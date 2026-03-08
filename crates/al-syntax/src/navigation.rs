@@ -40,6 +40,15 @@ pub struct ParameterInfo {
     pub is_var: bool,
 }
 
+impl std::fmt::Display for ParameterInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_var {
+            write!(f, "var ")?;
+        }
+        write!(f, "{}: {}", self.name, self.type_name)
+    }
+}
+
 /// All recognized AL object type node kinds in the tree-sitter grammar.
 const OBJECT_TYPE_KINDS: &[&str] = &[
     "kw_table",

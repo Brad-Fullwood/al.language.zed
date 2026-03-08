@@ -107,6 +107,17 @@ pub struct MethodSymbol {
     pub is_local: bool,
 }
 
+impl fmt::Display for MethodSymbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let params: Vec<String> = self.parameters.iter().map(|p| p.to_string()).collect();
+        write!(f, "{}({})", self.name, params.join("; "))?;
+        if let Some(ref ret) = self.return_type {
+            write!(f, ": {}", ret)?;
+        }
+        Ok(())
+    }
+}
+
 /// A method parameter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterSymbol {
@@ -115,6 +126,15 @@ pub struct ParameterSymbol {
     pub type_name: String,
     #[serde(default)]
     pub is_var: bool,
+}
+
+impl fmt::Display for ParameterSymbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_var {
+            write!(f, "var ")?;
+        }
+        write!(f, "{}: {}", self.name, self.type_name)
+    }
 }
 
 /// An attribute on a method (e.g., `[EventSubscriber]`, `[IntegrationEvent]`).

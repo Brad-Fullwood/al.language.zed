@@ -20,8 +20,12 @@ pub struct SymbolIndex {
     by_name: DashMap<String, Vec<Arc<SymbolEntry>>>,
     /// Objects keyed by (ObjectKind, id).
     by_kind_id: DashMap<(ObjectKind, i32), Vec<Arc<SymbolEntry>>>,
-    /// All entries (for linear scans like search).
-    all: DashMap<usize, Arc<SymbolEntry>>,
+    /// Objects keyed by ObjectKind (secondary index for O(1) kind lookups).
+    by_kind: DashMap<ObjectKind, Vec<Arc<SymbolEntry>>>,
+    /// Extension objects keyed by lowercase extends name (secondary index).
+    by_extends: DashMap<String, Vec<Arc<SymbolEntry>>>,
+    /// All entries with pre-computed lowercase names (for search).
+    all: DashMap<usize, (Arc<SymbolEntry>, String)>,
     /// Next ID for the `all` map.
     next_id: std::sync::atomic::AtomicUsize,
 }
@@ -38,6 +42,8 @@ impl SymbolIndex {
         Self {
             by_name: DashMap::new(),
             by_kind_id: DashMap::new(),
+            by_kind: DashMap::new(),
+            by_extends: DashMap::new(),
             all: DashMap::new(),
             next_id: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -84,12 +90,12 @@ impl SymbolIndex {
             let id = self
                 .next_id
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.all.insert(id, Arc::clone(&arc));
+            let name_lower = entry.name.to_lowercase();
+            self.all.insert(id, (Arc::clone(&arc), name_lower.clone()));
 
             // Index by lowercase name
-            let key = entry.name.to_lowercase();
             self.by_name
-                .entry(key)
+                .entry(name_lower)
                 .or_default()
                 .push(Arc::clone(&arc));
 
@@ -100,20 +106,46 @@ impl SymbolIndex {
                     .or_default()
                     .push(Arc::clone(&arc));
             }
+
+            // Index by object kind
+            self.by_kind
+                .entry(entry.kind)
+                .or_default()
+                .push(Arc::clone(&arc));
+
+            // Index extensions by lowercase extends name
+            if let Some(ref extends) = entry.extends {
+                self.by_extends
+                    .entry(extends.to_lowercase())
+                    .or_default()
+                    .push(Arc::clone(&arc));
+            }
         }
     }
 
     /// Case-insensitive substring search across all object names.
     /// Returns up to `limit` matching entries.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
-        let query_lower = query.to_lowercase();
         let mut results = Vec::new();
 
-        for entry in self.all.iter() {
-            if entry.value().name.to_lowercase().contains(&query_lower) {
-                results.push(Arc::clone(entry.value()));
+        if query.is_empty() {
+            // Short-circuit: return the first `limit` entries without filtering
+            for entry in self.all.iter() {
+                let (arc, _) = entry.value();
+                results.push(Arc::clone(arc));
                 if results.len() >= limit {
                     break;
+                }
+            }
+        } else {
+            let query_lower = query.to_lowercase();
+            for entry in self.all.iter() {
+                let (arc, name_lower) = entry.value();
+                if name_lower.contains(&query_lower) {
+                    results.push(Arc::clone(arc));
+                    if results.len() >= limit {
+                        break;
+                    }
                 }
             }
         }
@@ -140,29 +172,19 @@ impl SymbolIndex {
 
     /// Get all entries of a specific object kind.
     pub fn get_by_kind(&self, kind: ObjectKind) -> Vec<Arc<SymbolEntry>> {
-        let mut results = Vec::new();
-        for entry in self.all.iter() {
-            if entry.value().kind == kind {
-                results.push(Arc::clone(entry.value()));
-            }
-        }
-        results
+        self.by_kind
+            .get(&kind)
+            .map(|v| v.clone())
+            .unwrap_or_default()
     }
 
     /// Get all extensions that extend a given object name.
     pub fn get_extensions_of(&self, base_name: &str) -> Vec<Arc<SymbolEntry>> {
         let target = base_name.to_lowercase();
-        let mut results = Vec::new();
-        for entry in self.all.iter() {
-            if entry.value().kind.is_extension() {
-                if let Some(ref extends) = entry.value().extends {
-                    if extends.to_lowercase() == target {
-                        results.push(Arc::clone(entry.value()));
-                    }
-                }
-            }
-        }
-        results
+        self.by_extends
+            .get(&target)
+            .map(|v| v.clone())
+            .unwrap_or_default()
     }
 
     /// Total number of indexed entries.
