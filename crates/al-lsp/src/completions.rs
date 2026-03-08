@@ -8,6 +8,7 @@
 
 use tower_lsp::lsp_types::*;
 
+use crate::parsing;
 use crate::server::AlServer;
 
 /// AL keywords for general completion.
@@ -222,7 +223,7 @@ pub(crate) fn handle_completion(
             }
 
             // Look up built-in type methods
-            let builtins = server.builtins.blocking_read();
+            let builtins = server.builtins.read().unwrap().clone();
             for bt in builtins.iter() {
                 if bt.name.eq_ignore_ascii_case(var_name) {
                     for method in &bt.methods {
@@ -300,11 +301,11 @@ pub(crate) fn handle_completion(
                 });
             }
             // Also include default items
-            add_default_completions(server, &text, &mut items);
+            add_default_completions(server, uri, &text, &mut items);
         }
 
         CompletionContext::Default => {
-            add_default_completions(server, &text, &mut items);
+            add_default_completions(server, uri, &text, &mut items);
         }
     }
 
@@ -316,7 +317,7 @@ pub(crate) fn handle_completion(
 }
 
 /// Add default completions: keywords, local procedures, symbols.
-fn add_default_completions(server: &AlServer, text: &str, items: &mut Vec<CompletionItem>) {
+fn add_default_completions(server: &AlServer, uri: &Url, text: &str, items: &mut Vec<CompletionItem>) {
     // Keywords
     for kw in AL_KEYWORDS {
         items.push(CompletionItem {
@@ -327,10 +328,8 @@ fn add_default_completions(server: &AlServer, text: &str, items: &mut Vec<Comple
     }
 
     // Extract procedures from the current file
-    {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(text);
-        let doc_symbols = al_syntax::extract_document_symbols(&result.tree, text);
+    if let Some((_, tree)) = parsing::get_or_parse(server, uri) {
+        let doc_symbols = al_syntax::extract_document_symbols(&tree, text);
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
@@ -371,7 +370,7 @@ fn add_default_completions(server: &AlServer, text: &str, items: &mut Vec<Comple
     }
 
     // Add built-in type names
-    let builtins = server.builtins.blocking_read();
+    let builtins = server.builtins.read().unwrap().clone();
     for bt in builtins.iter() {
         items.push(CompletionItem {
             label: bt.name.clone(),

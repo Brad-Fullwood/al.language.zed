@@ -7,17 +7,12 @@
 
 use tower_lsp::lsp_types::*;
 
+use crate::parsing;
 use crate::server::AlServer;
 
 /// Handle textDocument/hover.
 pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> Option<Hover> {
-    let text = server.documents.get_text(uri)?;
-
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
-    };
+    let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let node = al_syntax::find_node_at_position(&tree, position)?;
     let source = text.as_bytes();
@@ -75,7 +70,7 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
 
     // 4. Check built-in types
     {
-        let builtins = server.builtins.blocking_read();
+        let builtins = server.builtins.read().unwrap().clone();
         for bt in builtins.iter() {
             if bt.name.eq_ignore_ascii_case(clean_name) {
                 let methods_list: Vec<String> = bt
@@ -122,13 +117,13 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
         }
     }
 
-    // 5. Check workspace files for procedures
-    for entry in server.workspace_files.iter() {
-        let file_text = entry.value();
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(file_text);
-        if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
-            if obj_info.name.eq_ignore_ascii_case(clean_name) {
+    // 5. Check workspace object name index for matching objects
+    if let Some(file_path_entry) = server.workspace_objects.get(&clean_name.to_lowercase()) {
+        let file_path = file_path_entry.value();
+        if let Some(file_text) = server.workspace_files.get(file_path) {
+            let mut parser = server.parser.lock().unwrap();
+            let result = parser.parse(file_text.value());
+            if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text.value()) {
                 let content = format!(
                     "```al\n{} {} \"{}\"\n```\n*(workspace)*",
                     obj_info.kind,

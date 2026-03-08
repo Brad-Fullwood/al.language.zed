@@ -7,6 +7,7 @@ use tower_lsp::lsp_types::{TextDocumentContentChangeEvent, Url};
 /// Store for open documents.
 pub struct DocumentStore {
     docs: DashMap<Url, Document>,
+    trees: DashMap<Url, (i32, tree_sitter::Tree)>,
 }
 
 struct Document {
@@ -18,6 +19,7 @@ impl DocumentStore {
     pub fn new() -> Self {
         Self {
             docs: DashMap::new(),
+            trees: DashMap::new(),
         }
     }
 
@@ -33,6 +35,7 @@ impl DocumentStore {
 
     pub fn close(&self, uri: &Url) {
         self.docs.remove(uri);
+        self.trees.remove(uri);
     }
 
     pub fn get_text(&self, uri: &Url) -> Option<String> {
@@ -62,7 +65,25 @@ impl DocumentStore {
                 }
             }
             doc.version += 1;
+            // Invalidate cached tree since the document changed
+            self.trees.remove(uri);
         }
+    }
+
+    /// Return the cached parse tree if the version matches the current document version.
+    pub fn get_cached_tree(&self, uri: &Url) -> Option<tree_sitter::Tree> {
+        let doc = self.docs.get(uri)?;
+        let cached = self.trees.get(uri)?;
+        if cached.0 == doc.version {
+            Some(cached.1.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Cache a parse tree for the given document URI and version.
+    pub fn cache_tree(&self, uri: &Url, version: i32, tree: tree_sitter::Tree) {
+        self.trees.insert(uri.clone(), (version, tree));
     }
 }
 

@@ -15,8 +15,14 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
 
     // Phase 1: Instant syntax + lint
     {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(text);
+        let result = {
+            let mut parser = server.parser.lock().unwrap();
+            parser.parse(text)
+        };
+
+        // Cache the tree for subsequent handler calls at this version
+        let version = server.documents.get_version(uri).unwrap_or(0);
+        server.documents.cache_tree(uri, version, result.tree.clone());
 
         // Syntax errors from tree-sitter
         for err in &result.errors {

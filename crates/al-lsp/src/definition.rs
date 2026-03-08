@@ -7,6 +7,7 @@
 
 use tower_lsp::lsp_types::*;
 
+use crate::parsing;
 use crate::server::AlServer;
 
 /// Handle textDocument/definition.
@@ -15,13 +16,7 @@ pub(crate) fn handle_definition(
     uri: &Url,
     position: Position,
 ) -> Option<GotoDefinitionResponse> {
-    let text = server.documents.get_text(uri)?;
-
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
-    };
+    let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let node = al_syntax::find_node_at_position(&tree, position)?;
     let source = text.as_bytes();
@@ -47,7 +42,29 @@ pub(crate) fn handle_definition(
         }
     }
 
-    // 2. Cross-file definitions: search workspace files for matching procedures/objects
+    // 2. Cross-file definitions: check workspace object name index first
+    if let Some(obj_path_entry) = server.workspace_objects.get(&clean_name.to_lowercase()) {
+        let file_path = obj_path_entry.value().clone();
+        // Skip the current file
+        let is_current = uri.to_file_path().map_or(false, |cp| cp == file_path);
+        if !is_current {
+            if let Some(file_text_entry) = server.workspace_files.get(&file_path) {
+                let file_text = file_text_entry.value();
+                let mut parser = server.parser.lock().unwrap();
+                let result = parser.parse(file_text);
+                if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
+                    if let Ok(file_uri) = Url::from_file_path(&file_path) {
+                        return Some(GotoDefinitionResponse::Scalar(Location {
+                            uri: file_uri,
+                            range: al_syntax::ts_range_to_lsp(&obj_info.range),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    // 2b. Search workspace files for matching procedures (not in the name index)
     for entry in server.workspace_files.iter() {
         let file_path = entry.key();
         let file_text = entry.value();
@@ -62,35 +79,19 @@ pub(crate) fn handle_definition(
         let mut parser = server.parser.lock().unwrap();
         let result = parser.parse(file_text);
 
-        // Check object declaration name
-        if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
-            if obj_info.name.eq_ignore_ascii_case(clean_name) {
-                if let Ok(file_uri) = Url::from_file_path(file_path) {
-                    return Some(GotoDefinitionResponse::Scalar(Location {
-                        uri: file_uri,
-                        range: al_syntax::ts_range_to_lsp(&obj_info.range),
-                    }));
-                }
-            }
-        }
-
         // Check procedures in other files
-        let refs = al_syntax::find_variable_references(&result.tree, file_text, clean_name);
-        if !refs.is_empty() {
-            // Look for procedure declarations
-            let doc_symbols = al_syntax::extract_document_symbols(&result.tree, file_text);
-            for sym in &doc_symbols {
-                if let Some(children) = &sym.children {
-                    for child in children {
-                        if (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
-                            && child.name.eq_ignore_ascii_case(clean_name)
-                        {
-                            if let Ok(file_uri) = Url::from_file_path(file_path) {
-                                return Some(GotoDefinitionResponse::Scalar(Location {
-                                    uri: file_uri,
-                                    range: child.selection_range,
-                                }));
-                            }
+        let doc_symbols = al_syntax::extract_document_symbols(&result.tree, file_text);
+        for sym in &doc_symbols {
+            if let Some(children) = &sym.children {
+                for child in children {
+                    if (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
+                        && child.name.eq_ignore_ascii_case(clean_name)
+                    {
+                        if let Ok(file_uri) = Url::from_file_path(file_path) {
+                            return Some(GotoDefinitionResponse::Scalar(Location {
+                                uri: file_uri,
+                                range: child.selection_range,
+                            }));
                         }
                     }
                 }
@@ -116,13 +117,7 @@ pub(crate) fn handle_references(
     position: Position,
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
-    let text = server.documents.get_text(uri)?;
-
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
-    };
+    let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let node = al_syntax::find_node_at_position(&tree, position)?;
     let source = text.as_bytes();
@@ -188,13 +183,7 @@ pub(crate) fn handle_rename(
     position: Position,
     new_name: String,
 ) -> Option<WorkspaceEdit> {
-    let text = server.documents.get_text(uri)?;
-
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
-    };
+    let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let node = al_syntax::find_node_at_position(&tree, position)?;
     let source = text.as_bytes();
@@ -234,13 +223,7 @@ pub(crate) fn handle_prepare_rename(
     uri: &Url,
     position: Position,
 ) -> Option<PrepareRenameResponse> {
-    let text = server.documents.get_text(uri)?;
-
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
-    };
+    let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let node = al_syntax::find_node_at_position(&tree, position)?;
     let source = text.as_bytes();

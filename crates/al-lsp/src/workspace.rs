@@ -4,6 +4,7 @@
 //! scanning workspace .al files, and spawning the semantic bridge.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
 use tracing::{info, warn};
@@ -30,7 +31,7 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
                     match bridge.builtin_types().await {
                         Ok(types) => {
                             info!(count = types.len(), "Loaded built-in types");
-                            *server.builtins.write().await = types;
+                            *server.builtins.write().unwrap() = Arc::new(types);
                         }
                         Err(e) => {
                             warn!(error = %e, "Failed to load built-in types");
@@ -128,6 +129,14 @@ fn scan_dir_recursive(dir: &Path, server: &AlServer, count: &mut usize, depth: u
             .map_or(false, |ext| ext.eq_ignore_ascii_case("al"))
         {
             if let Ok(content) = std::fs::read_to_string(&path) {
+                // Index the object name for fast lookups
+                {
+                    let mut parser = server.parser.lock().unwrap();
+                    let result = parser.parse(&content);
+                    if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &content) {
+                        server.workspace_objects.insert(obj_info.name.to_lowercase(), path.clone());
+                    }
+                }
                 server.workspace_files.insert(path, content);
                 *count += 1;
             }
@@ -182,21 +191,22 @@ pub(crate) fn handle_workspace_symbol(
         });
     }
 
-    // Search workspace files
-    for ws_entry in server.workspace_files.iter() {
-        let file_path = ws_entry.key();
-        let file_text = ws_entry.value();
+    // Search workspace files using the object name index
+    let query_lower = query.to_lowercase();
+    for ws_entry in server.workspace_objects.iter() {
+        let obj_name_lower = ws_entry.key();
+        let file_path = ws_entry.value();
 
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(file_text);
+        if !query.is_empty() && !obj_name_lower.contains(&query_lower) {
+            continue;
+        }
 
-        if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
-            if query.is_empty()
-                || obj_info
-                    .name
-                    .to_lowercase()
-                    .contains(&query.to_lowercase())
-            {
+        if let Some(file_text_entry) = server.workspace_files.get(file_path) {
+            let file_text = file_text_entry.value();
+            let mut parser = server.parser.lock().unwrap();
+            let result = parser.parse(file_text);
+
+            if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
                 if let Ok(file_uri) = Url::from_file_path(file_path) {
                     #[allow(deprecated)]
                     results.push(SymbolInformation {

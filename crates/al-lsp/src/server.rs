@@ -32,7 +32,10 @@ pub struct AlServer {
     pub(crate) project: RwLock<Option<AlProject>>,
     pub(crate) documents: DocumentStore,
     pub(crate) workspace_files: DashMap<PathBuf, String>,
-    pub(crate) builtins: RwLock<Vec<BuiltinType>>,
+    /// Builtins loaded once at init, read-only afterward. Arc for cheap cloning.
+    pub(crate) builtins: std::sync::RwLock<Arc<Vec<BuiltinType>>>,
+    /// Object name -> file path index for fast workspace lookups.
+    pub(crate) workspace_objects: DashMap<String, PathBuf>,
 }
 
 impl AlServer {
@@ -46,7 +49,8 @@ impl AlServer {
             project: RwLock::new(None),
             documents: DocumentStore::new(),
             workspace_files: DashMap::new(),
-            builtins: RwLock::new(Vec::new()),
+            builtins: std::sync::RwLock::new(Arc::new(Vec::new())),
+            workspace_objects: DashMap::new(),
         }
     }
 }
@@ -156,9 +160,15 @@ impl LanguageServer for AlServer {
 
         self.documents.open(uri.clone(), params.text_document.text);
 
-        // Update workspace files map
+        // Update workspace files map and object name index
         if let Ok(path) = uri.to_file_path() {
-            self.workspace_files.insert(path, text.clone());
+            self.workspace_files.insert(path.clone(), text.clone());
+            // Update workspace object name index
+            let mut parser = self.parser.lock().unwrap();
+            let result = parser.parse(&text);
+            if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &text) {
+                self.workspace_objects.insert(obj_info.name.to_lowercase(), path);
+            }
         }
 
         // Publish diagnostics
@@ -173,9 +183,15 @@ impl LanguageServer for AlServer {
 
         // Get updated text for diagnostics
         if let Some(text) = self.documents.get_text(&uri) {
-            // Update workspace files map
+            // Update workspace files map and object name index
             if let Ok(path) = uri.to_file_path() {
-                self.workspace_files.insert(path, text.clone());
+                self.workspace_files.insert(path.clone(), text.clone());
+                // Update workspace object name index
+                let mut parser = self.parser.lock().unwrap();
+                let result = parser.parse(&text);
+                if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &text) {
+                    self.workspace_objects.insert(obj_info.name.to_lowercase(), path);
+                }
             }
 
             // Re-publish diagnostics
@@ -190,6 +206,8 @@ impl LanguageServer for AlServer {
         // Remove from workspace_files to free memory (will be re-read if needed)
         if let Ok(path) = uri.to_file_path() {
             self.workspace_files.remove(&path);
+            // Remove from workspace_objects index (retain entries that don't point to this path)
+            self.workspace_objects.retain(|_, v| *v != path);
         }
 
         // Clear diagnostics for the closed file

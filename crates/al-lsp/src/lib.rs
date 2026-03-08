@@ -9,3 +9,4 @@ pub mod diagnostics;
 pub mod formatting;
 pub mod document;
 pub mod workspace;
+mod parsing;

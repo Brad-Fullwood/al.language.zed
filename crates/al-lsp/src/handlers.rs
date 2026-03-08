@@ -11,6 +11,7 @@
 use tower_lsp::lsp_types::*;
 
 use crate::completions::extract_last_identifier;
+use crate::parsing;
 use crate::server::AlServer;
 
 // ---------------------------------------------------------------------------
@@ -23,13 +24,7 @@ pub(crate) fn handle_document_symbol(
     server: &AlServer,
     uri: &Url,
 ) -> Option<DocumentSymbolResponse> {
-    let text = server.documents.get_text(uri)?;
-
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
-    };
+    let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let symbols = al_syntax::extract_document_symbols(&tree, &text);
 
@@ -42,13 +37,7 @@ pub(crate) fn handle_document_symbol(
 
 /// Handle textDocument/foldingRange.
 pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<FoldingRange>> {
-    let text = server.documents.get_text(uri)?;
-
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
-    };
+    let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let ranges = al_syntax::extract_folding_ranges(&tree, &text);
     Some(ranges)
@@ -63,13 +52,7 @@ pub(crate) fn handle_semantic_tokens(
     server: &AlServer,
     uri: &Url,
 ) -> Option<SemanticTokensResult> {
-    let text = server.documents.get_text(uri)?;
-
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
-    };
+    let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let tokens = al_syntax::extract_semantic_tokens(&tree, &text);
 
@@ -118,9 +101,8 @@ pub(crate) fn handle_signature_help(
 
     // Look up the procedure in the current file
     let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
+        let (_, t) = parsing::get_or_parse(server, uri)?;
+        t
     };
 
     // Search document symbols for the function
@@ -201,7 +183,7 @@ pub(crate) fn handle_signature_help(
     }
 
     // Look up in built-in types
-    let builtins = server.builtins.blocking_read();
+    let builtins = server.builtins.read().unwrap().clone();
     for bt in builtins.iter() {
         for method in &bt.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
@@ -403,13 +385,7 @@ pub(crate) fn handle_inlay_hint(
     uri: &Url,
     range: Range,
 ) -> Option<Vec<InlayHint>> {
-    let text = server.documents.get_text(uri)?;
-
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(&text);
-        result.tree
-    };
+    let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let root = tree.root_node();
     let source = text.as_bytes();
@@ -488,7 +464,7 @@ fn lookup_parameter_names(server: &AlServer, func_name: &str) -> Vec<String> {
     }
 
     // Check built-in types
-    let builtins = server.builtins.blocking_read();
+    let builtins = server.builtins.read().unwrap().clone();
     for bt in builtins.iter() {
         for method in &bt.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
