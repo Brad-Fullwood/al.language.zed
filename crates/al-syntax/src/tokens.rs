@@ -1,6 +1,38 @@
 //! Semantic token extraction from tree-sitter trees.
 
-use tree_sitter::Tree;
+use tree_sitter::{Node, Tree};
+
+/// Semantic token type indices — must match the legend registered with the LSP client.
+pub mod token_types {
+    pub const KEYWORD: u32 = 0;
+    pub const TYPE: u32 = 1;
+    pub const STRING: u32 = 2;
+    pub const NUMBER: u32 = 3;
+    pub const COMMENT: u32 = 4;
+    pub const OPERATOR: u32 = 5;
+    pub const PROPERTY: u32 = 6;
+    pub const VARIABLE: u32 = 7;
+    pub const FUNCTION: u32 = 8;
+    pub const PARAMETER: u32 = 9;
+    pub const ENUM_MEMBER: u32 = 10;
+    pub const NAMESPACE: u32 = 11;
+
+    /// The legend entries in order, for registering with the LSP server.
+    pub const LEGEND: &[&str] = &[
+        "keyword",
+        "type",
+        "string",
+        "number",
+        "comment",
+        "operator",
+        "property",
+        "variable",
+        "function",
+        "parameter",
+        "enumMember",
+        "namespace",
+    ];
+}
 
 /// A semantic token for syntax highlighting.
 #[derive(Debug, Clone)]
@@ -13,7 +45,344 @@ pub struct SemanticToken {
 }
 
 /// Extract semantic tokens from a parsed tree.
+///
+/// Classifies tokens into types:
+/// - Keywords (begin, end, procedure, trigger, var, if, then, else, etc.)
+/// - Types (Integer, Text, Record, Code, Decimal, Boolean, etc.)
+/// - Strings (single-quoted)
+/// - Numbers (integer and decimal literals)
+/// - Comments (line and block)
+/// - Operators (+, -, :=, =, etc.)
+/// - Properties (property names in assignments)
+/// - Object references
+///
+/// Returns delta-encoded tokens as required by the LSP semantic tokens protocol.
 pub fn extract_semantic_tokens(tree: &Tree, text: &str) -> Vec<SemanticToken> {
-    let _ = (tree, text);
-    todo!("Port semantic tokens from v2")
+    let root = tree.root_node();
+    let source = text.as_bytes();
+
+    // Collect all leaf tokens with their absolute positions
+    let mut raw_tokens: Vec<(u32, u32, u32, u32)> = Vec::new(); // (line, col, len, type)
+    collect_tokens(root, source, &mut raw_tokens);
+
+    // Sort by position (line, then column)
+    raw_tokens.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    // Convert to delta encoding
+    let mut tokens = Vec::with_capacity(raw_tokens.len());
+    let mut prev_line: u32 = 0;
+    let mut prev_start: u32 = 0;
+
+    for (line, col, len, token_type) in raw_tokens {
+        let delta_line = line - prev_line;
+        let delta_start = if delta_line == 0 {
+            col - prev_start
+        } else {
+            col
+        };
+
+        tokens.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length: len,
+            token_type,
+            token_modifiers: 0,
+        });
+
+        prev_line = line;
+        prev_start = col;
+    }
+
+    tokens
+}
+
+/// Recursively collect tokens from the AST.
+fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u32)>) {
+    let kind = node.kind();
+
+    // Classify this node
+    if let Some(token_type) = classify_node(kind, node, source) {
+        let start = node.start_position();
+        let end = node.end_position();
+
+        // For single-line tokens, emit directly
+        if start.row == end.row {
+            let len = (end.column - start.column) as u32;
+            if len > 0 {
+                tokens.push((start.row as u32, start.column as u32, len, token_type));
+            }
+        } else {
+            // Multi-line tokens (e.g., block comments, multi-line strings):
+            // emit the first line only with the full byte length as a rough approximation.
+            // LSP clients handle multi-line tokens by line.
+            if let Ok(text) = node.utf8_text(source) {
+                for (i, line) in text.lines().enumerate() {
+                    let row = start.row + i;
+                    let col = if i == 0 { start.column } else { 0 };
+                    let len = line.len();
+                    if len > 0 {
+                        tokens.push((row as u32, col as u32, len as u32, token_type));
+                    }
+                }
+            }
+        }
+        // Don't recurse into classified nodes (they are leaves conceptually)
+        return;
+    }
+
+    // Recurse into children
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_tokens(child, source, tokens);
+    }
+}
+
+/// Classify a tree-sitter node kind to a semantic token type.
+/// Returns `None` for nodes that should not be highlighted or should recurse.
+fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
+    match kind {
+        // Keywords (AL-specific keyword nodes from the external scanner)
+        "kw_begin" | "kw_end" | "kw_var" | "kw_if" | "kw_then" | "kw_else" | "kw_for"
+        | "kw_foreach" | "kw_while" | "kw_do" | "kw_repeat" | "kw_until" | "kw_case"
+        | "kw_of" | "kw_exit" | "kw_break" | "kw_continue" | "kw_with" | "kw_in"
+        | "kw_to" | "kw_downto" | "kw_asserterror" | "kw_local" | "kw_internal"
+        | "kw_protected" | "kw_temporary" | "kw_event" => Some(token_types::KEYWORD),
+
+        // Procedure/trigger/function keywords
+        "kw_procedure" | "kw_function" | "kw_trigger" => Some(token_types::KEYWORD),
+
+        // Object keywords
+        "kw_codeunit" | "kw_table" | "kw_page" | "kw_report" | "kw_query" | "kw_xmlport"
+        | "kw_enum" | "kw_interface" | "kw_permissionset" | "kw_profile"
+        | "kw_controladdin" | "kw_tableextension" | "kw_pageextension"
+        | "kw_reportextension" | "kw_enumextension" | "kw_permissionsetextension"
+        | "kw_pagecustomization" | "kw_entitlement" | "kw_profileextension"
+        | "kw_dotnet" | "kw_dotnetassembly" | "kw_dotnettypedeclaration" => {
+            Some(token_types::KEYWORD)
+        }
+
+        // Generic keyword categories from external scanner
+        "keyword" | "control_keyword" => Some(token_types::KEYWORD),
+        "object_keyword" => Some(token_types::KEYWORD),
+        "metadata_keyword" => Some(token_types::KEYWORD),
+
+        // Type keywords
+        "kw_integer" | "kw_decimal" | "kw_text" | "kw_code" | "kw_boolean" | "kw_date"
+        | "kw_time" | "kw_datetime" | "kw_dateformula" | "kw_duration" | "kw_guid"
+        | "kw_blob" | "kw_biginteger" | "kw_bigtext" | "kw_char" | "kw_byte"
+        | "kw_option" | "kw_record" | "kw_recordid" | "kw_recordref"
+        | "kw_dialog" | "kw_file" | "kw_instream" | "kw_outstream"
+        | "kw_variant" | "kw_list" | "kw_dictionary" | "kw_array"
+        | "kw_httpclient" | "kw_httpcontent" | "kw_httpheaders"
+        | "kw_httprequestmessage" | "kw_httpresponsemessage"
+        | "kw_jsonarray" | "kw_jsonobject" | "kw_jsontoken" | "kw_jsonvalue"
+        | "kw_xmldocument" | "kw_xmlelement" | "kw_xmlnode" | "kw_xmlnodelist"
+        | "kw_xmlattribute" | "kw_xmlattributecollection" | "kw_xmlcdata"
+        | "kw_xmlcomment" | "kw_xmldeclaration" | "kw_xmldocumenttype"
+        | "kw_xmlnamespacemanager" | "kw_xmlnametable"
+        | "kw_xmlprocessinginstruction" | "kw_xmlreadoptions" | "kw_xmltext"
+        | "kw_xmlwriteoptions" | "kw_textbuilder" | "kw_textconst"
+        | "kw_media" | "kw_mediaset" | "kw_notification" | "kw_errorinfo"
+        | "kw_secrettext" | "kw_filterpagebuilder" | "kw_datatransfer"
+        | "kw_sessionsettings" | "kw_testpage" | "kw_testrequestpage"
+        | "kw_fileupload" | "kw_cookie" => Some(token_types::TYPE),
+
+        "type_keyword" => Some(token_types::TYPE),
+
+        // Property keywords
+        "property_keyword" => Some(token_types::PROPERTY),
+
+        // Operator words (and, or, not, div, mod, xor, is, as)
+        "operator_word" | "op_and" | "op_or" | "op_not" | "op_div" | "op_mod"
+        | "op_xor" | "op_is" | "op_as" => Some(token_types::OPERATOR),
+
+        // Operators
+        "operator" => Some(token_types::OPERATOR),
+
+        // Strings
+        "string" | "verbatim_string" => Some(token_types::STRING),
+
+        // Numbers
+        "integer" | "decimal" | "date_literal" | "time_literal" | "datetime_literal" => {
+            Some(token_types::NUMBER)
+        }
+
+        // Comments
+        "comment" => Some(token_types::COMMENT),
+
+        // Directives (preprocessor)
+        "directive" | "inactive_code" => Some(token_types::COMMENT),
+
+        // Identifiers — classify based on parent context
+        "identifier" | "quoted_identifier" => classify_identifier(node, source),
+
+        _ => None,
+    }
+}
+
+/// Classify an identifier based on its parent context.
+fn classify_identifier(node: Node, _source: &[u8]) -> Option<u32> {
+    let parent = node.parent()?;
+    match parent.kind() {
+        // Function/procedure names
+        "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+        | "event_declaration" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::FUNCTION)
+            } else {
+                None
+            }
+        }
+        // Member access (method calls)
+        "member_call_suffix" | "scope_call_suffix" => {
+            if parent.child_by_field_name("member").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::FUNCTION)
+            } else {
+                None
+            }
+        }
+        // Variable declarations
+        "regular_variable_declaration" | "label_declaration" | "object_variable_declaration" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::VARIABLE)
+            } else {
+                None
+            }
+        }
+        // Parameters
+        "parameter" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::PARAMETER)
+            } else {
+                None
+            }
+        }
+        // Property assignments
+        "property_assignment" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::PROPERTY)
+            } else {
+                None
+            }
+        }
+        // Attribute names
+        "attribute" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::NAMESPACE)
+            } else {
+                None
+            }
+        }
+        // Enum value names
+        "enum_value_declaration" => {
+            Some(token_types::ENUM_MEMBER)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AlParser;
+
+    #[test]
+    fn test_extract_semantic_tokens_basic() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure DoSomething()
+    var
+        x: Integer;
+    begin
+        x := 42;
+        Message('Hello');
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert!(!tokens.is_empty(), "Should extract semantic tokens");
+
+        // Verify delta encoding is valid (non-negative deltas)
+        for token in &tokens {
+            assert!(token.length > 0, "Token length should be positive");
+        }
+
+        // Verify we get keyword tokens (begin, end, var, procedure, etc.)
+        let keyword_count = tokens.iter().filter(|t| t.token_type == token_types::KEYWORD).count();
+        assert!(keyword_count >= 3, "Should have at least 3 keyword tokens (codeunit, procedure, var, begin, end), got {}", keyword_count);
+    }
+
+    #[test]
+    fn test_semantic_tokens_string() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        Message('Hello World');
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        let string_count = tokens.iter().filter(|t| t.token_type == token_types::STRING).count();
+        assert!(string_count >= 1, "Should have at least 1 string token");
+    }
+
+    #[test]
+    fn test_semantic_tokens_number() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure DoSomething()
+    var
+        x: Integer;
+    begin
+        x := 42;
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        let number_count = tokens.iter().filter(|t| t.token_type == token_types::NUMBER).count();
+        assert!(number_count >= 1, "Should have at least 1 number token (50100 or 42)");
+    }
+
+    #[test]
+    fn test_delta_encoding_consistency() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure A()
+    begin
+    end;
+
+    procedure B()
+    begin
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        // Reconstruct absolute positions and verify they are monotonically increasing
+        let mut line: u32 = 0;
+        let mut col: u32 = 0;
+        let mut prev_pos = (0u32, 0u32);
+
+        for token in &tokens {
+            line += token.delta_line;
+            if token.delta_line > 0 {
+                col = token.delta_start;
+            } else {
+                col += token.delta_start;
+            }
+            assert!(
+                (line, col) >= prev_pos,
+                "Tokens must be ordered: ({},{}) < ({},{})",
+                prev_pos.0, prev_pos.1, line, col
+            );
+            prev_pos = (line, col);
+        }
+    }
 }
