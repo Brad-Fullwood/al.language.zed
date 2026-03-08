@@ -196,6 +196,31 @@ impl SymbolIndex {
     pub fn is_empty(&self) -> bool {
         self.all.is_empty()
     }
+
+    /// Get a composed view of an object by merging the base with all extensions.
+    ///
+    /// Convenience method that delegates to [`crate::composition::get_composed`].
+    pub fn get_composed(
+        &self,
+        kind: crate::model::ObjectKind,
+        name: &str,
+    ) -> Option<crate::model::ComposedObject> {
+        crate::composition::get_composed(self, kind, name)
+    }
+
+    /// Find event publishers and subscribers matching a name pattern.
+    ///
+    /// Convenience method that delegates to [`crate::events::get_events`].
+    pub fn get_events(&self, query: &str) -> crate::events::EventResults {
+        crate::events::get_events(self, query)
+    }
+
+    /// Create a symbol index pre-loaded with packages from an [`al_discovery::AlProject`].
+    pub fn from_project(project: &al_discovery::AlProject) -> Self {
+        let index = Self::new();
+        index.load_packages(&project.packages);
+        index
+    }
 }
 
 #[cfg(test)]

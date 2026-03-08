@@ -297,14 +297,14 @@ mod tests {
             name: "Customer".to_string(),
             extends: None,
             package: "Base Application".to_string(),
-            methods: vec![al_symbols::model::MethodSymbol {
+            methods: vec![al_symbols::MethodSymbol {
                 name: "GetBalance".to_string(),
                 parameters: vec![],
                 return_type: Some("Decimal".to_string()),
                 attributes: vec![],
                 is_local: false,
             }],
-            fields: vec![al_symbols::model::FieldSymbol {
+            fields: vec![al_symbols::FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),

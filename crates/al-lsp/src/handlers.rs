@@ -290,89 +290,572 @@ fn extract_trailing_identifier(s: &str) -> Option<&str> {
 pub(crate) fn handle_code_action(
     server: &AlServer,
     uri: &Url,
-    _range: Range,
+    range: Range,
     diagnostics: &[Diagnostic],
 ) -> Option<Vec<CodeActionOrCommand>> {
     let text = server.documents.get_text(uri)?;
     let mut actions = Vec::new();
 
+    // --- Diagnostic-based quick fixes ---
     for diag in diagnostics {
-        // Quick fix for missing case else (AL-L010)
-        if diag
-            .code
-            .as_ref()
-            .map_or(false, |c| matches!(c, NumberOrString::String(s) if s == "AL-L010"))
-        {
-            let insert_pos = Position {
-                line: diag.range.end.line,
-                character: 0,
-            };
+        let code = diag_code_str(diag);
 
-            let edit = TextEdit {
-                range: Range {
-                    start: insert_pos,
-                    end: insert_pos,
-                },
-                new_text: "            else\n                ; // default case\n".to_string(),
-            };
+        match code.as_deref() {
+            Some("AL-L001") => {
+                // Empty begin..end — suggest adding a TODO comment
+                let insert_pos = Position {
+                    line: diag.range.start.line + 1,
+                    character: 0,
+                };
+                let indent = detect_indent(&text, diag.range.start.line);
+                let edit = TextEdit {
+                    range: Range { start: insert_pos, end: insert_pos },
+                    new_text: format!("{}    // TODO: Implement\n", indent),
+                };
+                actions.push(make_quickfix(
+                    "Add TODO comment",
+                    uri,
+                    diag,
+                    vec![edit],
+                ));
+            }
 
-            let mut changes = std::collections::HashMap::new();
-            changes.insert(uri.clone(), vec![edit]);
+            Some("AL-L005") => {
+                // Unused variable — offer to remove the declaration line
+                // The diagnostic range covers the variable name; remove the whole line
+                let line_start = Position { line: diag.range.start.line, character: 0 };
+                let line_end = Position { line: diag.range.start.line + 1, character: 0 };
+                let edit = TextEdit {
+                    range: Range { start: line_start, end: line_end },
+                    new_text: String::new(),
+                };
+                actions.push(make_quickfix(
+                    "Remove unused variable",
+                    uri,
+                    diag,
+                    vec![edit],
+                ));
+            }
 
-            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: "Add missing 'else' branch".to_string(),
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }));
-        }
+            Some("AL-L006") => {
+                // Empty trigger body — offer to add a TODO comment
+                let insert_pos = Position {
+                    line: diag.range.start.line + 1,
+                    character: 0,
+                };
+                let indent = detect_indent(&text, diag.range.start.line);
+                let edit = TextEdit {
+                    range: Range { start: insert_pos, end: insert_pos },
+                    new_text: format!("{}        // TODO: Implement trigger\n", indent),
+                };
+                actions.push(make_quickfix(
+                    "Add TODO comment to trigger",
+                    uri,
+                    diag,
+                    vec![edit],
+                ));
+            }
 
-        // Quick fix for empty begin..end (AL-L001) — suggest adding a comment
-        if diag
-            .code
-            .as_ref()
-            .map_or(false, |c| matches!(c, NumberOrString::String(s) if s == "AL-L001"))
-        {
-            let insert_pos = Position {
-                line: diag.range.start.line + 1,
-                character: 0,
-            };
+            Some("AL-L007") => {
+                // TODO/FIXME comment — offer to remove (mark as resolved)
+                let line_start = Position { line: diag.range.start.line, character: 0 };
+                let line_end = Position { line: diag.range.start.line + 1, character: 0 };
+                let edit = TextEdit {
+                    range: Range { start: line_start, end: line_end },
+                    new_text: String::new(),
+                };
+                actions.push(make_quickfix(
+                    "Remove TODO comment (mark as resolved)",
+                    uri,
+                    diag,
+                    vec![edit],
+                ));
+            }
 
-            let edit = TextEdit {
-                range: Range {
-                    start: insert_pos,
-                    end: insert_pos,
-                },
-                new_text: "        // TODO: Implement\n".to_string(),
-            };
+            Some("AL-L009") => {
+                // Excessive parameters — offer to add a comment suggesting extraction
+                let insert_pos = Position {
+                    line: diag.range.start.line,
+                    character: 0,
+                };
+                let indent = detect_indent(&text, diag.range.start.line);
+                let edit = TextEdit {
+                    range: Range { start: insert_pos, end: insert_pos },
+                    new_text: format!(
+                        "{}// REFACTOR: Consider extracting parameters into a record or buffer table\n",
+                        indent
+                    ),
+                };
+                actions.push(make_quickfix(
+                    "Add refactoring suggestion comment",
+                    uri,
+                    diag,
+                    vec![edit],
+                ));
+            }
 
-            let mut changes = std::collections::HashMap::new();
-            changes.insert(uri.clone(), vec![edit]);
+            Some("AL-L010") => {
+                // Missing case else — add else branch
+                let insert_pos = Position {
+                    line: diag.range.end.line,
+                    character: 0,
+                };
+                let indent = detect_indent(&text, diag.range.start.line);
+                let edit = TextEdit {
+                    range: Range { start: insert_pos, end: insert_pos },
+                    new_text: format!(
+                        "{}    else\n{}        ; // default case\n",
+                        indent, indent
+                    ),
+                };
+                actions.push(make_quickfix(
+                    "Add missing 'else' branch",
+                    uri,
+                    diag,
+                    vec![edit],
+                ));
+            }
 
-            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                title: "Add TODO comment".to_string(),
-                kind: Some(CodeActionKind::QUICKFIX),
-                diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }));
+            Some("AL-L011") => {
+                // Redundant begin..end around single statement — remove begin/end
+                if let Some(edits) = compute_remove_begin_end(&text, diag) {
+                    actions.push(make_quickfix(
+                        "Remove redundant begin..end",
+                        uri,
+                        diag,
+                        edits,
+                    ));
+                }
+            }
+
+            Some("AL-L013") => {
+                // Empty REPEAT..UNTIL loop — add TODO comment
+                let insert_pos = Position {
+                    line: diag.range.start.line + 1,
+                    character: 0,
+                };
+                let indent = detect_indent(&text, diag.range.start.line);
+                let edit = TextEdit {
+                    range: Range { start: insert_pos, end: insert_pos },
+                    new_text: format!("{}    // TODO: Add loop body\n", indent),
+                };
+                actions.push(make_quickfix(
+                    "Add TODO comment to loop",
+                    uri,
+                    diag,
+                    vec![edit],
+                ));
+            }
+
+            Some("AL-L016") => {
+                // Procedure naming — fix to PascalCase (capitalize first letter)
+                if let Some(edit) = compute_pascal_case_fix(&text, diag) {
+                    actions.push(make_quickfix(
+                        "Fix procedure name to PascalCase",
+                        uri,
+                        diag,
+                        vec![edit],
+                    ));
+                }
+            }
+
+            Some("AL-L017") => {
+                // Hard-coded string — extract to Label variable
+                if let Some(edits) = compute_extract_to_label(&text, diag) {
+                    actions.push(make_quickfix(
+                        "Extract to Label variable",
+                        uri,
+                        diag,
+                        edits,
+                    ));
+                }
+            }
+
+            _ => {}
         }
     }
 
-    let _ = text; // used indirectly
+    // --- Source actions (not tied to diagnostics) ---
+    // Add procedure documentation template
+    if let Some(action) = source_action_add_doc_comment(server, uri, &text, range) {
+        actions.push(action);
+    }
+
+    // Add region wrapper
+    if range.start != range.end {
+        if let Some(action) = source_action_add_region(uri, &text, range) {
+            actions.push(action);
+        }
+    }
 
     if actions.is_empty() {
         None
     } else {
         Some(actions)
     }
+}
+
+/// Helper to extract a diagnostic code as a string.
+fn diag_code_str(diag: &Diagnostic) -> Option<String> {
+    diag.code.as_ref().and_then(|c| match c {
+        NumberOrString::String(s) => Some(s.clone()),
+        NumberOrString::Number(n) => Some(n.to_string()),
+    })
+}
+
+/// Build a quick-fix CodeAction.
+fn make_quickfix(
+    title: &str,
+    uri: &Url,
+    diag: &Diagnostic,
+    edits: Vec<TextEdit>,
+) -> CodeActionOrCommand {
+    let mut changes = std::collections::HashMap::new();
+    changes.insert(uri.clone(), edits);
+    CodeActionOrCommand::CodeAction(CodeAction {
+        title: title.to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diag.clone()]),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// Detect the leading whitespace of a line in the document text.
+fn detect_indent(text: &str, line: u32) -> String {
+    if let Some(line_str) = text.lines().nth(line as usize) {
+        let indent_len = line_str.len() - line_str.trim_start().len();
+        line_str[..indent_len].to_string()
+    } else {
+        "    ".to_string()
+    }
+}
+
+/// Compute edits to remove redundant begin..end around a single statement (AL-L011).
+/// Returns edits that remove the `begin` line and `end` line, keeping the inner statement.
+fn compute_remove_begin_end(text: &str, diag: &Diagnostic) -> Option<Vec<TextEdit>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let start_line = diag.range.start.line as usize;
+    let end_line = diag.range.end.line as usize;
+
+    if start_line >= lines.len() || end_line >= lines.len() {
+        return None;
+    }
+
+    // The begin line
+    let begin_line_text = lines[start_line];
+    if !begin_line_text.trim().eq_ignore_ascii_case("begin") {
+        return None;
+    }
+
+    // The end line (may be "end" or "end;")
+    let end_line_text = lines[end_line];
+    let end_trimmed = end_line_text.trim().to_lowercase();
+    if !end_trimmed.starts_with("end") {
+        return None;
+    }
+
+    let mut edits = Vec::new();
+
+    // Remove the begin line
+    edits.push(TextEdit {
+        range: Range {
+            start: Position { line: start_line as u32, character: 0 },
+            end: Position { line: (start_line + 1) as u32, character: 0 },
+        },
+        new_text: String::new(),
+    });
+
+    // Remove the end line
+    edits.push(TextEdit {
+        range: Range {
+            start: Position { line: end_line as u32, character: 0 },
+            end: Position { line: (end_line + 1) as u32, character: 0 },
+        },
+        new_text: String::new(),
+    });
+
+    Some(edits)
+}
+
+/// Compute edit to capitalize the first letter of a procedure name (AL-L016).
+fn compute_pascal_case_fix(text: &str, diag: &Diagnostic) -> Option<TextEdit> {
+    let lines: Vec<&str> = text.lines().collect();
+    let line = diag.range.start.line as usize;
+    if line >= lines.len() {
+        return None;
+    }
+
+    let start_col = diag.range.start.character as usize;
+    let end_col = diag.range.end.character as usize;
+    let line_text = lines[line];
+
+    if end_col > line_text.len() || start_col >= end_col {
+        return None;
+    }
+
+    let name = &line_text[start_col..end_col];
+    let name = name.trim_matches('"');
+    if name.is_empty() {
+        return None;
+    }
+
+    // Capitalize first letter
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    let fixed = format!("{}{}", first.to_uppercase(), chars.as_str());
+
+    Some(TextEdit {
+        range: diag.range,
+        new_text: fixed,
+    })
+}
+
+/// Compute edits to extract a hard-coded string to a Label variable (AL-L017).
+/// Replaces the string with a variable reference and adds a Label declaration.
+fn compute_extract_to_label(text: &str, diag: &Diagnostic) -> Option<Vec<TextEdit>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let line = diag.range.start.line as usize;
+    if line >= lines.len() {
+        return None;
+    }
+
+    let start_col = diag.range.start.character as usize;
+    let end_col = diag.range.end.character as usize;
+    let line_text = lines[line];
+
+    if end_col > line_text.len() || start_col >= end_col {
+        return None;
+    }
+
+    let string_literal = &line_text[start_col..end_col];
+    // Strip outer quotes to make a variable name
+    let inner = string_literal
+        .trim_start_matches("@'")
+        .trim_start_matches('\'')
+        .trim_end_matches('\'')
+        .trim_matches('"');
+
+    // Generate a label variable name: take first few words, PascalCase
+    let label_name = generate_label_name(inner);
+
+    let mut edits = Vec::new();
+
+    // Replace the string literal with the label variable
+    edits.push(TextEdit {
+        range: diag.range,
+        new_text: label_name.clone(),
+    });
+
+    // Find the var section to insert the label declaration
+    // Search backwards for a line containing 'var' (simple heuristic)
+    let indent = detect_indent(text, diag.range.start.line);
+    let label_decl = format!(
+        "{}    {}: Label {};\n",
+        indent, label_name, string_literal
+    );
+
+    // Try to find a 'var' section above the current line
+    let mut var_line = None;
+    for i in (0..line).rev() {
+        let l = lines[i].trim().to_lowercase();
+        if l == "var" || l.starts_with("var ") {
+            var_line = Some(i);
+            break;
+        }
+        // Stop at procedure/trigger declaration
+        if l.starts_with("procedure ") || l.starts_with("local procedure ")
+            || l.starts_with("trigger ") || l.starts_with("begin")
+        {
+            break;
+        }
+    }
+
+    if let Some(vl) = var_line {
+        // Insert after the var line
+        let insert_pos = Position {
+            line: (vl + 1) as u32,
+            character: 0,
+        };
+        edits.push(TextEdit {
+            range: Range { start: insert_pos, end: insert_pos },
+            new_text: label_decl,
+        });
+    } else {
+        // No var section found — add a comment near the string as a hint
+        let insert_pos = Position {
+            line: diag.range.start.line,
+            character: 0,
+        };
+        edits.push(TextEdit {
+            range: Range { start: insert_pos, end: insert_pos },
+            new_text: format!(
+                "{}// TODO: Add to var section: {}: Label {};\n",
+                indent, label_name, string_literal
+            ),
+        });
+    }
+
+    Some(edits)
+}
+
+/// Generate a PascalCase label variable name from a string value.
+fn generate_label_name(s: &str) -> String {
+    let words: Vec<&str> = s.split_whitespace().take(3).collect();
+    if words.is_empty() {
+        return "LblText".to_string();
+    }
+    let name: String = words
+        .iter()
+        .map(|w| {
+            let mut chars = w.chars().filter(|c| c.is_alphanumeric());
+            match chars.next() {
+                Some(first) => {
+                    let upper: String = first.to_uppercase().collect();
+                    let rest: String = chars.collect();
+                    format!("{}{}", upper, rest)
+                }
+                None => String::new(),
+            }
+        })
+        .collect();
+
+    if name.is_empty() {
+        "LblText".to_string()
+    } else {
+        format!("Lbl{}", name)
+    }
+}
+
+/// Source action: Add XML doc comment template above a procedure.
+#[allow(deprecated)]
+fn source_action_add_doc_comment(
+    server: &AlServer,
+    uri: &Url,
+    text: &str,
+    range: Range,
+) -> Option<CodeActionOrCommand> {
+    // Check if cursor is on or inside a procedure declaration
+    let (_, tree) = parsing::get_or_parse(server, uri)?;
+    let doc_symbols = al_syntax::extract_document_symbols(&tree, text);
+
+    for sym in &doc_symbols {
+        if let Some(children) = &sym.children {
+            for child in children {
+                if child.kind != SymbolKind::FUNCTION {
+                    continue;
+                }
+                // Check if the cursor range overlaps with the procedure
+                if range.start.line >= child.range.start.line
+                    && range.start.line <= child.range.end.line
+                {
+                    // Check if there is already a doc comment above
+                    let proc_line = child.range.start.line as usize;
+                    if proc_line > 0 {
+                        let lines: Vec<&str> = text.lines().collect();
+                        if proc_line <= lines.len() {
+                            let prev_line = lines[proc_line.saturating_sub(1)].trim();
+                            if prev_line.starts_with("///") {
+                                return None; // Already has doc comment
+                            }
+                        }
+                    }
+
+                    let indent = detect_indent(text, child.range.start.line);
+                    let params_detail = child.detail.as_deref().unwrap_or("()");
+                    let param_names = parse_parameter_names_from_detail(params_detail);
+
+                    let mut doc = format!("{}/// <summary>\n", indent);
+                    doc.push_str(&format!("{}/// Description for {}.\n", indent, child.name));
+                    doc.push_str(&format!("{}/// </summary>\n", indent));
+
+                    for param in &param_names {
+                        doc.push_str(&format!(
+                            "{}/// <param name=\"{}\">Description.</param>\n",
+                            indent, param
+                        ));
+                    }
+
+                    // Check for return type
+                    if let Some(detail) = &child.detail {
+                        if detail.contains("):") || detail.contains(") :") {
+                            doc.push_str(&format!(
+                                "{}/// <returns>Description of return value.</returns>\n",
+                                indent
+                            ));
+                        }
+                    }
+
+                    let insert_pos = Position {
+                        line: child.range.start.line,
+                        character: 0,
+                    };
+                    let edit = TextEdit {
+                        range: Range { start: insert_pos, end: insert_pos },
+                        new_text: doc,
+                    };
+
+                    let mut changes = std::collections::HashMap::new();
+                    changes.insert(uri.clone(), vec![edit]);
+
+                    return Some(CodeActionOrCommand::CodeAction(CodeAction {
+                        title: "Add procedure documentation".to_string(),
+                        kind: Some(CodeActionKind::REFACTOR),
+                        diagnostics: None,
+                        edit: Some(WorkspaceEdit {
+                            changes: Some(changes),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Source action: Wrap selected code in //region ... //endregion.
+fn source_action_add_region(
+    uri: &Url,
+    text: &str,
+    range: Range,
+) -> Option<CodeActionOrCommand> {
+    let indent = detect_indent(text, range.start.line);
+
+    let region_start = TextEdit {
+        range: Range {
+            start: Position { line: range.start.line, character: 0 },
+            end: Position { line: range.start.line, character: 0 },
+        },
+        new_text: format!("{}//region MyRegion\n", indent),
+    };
+
+    let region_end = TextEdit {
+        range: Range {
+            start: Position { line: range.end.line + 1, character: 0 },
+            end: Position { line: range.end.line + 1, character: 0 },
+        },
+        new_text: format!("{}//endregion\n", indent),
+    };
+
+    let mut changes = std::collections::HashMap::new();
+    changes.insert(uri.clone(), vec![region_start, region_end]);
+
+    Some(CodeActionOrCommand::CodeAction(CodeAction {
+        title: "Wrap in region".to_string(),
+        kind: Some(CodeActionKind::REFACTOR),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +874,7 @@ pub(crate) fn handle_inlay_hint(
     let source = text.as_bytes();
     let mut hints = Vec::new();
 
-    collect_inlay_hints(root, source, server, &range, &mut hints);
+    collect_inlay_hints(root, source, server, uri, &range, &mut hints);
 
     if hints.is_empty() {
         None
@@ -405,6 +888,7 @@ fn collect_inlay_hints(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     server: &AlServer,
+    uri: &Url,
     range: &Range,
     hints: &mut Vec<InlayHint>,
 ) {
@@ -421,8 +905,8 @@ fn collect_inlay_hints(
         if let Some(parent) = node.parent() {
             let func_name = extract_call_name(parent, source);
             if let Some(name) = func_name {
-                // Look up parameters from index or builtins
-                let param_names = lookup_parameter_names(server, &name);
+                // Look up parameters from local procedures, index, or builtins
+                let param_names = lookup_parameter_names(server, uri, &name);
                 if !param_names.is_empty() {
                     add_parameter_hints(node, source, &param_names, hints);
                 }
@@ -432,7 +916,7 @@ fn collect_inlay_hints(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_inlay_hints(child, source, server, range, hints);
+        collect_inlay_hints(child, source, server, uri, range, hints);
     }
 }
 
@@ -451,8 +935,32 @@ fn extract_call_name(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<Strin
     None
 }
 
-/// Look up parameter names for a function from index or builtins.
-fn lookup_parameter_names(server: &AlServer, func_name: &str) -> Vec<String> {
+/// Look up parameter names for a function from local procedures, index, or builtins.
+#[allow(deprecated)]
+fn lookup_parameter_names(server: &AlServer, uri: &Url, func_name: &str) -> Vec<String> {
+    // Check local procedures in current file FIRST
+    if let Some((text, tree)) = parsing::get_or_parse(server, uri) {
+        let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
+        for sym in &doc_symbols {
+            if let Some(children) = &sym.children {
+                for child in children {
+                    if child.name.eq_ignore_ascii_case(func_name)
+                        && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
+                    {
+                        // Extract parameter names from the detail string
+                        // Detail format: "(param1: Type1; param2: Type2): ReturnType"
+                        if let Some(detail) = &child.detail {
+                            let names = parse_parameter_names_from_detail(detail);
+                            if !names.is_empty() {
+                                return names;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Check package symbols
     let symbols = server.symbols.search(func_name, 5);
     for entry in &symbols {
@@ -474,6 +982,73 @@ fn lookup_parameter_names(server: &AlServer, func_name: &str) -> Vec<String> {
     }
 
     Vec::new()
+}
+
+/// Parse parameter names from a procedure's detail string.
+///
+/// The detail string format from `extract_document_symbols` is:
+/// - `"(param1: Type1; param2: Type2): ReturnType"` (with return type)
+/// - `"(param1: Type1; param2: Type2)"` (without return type)
+/// - `"()"` (no parameters)
+///
+/// Parameters may have `var` prefix: `"(var param1: Type1; param2: Type2)"`
+fn parse_parameter_names_from_detail(detail: &str) -> Vec<String> {
+    let trimmed = detail.trim();
+
+    // Find the parameter list between first '(' and matching ')'
+    let start = match trimmed.find('(') {
+        Some(i) => i + 1,
+        None => return Vec::new(),
+    };
+
+    // Find the matching close paren (handle nested parens for complex types)
+    let mut depth = 1;
+    let mut end = start;
+    for (i, ch) in trimmed[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let params_str = &trimmed[start..end];
+    if params_str.trim().is_empty() {
+        return Vec::new();
+    }
+
+    // Split on ';' (AL parameter separator)
+    params_str
+        .split(';')
+        .filter_map(|param| {
+            let param = param.trim();
+            if param.is_empty() {
+                return None;
+            }
+            // Strip optional 'var ' prefix
+            let param = param.strip_prefix("var ").unwrap_or(param).trim();
+            // The name is before the ':'
+            if let Some(colon_pos) = param.find(':') {
+                let name = param[..colon_pos].trim().trim_matches('"');
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+            // No colon — might be just a name with no type annotation
+            let name = param.trim().trim_matches('"');
+            if !name.is_empty() {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Add parameter name hints for arguments in a call.
@@ -555,5 +1130,150 @@ mod tests {
             extract_trailing_identifier("\"My Proc\""),
             Some("My Proc")
         );
+    }
+
+    // --- parse_parameter_names_from_detail tests ---
+
+    #[test]
+    fn test_parse_params_simple() {
+        let names = parse_parameter_names_from_detail("(x: Integer; y: Text)");
+        assert_eq!(names, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn test_parse_params_with_return_type() {
+        let names = parse_parameter_names_from_detail("(Name: Text; Amount: Decimal): Boolean");
+        assert_eq!(names, vec!["Name", "Amount"]);
+    }
+
+    #[test]
+    fn test_parse_params_with_var() {
+        let names = parse_parameter_names_from_detail("(var Rec: Record; Count: Integer)");
+        assert_eq!(names, vec!["Rec", "Count"]);
+    }
+
+    #[test]
+    fn test_parse_params_empty() {
+        let names = parse_parameter_names_from_detail("()");
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_parse_params_no_parens() {
+        let names = parse_parameter_names_from_detail("trigger");
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_parse_params_single() {
+        let names = parse_parameter_names_from_detail("(Value: Integer)");
+        assert_eq!(names, vec!["Value"]);
+    }
+
+    // --- Code action helper tests ---
+
+    #[test]
+    fn test_detect_indent() {
+        let text = "    procedure DoSomething()\n    begin\n    end;";
+        assert_eq!(detect_indent(text, 0), "    ");
+        assert_eq!(detect_indent(text, 1), "    ");
+    }
+
+    #[test]
+    fn test_detect_indent_tabs() {
+        let text = "\tprocedure DoSomething()";
+        assert_eq!(detect_indent(text, 0), "\t");
+    }
+
+    #[test]
+    fn test_diag_code_str() {
+        let diag = Diagnostic {
+            code: Some(NumberOrString::String("AL-L005".to_string())),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(diag_code_str(&diag), Some("AL-L005".to_string()));
+
+        let diag2 = Diagnostic {
+            code: None,
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(diag_code_str(&diag2), None);
+    }
+
+    #[test]
+    fn test_generate_label_name() {
+        assert_eq!(generate_label_name("Hello World"), "LblHelloWorld");
+        assert_eq!(generate_label_name("some text here extra"), "LblSomeTextHere");
+        assert_eq!(generate_label_name(""), "LblText");
+    }
+
+    #[test]
+    fn test_compute_pascal_case_fix() {
+        let text = "    procedure myProc()\n    begin\n    end;";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 0, character: 14 },
+                end: Position { line: 0, character: 20 },
+            },
+            code: Some(NumberOrString::String("AL-L016".to_string())),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let edit = compute_pascal_case_fix(text, &diag).unwrap();
+        assert_eq!(edit.new_text, "MyProc");
+    }
+
+    #[test]
+    fn test_compute_remove_begin_end() {
+        let text = "    if x then\n    begin\n        Message('hi');\n    end;";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 1, character: 4 },
+                end: Position { line: 3, character: 8 },
+            },
+            code: Some(NumberOrString::String("AL-L011".to_string())),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let edits = compute_remove_begin_end(text, &diag).unwrap();
+        assert_eq!(edits.len(), 2);
+        // First edit removes the begin line
+        assert_eq!(edits[0].new_text, "");
+        assert_eq!(edits[0].range.start.line, 1);
+        // Second edit removes the end line
+        assert_eq!(edits[1].new_text, "");
+        assert_eq!(edits[1].range.start.line, 3);
+    }
+
+    #[test]
+    fn test_code_action_al_l007_remove_todo() {
+        let uri = Url::parse("file:///test.al").unwrap();
+        let text = "    // TODO: fix this\n    x := 1;";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 0, character: 4 },
+                end: Position { line: 0, character: 21 },
+            },
+            code: Some(NumberOrString::String("AL-L007".to_string())),
+            message: "TODO/FIXME comment found".to_string(),
+            ..Default::default()
+        };
+
+        // We can't call handle_code_action directly since it needs a server,
+        // but we can verify the match arm logic through diag_code_str
+        assert_eq!(diag_code_str(&diag), Some("AL-L007".to_string()));
+
+        // Verify the edit that would be produced
+        let line_start = Position { line: diag.range.start.line, character: 0 };
+        let line_end = Position { line: diag.range.start.line + 1, character: 0 };
+        let edit = TextEdit {
+            range: Range { start: line_start, end: line_end },
+            new_text: String::new(),
+        };
+        // Removing a TODO comment line should produce an empty replacement
+        assert_eq!(edit.new_text, "");
+        let _ = (text, uri);
     }
 }

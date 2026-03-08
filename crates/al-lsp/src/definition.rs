@@ -176,7 +176,25 @@ pub(crate) fn handle_references(
     }
 }
 
+/// Build the replacement text for a rename, preserving quoted identifiers.
+///
+/// If the original node was a quoted_identifier (e.g. `"My Procedure"`), wrap
+/// the new name in quotes. Otherwise return it as-is.
+fn make_rename_text(node_kind: &str, original_text: &str, new_name: &str) -> String {
+    let is_quoted = node_kind == "quoted_identifier"
+        || (original_text.starts_with('"') && original_text.ends_with('"'));
+    if is_quoted {
+        let clean = new_name.trim_matches('"');
+        format!("\"{}\"", clean)
+    } else {
+        new_name.to_string()
+    }
+}
+
 /// Handle textDocument/rename.
+///
+/// Renames the identifier at the cursor across the current file AND all
+/// workspace files, returning a `WorkspaceEdit` with changes grouped by URI.
 pub(crate) fn handle_rename(
     server: &AlServer,
     uri: &Url,
@@ -194,22 +212,66 @@ pub(crate) fn handle_rename(
         return None;
     }
 
-    // Find all references in the current file
+    let mut changes = std::collections::HashMap::new();
+
+    // --- Current file ---
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-    if refs.is_empty() {
-        return None;
+    if !refs.is_empty() {
+        let edits: Vec<TextEdit> = refs
+            .iter()
+            .map(|r| {
+                // Determine per-reference whether the matched node is quoted
+                let matched_text = &text[r.start_byte..r.end_byte];
+                let replacement = make_rename_text(node.kind(), matched_text, &new_name);
+                TextEdit {
+                    range: al_syntax::ts_range_to_lsp(r),
+                    new_text: replacement,
+                }
+            })
+            .collect();
+        changes.insert(uri.clone(), edits);
     }
 
-    let edits: Vec<TextEdit> = refs
-        .iter()
-        .map(|r| TextEdit {
-            range: al_syntax::ts_range_to_lsp(r),
-            new_text: new_name.clone(),
-        })
-        .collect();
+    // --- Workspace files (cross-file rename) ---
+    for entry in server.workspace_files.iter() {
+        let file_path = entry.key();
+        let file_text = entry.value();
 
-    let mut changes = std::collections::HashMap::new();
-    changes.insert(uri.clone(), edits);
+        // Skip the current file — already handled above
+        if let Ok(current_path) = uri.to_file_path() {
+            if *file_path == current_path {
+                continue;
+            }
+        }
+
+        let file_uri = match Url::from_file_path(file_path) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+
+        let mut parser = server.parser.lock().unwrap();
+        let result = parser.parse(file_text);
+        let refs = al_syntax::find_variable_references(&result.tree, file_text, clean_name);
+
+        if !refs.is_empty() {
+            let edits: Vec<TextEdit> = refs
+                .iter()
+                .map(|r| {
+                    let matched_text = &file_text[r.start_byte..r.end_byte];
+                    let replacement = make_rename_text("", matched_text, &new_name);
+                    TextEdit {
+                        range: al_syntax::ts_range_to_lsp(r),
+                        new_text: replacement,
+                    }
+                })
+                .collect();
+            changes.insert(file_uri, edits);
+        }
+    }
+
+    if changes.is_empty() {
+        return None;
+    }
 
     Some(WorkspaceEdit {
         changes: Some(changes),
@@ -218,6 +280,9 @@ pub(crate) fn handle_rename(
 }
 
 /// Handle textDocument/prepareRename.
+///
+/// Validates that the cursor is on a renameable identifier and returns the
+/// range together with a placeholder (the unquoted name).
 pub(crate) fn handle_prepare_rename(
     server: &AlServer,
     uri: &Url,
@@ -242,7 +307,9 @@ pub(crate) fn handle_prepare_rename(
         return None;
     }
 
-    Some(PrepareRenameResponse::Range(al_syntax::ts_range_to_lsp(
-        &node.range(),
-    )))
+    // Return range + placeholder so the editor pre-fills the current name
+    Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range: al_syntax::ts_range_to_lsp(&node.range()),
+        placeholder: clean_name.to_string(),
+    })
 }

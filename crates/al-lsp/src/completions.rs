@@ -405,7 +405,7 @@ pub(crate) fn extract_last_identifier(s: &str) -> &str {
 }
 
 /// Convert a MethodSymbol from the index to a CompletionItem.
-fn method_to_completion_item(method: &al_symbols::model::MethodSymbol) -> CompletionItem {
+fn method_to_completion_item(method: &al_symbols::MethodSymbol) -> CompletionItem {
     let params: Vec<String> = method
         .parameters
         .iter()
@@ -425,7 +425,7 @@ fn method_to_completion_item(method: &al_symbols::model::MethodSymbol) -> Comple
 }
 
 /// Convert a FieldSymbol from the index to a CompletionItem.
-fn field_to_completion_item(field: &al_symbols::model::FieldSymbol) -> CompletionItem {
+fn field_to_completion_item(field: &al_symbols::FieldSymbol) -> CompletionItem {
     CompletionItem {
         label: field.name.clone(),
         kind: Some(CompletionItemKind::FIELD),

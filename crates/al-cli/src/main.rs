@@ -11,8 +11,7 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 
 use al_discovery::{find_project, find_toolchain, AlProject};
-use al_symbols::model::{ObjectKind, SymbolEntry};
-use al_symbols::SymbolIndex;
+use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
 use al_syntax::lint::LintSeverity;
 
 // ---------------------------------------------------------------------------
@@ -132,7 +131,7 @@ struct EventPublisherJson {
     object_name: String,
     method_name: String,
     event_type: String,
-    parameters: Vec<al_symbols::model::ParameterSymbol>,
+    parameters: Vec<al_symbols::ParameterSymbol>,
 }
 
 #[derive(Serialize)]
@@ -454,8 +453,8 @@ fn cmd_download_symbols(project_dir: Option<String>, json: bool) -> ExitCode {
     }
 
     // Convert discovery deps to NuGet deps
-    let nuget_deps: Vec<al_symbols::nuget::AppDependency> = project.app_json.dependencies.iter().map(|d| {
-        al_symbols::nuget::AppDependency {
+    let nuget_deps: Vec<al_symbols::AppDependency> = project.app_json.dependencies.iter().map(|d| {
+        al_symbols::AppDependency {
             id: d.id.clone(),
             name: d.name.clone(),
             publisher: d.publisher.clone(),
@@ -464,15 +463,18 @@ fn cmd_download_symbols(project_dir: Option<String>, json: bool) -> ExitCode {
     }).collect();
 
     let feeds = al_discovery::nuget_feeds();
-    let feed = al_symbols::nuget::NuGetFeed {
-        index_url: feeds.first().map(|f| f.index_url.clone()).unwrap_or_default(),
-    };
+    let nuget_feeds: Vec<al_symbols::NuGetFeed> = feeds
+        .iter()
+        .map(|f| al_symbols::NuGetFeed {
+            index_url: f.index_url.clone(),
+        })
+        .collect();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let client = reqwest::Client::new();
+    let nuget_client = al_symbols::NuGetClient::new(nuget_feeds);
     let dest = &project.packages_dir;
 
-    let results = rt.block_on(al_symbols::nuget::download_all(&client, &feed, &nuget_deps, dest));
+    let results = rt.block_on(nuget_client.download_all(&nuget_deps, dest));
 
     let mut success_count = 0;
     let mut fail_count = 0;
@@ -684,7 +686,7 @@ fn cmd_events(name: &str, json: bool) -> ExitCode {
         }
     };
 
-    let results = al_symbols::events::get_events(&index, name);
+    let results = al_symbols::get_events(&index, name);
 
     if json {
         let publishers: Vec<EventPublisherJson> = results.publishers.iter().map(|p| {
@@ -729,7 +731,7 @@ fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
         }
     };
 
-    let results = al_symbols::events::get_events(&index, event);
+    let results = al_symbols::get_events(&index, event);
 
     if json {
         let subscribers: Vec<EventSubscriberJson> = results.subscribers.iter().map(|s| {
@@ -786,7 +788,7 @@ fn cmd_composed(kind_str: &str, name: &str, json: bool) -> ExitCode {
         }
     };
 
-    let composed = al_symbols::composition::get_composed(&index, kind, name);
+    let composed = al_symbols::get_composed(&index, kind, name);
 
     match composed {
         Some(c) => {
@@ -1197,14 +1199,14 @@ mod tests {
             name: "Customer".to_string(),
             extends: None,
             package: "Base".to_string(),
-            methods: vec![al_symbols::model::MethodSymbol {
+            methods: vec![al_symbols::MethodSymbol {
                 name: "GetName".to_string(),
                 parameters: vec![],
                 return_type: Some("Text".to_string()),
                 attributes: vec![],
                 is_local: false,
             }],
-            fields: vec![al_symbols::model::FieldSymbol {
+            fields: vec![al_symbols::FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
@@ -1297,7 +1299,7 @@ mod tests {
             object_name: "Sales Post".to_string(),
             method_name: "OnAfterPost".to_string(),
             event_type: "IntegrationEvent".to_string(),
-            parameters: vec![al_symbols::model::ParameterSymbol {
+            parameters: vec![al_symbols::ParameterSymbol {
                 name: "SalesHeader".to_string(),
                 type_name: "Record".to_string(),
                 is_var: true,
@@ -1310,7 +1312,7 @@ mod tests {
 
     #[test]
     fn test_composed_object_serialization() {
-        use al_symbols::model::{ComposedObject, FieldSymbol};
+        use al_symbols::{ComposedObject, FieldSymbol};
         let composed = ComposedObject {
             base: SymbolEntry {
                 kind: ObjectKind::Table,

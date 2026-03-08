@@ -39,7 +39,7 @@ pub struct AlServer {
 }
 
 impl AlServer {
-    fn new(client: Client) -> Self {
+    pub(crate) fn new(client: Client) -> Self {
         Self {
             client,
             parser: std::sync::Mutex::new(AlParser::new()),
@@ -342,6 +342,16 @@ impl LanguageServer for AlServer {
         let range = params.range;
         Ok(handlers::handle_inlay_hint(self, uri, range))
     }
+}
+
+/// Create a test server instance (available only in tests).
+///
+/// Uses `LspService::new` to get a real `Client` without starting I/O.
+#[cfg(test)]
+pub(crate) fn test_server() -> Arc<AlServer> {
+    let (service, _socket) = LspService::new(AlServer::new);
+    // tower-lsp's inner() returns &T, wrap it in a new Arc
+    Arc::new(AlServer::new(service.inner().client.clone()))
 }
 
 /// Run the LSP server on stdin/stdout.

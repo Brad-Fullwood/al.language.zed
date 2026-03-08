@@ -7,10 +7,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use al_symbols::model::{
+use al_symbols::{
     EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,
+    SymbolIndex,
 };
-use al_symbols::SymbolIndex;
 use al_syntax::{AlParser, FormatOptions};
 use tower_lsp::lsp_types::*;
 

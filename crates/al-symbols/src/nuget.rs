@@ -106,10 +106,59 @@ struct VersionIndex {
     versions: Vec<String>,
 }
 
+/// A NuGet client that manages feeds and downloads symbol packages.
+pub struct NuGetClient {
+    client: reqwest::Client,
+    feeds: Vec<NuGetFeed>,
+}
+
+impl NuGetClient {
+    /// Create a new NuGet client with the given feeds.
+    pub fn new(feeds: Vec<NuGetFeed>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            feeds,
+        }
+    }
+
+    /// Download a single package, trying each feed in order until one succeeds.
+    ///
+    /// Returns the path to the extracted .app file.
+    pub async fn download(&self, pkg: &PackageRef, dest: &Path) -> Result<PathBuf, NuGetError> {
+        let mut last_err = None;
+        for feed in &self.feeds {
+            match download(&self.client, feed, pkg, dest).await {
+                Ok(path) => return Ok(path),
+                Err(e) => {
+                    tracing::debug!(feed = %feed.index_url, error = %e, "Feed failed, trying next");
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or(NuGetError::NoBaseAddress))
+    }
+
+    /// Download all dependencies, trying each feed in order for each package.
+    ///
+    /// Returns one result per dependency.
+    pub async fn download_all(
+        &self,
+        deps: &[AppDependency],
+        dest: &Path,
+    ) -> Vec<Result<PathBuf, NuGetError>> {
+        let refs = resolve_dependencies(deps);
+        let mut results = Vec::new();
+        for pkg_ref in &refs {
+            results.push(self.download(pkg_ref, dest).await);
+        }
+        results
+    }
+}
+
 /// Download a single package from a NuGet feed and extract the .app file.
 ///
 /// Returns the path to the extracted .app file.
-pub async fn download(
+async fn download(
     client: &reqwest::Client,
     feed: &NuGetFeed,
     pkg: &PackageRef,
@@ -173,7 +222,7 @@ pub async fn download(
 /// Download all dependencies from a NuGet feed.
 ///
 /// Returns paths to all extracted .app files.
-pub async fn download_all(
+async fn download_all(
     client: &reqwest::Client,
     feed: &NuGetFeed,
     deps: &[AppDependency],
