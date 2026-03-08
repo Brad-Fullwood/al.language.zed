@@ -74,7 +74,7 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
 }
 
 /// Convert a tree-sitter syntax error to an LSP Diagnostic.
-pub(crate) fn syntax_error_to_diagnostic(err: &al_syntax::SyntaxError) -> Diagnostic {
+pub fn syntax_error_to_diagnostic(err: &al_syntax::SyntaxError) -> Diagnostic {
     Diagnostic {
         range: al_syntax::ts_range_to_lsp(&err.range),
         severity: Some(DiagnosticSeverity::ERROR),
@@ -86,7 +86,7 @@ pub(crate) fn syntax_error_to_diagnostic(err: &al_syntax::SyntaxError) -> Diagno
 }
 
 /// Convert a native lint diagnostic to an LSP Diagnostic.
-pub(crate) fn lint_to_diagnostic(lint: &al_syntax::LintDiagnostic) -> Diagnostic {
+pub fn lint_to_diagnostic(lint: &al_syntax::LintDiagnostic) -> Diagnostic {
     let severity = match lint.severity {
         al_syntax::LintSeverity::Error => DiagnosticSeverity::ERROR,
         al_syntax::LintSeverity::Warning => DiagnosticSeverity::WARNING,
@@ -105,7 +105,7 @@ pub(crate) fn lint_to_diagnostic(lint: &al_syntax::LintDiagnostic) -> Diagnostic
 }
 
 /// Convert a semantic diagnostic entry to an LSP Diagnostic.
-pub(crate) fn semantic_to_diagnostic(entry: &al_semantic::DiagnosticEntry) -> Diagnostic {
+pub fn semantic_to_diagnostic(entry: &al_semantic::DiagnosticEntry) -> Diagnostic {
     let severity = match entry.severity.to_lowercase().as_str() {
         "error" => DiagnosticSeverity::ERROR,
         "warning" => DiagnosticSeverity::WARNING,
