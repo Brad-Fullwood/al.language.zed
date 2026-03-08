@@ -11,6 +11,13 @@ thiserror = { workspace = true }
 dashmap = { workspace = true }
 zip = { workspace = true }
 quick-xml = { workspace = true }
-reqwest = { workspace = true }
-tokio = { workspace = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 tracing = { workspace = true }
+
+[features]
+default = ["nuget"]
+nuget = ["reqwest", "tokio"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
