@@ -1,0 +1,3 @@
+[submodule "tree-sitter-al"]
+	path = tree-sitter-al
+	url = https://github.com/Brad-Fullwood/AL-Tree-Sitter.git

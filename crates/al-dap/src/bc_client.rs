@@ -1,0 +1,1 @@
+//! Business Central server communication.

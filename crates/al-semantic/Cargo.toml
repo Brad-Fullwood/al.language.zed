@@ -1,0 +1,13 @@
+[package]
+name = "al-semantic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+al-discovery = { path = "../al-discovery" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower-lsp = { workspace = true }
+tracing = { workspace = true }

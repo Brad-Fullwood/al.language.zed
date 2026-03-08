@@ -1,0 +1,123 @@
+{
+    "AL: Publish to your own server": {
+        "prefix": "al-publish-server",
+        "body": [
+            "{",
+            "\t\"adapter\": \"al\",",
+            "\t\"label\": \"${1:Publish: Your own server}\",",
+            "\t\"request\": \"launch\",",
+            "\t\"environmentType\": \"OnPrem\",",
+            "\t\"server\": \"${2|http://bcserver,http://localhost|}\",",
+            "\t\"serverInstance\": \"${3:BC}\",",
+            "\t\"authentication\": \"${4|UserPassword,Windows,AAD,MicrosoftEntraID|}\",",
+            "\t\"startupObjectId\": 22,",
+            "\t\"breakOnError\": \"All\",",
+            "\t\"breakOnRecordWrite\": \"None\",",
+            "\t\"launchBrowser\": true,",
+            "\t\"enableSqlInformationDebugger\": true,",
+            "\t\"enableLongRunningSqlStatements\": true,",
+            "\t\"longRunningSqlStatementsThreshold\": 500,",
+            "\t\"numberOfSqlStatements\": 10,",
+            "\t\"tenant\": \"default\",",
+            "\t\"usePublicURLFromServer\": true",
+            "}"
+        ],
+        "description": "Publish the package to your own server"
+    },
+    "AL: Publish to Microsoft cloud sandbox": {
+        "prefix": "al-publish-cloud",
+        "body": [
+            "{",
+            "\t\"adapter\": \"al\",",
+            "\t\"label\": \"${0:Publish: Microsoft cloud sandbox}\",",
+            "\t\"request\": \"launch\",",
+            "\t\"environmentType\": \"Sandbox\",",
+            "\t\"environmentName\": \"sandbox\",",
+            "\t\"startupObjectId\": 22,",
+            "\t\"breakOnError\": \"All\",",
+            "\t\"breakOnRecordWrite\": \"None\",",
+            "\t\"launchBrowser\": true,",
+            "\t\"enableSqlInformationDebugger\": true,",
+            "\t\"enableLongRunningSqlStatements\": true,",
+            "\t\"longRunningSqlStatementsThreshold\": 500,",
+            "\t\"numberOfSqlStatements\": 10",
+            "}"
+        ],
+        "description": "Publish the package to the Microsoft cloud sandbox"
+    },
+    "AL: Attach to the client on your server": {
+        "prefix": "al-attach-server",
+        "body": [
+            "{",
+            "\t\"adapter\": \"al\",",
+            "\t\"label\": \"${1:Attach: Your own server}\",",
+            "\t\"request\": \"attach\",",
+            "\t\"environmentType\": \"OnPrem\",",
+            "\t\"server\": \"${2|http://bcserver,http://localhost|}\",",
+            "\t\"serverInstance\": \"${3:BC}\",",
+            "\t\"authentication\": \"${4|UserPassword,Windows,AAD,MicrosoftEntraID|}\",",
+            "\t\"breakOnError\": \"All\",",
+            "\t\"breakOnRecordWrite\": \"None\",",
+            "\t\"enableSqlInformationDebugger\": true,",
+            "\t\"enableLongRunningSqlStatements\": true,",
+            "\t\"longRunningSqlStatementsThreshold\": 500,",
+            "\t\"numberOfSqlStatements\": 10,",
+            "\t\"breakOnNext\": \"WebServiceClient\",",
+            "\t\"tenant\": \"default\"",
+            "}"
+        ],
+        "description": "Attach to the client on your server"
+    },
+    "AL: Attach to the client on the cloud sandbox": {
+        "prefix": "al-attach-cloud",
+        "body": [
+            "{",
+            "\t\"adapter\": \"al\",",
+            "\t\"label\": \"${0:Attach: Microsoft cloud sandbox}\",",
+            "\t\"request\": \"attach\",",
+            "\t\"environmentType\": \"Sandbox\",",
+            "\t\"environmentName\": \"sandbox\",",
+            "\t\"breakOnError\": \"All\",",
+            "\t\"breakOnRecordWrite\": \"None\",",
+            "\t\"enableSqlInformationDebugger\": true,",
+            "\t\"enableLongRunningSqlStatements\": true,",
+            "\t\"longRunningSqlStatementsThreshold\": 500,",
+            "\t\"numberOfSqlStatements\": 10,",
+            "\t\"breakOnNext\": \"WebServiceClient\"",
+            "}"
+        ],
+        "description": "Attach to the client on the cloud sandbox"
+    },
+    "AL: Initialize a snapshot debugging session on cloud": {
+        "prefix": "al-snapshot-cloud",
+        "body": [
+            "{",
+            "\t\"adapter\": \"al\",",
+            "\t\"label\": \"${0:snapshotInitialize: Microsoft production cloud}\",",
+            "\t\"request\": \"snapshotInitialize\",",
+            "\t\"environmentType\": \"Production\",",
+            "\t\"environmentName\": \"production\",",
+            "\t\"breakOnNext\": \"WebClient\",",
+            "\t\"executionContext\": \"DebugAndProfile\"",
+            "}"
+        ],
+        "description": "Initialize a snapshot debugging session on cloud"
+    },
+    "AL: Initialize a snapshot debugging session on your own server": {
+        "prefix": "al-snapshot-server",
+        "body": [
+            "{",
+            "\t\"adapter\": \"al\",",
+            "\t\"label\": \"${1:snapshotInitialize: Your own server}\",",
+            "\t\"request\": \"snapshotInitialize\",",
+            "\t\"environmentType\": \"OnPrem\",",
+            "\t\"server\": \"${2|http://bcserver,http://localhost|}\",",
+            "\t\"serverInstance\": \"${3:BC}\",",
+            "\t\"authentication\": \"${4|UserPassword,Windows,AAD,MicrosoftEntraID|}\",",
+            "\t\"breakOnNext\": \"WebClient\",",
+            "\t\"executionContext\": \"DebugAndProfile\"",
+            "}"
+        ],
+        "description": "Initialize a snapshot debugging session on your own server"
+    }
+}

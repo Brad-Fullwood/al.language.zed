@@ -1,0 +1,14 @@
+[package]
+name = "al-syntax"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+tree-sitter = "0.25"
+ropey = { workspace = true }
+tower-lsp = { workspace = true }
+tracing = { workspace = true }
+
+[build-dependencies]
+cc = "1"

@@ -1,0 +1,16 @@
+[package]
+name = "al-symbols"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+al-discovery = { path = "../al-discovery" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+dashmap = { workspace = true }
+zip = { workspace = true }
+quick-xml = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

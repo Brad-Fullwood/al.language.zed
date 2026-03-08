@@ -1,0 +1,1204 @@
+{
+    "Snippet: Trigger": {
+        "prefix": "ttrigger",
+        "body": [
+            "trigger ${1:OnWhat}(${2})",
+            "var",
+            "\t${3:myInt}: ${4:Integer};",
+            "begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: Trigger"
+    },
+    "Snippet: Procedure": {
+        "prefix": "tprocedure",
+        "body": [
+            "${1:local} procedure ${2:MyProcedure}(${3})",
+            "var",
+            "\t${4:myInt}: ${5:Integer};",
+            "begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: Procedure"
+    },
+    "Snippet: Assert Error": {
+        "prefix": "tassert",
+        "body": [
+            "assertError ${1:AssertStatement};",
+            "if ${2:getLastErrorText} <> ${3:ErrorText} then",
+            "\terror('${4:Unexpected error: %1}', ${0:getLastErrorText});"
+        ],
+        "description": "Snippet: Assert Error"
+    },
+    "Snippet: With Do": {
+        "prefix": "twithdo",
+        "body": [
+            "with ${1:RecordName} do begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: With Do"
+    },
+    "Snippet: If": {
+        "prefix": "tif",
+        "body": [
+            "if ${1:BooleanExpression} then begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: If"
+    },
+    "Snippet: If Else": {
+        "prefix": "tifelse",
+        "body": [
+            "if ${1:BooleanExpression} then begin",
+            "\t${2}",
+            "end else begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: If Else"
+    },
+    "Snippet: Case Of": {
+        "prefix": "tcaseof",
+        "body": [
+            "case ${1:Expression} of",
+            "\t${2:ExpressionOrRange}:",
+            "\t\t${3}",
+            "\t${4:ExpressionOrRange}:",
+            "\t\t$0",
+            "end;"
+        ],
+        "description": "Snippet: Case Of"
+    },
+    "Snippet: Case Else": {
+        "prefix": "tcaseelse",
+        "body": [
+            "case ${1:Expression} of",
+            "\t${2:ExpressionOrRange}:",
+            "\t\t${3}",
+            "\t${4:ExpressionOrRange}:",
+            "\t\t${5}",
+            "else",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: Case Else"
+    },
+    "Snippet: For": {
+        "prefix": "tfor",
+        "body": [
+            "for ${1:ControlVariable} := ${2:StartNumber} to ${3:EndNumber} do begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: For"
+    },
+    "Snippet: ForEach": {
+        "prefix": "tforeach",
+        "body": [
+            "foreach ${1:Value} in ${2:EnumerableCollection} do begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: ForEach"
+    },
+    "Snippet: While": {
+        "prefix": "twhile",
+        "body": [
+            "while ${1:BooleanExpression} do begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: While"
+    },
+    "Snippet: Repeat Until": {
+        "prefix": "trepeat",
+        "body": [
+            "repeat begin",
+            "\t$0",
+            "end until ${1:BooleanExpression};"
+        ],
+        "description": "Snippet: Repeat Until"
+    },
+    "Snippet: Event Subscriber": {
+        "prefix": "teventsub",
+        "body": [
+            "[EventSubscriber(ObjectType::${1|Codeunit,Page,Query,Report,Table,XmlPort|}, ${2|Codeunit::,Database::,Page::,Query::,Report::,XmlPort::|}, ${3:OnSomeEvent}, ${4:'ElementName'}, ${5:SkipOnMissingLicense}, ${6:SkipOnMissingPermission})]",
+            "local procedure ${7:MyProcedure}(${8})",
+            "begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: Event Subscriber"
+    },
+    "Snippet: Integration Event": {
+        "prefix": "teventint",
+        "body": [
+            "[IntegrationEvent(${1:IncludeSender}, false)]",
+            "local procedure ${0:MyProcedure}()",
+            "begin",
+            "end;"
+        ],
+        "description": "Snippet: Integration Event"
+    },
+    "Snippet: Business Event": {
+        "prefix": "teventbus",
+        "body": [
+            "[BusinessEvent(${1:IncludeSender})]",
+            "local procedure ${0:MyProcedure}()",
+            "begin",
+            "end;"
+        ],
+        "description": "Snippet: Business Event"
+    },
+    "Snippet: Internal Event": {
+        "prefix": "teventinternal",
+        "body": [
+            "[InternalEvent(${1:IncludeSender})]",
+            "local procedure ${0:MyProcedure}()",
+            "begin",
+            "end;"
+        ],
+        "description": "Snippet: Internal Event"
+    },
+    "Snippet: External Business Event": {
+        "prefix": "teventexternal",
+        "body": [
+            "[ExternalBusinessEvent(${1:Name}, ${2:DisplayName}, ${3:Description}, ${4:Category}, ${5:Version})]",
+            "local procedure ${0:MyProcedure}()",
+            "begin",
+            "end;"
+        ],
+        "description": "Snippet: External Business Event"
+    },
+    "Snippet: Caption ML": {
+        "prefix": "tcaptionml",
+        "body": [
+            "CaptionML = ENU = '${1:englishText}',",
+            "\t\t\t${2:languageShortcut} = '${0:languageText}';"
+        ],
+        "description": "Snippet: Caption ML"
+    },
+    "Snippet: Option Caption ML": {
+        "prefix": "toptioncaptionml",
+        "body": [
+            "OptionCaptionML = ENU = '${1:englishText}',",
+            "\t\t\t${2:languageShortcut} = '${0:languageText}';"
+        ],
+        "description": "Snippet: Option Caption ML"
+    },
+    "Snippet: If Table Empty Else": {
+        "prefix": "tisemptyelse",
+        "body": [
+            "if ${1:Rec}.IsEmpty then begin",
+            "\t${2}",
+            "end else begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: If Table Empty Else"
+    },
+    "Snippet: If Table Empty": {
+        "prefix": "tisempty",
+        "body": [
+            "if ${1:Rec}.IsEmpty then begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: If Table Empty"
+    },
+    "Snippet: Codeunit": {
+        "prefix": "tcodeunit",
+        "body": [
+            "codeunit ${1:Id} ${2:MyCodeunit}",
+            "{",
+            "\ttrigger OnRun()",
+            "\tbegin",
+            "\t\t$0",
+            "\tend;",
+            "\t",
+            "\tvar",
+            "\t\t${3:myInt}: ${4:Integer};",
+            "}"
+        ],
+        "description": "Snippet: Codeunit"
+    },
+    "Snippet: Control Add-In": {
+        "prefix": "tcontroladdin",
+        "body": [
+            "controladdin ${1:MyControlAddIn}",
+            "{",
+            "\tRequestedHeight = ${2:300};",
+            "\tMinimumHeight = ${3:300};",
+            "\tMaximumHeight = ${4:300};",
+            "\tRequestedWidth = ${5:700};",
+            "\tMinimumWidth = ${6:700};",
+            "\tMaximumWidth = ${7:700};",
+            "\tVerticalStretch = ${8|true,false|};",
+            "\tVerticalShrink = ${9|true,false|};",
+            "\tHorizontalStretch = ${10|true,false|};",
+            "\tHorizontalShrink = ${11|true,false|};",
+            "\tScripts = ",
+            "\t\t'${12:script1.js}',",
+            "\t\t'${13:script2.js}';",
+            "\tStyleSheets =",
+            "\t\t'${14:style.css}';",
+            "\tStartupScript = '${15:startupScript.js}';",
+            "\tRecreateScript = '${16:recreateScript.js}';",
+            "\tRefreshScript = '${17:refreshScript.js}';",
+            "\tImages = ",
+            "\t\t'${18:image1.png}',",
+            "\t\t'${19:image2.png}';",
+            "\t",
+            "\tevent ${20:MyEvent}(${21})",
+            "\t",
+            "\tprocedure ${22:MyProcedure}($0)",
+            "}"
+        ],
+        "description": "Snippet: Control Add-In"
+    },
+    "Snippet: DotNetPackage": {
+        "prefix": "tdotnet",
+        "body": [
+            "dotnet",
+            "{",
+            "\tassembly(${1:AssemblyName})",
+            "\t{",
+            "\t\ttype(${2:TypeName};${0:AliasName}){}",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: DotNet Package"
+    },
+    "Snippet: DotNetAssembly": {
+        "prefix": "tdotnetassembly",
+        "body": [
+            "assembly(${1:AssemblyName})",
+            "{",
+            "\ttype(${2:TypeName};${0:AliasName}){}",
+            "}"
+        ],
+        "description": "Snippet: DotNet Assembly"
+    },
+    "Snippet: DotNetType": {
+        "prefix": "tdotnettype",
+        "body": [
+            "type(${1:TypeName};${0:AliasName}){}"
+        ],
+        "description": "Snippet: DotNet Type"
+    },
+    "Snippet: Entitlement": {
+        "prefix": "tentitlement",
+        "body": [
+            "entitlement \"${1:MyEntitlement}\"",
+            "{",
+            "\tType = ${2|Application,ApplicationScope,ConcurrentUserServicePlan,FlatRateServicePlan,Implicit,PerUserServicePlan,Role,Group|};",
+            "\tRoleType =${3|Delegated,Local|};",
+            "\tId = '${4:MyId}';",
+            "\tObjectEntitlements = \"${0:MyListofObjects}\";",
+            "}"
+        ],
+        "description": "Snippet: Entitlement"
+    },
+    "Snippet: Enum": {
+        "prefix": "tenum",
+        "body": [
+            "enum ${1:id} ${2:MyEnum}",
+            "{",
+            "\tExtensible = ${3|true,false|};",
+            "\t",
+            "\tvalue(0; ${0:MyValue})",
+            "\t{",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: Enum"
+    },
+    "Snippet: Enum Value": {
+        "prefix": "tenumvalue",
+        "body": [
+            "value(${1:ValueId}; ${0:MyValue})",
+            "{",
+            "}"
+        ],
+        "description": "Snippet: Enum Value"
+    },
+    "Snippet: Enum Extension": {
+        "prefix": "tenumext",
+        "body": [
+            "enumextension ${1:Id} ${2:MyEnumExtension} extends ${3:MyTargetEnum}",
+            "{",
+            "\tvalue(${4:ValueId}; ${0:MyValue})",
+            "\t{",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: Enum Extension"
+    },
+    "Snippet: Interface": {
+        "prefix": "tinterface",
+        "body": [
+            "interface ${1:MyInterface}",
+            "{",
+            "\tprocedure ${0:MyProcedure}();",
+            "}"
+        ],
+        "description": "Snippet: Interface"
+    },
+    "Page": {
+        "prefix": "tpage",
+        "body": [
+            "page ${1:Id} ${2:MyPage}",
+            "{",
+            "\tPageType = ${3|Card,List,RoleCenter,CardPart,ListPart,Document,Worksheet,ListPlus,ConfirmationDialog,NavigatePage,StandardDialog,API,ReportPreview,ReportProcessingOnly,XmlPort|};",
+            "\tApplicationArea = ${4|All,Basic,Suite,Advanced|};",
+            "\tUsageCategory = ${5|Administration,Documents,History,Lists,None,ReportsAndAnalysis,Tasks|};",
+            "\tSourceTable = ${6:TableName};",
+            "\t",
+            "\tlayout",
+            "\t{",
+            "\t\tarea(Content)",
+            "\t\t{",
+            "\t\t\tgroup(${7:GroupName})",
+            "\t\t\t{",
+            "\t\t\t\tfield(${9:Name}; ${8:NameSource})",
+            "\t\t\t\t{",
+            "\t\t\t\t\t${10}",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tactions",
+            "\t{",
+            "\t\tarea(${11:Processing})",
+            "\t\t{",
+            "\t\t\taction(${12:ActionName})",
+            "\t\t\t{",
+            "\t\t\t\t",
+            "\t\t\t\ttrigger OnAction()",
+            "\t\t\t\tbegin",
+            "\t\t\t\t\t${13}",
+            "\t\t\t\tend;",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tvar",
+            "\t\t${14:myInt}: ${0:Integer};",
+            "}"
+        ],
+        "description": "Snippet: Page"
+    },
+    "Snippet: Page Field": {
+        "prefix": "tpagefield",
+        "body": [
+            "field(${1:MyField}; ${2:FieldSource})",
+            "{",
+            "\t${3:FieldPropertyName} = ${0:FieldPropertyValue};",
+            "}"
+        ],
+        "description": "Snippet: Page Field"
+    },
+    "Snippet: Group": {
+        "prefix": "tgroup",
+        "body": [
+            "group(${1:GroupName})",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Snippet: Page Group"
+    },
+    "Snippet: Action": {
+        "prefix": "taction",
+        "body": [
+            "action(${1:ActionName})",
+            "{",
+            "\ttrigger OnAction()",
+            "\tbegin",
+            "\t\t$0",
+            "\tend;",
+            "}"
+        ],
+        "description": "Snippet: Page Action"
+    },
+    "Snippet: Action Ref": {
+        "prefix": "tactionref",
+        "body": [
+            "actionref(${1:ActionRefName}; ${2:ActionName})",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Snippet: Page Action Ref"
+    },
+    "Snippet: Custom Action": {
+        "prefix": "tcustomaction",
+        "body": [
+            "customaction(${1:CustomActionName})",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Snippet: Page Custom Action"
+    },
+    "Snippet: System Action": {
+        "prefix": "tsystemaction",
+        "body": [
+            "systemaction(${1|Generate,Attach,Cancel,Ok,Regenerate|})",
+            "{",
+            "\ttrigger OnAction()",
+            "\tbegin",
+            "\t\t$0",
+            "\tend;",
+            "}"
+        ],
+        "description": "Snippet: Page Custom Action"
+    },
+    "Snippet: User Control": {
+        "prefix": "tusercontrol",
+        "body": [
+            "usercontrol(${1:ControlName}; ${2:AddInName})",
+            "{",
+            "\ttrigger ${3:MyTrigger()}",
+            "\tbegin",
+            "\t\t$0",
+            "\tend;",
+            "}"
+        ],
+        "description": "Snippet: Page User Control"
+    },
+    "Snippet: View Shared Layout": {
+        "prefix": "tview",
+        "body": [
+            "view(${1:ViewName})",
+            "{",
+            "\tCaption = '${2:ViewCaption}';",
+            "\tFilters = where(${3:TableFieldName} = filter(${0:FilterValue}));",
+            "}"
+        ],
+        "description": "Snippet: Page View without layout changes"
+    },
+    "Snippet: View Detached Layout": {
+        "prefix": "tview",
+        "body": [
+            "view(${1:ViewName})",
+            "{",
+            "\tCaption = '${2:ViewCaption}';",
+            "\tFilters = where(${3:TableFieldName} = filter(${4:FilterValue}));",
+            "\tSharedLayout = false;",
+            "\t",
+            "\tlayout",
+            "\t{",
+            "\t\t$0",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: Page View with layout changes"
+    },
+    "Snippet: Part": {
+        "prefix": "tpart",
+        "body": [
+            "part(${1:PartName}; ${2:PartSource})",
+            "{",
+            "\t${0}",
+            "}"
+        ],
+        "description": "Snippet: Page Part"
+    },
+    "Page of type List": {
+        "prefix": "tpage",
+        "body": [
+            "page ${1:Id} ${2:PageName}",
+            "{",
+            "\tPageType = List;",
+            "\tApplicationArea = ${3|All,Basic,Suite,Advanced|};",
+            "\tUsageCategory = Lists;",
+            "\tSourceTable = ${4:TableName};",
+            "\t",
+            "\tlayout",
+            "\t{",
+            "\t\tarea(Content)",
+            "\t\t{",
+            "\t\t\trepeater(${5:GroupName})",
+            "\t\t\t{",
+            "\t\t\t\tfield(${7:Name}; ${6:NameSource})",
+            "\t\t\t\t{",
+            "\t\t\t\t\t${8}",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t\tarea(Factboxes)",
+            "\t\t{",
+            "\t\t\t${9}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tactions",
+            "\t{",
+            "\t\tarea(${10:Processing})",
+            "\t\t{",
+            "\t\t\taction(${11:ActionName})",
+            "\t\t\t{",
+            "\t\t\t\t",
+            "\t\t\t\ttrigger OnAction()",
+            "\t\t\t\tbegin",
+            "\t\t\t\t\t$0",
+            "\t\t\t\tend;",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: Page of type list"
+    },
+    "Page of type API": {
+        "prefix": "tpage",
+        "body": [
+            "page ${1:Id} ${2:ApiPageName}",
+            "{",
+            "\tPageType = API;",
+            "\tCaption = '${3:apiPageName}';",
+            "\tAPIPublisher = '${4:publisherName}';",
+            "\tAPIGroup = '${5:groupName}';",
+            "\tAPIVersion = '${6:VersionList}';",
+            "\tEntityName = '${7:entityName}';",
+            "\tEntitySetName = '${8:entitySetName}';",
+            "\tSourceTable = ${9:TableName};",
+            "\tDelayedInsert = true;",
+            "\t",
+            "\tlayout",
+            "\t{",
+            "\t\tarea(Content)",
+            "\t\t{",
+            "\t\t\trepeater(${10:GroupName})",
+            "\t\t\t{",
+            "\t\t\t\tfield(${12:fieldName}; ${11:NameSource})",
+            "\t\t\t\t{",
+            "\t\t\t\t\tCaption = '${13:fieldCaption}';",
+            "\t\t\t\t\t${0}",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: Page of type API"
+    },
+    "Page of type Role Center": {
+        "prefix": "tpage",
+        "body": [
+            "page ${1:Id} ${2:RoleCenterName}",
+            "{",
+            "\tPageType = RoleCenter;",
+            "\t",
+            "\tlayout",
+            "\t{",
+            "\t\tarea(RoleCenter)",
+            "\t\t{",
+            "\t\t\t$0",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tactions",
+            "\t{",
+            "\t\tarea(Creation)",
+            "\t\t{",
+            "\t\t\taction(${3:ActionBarAction})",
+            "\t\t\t{",
+            "\t\t\t\tRunObject = ${4|Page,Report,XmlPort,Codeunit|} ${5:ObjectName};",
+            "\t\t\t}",
+            "\t\t}",
+            "\t\tarea(Sections)",
+            "\t\t{",
+            "\t\t\tgroup(${6:SectionsGroupName})",
+            "\t\t\t{",
+            "\t\t\t\taction(${7:SectionsAction})",
+            "\t\t\t\t{",
+            "\t\t\t\t\tRunObject = ${8|Page,Report,XmlPort,Codeunit|} ${9:ObjectName};",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t\tarea(Embedding)",
+            "\t\t{",
+            "\t\t\taction(${10:EmbeddingAction})",
+            "\t\t\t{",
+            "\t\t\t\tRunObject = ${11|Page,Report,XmlPort,Codeunit|} ${12:ObjectName};",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: Page of type Role Center"
+    },
+    "Page of type PromptDialog": {
+        "prefix": "tpage",
+        "body": [
+            "page ${1:Id} ${2:PageName}",
+            "{",
+            "\tPageType = PromptDialog;",
+            "\tApplicationArea = ${3|All,Basic,Suite,Advanced|};",
+            "\tCaption = '${4:Draft with Copilot}';",
+            "\tPromptMode = ${5|Prompt,Generate,Content|};",
+            "\tExtensible = false;",
+            "\tSourceTable = ${6:TableName};",
+            "\tSourceTableTemporary = true;",
+            "\t",
+            "\tlayout",
+            "\t{",
+            "\t\tarea(Prompt)",
+            "\t\t{",
+            "\t\t\t$7",
+            "\t\t}",
+            "\t\tarea(PromptOptions)",
+            "\t\t{",
+            "\t\t\t$8",
+            "\t\t}",
+            "\t\tarea(Content)",
+            "\t\t{",
+            "\t\t\t$9",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tactions",
+            "\t{",
+            "\t\tarea(SystemActions)",
+            "\t\t{",
+            "\t\t\tsystemaction(${10|Generate,Attach,Cancel,Ok,Regenerate|})",
+            "\t\t\t{",
+            "\t\t\t\ttrigger OnAction()",
+            "\t\t\t\tbegin",
+            "\t\t\t\t\t$0",
+            "\t\t\t\tend;",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "}"
+        ],
+        "description": "Snippet: Page of type Prompt Dialog"
+    },
+    "Snippet: Analysis View": {
+        "prefix": "tanalysisview",
+        "body": [
+            "analysisview(${1:AnalysisViewName})",
+            "{",
+            "\tCaption = '${2:ViewCaption}';",
+            "\tDefinitionFile = '${2:DefinitionFilePath}';",
+            "}"
+        ],
+        "description": "Snippet: Analysis View"
+    },
+    "Snippet: Page Customization": {
+        "prefix": "tpagecust",
+        "body": [
+            "pagecustomization ${1:MyCustomization} customizes ${2:MyTargetPage}",
+            "{",
+            "\tlayout",
+            "\t{",
+            "\t\t${3:// Add changes to page layout here}",
+            "\t}",
+            "\t",
+            "\tactions",
+            "\t{",
+            "\t\t${0:// Add changes to page actions here}",
+            "\t}",
+            "\t",
+            "\t//Variables, procedures and triggers are not allowed on Page Customizations",
+            "}"
+        ],
+        "description": "Snippet: Page Customization"
+    },
+    "Snippet: Page Extension": {
+        "prefix": "tpageext",
+        "body": [
+            "pageextension ${1:Id} ${2:MyExtension} extends ${3:MyTargetPage}",
+            "{",
+            "\tlayout",
+            "\t{",
+            "\t\t${4:// Add changes to page layout here}",
+            "\t}",
+            "\t",
+            "\tactions",
+            "\t{",
+            "\t\t${5:// Add changes to page actions here}",
+            "\t}",
+            "\t",
+            "\tvar",
+            "\t\t${6:myInt}: ${0:Integer};",
+            "}"
+        ],
+        "description": "Snippet: Page Extension"
+    },
+    "Snippet: PermissionSet": {
+        "prefix": "tpermissionset",
+        "body": [
+            "permissionset ${1:Id} ${2:MyPermissionSet}",
+            "{",
+            "\tAssignable = ${3|true,false|};",
+            "\tIncludedPermissionSets = ${4:SomePermissionSet};",
+            "\tPermissions = ",
+            "\t\t${5:ObjectType} ${6:ObjectName} = ${7:ObjectPermissions};",
+            "}"
+        ],
+        "description": "Snippet: Permission Set"
+    },
+    "Snippet: PermissionSetExtension": {
+        "prefix": "tpermissionsetextension",
+        "body": [
+            "permissionsetextension ${1:Id} ${2:MyPermissionSetExt} extends ${3:MyTargetPermissionSet}",
+            "{",
+            "\tIncludedPermissionSets = ${4:SomePermissionSet};",
+            "\tPermissions = ",
+            "\t\t${5:ObjectType} ${6:ObjectName} = ${7:ObjectPermissions};",
+            "}"
+        ],
+        "description": "Snippet: Permission set extension"
+    },
+    "Snippet: Profile": {
+        "prefix": "tprofile",
+        "body": [
+            "profile ${1:MyProfile} ",
+            "{",
+            "\tDescription = '${2:Profile Display Name}';",
+            "\tRoleCenter = ${3:RoleCenter};",
+            "\tCustomizations = ${0:Customizations};",
+            "}"
+        ],
+        "description": "Snippet: Profile"
+    },
+    "Snippet: Profile (4.0)": {
+        "prefix": "tprofile",
+        "body": [
+            "profile ${1:MyProfile} ",
+            "{",
+            "\tCaption = '${2:Profile Display Name}';",
+            "\tRoleCenter = ${3:RoleCenter};",
+            "\tProfileDescription = '${4:Profile Description}';",
+            "\tCustomizations = ${0:Customizations};",
+            "}"
+        ],
+        "description": "Snippet: Profile"
+    },
+    "Snippet: ProfileExtension": {
+        "prefix": "tprofileextension",
+        "body": [
+            "profileextension ${1:MyProfileExt} extends ${2:MyTargetProfile}",
+            "{",
+            "\tCaption = '${3:New Caption}';",
+            "\tCustomizations = ${0:Customizations};",
+            "}"
+        ],
+        "description": "Snippet: Profile extension"
+    },
+    "Snippet: Query": {
+        "prefix": "tquery",
+        "body": [
+            "query ${1:Id} ${2:MyQuery}",
+            "{",
+            "\tQueryType = ${3|Normal,API|};",
+            "\t",
+            "\telements",
+            "\t{",
+            "\t\tdataitem(${5:DataItemName}; ${4:SourceTableName})",
+            "\t\t{",
+            "\t\t\tcolumn(${7:ColumnName}; ${6:SourceFieldName})",
+            "\t\t\t{",
+            "\t\t\t\t${8}",
+            "\t\t\t}",
+            "\t\t\tfilter(${10:FilterName}; ${9:SourceFieldName})",
+            "\t\t\t{",
+            "\t\t\t\t${11}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tvar",
+            "\t\t${12:myInt}: ${13:Integer};",
+            "\t",
+            "\ttrigger ${14:OnBeforeOpen}()",
+            "\tbegin",
+            "\t\t$0",
+            "\tend;",
+            "}"
+        ],
+        "description": "Snippet: Query"
+    },
+    "Query of type API": {
+        "prefix": "tquery",
+        "body": [
+            "query ${1:Id} ${2:MyQuery}",
+            "{",
+            "\tQueryType = API;",
+            "\tAPIPublisher = '${3:PublisherName}';",
+            "\tAPIGroup = '${4:GroupName}';",
+            "\tAPIVersion = '${5:VersionList}';",
+            "\tEntityName = '${6:EntityName}';",
+            "\tEntitySetName = '${7:EntitySetName}';",
+            "\t",
+            "\telements",
+            "\t{",
+            "\t\tdataitem(${10:DataItemName}; ${9:SourceTableName})",
+            "\t\t{",
+            "\t\t\tcolumn(${12:ColumnName}; ${11:SourceFieldName})",
+            "\t\t\t{",
+            "\t\t\t\t${13}",
+            "\t\t\t}",
+            "\t\t\tfilter(${15:FilterName}; ${14:SourceFieldName})",
+            "\t\t\t{",
+            "\t\t\t\t${16}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tvar",
+            "\t\t${17:myInt}: ${18:Integer};",
+            "\t",
+            "\ttrigger ${19:OnBeforeOpen}()",
+            "\tbegin",
+            "\t\t$0",
+            "\tend;",
+            "}"
+        ],
+        "description": "Snippet: Query of type API"
+    },
+    "Query DataItemLink": {
+        "prefix": "tquerydataitemlink",
+        "body": [
+            "\t\t\tDataItemLink = ${1:column} = ${2:parent}.${3:parentColumn};"
+        ],
+        "description": "Add a data item link to a data item"
+    },
+    "Snippet: Report": {
+        "prefix": "treport",
+        "body": [
+            "report ${1:Id} ${2:MyReport}",
+            "{",
+            "\tUsageCategory = ${3|ReportsAndAnalysis,Administration,Documents,History,Lists,None,Tasks|};",
+            "\tApplicationArea = ${4|All,Basic,Suite,Advanced|};",
+            "\tDefaultRenderingLayout = ${17:LayoutName};",
+            "\t",
+            "\tdataset",
+            "\t{",
+            "\t\tdataitem(${6:DataItemName}; ${5:SourceTableName})",
+            "\t\t{",
+            "\t\t\tcolumn(${8:ColumnName}; ${7:SourceFieldName})",
+            "\t\t\t{",
+            "\t\t\t\t${9}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\trequestpage",
+            "\t{",
+            "\t\tAboutTitle = '${10:Teaching tip title}';",
+            "\t\tAboutText = '${11:Teaching tip content}';",
+            "\t\tlayout",
+            "\t\t{",
+            "\t\t\tarea(Content)",
+            "\t\t\t{",
+            "\t\t\t\tgroup(${12:GroupName})",
+            "\t\t\t\t{",
+            "\t\t\t\t\tfield(${14:Name}; ${13:SourceExpression})",
+            "\t\t\t\t\t{",
+            "\t\t\t\t\t\t${15}",
+            "\t\t\t\t\t}",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t",
+            "\t\tactions",
+            "\t\t{",
+            "\t\t\tarea(${16:processing})",
+            "\t\t\t{",
+            "\t\t\t\taction(${17:ActionName})",
+            "\t\t\t\t{",
+            "\t\t\t\t\t${18}",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\trendering",
+            "\t{",
+            "\t\tlayout(${19:LayoutName})",
+            "\t\t{",
+            "\t\t\tType = ${20:Excel};",
+            "\t\t\tLayoutFile = '${21:mySpreadsheet.xlsx}';",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tvar",
+            "\t\t${22:myInt}: ${0:Integer};",
+            "}"
+        ],
+        "description": "Snippet: Report"
+    },
+    "Snippet: Data Item": {
+        "prefix": "tdataitem",
+        "body": [
+            "dataitem(${1:DataItemName}; ${2:SourceTableName})",
+            "{",
+            "\tcolumn(${3:ColumnName}; ${4:SourceFieldName})",
+            "\t{",
+            "\t\t${0}",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: Report Data Item"
+    },
+    "Snippet: Column": {
+        "prefix": "tcolumn",
+        "body": [
+            "column(${1:ColumnName}; ${2:SourceFieldName})",
+            "{",
+            "\t${0}",
+            "}"
+        ],
+        "description": "Snippet: Column"
+    },
+    "Snippet: Report Layout": {
+        "prefix": "treportlayout",
+        "body": [
+            "layout(${0:LayoutName})",
+            "{",
+            "\tType = ${1:Excel};",
+            "\tLayoutFile = '${2:mySpreadsheet.xlsx}';",
+            "}"
+        ],
+        "description": "Snippet: Report Layout"
+    },
+    "Snippet: Report Extension": {
+        "prefix": "treportext",
+        "body": [
+            "reportextension ${1:Id} ${2:MyExtension} extends ${3:MyTargetReport}",
+            "{",
+            "\tdataset",
+            "\t{",
+            "\t\t${4:// Add changes to dataitems and columns here}",
+            "\t}",
+            "\t",
+            "\trequestpage",
+            "\t{",
+            "\t\t${5:// Add changes to the requestpage here}",
+            "\t}",
+            "\t",
+            "\trendering",
+            "\t{",
+            "\t\tlayout(${6:LayoutName})",
+            "\t\t{",
+            "\t\t\tType = ${7:RDLC};",
+            "\t\t\tLayoutFile = '${8:mylayout.rdl}';",
+            "\t\t}",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: Report Extension"
+    },
+    "Snippet: Table": {
+        "prefix": "ttable",
+        "body": [
+            "table ${1:id} ${2:MyTable}",
+            "{",
+            "\tDataClassification = ${3|ToBeClassified,CustomerContent,EndUserIdentifiableInformation,AccountData,EndUserPseudonymousIdentifiers,OrganizationIdentifiableInformation,SystemMetadata|};",
+            "\t",
+            "\tfields",
+            "\t{",
+            "\t\tfield(1;${4:MyField}; ${5:Integer})",
+            "\t\t{",
+            "\t\t\tDataClassification = ${6|ToBeClassified,CustomerContent,EndUserIdentifiableInformation,AccountData,EndUserPseudonymousIdentifiers,OrganizationIdentifiableInformation,SystemMetadata|};",
+            "\t\t\t$7",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tkeys",
+            "\t{",
+            "\t\tkey(${8:Key1}; ${4:MyField})",
+            "\t\t{",
+            "\t\t\tClustered = ${9|true,false|};",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tfieldgroups",
+            "\t{",
+            "\t\t${10:// Add changes to field groups here}",
+            "\t}",
+            "\t",
+            "\tvar",
+            "\t\t${11:myInt}: ${12:Integer};",
+            "\t",
+            "\ttrigger OnInsert()",
+            "\tbegin",
+            "\t\t$13",
+            "\tend;",
+            "\t",
+            "\ttrigger OnModify()",
+            "\tbegin",
+            "\t\t$14",
+            "\tend;",
+            "\t",
+            "\ttrigger OnDelete()",
+            "\tbegin",
+            "\t\t$15",
+            "\tend;",
+            "\t",
+            "\ttrigger OnRename()",
+            "\tbegin",
+            "\t\t$0",
+            "\tend;",
+            "\t",
+            "}"
+        ],
+        "description": "Snippet: Table"
+    },
+    "Snippet: Table Field": {
+        "prefix": "tfield",
+        "body": [
+            "field(${1:id}; ${2:MyField}; ${3|Blob,BigInteger,Boolean,Code[50],Date,DateFormula,Decimal,Duration,Integer,Guid,Media,MediaSet,Option,RecordID,TableFilter,Text[50],Time|})",
+            "{",
+            "\tDataClassification = ${4|ToBeClassified,CustomerContent,EndUserIdentifiableInformation,AccountData,EndUserPseudonymousIdentifiers,OrganizationIdentifiableInformation,SystemMetadata|};",
+            "}"
+        ],
+        "description": "Snippet: Table Field"
+    },
+    "Snippet: Table Field Option": {
+        "prefix": "tfieldoption",
+        "body": [
+            "field(${1:id}; ${2:MyField}; Option)",
+            "{",
+            "\tDataClassification = ${3|ToBeClassified,CustomerContent,EndUserIdentifiableInformation,AccountData,EndUserPseudonymousIdentifiers,OrganizationIdentifiableInformation,SystemMetadata|};",
+            "\tOptionMembers = ${0:Default};",
+            "}"
+        ],
+        "description": "Snippet: Table Field Option"
+    },
+    "Snippet: Table Field Code": {
+        "prefix": "tfieldcode",
+        "body": [
+            "field(${1:id}; ${2:MyField}; Code[${3:Length}])",
+            "{",
+            "\tDataClassification = ${4|ToBeClassified,CustomerContent,EndUserIdentifiableInformation,AccountData,EndUserPseudonymousIdentifiers,OrganizationIdentifiableInformation,SystemMetadata|};",
+            "\t$0",
+            "}"
+        ],
+        "description": "Snippet: Table Field Code"
+    },
+    "Snippet: Table Field Text": {
+        "prefix": "tfieldtext",
+        "body": [
+            "field(${1:id}; ${2:MyField}; Text[${3:Length}])",
+            "{",
+            "\tDataClassification = ${4|ToBeClassified,CustomerContent,EndUserIdentifiableInformation,AccountData,EndUserPseudonymousIdentifiers,OrganizationIdentifiableInformation,SystemMetadata|};",
+            "\t$0",
+            "}"
+        ],
+        "description": "Snippet: Table Field Text"
+    },
+    "Snippet: Table Key": {
+        "prefix": "tkey",
+        "body": [
+            "key(${1:MyKey}; ${2:MyField})",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Snippet: Table Key"
+    },
+    "Snippet: Table Field Group": {
+        "prefix": "tfieldgroup",
+        "body": [
+            "fieldgroup(${1|DropDown,Brick|}; ${0:MyField}){}"
+        ],
+        "description": "Snippet: Table Field Group"
+    },
+    "Snippet: Table Extension": {
+        "prefix": "ttableext",
+        "body": [
+            "tableextension ${1:Id} ${2:MyExtension} extends ${3:MyTargetTable}",
+            "{",
+            "\tfields",
+            "\t{",
+            "\t\t${4:// Add changes to table fields here}",
+            "\t}",
+            "\t",
+            "\tkeys",
+            "\t{",
+            "\t\t${5:// Add changes to keys here}",
+            "\t}",
+            "\t",
+            "\tfieldgroups",
+            "\t{",
+            "\t\t${6:// Add changes to field groups here}",
+            "\t}",
+            "\t",
+            "\tvar",
+            "\t\t${7:myInt}: ${0:Integer};",
+            "}"
+        ],
+        "description": "Snippet: Table Extension"
+    },
+    "Snippet: Table Extension FieldGroup AddLast": {
+        "prefix": "tfieldgroupaddlast",
+        "body": [
+            "addlast(${1|DropDown,Brick|}; ${0:MyField}){}"
+        ],
+        "description": "Snippet: Table Extension FieldGroup AddLast"
+    },
+    "Snippet: XmlPort": {
+        "prefix": "txmlport",
+        "body": [
+            "xmlport ${1:Id} ${2:MyXmlport}",
+            "{",
+            "\tschema",
+            "\t{",
+            "\t\ttextelement(${3:NodeName1})",
+            "\t\t{",
+            "\t\t\ttableelement(${5:NodeName2}; ${4:SourceTableName})",
+            "\t\t\t{",
+            "\t\t\t\tfieldattribute(${7:NodeName3}; ${5:NodeName2}.${6:SourceFieldName})",
+            "\t\t\t\t{",
+            "\t\t\t\t\t${8}",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\trequestpage",
+            "\t{",
+            "\t\tlayout",
+            "\t\t{",
+            "\t\t\tarea(content)",
+            "\t\t\t{",
+            "\t\t\t\tgroup(${9:GroupName})",
+            "\t\t\t\t{",
+            "\t\t\t\t\tfield(${11:Name}; ${10:SourceExpression})",
+            "\t\t\t\t\t{",
+            "\t\t\t\t\t\t${12}",
+            "\t\t\t\t\t}",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t",
+            "\t\tactions",
+            "\t\t{",
+            "\t\t\tarea(${13:processing})",
+            "\t\t\t{",
+            "\t\t\t\taction(${14:ActionName})",
+            "\t\t\t\t{",
+            "\t\t\t\t\t${15}",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "\t",
+            "\tvar",
+            "\t\t${16:myInt}: ${0:Integer};",
+            "}"
+        ],
+        "description": "Snippet: XmlPort"
+    }
+}

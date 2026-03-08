@@ -1,0 +1,11 @@
+/target
+/Cargo.lock
+*.wasm
+.alpackages/
+.claude/worktrees/
+
+# .NET build artifacts
+crates/al-semantic/dotnet/AlSemantic/bin/
+crates/al-semantic/dotnet/AlSemantic/obj/
+crates/al-dap/dotnet/AlDap/bin/
+crates/al-dap/dotnet/AlDap/obj/
