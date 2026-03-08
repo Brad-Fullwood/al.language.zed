@@ -322,18 +322,4 @@ pub fn encode_message(value: &serde_json::Value) -> Vec<u8> {
 // JSON-RPC types (for communication with the .NET bridge process)
 // ---------------------------------------------------------------------------
 
-/// A JSON-RPC request sent to the .NET bridge.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeRequest {
-    pub id: u64,
-    pub method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub params: Option<serde_json::Value>,
-}
-
-/// A JSON-RPC response from the .NET bridge.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeResponse {
-    pub id: u64,
-    pub result: serde_json::Value,
-}
+pub use al_discovery::jsonrpc::{Request as BridgeRequest, Response as BridgeResponse, RpcError};

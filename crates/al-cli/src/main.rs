@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 
 use al_discovery::{find_project, find_toolchain, AlProject};
-use al_symbols::model::{ComposedObject, ObjectKind, SymbolEntry};
+use al_symbols::model::{ObjectKind, SymbolEntry};
 use al_symbols::SymbolIndex;
 use al_syntax::lint::LintSeverity;
 
@@ -96,53 +96,8 @@ enum Commands {
 }
 
 // ---------------------------------------------------------------------------
-// JSON output types (serializable wrappers)
+// JSON output types
 // ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-struct SymbolEntryJson {
-    kind: String,
-    id: i32,
-    name: String,
-    package: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    extends: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    fields: Vec<FieldJson>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    methods: Vec<MethodJson>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    enum_values: Vec<EnumValueJson>,
-}
-
-#[derive(Serialize)]
-struct FieldJson {
-    id: i32,
-    name: String,
-    type_name: String,
-}
-
-#[derive(Serialize)]
-struct MethodJson {
-    name: String,
-    parameters: Vec<ParamJson>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    return_type: Option<String>,
-    is_local: bool,
-}
-
-#[derive(Serialize)]
-struct ParamJson {
-    name: String,
-    type_name: String,
-    is_var: bool,
-}
-
-#[derive(Serialize)]
-struct EnumValueJson {
-    ordinal: i32,
-    name: String,
-}
 
 #[derive(Serialize)]
 struct PackageJson {
@@ -177,7 +132,7 @@ struct EventPublisherJson {
     object_name: String,
     method_name: String,
     event_type: String,
-    parameters: Vec<ParamJson>,
+    parameters: Vec<al_symbols::model::ParameterSymbol>,
 }
 
 #[derive(Serialize)]
@@ -195,15 +150,6 @@ struct DepJson {
     name: String,
     publisher: String,
     version: String,
-}
-
-#[derive(Serialize)]
-struct ComposedObjectJson {
-    base: SymbolEntryJson,
-    extensions: Vec<SymbolEntryJson>,
-    all_fields: Vec<FieldJson>,
-    all_methods: Vec<MethodJson>,
-    all_enum_values: Vec<EnumValueJson>,
 }
 
 #[derive(Serialize)]
@@ -227,60 +173,6 @@ struct DoctorJson {
     package_count: usize,
     symbols_loadable: bool,
     symbol_count: usize,
-}
-
-// ---------------------------------------------------------------------------
-// Conversion helpers
-// ---------------------------------------------------------------------------
-
-fn entry_to_json(e: &SymbolEntry) -> SymbolEntryJson {
-    SymbolEntryJson {
-        kind: e.kind.to_string(),
-        id: e.id,
-        name: e.name.clone(),
-        package: e.package.clone(),
-        extends: e.extends.clone(),
-        fields: e.fields.iter().map(|f| FieldJson {
-            id: f.id,
-            name: f.name.clone(),
-            type_name: f.type_name.clone(),
-        }).collect(),
-        methods: e.methods.iter().map(method_to_json).collect(),
-        enum_values: e.enum_values.iter().map(|v| EnumValueJson {
-            ordinal: v.ordinal,
-            name: v.name.clone(),
-        }).collect(),
-    }
-}
-
-fn method_to_json(m: &al_symbols::model::MethodSymbol) -> MethodJson {
-    MethodJson {
-        name: m.name.clone(),
-        parameters: m.parameters.iter().map(|p| ParamJson {
-            name: p.name.clone(),
-            type_name: p.type_name.clone(),
-            is_var: p.is_var,
-        }).collect(),
-        return_type: m.return_type.clone(),
-        is_local: m.is_local,
-    }
-}
-
-fn composed_to_json(c: &ComposedObject) -> ComposedObjectJson {
-    ComposedObjectJson {
-        base: entry_to_json(&c.base),
-        extensions: c.extensions.iter().map(entry_to_json).collect(),
-        all_fields: c.all_fields.iter().map(|f| FieldJson {
-            id: f.id,
-            name: f.name.clone(),
-            type_name: f.type_name.clone(),
-        }).collect(),
-        all_methods: c.all_methods.iter().map(method_to_json).collect(),
-        all_enum_values: c.all_enum_values.iter().map(|v| EnumValueJson {
-            ordinal: v.ordinal,
-            name: v.name.clone(),
-        }).collect(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -653,7 +545,7 @@ fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
     let results = index.search(query, limit);
 
     if json {
-        let items: Vec<SymbolEntryJson> = results.iter().map(|e| entry_to_json(e)).collect();
+        let items: Vec<&SymbolEntry> = results.iter().map(|e| e.as_ref()).collect();
         print_json(&items);
     } else {
         if results.is_empty() {
@@ -710,10 +602,10 @@ fn cmd_object(kind_str: &str, name: &str, json: bool) -> ExitCode {
     }
 
     if json {
-        let items: Vec<SymbolEntryJson> = matches.iter().map(|e| entry_to_json(e)).collect();
-        if items.len() == 1 {
-            print_json(&items[0]);
+        if matches.len() == 1 {
+            print_json(&**matches[0]);
         } else {
+            let items: Vec<&SymbolEntry> = matches.iter().map(|e| e.as_ref()).collect();
             print_json(&items);
         }
     } else {
@@ -763,10 +655,10 @@ fn cmd_by_id(kind_str: &str, id: i32, json: bool) -> ExitCode {
     }
 
     if json {
-        let items: Vec<SymbolEntryJson> = results.iter().map(|e| entry_to_json(e)).collect();
-        if items.len() == 1 {
-            print_json(&items[0]);
+        if results.len() == 1 {
+            print_json(&*results[0]);
         } else {
+            let items: Vec<&SymbolEntry> = results.iter().map(|e| e.as_ref()).collect();
             print_json(&items);
         }
     } else {
@@ -801,11 +693,7 @@ fn cmd_events(name: &str, json: bool) -> ExitCode {
                 object_name: p.object.name.clone(),
                 method_name: p.method.name.clone(),
                 event_type: p.event_type.to_string(),
-                parameters: p.method.parameters.iter().map(|param| ParamJson {
-                    name: param.name.clone(),
-                    type_name: param.type_name.clone(),
-                    is_var: param.is_var,
-                }).collect(),
+                parameters: p.method.parameters.clone(),
             }
         }).collect();
         print_json(&publishers);
@@ -903,7 +791,7 @@ fn cmd_composed(kind_str: &str, name: &str, json: bool) -> ExitCode {
     match composed {
         Some(c) => {
             if json {
-                print_json(&composed_to_json(&c));
+                print_json(&c);
             } else {
                 println!("{} {} \"{}\" (composed)", c.base.kind, c.base.id, c.base.name);
                 println!("  {} extension(s) merged", c.extensions.len());
@@ -1302,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entry_to_json_conversion() {
+    fn test_symbol_entry_serialization() {
         let entry = SymbolEntry {
             kind: ObjectKind::Table,
             id: 50100,
@@ -1325,13 +1213,15 @@ mod tests {
             enum_values: vec![],
         };
 
-        let json_entry = entry_to_json(&entry);
-        assert_eq!(json_entry.kind, "Table");
-        assert_eq!(json_entry.id, 50100);
-        assert_eq!(json_entry.name, "Customer");
-        assert_eq!(json_entry.fields.len(), 1);
-        assert_eq!(json_entry.methods.len(), 1);
-        assert!(json_entry.extends.is_none());
+        let json = serde_json::to_string(&entry).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(val["kind"], "Table");
+        assert_eq!(val["id"], 50100);
+        assert_eq!(val["name"], "Customer");
+        assert!(val.get("fields").unwrap().as_array().unwrap().len() == 1);
+        assert!(val.get("methods").unwrap().as_array().unwrap().len() == 1);
+        // extends should be absent (skip_serializing_if None)
+        assert!(val.get("extends").is_none());
     }
 
     #[test]
@@ -1407,7 +1297,7 @@ mod tests {
             object_name: "Sales Post".to_string(),
             method_name: "OnAfterPost".to_string(),
             event_type: "IntegrationEvent".to_string(),
-            parameters: vec![ParamJson {
+            parameters: vec![al_symbols::model::ParameterSymbol {
                 name: "SalesHeader".to_string(),
                 type_name: "Record".to_string(),
                 is_var: true,
@@ -1419,29 +1309,32 @@ mod tests {
     }
 
     #[test]
-    fn test_composed_object_json_serialization() {
-        let composed = ComposedObjectJson {
-            base: SymbolEntryJson {
-                kind: "Table".to_string(),
+    fn test_composed_object_serialization() {
+        use al_symbols::model::{ComposedObject, FieldSymbol};
+        let composed = ComposedObject {
+            base: SymbolEntry {
+                kind: ObjectKind::Table,
                 id: 18,
                 name: "Customer".to_string(),
                 package: "Base".to_string(),
                 extends: None,
-                fields: vec![FieldJson {
+                fields: vec![FieldSymbol {
                     id: 1,
                     name: "No.".to_string(),
                     type_name: "Code".to_string(),
                 }],
                 methods: vec![],
+                controls: vec![],
                 enum_values: vec![],
             },
             extensions: vec![],
-            all_fields: vec![FieldJson {
+            all_fields: vec![FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
             }],
             all_methods: vec![],
+            all_controls: vec![],
             all_enum_values: vec![],
         };
         let json = serde_json::to_string(&composed).unwrap();

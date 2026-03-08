@@ -1055,7 +1055,7 @@ mod tests {
 
         let resp: BridgeResponse = serde_json::from_value(json).unwrap();
         assert_eq!(resp.id, 1);
-        assert_eq!(resp.result["status"], "ok");
+        assert_eq!(resp.result.unwrap()["status"], "ok");
     }
 
     // -----------------------------------------------------------------------

@@ -3,6 +3,8 @@
 //! Finds ALTool installation, parses app.json manifests,
 //! locates .alpackages, and provides NuGet feed URLs.
 
+pub mod jsonrpc;
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};

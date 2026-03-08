@@ -204,7 +204,7 @@ impl SemanticBridge {
         let request = Request {
             id,
             method: method.to_string(),
-            params,
+            params: if params.is_null() { None } else { Some(params) },
         };
 
         let mut request_line = serde_json::to_string(&request)
@@ -596,7 +596,7 @@ mod tests {
         let req = protocol::Request {
             id: 42,
             method: "ping".to_string(),
-            params: serde_json::Value::Null,
+            params: None,
         };
         let req_json = serde_json::to_string(&req).unwrap();
 

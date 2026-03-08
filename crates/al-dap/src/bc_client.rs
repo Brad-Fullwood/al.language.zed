@@ -290,7 +290,14 @@ impl BcBridge {
             )));
         }
 
-        Ok(response.result)
+        if let Some(err) = response.error {
+            return Err(DapError::ProtocolError(format!(
+                "Bridge RPC error {}: {}",
+                err.code, err.message
+            )));
+        }
+
+        Ok(response.result.unwrap_or(serde_json::Value::Null))
     }
 }
 

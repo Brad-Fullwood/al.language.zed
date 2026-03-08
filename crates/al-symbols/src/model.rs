@@ -178,18 +178,18 @@ pub struct SymbolEntry {
     pub id: i32,
     pub name: String,
     /// For extensions: the name of the object being extended.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
     /// Package this symbol came from.
     #[serde(default)]
     pub package: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<MethodSymbol>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FieldSymbol>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub controls: Vec<ControlSymbol>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enum_values: Vec<EnumValueSymbol>,
 }
 
@@ -204,17 +204,21 @@ pub struct SymbolPackage {
 }
 
 /// A composed object: base + merged extensions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ComposedObject {
     pub base: SymbolEntry,
     pub extensions: Vec<SymbolEntry>,
     /// Merged fields (base + all extension fields).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub all_fields: Vec<FieldSymbol>,
     /// Merged methods (base + all extension methods).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub all_methods: Vec<MethodSymbol>,
     /// Merged controls (base + all extension controls).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub all_controls: Vec<ControlSymbol>,
     /// Merged enum values (base + all extension values).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub all_enum_values: Vec<EnumValueSymbol>,
 }
 
