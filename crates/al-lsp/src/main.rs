@@ -17,7 +17,7 @@ async fn main() {
     if args.iter().any(|a| a == "--dap") {
         // DAP mode
         let toolchain = al_discovery::find_toolchain().expect("ALTool not found");
-        al_dap::run_dap_server(&toolchain).await;
+        let _ = al_dap::run_dap_server(&toolchain).await;
     } else {
         // LSP mode
         al_lsp::server::run_lsp().await;
