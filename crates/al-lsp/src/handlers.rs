@@ -10,6 +10,7 @@
 
 use tower_lsp::lsp_types::*;
 
+use crate::completions::extract_last_identifier;
 use crate::server::AlServer;
 
 // ---------------------------------------------------------------------------
@@ -295,29 +296,8 @@ fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
 
 /// Extract the trailing identifier from a string.
 fn extract_trailing_identifier(s: &str) -> Option<&str> {
-    let s = s.trim_end();
-    if s.is_empty() {
-        return None;
-    }
-
-    // Handle quoted identifiers
-    if s.ends_with('"') {
-        let start = s[..s.len() - 1].rfind('"')?;
-        return Some(&s[start + 1..s.len() - 1]);
-    }
-
-    // Find the start of the identifier
-    let start = s
-        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-
-    let ident = &s[start..];
-    if ident.is_empty() {
-        None
-    } else {
-        Some(ident)
-    }
+    let result = extract_last_identifier(s);
+    if result.is_empty() { None } else { Some(result) }
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +401,7 @@ pub(crate) fn handle_code_action(
 pub(crate) fn handle_inlay_hint(
     server: &AlServer,
     uri: &Url,
-    _range: Range,
+    range: Range,
 ) -> Option<Vec<InlayHint>> {
     let text = server.documents.get_text(uri)?;
 
@@ -435,7 +415,7 @@ pub(crate) fn handle_inlay_hint(
     let source = text.as_bytes();
     let mut hints = Vec::new();
 
-    collect_inlay_hints(root, source, server, &mut hints);
+    collect_inlay_hints(root, source, server, &range, &mut hints);
 
     if hints.is_empty() {
         None
@@ -444,13 +424,21 @@ pub(crate) fn handle_inlay_hint(
     }
 }
 
-/// Recursively collect inlay hints from the AST.
+/// Recursively collect inlay hints from the AST, limited to the requested range.
 fn collect_inlay_hints(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     server: &AlServer,
+    range: &Range,
     hints: &mut Vec<InlayHint>,
 ) {
+    // Skip nodes entirely outside the requested range
+    let node_start = node.start_position().row as u32;
+    let node_end = node.end_position().row as u32;
+    if node_end < range.start.line || node_start > range.end.line {
+        return;
+    }
+
     // Look for procedure/function calls with arguments
     if node.kind() == "argument_list" || node.kind() == "call_arguments" {
         // Try to find the function name from the parent expression
@@ -468,7 +456,7 @@ fn collect_inlay_hints(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_inlay_hints(child, source, server, hints);
+        collect_inlay_hints(child, source, server, range, hints);
     }
 }
 

@@ -383,7 +383,7 @@ fn add_default_completions(server: &AlServer, text: &str, items: &mut Vec<Comple
 }
 
 /// Extract the last identifier from a string (e.g., "Rec" from "Rec").
-fn extract_last_identifier(s: &str) -> &str {
+pub(crate) fn extract_last_identifier(s: &str) -> &str {
     let s = s.trim();
     // Handle quoted identifiers
     if s.ends_with('"') {

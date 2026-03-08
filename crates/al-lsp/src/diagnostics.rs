@@ -37,29 +37,26 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
         .await;
 
     // Phase 2: Async semantic analysis (if bridge available)
-    let bridge_available = server.semantic.read().await.is_some();
-    if bridge_available {
-        // Determine the file path from the URI
-        let file_path = uri
-            .to_file_path()
-            .unwrap_or_else(|_| PathBuf::from(uri.path()));
-
-        // Determine package cache path
-        let package_cache = if let Some(project) = server.project.read().await.as_ref() {
-            project.packages_dir.clone()
-        } else {
-            PathBuf::from(".alpackages")
-        };
-
-        let req = al_semantic::AnalyzeRequest {
-            file: file_path,
-            source: text.to_string(),
-            analyzers: vec!["CodeCop".to_string()],
-            package_cache,
-        };
-
+    {
         let semantic = server.semantic.read().await;
         if let Some(bridge) = semantic.as_ref() {
+            let file_path = uri
+                .to_file_path()
+                .unwrap_or_else(|_| PathBuf::from(uri.path()));
+
+            let package_cache = if let Some(project) = server.project.read().await.as_ref() {
+                project.packages_dir.clone()
+            } else {
+                PathBuf::from(".alpackages")
+            };
+
+            let req = al_semantic::AnalyzeRequest {
+                file: file_path,
+                source: text.to_string(),
+                analyzers: vec!["CodeCop".to_string()],
+                package_cache,
+            };
+
             if let Ok(results) = bridge.analyze(req).await {
                 for entry in results {
                     diagnostics.push(semantic_to_diagnostic(&entry));

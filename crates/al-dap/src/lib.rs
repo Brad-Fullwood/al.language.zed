@@ -153,7 +153,6 @@ struct DapSession {
     toolchain: AlToolchain,
     bridge: Option<BcBridge>,
     seq: AtomicU64,
-    initialized: bool,
     launch_config: Option<AlLaunchConfig>,
 }
 
@@ -163,7 +162,6 @@ impl DapSession {
             toolchain,
             bridge: None,
             seq: AtomicU64::new(1),
-            initialized: false,
             launch_config: None,
         }
     }
@@ -215,6 +213,23 @@ impl DapSession {
         self.make_response(request, false, None, Some(message.to_string()))
     }
 
+    /// Get the bridge or return an error response.
+    fn require_bridge(&self, request: &DapRequest) -> std::result::Result<&BcBridge, DapResponse> {
+        self.bridge
+            .as_ref()
+            .ok_or_else(|| self.error_response(request, "Not connected"))
+    }
+
+    /// Extract a u64 argument from a DAP request.
+    fn arg_u64(&self, request: &DapRequest, key: &str) -> u64 {
+        request
+            .arguments
+            .as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    }
+
     // -----------------------------------------------------------------------
     // Request dispatch
     // -----------------------------------------------------------------------
@@ -259,7 +274,6 @@ impl DapSession {
     // -----------------------------------------------------------------------
 
     fn handle_initialize(&mut self, request: &DapRequest) -> DapResponse {
-        self.initialized = true;
         let capabilities = Capabilities::default();
         let body = serde_json::to_value(capabilities).unwrap_or_default();
         self.success_response(request, Some(body))
@@ -316,9 +330,9 @@ impl DapSession {
     }
 
     async fn handle_set_breakpoints(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
         let args: SetBreakpointsArguments = match request
@@ -344,9 +358,9 @@ impl DapSession {
     }
 
     async fn handle_threads(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
         match bridge.threads().await {
@@ -359,17 +373,12 @@ impl DapSession {
     }
 
     async fn handle_stack_trace(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
-        let thread_id = request
-            .arguments
-            .as_ref()
-            .and_then(|v| v.get("threadId"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let thread_id = self.arg_u64(request, "threadId");
 
         match bridge.stack_trace(thread_id).await {
             Ok(frames) => {
@@ -384,17 +393,12 @@ impl DapSession {
     }
 
     async fn handle_scopes(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
-        let frame_id = request
-            .arguments
-            .as_ref()
-            .and_then(|v| v.get("frameId"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let frame_id = self.arg_u64(request, "frameId");
 
         match bridge.scopes(frame_id).await {
             Ok(scopes) => {
@@ -406,17 +410,12 @@ impl DapSession {
     }
 
     async fn handle_variables(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
-        let reference = request
-            .arguments
-            .as_ref()
-            .and_then(|v| v.get("variablesReference"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let reference = self.arg_u64(request, "variablesReference");
 
         match bridge.variables(reference).await {
             Ok(variables) => {
@@ -428,17 +427,12 @@ impl DapSession {
     }
 
     async fn handle_continue(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
-        let thread_id = request
-            .arguments
-            .as_ref()
-            .and_then(|v| v.get("threadId"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let thread_id = self.arg_u64(request, "threadId");
 
         match bridge.continue_execution(thread_id).await {
             Ok(()) => {
@@ -450,17 +444,12 @@ impl DapSession {
     }
 
     async fn handle_next(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
-        let thread_id = request
-            .arguments
-            .as_ref()
-            .and_then(|v| v.get("threadId"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let thread_id = self.arg_u64(request, "threadId");
 
         match bridge.step_over(thread_id).await {
             Ok(()) => self.success_response(request, None),
@@ -469,17 +458,12 @@ impl DapSession {
     }
 
     async fn handle_step_in(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
-        let thread_id = request
-            .arguments
-            .as_ref()
-            .and_then(|v| v.get("threadId"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let thread_id = self.arg_u64(request, "threadId");
 
         match bridge.step_in(thread_id).await {
             Ok(()) => self.success_response(request, None),
@@ -488,17 +472,12 @@ impl DapSession {
     }
 
     async fn handle_step_out(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
-        let thread_id = request
-            .arguments
-            .as_ref()
-            .and_then(|v| v.get("threadId"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let thread_id = self.arg_u64(request, "threadId");
 
         match bridge.step_out(thread_id).await {
             Ok(()) => self.success_response(request, None),
@@ -507,9 +486,9 @@ impl DapSession {
     }
 
     async fn handle_evaluate(&self, request: &DapRequest) -> DapResponse {
-        let bridge = match &self.bridge {
-            Some(b) => b,
-            None => return self.error_response(request, "Not connected"),
+        let bridge = match self.require_bridge(request) {
+            Ok(b) => b,
+            Err(r) => return r,
         };
 
         let expression = request

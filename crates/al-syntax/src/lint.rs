@@ -23,6 +23,17 @@ pub enum LintSeverity {
     Hint,
 }
 
+impl std::fmt::Display for LintSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LintSeverity::Error => write!(f, "error"),
+            LintSeverity::Warning => write!(f, "warning"),
+            LintSeverity::Info => write!(f, "info"),
+            LintSeverity::Hint => write!(f, "hint"),
+        }
+    }
+}
+
 /// Lint configuration.
 #[derive(Debug, Clone)]
 pub struct LintConfig {

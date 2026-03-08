@@ -28,12 +28,9 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
         return None;
     }
 
-    // 1. Check if we're on a procedure name — show its signature
+    // 1. Check if we're on a procedure name or a local parameter
     if let Some(proc_info) = al_syntax::find_procedure_at(&tree, &text, position) {
-        if proc_info
-            .name
-            .eq_ignore_ascii_case(clean_name)
-        {
+        if proc_info.name.eq_ignore_ascii_case(clean_name) {
             let content = format_procedure_hover(&proc_info);
             return Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
@@ -43,16 +40,13 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
                 range: Some(al_syntax::ts_range_to_lsp(&node.range())),
             });
         }
-    }
 
-    // 2. Check local variable declarations in the current procedure
-    if let Some(proc_info) = al_syntax::find_procedure_at(&tree, &text, position) {
+        // 2. Check local parameter declarations in the current procedure
         for param in &proc_info.parameters {
             if param.name.eq_ignore_ascii_case(clean_name) {
-                let var_prefix = if param.is_var { "var " } else { "" };
                 let content = format!(
                     "```al\n{}{}: {}\n```\n*(parameter)*",
-                    var_prefix, param.name, param.type_name
+                    format_param_prefix(param.is_var), param.name, param.type_name
                 );
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
@@ -155,16 +149,18 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
     None
 }
 
+/// Format a "var " prefix for parameter display.
+fn format_param_prefix(is_var: bool) -> &'static str {
+    if is_var { "var " } else { "" }
+}
+
 /// Format a procedure's hover information.
 fn format_procedure_hover(proc: &al_syntax::ProcedureInfo) -> String {
     let local = if proc.is_local { "local " } else { "" };
     let params: Vec<String> = proc
         .parameters
         .iter()
-        .map(|p| {
-            let var_prefix = if p.is_var { "var " } else { "" };
-            format!("{}{}: {}", var_prefix, p.name, p.type_name)
-        })
+        .map(|p| format!("{}{}: {}", format_param_prefix(p.is_var), p.name, p.type_name))
         .collect();
     let params_str = params.join("; ");
     let return_str = proc
@@ -231,10 +227,7 @@ fn format_builtin_method(method: &al_semantic::BuiltinMethod) -> String {
     let params: Vec<String> = method
         .parameters
         .iter()
-        .map(|p| {
-            let var_prefix = if p.is_var { "var " } else { "" };
-            format!("{}{}: {}", var_prefix, p.name, p.type_name)
-        })
+        .map(|p| format!("{}{}: {}", format_param_prefix(p.is_var), p.name, p.type_name))
         .collect();
     let return_str = method
         .return_type

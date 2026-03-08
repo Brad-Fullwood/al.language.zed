@@ -187,6 +187,11 @@ impl LanguageServer for AlServer {
         let uri = params.text_document.uri;
         self.documents.close(&uri);
 
+        // Remove from workspace_files to free memory (will be re-read if needed)
+        if let Ok(path) = uri.to_file_path() {
+            self.workspace_files.remove(&path);
+        }
+
         // Clear diagnostics for the closed file
         self.client
             .publish_diagnostics(uri, vec![], None)
