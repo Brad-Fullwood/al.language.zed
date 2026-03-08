@@ -12,4 +12,4 @@ brackets = [
 ]
 autoclose_before = ";:.,=}])<>\" \n\t"
 word_characters = ["_"]
-language_servers = ["al-language-server"]
+language_servers = ["al-lsp"]
