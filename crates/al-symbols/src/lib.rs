@@ -21,6 +21,8 @@ pub mod manifest;
 pub mod model;
 
 #[cfg(feature = "nuget")]
+pub mod bc_server;
+#[cfg(feature = "nuget")]
 pub mod nuget;
 
 // Re-export primary types for convenience.

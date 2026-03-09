@@ -1197,7 +1197,7 @@ class CodeAnalysisBridge
 
             var stdout = process.StandardOutput.ReadToEnd();
             var stderr = process.StandardError.ReadToEnd();
-            process.WaitForExit(timeoutMilliseconds: 120000); // 2 minute timeout
+            process.WaitForExit(120000); // 2 minute timeout
 
             var exitCode = process.ExitCode;
             Console.Error.WriteLine($"  alc exit code: {exitCode}");
@@ -2111,7 +2111,7 @@ class CodeAnalysisBridge
         var typeInfo = typesDict[typeName];
         if (!typeInfo.Methods.Any(m => m.Name == name && m.Parameters.Count == parameters.Count))
         {
-            typeInfo.Methods.Add(new MethodInfo
+            typeInfo.Methods.Add(new AlMethodInfo
             {
                 Name = name,
                 Parameters = parameters,
@@ -2568,11 +2568,11 @@ class CodeAnalysisBridge
 class BuiltinTypeInfo
 {
     public string Name { get; set; } = "";
-    public List<MethodInfo> Methods { get; set; } = new();
+    public List<AlMethodInfo> Methods { get; set; } = new();
 }
 
 /// <summary>Accumulated info about a method during extraction.</summary>
-class MethodInfo
+class AlMethodInfo
 {
     public string Name { get; set; } = "";
     public List<MethodParamInfo> Parameters { get; set; } = new();

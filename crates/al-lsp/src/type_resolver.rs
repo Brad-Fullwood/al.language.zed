@@ -3,7 +3,10 @@
 //! Extracts variable declarations and their types from the current scope
 //! by walking the tree-sitter AST. Handles local variables, global variables,
 //! parameters, and trigger-implicit variables (Rec, xRec, etc.).
-
+//!
+//! Not yet wired into production handlers (completions, hover) — currently
+//! only exercised by unit tests. Will be integrated when type-aware
+//! dot-completion is implemented.
 use tower_lsp::lsp_types::Position;
 use tree_sitter::{Node, Tree};
 

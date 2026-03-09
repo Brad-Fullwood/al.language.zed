@@ -9,6 +9,7 @@
 use tower_lsp::lsp_types::*;
 
 use crate::parsing;
+use crate::resolution;
 use crate::server::AlServer;
 
 /// AL keywords for general completion.
@@ -123,69 +124,7 @@ const TRIGGER_VARIABLES: &[(&str, &str)] = &[
     ("RequestOptionsPage", "Page — the request options page"),
 ];
 
-/// Detect the completion context from the cursor position.
-#[derive(Debug, PartialEq)]
-pub(crate) enum CompletionContext {
-    /// After a `.` — member access
-    MemberAccess,
-    /// After `::` — enum member
-    EnumAccess,
-    /// In a type position (after `:` in a var declaration)
-    TypePosition,
-    /// Inside a trigger body — add trigger-specific variables
-    #[allow(dead_code)]
-    TriggerBody,
-    /// Default completion context
-    Default,
-}
-
-/// Detect the completion context from the text before the cursor.
-pub(crate) fn detect_context(text: &str, position: Position) -> CompletionContext {
-    let line_idx = position.line as usize;
-    let col = position.character as usize;
-
-    let line = match text.lines().nth(line_idx) {
-        Some(l) => l,
-        None => return CompletionContext::Default,
-    };
-
-    let prefix = if col <= line.len() {
-        &line[..col]
-    } else {
-        line
-    };
-
-    let trimmed = prefix.trim_end();
-
-    if trimmed.ends_with("::") {
-        return CompletionContext::EnumAccess;
-    }
-
-    if trimmed.ends_with('.') {
-        return CompletionContext::MemberAccess;
-    }
-
-    // Check if we're in a type position: look for "name:" or "name :" pattern
-    let before_cursor = prefix.trim();
-    if before_cursor.ends_with(':') && !before_cursor.ends_with(":=") {
-        return CompletionContext::TypePosition;
-    }
-
-    // Check if the line before has a var declaration pattern
-    // but exclude lines that contain := (assignment)
-    if !before_cursor.contains(":=") {
-        if let Some(colon_pos) = before_cursor.rfind(':') {
-            let after_colon = before_cursor[colon_pos + 1..].trim();
-            // If there's a colon earlier on the line and we're typing the type
-            if !after_colon.is_empty() {
-                // Likely typing a type name
-                return CompletionContext::TypePosition;
-            }
-        }
-    }
-
-    CompletionContext::Default
-}
+use al_syntax::context::{CompletionContext, detect_context};
 
 /// Handle textDocument/completion.
 pub(crate) fn handle_completion(
@@ -200,62 +139,34 @@ pub(crate) fn handle_completion(
 
     match context {
         CompletionContext::MemberAccess => {
-            // Get the identifier before the dot
-            let line_idx = position.line as usize;
-            let col = position.character as usize;
-            let line = text.lines().nth(line_idx)?;
-            let prefix = &line[..col.min(line.len())];
-            let before_dot = prefix.trim_end().strip_suffix('.')?;
-            let var_name = extract_last_identifier(before_dot);
-
-            // Look up methods/fields from package symbols
-            let symbols = server.symbols.get_by_name(var_name);
-            for entry in &symbols {
-                for method in &entry.methods {
-                    if method.is_local {
-                        continue;
-                    }
-                    items.push(method_to_completion_item(method));
-                }
-                for field in &entry.fields {
-                    items.push(field_to_completion_item(field));
-                }
-            }
-
-            // Look up built-in type methods
-            let builtins = server.builtins.read().unwrap().clone();
-            for bt in builtins.iter() {
-                if bt.name.eq_ignore_ascii_case(var_name) {
-                    for method in &bt.methods {
-                        items.push(builtin_method_to_completion_item(method));
+            if let Some((file_text, tree)) = parsing::get_or_parse(server, uri) {
+                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, position) {
+                    if let Some(receiver) = resolution::resolve_expression_type(
+                        server,
+                        uri,
+                        &file_text,
+                        &tree,
+                        &receiver_expr,
+                        position,
+                    ) {
+                        items.extend(resolution::completion_items_for_receiver(server, &receiver));
                     }
                 }
             }
         }
 
         CompletionContext::EnumAccess => {
-            // Get the enum name before ::
-            let line_idx = position.line as usize;
-            let col = position.character as usize;
-            let line = text.lines().nth(line_idx)?;
-            let prefix = &line[..col.min(line.len())];
-            let before_colons = prefix.trim_end().strip_suffix("::")?;
-            let enum_name = extract_last_identifier(before_colons);
-
-            // Find enum values from index
-            let symbols = server.symbols.get_by_name(enum_name);
-            for entry in &symbols {
-                if matches!(
-                    entry.kind,
-                    al_symbols::ObjectKind::Enum | al_symbols::ObjectKind::EnumExtension
-                ) {
-                    for ev in &entry.enum_values {
-                        items.push(CompletionItem {
-                            label: ev.name.clone(),
-                            kind: Some(CompletionItemKind::ENUM_MEMBER),
-                            detail: Some(format!("value({})", ev.ordinal)),
-                            ..Default::default()
-                        });
+            if let Some((file_text, tree)) = parsing::get_or_parse(server, uri) {
+                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, position) {
+                    if let Some(enum_type) = resolution::resolve_expression_type(
+                        server,
+                        uri,
+                        &file_text,
+                        &tree,
+                        &receiver_expr,
+                        position,
+                    ) {
+                        items.extend(resolution::enum_completion_items(server, &enum_type));
                     }
                 }
             }
@@ -301,23 +212,24 @@ pub(crate) fn handle_completion(
                 });
             }
             // Also include default items
-            add_default_completions(server, uri, &text, &mut items);
+            add_default_completions(server, uri, &text, position, &mut items);
         }
 
         CompletionContext::Default => {
-            add_default_completions(server, uri, &text, &mut items);
+            add_default_completions(server, uri, &text, position, &mut items);
         }
     }
 
     if items.is_empty() {
         None
     } else {
+        finalize_completion_items(&mut items);
         Some(CompletionResponse::Array(items))
     }
 }
 
-/// Add default completions: keywords, local procedures, symbols.
-fn add_default_completions(server: &AlServer, uri: &Url, text: &str, items: &mut Vec<CompletionItem>) {
+/// Add default completions: keywords, local procedures, variables, symbols.
+fn add_default_completions(server: &AlServer, uri: &Url, text: &str, position: Position, items: &mut Vec<CompletionItem>) {
     // Keywords
     for kw in AL_KEYWORDS {
         items.push(CompletionItem {
@@ -327,8 +239,8 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, items: &mut
         });
     }
 
-    // Extract procedures from the current file
-    if let Some((_, tree)) = parsing::get_or_parse(server, uri) {
+    // Extract procedures from the current file + add visible variables via TypeResolver
+    if let Some((file_text, tree)) = parsing::get_or_parse(server, uri) {
         let doc_symbols = al_syntax::extract_document_symbols(&tree, text);
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
@@ -343,6 +255,29 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, items: &mut
                     }
                 }
             }
+        }
+
+        // Add local/global variables visible at the cursor position via TypeResolver
+        let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &file_text);
+        let vars = resolver.variables_at(position);
+        for var in &vars {
+            let subtype = var.type_subtype.as_ref()
+                .map(|s| format!(" \"{}\"", s))
+                .unwrap_or_default();
+            let scope_label = match var.scope {
+                al_syntax::type_resolver::VariableScope::Local => "local",
+                al_syntax::type_resolver::VariableScope::Parameter => "parameter",
+                al_syntax::type_resolver::VariableScope::Global => "global",
+                al_syntax::type_resolver::VariableScope::SelfImplicit => "self",
+                al_syntax::type_resolver::VariableScope::TriggerImplicit => "trigger",
+            };
+            items.push(CompletionItem {
+                label: var.name.clone(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(format!("{}{} ({})", var.type_name, subtype, scope_label)),
+                sort_text: Some(format!("0_{}", var.name)), // Sort variables first
+                ..Default::default()
+            });
         }
     }
 
@@ -381,151 +316,149 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, items: &mut
     }
 }
 
-/// Extract the last identifier from a string (e.g., "Rec" from "Rec").
-pub(crate) fn extract_last_identifier(s: &str) -> &str {
-    let s = s.trim();
-    // Handle quoted identifiers
-    if s.ends_with('"') {
-        if let Some(start) = s[..s.len() - 1].rfind('"') {
-            return &s[start + 1..s.len() - 1];
+fn finalize_completion_items(items: &mut Vec<CompletionItem>) {
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|item| seen.insert(item.label.to_lowercase()));
+    for item in items.iter_mut() {
+        if item.sort_text.is_none() {
+            item.sort_text = Some(format!("1_{}", item.label.to_lowercase()));
         }
     }
-    // Find last word boundary
-    let bytes = s.as_bytes();
-    let end = bytes.len();
-    // Walk backwards to find identifier start
-    for i in (0..bytes.len()).rev() {
-        let ch = bytes[i] as char;
-        if ch.is_alphanumeric() || ch == '_' {
-            continue;
-        }
-        return &s[i + 1..end];
-    }
-    &s[..end]
+    items.sort_by(|a, b| {
+        a.sort_text
+            .as_deref()
+            .unwrap_or(a.label.as_str())
+            .cmp(b.sort_text.as_deref().unwrap_or(b.label.as_str()))
+            .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
+    });
 }
 
-/// Convert a MethodSymbol from the index to a CompletionItem.
-fn method_to_completion_item(method: &al_symbols::MethodSymbol) -> CompletionItem {
-    let params: Vec<String> = method
-        .parameters
-        .iter()
-        .map(|p| {
-            let var_prefix = if p.is_var { "var " } else { "" };
-            format!("{}{}: {}", var_prefix, p.name, p.type_name)
-        })
-        .collect();
-    let detail = format!("({})", params.join("; "));
-
-    CompletionItem {
-        label: method.name.clone(),
-        kind: Some(CompletionItemKind::METHOD),
-        detail: Some(detail),
-        ..Default::default()
-    }
-}
-
-/// Convert a FieldSymbol from the index to a CompletionItem.
-fn field_to_completion_item(field: &al_symbols::FieldSymbol) -> CompletionItem {
-    CompletionItem {
-        label: field.name.clone(),
-        kind: Some(CompletionItemKind::FIELD),
-        detail: Some(format!("{}: {}", field.id, field.type_name)),
-        ..Default::default()
-    }
-}
-
-/// Convert a BuiltinMethod to a CompletionItem.
-fn builtin_method_to_completion_item(method: &al_semantic::BuiltinMethod) -> CompletionItem {
-    let params: Vec<String> = method
-        .parameters
-        .iter()
-        .map(|p| {
-            let var_prefix = if p.is_var { "var " } else { "" };
-            format!("{}{}: {}", var_prefix, p.name, p.type_name)
-        })
-        .collect();
-    let detail = format!("({})", params.join("; "));
-
-    CompletionItem {
-        label: method.name.clone(),
-        kind: Some(CompletionItemKind::METHOD),
-        detail: Some(detail),
-        documentation: if method.documentation.is_empty() {
-            None
-        } else {
-            Some(Documentation::String(method.documentation.clone()))
-        },
-        ..Default::default()
-    }
-}
+// Tests for detect_context, extract_last_identifier moved to al_syntax::context
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::test_server;
+    use std::path::PathBuf;
 
     #[test]
-    fn test_detect_context_member_access() {
-        let text = "Rec.\n";
-        let pos = Position {
-            line: 0,
-            character: 4,
+    fn member_completion_uses_receiver_chain_before_cursor() {
+        let server = test_server();
+        let path = PathBuf::from("/tmp/item-journal-api.page.al");
+        let uri = Url::from_file_path(&path).expect("file uri");
+        let source = r#"page 50201 "Item Journal API"
+{
+    layout
+    {
+        area(Content)
+        {
+            repeater(Records)
+            {
+                field(status; this.StatusText)
+                {
+                }
+            }
+        }
+    }
+
+    var
+        StatusText: Text;
+
+    trigger OnAfterGetRecord()
+    begin
+    end;
+}"#;
+
+        server.documents.open(uri.clone(), source.to_string());
+        server.workspace_files.insert(path.clone(), source.to_string());
+        server
+            .workspace_objects
+            .insert("item journal api".to_string(), path);
+
+        let response = handle_completion(
+            &server,
+            &uri,
+            Position {
+                line: 8,
+                character: 35,
+            },
+        )
+        .expect("completion response");
+
+        let items = match response {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
         };
-        assert_eq!(detect_context(text, pos), CompletionContext::MemberAccess);
+        let labels = items.into_iter().map(|item| item.label).collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == "StatusText"));
+        assert!(labels.iter().any(|label| label == "OnAfterGetRecord"));
+        assert!(!labels.iter().any(|label| label == "begin"));
     }
 
     #[test]
-    fn test_detect_context_enum_access() {
-        let text = "MyEnum::\n";
-        let pos = Position {
-            line: 0,
-            character: 8,
+    fn enum_completion_includes_workspace_enum_values() {
+        let server = test_server();
+        let page_path = PathBuf::from("/tmp/report.al");
+        let enum_path = PathBuf::from("/tmp/status.enum.al");
+        let uri = Url::from_file_path(&page_path).expect("file uri");
+        let source = r#"report 1 Test
+{
+    trigger OnPreReport()
+    begin
+        if Staging.Status:: then;
+    end;
+
+    var
+        Staging: Record "Item Journal Staging";
+}"#;
+        let table_source = r#"table 1 "Item Journal Staging"
+{
+    fields
+    {
+        field(1; Status; Enum "IJL Status")
+        {
+        }
+    }
+}"#;
+        let table_path = PathBuf::from("/tmp/staging.table.al");
+        let enum_source = r#"enum 1 "IJL Status"
+{
+    value(0; Pending) { }
+    value(1; Posting) { }
+}"#;
+
+        server.documents.open(uri.clone(), source.to_string());
+        server.workspace_files.insert(page_path.clone(), source.to_string());
+        server.workspace_objects.insert("test".to_string(), page_path);
+        server
+            .workspace_files
+            .insert(table_path.clone(), table_source.to_string());
+        server
+            .workspace_objects
+            .insert("item journal staging".to_string(), table_path);
+        server
+            .workspace_files
+            .insert(enum_path.clone(), enum_source.to_string());
+        server
+            .workspace_objects
+            .insert("ijl status".to_string(), enum_path);
+
+        let response = handle_completion(
+            &server,
+            &uri,
+            Position {
+                line: 4,
+                character: 28,
+            },
+        )
+        .expect("enum completion response");
+
+        let items = match response {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
         };
-        assert_eq!(detect_context(text, pos), CompletionContext::EnumAccess);
-    }
-
-    #[test]
-    fn test_detect_context_type_position() {
-        let text = "x:\n";
-        let pos = Position {
-            line: 0,
-            character: 2,
-        };
-        assert_eq!(detect_context(text, pos), CompletionContext::TypePosition);
-    }
-
-    #[test]
-    fn test_detect_context_not_type_after_assign() {
-        let text = "x:=\n";
-        let pos = Position {
-            line: 0,
-            character: 3,
-        };
-        // := is assignment, not type position
-        assert_eq!(detect_context(text, pos), CompletionContext::Default);
-    }
-
-    #[test]
-    fn test_detect_context_default() {
-        let text = "Message\n";
-        let pos = Position {
-            line: 0,
-            character: 7,
-        };
-        assert_eq!(detect_context(text, pos), CompletionContext::Default);
-    }
-
-    #[test]
-    fn test_extract_last_identifier() {
-        assert_eq!(extract_last_identifier("Rec"), "Rec");
-        assert_eq!(extract_last_identifier("x.Rec"), "Rec");
-        assert_eq!(extract_last_identifier("  MyVar  "), "MyVar");
-    }
-
-    #[test]
-    fn test_extract_last_identifier_quoted() {
-        assert_eq!(
-            extract_last_identifier("\"Customer Ledger Entry\""),
-            "Customer Ledger Entry"
-        );
+        let labels = items.into_iter().map(|item| item.label).collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == "Pending"));
+        assert!(labels.iter().any(|label| label == "Posting"));
     }
 }

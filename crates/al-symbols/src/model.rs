@@ -228,6 +228,9 @@ pub struct ComposedObject {
 
 /// Raw shape of SymbolReference.json from Microsoft .app files.
 /// Field names match the JSON exactly (PascalCase).
+///
+/// BC packages since v20+ use nested `Namespaces` to organize symbols.
+/// All object types can appear at any level; we flatten recursively.
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub(crate) struct SymbolReferenceJson {
@@ -249,9 +252,10 @@ pub(crate) struct SymbolReferenceJson {
     pub xml_ports: Vec<ObjectJson>,
     #[serde(alias = "Queries")]
     pub queries: Vec<ObjectJson>,
-    #[serde(alias = "Enums")]
+    // BC uses "EnumTypes" in JSON, older packages may use "Enums"
+    #[serde(alias = "EnumTypes", alias = "Enums")]
     pub enums: Vec<ObjectJson>,
-    #[serde(alias = "EnumExtensions")]
+    #[serde(alias = "EnumExtensionTypes", alias = "EnumExtensions")]
     pub enum_extensions: Vec<ObjectJson>,
     #[serde(alias = "Interfaces")]
     pub interfaces: Vec<ObjectJson>,
@@ -267,6 +271,9 @@ pub(crate) struct SymbolReferenceJson {
     pub control_add_ins: Vec<ObjectJson>,
     #[serde(alias = "Entitlements")]
     pub entitlements: Vec<ObjectJson>,
+    /// Nested namespace containers — objects within are flattened during conversion.
+    #[serde(alias = "Namespaces")]
+    pub namespaces: Vec<SymbolReferenceJson>,
 }
 
 impl Default for SymbolReferenceJson {
@@ -290,6 +297,7 @@ impl Default for SymbolReferenceJson {
             page_customizations: Vec::new(),
             control_add_ins: Vec::new(),
             entitlements: Vec::new(),
+            namespaces: Vec::new(),
         }
     }
 }
@@ -377,10 +385,45 @@ pub(crate) struct FieldJson {
 pub(crate) struct ControlJson {
     #[serde(alias = "Name", default)]
     pub name: String,
-    #[serde(alias = "Kind", alias = "ControlKind", default)]
+    #[serde(alias = "Kind", alias = "ControlKind", default, deserialize_with = "deserialize_string_or_int")]
     pub kind: String,
     #[serde(alias = "Controls", alias = "Children", default)]
     pub children: Vec<ControlJson>,
+}
+
+/// Deserialize a field that can be either a string or an integer.
+/// BC SymbolReference.json uses integers for control kinds in newer versions.
+fn deserialize_string_or_int<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct StringOrInt;
+
+    impl<'de> serde::de::Visitor<'de> for StringOrInt {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a string or integer")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<String, E> {
+            Ok(v)
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<String, E> {
+            Ok(v.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(StringOrInt)
 }
 
 #[derive(Debug, Deserialize)]
@@ -399,6 +442,12 @@ impl SymbolReferenceJson {
     /// Convert to a flat list of `SymbolEntry` values.
     pub fn into_entries(self, package_name: &str) -> Vec<SymbolEntry> {
         let mut entries = Vec::new();
+        self.collect_entries_recursive(package_name, &mut entries);
+        entries
+    }
+
+    /// Recursively collect entries from this level and all nested namespaces.
+    fn collect_entries_recursive(self, package_name: &str, entries: &mut Vec<SymbolEntry>) {
         let pkg = package_name.to_string();
 
         let collections: Vec<(ObjectKind, Vec<ObjectJson>)> = vec![
@@ -428,7 +477,10 @@ impl SymbolReferenceJson {
             }
         }
 
-        entries
+        // Recursively flatten nested namespaces
+        for ns in self.namespaces {
+            ns.collect_entries_recursive(package_name, entries);
+        }
     }
 }
 
@@ -634,5 +686,168 @@ mod tests {
         assert!(ObjectKind::Codeunit.extension_kind().is_none());
         assert!(ObjectKind::TableExtension.is_extension());
         assert!(!ObjectKind::Table.is_extension());
+    }
+
+    #[test]
+    fn test_object_kind_display() {
+        assert_eq!(ObjectKind::Table.to_string(), "Table");
+        assert_eq!(ObjectKind::Codeunit.to_string(), "Codeunit");
+        assert_eq!(ObjectKind::PageExtension.to_string(), "PageExtension");
+        assert_eq!(ObjectKind::XmlPort.to_string(), "XmlPort");
+        assert_eq!(ObjectKind::PermissionSetExtension.to_string(), "PermissionSetExtension");
+        assert_eq!(ObjectKind::Entitlement.to_string(), "Entitlement");
+    }
+
+    #[test]
+    fn test_symbol_entry_default_fields() {
+        let entry = SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 1,
+            name: "Test".to_string(),
+            extends: None,
+            package: "pkg".to_string(),
+            methods: vec![],
+            fields: vec![],
+            controls: vec![],
+            enum_values: vec![],
+        };
+        assert!(entry.extends.is_none());
+        assert!(entry.methods.is_empty());
+        assert!(entry.fields.is_empty());
+        assert!(entry.controls.is_empty());
+        assert!(entry.enum_values.is_empty());
+    }
+
+    #[test]
+    fn test_method_symbol_display() {
+        let method = MethodSymbol {
+            name: "DoSomething".to_string(),
+            parameters: vec![
+                ParameterSymbol { name: "Input".to_string(), type_name: "Text".to_string(), is_var: false },
+                ParameterSymbol { name: "Output".to_string(), type_name: "Integer".to_string(), is_var: true },
+            ],
+            return_type: Some("Boolean".to_string()),
+            attributes: vec![],
+            is_local: false,
+        };
+        assert_eq!(format!("{}", method), "DoSomething(Input: Text; var Output: Integer): Boolean");
+    }
+
+    #[test]
+    fn test_method_symbol_display_no_return() {
+        let method = MethodSymbol {
+            name: "NoReturn".to_string(),
+            parameters: vec![],
+            return_type: None,
+            attributes: vec![],
+            is_local: false,
+        };
+        assert_eq!(format!("{}", method), "NoReturn()");
+    }
+
+    #[test]
+    fn test_parameter_symbol_display() {
+        let param = ParameterSymbol { name: "X".to_string(), type_name: "Decimal".to_string(), is_var: false };
+        assert_eq!(format!("{}", param), "X: Decimal");
+
+        let var_param = ParameterSymbol { name: "Y".to_string(), type_name: "Record".to_string(), is_var: true };
+        assert_eq!(format!("{}", var_param), "var Y: Record");
+    }
+
+    #[test]
+    fn test_all_extension_kinds_roundtrip() {
+        // Every extension kind should map back to its base
+        let ext_pairs = [
+            (ObjectKind::Table, ObjectKind::TableExtension),
+            (ObjectKind::Page, ObjectKind::PageExtension),
+            (ObjectKind::Report, ObjectKind::ReportExtension),
+            (ObjectKind::Enum, ObjectKind::EnumExtension),
+            (ObjectKind::PermissionSet, ObjectKind::PermissionSetExtension),
+        ];
+        for (base, ext) in &ext_pairs {
+            assert_eq!(base.extension_kind(), Some(*ext));
+            assert_eq!(ext.base_kind(), Some(*base));
+            assert!(!base.is_extension());
+            assert!(ext.is_extension());
+        }
+    }
+
+    #[test]
+    fn test_kinds_without_extensions() {
+        let no_ext = [
+            ObjectKind::Codeunit,
+            ObjectKind::XmlPort,
+            ObjectKind::Query,
+            ObjectKind::Interface,
+            ObjectKind::Profile,
+            ObjectKind::PageCustomization,
+            ObjectKind::ControlAddIn,
+            ObjectKind::Entitlement,
+        ];
+        for kind in &no_ext {
+            assert!(kind.extension_kind().is_none(), "{} should have no extension kind", kind);
+            assert!(!kind.is_extension());
+        }
+    }
+
+    #[test]
+    fn test_nested_namespaces_deserialization() {
+        let json = r#"{
+            "Namespaces": [
+                {
+                    "Tables": [
+                        { "Id": 1, "Name": "NestedTable" }
+                    ],
+                    "Namespaces": [
+                        {
+                            "Codeunits": [
+                                { "Id": 2, "Name": "DeeplyNested" }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        let sr: SymbolReferenceJson = serde_json::from_str(json).unwrap();
+        let entries = sr.into_entries("Nested");
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|e| e.name == "NestedTable" && e.kind == ObjectKind::Table));
+        assert!(entries.iter().any(|e| e.name == "DeeplyNested" && e.kind == ObjectKind::Codeunit));
+    }
+
+    #[test]
+    fn test_deserialize_string_or_int_kind() {
+        // Control kind as integer (newer BC versions)
+        let json = r#"{ "Name": "ContentArea", "Kind": 0, "Controls": [] }"#;
+        let control: ControlJson = serde_json::from_str(json).unwrap();
+        assert_eq!(control.kind, "0");
+
+        // Control kind as string (older BC versions)
+        let json2 = r#"{ "Name": "ContentArea", "Kind": "Area", "Controls": [] }"#;
+        let control2: ControlJson = serde_json::from_str(json2).unwrap();
+        assert_eq!(control2.kind, "Area");
+    }
+
+    #[test]
+    fn test_symbol_entry_serialization_roundtrip() {
+        let entry = SymbolEntry {
+            kind: ObjectKind::Enum,
+            id: 50100,
+            name: "MyEnum".to_string(),
+            extends: None,
+            package: "test".to_string(),
+            methods: vec![],
+            fields: vec![],
+            controls: vec![],
+            enum_values: vec![
+                EnumValueSymbol { ordinal: 0, name: "None".to_string() },
+                EnumValueSymbol { ordinal: 1, name: "Active".to_string() },
+            ],
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: SymbolEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.kind, ObjectKind::Enum);
+        assert_eq!(deserialized.name, "MyEnum");
+        assert_eq!(deserialized.enum_values.len(), 2);
     }
 }

@@ -64,19 +64,22 @@ pub struct AppDependency {
     pub version: String,
 }
 
+/// Well-known BC core package GUIDs that use special naming on the MSSymbols feed.
+const APPLICATION_APP_ID: &str = "c1335042-3002-4257-bf8a-75c898ccb1b8";
+const BASE_APPLICATION_APP_ID: &str = "437dbf0e-84ff-417a-965d-ed2bb9650972";
+const BUSINESS_FOUNDATION_APP_ID: &str = "f3552374-a1f2-4356-848e-196002525837";
+const SYSTEM_APPLICATION_APP_ID: &str = "63ca2fa4-4f03-4f2b-a480-172fef340d3f";
+const SYSTEM_APP_ID: &str = "8874ed3a-0643-4247-9ced-7a7002f7135d";
+
 /// Resolve app.json dependencies into NuGet PackageRefs.
 ///
 /// BC NuGet package IDs follow the pattern:
-/// `{publisher}.{name}.symbols.{id}` (all lowercase, spaces→dots)
+/// - Core Microsoft packages have fixed names (no GUID or special casing)
+/// - Other packages: `{Publisher}.{AppName}.symbols.{AppId}` (spaces removed, lowercase)
 pub fn resolve_dependencies(deps: &[AppDependency]) -> Vec<PackageRef> {
     deps.iter()
         .map(|dep| {
-            let id = format!(
-                "{}.{}.symbols.{}",
-                dep.publisher.to_lowercase().replace(' ', "."),
-                dep.name.to_lowercase().replace(' ', "."),
-                dep.id.to_lowercase()
-            );
+            let id = resolve_package_id(dep);
             PackageRef {
                 id,
                 version: Some(dep.version.clone()),
@@ -84,6 +87,53 @@ pub fn resolve_dependencies(deps: &[AppDependency]) -> Vec<PackageRef> {
             }
         })
         .collect()
+}
+
+/// Resolve a single dependency to its NuGet package ID.
+///
+/// The core BC packages have hardcoded names because Microsoft's MSSymbols feed
+/// uses inconsistent naming:
+/// - Application (Base App): `Microsoft.Application.symbols` (no GUID)
+/// - System Application: `Microsoft.SystemApplication.symbols.{guid}` (no space, with GUID)
+/// - System (Platform): `Microsoft.Platform.symbols` (no GUID, different name)
+fn resolve_package_id(dep: &AppDependency) -> String {
+    let id_lower = dep.id.to_lowercase();
+
+    // Core Microsoft packages have special naming on the MSSymbols feed.
+    // These were found empirically — Microsoft is inconsistent about GUID inclusion.
+    if id_lower == APPLICATION_APP_ID {
+        return "Microsoft.Application.symbols".to_string();
+    }
+    if id_lower == BASE_APPLICATION_APP_ID {
+        return format!(
+            "Microsoft.BaseApplication.symbols.{}",
+            BASE_APPLICATION_APP_ID
+        );
+    }
+    if id_lower == BUSINESS_FOUNDATION_APP_ID {
+        return format!(
+            "Microsoft.BusinessFoundation.symbols.{}",
+            BUSINESS_FOUNDATION_APP_ID
+        );
+    }
+    if id_lower == SYSTEM_APPLICATION_APP_ID {
+        return format!(
+            "Microsoft.SystemApplication.symbols.{}",
+            SYSTEM_APPLICATION_APP_ID
+        );
+    }
+    if id_lower == SYSTEM_APP_ID {
+        return "Microsoft.Platform.symbols".to_string();
+    }
+
+    // General pattern: {Publisher}.{AppName}.symbols.{AppId}
+    // Spaces are removed (not replaced with dots) to match ADO feed convention
+    format!(
+        "{}.{}.symbols.{}",
+        dep.publisher.replace(' ', ""),
+        dep.name.replace(' ', ""),
+        id_lower
+    )
 }
 
 // -- NuGet v3 service index types --
@@ -180,17 +230,35 @@ async fn download(
 
     // 3. Determine version to download
     let version = if let Some(ref requested) = pkg.version {
-        // Find exact or best match
-        version_index
-            .versions
-            .iter()
-            .find(|v| v == &requested)
-            .or_else(|| version_index.versions.last())
-            .ok_or_else(|| NuGetError::VersionNotFound {
-                id: pkg.id.clone(),
-                version: requested.clone(),
-            })?
-            .clone()
+        // Try exact match first
+        if let Some(v) = version_index.versions.iter().find(|v| *v == requested) {
+            v.clone()
+        } else {
+            // Find best prefix match: e.g. "26.5.0.0" → latest "26.5.*"
+            let prefix = version_prefix(requested);
+            let prefix_matches: Vec<&String> = version_index
+                .versions
+                .iter()
+                .filter(|v| v.starts_with(&prefix))
+                .collect();
+            if let Some(v) = prefix_matches.last() {
+                info!(
+                    requested = %requested,
+                    resolved = %v,
+                    "Resolved version via prefix match"
+                );
+                (*v).clone()
+            } else {
+                // Fall back to latest available
+                let latest = version_index.versions.last().unwrap();
+                info!(
+                    requested = %requested,
+                    resolved = %latest,
+                    "No prefix match, using latest version"
+                );
+                latest.clone()
+            }
+        }
     } else {
         // Use latest
         version_index.versions.last().unwrap().clone()
@@ -219,24 +287,17 @@ async fn download(
     Ok(app_path)
 }
 
-/// Download all dependencies from a NuGet feed.
+/// Extract the major.minor prefix from a version string.
 ///
-/// Returns paths to all extracted .app files.
-async fn download_all(
-    client: &reqwest::Client,
-    feed: &NuGetFeed,
-    deps: &[AppDependency],
-    dest: &Path,
-) -> Vec<Result<PathBuf, NuGetError>> {
-    let refs = resolve_dependencies(deps);
-    let mut results = Vec::new();
-
-    for pkg_ref in &refs {
-        let result = download(client, feed, pkg_ref, dest).await;
-        results.push(result);
+/// "26.5.0.0" → "26.5."
+/// "26.0.40469" → "26.0."
+fn version_prefix(version: &str) -> String {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() >= 2 {
+        format!("{}.", parts[..2].join("."))
+    } else {
+        format!("{}.", version)
     }
-
-    results
 }
 
 /// Get the PackageBaseAddress URL from the NuGet v3 service index.
@@ -303,10 +364,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_single_dependency() {
+    fn resolve_core_system_application() {
+        // System Application uses special naming: with GUID, spaces removed
         let deps = vec![AppDependency {
             id: "63ca2fa4-4f03-4f2b-a480-172fef340d3f".to_string(),
-            name: "Base Application".to_string(),
+            name: "System Application".to_string(),
             publisher: "Microsoft".to_string(),
             version: "24.0.12345.0".to_string(),
         }];
@@ -315,33 +377,53 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(
             refs[0].id,
-            "microsoft.base.application.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f"
+            "Microsoft.SystemApplication.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f"
         );
         assert_eq!(refs[0].version.as_deref(), Some("24.0.12345.0"));
-        assert_eq!(refs[0].display_name, "Base Application");
     }
 
     #[test]
-    fn resolve_multiple_dependencies() {
-        let deps = vec![
-            AppDependency {
-                id: "id-1".to_string(),
-                name: "System Application".to_string(),
-                publisher: "Microsoft".to_string(),
-                version: "24.0.0.0".to_string(),
-            },
-            AppDependency {
-                id: "id-2".to_string(),
-                name: "My App".to_string(),
-                publisher: "Contoso Ltd".to_string(),
-                version: "1.0.0.0".to_string(),
-            },
-        ];
+    fn resolve_core_application() {
+        // Application (Base App) uses special naming: no GUID
+        let deps = vec![AppDependency {
+            id: "c1335042-3002-4257-bf8a-75c898ccb1b8".to_string(),
+            name: "Application".to_string(),
+            publisher: "Microsoft".to_string(),
+            version: "26.5.0.0".to_string(),
+        }];
 
         let refs = resolve_dependencies(&deps);
-        assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0].id, "microsoft.system.application.symbols.id-1");
-        assert_eq!(refs[1].id, "contoso.ltd.my.app.symbols.id-2");
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].id, "Microsoft.Application.symbols");
+    }
+
+    #[test]
+    fn resolve_core_platform() {
+        // System/Platform uses special naming: no GUID, different name
+        let deps = vec![AppDependency {
+            id: "8874ed3a-0643-4247-9ced-7a7002f7135d".to_string(),
+            name: "System".to_string(),
+            publisher: "Microsoft".to_string(),
+            version: "1.0.0.0".to_string(),
+        }];
+
+        let refs = resolve_dependencies(&deps);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].id, "Microsoft.Platform.symbols");
+    }
+
+    #[test]
+    fn resolve_third_party_dependency() {
+        let deps = vec![AppDependency {
+            id: "id-2".to_string(),
+            name: "My App".to_string(),
+            publisher: "Contoso Ltd".to_string(),
+            version: "1.0.0.0".to_string(),
+        }];
+
+        let refs = resolve_dependencies(&deps);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].id, "ContosoLtd.MyApp.symbols.id-2");
     }
 
     #[test]

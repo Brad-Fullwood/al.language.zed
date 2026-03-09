@@ -10,7 +10,6 @@
 
 use tower_lsp::lsp_types::*;
 
-use crate::completions::extract_last_identifier;
 use crate::parsing;
 use crate::server::AlServer;
 
@@ -245,42 +244,8 @@ pub(crate) fn handle_signature_help(
     None
 }
 
-/// Find the function name and active parameter index from text before cursor.
-/// Returns (function_name, active_parameter_index).
-fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
-    let bytes = prefix.as_bytes();
-    let mut paren_depth = 0i32;
-    let mut comma_count = 0u32;
-
-    // Walk backwards from end
-    for i in (0..bytes.len()).rev() {
-        match bytes[i] {
-            b')' => paren_depth += 1,
-            b'(' => {
-                if paren_depth > 0 {
-                    paren_depth -= 1;
-                } else {
-                    // Found the matching open paren
-                    let before_paren = prefix[..i].trim_end();
-                    let func_name = extract_trailing_identifier(before_paren)?;
-                    return Some((func_name, comma_count));
-                }
-            }
-            b',' if paren_depth == 0 => {
-                comma_count += 1;
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-/// Extract the trailing identifier from a string.
-fn extract_trailing_identifier(s: &str) -> Option<&str> {
-    let result = extract_last_identifier(s);
-    if result.is_empty() { None } else { Some(result) }
-}
+// find_call_context and extract_trailing_identifier moved to al_syntax::context
+use al_syntax::find_call_context;
 
 // ---------------------------------------------------------------------------
 // Code actions
@@ -874,7 +839,10 @@ pub(crate) fn handle_inlay_hint(
     let source = text.as_bytes();
     let mut hints = Vec::new();
 
-    collect_inlay_hints(root, source, server, uri, &range, &mut hints);
+    // Extract document symbols once for the whole file (used for local procedure lookups)
+    let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
+
+    collect_inlay_hints(root, source, server, &doc_symbols, &range, &mut hints);
 
     if hints.is_empty() {
         None
@@ -888,7 +856,7 @@ fn collect_inlay_hints(
     node: tree_sitter::Node<'_>,
     source: &[u8],
     server: &AlServer,
-    uri: &Url,
+    doc_symbols: &[DocumentSymbol],
     range: &Range,
     hints: &mut Vec<InlayHint>,
 ) {
@@ -906,7 +874,7 @@ fn collect_inlay_hints(
             let func_name = extract_call_name(parent, source);
             if let Some(name) = func_name {
                 // Look up parameters from local procedures, index, or builtins
-                let param_names = lookup_parameter_names(server, uri, &name);
+                let param_names = lookup_parameter_names(server, doc_symbols, &name);
                 if !param_names.is_empty() {
                     add_parameter_hints(node, source, &param_names, hints);
                 }
@@ -916,7 +884,7 @@ fn collect_inlay_hints(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_inlay_hints(child, source, server, uri, range, hints);
+        collect_inlay_hints(child, source, server, doc_symbols, range, hints);
     }
 }
 
@@ -937,23 +905,18 @@ fn extract_call_name(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<Strin
 
 /// Look up parameter names for a function from local procedures, index, or builtins.
 #[allow(deprecated)]
-fn lookup_parameter_names(server: &AlServer, uri: &Url, func_name: &str) -> Vec<String> {
+fn lookup_parameter_names(server: &AlServer, doc_symbols: &[DocumentSymbol], func_name: &str) -> Vec<String> {
     // Check local procedures in current file FIRST
-    if let Some((text, tree)) = parsing::get_or_parse(server, uri) {
-        let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
-        for sym in &doc_symbols {
-            if let Some(children) = &sym.children {
-                for child in children {
-                    if child.name.eq_ignore_ascii_case(func_name)
-                        && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
-                    {
-                        // Extract parameter names from the detail string
-                        // Detail format: "(param1: Type1; param2: Type2): ReturnType"
-                        if let Some(detail) = &child.detail {
-                            let names = parse_parameter_names_from_detail(detail);
-                            if !names.is_empty() {
-                                return names;
-                            }
+    for sym in doc_symbols {
+        if let Some(children) = &sym.children {
+            for child in children {
+                if child.name.eq_ignore_ascii_case(func_name)
+                    && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
+                {
+                    if let Some(detail) = &child.detail {
+                        let names = parse_parameter_names_from_detail(detail);
+                        if !names.is_empty() {
+                            return names;
                         }
                     }
                 }
@@ -1117,20 +1080,7 @@ mod tests {
         assert_eq!(result, None);
     }
 
-    #[test]
-    fn test_extract_trailing_identifier() {
-        assert_eq!(extract_trailing_identifier("Message"), Some("Message"));
-        assert_eq!(extract_trailing_identifier("x.DoWork"), Some("DoWork"));
-        assert_eq!(extract_trailing_identifier(""), None);
-    }
-
-    #[test]
-    fn test_extract_trailing_identifier_quoted() {
-        assert_eq!(
-            extract_trailing_identifier("\"My Proc\""),
-            Some("My Proc")
-        );
-    }
+    // extract_trailing_identifier tests moved to al_syntax::context
 
     // --- parse_parameter_names_from_detail tests ---
 
@@ -1275,5 +1225,192 @@ mod tests {
         // Removing a TODO comment line should produce an empty replacement
         assert_eq!(edit.new_text, "");
         let _ = (text, uri);
+    }
+
+    // --- compute_extract_to_label tests ---
+
+    #[test]
+    fn test_extract_to_label_simple_string() {
+        let text = "    procedure DoSomething()\n    var\n        x: Integer;\n    begin\n        Message('Hello World');\n    end;";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 4, character: 16 },
+                end: Position { line: 4, character: 29 },
+            },
+            code: Some(NumberOrString::String("AL-L017".to_string())),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let edits = compute_extract_to_label(text, &diag);
+        assert!(edits.is_some(), "Should produce edits for string extraction");
+        let edits = edits.unwrap();
+        assert!(edits.len() >= 2, "Should have at least 2 edits (replace + insert)");
+        // First edit replaces the string with label name
+        assert!(edits[0].new_text.starts_with("Lbl"), "Label should start with Lbl");
+    }
+
+    #[test]
+    fn test_extract_to_label_no_var_section() {
+        let text = "    procedure DoSomething()\n    begin\n        Message('Test string');\n    end;";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 2, character: 16 },
+                end: Position { line: 2, character: 29 },
+            },
+            code: Some(NumberOrString::String("AL-L017".to_string())),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let edits = compute_extract_to_label(text, &diag);
+        assert!(edits.is_some());
+        let edits = edits.unwrap();
+        // Should add a TODO comment since no var section found
+        assert!(edits.len() >= 2);
+    }
+
+    #[test]
+    fn test_generate_label_name_single_word() {
+        assert_eq!(generate_label_name("Hello"), "LblHello");
+    }
+
+    #[test]
+    fn test_generate_label_name_special_chars() {
+        let name = generate_label_name("Hello! World? Test.");
+        assert!(name.starts_with("Lbl"), "Should start with Lbl: {}", name);
+        // Special chars should be filtered out
+        assert!(!name.contains('!'));
+        assert!(!name.contains('?'));
+    }
+
+    #[test]
+    fn test_generate_label_name_max_words() {
+        // Should only take first 3 words
+        let name = generate_label_name("one two three four five");
+        assert_eq!(name, "LblOneTwoThree");
+    }
+
+    // --- compute_remove_begin_end edge cases ---
+
+    #[test]
+    fn test_remove_begin_end_not_begin() {
+        let text = "    if x then\n    notbegin\n        Message('hi');\n    end;";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 1, character: 4 },
+                end: Position { line: 3, character: 8 },
+            },
+            ..Default::default()
+        };
+        let edits = compute_remove_begin_end(text, &diag);
+        assert!(edits.is_none(), "Should not produce edits when line is not 'begin'");
+    }
+
+    #[test]
+    fn test_remove_begin_end_out_of_range() {
+        let text = "begin\nend";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 10, character: 0 },
+                end: Position { line: 20, character: 0 },
+            },
+            ..Default::default()
+        };
+        let edits = compute_remove_begin_end(text, &diag);
+        assert!(edits.is_none(), "Should not produce edits when out of range");
+    }
+
+    // --- compute_pascal_case_fix edge cases ---
+
+    #[test]
+    fn test_pascal_case_already_uppercase() {
+        let text = "    procedure MyProc()\n    begin\n    end;";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 0, character: 14 },
+                end: Position { line: 0, character: 20 },
+            },
+            code: Some(NumberOrString::String("AL-L016".to_string())),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        let edit = compute_pascal_case_fix(text, &diag);
+        // Even if already uppercase, should still produce an edit
+        assert!(edit.is_some());
+    }
+
+    #[test]
+    fn test_pascal_case_out_of_range() {
+        let text = "short";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 0, character: 100 },
+            },
+            ..Default::default()
+        };
+        let edit = compute_pascal_case_fix(text, &diag);
+        assert!(edit.is_none(), "Should return None for out of range");
+    }
+
+    #[test]
+    fn test_pascal_case_empty_name() {
+        let text = "    procedure \"\"()\n    begin\n    end;";
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 0, character: 14 },
+                end: Position { line: 0, character: 16 },
+            },
+            ..Default::default()
+        };
+        let edit = compute_pascal_case_fix(text, &diag);
+        assert!(edit.is_none(), "Should return None for empty name");
+    }
+
+    // --- detect_indent edge cases ---
+
+    #[test]
+    fn test_detect_indent_out_of_range() {
+        let text = "line1\nline2";
+        assert_eq!(detect_indent(text, 999), "    ");
+    }
+
+    #[test]
+    fn test_detect_indent_no_indent() {
+        let text = "no indent here";
+        assert_eq!(detect_indent(text, 0), "");
+    }
+
+    // --- parse_parameter_names_from_detail edge cases ---
+
+    #[test]
+    fn test_parse_params_nested_parens() {
+        let names = parse_parameter_names_from_detail("(Callback: Action(Integer))");
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0], "Callback");
+    }
+
+    #[test]
+    fn test_parse_params_quoted_identifier() {
+        let names = parse_parameter_names_from_detail("(\"My Param\": Integer)");
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[0], "My Param");
+    }
+
+    #[test]
+    fn test_parse_params_multiple_var() {
+        let names = parse_parameter_names_from_detail("(var A: Integer; var B: Text; C: Boolean)");
+        assert_eq!(names, vec!["A", "B", "C"]);
+    }
+
+    // --- diag_code_str with number ---
+
+    #[test]
+    fn test_diag_code_str_number() {
+        let diag = Diagnostic {
+            code: Some(NumberOrString::Number(42)),
+            message: "test".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(diag_code_str(&diag), Some("42".to_string()));
     }
 }

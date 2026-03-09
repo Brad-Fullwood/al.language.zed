@@ -87,3 +87,90 @@ fn collect_errors_recursive(
         cursor.goto_parent();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_empty_string() {
+        let mut parser = AlParser::new();
+        let result = parser.parse("");
+        // Empty source should produce a tree (even if trivial)
+        assert!(result.tree.root_node().child_count() == 0 || result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_just_whitespace() {
+        let mut parser = AlParser::new();
+        let result = parser.parse("   \n\n   ");
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_unicode_content() {
+        let mut parser = AlParser::new();
+        let result = parser.parse("codeunit 50100 \"Ünîcödé Tëst\" { }");
+        // Should parse without panicking
+        assert!(result.tree.root_node().child_count() > 0);
+    }
+
+    #[test]
+    fn test_parse_very_long_line() {
+        let mut parser = AlParser::new();
+        let long_name = "A".repeat(1000);
+        let source = format!("codeunit 50100 \"{}\" {{ }}", long_name);
+        let result = parser.parse(&source);
+        assert!(result.tree.root_node().child_count() > 0);
+    }
+
+    #[test]
+    fn test_parse_deeply_nested() {
+        let mut parser = AlParser::new();
+        let source = r#"codeunit 50100 Test {
+    procedure Deep()
+    begin
+        if true then begin
+            if true then begin
+                if true then begin
+                    if true then begin
+                        if true then begin
+                            Message('deep');
+                        end;
+                    end;
+                end;
+            end;
+        end;
+    end;
+}"#;
+        let result = parser.parse(source);
+        // Should parse without stack overflow
+        assert!(result.tree.root_node().child_count() > 0);
+    }
+
+    #[test]
+    fn test_parse_incremental_after_edit() {
+        let mut parser = AlParser::new();
+        let source1 = "codeunit 50100 Test { }";
+        let result1 = parser.parse(source1);
+        let source2 = "codeunit 50100 Test { procedure A() begin end; }";
+        let result2 = parser.parse_incremental(source2, &result1.tree);
+        assert!(result2.tree.root_node().child_count() > 0);
+    }
+
+    #[test]
+    fn test_parser_default_trait() {
+        let mut parser = AlParser::default();
+        let result = parser.parse("codeunit 50100 Test { }");
+        assert!(result.tree.root_node().child_count() > 0);
+    }
+
+    #[test]
+    fn test_syntax_error_on_invalid_code() {
+        let mut parser = AlParser::new();
+        let result = parser.parse("codeunit 50100 Test { procedure () begin end; }");
+        // Invalid code with missing procedure name may produce errors
+        // At minimum it should not panic
+        let _ = result;
+    }
+}

@@ -4,6 +4,7 @@
 //! and toolchain management for Microsoft Dynamics 365 Business Central
 //! AL projects.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -12,6 +13,8 @@ use serde::Serialize;
 
 use al_discovery::{find_project, find_toolchain, AlProject};
 use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
+use al_syntax::{AlParser, TypeResolver};
+#[cfg(test)]
 use al_syntax::lint::LintSeverity;
 
 // ---------------------------------------------------------------------------
@@ -73,9 +76,16 @@ enum Commands {
     Packages,
     /// Show dependency graph
     Deps,
-    /// Run native lint rules on an AL file
+    /// Run native lint rules on AL file(s)
     Lint {
-        file: String,
+        /// File or directory to lint (default: current dir with --all)
+        file: Option<String>,
+        /// Lint all .al files in the project directory
+        #[arg(long)]
+        all: bool,
+        /// Also run semantic diagnostics via .NET CodeAnalysis (requires ALTool)
+        #[arg(long)]
+        semantic: bool,
     },
     /// Format AL code
     Format {
@@ -87,11 +97,116 @@ enum Commands {
         /// Read from stdin instead of a file
         #[arg(long)]
         stdin: bool,
+        /// Format all .al files in the project directory
+        #[arg(long)]
+        all: bool,
+    },
+    /// Extract document symbols (file outline) from an AL file
+    Symbols {
+        file: String,
+    },
+    /// Show type info at a position (hover equivalent)
+    Hover {
+        file: String,
+        /// Line number (1-based)
+        line: u32,
+        /// Column number (1-based)
+        col: u32,
+    },
+    /// Find definition of symbol at a position
+    Definition {
+        file: String,
+        /// Line number (1-based)
+        line: u32,
+        /// Column number (1-based)
+        col: u32,
+        /// Search workspace files too
+        #[arg(long)]
+        workspace: bool,
+    },
+    /// Find all references to symbol at a position
+    References {
+        file: String,
+        /// Line number (1-based)
+        line: u32,
+        /// Column number (1-based)
+        col: u32,
+        /// Search workspace files too
+        #[arg(long)]
+        workspace: bool,
+    },
+    /// Show signature help for function call at a position
+    Signature {
+        file: String,
+        /// Line number (1-based)
+        line: u32,
+        /// Column number (1-based)
+        col: u32,
+    },
+    /// Get completions at a position
+    Completions {
+        file: String,
+        /// Line number (1-based)
+        line: u32,
+        /// Column number (1-based)
+        col: u32,
+    },
+    /// Rename a symbol across file(s)
+    Rename {
+        file: String,
+        /// Line number (1-based)
+        line: u32,
+        /// Column number (1-based)
+        col: u32,
+        /// New name for the symbol
+        new_name: String,
+        /// Preview changes without applying
+        #[arg(long)]
+        dry_run: bool,
+        /// Search workspace files too
+        #[arg(long)]
+        workspace: bool,
     },
     /// List all lint rules
     Rules,
     /// Show version info
     Version,
+    /// Show folding ranges for an AL file
+    Folding {
+        file: String,
+    },
+    /// Show semantic tokens for an AL file
+    Tokens {
+        file: String,
+    },
+    /// Parse an AL file and show parse info
+    Parse {
+        file: String,
+    },
+    /// Show inlay hints for an AL file
+    Hints {
+        file: String,
+        /// Start line of range (1-based, optional)
+        #[arg(long)]
+        start_line: Option<u32>,
+        /// End line of range (1-based, optional)
+        #[arg(long)]
+        end_line: Option<u32>,
+    },
+    /// Apply code fixes/quickfixes to an AL file
+    Fix {
+        /// File to fix (or directory with --all)
+        file: Option<String>,
+        /// Apply all available fixes
+        #[arg(long)]
+        all: bool,
+        /// Preview changes without applying
+        #[arg(long)]
+        dry_run: bool,
+        /// Only apply fixes for specific rule code
+        #[arg(long)]
+        rule: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -118,11 +233,11 @@ struct LintDiagJson {
 }
 
 #[derive(Serialize)]
-struct LintRuleJson {
-    code: String,
-    name: String,
+struct LintRuleJson<'a> {
+    code: &'a str,
+    name: &'a str,
     severity: String,
-    description: String,
+    description: &'a str,
 }
 
 #[derive(Serialize)]
@@ -152,6 +267,80 @@ struct DepJson {
 }
 
 #[derive(Serialize)]
+struct DocumentSymbolJson {
+    name: String,
+    kind: String,
+    detail: Option<String>,
+    range: RangeJson,
+    children: Option<Vec<DocumentSymbolJson>>,
+}
+
+#[derive(Serialize)]
+struct RangeJson {
+    start_line: u32,
+    start_col: u32,
+    end_line: u32,
+    end_col: u32,
+}
+
+#[derive(Serialize)]
+struct HoverJson {
+    name: String,
+    kind: String,
+    type_name: Option<String>,
+    type_subtype: Option<String>,
+    scope: Option<String>,
+    signature: Option<String>,
+    source_package: Option<String>,
+}
+
+#[derive(Serialize)]
+struct LocationJson {
+    file: String,
+    line: u32,
+    column: u32,
+    end_line: u32,
+    end_column: u32,
+}
+
+#[derive(Serialize)]
+struct SignatureJson {
+    label: String,
+    parameters: Vec<SignatureParamJson>,
+    active_parameter: u32,
+}
+
+#[derive(Serialize)]
+struct SignatureParamJson {
+    name: String,
+    #[serde(rename = "type")]
+    type_name: String,
+}
+
+#[derive(Serialize)]
+struct CompletionItemJson {
+    label: String,
+    kind: String,
+    detail: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RenameEditJson {
+    file: String,
+    line: u32,
+    column: u32,
+    end_line: u32,
+    end_column: u32,
+    new_text: String,
+}
+
+#[derive(Serialize)]
+struct FileLintJson {
+    file: String,
+    diagnostics: Vec<LintDiagJson>,
+}
+
+#[derive(Serialize)]
 struct SetupJson {
     altool_installed: bool,
     altool_version: Option<String>,
@@ -172,6 +361,67 @@ struct DoctorJson {
     package_count: usize,
     symbols_loadable: bool,
     symbol_count: usize,
+}
+
+#[derive(Serialize)]
+struct FoldingRangeJson {
+    start_line: u32,
+    end_line: u32,
+    kind: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SemanticTokenJson {
+    line: u32,
+    character: u32,
+    length: u32,
+    token_type: String,
+    modifiers: u32,
+}
+
+#[derive(Serialize)]
+struct ParseInfoJson {
+    errors: Vec<ParseErrorJson>,
+    node_count: usize,
+    parse_time_ms: f64,
+}
+
+#[derive(Serialize)]
+struct ParseErrorJson {
+    line: usize,
+    column: usize,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct InlayHintJson {
+    line: u32,
+    character: u32,
+    label: String,
+    kind: String,
+}
+
+#[derive(Serialize)]
+struct FixResultJson {
+    file: String,
+    fixes_applied: usize,
+    fixes: Vec<FixActionJson>,
+}
+
+#[derive(Serialize)]
+struct FixActionJson {
+    title: String,
+    rule: String,
+    edits: Vec<FixEditJson>,
+}
+
+#[derive(Serialize)]
+struct FixEditJson {
+    line: u32,
+    character: u32,
+    end_line: u32,
+    end_character: u32,
+    new_text: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +462,113 @@ fn object_kind_from_str(s: &str) -> Result<ObjectKind, String> {
     }
 }
 
+/// Convert user-provided 1-based line/col to 0-based Position.
+fn parse_position(line: u32, col: u32) -> tower_lsp::lsp_types::Position {
+    tower_lsp::lsp_types::Position {
+        line: line.saturating_sub(1),
+        character: col.saturating_sub(1),
+    }
+}
+
+/// Collect all .al files under a directory (non-recursive into .alpackages).
+fn collect_al_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_al_files_recursive(dir, &mut files);
+    files.sort();
+    files
+}
+
+fn collect_al_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            // Skip .alpackages, .git, target, node_modules
+            if name.starts_with('.') || name == "target" || name == "node_modules" {
+                continue;
+            }
+            collect_al_files_recursive(&path, files);
+        } else if path.extension().map_or(false, |e| e.eq_ignore_ascii_case("al")) {
+            files.push(path);
+        }
+    }
+}
+
+/// Convert an LSP DocumentSymbol to our CLI JSON type.
+#[allow(deprecated)]
+fn doc_symbol_to_json(sym: &tower_lsp::lsp_types::DocumentSymbol) -> DocumentSymbolJson {
+    DocumentSymbolJson {
+        name: sym.name.clone(),
+        kind: symbol_kind_str(sym.kind),
+        detail: sym.detail.clone(),
+        range: RangeJson {
+            start_line: sym.range.start.line + 1,
+            start_col: sym.range.start.character + 1,
+            end_line: sym.range.end.line + 1,
+            end_col: sym.range.end.character + 1,
+        },
+        children: sym.children.as_ref().map(|kids| {
+            kids.iter().map(doc_symbol_to_json).collect()
+        }),
+    }
+}
+
+fn symbol_kind_str(kind: tower_lsp::lsp_types::SymbolKind) -> String {
+    use tower_lsp::lsp_types::SymbolKind;
+    match kind {
+        SymbolKind::MODULE => "module".to_string(),
+        SymbolKind::CLASS => "class".to_string(),
+        SymbolKind::STRUCT => "struct".to_string(),
+        SymbolKind::FUNCTION => "function".to_string(),
+        SymbolKind::VARIABLE => "variable".to_string(),
+        SymbolKind::FIELD => "field".to_string(),
+        SymbolKind::ENUM => "enum".to_string(),
+        SymbolKind::ENUM_MEMBER => "enum_member".to_string(),
+        SymbolKind::EVENT => "event".to_string(),
+        SymbolKind::KEY => "key".to_string(),
+        SymbolKind::NAMESPACE => "namespace".to_string(),
+        SymbolKind::INTERFACE => "interface".to_string(),
+        SymbolKind::FILE => "file".to_string(),
+        SymbolKind::OBJECT => "object".to_string(),
+        _ => format!("{:?}", kind),
+    }
+}
+
+/// Workspace helper — loads all .al files and builds an object name index.
+struct CliWorkspace {
+    #[allow(dead_code)]
+    root: PathBuf,
+    files: HashMap<PathBuf, String>,
+    objects: HashMap<String, PathBuf>,
+    parser: AlParser,
+}
+
+impl CliWorkspace {
+    fn load(root: PathBuf) -> Self {
+        let mut ws = Self {
+            root: root.clone(),
+            files: HashMap::new(),
+            objects: HashMap::new(),
+            parser: AlParser::new(),
+        };
+        let al_files = collect_al_files(&root);
+        for path in al_files {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let result = ws.parser.parse(&text);
+                if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &text) {
+                    ws.objects.insert(obj_info.name.to_lowercase(), path.clone());
+                }
+                ws.files.insert(path, text);
+            }
+        }
+        ws
+    }
+}
+
 fn load_project_symbols() -> Result<(AlProject, SymbolIndex, Vec<al_symbols::SymbolPackage>), String> {
     let cwd = std::env::current_dir().map_err(|e| format!("Cannot get current directory: {e}"))?;
     let project = find_project(&cwd).map_err(|e| format!("{e}"))?;
@@ -229,15 +586,6 @@ fn get_dotnet_version() -> Option<String> {
         Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         None
-    }
-}
-
-fn severity_str(s: LintSeverity) -> &'static str {
-    match s {
-        LintSeverity::Error => "error",
-        LintSeverity::Warning => "warning",
-        LintSeverity::Info => "info",
-        LintSeverity::Hint => "hint",
     }
 }
 
@@ -275,38 +623,6 @@ fn print_entry(e: &SymbolEntry) {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Lint rules table
-// ---------------------------------------------------------------------------
-
-struct LintRule {
-    code: &'static str,
-    name: &'static str,
-    severity: &'static str,
-    description: &'static str,
-}
-
-const LINT_RULES: &[LintRule] = &[
-    LintRule { code: "AL-L001", name: "EmptyBeginEnd", severity: "warning", description: "Empty begin..end block" },
-    LintRule { code: "AL-L002", name: "LongProcedure", severity: "warning", description: "Procedure exceeds maximum line count" },
-    LintRule { code: "AL-L003", name: "MissingSemicolon", severity: "error", description: "Missing semicolon (detected via parser errors)" },
-    LintRule { code: "AL-L004", name: "DeepNesting", severity: "warning", description: "Nested if depth exceeds maximum" },
-    LintRule { code: "AL-L005", name: "UnusedVariable", severity: "warning", description: "Variable declared but not used in procedure body" },
-    LintRule { code: "AL-L006", name: "EmptyTrigger", severity: "hint", description: "Trigger has an empty body" },
-    LintRule { code: "AL-L007", name: "TodoComment", severity: "info", description: "TODO/FIXME/HACK comment found" },
-    LintRule { code: "AL-L008", name: "MagicNumber", severity: "info", description: "Magic number — consider using a named constant" },
-    LintRule { code: "AL-L009", name: "ExcessiveParams", severity: "warning", description: "Procedure has too many parameters" },
-    LintRule { code: "AL-L010", name: "MissingCaseElse", severity: "warning", description: "Case statement is missing an else branch" },
-    LintRule { code: "AL-L011", name: "RedundantBeginEnd", severity: "hint", description: "Redundant begin..end around single statement" },
-    LintRule { code: "AL-L012", name: "AssignmentInCondition", severity: "warning", description: "Suspicious assignment in if condition" },
-    LintRule { code: "AL-L013", name: "EmptyRepeat", severity: "warning", description: "Empty repeat..until loop" },
-    LintRule { code: "AL-L014", name: "UnreachableCode", severity: "warning", description: "Unreachable code after exit/error" },
-    LintRule { code: "AL-L015", name: "GlobalVarNaming", severity: "info", description: "Global variable has a non-descriptive name" },
-    LintRule { code: "AL-L016", name: "ProcedureNaming", severity: "warning", description: "Procedure name does not follow PascalCase convention" },
-    LintRule { code: "AL-L017", name: "HardcodedString", severity: "info", description: "Hard-coded text string — consider using a Label variable" },
-    LintRule { code: "AL-L018", name: "RecordVarNaming", severity: "info", description: "Record variable should use a descriptive name matching the table" },
-];
 
 // ---------------------------------------------------------------------------
 // Command implementations
@@ -443,17 +759,19 @@ fn cmd_download_symbols(project_dir: Option<String>, json: bool) -> ExitCode {
         }
     };
 
-    if project.app_json.dependencies.is_empty() {
+    let all_deps = project.all_dependencies();
+
+    if all_deps.is_empty() {
         if json {
             print_json(&serde_json::json!({ "status": "no dependencies", "dependencies": [] }));
         } else {
-            eprintln!("No dependencies listed in app.json.");
+            eprintln!("No dependencies to download.");
         }
         return ExitCode::SUCCESS;
     }
 
     // Convert discovery deps to NuGet deps
-    let nuget_deps: Vec<al_symbols::AppDependency> = project.app_json.dependencies.iter().map(|d| {
+    let nuget_deps: Vec<al_symbols::AppDependency> = all_deps.iter().map(|d| {
         al_symbols::AppDependency {
             id: d.id.clone(),
             name: d.name.clone(),
@@ -938,25 +1256,21 @@ fn cmd_deps(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_lint(file: &str, json: bool) -> ExitCode {
-    let path = Path::new(file);
-    let source = match std::fs::read_to_string(path) {
+fn lint_single_file(file: &str, parser: &mut AlParser) -> (Vec<LintDiagJson>, bool) {
+    let source = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
-            if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
-            } else {
-                eprintln!("Error: Cannot read '{}': {}", file, e);
-            }
-            return ExitCode::FAILURE;
+            return (vec![LintDiagJson {
+                code: "IO".to_string(),
+                message: format!("Cannot read '{}': {}", file, e),
+                severity: "error".to_string(),
+                line: 0, column: 0, end_line: 0, end_column: 0,
+            }], true);
         }
     };
 
-    let mut parser = al_syntax::AlParser::new();
     let result = parser.parse(&source);
     let diagnostics = al_syntax::lint(&result.tree, &source);
-
-    // Also include parser syntax errors
     let mut all_diags: Vec<LintDiagJson> = Vec::new();
 
     for err in &result.errors {
@@ -975,7 +1289,7 @@ fn cmd_lint(file: &str, json: bool) -> ExitCode {
         all_diags.push(LintDiagJson {
             code: d.code.clone(),
             message: d.message.clone(),
-            severity: severity_str(d.severity).to_string(),
+            severity: d.severity.to_string(),
             line: d.range.start_point.row + 1,
             column: d.range.start_point.column + 1,
             end_line: d.range.end_point.row + 1,
@@ -983,118 +1297,1292 @@ fn cmd_lint(file: &str, json: bool) -> ExitCode {
         });
     }
 
-    // Sort by line then column
     all_diags.sort_by(|a, b| a.line.cmp(&b.line).then(a.column.cmp(&b.column)));
-
     let has_errors = all_diags.iter().any(|d| d.severity == "error");
+    (all_diags, has_errors)
+}
 
-    if json {
-        print_json(&all_diags);
-    } else {
-        if all_diags.is_empty() {
-            eprintln!("No issues found in {file}");
-            return ExitCode::SUCCESS;
-        }
-        for d in &all_diags {
-            println!(
-                "{}:{}:{}: {}: {} [{}]",
-                file, d.line, d.column, d.severity, d.message, d.code
-            );
-        }
-        eprintln!("\n{} diagnostic(s)", all_diags.len());
+fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, json: bool) -> ExitCode {
+    let mut parser = AlParser::new();
+
+    // Run semantic diagnostics via .NET bridge if requested
+    if semantic {
+        return cmd_lint_semantic(file, all, json);
     }
 
-    if has_errors {
-        ExitCode::FAILURE
+    if all || file.map_or(false, |f| Path::new(f).is_dir()) {
+        let dir = file.map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let al_files = collect_al_files(&dir);
+
+        if al_files.is_empty() {
+            if json {
+                print_json(&serde_json::json!([]));
+            } else {
+                eprintln!("No .al files found");
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        let mut any_errors = false;
+
+        if json {
+            let mut file_results: Vec<FileLintJson> = Vec::new();
+            for path in &al_files {
+                let file_str = path.display().to_string();
+                let (diags, has_errors) = lint_single_file(&file_str, &mut parser);
+                if has_errors { any_errors = true; }
+                if !diags.is_empty() {
+                    file_results.push(FileLintJson { file: file_str, diagnostics: diags });
+                }
+            }
+            print_json(&file_results);
+        } else {
+            let mut total_diags = 0usize;
+            for path in &al_files {
+                let file_str = path.display().to_string();
+                let (diags, has_errors) = lint_single_file(&file_str, &mut parser);
+                if has_errors { any_errors = true; }
+                total_diags += diags.len();
+                for d in &diags {
+                    println!(
+                        "{}:{}:{}: {}: {} [{}]",
+                        file_str, d.line, d.column, d.severity, d.message, d.code
+                    );
+                }
+            }
+            eprintln!("\n{} file(s) checked, {} diagnostic(s)", al_files.len(), total_diags);
+        }
+
+        if any_errors { ExitCode::FAILURE } else { ExitCode::SUCCESS }
     } else {
-        ExitCode::SUCCESS
+        // Single file mode
+        let file = match file {
+            Some(f) => f,
+            None => {
+                if json {
+                    print_json(&serde_json::json!({ "error": "Provide a file path or use --all" }));
+                } else {
+                    eprintln!("Error: Provide a file path or use --all");
+                }
+                return ExitCode::FAILURE;
+            }
+        };
+
+        let (all_diags, has_errors) = lint_single_file(file, &mut parser);
+
+        if json {
+            print_json(&all_diags);
+        } else {
+            if all_diags.is_empty() {
+                eprintln!("No issues found in {file}");
+                return ExitCode::SUCCESS;
+            }
+            for d in &all_diags {
+                println!(
+                    "{}:{}:{}: {}: {} [{}]",
+                    file, d.line, d.column, d.severity, d.message, d.code
+                );
+            }
+            eprintln!("\n{} diagnostic(s)", all_diags.len());
+        }
+
+        if has_errors { ExitCode::FAILURE } else { ExitCode::SUCCESS }
     }
 }
 
-fn cmd_format(file: Option<&str>, check: bool, from_stdin: bool, _json: bool) -> ExitCode {
-    let (source, file_path) = if from_stdin {
-        let mut buf = String::new();
-        if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf) {
-            eprintln!("Error reading stdin: {e}");
+fn cmd_lint_semantic(file: Option<&str>, _all: bool, json: bool) -> ExitCode {
+    let tc = match al_discovery::find_toolchain() {
+        Ok(tc) => tc,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("ALTool not found: {e}") }));
+            } else {
+                eprintln!("Error: ALTool not found: {e}");
+                eprintln!("Install with: dotnet tool install --global Microsoft.Dynamics.BusinessCentral.Development.Tools");
+            }
             return ExitCode::FAILURE;
-        }
-        (buf, None)
-    } else {
-        match file {
-            Some(f) => {
-                match std::fs::read_to_string(f) {
-                    Ok(s) => (s, Some(f.to_string())),
-                    Err(e) => {
-                        eprintln!("Error: Cannot read '{}': {}", f, e);
-                        return ExitCode::FAILURE;
-                    }
-                }
-            }
-            None => {
-                eprintln!("Error: Provide a file path or use --stdin");
-                return ExitCode::FAILURE;
-            }
         }
     };
 
-    let options = al_syntax::FormatOptions::default();
-    let formatted = al_syntax::format_al(&source, &options);
+    let file_path = match file {
+        Some(f) => PathBuf::from(f),
+        None => {
+            if json {
+                print_json(&serde_json::json!({ "error": "Provide a file path for --semantic" }));
+            } else {
+                eprintln!("Error: Provide a file path for --semantic");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
 
-    if check {
-        if formatted == source {
-            if let Some(ref f) = file_path {
-                eprintln!("{f}: OK");
+    let source = match std::fs::read_to_string(&file_path) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {e}", file_path.display()) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {e}", file_path.display());
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Find project for package cache path
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let packages_dir = match al_discovery::find_project(&cwd) {
+        Ok(p) => p.packages_dir,
+        Err(_) => cwd.join(".alpackages"),
+    };
+
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Failed to create runtime: {e}") }));
+            } else {
+                eprintln!("Error: Failed to create runtime: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let result = rt.block_on(async {
+        let bridge = al_semantic::SemanticBridge::spawn(&tc).await?;
+        let diags = bridge.analyze(al_semantic::AnalyzeRequest {
+            file: file_path.clone(),
+            source,
+            analyzers: vec!["CodeCop".to_string()],
+            package_cache: packages_dir,
+        }).await?;
+        bridge.shutdown().await;
+        Ok::<Vec<al_semantic::DiagnosticEntry>, al_semantic::SemanticError>(diags)
+    });
+
+    match result {
+        Ok(diags) => {
+            if json {
+                let items: Vec<LintDiagJson> = diags.iter().map(|d| {
+                    LintDiagJson {
+                        code: d.code.clone(),
+                        message: d.message.clone(),
+                        severity: d.severity.to_lowercase(),
+                        line: d.line as usize,
+                        column: d.column as usize,
+                        end_line: d.end_line as usize,
+                        end_column: d.end_column as usize,
+                    }
+                }).collect();
+                print_json(&items);
+            } else {
+                if diags.is_empty() {
+                    eprintln!("No semantic issues found");
+                } else {
+                    for d in &diags {
+                        println!("{}:{}:{}: {}: {} [{}]",
+                            file_path.display(), d.line, d.column,
+                            d.severity.to_lowercase(), d.message, d.code);
+                    }
+                    eprintln!("\n{} semantic diagnostic(s)", diags.len());
+                }
             }
             ExitCode::SUCCESS
-        } else {
-            if let Some(ref f) = file_path {
-                eprintln!("{f}: needs formatting");
+        }
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Semantic analysis failed: {e}") }));
             } else {
-                eprintln!("stdin: needs formatting");
+                eprintln!("Error: Semantic analysis failed: {e}");
             }
             ExitCode::FAILURE
         }
-    } else if from_stdin || file_path.is_none() {
-        // Write to stdout
-        print!("{formatted}");
-        ExitCode::SUCCESS
+    }
+}
+
+fn cmd_format(file: Option<&str>, check: bool, from_stdin: bool, all: bool, json: bool) -> ExitCode {
+    let options = al_syntax::FormatOptions::default();
+
+    if all || file.map_or(false, |f| Path::new(f).is_dir()) {
+        let dir = file.map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let al_files = collect_al_files(&dir);
+
+        if al_files.is_empty() {
+            if json {
+                print_json(&serde_json::json!({ "files": 0, "formatted": 0 }));
+            } else {
+                eprintln!("No .al files found");
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        let mut needs_formatting = 0usize;
+        let mut formatted_count = 0usize;
+        let mut error_count = 0usize;
+
+        for path in &al_files {
+            let file_str = path.display().to_string();
+            let source = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error: Cannot read '{}': {}", file_str, e);
+                    error_count += 1;
+                    continue;
+                }
+            };
+
+            let result = al_syntax::format_al(&source, &options);
+
+            if check {
+                if result != source {
+                    needs_formatting += 1;
+                    if !json {
+                        println!("{file_str}: needs formatting");
+                    }
+                }
+            } else if result != source {
+                match std::fs::write(path, &result) {
+                    Ok(()) => {
+                        formatted_count += 1;
+                        if !json {
+                            eprintln!("{file_str}: formatted");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error writing '{}': {}", file_str, e);
+                        error_count += 1;
+                    }
+                }
+            }
+        }
+
+        if json {
+            if check {
+                print_json(&serde_json::json!({
+                    "files": al_files.len(),
+                    "needs_formatting": needs_formatting,
+                }));
+            } else {
+                print_json(&serde_json::json!({
+                    "files": al_files.len(),
+                    "formatted": formatted_count,
+                    "errors": error_count,
+                }));
+            }
+        } else if check {
+            eprintln!("\n{} file(s) checked, {} need formatting", al_files.len(), needs_formatting);
+        } else {
+            eprintln!("\n{} file(s) checked, {} formatted", al_files.len(), formatted_count);
+        }
+
+        if check && needs_formatting > 0 {
+            ExitCode::FAILURE
+        } else if error_count > 0 {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        }
     } else {
-        // Write back to file
-        let f = file_path.unwrap();
-        if formatted == source {
-            eprintln!("{f}: already formatted");
+        // Single file / stdin mode
+        let (source, file_path) = if from_stdin {
+            let mut buf = String::new();
+            if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf) {
+                eprintln!("Error reading stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            (buf, None)
+        } else {
+            match file {
+                Some(f) => {
+                    match std::fs::read_to_string(f) {
+                        Ok(s) => (s, Some(f.to_string())),
+                        Err(e) => {
+                            eprintln!("Error: Cannot read '{}': {}", f, e);
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("Error: Provide a file path, use --stdin, or use --all");
+                    return ExitCode::FAILURE;
+                }
+            }
+        };
+
+        let formatted = al_syntax::format_al(&source, &options);
+
+        if check {
+            if formatted == source {
+                if let Some(ref f) = file_path {
+                    eprintln!("{f}: OK");
+                }
+                ExitCode::SUCCESS
+            } else {
+                if let Some(ref f) = file_path {
+                    eprintln!("{f}: needs formatting");
+                } else {
+                    eprintln!("stdin: needs formatting");
+                }
+                ExitCode::FAILURE
+            }
+        } else if from_stdin || file_path.is_none() {
+            print!("{formatted}");
             ExitCode::SUCCESS
         } else {
-            match std::fs::write(&f, &formatted) {
-                Ok(()) => {
-                    eprintln!("{f}: formatted");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("Error writing '{}': {}", f, e);
-                    ExitCode::FAILURE
+            let f = file_path.unwrap();
+            if formatted == source {
+                eprintln!("{f}: already formatted");
+                ExitCode::SUCCESS
+            } else {
+                match std::fs::write(&f, &formatted) {
+                    Ok(()) => {
+                        eprintln!("{f}: formatted");
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("Error writing '{}': {}", f, e);
+                        ExitCode::FAILURE
+                    }
                 }
             }
         }
     }
 }
 
-fn cmd_rules(json: bool) -> ExitCode {
+// ---------------------------------------------------------------------------
+// New commands: symbols, hover, definition, references, signature,
+//               completions, rename
+// ---------------------------------------------------------------------------
+
+#[allow(deprecated)]
+fn cmd_symbols(file: &str, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+    let symbols = al_syntax::extract_document_symbols(&result.tree, &source);
+
     if json {
-        let items: Vec<LintRuleJson> = LINT_RULES.iter().map(|r| LintRuleJson {
-            code: r.code.to_string(),
-            name: r.name.to_string(),
+        let items: Vec<DocumentSymbolJson> = symbols.iter().map(doc_symbol_to_json).collect();
+        print_json(&items);
+    } else {
+        fn print_symbol(sym: &tower_lsp::lsp_types::DocumentSymbol, depth: usize) {
+            let indent = "  ".repeat(depth);
+            let detail = sym.detail.as_deref().unwrap_or("");
+            let line = sym.range.start.line + 1;
+            println!("{}{}  {}  (line {})", indent, sym.name, detail, line);
+            if let Some(ref children) = sym.children {
+                for child in children {
+                    print_symbol(child, depth + 1);
+                }
+            }
+        }
+        if symbols.is_empty() {
+            eprintln!("No symbols found in {file}");
+        } else {
+            for sym in &symbols {
+                print_symbol(sym, 0);
+            }
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let position = parse_position(line, col);
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+
+    let node = match al_syntax::find_node_at_position(&result.tree, position) {
+        Some(n) => n,
+        None => {
+            if json {
+                print_json(&serde_json::json!(null));
+            } else {
+                eprintln!("No symbol at {}:{}:{}", file, line, col);
+            }
+            return ExitCode::SUCCESS;
+        }
+    };
+
+    let node_text = node.utf8_text(source.as_bytes()).unwrap_or("");
+    let clean_name = node_text.trim_matches('"');
+
+    if clean_name.is_empty() {
+        if json {
+            print_json(&serde_json::json!(null));
+        } else {
+            eprintln!("No symbol at {}:{}:{}", file, line, col);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    // 1. Check procedure at position
+    if let Some(proc_info) = al_syntax::find_procedure_at(&result.tree, &source, position) {
+        if proc_info.name.eq_ignore_ascii_case(clean_name) {
+            let local = if proc_info.is_local { "local " } else { "" };
+            let params: Vec<String> = proc_info.parameters.iter().map(|p| {
+                let var_prefix = if p.is_var { "var " } else { "" };
+                format!("{}{}: {}", var_prefix, p.name, p.type_name)
+            }).collect();
+            let ret = proc_info.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
+            let sig = format!("{}procedure {}({}){}", local, proc_info.name, params.join("; "), ret);
+
+            if json {
+                print_json(&HoverJson {
+                    name: proc_info.name.clone(),
+                    kind: "procedure".to_string(),
+                    type_name: proc_info.return_type.clone(),
+                    type_subtype: None,
+                    scope: None,
+                    signature: Some(sig.clone()),
+                    source_package: None,
+                });
+            } else {
+                println!("{sig}");
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        // Check parameters
+        for param in &proc_info.parameters {
+            if param.name.eq_ignore_ascii_case(clean_name) {
+                let var_prefix = if param.is_var { "var " } else { "" };
+                if json {
+                    print_json(&HoverJson {
+                        name: param.name.clone(),
+                        kind: "parameter".to_string(),
+                        type_name: Some(param.type_name.clone()),
+                        type_subtype: None,
+                        scope: Some("parameter".to_string()),
+                        signature: None,
+                        source_package: None,
+                    });
+                } else {
+                    println!("{}{}: {} (parameter)", var_prefix, param.name, param.type_name);
+                }
+                return ExitCode::SUCCESS;
+            }
+        }
+    }
+
+    // 2. Check variables via TypeResolver
+    let resolver = TypeResolver::new(&result.tree, &source);
+    if let Some(decl) = resolver.resolve_type(clean_name, position) {
+        let scope_label = match decl.scope {
+            al_syntax::VariableScope::Local => "local variable",
+            al_syntax::VariableScope::Parameter => "parameter",
+            al_syntax::VariableScope::Global => "global variable",
+            al_syntax::VariableScope::SelfImplicit => "self",
+            al_syntax::VariableScope::TriggerImplicit => "trigger variable",
+        };
+        let subtype_str = decl.type_subtype.as_ref()
+            .map(|s| format!(" \"{}\"", s))
+            .unwrap_or_default();
+        let var_prefix = if decl.is_var { "var " } else { "" };
+
+        if json {
+            print_json(&HoverJson {
+                name: decl.name.clone(),
+                kind: scope_label.to_string(),
+                type_name: Some(decl.type_name.clone()),
+                type_subtype: decl.type_subtype.clone(),
+                scope: Some(scope_label.to_string()),
+                signature: None,
+                source_package: None,
+            });
+        } else {
+            println!("{}{}: {}{} ({})", var_prefix, decl.name, decl.type_name, subtype_str, scope_label);
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    // 3. Check package symbols
+    let (_project, index, _packages) = match load_project_symbols() {
+        Ok(v) => v,
+        Err(_) => {
+            // No project — just report nothing found
+            if json {
+                print_json(&serde_json::json!(null));
+            } else {
+                eprintln!("No symbol info for '{}' at {}:{}:{}", clean_name, file, line, col);
+            }
+            return ExitCode::SUCCESS;
+        }
+    };
+
+    let symbols = index.get_by_name(clean_name);
+    if !symbols.is_empty() {
+        let entry = &symbols[0];
+        if json {
+            print_json(&HoverJson {
+                name: entry.name.clone(),
+                kind: entry.kind.to_string(),
+                type_name: None,
+                type_subtype: None,
+                scope: None,
+                signature: None,
+                source_package: Some(entry.package.clone()),
+            });
+        } else {
+            println!("{} {} \"{}\" (package: {})", entry.kind, entry.id, entry.name, entry.package);
+            if !entry.fields.is_empty() {
+                println!("  {} field(s)", entry.fields.len());
+            }
+            if !entry.methods.is_empty() {
+                println!("  {} method(s)", entry.methods.len());
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if json {
+        print_json(&serde_json::json!(null));
+    } else {
+        eprintln!("No symbol info for '{}' at {}:{}:{}", clean_name, file, line, col);
+    }
+    ExitCode::SUCCESS
+}
+
+fn cmd_definition(file: &str, line: u32, col: u32, workspace: bool, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let position = parse_position(line, col);
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+
+    let node = match al_syntax::find_node_at_position(&result.tree, position) {
+        Some(n) => n,
+        None => {
+            if json { print_json(&serde_json::json!(null)); }
+            else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+            return ExitCode::SUCCESS;
+        }
+    };
+    let node_text = node.utf8_text(source.as_bytes()).unwrap_or("");
+    let clean_name = node_text.trim_matches('"');
+    if clean_name.is_empty() {
+        if json { print_json(&serde_json::json!(null)); }
+        else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+        return ExitCode::SUCCESS;
+    }
+
+    // 1. In-file: find variable references (first is declaration)
+    let refs = al_syntax::find_variable_references(&result.tree, &source, clean_name);
+    if refs.len() > 1 {
+        let first = &refs[0];
+        let def_line = first.start_point.row as u32 + 1;
+        let def_col = first.start_point.column as u32 + 1;
+        // Skip if the definition IS the cursor position
+        if def_line != line || def_col != col {
+            let file_path = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+            if json {
+                print_json(&LocationJson {
+                    file: file_path.display().to_string(),
+                    line: def_line,
+                    column: def_col,
+                    end_line: first.end_point.row as u32 + 1,
+                    end_column: first.end_point.column as u32 + 1,
+                });
+            } else {
+                println!("{}:{}:{}", file_path.display(), def_line, def_col);
+            }
+            return ExitCode::SUCCESS;
+        }
+    }
+
+    // 2. Workspace search
+    if workspace {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let ws = CliWorkspace::load(cwd);
+        let file_abs = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+
+        // Check object name index
+        if let Some(obj_path) = ws.objects.get(&clean_name.to_lowercase()) {
+            if *obj_path != file_abs {
+                if let Some(file_text) = ws.files.get(obj_path) {
+                    let ws_result = parser.parse(file_text);
+                    if let Some(obj_info) = al_syntax::find_object_declaration(&ws_result.tree, file_text) {
+                        let def_line = obj_info.range.start_point.row as u32 + 1;
+                        let def_col = obj_info.range.start_point.column as u32 + 1;
+                        if json {
+                            print_json(&LocationJson {
+                                file: obj_path.display().to_string(),
+                                line: def_line,
+                                column: def_col,
+                                end_line: obj_info.range.end_point.row as u32 + 1,
+                                end_column: obj_info.range.end_point.column as u32 + 1,
+                            });
+                        } else {
+                            println!("{}:{}:{}", obj_path.display(), def_line, def_col);
+                        }
+                        return ExitCode::SUCCESS;
+                    }
+                }
+            }
+        }
+
+        // Search workspace files for matching procedures
+        for (path, text) in &ws.files {
+            if *path == file_abs { continue; }
+            let ws_result = parser.parse(text);
+            let doc_symbols = al_syntax::extract_document_symbols(&ws_result.tree, text);
+            for sym in &doc_symbols {
+                if let Some(children) = &sym.children {
+                    for child in children {
+                        if child.name.eq_ignore_ascii_case(clean_name) {
+                            let def_line = child.selection_range.start.line + 1;
+                            let def_col = child.selection_range.start.character + 1;
+                            if json {
+                                print_json(&LocationJson {
+                                    file: path.display().to_string(),
+                                    line: def_line,
+                                    column: def_col,
+                                    end_line: child.selection_range.end.line + 1,
+                                    end_column: child.selection_range.end.character + 1,
+                                });
+                            } else {
+                                println!("{}:{}:{}", path.display(), def_line, def_col);
+                            }
+                            return ExitCode::SUCCESS;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if json { print_json(&serde_json::json!(null)); }
+    else { eprintln!("Definition not found for '{}'", clean_name); }
+    ExitCode::SUCCESS
+}
+
+fn cmd_references(file: &str, line: u32, col: u32, workspace: bool, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let position = parse_position(line, col);
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+
+    let node = match al_syntax::find_node_at_position(&result.tree, position) {
+        Some(n) => n,
+        None => {
+            if json { print_json(&serde_json::json!([])); }
+            else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+            return ExitCode::SUCCESS;
+        }
+    };
+    let node_text = node.utf8_text(source.as_bytes()).unwrap_or("");
+    let clean_name = node_text.trim_matches('"');
+    if clean_name.is_empty() {
+        if json { print_json(&serde_json::json!([])); }
+        else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+        return ExitCode::SUCCESS;
+    }
+
+    let file_abs = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+    let mut locations: Vec<LocationJson> = Vec::new();
+
+    // In-file references
+    let refs = al_syntax::find_variable_references(&result.tree, &source, clean_name);
+    for r in &refs {
+        locations.push(LocationJson {
+            file: file_abs.display().to_string(),
+            line: r.start_point.row as u32 + 1,
+            column: r.start_point.column as u32 + 1,
+            end_line: r.end_point.row as u32 + 1,
+            end_column: r.end_point.column as u32 + 1,
+        });
+    }
+
+    // Workspace references
+    if workspace {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let ws = CliWorkspace::load(cwd);
+
+        for (path, text) in &ws.files {
+            if *path == file_abs { continue; }
+            let ws_result = parser.parse(text);
+            let ws_refs = al_syntax::find_variable_references(&ws_result.tree, text, clean_name);
+            for r in &ws_refs {
+                locations.push(LocationJson {
+                    file: path.display().to_string(),
+                    line: r.start_point.row as u32 + 1,
+                    column: r.start_point.column as u32 + 1,
+                    end_line: r.end_point.row as u32 + 1,
+                    end_column: r.end_point.column as u32 + 1,
+                });
+            }
+        }
+    }
+
+    if json {
+        print_json(&locations);
+    } else {
+        if locations.is_empty() {
+            eprintln!("No references found for '{}'", clean_name);
+        } else {
+            for loc in &locations {
+                println!("{}:{}:{}", loc.file, loc.line, loc.column);
+            }
+            eprintln!("\n{} reference(s)", locations.len());
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn cmd_signature(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let position = parse_position(line, col);
+    let line_idx = position.line as usize;
+    let col_idx = position.character as usize;
+
+    let text_line = match source.lines().nth(line_idx) {
+        Some(l) => l,
+        None => {
+            if json { print_json(&serde_json::json!(null)); }
+            else { eprintln!("Line {} out of range", line); }
+            return ExitCode::SUCCESS;
+        }
+    };
+
+    let prefix = if col_idx <= text_line.len() { &text_line[..col_idx] } else { text_line };
+    let (func_name, active_param) = match al_syntax::find_call_context(prefix) {
+        Some(v) => v,
+        None => {
+            if json { print_json(&serde_json::json!(null)); }
+            else { eprintln!("No function call context at {}:{}:{}", file, line, col); }
+            return ExitCode::SUCCESS;
+        }
+    };
+
+    // Search in current file's document symbols
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+    let doc_symbols = al_syntax::extract_document_symbols(&result.tree, &source);
+
+    for sym in &doc_symbols {
+        if let Some(children) = &sym.children {
+            for child in children {
+                if child.name.eq_ignore_ascii_case(func_name) {
+                    if let Some(detail) = &child.detail {
+                        let label = format!("{}{}", child.name, detail);
+                        let param_names = parse_param_names_from_detail(detail);
+                        if json {
+                            print_json(&SignatureJson {
+                                label,
+                                parameters: param_names.iter().map(|(n, t)| SignatureParamJson {
+                                    name: n.clone(), type_name: t.clone(),
+                                }).collect(),
+                                active_parameter: active_param,
+                            });
+                        } else {
+                            println!("{label}");
+                            if !param_names.is_empty() {
+                                println!("  active parameter: {} (index {})",
+                                    param_names.get(active_param as usize).map(|(n, _)| n.as_str()).unwrap_or("?"),
+                                    active_param);
+                            }
+                        }
+                        return ExitCode::SUCCESS;
+                    }
+                }
+            }
+        }
+    }
+
+    // Search package symbols
+    if let Ok((_project, index, _packages)) = load_project_symbols() {
+        let symbols = index.search(func_name, 5);
+        for entry in &symbols {
+            for method in &entry.methods {
+                if method.name.eq_ignore_ascii_case(func_name) {
+                    let params: Vec<String> = method.parameters.iter().map(|p| {
+                        let var_prefix = if p.is_var { "var " } else { "" };
+                        format!("{}{}: {}", var_prefix, p.name, p.type_name)
+                    }).collect();
+                    let ret = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
+                    let label = format!("{}({}){}", method.name, params.join("; "), ret);
+
+                    if json {
+                        print_json(&SignatureJson {
+                            label,
+                            parameters: method.parameters.iter().map(|p| SignatureParamJson {
+                                name: p.name.clone(), type_name: p.type_name.clone(),
+                            }).collect(),
+                            active_parameter: active_param,
+                        });
+                    } else {
+                        println!("{label}");
+                        println!("  active parameter: {} (index {})",
+                            method.parameters.get(active_param as usize).map(|p| p.name.as_str()).unwrap_or("?"),
+                            active_param);
+                    }
+                    return ExitCode::SUCCESS;
+                }
+            }
+        }
+    }
+
+    if json { print_json(&serde_json::json!(null)); }
+    else { eprintln!("No signature found for '{}'", func_name); }
+    ExitCode::SUCCESS
+}
+
+/// Parse parameter names+types from a detail string like "(x: Integer; y: Text): Boolean".
+fn parse_param_names_from_detail(detail: &str) -> Vec<(String, String)> {
+    let trimmed = detail.trim();
+    let start = match trimmed.find('(') {
+        Some(i) => i + 1,
+        None => return Vec::new(),
+    };
+    let mut depth = 1;
+    let mut end = start;
+    for (i, ch) in trimmed[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 { end = start + i; break; }
+            }
+            _ => {}
+        }
+    }
+    let params_str = &trimmed[start..end];
+    if params_str.trim().is_empty() { return Vec::new(); }
+
+    params_str.split(';').filter_map(|param| {
+        let param = param.trim();
+        if param.is_empty() { return None; }
+        let param = param.strip_prefix("var ").unwrap_or(param).trim();
+        if let Some(colon_pos) = param.find(':') {
+            let name = param[..colon_pos].trim().trim_matches('"').to_string();
+            let type_name = param[colon_pos + 1..].trim().to_string();
+            if !name.is_empty() {
+                return Some((name, type_name));
+            }
+        }
+        None
+    }).collect()
+}
+
+fn cmd_completions(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let position = parse_position(line, col);
+    let context = al_syntax::detect_context(&source, position);
+
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+    let mut items: Vec<CompletionItemJson> = Vec::new();
+
+    match context {
+        al_syntax::CompletionContext::MemberAccess => {
+            // Get identifier before the dot
+            let line_idx = position.line as usize;
+            let col_idx = position.character as usize;
+            if let Some(text_line) = source.lines().nth(line_idx) {
+                let prefix = &text_line[..col_idx.min(text_line.len())];
+                if let Some(before_dot) = prefix.trim_end().strip_suffix('.') {
+                    let var_name = al_syntax::extract_last_identifier(before_dot);
+
+                    // Try resolving variable type
+                    let resolver = TypeResolver::new(&result.tree, &source);
+                    let mut resolved_subtype: Option<String> = None;
+                    if let Some(decl) = resolver.resolve_type(var_name, position) {
+                        resolved_subtype = decl.type_subtype.clone();
+                    }
+
+                    // Look up methods/fields from package symbols
+                    if let Ok((_project, index, _packages)) = load_project_symbols() {
+                        // By subtype (e.g., Record "Customer" → lookup Customer)
+                        if let Some(ref subtype) = resolved_subtype {
+                            for entry in index.get_by_name(subtype) {
+                                for method in &entry.methods {
+                                    if method.is_local { continue; }
+                                    items.push(CompletionItemJson {
+                                        label: method.name.clone(),
+                                        kind: "method".to_string(),
+                                        detail: Some(format_method_params(method)),
+                                    });
+                                }
+                                for field in &entry.fields {
+                                    items.push(CompletionItemJson {
+                                        label: field.name.clone(),
+                                        kind: "field".to_string(),
+                                        detail: Some(format!("{}: {}", field.id, field.type_name)),
+                                    });
+                                }
+                            }
+                        }
+                        // By var name directly
+                        for entry in index.get_by_name(var_name) {
+                            for method in &entry.methods {
+                                if method.is_local { continue; }
+                                items.push(CompletionItemJson {
+                                    label: method.name.clone(),
+                                    kind: "method".to_string(),
+                                    detail: Some(format_method_params(method)),
+                                });
+                            }
+                            for field in &entry.fields {
+                                items.push(CompletionItemJson {
+                                    label: field.name.clone(),
+                                    kind: "field".to_string(),
+                                    detail: Some(format!("{}: {}", field.id, field.type_name)),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        al_syntax::CompletionContext::EnumAccess => {
+            let line_idx = position.line as usize;
+            let col_idx = position.character as usize;
+            if let Some(text_line) = source.lines().nth(line_idx) {
+                let prefix = &text_line[..col_idx.min(text_line.len())];
+                if let Some(before_colons) = prefix.trim_end().strip_suffix("::") {
+                    let enum_name = al_syntax::extract_last_identifier(before_colons);
+                    if let Ok((_project, index, _packages)) = load_project_symbols() {
+                        for entry in index.get_by_name(enum_name) {
+                            if matches!(entry.kind, ObjectKind::Enum | ObjectKind::EnumExtension) {
+                                for ev in &entry.enum_values {
+                                    items.push(CompletionItemJson {
+                                        label: ev.name.clone(),
+                                        kind: "enum_member".to_string(),
+                                        detail: Some(format!("value({})", ev.ordinal)),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        al_syntax::CompletionContext::TypePosition => {
+            // Type keywords
+            for kw in &[
+                "Integer", "Decimal", "Text", "Code", "Boolean", "Date", "Time",
+                "DateTime", "Guid", "BigInteger", "Char", "Byte", "Blob", "Option",
+                "Record", "Variant", "List", "Dictionary", "JsonObject", "JsonArray",
+                "HttpClient", "HttpContent", "HttpResponseMessage", "Label",
+                "Enum", "Interface", "Codeunit", "Page", "Report", "Query", "XmlPort",
+            ] {
+                items.push(CompletionItemJson {
+                    label: kw.to_string(),
+                    kind: "keyword".to_string(),
+                    detail: None,
+                });
+            }
+        }
+
+        al_syntax::CompletionContext::Default | al_syntax::CompletionContext::TriggerBody => {
+            // Variables at position
+            let resolver = TypeResolver::new(&result.tree, &source);
+            let vars = resolver.variables_at(position);
+            for var in &vars {
+                let subtype = var.type_subtype.as_ref().map(|s| format!(" \"{}\"", s)).unwrap_or_default();
+                items.push(CompletionItemJson {
+                    label: var.name.clone(),
+                    kind: "variable".to_string(),
+                    detail: Some(format!("{}{}", var.type_name, subtype)),
+                });
+            }
+
+            // Procedures from current file
+            let doc_symbols = al_syntax::extract_document_symbols(&result.tree, &source);
+            for sym in &doc_symbols {
+                if let Some(children) = &sym.children {
+                    for child in children {
+                        if child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
+                            || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT
+                        {
+                            items.push(CompletionItemJson {
+                                label: child.name.clone(),
+                                kind: "function".to_string(),
+                                detail: child.detail.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Keywords
+            for kw in &["begin", "end", "var", "procedure", "trigger", "if", "then",
+                "else", "case", "for", "to", "do", "while", "repeat", "until",
+                "exit", "true", "false", "not", "and", "or"] {
+                items.push(CompletionItemJson {
+                    label: kw.to_string(),
+                    kind: "keyword".to_string(),
+                    detail: None,
+                });
+            }
+        }
+    }
+
+    // Dedup by label
+    items.dedup_by(|a, b| a.label == b.label);
+
+    if json {
+        print_json(&items);
+    } else {
+        if items.is_empty() {
+            eprintln!("No completions at {}:{}:{}", file, line, col);
+        } else {
+            for item in &items {
+                let detail = item.detail.as_deref().unwrap_or("");
+                println!("{:<30} {:<10} {}", item.label, item.kind, detail);
+            }
+            eprintln!("\n{} completion(s)", items.len());
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn format_method_params(method: &al_symbols::MethodSymbol) -> String {
+    let params: Vec<String> = method.parameters.iter().map(|p| {
+        let var_prefix = if p.is_var { "var " } else { "" };
+        format!("{}{}: {}", var_prefix, p.name, p.type_name)
+    }).collect();
+    let ret = method.return_type.as_deref().unwrap_or("void");
+    format!("({}): {}", params.join("; "), ret)
+}
+
+fn cmd_rename(file: &str, line: u32, col: u32, new_name: &str, dry_run: bool, workspace: bool, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let position = parse_position(line, col);
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+
+    let node = match al_syntax::find_node_at_position(&result.tree, position) {
+        Some(n) => n,
+        None => {
+            if json { print_json(&serde_json::json!({ "error": "No symbol at position" })); }
+            else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+            return ExitCode::FAILURE;
+        }
+    };
+    let node_text = node.utf8_text(source.as_bytes()).unwrap_or("");
+    let clean_name = node_text.trim_matches('"');
+    if clean_name.is_empty() {
+        if json { print_json(&serde_json::json!({ "error": "No symbol at position" })); }
+        else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+        return ExitCode::FAILURE;
+    }
+
+    let file_abs = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+    let mut all_edits: Vec<RenameEditJson> = Vec::new();
+
+    // Helper to compute replacement text, preserving quoted identifiers
+    let make_replacement = |original: &str| -> String {
+        if original.starts_with('"') && original.ends_with('"') {
+            format!("\"{}\"", new_name.trim_matches('"'))
+        } else {
+            new_name.to_string()
+        }
+    };
+
+    // Current file references
+    let refs = al_syntax::find_variable_references(&result.tree, &source, clean_name);
+    for r in &refs {
+        let matched_text = &source[r.start_byte..r.end_byte];
+        all_edits.push(RenameEditJson {
+            file: file_abs.display().to_string(),
+            line: r.start_point.row as u32 + 1,
+            column: r.start_point.column as u32 + 1,
+            end_line: r.end_point.row as u32 + 1,
+            end_column: r.end_point.column as u32 + 1,
+            new_text: make_replacement(matched_text),
+        });
+    }
+
+    // Workspace references
+    if workspace {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let ws = CliWorkspace::load(cwd);
+
+        for (path, text) in &ws.files {
+            if *path == file_abs { continue; }
+            let ws_result = parser.parse(text);
+            let ws_refs = al_syntax::find_variable_references(&ws_result.tree, text, clean_name);
+            for r in &ws_refs {
+                let matched_text = &text[r.start_byte..r.end_byte];
+                all_edits.push(RenameEditJson {
+                    file: path.display().to_string(),
+                    line: r.start_point.row as u32 + 1,
+                    column: r.start_point.column as u32 + 1,
+                    end_line: r.end_point.row as u32 + 1,
+                    end_column: r.end_point.column as u32 + 1,
+                    new_text: make_replacement(matched_text),
+                });
+            }
+        }
+    }
+
+    if all_edits.is_empty() {
+        if json { print_json(&serde_json::json!({ "changes": [] })); }
+        else { eprintln!("No references found for '{}'", clean_name); }
+        return ExitCode::SUCCESS;
+    }
+
+    if json {
+        print_json(&serde_json::json!({ "changes": all_edits }));
+    } else if dry_run {
+        println!("Rename '{}' -> '{}' ({} edit(s)):", clean_name, new_name, all_edits.len());
+        for edit in &all_edits {
+            println!("  {}:{}:{} -> {}", edit.file, edit.line, edit.column, edit.new_text);
+        }
+    } else {
+        // Group edits by file and apply in reverse order (to preserve positions)
+        let mut edits_by_file: HashMap<String, Vec<&RenameEditJson>> = HashMap::new();
+        for edit in &all_edits {
+            edits_by_file.entry(edit.file.clone()).or_default().push(edit);
+        }
+
+        for (file_path, mut edits) in edits_by_file {
+            let text = match std::fs::read_to_string(&file_path) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("Error reading '{}': {}", file_path, e);
+                    continue;
+                }
+            };
+
+            // Sort edits in reverse order by position
+            edits.sort_by(|a, b| {
+                b.line.cmp(&a.line).then(b.column.cmp(&a.column))
+            });
+
+            // Apply edits (reverse order keeps earlier positions valid)
+            let mut lines: Vec<String> = text.lines().map(String::from).collect();
+            // Handle trailing newline
+            if text.ends_with('\n') { lines.push(String::new()); }
+
+            for edit in &edits {
+                let start_line = (edit.line - 1) as usize;
+                let start_col = (edit.column - 1) as usize;
+                let end_line = (edit.end_line - 1) as usize;
+                let end_col = (edit.end_column - 1) as usize;
+
+                if start_line == end_line && start_line < lines.len() {
+                    let line = &mut lines[start_line];
+                    if start_col <= line.len() && end_col <= line.len() {
+                        line.replace_range(start_col..end_col, &edit.new_text);
+                    }
+                }
+            }
+
+            let new_text = lines.join("\n");
+            if let Err(e) = std::fs::write(&file_path, &new_text) {
+                eprintln!("Error writing '{}': {}", file_path, e);
+            } else {
+                eprintln!("{}: {} edit(s) applied", file_path, edits.len());
+            }
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn cmd_rules(json: bool) -> ExitCode {
+    let rules = al_syntax::lint_rules();
+
+    if json {
+        let items: Vec<LintRuleJson> = rules.iter().map(|r| LintRuleJson {
+            code: r.code,
+            name: r.name,
             severity: r.severity.to_string(),
-            description: r.description.to_string(),
+            description: r.description,
         }).collect();
         print_json(&items);
     } else {
         println!("{:<10} {:<25} {:<10} {}", "CODE", "NAME", "SEVERITY", "DESCRIPTION");
         println!("{}", "-".repeat(85));
-        for r in LINT_RULES {
+        for r in rules {
             println!("{:<10} {:<25} {:<10} {}", r.code, r.name, r.severity, r.description);
         }
-        eprintln!("\n{} rules", LINT_RULES.len());
+        eprintln!("\n{} rules", rules.len());
     }
 
     ExitCode::SUCCESS
@@ -1110,6 +2598,567 @@ fn cmd_version(json: bool) -> ExitCode {
         println!("al {}", env!("CARGO_PKG_VERSION"));
     }
     ExitCode::SUCCESS
+}
+
+fn cmd_folding(file: &str, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+    let ranges = al_syntax::extract_folding_ranges(&result.tree, &source);
+
+    if json {
+        let items: Vec<FoldingRangeJson> = ranges.iter().map(|r| {
+            FoldingRangeJson {
+                start_line: r.start_line + 1,
+                end_line: r.end_line + 1,
+                kind: r.kind.as_ref().map(|k| match k {
+                    tower_lsp::lsp_types::FoldingRangeKind::Comment => "comment".to_string(),
+                    tower_lsp::lsp_types::FoldingRangeKind::Imports => "imports".to_string(),
+                    tower_lsp::lsp_types::FoldingRangeKind::Region => "region".to_string(),
+                }),
+            }
+        }).collect();
+        print_json(&items);
+    } else {
+        if ranges.is_empty() {
+            eprintln!("No folding ranges in {file}");
+        } else {
+            for r in &ranges {
+                let start = r.start_line + 1;
+                let end = r.end_line + 1;
+                let kind = r.kind.as_ref().map(|k| match k {
+                    tower_lsp::lsp_types::FoldingRangeKind::Comment => "comment",
+                    tower_lsp::lsp_types::FoldingRangeKind::Imports => "imports",
+                    tower_lsp::lsp_types::FoldingRangeKind::Region => "region",
+                }).unwrap_or("region");
+                println!("line {}..{} ({})", start, end, kind);
+            }
+            eprintln!("\n{} folding range(s)", ranges.len());
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn cmd_tokens(file: &str, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+    let tokens = al_syntax::extract_semantic_tokens(&result.tree, &source);
+
+    if json {
+        // Convert delta-encoded tokens to absolute positions
+        let mut abs_line: u32 = 0;
+        let mut abs_char: u32 = 0;
+        let items: Vec<SemanticTokenJson> = tokens.iter().map(|t| {
+            if t.delta_line > 0 {
+                abs_line += t.delta_line;
+                abs_char = t.delta_start;
+            } else {
+                abs_char += t.delta_start;
+            }
+            SemanticTokenJson {
+                line: abs_line + 1,
+                character: abs_char + 1,
+                length: t.length,
+                token_type: token_type_name(t.token_type),
+                modifiers: t.token_modifiers,
+            }
+        }).collect();
+        print_json(&items);
+    } else {
+        // Summarize by type
+        let mut counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for t in &tokens {
+            *counts.entry(t.token_type).or_insert(0) += 1;
+        }
+        let mut sorted: Vec<_> = counts.into_iter().collect();
+        sorted.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+
+        println!("{} tokens:", tokens.len());
+        for (type_id, count) in &sorted {
+            println!("  {} {}", count, token_type_name(*type_id));
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn token_type_name(id: u32) -> String {
+    use al_syntax::tokens::token_types;
+    match id {
+        token_types::KEYWORD => "keyword".to_string(),
+        token_types::TYPE => "type".to_string(),
+        token_types::STRING => "string".to_string(),
+        token_types::NUMBER => "number".to_string(),
+        token_types::COMMENT => "comment".to_string(),
+        token_types::OPERATOR => "operator".to_string(),
+        token_types::PROPERTY => "property".to_string(),
+        token_types::VARIABLE => "variable".to_string(),
+        token_types::FUNCTION => "function".to_string(),
+        token_types::PARAMETER => "parameter".to_string(),
+        token_types::ENUM_MEMBER => "enumMember".to_string(),
+        token_types::NAMESPACE => "namespace".to_string(),
+        _ => format!("unknown({})", id),
+    }
+}
+
+fn cmd_parse(file: &str, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut parser = AlParser::new();
+    let start = std::time::Instant::now();
+    let result = parser.parse(&source);
+    let elapsed = start.elapsed();
+
+    let node_count = count_nodes(result.tree.root_node());
+
+    if json {
+        print_json(&ParseInfoJson {
+            errors: result.errors.iter().map(|e| ParseErrorJson {
+                line: e.range.start_point.row + 1,
+                column: e.range.start_point.column + 1,
+                message: e.message.clone(),
+            }).collect(),
+            node_count,
+            parse_time_ms: elapsed.as_secs_f64() * 1000.0,
+        });
+    } else {
+        println!("Parsed in {:.1}ms, {} nodes, {} error(s)",
+            elapsed.as_secs_f64() * 1000.0,
+            node_count,
+            result.errors.len(),
+        );
+        for err in &result.errors {
+            println!("  {}:{}: {}",
+                err.range.start_point.row + 1,
+                err.range.start_point.column + 1,
+                err.message,
+            );
+        }
+    }
+
+    if result.errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn count_nodes(node: tree_sitter::Node) -> usize {
+    let mut count = 1;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        count += count_nodes(child);
+    }
+    count
+}
+
+// ---------------------------------------------------------------------------
+// Hints command
+// ---------------------------------------------------------------------------
+
+#[allow(deprecated)]
+fn cmd_hints(file: &str, start_line: Option<u32>, end_line: Option<u32>, json: bool) -> ExitCode {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+            } else {
+                eprintln!("Error: Cannot read '{}': {}", file, e);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut parser = AlParser::new();
+    let result = parser.parse(&source);
+    let doc_symbols = al_syntax::extract_document_symbols(&result.tree, &source);
+
+    // Build a map of procedure name -> parameter names from doc symbols
+    let mut proc_params: HashMap<String, Vec<String>> = HashMap::new();
+    for sym in &doc_symbols {
+        if let Some(children) = &sym.children {
+            for child in children {
+                if child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
+                    || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT
+                {
+                    if let Some(detail) = &child.detail {
+                        let names = parse_param_names_from_detail(detail)
+                            .into_iter()
+                            .map(|(name, _)| name)
+                            .collect::<Vec<_>>();
+                        if !names.is_empty() {
+                            proc_params.insert(child.name.to_lowercase(), names);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Range to check (convert 1-based to 0-based)
+    let range_start = start_line.map(|l| l.saturating_sub(1)).unwrap_or(0);
+    let range_end = end_line.map(|l| l.saturating_sub(1)).unwrap_or(u32::MAX);
+
+    let mut hints: Vec<InlayHintJson> = Vec::new();
+    collect_cli_hints(result.tree.root_node(), source.as_bytes(), &proc_params, range_start, range_end, &mut hints);
+
+    if json {
+        print_json(&hints);
+    } else {
+        if hints.is_empty() {
+            eprintln!("No inlay hints in {file}");
+        } else {
+            for h in &hints {
+                println!("{}:{} {}", h.line, h.character, h.label);
+            }
+            eprintln!("\n{} hint(s)", hints.len());
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn collect_cli_hints(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    proc_params: &HashMap<String, Vec<String>>,
+    range_start: u32,
+    range_end: u32,
+    hints: &mut Vec<InlayHintJson>,
+) {
+    let node_start = node.start_position().row as u32;
+    let node_end = node.end_position().row as u32;
+    if node_end < range_start || node_start > range_end {
+        return;
+    }
+
+    if node.kind() == "argument_list" || node.kind() == "call_arguments" {
+        if let Some(parent) = node.parent() {
+            if let Some(func_name) = extract_cli_call_name(parent, source) {
+                if let Some(param_names) = proc_params.get(&func_name.to_lowercase()) {
+                    let mut cursor = node.walk();
+                    let mut param_idx = 0;
+                    for child in node.children(&mut cursor) {
+                        let kind = child.kind();
+                        if !child.is_named() || kind == "," || kind == "(" || kind == ")" || kind == "semicolon" {
+                            continue;
+                        }
+                        if let Some(name) = param_names.get(param_idx) {
+                            let start = child.start_position();
+                            hints.push(InlayHintJson {
+                                line: start.row as u32 + 1,
+                                character: start.column as u32 + 1,
+                                label: format!("{}: ", name),
+                                kind: "parameter".to_string(),
+                            });
+                        }
+                        param_idx += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_cli_hints(child, source, proc_params, range_start, range_end, hints);
+    }
+}
+
+fn extract_cli_call_name(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let kind = child.kind();
+        if kind == "identifier" || kind == "quoted_identifier" || kind == "name" {
+            if let Ok(text) = child.utf8_text(source) {
+                return Some(text.trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Fix command
+// ---------------------------------------------------------------------------
+
+fn cmd_fix(file: Option<&str>, all: bool, dry_run: bool, rule_filter: Option<&str>, json: bool) -> ExitCode {
+    let mut parser = AlParser::new();
+
+    if all || file.map_or(false, |f| Path::new(f).is_dir()) {
+        let dir = file.map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let al_files = collect_al_files(&dir);
+
+        if al_files.is_empty() {
+            if json { print_json(&serde_json::json!([])); }
+            else { eprintln!("No .al files found"); }
+            return ExitCode::SUCCESS;
+        }
+
+        let mut total_fixes = 0usize;
+        let mut results: Vec<FixResultJson> = Vec::new();
+
+        for path in &al_files {
+            let file_str = path.display().to_string();
+            let (fixes_count, fix_result) = fix_single_file(&file_str, &mut parser, dry_run, rule_filter, json);
+            total_fixes += fixes_count;
+            if fixes_count > 0 {
+                results.push(fix_result);
+            }
+        }
+
+        if json {
+            print_json(&results);
+        } else {
+            eprintln!("{} file(s) checked, {} fix(es) {}", al_files.len(), total_fixes, if dry_run { "available" } else { "applied" });
+        }
+
+        ExitCode::SUCCESS
+    } else {
+        let file = match file {
+            Some(f) => f,
+            None => {
+                if json { print_json(&serde_json::json!({ "error": "Provide a file path or use --all" })); }
+                else { eprintln!("Error: Provide a file path or use --all"); }
+                return ExitCode::FAILURE;
+            }
+        };
+
+        let (fixes_count, fix_result) = fix_single_file(file, &mut parser, dry_run, rule_filter, json);
+
+        if json {
+            print_json(&fix_result);
+        } else {
+            if fixes_count == 0 {
+                eprintln!("No fixes available for {file}");
+            } else {
+                eprintln!("{} fix(es) {} in {}", fixes_count, if dry_run { "available" } else { "applied" }, file);
+            }
+        }
+
+        ExitCode::SUCCESS
+    }
+}
+
+fn fix_single_file(file: &str, parser: &mut AlParser, dry_run: bool, rule_filter: Option<&str>, json: bool) -> (usize, FixResultJson) {
+    let source = match std::fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(_) => return (0, FixResultJson { file: file.to_string(), fixes_applied: 0, fixes: vec![] }),
+    };
+
+    let result = parser.parse(&source);
+    let diagnostics = al_syntax::lint(&result.tree, &source);
+
+    let mut fixes: Vec<FixActionJson> = Vec::new();
+    let lines: Vec<&str> = source.lines().collect();
+
+    for diag in &diagnostics {
+        if let Some(filter) = rule_filter {
+            if !diag.code.eq_ignore_ascii_case(filter) {
+                continue;
+            }
+        }
+
+        let diag_start_line = diag.range.start_point.row;
+        let diag_end_line = diag.range.end_point.row;
+        let diag_start_col = diag.range.start_point.column;
+        let diag_end_col = diag.range.end_point.column;
+
+        match diag.code.as_str() {
+            "AL-L001" => {
+                // Empty begin..end — add TODO comment
+                let indent = get_line_indent(&lines, diag_start_line);
+                fixes.push(FixActionJson {
+                    title: "Add TODO comment".to_string(),
+                    rule: diag.code.clone(),
+                    edits: vec![FixEditJson {
+                        line: diag_start_line as u32 + 2,
+                        character: 1,
+                        end_line: diag_start_line as u32 + 2,
+                        end_character: 1,
+                        new_text: format!("{}    // TODO: Implement\n", indent),
+                    }],
+                });
+            }
+            "AL-L005" => {
+                // Unused variable — remove line
+                fixes.push(FixActionJson {
+                    title: "Remove unused variable".to_string(),
+                    rule: diag.code.clone(),
+                    edits: vec![FixEditJson {
+                        line: diag_start_line as u32 + 1,
+                        character: 1,
+                        end_line: diag_start_line as u32 + 2,
+                        end_character: 1,
+                        new_text: String::new(),
+                    }],
+                });
+            }
+            "AL-L006" => {
+                // Empty trigger body — add TODO
+                let indent = get_line_indent(&lines, diag_start_line);
+                fixes.push(FixActionJson {
+                    title: "Add TODO comment to trigger".to_string(),
+                    rule: diag.code.clone(),
+                    edits: vec![FixEditJson {
+                        line: diag_start_line as u32 + 2,
+                        character: 1,
+                        end_line: diag_start_line as u32 + 2,
+                        end_character: 1,
+                        new_text: format!("{}        // TODO: Implement trigger\n", indent),
+                    }],
+                });
+            }
+            "AL-L007" => {
+                // TODO/FIXME — remove line
+                fixes.push(FixActionJson {
+                    title: "Remove TODO comment (mark as resolved)".to_string(),
+                    rule: diag.code.clone(),
+                    edits: vec![FixEditJson {
+                        line: diag_start_line as u32 + 1,
+                        character: 1,
+                        end_line: diag_start_line as u32 + 2,
+                        end_character: 1,
+                        new_text: String::new(),
+                    }],
+                });
+            }
+            "AL-L016" => {
+                // PascalCase fix
+                if diag_start_line < lines.len() {
+                    let line_text = lines[diag_start_line];
+                    if diag_end_col <= line_text.len() && diag_start_col < diag_end_col {
+                        let name = &line_text[diag_start_col..diag_end_col];
+                        let name = name.trim_matches('"');
+                        if let Some(first) = name.chars().next() {
+                            let fixed = format!("{}{}", first.to_uppercase(), &name[first.len_utf8()..]);
+                            fixes.push(FixActionJson {
+                                title: "Fix procedure name to PascalCase".to_string(),
+                                rule: diag.code.clone(),
+                                edits: vec![FixEditJson {
+                                    line: diag_start_line as u32 + 1,
+                                    character: diag_start_col as u32 + 1,
+                                    end_line: diag_end_line as u32 + 1,
+                                    end_character: diag_end_col as u32 + 1,
+                                    new_text: fixed,
+                                }],
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let fixes_count = fixes.len();
+
+    // Apply fixes if not dry-run
+    if !dry_run && !fixes.is_empty() {
+        // Collect all edits and sort in reverse order to avoid position shifts
+        let mut all_edits: Vec<&FixEditJson> = fixes.iter().flat_map(|f| &f.edits).collect();
+        all_edits.sort_by(|a, b| b.line.cmp(&a.line).then(b.character.cmp(&a.character)));
+
+        // Simple line-based apply for non-overlapping edits
+        let mut mod_lines: Vec<String> = source.lines().map(|l| l.to_string()).collect();
+        for edit in &all_edits {
+            let start_line = (edit.line as usize).saturating_sub(1);
+            let end_line = (edit.end_line as usize).saturating_sub(1);
+
+            if edit.new_text.is_empty() && start_line < mod_lines.len() {
+                // Remove lines
+                let remove_count = end_line.saturating_sub(start_line).min(mod_lines.len() - start_line);
+                for _ in 0..remove_count {
+                    if start_line < mod_lines.len() {
+                        mod_lines.remove(start_line);
+                    }
+                }
+            } else if edit.character == 1 && edit.end_character == 1 && start_line == end_line {
+                // Insert before line
+                if start_line <= mod_lines.len() {
+                    let new_line = edit.new_text.trim_end_matches('\n').to_string();
+                    mod_lines.insert(start_line, new_line);
+                }
+            }
+            // For replacement edits (like PascalCase), apply in-place
+            else if start_line < mod_lines.len() && start_line == end_line {
+                let line = &mod_lines[start_line];
+                let start_col = (edit.character as usize).saturating_sub(1);
+                let end_col = (edit.end_character as usize).saturating_sub(1);
+                if end_col <= line.len() {
+                    let new_line = format!("{}{}{}", &line[..start_col], edit.new_text, &line[end_col..]);
+                    mod_lines[start_line] = new_line;
+                }
+            }
+        }
+
+        let mut modified = mod_lines.join("\n");
+        if source.ends_with('\n') && !modified.ends_with('\n') {
+            modified.push('\n');
+        }
+
+        if let Err(e) = std::fs::write(file, &modified) {
+            eprintln!("Error writing {}: {}", file, e);
+        }
+    }
+
+    if !json && !dry_run && fixes_count > 0 {
+        // Print summary per rule
+        let mut rule_counts: HashMap<String, usize> = HashMap::new();
+        for f in &fixes {
+            *rule_counts.entry(f.rule.clone()).or_insert(0) += 1;
+        }
+        let summary: Vec<String> = rule_counts.iter().map(|(rule, count)| format!("{} ({})", rule, count)).collect();
+        println!("Applied {} fix(es): {}", fixes_count, summary.join(", "));
+    }
+
+    (fixes_count, FixResultJson { file: file.to_string(), fixes_applied: fixes_count, fixes })
+}
+
+fn get_line_indent(lines: &[&str], line: usize) -> String {
+    if line < lines.len() {
+        let l = lines[line];
+        let indent_len = l.len() - l.trim_start().len();
+        l[..indent_len].to_string()
+    } else {
+        "    ".to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1131,10 +3180,22 @@ fn main() -> ExitCode {
         Commands::Composed { kind, name } => cmd_composed(&kind, &name, cli.json),
         Commands::Packages => cmd_packages(cli.json),
         Commands::Deps => cmd_deps(cli.json),
-        Commands::Lint { file } => cmd_lint(&file, cli.json),
-        Commands::Format { file, check, stdin } => cmd_format(file.as_deref(), check, stdin, cli.json),
+        Commands::Lint { file, all, semantic } => cmd_lint(file.as_deref(), all, semantic, cli.json),
+        Commands::Format { file, check, stdin, all } => cmd_format(file.as_deref(), check, stdin, all, cli.json),
+        Commands::Symbols { file } => cmd_symbols(&file, cli.json),
+        Commands::Hover { file, line, col } => cmd_hover(&file, line, col, cli.json),
+        Commands::Definition { file, line, col, workspace } => cmd_definition(&file, line, col, workspace, cli.json),
+        Commands::References { file, line, col, workspace } => cmd_references(&file, line, col, workspace, cli.json),
+        Commands::Signature { file, line, col } => cmd_signature(&file, line, col, cli.json),
+        Commands::Completions { file, line, col } => cmd_completions(&file, line, col, cli.json),
+        Commands::Rename { file, line, col, new_name, dry_run, workspace } => cmd_rename(&file, line, col, &new_name, dry_run, workspace, cli.json),
         Commands::Rules => cmd_rules(cli.json),
         Commands::Version => cmd_version(cli.json),
+        Commands::Folding { file } => cmd_folding(&file, cli.json),
+        Commands::Tokens { file } => cmd_tokens(&file, cli.json),
+        Commands::Parse { file } => cmd_parse(&file, cli.json),
+        Commands::Hints { file, start_line, end_line } => cmd_hints(&file, start_line, end_line, cli.json),
+        Commands::Fix { file, all, dry_run, rule } => cmd_fix(file.as_deref(), all, dry_run, rule.as_deref(), cli.json),
     }
 }
 
@@ -1228,23 +3289,23 @@ mod tests {
 
     #[test]
     fn test_lint_rules_count() {
-        assert_eq!(LINT_RULES.len(), 18);
+        assert_eq!(al_syntax::lint_rules().len(), 18);
     }
 
     #[test]
     fn test_lint_rules_codes_sequential() {
-        for (i, rule) in LINT_RULES.iter().enumerate() {
+        for (i, rule) in al_syntax::lint_rules().iter().enumerate() {
             let expected = format!("AL-L{:03}", i + 1);
             assert_eq!(rule.code, expected, "Rule at index {i} has wrong code");
         }
     }
 
     #[test]
-    fn test_severity_str() {
-        assert_eq!(severity_str(LintSeverity::Error), "error");
-        assert_eq!(severity_str(LintSeverity::Warning), "warning");
-        assert_eq!(severity_str(LintSeverity::Info), "info");
-        assert_eq!(severity_str(LintSeverity::Hint), "hint");
+    fn test_severity_display() {
+        assert_eq!(LintSeverity::Error.to_string(), "error");
+        assert_eq!(LintSeverity::Warning.to_string(), "warning");
+        assert_eq!(LintSeverity::Info.to_string(), "info");
+        assert_eq!(LintSeverity::Hint.to_string(), "hint");
     }
 
     #[test]
@@ -1255,13 +3316,15 @@ mod tests {
 
     #[test]
     fn test_lint_rule_json_serialization() {
-        let rule = LintRuleJson {
-            code: "AL-L001".to_string(),
-            name: "EmptyBeginEnd".to_string(),
-            severity: "warning".to_string(),
-            description: "Empty begin..end block".to_string(),
+        let rules = al_syntax::lint_rules();
+        let rule = &rules[0];
+        let json_rule = LintRuleJson {
+            code: rule.code,
+            name: rule.name,
+            severity: rule.severity.to_string(),
+            description: rule.description,
         };
-        let json = serde_json::to_string(&rule).unwrap();
+        let json = serde_json::to_string(&json_rule).unwrap();
         assert!(json.contains("AL-L001"));
         assert!(json.contains("EmptyBeginEnd"));
     }
@@ -1342,5 +3405,230 @@ mod tests {
         let json = serde_json::to_string(&composed).unwrap();
         assert!(json.contains("Customer"));
         assert!(json.contains("No."));
+    }
+
+    // -----------------------------------------------------------------------
+    // New command tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_position() {
+        let pos = parse_position(1, 1);
+        assert_eq!(pos.line, 0);
+        assert_eq!(pos.character, 0);
+
+        let pos = parse_position(10, 5);
+        assert_eq!(pos.line, 9);
+        assert_eq!(pos.character, 4);
+
+        // Edge case: 0 input should not underflow
+        let pos = parse_position(0, 0);
+        assert_eq!(pos.line, 0);
+        assert_eq!(pos.character, 0);
+    }
+
+    #[test]
+    fn test_collect_al_files_nonexistent() {
+        let files = collect_al_files(Path::new("/nonexistent/path"));
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_doc_symbol_to_json() {
+        use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind, Range, Position};
+
+        #[allow(deprecated)]
+        let sym = DocumentSymbol {
+            name: "MyProc".to_string(),
+            detail: Some("(): Boolean".to_string()),
+            kind: SymbolKind::FUNCTION,
+            tags: None,
+            deprecated: None,
+            range: Range {
+                start: Position { line: 5, character: 4 },
+                end: Position { line: 10, character: 8 },
+            },
+            selection_range: Range {
+                start: Position { line: 5, character: 14 },
+                end: Position { line: 5, character: 20 },
+            },
+            children: None,
+        };
+
+        let json_sym = doc_symbol_to_json(&sym);
+        assert_eq!(json_sym.name, "MyProc");
+        assert_eq!(json_sym.kind, "function");
+        assert_eq!(json_sym.detail.as_deref(), Some("(): Boolean"));
+        assert_eq!(json_sym.range.start_line, 6); // 0-based → 1-based
+        assert_eq!(json_sym.range.start_col, 5);
+        assert!(json_sym.children.is_none());
+    }
+
+    #[test]
+    fn test_symbol_kind_str() {
+        use tower_lsp::lsp_types::SymbolKind;
+        assert_eq!(symbol_kind_str(SymbolKind::MODULE), "module");
+        assert_eq!(symbol_kind_str(SymbolKind::FUNCTION), "function");
+        assert_eq!(symbol_kind_str(SymbolKind::VARIABLE), "variable");
+        assert_eq!(symbol_kind_str(SymbolKind::ENUM), "enum");
+        assert_eq!(symbol_kind_str(SymbolKind::ENUM_MEMBER), "enum_member");
+        assert_eq!(symbol_kind_str(SymbolKind::EVENT), "event");
+    }
+
+    #[test]
+    fn test_parse_param_names_from_detail() {
+        let params = parse_param_names_from_detail("(x: Integer; y: Text)");
+        assert_eq!(params, vec![("x".to_string(), "Integer".to_string()), ("y".to_string(), "Text".to_string())]);
+
+        let params = parse_param_names_from_detail("(Name: Text; Amount: Decimal): Boolean");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].0, "Name");
+
+        let params = parse_param_names_from_detail("(var Rec: Record; Count: Integer)");
+        assert_eq!(params[0].0, "Rec");
+        assert_eq!(params[0].1, "Record");
+
+        let params = parse_param_names_from_detail("()");
+        assert!(params.is_empty());
+
+        let params = parse_param_names_from_detail("trigger");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_format_method_params() {
+        let method = al_symbols::MethodSymbol {
+            name: "GetBalance".to_string(),
+            parameters: vec![
+                al_symbols::ParameterSymbol {
+                    name: "CustNo".to_string(),
+                    type_name: "Code".to_string(),
+                    is_var: false,
+                },
+            ],
+            return_type: Some("Decimal".to_string()),
+            attributes: vec![],
+            is_local: false,
+        };
+        let result = format_method_params(&method);
+        assert_eq!(result, "(CustNo: Code): Decimal");
+    }
+
+    #[test]
+    fn test_format_method_params_void() {
+        let method = al_symbols::MethodSymbol {
+            name: "DoWork".to_string(),
+            parameters: vec![],
+            return_type: None,
+            attributes: vec![],
+            is_local: false,
+        };
+        let result = format_method_params(&method);
+        assert_eq!(result, "(): void");
+    }
+
+    #[test]
+    fn test_document_symbol_json_serialization() {
+        let sym = DocumentSymbolJson {
+            name: "Test".to_string(),
+            kind: "function".to_string(),
+            detail: Some("(): Integer".to_string()),
+            range: RangeJson { start_line: 1, start_col: 1, end_line: 5, end_col: 4 },
+            children: None,
+        };
+        let json = serde_json::to_string(&sym).unwrap();
+        assert!(json.contains("Test"));
+        assert!(json.contains("function"));
+    }
+
+    #[test]
+    fn test_hover_json_serialization() {
+        let hover = HoverJson {
+            name: "MyVar".to_string(),
+            kind: "local variable".to_string(),
+            type_name: Some("Integer".to_string()),
+            type_subtype: None,
+            scope: Some("local variable".to_string()),
+            signature: None,
+            source_package: None,
+        };
+        let json = serde_json::to_string(&hover).unwrap();
+        assert!(json.contains("MyVar"));
+        assert!(json.contains("Integer"));
+    }
+
+    #[test]
+    fn test_location_json_serialization() {
+        let loc = LocationJson {
+            file: "test.al".to_string(),
+            line: 10,
+            column: 5,
+            end_line: 10,
+            end_column: 15,
+        };
+        let json = serde_json::to_string(&loc).unwrap();
+        assert!(json.contains("test.al"));
+        assert!(json.contains("10"));
+    }
+
+    #[test]
+    fn test_completion_item_json_serialization() {
+        let item = CompletionItemJson {
+            label: "MyFunc".to_string(),
+            kind: "function".to_string(),
+            detail: Some("(): Boolean".to_string()),
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(json.contains("MyFunc"));
+        assert!(json.contains("function"));
+    }
+
+    #[test]
+    fn test_rename_edit_json_serialization() {
+        let edit = RenameEditJson {
+            file: "test.al".to_string(),
+            line: 5,
+            column: 10,
+            end_line: 5,
+            end_column: 15,
+            new_text: "NewName".to_string(),
+        };
+        let json = serde_json::to_string(&edit).unwrap();
+        assert!(json.contains("NewName"));
+        assert!(json.contains("test.al"));
+    }
+
+    #[test]
+    fn test_file_lint_json_serialization() {
+        let file_lint = FileLintJson {
+            file: "test.al".to_string(),
+            diagnostics: vec![LintDiagJson {
+                code: "AL-L001".to_string(),
+                message: "Empty begin..end".to_string(),
+                severity: "warning".to_string(),
+                line: 5,
+                column: 5,
+                end_line: 7,
+                end_column: 8,
+            }],
+        };
+        let json = serde_json::to_string(&file_lint).unwrap();
+        assert!(json.contains("test.al"));
+        assert!(json.contains("AL-L001"));
+    }
+
+    #[test]
+    fn test_signature_json_serialization() {
+        let sig = SignatureJson {
+            label: "DoWork(x: Integer; y: Text): Boolean".to_string(),
+            parameters: vec![
+                SignatureParamJson { name: "x".to_string(), type_name: "Integer".to_string() },
+                SignatureParamJson { name: "y".to_string(), type_name: "Text".to_string() },
+            ],
+            active_parameter: 0,
+        };
+        let json = serde_json::to_string(&sig).unwrap();
+        assert!(json.contains("DoWork"));
+        assert!(json.contains("Integer"));
     }
 }

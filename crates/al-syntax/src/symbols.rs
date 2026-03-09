@@ -148,7 +148,11 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         deprecated: None,
         range,
         selection_range,
-        children: if children.is_empty() { None } else { Some(children) },
+        children: if children.is_empty() {
+            None
+        } else {
+            Some(children)
+        },
     })
 }
 
@@ -217,6 +221,9 @@ fn extract_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSy
             }
             "object_var_section" | "var_section" => {
                 extract_var_section_children(child, source, symbols);
+            }
+            "variable_declaration" | "label_declaration" | "object_variable_declaration" => {
+                collect_var_symbols_recursive(child, source, symbols);
             }
             _ => {}
         }
@@ -360,7 +367,11 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         deprecated: None,
         range,
         selection_range,
-        children: if children.is_empty() { None } else { Some(children) },
+        children: if children.is_empty() {
+            None
+        } else {
+            Some(children)
+        },
     })
 }
 
@@ -458,7 +469,11 @@ fn extract_key_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
 
     Some(DocumentSymbol {
         name,
-        detail: if fields.is_empty() { None } else { Some(fields.to_string()) },
+        detail: if fields.is_empty() {
+            None
+        } else {
+            Some(fields.to_string())
+        },
         kind: SymbolKind::KEY,
         tags: None,
         deprecated: None,
@@ -471,38 +486,187 @@ fn extract_key_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
 /// Extract variable symbols from a var section.
 #[allow(deprecated)]
 fn extract_var_section_children(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "variable_declaration"
-            || child.kind() == "regular_variable_declaration"
-            || child.kind() == "label_declaration"
-            || child.kind() == "object_variable_declaration"
-        {
-            let name = child
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("(unnamed)")
-                .trim_matches('"')
-                .to_string();
+    collect_var_symbols_recursive(node, source, symbols);
+    collect_label_symbols_from_text(node, source, symbols);
+}
 
-            let type_name = child
-                .child_by_field_name("type")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("");
-
-            let range = ts_range_to_lsp(&child.range());
-
+#[allow(deprecated)]
+fn collect_var_symbols_recursive(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
+    match node.kind() {
+        "regular_variable_declaration" => {
+            let detail = extract_node_text(node.child_by_field_name("type"), source);
+            let range = ts_range_to_lsp(&node.range());
+            for (name, selection_range) in extract_regular_variable_names(node, source) {
+                symbols.push(DocumentSymbol {
+                    name,
+                    detail: detail.clone(),
+                    kind: SymbolKind::VARIABLE,
+                    tags: None,
+                    deprecated: None,
+                    range,
+                    selection_range,
+                    children: None,
+                });
+            }
+            return;
+        }
+        "label_declaration" => {
+            let Some(name_node) = node.child_by_field_name("name") else {
+                return;
+            };
+            let Some(name) = clean_node_text(name_node, source) else {
+                return;
+            };
+            let detail = extract_node_text(node.child_by_field_name("type"), source);
             symbols.push(DocumentSymbol {
                 name,
-                detail: Some(type_name.to_string()),
+                detail,
                 kind: SymbolKind::VARIABLE,
                 tags: None,
                 deprecated: None,
-                range,
-                selection_range: range,
+                range: ts_range_to_lsp(&node.range()),
+                selection_range: ts_range_to_lsp(&name_node.range()),
                 children: None,
             });
+            return;
         }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_var_symbols_recursive(child, source, symbols);
+    }
+}
+
+fn extract_regular_variable_names(
+    node: Node,
+    source: &[u8],
+) -> Vec<(String, tower_lsp::lsp_types::Range)> {
+    let Some(sep_start) = node.child_by_field_name("sep").map(|sep| sep.start_byte()) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    collect_variable_name_nodes(node, sep_start, source, &mut names);
+
+    if names.is_empty() {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if let Some(name) = clean_node_text(name_node, source) {
+                names.push((name, ts_range_to_lsp(&name_node.range())));
+            }
+        }
+    }
+
+    names
+}
+
+fn collect_variable_name_nodes(
+    node: Node,
+    sep_start: usize,
+    source: &[u8],
+    names: &mut Vec<(String, tower_lsp::lsp_types::Range)>,
+) {
+    if node.start_byte() >= sep_start {
+        return;
+    }
+
+    if node.child_count() == 0 && is_variable_name_node(node.kind()) {
+        if let Some(name) = clean_node_text(node, source) {
+            names.push((name, ts_range_to_lsp(&node.range())));
+        }
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_variable_name_nodes(child, sep_start, source, names);
+    }
+}
+
+fn is_variable_name_node(kind: &str) -> bool {
+    matches!(
+        kind,
+        "identifier"
+            | "quoted_identifier"
+            | "keyword"
+            | "object_keyword"
+            | "metadata_keyword"
+            | "property_keyword"
+            | "kw_function"
+    )
+}
+
+fn extract_node_text(node: Option<Node>, source: &[u8]) -> Option<String> {
+    let node = node?;
+    let text = node.utf8_text(source).ok()?.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
+
+fn clean_node_text(node: Node, source: &[u8]) -> Option<String> {
+    let text = node.utf8_text(source).ok()?;
+    let clean = text.trim_matches('"').trim();
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean.to_string())
+    }
+}
+
+#[allow(deprecated)]
+fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
+    let Ok(section_text) = node.utf8_text(source) else {
+        return;
+    };
+
+    let mut seen: std::collections::HashSet<String> = symbols
+        .iter()
+        .filter(|symbol| symbol.kind == SymbolKind::VARIABLE)
+        .map(|symbol| symbol.name.to_lowercase())
+        .collect();
+
+    for (offset, line) in section_text.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.ends_with(';') {
+            continue;
+        }
+        let Some((name_part, rest)) = trimmed.split_once(':') else {
+            continue;
+        };
+        if !rest.trim_start().starts_with("Label ") && !rest.trim_start().starts_with("Label\t") {
+            continue;
+        }
+
+        let name = name_part.trim().trim_matches('"').to_string();
+        if name.is_empty() || !seen.insert(name.to_lowercase()) {
+            continue;
+        }
+
+        let line_no = node.start_position().row as u32 + offset as u32;
+        let start_col = line.find(name_part).unwrap_or_default() as u32;
+        let end_col = start_col + name_part.len() as u32;
+        symbols.push(DocumentSymbol {
+            name,
+            detail: Some("Label".to_string()),
+            kind: SymbolKind::VARIABLE,
+            tags: None,
+            deprecated: None,
+            range: ts_range_to_lsp(&node.range()),
+            selection_range: tower_lsp::lsp_types::Range {
+                start: tower_lsp::lsp_types::Position {
+                    line: line_no,
+                    character: start_col,
+                },
+                end: tower_lsp::lsp_types::Position {
+                    line: line_no,
+                    character: end_col,
+                },
+            },
+            children: None,
+        });
     }
 }
 
@@ -531,7 +695,11 @@ mod tests {
         assert_eq!(obj.name, "My Codeunit");
         assert_eq!(obj.kind, SymbolKind::MODULE);
         let children = obj.children.as_ref().expect("Should have children");
-        assert!(children.len() >= 2, "Should have at least 2 procedures, got {}", children.len());
+        assert!(
+            children.len() >= 2,
+            "Should have at least 2 procedures, got {}",
+            children.len()
+        );
     }
 
     #[test]
@@ -571,5 +739,44 @@ mod tests {
         let obj = &symbols[0];
         assert_eq!(obj.name, "My Table");
         assert_eq!(obj.kind, SymbolKind::STRUCT);
+    }
+
+    #[test]
+    fn test_extract_symbols_global_variables_keep_names_and_types() {
+        let src = r#"codeunit 50100 Test
+{
+    var
+        FirstVar, "Second Var": Record "Sales Header" temporary;
+        CaptionLbl: Label 'Caption';
+
+    procedure DoIt()
+    begin
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let symbols = extract_document_symbols(&result.tree, src);
+        let obj = &symbols[0];
+        let children = obj.children.as_ref().expect("Should have object children");
+
+        let vars: Vec<&DocumentSymbol> = children
+            .iter()
+            .filter(|child| child.kind == SymbolKind::VARIABLE)
+            .collect();
+
+        assert_eq!(vars.len(), 3, "Expected one symbol per declared variable");
+        assert_eq!(vars[0].name, "FirstVar");
+        assert_eq!(
+            vars[0].detail.as_deref(),
+            Some(r#"Record "Sales Header" temporary"#)
+        );
+        assert_eq!(vars[1].name, "Second Var");
+        assert_eq!(
+            vars[1].detail.as_deref(),
+            Some(r#"Record "Sales Header" temporary"#)
+        );
+        assert_eq!(vars[2].name, "CaptionLbl");
+        assert_eq!(vars[2].detail.as_deref(), Some("Label"));
+        assert!(vars.iter().all(|var| var.name != "(unnamed)"));
     }
 }

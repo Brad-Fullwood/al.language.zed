@@ -8,6 +8,7 @@
 use tower_lsp::lsp_types::*;
 
 use crate::parsing;
+use crate::resolution::{self, ResolvedMemberKind};
 use crate::server::AlServer;
 
 /// Handle textDocument/hover.
@@ -21,6 +22,73 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
 
     if clean_name.is_empty() {
         return None;
+    }
+
+    tracing::debug!(name = %clean_name, node_kind = %node.kind(), "hover: looking up symbol");
+
+    if let Some(access) = resolution::access_path_at(&tree, &text, position) {
+        if let Some(receiver) =
+            resolution::resolve_expression_type(server, uri, &text, &tree, &access.receiver, position)
+        {
+            if let Some(member) = resolution::resolve_member(server, uri, &receiver, &access.member) {
+                let value = match member.kind {
+                    ResolvedMemberKind::Variable { scope, .. } => {
+                        let type_info = member.type_info.as_ref()?;
+                        format!(
+                            "```al\n{}: {}\n```\n*({})*",
+                            member.name,
+                            resolution::format_type_detail(
+                                &type_info.type_name,
+                                type_info.type_subtype.as_deref()
+                            ),
+                            scope
+                        )
+                    }
+                    ResolvedMemberKind::Procedure { signature, documentation, .. } => {
+                        let mut content = format!("```al\nprocedure {}\n```", signature);
+                        if let Some(doc) = documentation {
+                            content.push_str("\n\n");
+                            content.push_str(&doc);
+                        }
+                        content
+                    }
+                    ResolvedMemberKind::BuiltinMethod { signature, documentation, .. } => {
+                        let mut content = format!("```al\n{}\n```", signature);
+                        if let Some(doc) = documentation {
+                            content.push_str("\n\n");
+                            content.push_str(&doc);
+                        }
+                        content
+                    }
+                    ResolvedMemberKind::Field => {
+                        let type_info = member.type_info.as_ref()?;
+                        format!(
+                            "```al\n{}: {}\n```\n*(field)*",
+                            member.name,
+                            resolution::format_type_detail(
+                                &type_info.type_name,
+                                type_info.type_subtype.as_deref()
+                            ),
+                        )
+                    }
+                    ResolvedMemberKind::EnumValue => {
+                        let type_info = member.type_info.as_ref()?;
+                        format!(
+                            "```al\n{}\n```\n*(enum value of {})*",
+                            member.name,
+                            type_info.type_subtype.as_deref().unwrap_or("Enum")
+                        )
+                    }
+                };
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value,
+                    }),
+                    range: Some(al_syntax::ts_range_to_lsp(&node.range())),
+                });
+            }
+        }
     }
 
     // 1. Check if we're on a procedure name or a local parameter
@@ -54,8 +122,38 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
         }
     }
 
+    // 2b. Check local/global variable declarations via TypeResolver
+    {
+        let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &text);
+        if let Some(decl) = resolver.resolve_type(clean_name, position) {
+            let scope_label = match decl.scope {
+                al_syntax::type_resolver::VariableScope::Local => "local variable",
+                al_syntax::type_resolver::VariableScope::Parameter => "parameter",
+                al_syntax::type_resolver::VariableScope::Global => "global variable",
+                al_syntax::type_resolver::VariableScope::SelfImplicit => "self",
+                al_syntax::type_resolver::VariableScope::TriggerImplicit => "trigger variable",
+            };
+            let var_prefix = if decl.is_var { "var " } else { "" };
+            let subtype = decl.type_subtype.as_ref()
+                .map(|s| format!(" \"{}\"", s))
+                .unwrap_or_default();
+            let content = format!(
+                "```al\n{}{}: {}{}\n```\n*({})*",
+                var_prefix, decl.name, decl.type_name, subtype, scope_label
+            );
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: content,
+                }),
+                range: Some(al_syntax::ts_range_to_lsp(&node.range())),
+            });
+        }
+    }
+
     // 3. Check package symbols from SymbolIndex
     let symbols = server.symbols.get_by_name(clean_name);
+    tracing::debug!(name = %clean_name, package_matches = symbols.len(), index_size = server.symbols.len(), "hover: package symbol lookup");
     if !symbols.is_empty() {
         let entry = &symbols[0];
         let content = format_symbol_hover(entry);
@@ -71,6 +169,7 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
     // 4. Check built-in types
     {
         let builtins = server.builtins.read().unwrap().clone();
+        tracing::debug!(name = %clean_name, builtin_types = builtins.len(), "hover: checking builtins");
         for bt in builtins.iter() {
             if bt.name.eq_ignore_ascii_case(clean_name) {
                 let methods_list: Vec<String> = bt
@@ -118,6 +217,7 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
     }
 
     // 5. Check workspace object name index for matching objects
+    tracing::debug!(name = %clean_name, workspace_objects = server.workspace_objects.len(), "hover: checking workspace objects");
     if let Some(file_path_entry) = server.workspace_objects.get(&clean_name.to_lowercase()) {
         let file_path = file_path_entry.value();
         if let Some(file_text) = server.workspace_files.get(file_path) {

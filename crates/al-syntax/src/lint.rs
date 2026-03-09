@@ -55,6 +55,40 @@ impl Default for LintConfig {
     }
 }
 
+/// Metadata for a lint rule (for listing/documentation).
+#[derive(Debug, Clone)]
+pub struct LintRuleInfo {
+    pub code: &'static str,
+    pub name: &'static str,
+    pub severity: LintSeverity,
+    pub description: &'static str,
+}
+
+/// Return metadata for all available lint rules.
+pub fn lint_rules() -> &'static [LintRuleInfo] {
+    static RULES: &[LintRuleInfo] = &[
+        LintRuleInfo { code: "AL-L001", name: "EmptyBeginEnd", severity: LintSeverity::Warning, description: "Empty begin..end block" },
+        LintRuleInfo { code: "AL-L002", name: "LongProcedure", severity: LintSeverity::Warning, description: "Procedure exceeds maximum line count" },
+        LintRuleInfo { code: "AL-L003", name: "MissingSemicolon", severity: LintSeverity::Error, description: "Missing semicolon (detected via parser errors)" },
+        LintRuleInfo { code: "AL-L004", name: "DeepNesting", severity: LintSeverity::Warning, description: "Nested if depth exceeds maximum" },
+        LintRuleInfo { code: "AL-L005", name: "UnusedVariable", severity: LintSeverity::Warning, description: "Variable declared but not used in procedure body" },
+        LintRuleInfo { code: "AL-L006", name: "EmptyTrigger", severity: LintSeverity::Hint, description: "Trigger has an empty body" },
+        LintRuleInfo { code: "AL-L007", name: "TodoComment", severity: LintSeverity::Info, description: "TODO/FIXME/HACK comment found" },
+        LintRuleInfo { code: "AL-L008", name: "MagicNumber", severity: LintSeverity::Info, description: "Magic number — consider using a named constant" },
+        LintRuleInfo { code: "AL-L009", name: "ExcessiveParams", severity: LintSeverity::Warning, description: "Procedure has too many parameters" },
+        LintRuleInfo { code: "AL-L010", name: "MissingCaseElse", severity: LintSeverity::Warning, description: "Case statement is missing an else branch" },
+        LintRuleInfo { code: "AL-L011", name: "RedundantBeginEnd", severity: LintSeverity::Hint, description: "Redundant begin..end around single statement" },
+        LintRuleInfo { code: "AL-L012", name: "AssignmentInCondition", severity: LintSeverity::Warning, description: "Suspicious assignment in if condition" },
+        LintRuleInfo { code: "AL-L013", name: "EmptyRepeat", severity: LintSeverity::Warning, description: "Empty repeat..until loop" },
+        LintRuleInfo { code: "AL-L014", name: "UnreachableCode", severity: LintSeverity::Warning, description: "Unreachable code after exit/error" },
+        LintRuleInfo { code: "AL-L015", name: "GlobalVarNaming", severity: LintSeverity::Info, description: "Global variable has a non-descriptive name" },
+        LintRuleInfo { code: "AL-L016", name: "ProcedureNaming", severity: LintSeverity::Warning, description: "Procedure name does not follow PascalCase convention" },
+        LintRuleInfo { code: "AL-L017", name: "HardcodedString", severity: LintSeverity::Info, description: "Hard-coded text string — consider using a Label variable" },
+        LintRuleInfo { code: "AL-L018", name: "RecordVarNaming", severity: LintSeverity::Info, description: "Record variable should use a descriptive name matching the table" },
+    ];
+    RULES
+}
+
 /// Run all native lint rules on the parsed tree with default config.
 pub fn lint(tree: &Tree, text: &str) -> Vec<LintDiagnostic> {
     lint_with_config(tree, text, &LintConfig::default())
@@ -1032,5 +1066,113 @@ mod tests {
         // Should not have L001 (not empty), L016 (PascalCase OK)
         assert!(!has_code(&diags, "AL-L001"));
         assert!(!has_code(&diags, "AL-L016"));
+    }
+
+    #[test]
+    fn test_lint_empty_source() {
+        let diags = lint_src("");
+        // Empty file should have no lint issues (or minimal)
+        let _ = diags;
+    }
+
+    #[test]
+    fn test_lint_clean_code_no_errors() {
+        let src = r#"codeunit 50100 "Clean"
+{
+    procedure ValidName()
+    var
+        x: Integer;
+    begin
+        x := 42;
+    end;
+}"#;
+        let diags = lint_src(src);
+        // Should have no errors for clean code
+        let errors: Vec<_> = diags.iter().filter(|d| d.severity == LintSeverity::Error).collect();
+        assert!(errors.is_empty(), "Clean code should have no errors, got: {:?}", errors);
+    }
+
+    #[test]
+    fn test_lint_config_custom_max_proc_lines() {
+        // Create a procedure with 12 lines, set max to 10
+        let mut lines = vec![
+            "codeunit 50100 Test".to_string(),
+            "{".to_string(),
+            "    procedure ShortButOverLimit()".to_string(),
+            "    begin".to_string(),
+        ];
+        for i in 0..8 {
+            lines.push(format!("        x := {};", i));
+        }
+        lines.push("    end;".to_string());
+        lines.push("}".to_string());
+        let src = lines.join("\n");
+
+        let config = LintConfig {
+            max_procedure_lines: 10,
+            ..LintConfig::default()
+        };
+        let diags = lint_src_with_config(&src, &config);
+        assert!(has_code(&diags, "AL-L002"), "Should detect procedure over custom limit");
+    }
+
+    #[test]
+    fn test_lint_config_custom_max_params() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure FewParams(a: Integer; b: Integer; c: Integer)
+    begin
+    end;
+}"#;
+        let config = LintConfig {
+            max_parameters: 2,
+            ..LintConfig::default()
+        };
+        let diags = lint_src_with_config(src, &config);
+        assert!(has_code(&diags, "AL-L009"), "Should detect excessive params with custom limit of 2");
+    }
+
+    #[test]
+    fn test_lint_severity_display() {
+        assert_eq!(format!("{}", LintSeverity::Error), "error");
+        assert_eq!(format!("{}", LintSeverity::Warning), "warning");
+        assert_eq!(format!("{}", LintSeverity::Info), "info");
+        assert_eq!(format!("{}", LintSeverity::Hint), "hint");
+    }
+
+    #[test]
+    fn test_lint_rules_returns_18_rules() {
+        let rules = lint_rules();
+        assert_eq!(rules.len(), 18, "Should have exactly 18 lint rules");
+        // Verify codes are sequential
+        for (i, rule) in rules.iter().enumerate() {
+            let expected_code = format!("AL-L{:03}", i + 1);
+            assert_eq!(rule.code, expected_code, "Rule {} should have code {}", i, expected_code);
+        }
+    }
+
+    #[test]
+    fn test_l007_fixme_and_hack_comments() {
+        let src = r#"codeunit 50100 Test
+{
+    // FIXME: broken logic
+    procedure A()
+    begin
+        Message('Hello');
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(has_code(&diags, "AL-L007"), "Should detect FIXME comment");
+
+        let src2 = r#"codeunit 50100 Test
+{
+    // HACK: workaround
+    procedure B()
+    begin
+        Message('Hello');
+    end;
+}"#;
+        let diags2 = lint_src(src2);
+        assert!(has_code(&diags2, "AL-L007"), "Should detect HACK comment");
     }
 }

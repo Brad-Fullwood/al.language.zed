@@ -8,6 +8,7 @@
 use tower_lsp::lsp_types::*;
 
 use crate::parsing;
+use crate::resolution::{self, ResolvedMemberKind};
 use crate::server::AlServer;
 
 /// Handle textDocument/definition.
@@ -27,13 +28,67 @@ pub(crate) fn handle_definition(
         return None;
     }
 
-    // 1. Local definitions: look for variable/parameter declarations in the same procedure
-    let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-    if refs.len() > 1 {
-        // The first reference is typically the declaration
-        let first = &refs[0];
-        let def_range = al_syntax::ts_range_to_lsp(first);
-        // Only return if the definition is NOT the same position we're on
+    tracing::debug!(name = %clean_name, node_kind = %node.kind(), "definition: looking up");
+
+    if let Some(access) = resolution::access_path_at(&tree, &text, position) {
+        if let Some(receiver) =
+            resolution::resolve_expression_type(server, uri, &text, &tree, &access.receiver, position)
+        {
+            if let Some(member) = resolution::resolve_member(server, uri, &receiver, &access.member) {
+                match member.kind {
+                    ResolvedMemberKind::Variable { range: Some(range), .. }
+                    | ResolvedMemberKind::Procedure { range: Some(range), .. } => {
+                        return Some(GotoDefinitionResponse::Scalar(Location {
+                            uri: member.uri.unwrap_or_else(|| uri.clone()),
+                            range,
+                        }));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let looks_like_object_name = node.kind() == "quoted_identifier" || clean_name.contains(' ');
+    if looks_like_object_name {
+        if let Some((obj_uri, range)) = resolution::resolve_workspace_object_definition(server, clean_name) {
+            return Some(GotoDefinitionResponse::Scalar(Location { uri: obj_uri, range }));
+        }
+
+        if server
+            .symbols
+            .get_by_name(clean_name)
+            .into_iter()
+            .any(|entry| {
+                matches!(
+                    entry.kind,
+                    al_symbols::ObjectKind::Table
+                        | al_symbols::ObjectKind::Page
+                        | al_symbols::ObjectKind::Codeunit
+                        | al_symbols::ObjectKind::Report
+                        | al_symbols::ObjectKind::Query
+                        | al_symbols::ObjectKind::XmlPort
+                        | al_symbols::ObjectKind::Enum
+                        | al_symbols::ObjectKind::Interface
+                        | al_symbols::ObjectKind::PermissionSet
+                        | al_symbols::ObjectKind::Profile
+                        | al_symbols::ObjectKind::PageCustomization
+                        | al_symbols::ObjectKind::ControlAddIn
+                        | al_symbols::ObjectKind::Entitlement
+                )
+            })
+        {
+            tracing::debug!(
+                name = %clean_name,
+                "definition: package object found but no file location is available"
+            );
+            return None;
+        }
+    }
+
+    let resolver = al_syntax::TypeResolver::new(&tree, &text);
+    if let Some(decl) = resolver.resolve_type(clean_name, position) {
+        let def_range = al_syntax::ts_range_to_lsp(&decl.range);
         if def_range.start != position {
             return Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
@@ -42,11 +97,27 @@ pub(crate) fn handle_definition(
         }
     }
 
+    // 1. Local textual fallback
+    let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
+    if refs.len() > 1 {
+        let first = &refs[0];
+        let def_range = al_syntax::ts_range_to_lsp(first);
+        if def_range.start != position {
+            return Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range: def_range,
+            }));
+        }
+    }
+
+    // Pre-resolve the current file path once for all workspace lookups
+    let current_path = uri.to_file_path().ok();
+
     // 2. Cross-file definitions: check workspace object name index first
     if let Some(obj_path_entry) = server.workspace_objects.get(&clean_name.to_lowercase()) {
         let file_path = obj_path_entry.value().clone();
         // Skip the current file
-        let is_current = uri.to_file_path().map_or(false, |cp| cp == file_path);
+        let is_current = current_path.as_ref().map_or(false, |cp| *cp == file_path);
         if !is_current {
             if let Some(file_text_entry) = server.workspace_files.get(&file_path) {
                 let file_text = file_text_entry.value();
@@ -70,10 +141,8 @@ pub(crate) fn handle_definition(
         let file_text = entry.value();
 
         // Skip the current file (already handled above)
-        if let Ok(current_path) = uri.to_file_path() {
-            if *file_path == current_path {
-                continue;
-            }
+        if current_path.as_ref() == Some(file_path) {
+            continue;
         }
 
         let mut parser = server.parser.lock().unwrap();
@@ -102,9 +171,20 @@ pub(crate) fn handle_definition(
     // 3. Package symbols — no file location available, but we can note the package
     let symbols = server.symbols.get_by_name(clean_name);
     if !symbols.is_empty() {
-        // Package symbols don't have file locations, so we can't jump to them.
-        // Return None to indicate no definition found.
-        // In the future, we could synthesize a virtual document showing the symbol's API.
+        tracing::debug!(
+            name = %clean_name,
+            count = symbols.len(),
+            packages = ?symbols.iter().map(|s| s.package.as_str()).collect::<Vec<_>>(),
+            "definition: found in packages but no file location"
+        );
+    } else {
+        tracing::debug!(
+            name = %clean_name,
+            index_size = server.symbols.len(),
+            workspace_files = server.workspace_files.len(),
+            workspace_objects = server.workspace_objects.len(),
+            "definition: symbol not found anywhere"
+        );
     }
 
     None
@@ -144,15 +224,14 @@ pub(crate) fn handle_references(
     }
 
     // Find references in workspace files
+    let current_path = uri.to_file_path().ok();
     for entry in server.workspace_files.iter() {
         let file_path = entry.key();
         let file_text = entry.value();
 
         // Skip the current file
-        if let Ok(current_path) = uri.to_file_path() {
-            if *file_path == current_path {
-                continue;
-            }
+        if current_path.as_ref() == Some(file_path) {
+            continue;
         }
 
         let mut parser = server.parser.lock().unwrap();
@@ -233,15 +312,14 @@ pub(crate) fn handle_rename(
     }
 
     // --- Workspace files (cross-file rename) ---
+    let current_path = uri.to_file_path().ok();
     for entry in server.workspace_files.iter() {
         let file_path = entry.key();
         let file_text = entry.value();
 
         // Skip the current file — already handled above
-        if let Ok(current_path) = uri.to_file_path() {
-            if *file_path == current_path {
-                continue;
-            }
+        if current_path.as_ref() == Some(file_path) {
+            continue;
         }
 
         let file_uri = match Url::from_file_path(file_path) {

@@ -17,7 +17,7 @@ version = "0.7.0"
 name = "AL Language Server"
 languages = ["AL"]
 
-[debug_adapters.AL]
+[debug_adapters.al]
 schema_path = "debug_adapter_schemas/al.json"
 
 [grammars.al]

@@ -139,27 +139,41 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
 
 /// Classify a tree-sitter node kind to a semantic token type.
 /// Returns `None` for nodes that should not be highlighted or should recurse.
-fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
+fn classify_node(kind: &str, node: Node, _source: &[u8]) -> Option<u32> {
     match kind {
         // Keywords (AL-specific keyword nodes from the external scanner)
         "kw_begin" | "kw_end" | "kw_var" | "kw_if" | "kw_then" | "kw_else" | "kw_for"
-        | "kw_foreach" | "kw_while" | "kw_do" | "kw_repeat" | "kw_until" | "kw_case"
-        | "kw_of" | "kw_exit" | "kw_break" | "kw_continue" | "kw_with" | "kw_in"
-        | "kw_to" | "kw_downto" | "kw_asserterror" | "kw_local" | "kw_internal"
-        | "kw_protected" | "kw_temporary" | "kw_event" => Some(token_types::KEYWORD),
+        | "kw_foreach" | "kw_while" | "kw_do" | "kw_repeat" | "kw_until" | "kw_case" | "kw_of"
+        | "kw_exit" | "kw_break" | "kw_continue" | "kw_with" | "kw_in" | "kw_to" | "kw_downto"
+        | "kw_asserterror" | "kw_local" | "kw_internal" | "kw_protected" | "kw_temporary"
+        | "kw_event" => Some(token_types::KEYWORD),
 
         // Procedure/trigger/function keywords
         "kw_procedure" | "kw_function" | "kw_trigger" => Some(token_types::KEYWORD),
 
         // Object keywords
-        "kw_codeunit" | "kw_table" | "kw_page" | "kw_report" | "kw_query" | "kw_xmlport"
-        | "kw_enum" | "kw_interface" | "kw_permissionset" | "kw_profile"
-        | "kw_controladdin" | "kw_tableextension" | "kw_pageextension"
-        | "kw_reportextension" | "kw_enumextension" | "kw_permissionsetextension"
-        | "kw_pagecustomization" | "kw_entitlement" | "kw_profileextension"
-        | "kw_dotnet" | "kw_dotnetassembly" | "kw_dotnettypedeclaration" => {
-            Some(token_types::KEYWORD)
-        }
+        "kw_codeunit"
+        | "kw_table"
+        | "kw_page"
+        | "kw_report"
+        | "kw_query"
+        | "kw_xmlport"
+        | "kw_enum"
+        | "kw_interface"
+        | "kw_permissionset"
+        | "kw_profile"
+        | "kw_controladdin"
+        | "kw_tableextension"
+        | "kw_pageextension"
+        | "kw_reportextension"
+        | "kw_enumextension"
+        | "kw_permissionsetextension"
+        | "kw_pagecustomization"
+        | "kw_entitlement"
+        | "kw_profileextension"
+        | "kw_dotnet"
+        | "kw_dotnetassembly"
+        | "kw_dotnettypedeclaration" => Some(token_types::KEYWORD),
 
         // Generic keyword categories from external scanner
         "keyword" | "control_keyword" => Some(token_types::KEYWORD),
@@ -167,25 +181,73 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         "metadata_keyword" => Some(token_types::KEYWORD),
 
         // Type keywords
-        "kw_integer" | "kw_decimal" | "kw_text" | "kw_code" | "kw_boolean" | "kw_date"
-        | "kw_time" | "kw_datetime" | "kw_dateformula" | "kw_duration" | "kw_guid"
-        | "kw_blob" | "kw_biginteger" | "kw_bigtext" | "kw_char" | "kw_byte"
-        | "kw_option" | "kw_record" | "kw_recordid" | "kw_recordref"
-        | "kw_dialog" | "kw_file" | "kw_instream" | "kw_outstream"
-        | "kw_variant" | "kw_list" | "kw_dictionary" | "kw_array"
-        | "kw_httpclient" | "kw_httpcontent" | "kw_httpheaders"
-        | "kw_httprequestmessage" | "kw_httpresponsemessage"
-        | "kw_jsonarray" | "kw_jsonobject" | "kw_jsontoken" | "kw_jsonvalue"
-        | "kw_xmldocument" | "kw_xmlelement" | "kw_xmlnode" | "kw_xmlnodelist"
-        | "kw_xmlattribute" | "kw_xmlattributecollection" | "kw_xmlcdata"
-        | "kw_xmlcomment" | "kw_xmldeclaration" | "kw_xmldocumenttype"
-        | "kw_xmlnamespacemanager" | "kw_xmlnametable"
-        | "kw_xmlprocessinginstruction" | "kw_xmlreadoptions" | "kw_xmltext"
-        | "kw_xmlwriteoptions" | "kw_textbuilder" | "kw_textconst"
-        | "kw_media" | "kw_mediaset" | "kw_notification" | "kw_errorinfo"
-        | "kw_secrettext" | "kw_filterpagebuilder" | "kw_datatransfer"
-        | "kw_sessionsettings" | "kw_testpage" | "kw_testrequestpage"
-        | "kw_fileupload" | "kw_cookie" => Some(token_types::TYPE),
+        "kw_integer"
+        | "kw_decimal"
+        | "kw_text"
+        | "kw_code"
+        | "kw_boolean"
+        | "kw_date"
+        | "kw_time"
+        | "kw_datetime"
+        | "kw_dateformula"
+        | "kw_duration"
+        | "kw_guid"
+        | "kw_blob"
+        | "kw_biginteger"
+        | "kw_bigtext"
+        | "kw_char"
+        | "kw_byte"
+        | "kw_option"
+        | "kw_record"
+        | "kw_recordid"
+        | "kw_recordref"
+        | "kw_dialog"
+        | "kw_file"
+        | "kw_instream"
+        | "kw_outstream"
+        | "kw_variant"
+        | "kw_list"
+        | "kw_dictionary"
+        | "kw_array"
+        | "kw_httpclient"
+        | "kw_httpcontent"
+        | "kw_httpheaders"
+        | "kw_httprequestmessage"
+        | "kw_httpresponsemessage"
+        | "kw_jsonarray"
+        | "kw_jsonobject"
+        | "kw_jsontoken"
+        | "kw_jsonvalue"
+        | "kw_xmldocument"
+        | "kw_xmlelement"
+        | "kw_xmlnode"
+        | "kw_xmlnodelist"
+        | "kw_xmlattribute"
+        | "kw_xmlattributecollection"
+        | "kw_xmlcdata"
+        | "kw_xmlcomment"
+        | "kw_xmldeclaration"
+        | "kw_xmldocumenttype"
+        | "kw_xmlnamespacemanager"
+        | "kw_xmlnametable"
+        | "kw_xmlprocessinginstruction"
+        | "kw_xmlreadoptions"
+        | "kw_xmltext"
+        | "kw_xmlwriteoptions"
+        | "kw_textbuilder"
+        | "kw_textconst"
+        | "kw_media"
+        | "kw_mediaset"
+        | "kw_notification"
+        | "kw_errorinfo"
+        | "kw_secrettext"
+        | "kw_filterpagebuilder"
+        | "kw_datatransfer"
+        | "kw_sessionsettings"
+        | "kw_testpage"
+        | "kw_testrequestpage"
+        | "kw_fileupload"
+        | "kw_cookie" => Some(token_types::TYPE),
 
         "type_keyword" => Some(token_types::TYPE),
 
@@ -193,14 +255,17 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         "property_keyword" => Some(token_types::PROPERTY),
 
         // Operator words (and, or, not, div, mod, xor, is, as)
-        "operator_word" | "op_and" | "op_or" | "op_not" | "op_div" | "op_mod"
-        | "op_xor" | "op_is" | "op_as" => Some(token_types::OPERATOR),
+        "operator_word" | "op_and" | "op_or" | "op_not" | "op_div" | "op_mod" | "op_xor"
+        | "op_is" | "op_as" => Some(token_types::OPERATOR),
 
         // Operators
         "operator" => Some(token_types::OPERATOR),
 
-        // Strings
-        "string" | "verbatim_string" => Some(token_types::STRING),
+        // Names and quoted object/type references need context-sensitive handling.
+        "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
+            classify_name_like_node(node)
+        }
+        "verbatim_string" => Some(token_types::STRING),
 
         // Numbers
         "integer" | "decimal" | "date_literal" | "time_literal" | "datetime_literal" => {
@@ -213,19 +278,18 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         // Directives (preprocessor)
         "directive" | "inactive_code" => Some(token_types::COMMENT),
 
-        // Identifiers — classify based on parent context
-        "identifier" | "quoted_identifier" => classify_identifier(node, source),
-
         _ => None,
     }
 }
 
-/// Classify an identifier based on its parent context.
-fn classify_identifier(node: Node, _source: &[u8]) -> Option<u32> {
+/// Classify identifiers and quoted names based on parent/ancestor context.
+fn classify_name_like_node(node: Node) -> Option<u32> {
     let parent = node.parent()?;
     match parent.kind() {
         // Function/procedure names
-        "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+        "procedure_declaration"
+        | "trigger_declaration"
+        | "event_procedure_declaration"
         | "event_declaration" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::FUNCTION)
@@ -242,7 +306,14 @@ fn classify_identifier(node: Node, _source: &[u8]) -> Option<u32> {
             }
         }
         // Variable declarations
-        "regular_variable_declaration" | "label_declaration" | "object_variable_declaration" => {
+        "regular_variable_declaration" => {
+            if is_regular_variable_name(node, parent) {
+                Some(token_types::VARIABLE)
+            } else {
+                None
+            }
+        }
+        "label_declaration" | "object_variable_declaration" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::VARIABLE)
             } else {
@@ -274,17 +345,117 @@ fn classify_identifier(node: Node, _source: &[u8]) -> Option<u32> {
             }
         }
         // Enum value names
-        "enum_value_declaration" => {
-            Some(token_types::ENUM_MEMBER)
+        "enum_value_declaration" => Some(token_types::ENUM_MEMBER),
+        "namespace_or_using_declaration" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::NAMESPACE)
+            } else {
+                None
+            }
         }
-        _ => None,
+        "object_declaration" => {
+            if is_object_name(node, parent) {
+                Some(token_types::TYPE)
+            } else {
+                None
+            }
+        }
+        _ => {
+            if has_ancestor_kind(node, "type_reference") {
+                Some(token_types::TYPE)
+            } else if matches!(node.kind(), "string" | "verbatim_string") {
+                Some(token_types::STRING)
+            } else {
+                None
+            }
+        }
     }
+}
+
+fn is_regular_variable_name(node: Node, declaration: Node) -> bool {
+    if declaration.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+        return true;
+    }
+
+    let Some(sep_start) = declaration
+        .child_by_field_name("sep")
+        .map(|sep| sep.start_byte())
+    else {
+        return false;
+    };
+
+    node.start_byte() < sep_start
+}
+
+fn is_object_name(node: Node, declaration: Node) -> bool {
+    if declaration.child_by_field_name("kind").map(|n| n.id()) == Some(node.id()) {
+        return false;
+    }
+    if declaration.child_by_field_name("id").map(|n| n.id()) == Some(node.id()) {
+        return false;
+    }
+    if declaration.child_by_field_name("body").map(|n| n.id()) == Some(node.id()) {
+        return false;
+    }
+
+    matches!(node.kind(), "identifier" | "quoted_identifier" | "string")
+}
+
+fn has_ancestor_kind(node: Node, kind: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == kind {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::AlParser;
+
+    fn decoded_tokens(tokens: &[SemanticToken]) -> Vec<(u32, u32, u32, u32)> {
+        let mut decoded = Vec::with_capacity(tokens.len());
+        let mut line = 0;
+        let mut col = 0;
+
+        for token in tokens {
+            line += token.delta_line;
+            if token.delta_line > 0 {
+                col = token.delta_start;
+            } else {
+                col += token.delta_start;
+            }
+            decoded.push((line, col, token.length, token.token_type));
+        }
+
+        decoded
+    }
+
+    fn token_text_at(source: &str, line: u32, col: u32, len: u32) -> Option<&str> {
+        let line = source.lines().nth(line as usize)?;
+        let start = col as usize;
+        let end = start + len as usize;
+        line.get(start..end)
+    }
+
+    fn assert_token_type_for_text(
+        source: &str,
+        tokens: &[SemanticToken],
+        text: &str,
+        expected: u32,
+    ) {
+        let found = decoded_tokens(tokens)
+            .into_iter()
+            .any(|(line, col, len, token_type)| {
+                token_type == expected && token_text_at(source, line, col, len) == Some(text)
+            });
+
+        assert!(found, "Expected token {:?} with type {}", text, expected);
+    }
 
     #[test]
     fn test_extract_semantic_tokens_basic() {
@@ -309,8 +480,15 @@ mod tests {
         }
 
         // Verify we get keyword tokens (begin, end, var, procedure, etc.)
-        let keyword_count = tokens.iter().filter(|t| t.token_type == token_types::KEYWORD).count();
-        assert!(keyword_count >= 3, "Should have at least 3 keyword tokens (codeunit, procedure, var, begin, end), got {}", keyword_count);
+        let keyword_count = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::KEYWORD)
+            .count();
+        assert!(
+            keyword_count >= 3,
+            "Should have at least 3 keyword tokens (codeunit, procedure, var, begin, end), got {}",
+            keyword_count
+        );
     }
 
     #[test]
@@ -326,7 +504,10 @@ mod tests {
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
 
-        let string_count = tokens.iter().filter(|t| t.token_type == token_types::STRING).count();
+        let string_count = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::STRING)
+            .count();
         assert!(string_count >= 1, "Should have at least 1 string token");
     }
 
@@ -345,8 +526,14 @@ mod tests {
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
 
-        let number_count = tokens.iter().filter(|t| t.token_type == token_types::NUMBER).count();
-        assert!(number_count >= 1, "Should have at least 1 number token (50100 or 42)");
+        let number_count = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::NUMBER)
+            .count();
+        assert!(
+            number_count >= 1,
+            "Should have at least 1 number token (50100 or 42)"
+        );
     }
 
     #[test]
@@ -380,9 +567,116 @@ mod tests {
             assert!(
                 (line, col) >= prev_pos,
                 "Tokens must be ordered: ({},{}) < ({},{})",
-                prev_pos.0, prev_pos.1, line, col
+                prev_pos.0,
+                prev_pos.1,
+                line,
+                col
             );
             prev_pos = (line, col);
         }
+    }
+
+    #[test]
+    fn test_tokens_empty_file() {
+        let mut parser = AlParser::new();
+        let result = parser.parse("");
+        let tokens = extract_semantic_tokens(&result.tree, "");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn test_tokens_has_keywords() {
+        let mut parser = AlParser::new();
+        let source = "codeunit 50100 Test { procedure DoIt() begin end; }";
+        let result = parser.parse(source);
+        let tokens = extract_semantic_tokens(&result.tree, source);
+        assert!(!tokens.is_empty(), "Should have tokens");
+        let keyword_count = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::KEYWORD)
+            .count();
+        assert!(keyword_count > 0, "Should have keyword tokens");
+    }
+
+    #[test]
+    fn test_tokens_has_strings() {
+        let mut parser = AlParser::new();
+        let source = "codeunit 50100 Test { procedure DoIt() begin Message('hello'); end; }";
+        let result = parser.parse(source);
+        let tokens = extract_semantic_tokens(&result.tree, source);
+        let string_count = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::STRING)
+            .count();
+        assert!(string_count > 0, "Should have string tokens");
+    }
+
+    #[test]
+    fn test_tokens_comment() {
+        let mut parser = AlParser::new();
+        let source = "// this is a comment\ncodeunit 50100 Test { }";
+        let result = parser.parse(source);
+        let tokens = extract_semantic_tokens(&result.tree, source);
+        let comment_count = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::COMMENT)
+            .count();
+        assert!(comment_count > 0, "Should have comment tokens");
+    }
+
+    #[test]
+    fn test_tokens_variable_declaration() {
+        let mut parser = AlParser::new();
+        let source = r#"codeunit 50100 Test {
+    procedure MyFunc()
+    var
+        Counter: Integer;
+    begin
+    end;
+}"#;
+        let result = parser.parse(source);
+        let tokens = extract_semantic_tokens(&result.tree, source);
+        // Should produce multiple token types for a procedure with a var section
+        let type_count = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::TYPE)
+            .count();
+        assert!(type_count > 0, "Should have type tokens for 'Integer'");
+    }
+
+    #[test]
+    fn test_tokens_quoted_object_and_type_names_are_classified_as_type() {
+        let mut parser = AlParser::new();
+        let source = r#"table 50100 "My Table"
+{
+    var
+        RecRef: Record "My Table";
+
+    procedure DoIt()
+    var
+        OtherRec: Record "Another Table";
+    begin
+    end;
+}"#;
+        let result = parser.parse(source);
+        let tokens = extract_semantic_tokens(&result.tree, source);
+
+        assert_token_type_for_text(source, &tokens, r#""My Table""#, token_types::TYPE);
+        assert_token_type_for_text(source, &tokens, r#""Another Table""#, token_types::TYPE);
+    }
+
+    #[test]
+    fn test_tokens_multi_variable_declaration_names_are_variables() {
+        let mut parser = AlParser::new();
+        let source = r#"codeunit 50100 Test
+{
+    var
+        FirstVar, "Second Var": Integer;
+}"#;
+        let result = parser.parse(source);
+        let tokens = extract_semantic_tokens(&result.tree, source);
+
+        assert_token_type_for_text(source, &tokens, "FirstVar", token_types::VARIABLE);
+        assert_token_type_for_text(source, &tokens, r#""Second Var""#, token_types::VARIABLE);
     }
 }

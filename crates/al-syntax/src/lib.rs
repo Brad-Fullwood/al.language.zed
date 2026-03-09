@@ -7,10 +7,12 @@ pub mod lint;
 pub mod symbols;
 pub mod tokens;
 pub mod folding;
+pub mod type_resolver;
+pub mod context;
 
 pub use parser::{AlParser, ParseResult, SyntaxError};
 pub use formatting::{format_al, FormatOptions};
-pub use lint::{lint, LintDiagnostic, LintSeverity};
+pub use lint::{lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity};
 pub use symbols::extract_document_symbols;
 pub use tokens::{extract_semantic_tokens, SemanticToken};
 pub use folding::extract_folding_ranges;
@@ -18,6 +20,8 @@ pub use navigation::{
     find_node_at_position, find_object_declaration, find_procedure_at,
     find_variable_references, ObjectInfo, ProcedureInfo, ParameterInfo,
 };
+pub use type_resolver::{TypeResolver, VariableDecl, VariableScope};
+pub use context::{detect_context, extract_last_identifier, find_call_context, CompletionContext};
 
 /// Convert a tree-sitter Range to an LSP Range.
 pub fn ts_range_to_lsp(range: &tree_sitter::Range) -> tower_lsp::lsp_types::Range {

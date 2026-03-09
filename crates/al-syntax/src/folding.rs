@@ -235,4 +235,58 @@ codeunit 50100 Test
         // Just verify it doesn't panic
         assert!(ranges.len() >= 0);
     }
+
+    #[test]
+    fn test_folding_empty_file() {
+        let mut parser = AlParser::new();
+        let result = parser.parse("");
+        let ranges = extract_folding_ranges(&result.tree, "");
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn test_folding_consecutive_comments_at_top() {
+        let mut parser = AlParser::new();
+        let source = "// Line 1\n// Line 2\n// Line 3\ncodeunit 50100 Test { }";
+        let result = parser.parse(source);
+        let ranges = extract_folding_ranges(&result.tree, source);
+        // Should have a comment block fold for the 3 consecutive comment lines
+        let comment_folds: Vec<_> = ranges.iter()
+            .filter(|r| r.kind.as_ref().map_or(false, |k| matches!(k, FoldingRangeKind::Comment)))
+            .collect();
+        assert!(!comment_folds.is_empty(), "Should have comment block fold");
+    }
+
+    #[test]
+    fn test_folding_procedure_body() {
+        let mut parser = AlParser::new();
+        let source = r#"codeunit 50100 Test {
+    procedure LongProc()
+    begin
+        Message('a');
+        Message('b');
+        Message('c');
+    end;
+}"#;
+        let result = parser.parse(source);
+        let ranges = extract_folding_ranges(&result.tree, source);
+        assert!(!ranges.is_empty(), "Should have folding ranges for procedure");
+    }
+
+    #[test]
+    fn test_folding_single_comment_line_no_fold() {
+        let mut parser = AlParser::new();
+        let source = "// Just one comment line\ncodeunit 50100 Test { }";
+        let result = parser.parse(source);
+        let ranges = extract_folding_ranges(&result.tree, source);
+        // A single comment line should NOT produce a comment block fold
+        let single_line_comment_folds: Vec<_> = ranges.iter()
+            .filter(|r| {
+                r.kind == Some(FoldingRangeKind::Comment)
+                    && r.start_line == r.end_line
+            })
+            .collect();
+        // Single-line comment blocks should not exist (block must span 2+ lines)
+        assert!(single_line_comment_folds.is_empty(), "Single comment line should not produce fold");
+    }
 }

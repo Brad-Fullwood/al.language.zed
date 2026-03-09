@@ -231,7 +231,7 @@ impl zed::Extension for AlExtension {
 
         Ok(zed::DebugScenario {
             label: config.label.clone(),
-            adapter: "AL".to_string(),
+            adapter: "al".to_string(),
             build: None,
             config: config_json,
             tcp_connection: None,

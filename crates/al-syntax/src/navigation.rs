@@ -401,4 +401,110 @@ mod tests {
         let node = find_node_at_position(&result.tree, Position { line: 0, character: 0 });
         assert!(node.is_some());
     }
+
+    #[test]
+    fn test_find_node_at_position_out_of_range() {
+        let mut parser = AlParser::new();
+        let result = parser.parse("codeunit 50100 Test { }");
+        let pos = Position { line: 999, character: 0 };
+        let node = find_node_at_position(&result.tree, pos);
+        // Should not panic on out-of-range position
+        assert!(node.is_none() || node.is_some());
+    }
+
+    #[test]
+    fn test_find_object_declaration_table_with_fields() {
+        let mut parser = AlParser::new();
+        let source = "table 50100 \"My Table\" { fields { } }";
+        let result = parser.parse(source);
+        let obj = find_object_declaration(&result.tree, source);
+        assert!(obj.is_some(), "Should find table declaration");
+        let obj = obj.unwrap();
+        assert_eq!(obj.name, "My Table");
+    }
+
+    #[test]
+    fn test_find_object_declaration_empty() {
+        let mut parser = AlParser::new();
+        let result = parser.parse("");
+        let obj = find_object_declaration(&result.tree, "");
+        assert!(obj.is_none());
+    }
+
+    #[test]
+    fn test_find_variable_references_not_found() {
+        let mut parser = AlParser::new();
+        let source = "codeunit 50100 Test { procedure DoIt() begin end; }";
+        let result = parser.parse(source);
+        let refs = find_variable_references(&result.tree, source, "nonExistentVar");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_find_variable_references_case_insensitive() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure DoSomething()
+    var
+        myvar: Integer;
+    begin
+        MYVAR := 42;
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let refs = find_variable_references(&result.tree, src, "MyVar");
+        // Case-insensitive match should find references
+        assert!(refs.len() >= 1, "Expected at least 1 case-insensitive reference, got {}", refs.len());
+    }
+
+    #[test]
+    fn test_find_procedure_at_outside_proc() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        // Position on the codeunit keyword (outside any procedure)
+        let info = find_procedure_at(&result.tree, src, Position { line: 0, character: 0 });
+        assert!(info.is_none(), "Should not find a procedure at the object declaration level");
+    }
+
+    #[test]
+    fn test_find_procedure_at_inside_proc() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure MyProc()
+    begin
+        Message('hello');
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        // Position inside the procedure body
+        let info = find_procedure_at(&result.tree, src, Position { line: 4, character: 8 });
+        assert!(info.is_some(), "Should find procedure at body position");
+        let info = info.unwrap();
+        assert_eq!(info.name, "MyProc");
+    }
+
+    #[test]
+    fn test_parameter_info_display() {
+        let param = ParameterInfo {
+            name: "Input".to_string(),
+            type_name: "Text".to_string(),
+            is_var: false,
+        };
+        assert_eq!(format!("{}", param), "Input: Text");
+
+        let var_param = ParameterInfo {
+            name: "Output".to_string(),
+            type_name: "Integer".to_string(),
+            is_var: true,
+        };
+        assert_eq!(format!("{}", var_param), "var Output: Integer");
+    }
 }

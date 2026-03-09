@@ -9,5 +9,5 @@ pub mod diagnostics;
 pub mod formatting;
 pub mod document;
 pub mod workspace;
-pub mod type_resolver;
 mod parsing;
+mod resolution;

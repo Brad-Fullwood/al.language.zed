@@ -4,6 +4,7 @@
 //! locates .alpackages, and provides NuGet feed URLs.
 
 pub mod jsonrpc;
+pub mod launch;
 
 use std::path::{Path, PathBuf};
 
@@ -38,6 +39,8 @@ pub struct AlProject {
     pub app_json: AppManifest,
     pub packages_dir: PathBuf,
     pub packages: Vec<PathBuf>,
+    /// Server configs from launch.json for downloading symbols from a BC instance.
+    pub server_configs: Vec<launch::BcServerConfig>,
 }
 
 /// Parsed app.json manifest.
@@ -73,6 +76,69 @@ pub struct AppDependency {
 pub struct NuGetFeed {
     pub name: String,
     pub index_url: String,
+}
+
+// Well-known BC package GUIDs for implicit dependencies.
+const APPLICATION_APP_ID: &str = "c1335042-3002-4257-bf8a-75c898ccb1b8";
+const BASE_APPLICATION_APP_ID: &str = "437dbf0e-84ff-417a-965d-ed2bb9650972";
+const BUSINESS_FOUNDATION_APP_ID: &str = "f3552374-a1f2-4356-848e-196002525837";
+const SYSTEM_APPLICATION_APP_ID: &str = "63ca2fa4-4f03-4f2b-a480-172fef340d3f";
+const SYSTEM_APP_ID: &str = "8874ed3a-0643-4247-9ced-7a7002f7135d";
+
+impl AlProject {
+    /// Compute the full dependency list including implicit BC dependencies.
+    ///
+    /// BC projects have implicit dependencies derived from `application` and `platform`
+    /// properties in app.json:
+    /// - `application` → Application + System Application packages
+    /// - `platform` → System package (version derived from application major)
+    pub fn all_dependencies(&self) -> Vec<AppDependency> {
+        let mut deps = self.app_json.dependencies.clone();
+
+        // Add implicit Application dependency chain.
+        // "Application" is a stub that depends on "Base Application" + "Business Foundation".
+        // We need all of them for complete symbol coverage.
+        if let Some(app_version) = &self.app_json.application {
+            for (id, name) in [
+                (APPLICATION_APP_ID, "Application"),
+                (BASE_APPLICATION_APP_ID, "Base Application"),
+                (BUSINESS_FOUNDATION_APP_ID, "Business Foundation"),
+                (SYSTEM_APPLICATION_APP_ID, "System Application"),
+            ] {
+                if !deps.iter().any(|d| d.id == id) {
+                    deps.push(AppDependency {
+                        id: id.to_string(),
+                        name: name.to_string(),
+                        publisher: "Microsoft".to_string(),
+                        version: app_version.clone(),
+                    });
+                }
+            }
+        }
+
+        // Add implicit System (platform) dependency.
+        // The platform version in app.json is a minimum (often "1.0.0.0"),
+        // so derive actual version from the application major version.
+        if self.app_json.platform.is_some() {
+            if !deps.iter().any(|d| d.id == SYSTEM_APP_ID) {
+                let platform_version = self
+                    .app_json
+                    .application
+                    .as_ref()
+                    .and_then(|v| v.split('.').next())
+                    .map(|major| format!("{}.0.0.0", major))
+                    .unwrap_or_else(|| "26.0.0.0".to_string());
+                deps.push(AppDependency {
+                    id: SYSTEM_APP_ID.to_string(),
+                    name: "System".to_string(),
+                    publisher: "Microsoft".to_string(),
+                    version: platform_version,
+                });
+            }
+        }
+
+        deps
+    }
 }
 
 /// Errors with actionable messages.
@@ -368,12 +434,16 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
 
             let packages_dir = dir.join(".alpackages");
             let packages = scan_packages(&packages_dir);
+            let server_configs = launch::find_launch_config(dir)
+                .map(|lf| lf.configs)
+                .unwrap_or_default();
 
             return Ok(AlProject {
                 root: dir.to_path_buf(),
                 app_json: manifest,
                 packages_dir,
                 packages,
+                server_configs,
             });
         }
 
@@ -417,20 +487,20 @@ fn scan_packages(packages_dir: &Path) -> Vec<PathBuf> {
 // nuget_feeds
 // ---------------------------------------------------------------------------
 
-/// Returns the 3 public BC NuGet feeds.
+/// Returns the 3 public BC NuGet feeds (Azure DevOps hosted).
 pub fn nuget_feeds() -> Vec<NuGetFeed> {
     vec![
         NuGetFeed {
-            name: "AppSource Symbols".into(),
-            index_url: "https://dynamicssmb.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/AppSourceSymbols/nuget/v3/index.json".into(),
+            name: "BC Symbols".into(),
+            index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json".into(),
         },
         NuGetFeed {
-            name: "BC Symbols".into(),
-            index_url: "https://dynamicssmb.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json".into(),
+            name: "AppSource Symbols".into(),
+            index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/AppSourceSymbols/nuget/v3/index.json".into(),
         },
         NuGetFeed {
             name: "BC Public".into(),
-            index_url: "https://dynamicssmb.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/BCPublic/nuget/v3/index.json".into(),
+            index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/BCPublic/nuget/v3/index.json".into(),
         },
     ]
 }
@@ -652,6 +722,164 @@ mod tests {
         fs::write(pkg_dir.join("skip.txt"), b"data").unwrap();
         let packages = scan_packages(&pkg_dir);
         assert_eq!(packages.len(), 2);
+    }
+
+    #[test]
+    fn test_all_dependencies_includes_implicit() {
+        let project = AlProject {
+            root: PathBuf::from("/tmp/fake"),
+            app_json: AppManifest {
+                id: "00000000-0000-0000-0000-000000000000".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: vec![],
+                application: Some("25.0.0.0".to_string()),
+                platform: Some("25.0.0.0".to_string()),
+                runtime: Some("14.0".to_string()),
+            },
+            packages_dir: PathBuf::from("/tmp/fake/.alpackages"),
+            packages: vec![],
+            server_configs: vec![],
+        };
+        let all = project.all_dependencies();
+        // Should include Application, Base Application, Business Foundation, System Application, System
+        assert!(all.len() >= 5, "Expected at least 5 implicit deps, got {}", all.len());
+        let names: Vec<&str> = all.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"Application"));
+        assert!(names.contains(&"Base Application"));
+        assert!(names.contains(&"Business Foundation"));
+        assert!(names.contains(&"System Application"));
+        assert!(names.contains(&"System"));
+    }
+
+    #[test]
+    fn test_all_dependencies_no_implicit_without_application() {
+        let project = AlProject {
+            root: PathBuf::from("/tmp/fake"),
+            app_json: AppManifest {
+                id: "00000000-0000-0000-0000-000000000000".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: vec![],
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: PathBuf::from("/tmp/fake/.alpackages"),
+            packages: vec![],
+            server_configs: vec![],
+        };
+        let all = project.all_dependencies();
+        assert!(all.is_empty(), "No implicit deps when application/platform are None");
+    }
+
+    #[test]
+    fn test_all_dependencies_no_duplicate_system_app() {
+        // If System Application is already in dependencies, it should not be duplicated
+        let project = AlProject {
+            root: PathBuf::from("/tmp/fake"),
+            app_json: AppManifest {
+                id: "00000000-0000-0000-0000-000000000000".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: vec![
+                    AppDependency {
+                        id: SYSTEM_APPLICATION_APP_ID.to_string(),
+                        name: "System Application".to_string(),
+                        publisher: "Microsoft".to_string(),
+                        version: "25.0.0.0".to_string(),
+                    },
+                ],
+                application: Some("25.0.0.0".to_string()),
+                platform: Some("1.0.0.0".to_string()),
+                runtime: None,
+            },
+            packages_dir: PathBuf::from("/tmp/fake/.alpackages"),
+            packages: vec![],
+            server_configs: vec![],
+        };
+        let all = project.all_dependencies();
+        let sys_app_count = all.iter().filter(|d| d.id == SYSTEM_APPLICATION_APP_ID).count();
+        assert_eq!(sys_app_count, 1, "System Application should not be duplicated");
+    }
+
+    #[test]
+    fn test_platform_version_derived_from_application_major() {
+        let project = AlProject {
+            root: PathBuf::from("/tmp/fake"),
+            app_json: AppManifest {
+                id: "00000000-0000-0000-0000-000000000000".to_string(),
+                name: "Test".to_string(),
+                publisher: "Test".to_string(),
+                version: "1.0.0.0".to_string(),
+                dependencies: vec![],
+                application: Some("26.1.2.3".to_string()),
+                platform: Some("1.0.0.0".to_string()),
+                runtime: None,
+            },
+            packages_dir: PathBuf::from("/tmp/fake/.alpackages"),
+            packages: vec![],
+            server_configs: vec![],
+        };
+        let all = project.all_dependencies();
+        let system = all.iter().find(|d| d.name == "System").expect("Should have System dep");
+        assert_eq!(system.version, "26.0.0.0", "Platform version should derive from application major");
+    }
+
+    #[test]
+    fn test_scan_packages_empty_dir() {
+        let tmp = tempdir();
+        let pkg_dir = tmp.join("empty-packages");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let packages = scan_packages(&pkg_dir);
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn test_scan_packages_nonexistent_dir() {
+        let packages = scan_packages(Path::new("/nonexistent/path/packages"));
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn test_extract_version_edge_cases() {
+        // No version components
+        assert_eq!(extract_version_from_path(Path::new("/")), "unknown");
+        // Single digit version
+        assert_eq!(extract_version_from_path(Path::new("/opt/tools/1.0")), "1.0");
+        // Path with non-version numbers
+        assert_eq!(extract_version_from_path(Path::new("/home/user123/tools")), "unknown");
+    }
+
+    #[test]
+    fn test_app_manifest_with_extra_fields() {
+        // app.json may contain additional fields not in our struct — serde should ignore them
+        let json = serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000000",
+            "name": "Test",
+            "publisher": "Publisher",
+            "version": "1.0.0.0",
+            "target": "Cloud",
+            "idRanges": [{ "from": 50100, "to": 50199 }],
+            "extraUnknownField": true
+        })
+        .to_string();
+        let manifest: Result<AppManifest, _> = serde_json::from_str(&json);
+        // This should not fail — serde default is to ignore unknown fields unless deny_unknown_fields
+        assert!(manifest.is_ok(), "Should deserialize with unknown fields");
+    }
+
+    #[test]
+    fn test_nuget_feeds_urls_are_valid() {
+        let feeds = nuget_feeds();
+        for feed in &feeds {
+            assert!(feed.index_url.starts_with("https://"), "Feed URL should use HTTPS: {}", feed.index_url);
+            assert!(feed.index_url.ends_with("index.json"), "Feed URL should end with index.json: {}", feed.index_url);
+            assert!(feed.index_url.contains("dynamicssmb2"), "Feed URL should use dynamicssmb2 domain: {}", feed.index_url);
+        }
     }
 
     fn tempdir() -> PathBuf {

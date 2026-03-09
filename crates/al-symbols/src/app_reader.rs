@@ -128,8 +128,34 @@ fn read_symbol_reference(
     let mut json_bytes = Vec::new();
     file.read_to_end(&mut json_bytes)?;
 
-    let sr: SymbolReferenceJson = serde_json::from_slice(&json_bytes)?;
+    let sr = parse_symbol_reference_json(&json_bytes)?;
     Ok(sr.into_entries(package_name))
+}
+
+fn parse_symbol_reference_json(json_bytes: &[u8]) -> Result<SymbolReferenceJson, AppReaderError> {
+    let json_slice = strip_utf8_bom(json_bytes);
+    let mut values =
+        serde_json::Deserializer::from_slice(json_slice).into_iter::<SymbolReferenceJson>();
+
+    match values.next().transpose()? {
+        Some(sr) if has_only_json_padding(&json_slice[values.byte_offset()..]) => Ok(sr),
+        _ => Ok(serde_json::from_slice(json_slice)?),
+    }
+}
+
+fn strip_utf8_bom(bytes: &[u8]) -> &[u8] {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &bytes[3..]
+    } else {
+        bytes
+    }
+}
+
+fn has_only_json_padding(bytes: &[u8]) -> bool {
+    // Real BC packages may leave NUL padding or a DOS EOF marker after the JSON payload.
+    bytes
+        .iter()
+        .all(|byte| byte.is_ascii_whitespace() || matches!(byte, 0x00 | 0x1A))
 }
 
 /// Find a file in the archive by name (case-insensitive, ignoring path prefixes).
@@ -298,5 +324,32 @@ mod tests {
 
         let pkg = read_app_bytes(&data).unwrap();
         assert_eq!(pkg.name, "Test App");
+    }
+
+    #[test]
+    fn read_symbol_reference_with_bom_and_trailing_padding() {
+        let mut symbols = String::from("\u{feff}");
+        symbols.push_str(&test_symbols());
+        symbols.push('\0');
+        symbols.push('\0');
+        symbols.push('\u{001a}');
+        symbols.push('\n');
+
+        let data = make_test_app(&test_manifest(), &symbols);
+        let pkg = read_app_bytes(&data).unwrap();
+
+        assert_eq!(pkg.name, "Test App");
+        assert_eq!(pkg.objects.len(), 2);
+    }
+
+    #[test]
+    fn reject_symbol_reference_with_non_padding_trailing_bytes() {
+        let mut symbols = test_symbols();
+        symbols.push_str("oops");
+
+        let data = make_test_app(&test_manifest(), &symbols);
+        let err = read_app_bytes(&data).unwrap_err();
+
+        assert!(matches!(err, AppReaderError::Json(_)));
     }
 }

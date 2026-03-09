@@ -102,9 +102,12 @@ fn spawn_dotnet_run(project_dir: &Path, code_analysis_path: &Path) -> Result<Chi
 /// 1. The `CARGO_MANIFEST_DIR` (for development/test builds)
 /// 2. The current executable directory
 fn find_dotnet_project() -> Option<PathBuf> {
-    // During development, CARGO_MANIFEST_DIR points to crates/al-semantic/
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        let candidate = PathBuf::from(&manifest_dir).join(DOTNET_PROJECT_DIR);
+    // During development, use the compile-time manifest dir as the stable base.
+    let manifest_dir = option_env!("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("CARGO_MANIFEST_DIR").ok().map(PathBuf::from));
+    if let Some(manifest_dir) = manifest_dir {
+        let candidate = manifest_dir.join(DOTNET_PROJECT_DIR);
         if candidate.join("AlSemantic.csproj").is_file() {
             return Some(candidate);
         }

@@ -84,23 +84,32 @@ pub struct CompletionItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuiltinType {
     pub name: String,
+    #[serde(default)]
     pub methods: Vec<BuiltinMethod>,
 }
 
 /// A method on a built-in type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuiltinMethod {
     pub name: String,
+    #[serde(default)]
     pub parameters: Vec<MethodParameter>,
+    #[serde(default)]
     pub return_type: Option<String>,
+    #[serde(default)]
     pub documentation: String,
 }
 
 /// A method parameter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MethodParameter {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub type_name: String,
+    #[serde(default)]
     pub is_var: bool,
 }
 
@@ -240,10 +249,11 @@ impl SemanticBridge {
         match read_result {
             Ok(Ok(0)) => Err(SemanticError::ProcessDied),
             Ok(Ok(_)) => {
-                let response: Response = serde_json::from_str(line.trim())
-                    .map_err(|e| SemanticError::SerializationError(format!(
+                let response: Response = serde_json::from_str(line.trim()).map_err(|e| {
+                    SemanticError::SerializationError(format!(
                         "Failed to parse response: {e}. Raw: {line}"
-                    )))?;
+                    ))
+                })?;
 
                 if response.id != id {
                     return Err(SemanticError::SerializationError(format!(
@@ -267,20 +277,21 @@ impl SemanticBridge {
     }
 
     /// Run CodeAnalysis analyzers on a source file.
-    pub async fn analyze(&self, req: AnalyzeRequest) -> Result<Vec<DiagnosticEntry>, SemanticError> {
+    pub async fn analyze(
+        &self,
+        req: AnalyzeRequest,
+    ) -> Result<Vec<DiagnosticEntry>, SemanticError> {
         let params = serde_json::to_value(&req)
             .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
         let result = self.call("analyze", params).await?;
-        serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
     }
 
     /// Invoke the CodeAnalysis Compilation API on a project directory.
     pub async fn compile(&self, project: &Path) -> Result<CompileResult, SemanticError> {
         let params = serde_json::json!({ "project": project });
         let result = self.call("compile", params).await?;
-        serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
     }
 
     /// Resolve the type of the symbol at the given position.
@@ -315,22 +326,19 @@ impl SemanticBridge {
             "column": pos.1,
         });
         let result = self.call("completions", params).await?;
-        serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
     }
 
     /// Extract all built-in types and methods from CodeAnalysis.
     pub async fn builtin_types(&self) -> Result<Vec<BuiltinType>, SemanticError> {
         let result = self.call("builtins", serde_json::Value::Null).await?;
-        serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
     }
 
     /// List all compiler error codes from CodeAnalysis.
     pub async fn error_codes(&self) -> Result<Vec<ErrorCodeInfo>, SemanticError> {
         let result = self.call("errorCodes", serde_json::Value::Null).await?;
-        serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
     }
 
     /// Health check — verifies the .NET process is alive and responsive.
@@ -371,9 +379,9 @@ impl SemanticBridge {
     pub async fn is_alive(&self) -> bool {
         let mut child = self.child.lock().await;
         match child.try_wait() {
-            Ok(None) => true,  // Still running
-            Ok(Some(_)) => false,  // Exited
-            Err(_) => false,  // Error checking
+            Ok(None) => true,     // Still running
+            Ok(Some(_)) => false, // Exited
+            Err(_) => false,      // Error checking
         }
     }
 }
@@ -553,7 +561,10 @@ mod tests {
     #[test]
     fn test_semantic_error_display() {
         let err = SemanticError::SpawnFailed("dotnet not found".to_string());
-        assert_eq!(err.to_string(), "Failed to spawn .NET bridge: dotnet not found");
+        assert_eq!(
+            err.to_string(),
+            "Failed to spawn .NET bridge: dotnet not found"
+        );
 
         let err = SemanticError::ProcessDied;
         assert_eq!(err.to_string(), "Bridge process died unexpectedly");
@@ -668,7 +679,7 @@ mod tests {
             is_var: true,
         };
         let json = serde_json::to_value(&param).unwrap();
-        assert_eq!(json["is_var"], true);
+        assert_eq!(json["isVar"], true);
 
         let parsed: MethodParameter = serde_json::from_value(json).unwrap();
         assert!(parsed.is_var);
