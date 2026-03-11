@@ -207,6 +207,45 @@ enum Commands {
         #[arg(long)]
         rule: Option<String>,
     },
+    /// Query diagnostic logs from the LSP
+    #[cfg(feature = "diagnostics")]
+    Diag {
+        #[command(subcommand)]
+        action: DiagAction,
+    },
+}
+
+#[cfg(feature = "diagnostics")]
+#[derive(Subcommand)]
+enum DiagAction {
+    /// Show summary of the latest session
+    Summary,
+    /// Show recent events (most recent first)
+    Recent {
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+        /// Filter by level (DEBUG, INFO, WARN, ERROR)
+        #[arg(long)]
+        level: Option<String>,
+        /// Filter by target module (substring match)
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// Show resolution failures (hover/definition/completion misses)
+    Failures,
+    /// Show slowest operations
+    Slow {
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+    /// Search events by text
+    Search {
+        query: String,
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+    },
+    /// List recorded sessions
+    Sessions,
 }
 
 // ---------------------------------------------------------------------------
@@ -1901,37 +1940,16 @@ fn cmd_definition(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
         return ExitCode::SUCCESS;
     }
 
-    // 1. In-file: find variable references (first is declaration)
-    let refs = al_syntax::find_variable_references(&result.tree, &source, clean_name);
-    if refs.len() > 1 {
-        let first = &refs[0];
-        let def_line = first.start_point.row as u32 + 1;
-        let def_col = first.start_point.column as u32 + 1;
-        // Skip if the definition IS the cursor position
-        if def_line != line || def_col != col {
-            let file_path = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
-            if json {
-                print_json(&LocationJson {
-                    file: file_path.display().to_string(),
-                    line: def_line,
-                    column: def_col,
-                    end_line: first.end_point.row as u32 + 1,
-                    end_column: first.end_point.column as u32 + 1,
-                });
-            } else {
-                println!("{}:{}:{}", file_path.display(), def_line, def_col);
-            }
-            return ExitCode::SUCCESS;
-        }
-    }
+    let looks_like_object_name = node.kind() == "quoted_identifier" || clean_name.contains(' ');
 
-    // 2. Workspace search
-    if workspace {
+    // 1. For object-like names, check workspace objects and package symbols first
+    //    (Same priority order as the LSP handler in al-lsp/src/definition.rs)
+    if looks_like_object_name && workspace {
         let cwd = std::env::current_dir().unwrap_or_default();
         let ws = CliWorkspace::load(cwd);
         let file_abs = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
 
-        // Check object name index
+        // Check workspace object name index
         if let Some(obj_path) = ws.objects.get(&clean_name.to_lowercase()) {
             if *obj_path != file_abs {
                 if let Some(file_text) = ws.files.get(obj_path) {
@@ -1955,8 +1973,64 @@ fn cmd_definition(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
                 }
             }
         }
+    }
 
-        // Search workspace files for matching procedures
+    // 2. Package symbols — generate virtual AL file (same code path as LSP)
+    if looks_like_object_name {
+        if let Ok((_project, index, _packages)) = load_project_symbols() {
+            let entries = index.get_by_name(clean_name);
+            if let Some(entry) = entries.into_iter().find(|e| !e.kind.is_extension()) {
+                match al_symbols::virtual_file::get_or_create(&entry) {
+                    Ok(vpath) => {
+                        if json {
+                            print_json(&LocationJson {
+                                file: vpath.display().to_string(),
+                                line: 1,
+                                column: 1,
+                                end_line: 1,
+                                end_column: 1,
+                            });
+                        } else {
+                            println!("{}:1:1", vpath.display());
+                        }
+                        return ExitCode::SUCCESS;
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: failed to create virtual file: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. In-file: TypeResolver then textual fallback
+    let refs = al_syntax::find_variable_references(&result.tree, &source, clean_name);
+    if refs.len() > 1 {
+        let first = &refs[0];
+        let def_line = first.start_point.row as u32 + 1;
+        let def_col = first.start_point.column as u32 + 1;
+        if def_line != line || def_col != col {
+            let file_path = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+            if json {
+                print_json(&LocationJson {
+                    file: file_path.display().to_string(),
+                    line: def_line,
+                    column: def_col,
+                    end_line: first.end_point.row as u32 + 1,
+                    end_column: first.end_point.column as u32 + 1,
+                });
+            } else {
+                println!("{}:{}:{}", file_path.display(), def_line, def_col);
+            }
+            return ExitCode::SUCCESS;
+        }
+    }
+
+    // 4. Workspace procedure search
+    if workspace {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let ws = CliWorkspace::load(cwd);
+        let file_abs = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
         for (path, text) in &ws.files {
             if *path == file_abs { continue; }
             let ws_result = parser.parse(text);
@@ -3162,6 +3236,128 @@ fn get_line_indent(lines: &[&str], line: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Diagnostics (feature-gated)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "diagnostics")]
+fn diag_db_path() -> std::path::PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("al-lsp")
+        .join("logs")
+        .join("al-diag.db")
+}
+
+#[cfg(feature = "diagnostics")]
+fn cmd_diag(action: DiagAction, json: bool) -> ExitCode {
+    let path = diag_db_path();
+    if !path.exists() {
+        eprintln!("No diagnostic database found at {}", path.display());
+        eprintln!("Start the LSP with diagnostics enabled to generate data.");
+        return ExitCode::FAILURE;
+    }
+    let conn = match al_diag::query::open(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to open diagnostic database: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match action {
+        DiagAction::Summary => {
+            let summary = al_diag::query::summarize(&conn);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+            } else {
+                println!("Session {} — {} events, {} failures",
+                    summary.session_id, summary.total_events, summary.failure_count);
+                println!("\nBy level:");
+                for (level, count) in &summary.by_level {
+                    println!("  {level:>5}: {count}");
+                }
+                println!("\nTop targets:");
+                for (target, count) in &summary.by_target {
+                    println!("  {target}: {count}");
+                }
+                if summary.avg_span_duration_us > 0 {
+                    println!("\nAvg span duration: {}µs", summary.avg_span_duration_us);
+                }
+            }
+        }
+        DiagAction::Recent { limit, level, target } => {
+            let events = al_diag::query::recent_events(&conn, limit, level.as_deref(), target.as_deref());
+            if json {
+                println!("{}", serde_json::to_string_pretty(&events).unwrap());
+            } else {
+                for e in events.iter().rev() {
+                    let spans = if e.spans.is_empty() { String::new() } else { format!(" [{}]", e.spans) };
+                    let fields = if e.fields.is_empty() { String::new() } else { format!(" {}", e.fields) };
+                    println!("{:>5} {}{}: {}{}", e.level, e.target, spans, e.msg, fields);
+                }
+            }
+        }
+        DiagAction::Failures => {
+            let failures = al_diag::query::resolution_failures(&conn, None);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&failures).unwrap());
+            } else {
+                if failures.is_empty() {
+                    println!("No resolution failures found in latest session.");
+                } else {
+                    println!("{} resolution failures:", failures.len());
+                    for e in &failures {
+                        let spans = if e.spans.is_empty() { String::new() } else { format!(" [{}]", e.spans) };
+                        let fields = if e.fields.is_empty() { String::new() } else { format!(" {}", e.fields) };
+                        println!("  {}{}: {}{}", e.target, spans, e.msg, fields);
+                    }
+                }
+            }
+        }
+        DiagAction::Slow { limit } => {
+            let slow = al_diag::query::slow_spans(&conn, limit);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&slow).unwrap());
+            } else {
+                if slow.is_empty() {
+                    println!("No span timings recorded.");
+                } else {
+                    println!("Slowest operations:");
+                    for s in &slow {
+                        let fields = if s.fields.is_empty() { String::new() } else { format!(" {}", s.fields) };
+                        println!("  {:>8}µs  {}{}", s.duration_us, s.name, fields);
+                    }
+                }
+            }
+        }
+        DiagAction::Search { query, limit } => {
+            let results = al_diag::query::search(&conn, &query, limit);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&results).unwrap());
+            } else {
+                for e in results.iter().rev() {
+                    let spans = if e.spans.is_empty() { String::new() } else { format!(" [{}]", e.spans) };
+                    let fields = if e.fields.is_empty() { String::new() } else { format!(" {}", e.fields) };
+                    println!("{:>5} {}{}: {}{}", e.level, e.target, spans, e.msg, fields);
+                }
+            }
+        }
+        DiagAction::Sessions => {
+            let sessions = al_diag::query::sessions(&conn);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&sessions).unwrap());
+            } else {
+                for s in &sessions {
+                    println!("Session {} — started {} (pid {}) — {} events",
+                        s.id, s.started_at, s.pid, s.event_count);
+                }
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -3196,6 +3392,8 @@ fn main() -> ExitCode {
         Commands::Parse { file } => cmd_parse(&file, cli.json),
         Commands::Hints { file, start_line, end_line } => cmd_hints(&file, start_line, end_line, cli.json),
         Commands::Fix { file, all, dry_run, rule } => cmd_fix(file.as_deref(), all, dry_run, rule.as_deref(), cli.json),
+        #[cfg(feature = "diagnostics")]
+        Commands::Diag { action } => cmd_diag(action, cli.json),
     }
 }
 

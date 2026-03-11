@@ -42,10 +42,19 @@ async fn main() {
 
     let file_filter = tracing_subscriber::EnvFilter::new("debug");
 
-    tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(stderr_layer.with_filter(env_filter))
-        .with(file_layer.with_filter(file_filter))
-        .init();
+        .with(file_layer.with_filter(file_filter));
+
+    // Structured JSON diagnostics layer (feature-gated)
+    #[cfg(feature = "diagnostics")]
+    let registry = {
+        let diag_filter = tracing_subscriber::EnvFilter::new("debug");
+        let diag_layer = al_diag::DiagLayer::new(log_dir.join("al-diag.db"));
+        registry.with(diag_layer.with_filter(diag_filter))
+    };
+
+    registry.init();
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),

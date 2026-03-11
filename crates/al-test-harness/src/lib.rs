@@ -64,6 +64,8 @@ pub struct LspClient {
     next_id: AtomicI64,
     pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
     notifications: mpsc::UnboundedReceiver<(String, Value)>,
+    /// Notifications consumed by internal waits that should still be visible to tests.
+    buffered_notifications: Vec<(String, Value)>,
     root_path: PathBuf,
     open_docs: HashMap<String, i32>, // uri -> version
 }
@@ -103,6 +105,7 @@ impl LspClient {
             next_id: AtomicI64::new(1),
             pending,
             notifications: notif_rx,
+            buffered_notifications: Vec::new(),
             root_path,
             open_docs: HashMap::new(),
         };
@@ -156,16 +159,38 @@ impl LspClient {
 
         let result = self.request("initialize", params).await?;
 
-        // Send initialized notification
+        // Send initialized notification — triggers async workspace init
         self.notify("initialized", serde_json::json!({})).await?;
 
-        // Give the server time to run workspace init
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Wait for workspace initialization by polling workspace/symbol.
+        // The server loads packages asynchronously; completions/hover won't work
+        // until symbols are available. We probe until we get results or timeout.
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!("Timed out waiting for workspace init");
+                break;
+            }
+            // Use empty query to check if any workspace symbols are loaded
+            let probe = self.request("workspace/symbol", serde_json::json!({ "query": "" })).await;
+            if let Ok(val) = probe {
+                if let Some(arr) = val.as_array() {
+                    if !arr.is_empty() {
+                        break; // Workspace has scanned files
+                    }
+                }
+            }
+        }
 
         Ok(result)
     }
 
-    /// Open a file in the server.
+    /// Open a file in the server and wait until the server has processed it.
+    ///
+    /// Waits for `textDocument/publishDiagnostics` for the opened URI, which
+    /// signals that parsing + linting are complete. Falls back to a 5-second
+    /// timeout so tests don't hang if the server never publishes.
     pub async fn open_file(&mut self, relative_path: &str, content: &str) {
         let uri = self.file_uri(relative_path);
         let version = 1;
@@ -181,8 +206,24 @@ impl LspClient {
         });
 
         self.notify("textDocument/didOpen", params).await.unwrap();
-        // Allow diagnostics to be computed
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Wait for publishDiagnostics for this URI (signals server has processed the file)
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        loop {
+            match tokio::time::timeout_at(deadline, self.notifications.recv()).await {
+                Ok(Some((method, params))) => {
+                    let is_our_diag = method == "textDocument/publishDiagnostics"
+                        && params.get("uri").and_then(|v| v.as_str()) == Some(uri.as_str());
+                    // Buffer the notification so tests can still see it
+                    self.buffered_notifications.push((method, params));
+                    if is_our_diag {
+                        break;
+                    }
+                }
+                Ok(None) => break, // Channel closed
+                Err(_) => break,   // Timeout
+            }
+        }
     }
 
     /// Get hover info at a position.
@@ -193,8 +234,15 @@ impl LspClient {
             "position": { "line": line, "character": character }
         });
 
-        let result = self.request("textDocument/hover", params).await.ok()?;
-        if result.is_null() { None } else { Some(result) }
+        match self.request("textDocument/hover", params).await {
+            Ok(result) => {
+                if result.is_null() { None } else { Some(result) }
+            }
+            Err(e) => {
+                tracing::warn!(uri = %uri, line, character, error = %e, "hover request failed");
+                None
+            }
+        }
     }
 
     /// Get completions at a position.
@@ -362,8 +410,9 @@ impl LspClient {
     }
 
     /// Drain all pending notifications. Returns (method, params) pairs.
+    /// Includes notifications buffered by internal waits (e.g. `open_file`).
     pub fn drain_notifications(&mut self) -> Vec<(String, Value)> {
-        let mut result = vec![];
+        let mut result = std::mem::take(&mut self.buffered_notifications);
         while let Ok(notif) = self.notifications.try_recv() {
             result.push(notif);
         }
@@ -403,7 +452,22 @@ impl LspClient {
 
     fn file_uri(&self, relative_path: &str) -> String {
         let full_path = self.root_path.join(relative_path);
-        format!("file://{}", full_path.display())
+        // Use percent-encoding for path components to match how tower-lsp's
+        // Url type encodes URIs (e.g., spaces become %20).
+        let encoded: String = full_path
+            .to_str()
+            .unwrap_or("")
+            .bytes()
+            .flat_map(|b| {
+                if b == b' ' {
+                    vec![b'%', b'2', b'0']
+                } else {
+                    vec![b]
+                }
+            })
+            .map(|b| b as char)
+            .collect();
+        format!("file://{}", encoded)
     }
 
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, Box<dyn std::error::Error>> {

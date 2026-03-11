@@ -19,6 +19,7 @@ pub mod events;
 pub mod index;
 pub mod manifest;
 pub mod model;
+pub mod virtual_file;
 
 #[cfg(feature = "nuget")]
 pub mod bc_server;

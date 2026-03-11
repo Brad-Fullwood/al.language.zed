@@ -4,6 +4,7 @@
 //! by walking the tree-sitter AST. Handles local variables, global variables,
 //! parameters, and trigger-implicit variables (Rec, xRec, etc.).
 use tower_lsp::lsp_types::Position;
+use tracing::{debug, trace};
 use tree_sitter::{Node, Tree};
 
 /// A resolved variable declaration with its type information.
@@ -38,6 +39,20 @@ pub enum VariableScope {
     TriggerImplicit,
 }
 
+/// Maps a tree-sitter object kind (e.g. "table", "page") to the corresponding
+/// AL type name used for builtin method lookup (e.g. "Record", "Page").
+pub fn object_kind_to_al_type(kind: &str) -> &str {
+    match kind.to_ascii_lowercase().as_str() {
+        "table" | "tableextension" => "Record",
+        "page" | "pageextension" => "Page",
+        "report" | "reportextension" => "Report",
+        "codeunit" => "Codeunit",
+        "xmlport" => "Xmlport",
+        "query" => "Query",
+        _ => kind,
+    }
+}
+
 /// Resolves variable types from the tree-sitter AST.
 pub struct TypeResolver<'a> {
     tree: &'a Tree,
@@ -59,8 +74,25 @@ impl<'a> TypeResolver<'a> {
     /// trigger-implicit variables.
     pub fn resolve_type(&self, name: &str, position: Position) -> Option<VariableDecl> {
         let vars = self.variables_at(position);
-        vars.into_iter()
-            .find(|v| v.name.eq_ignore_ascii_case(name))
+        let result = vars.into_iter().find(|v| v.name.eq_ignore_ascii_case(name));
+        match &result {
+            Some(decl) => debug!(
+                name,
+                line = position.line,
+                character = position.character,
+                type_name = %decl.type_name,
+                type_subtype = ?decl.type_subtype,
+                scope = ?decl.scope,
+                "resolve_type: found"
+            ),
+            None => debug!(
+                name,
+                line = position.line,
+                character = position.character,
+                "resolve_type: not found"
+            ),
+        }
+        result
     }
 
     /// Get all variable declarations visible at a given position.
@@ -87,6 +119,11 @@ impl<'a> TypeResolver<'a> {
             if proc.kind() == "trigger_declaration" {
                 self.add_trigger_implicit_vars(root, &mut result);
             }
+        } else {
+            // Fallback: the grammar doesn't produce trigger_declaration nodes for
+            // triggers nested inside action blocks (e.g., `trigger OnAction()` in a
+            // page action). Scan the text backwards to find a var section.
+            self.collect_action_trigger_vars(position, &mut result);
         }
 
         // Rec/xRec are available across table-bound object members, including
@@ -98,6 +135,21 @@ impl<'a> TypeResolver<'a> {
         // Collect global variables from object_var_section(s)
         self.collect_global_vars(root, &mut result);
 
+        // Collect dataitem variables from report dataset sections.
+        // The tree-sitter grammar parses `dataitem(Name; "Table")` generically
+        // (as metadata_keyword + parenthesized_block), so we use text scanning.
+        self.collect_dataitem_vars(&mut result);
+
+        debug!(
+            line = position.line,
+            character = position.character,
+            total = result.len(),
+            locals = result.iter().filter(|v| v.scope == VariableScope::Local).count(),
+            params = result.iter().filter(|v| v.scope == VariableScope::Parameter).count(),
+            globals = result.iter().filter(|v| v.scope == VariableScope::Global).count(),
+            implicit = result.iter().filter(|v| matches!(v.scope, VariableScope::TriggerImplicit | VariableScope::SelfImplicit)).count(),
+            "variables_at: collected"
+        );
         result
     }
 
@@ -108,7 +160,10 @@ impl<'a> TypeResolver<'a> {
             column: position.character as usize,
         };
 
-        let node = self.tree.root_node().descendant_for_point_range(point, point)?;
+        let node = self
+            .tree
+            .root_node()
+            .descendant_for_point_range(point, point)?;
         let mut current = node;
 
         loop {
@@ -117,6 +172,15 @@ impl<'a> TypeResolver<'a> {
                 || kind == "trigger_declaration"
                 || kind == "event_procedure_declaration"
             {
+                let proc_name = current
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(self.source).ok())
+                    .unwrap_or("(unknown)");
+                debug!(
+                    kind,
+                    name = proc_name,
+                    "find_enclosing_procedure: found"
+                );
                 return Some(current);
             }
             current = current.parent()?;
@@ -166,9 +230,10 @@ impl<'a> TypeResolver<'a> {
                         // that appear directly in the object body (parsed as
                         // variable_declaration instead of inside object_var_section)
                         if body_child.kind() == "variable_declaration" {
-                            if let Some(decl) =
-                                self.parse_regular_var_decl_from_container(body_child, VariableScope::Global)
-                            {
+                            if let Some(decl) = self.parse_regular_var_decl_from_container(
+                                body_child,
+                                VariableScope::Global,
+                            ) {
                                 result.push(decl);
                             }
                         }
@@ -179,11 +244,7 @@ impl<'a> TypeResolver<'a> {
     }
 
     /// Collect declarations from an object_var_section (global var section).
-    fn collect_object_var_section_decls(
-        &self,
-        section: Node<'a>,
-        result: &mut Vec<VariableDecl>,
-    ) {
+    fn collect_object_var_section_decls(&self, section: Node<'a>, result: &mut Vec<VariableDecl>) {
         let mut cursor = section.walk();
         for child in section.children(&mut cursor) {
             if child.kind() == "object_variable_declaration" {
@@ -207,7 +268,8 @@ impl<'a> TypeResolver<'a> {
         let mut cursor = section.walk();
         for child in section.children(&mut cursor) {
             if child.kind() == "variable_declaration" {
-                if let Some(decl) = self.parse_regular_var_decl_from_container(child, scope.clone()) {
+                if let Some(decl) = self.parse_regular_var_decl_from_container(child, scope.clone())
+                {
                     result.push(decl);
                 }
             }
@@ -215,32 +277,35 @@ impl<'a> TypeResolver<'a> {
     }
 
     /// Parse a variable declaration from a container node (variable_declaration
-    /// or object_variable_declaration), which wraps a regular_variable_declaration.
+    /// or object_variable_declaration), which wraps a regular_variable_declaration
+    /// or label_declaration.
     fn parse_regular_var_decl_from_container(
         &self,
         container: Node<'a>,
         scope: VariableScope,
     ) -> Option<VariableDecl> {
-        // Find the regular_variable_declaration child
+        // Find the regular_variable_declaration or label_declaration child
         let mut cursor = container.walk();
         for child in container.children(&mut cursor) {
             if child.kind() == "regular_variable_declaration" {
                 return self.parse_regular_var_decl(child, scope);
+            }
+            if child.kind() == "label_declaration" {
+                return self.parse_label_decl(child, scope);
             }
         }
         // The container itself might be a regular_variable_declaration
         if container.kind() == "regular_variable_declaration" {
             return self.parse_regular_var_decl(container, scope);
         }
+        if container.kind() == "label_declaration" {
+            return self.parse_label_decl(container, scope);
+        }
         None
     }
 
     /// Parse a regular_variable_declaration node into a VariableDecl.
-    fn parse_regular_var_decl(
-        &self,
-        node: Node<'a>,
-        scope: VariableScope,
-    ) -> Option<VariableDecl> {
+    fn parse_regular_var_decl(&self, node: Node<'a>, scope: VariableScope) -> Option<VariableDecl> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text_clean(name_node)?;
 
@@ -251,6 +316,27 @@ impl<'a> TypeResolver<'a> {
             name,
             type_name,
             type_subtype,
+            is_var: false,
+            scope,
+            range: node.range(),
+        })
+    }
+
+    /// Parse a label_declaration node into a VariableDecl.
+    ///
+    /// Label declarations have the form: `MyLabel: Label 'text', Locked = true;`
+    /// The grammar defines: name, sep, type (keyword), value (string), label_property*.
+    fn parse_label_decl(&self, node: Node<'a>, scope: VariableScope) -> Option<VariableDecl> {
+        let name_node = node.child_by_field_name("name")?;
+        let name = self.node_text_clean(name_node)?;
+
+        let type_node = node.child_by_field_name("type")?;
+        let type_name = type_node.utf8_text(self.source).ok()?.to_string();
+
+        Some(VariableDecl {
+            name,
+            type_name,
+            type_subtype: None,
             is_var: false,
             scope,
             range: node.range(),
@@ -325,13 +411,11 @@ impl<'a> TypeResolver<'a> {
             }
         }
 
-        // Fallback: use the full text of the type_reference if no keyword found
-        if type_keyword.is_empty() {
-            if let Ok(text) = node.utf8_text(self.source) {
-                type_keyword = text.trim_matches('"').to_string();
-            }
-        }
-
+        trace!(
+            type_name = %type_keyword,
+            type_subtype = ?subtype,
+            "parse_type_reference"
+        );
         (type_keyword, subtype)
     }
 
@@ -345,7 +429,7 @@ impl<'a> TypeResolver<'a> {
 
         result.push(VariableDecl {
             name: "this".to_string(),
-            type_name: obj.kind,
+            type_name: object_kind_to_al_type(&obj.kind).to_string(),
             type_subtype: Some(obj.name),
             is_var: false,
             scope: VariableScope::SelfImplicit,
@@ -428,6 +512,11 @@ impl<'a> TypeResolver<'a> {
                                     if let Ok(text) = c.utf8_text(self.source) {
                                         let name = text.trim_matches('"').to_string();
                                         if !name.is_empty() {
+                                            debug!(
+                                                object_kind = kind,
+                                                source_table = %name,
+                                                "find_source_table: table object is its own source"
+                                            );
                                             return Some(name);
                                         }
                                     }
@@ -462,6 +551,11 @@ impl<'a> TypeResolver<'a> {
                                 .trim_matches('\'')
                                 .to_string();
                             if !clean.is_empty() {
+                                debug!(
+                                    object_kind = kind,
+                                    source_table = %clean,
+                                    "find_source_table: found SourceTable property"
+                                );
                                 return Some(clean);
                             }
                         }
@@ -470,6 +564,186 @@ impl<'a> TypeResolver<'a> {
             }
         }
         None
+    }
+
+    /// Collect dataitem variables from report `dataset` sections.
+    ///
+    /// Parses `dataitem(VarName; "Table Name")` patterns via text scanning since
+    /// the tree-sitter grammar doesn't have specific dataitem node types.
+    fn collect_dataitem_vars(&self, result: &mut Vec<VariableDecl>) {
+        let text = match std::str::from_utf8(self.source) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        for (line_idx, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("dataitem(") {
+                continue;
+            }
+            // Parse: dataitem(VarName; "Table Name")
+            let inside = match trimmed
+                .strip_prefix("dataitem(")
+                .and_then(|s| s.split(')').next())
+            {
+                Some(s) => s,
+                None => continue,
+            };
+            let mut parts = inside.splitn(2, ';');
+            let var_name = match parts.next() {
+                Some(n) => n.trim().trim_matches('"'),
+                None => continue,
+            };
+            let table_name = match parts.next() {
+                Some(t) => t.trim().trim_matches('"').trim_matches('\''),
+                None => continue,
+            };
+            if var_name.is_empty() || table_name.is_empty() {
+                continue;
+            }
+            debug!(
+                var_name,
+                table_name,
+                line = line_idx,
+                "collect_dataitem_vars: found dataitem"
+            );
+            let col = line.find("dataitem(").unwrap_or(0);
+            result.push(VariableDecl {
+                name: var_name.to_string(),
+                type_name: "Record".to_string(),
+                type_subtype: Some(table_name.to_string()),
+                is_var: false,
+                scope: VariableScope::Local,
+                range: tree_sitter::Range {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_point: tree_sitter::Point {
+                        row: line_idx,
+                        column: col,
+                    },
+                    end_point: tree_sitter::Point {
+                        row: line_idx,
+                        column: col + trimmed.len(),
+                    },
+                },
+            });
+        }
+    }
+
+    /// Fallback: collect local variables from action trigger var sections.
+    ///
+    /// The tree-sitter grammar doesn't produce `trigger_declaration` nodes for
+    /// `trigger OnAction()` inside page action blocks. This scans the text
+    /// backwards from the cursor to find a `var` section between a `trigger`
+    /// header and a `begin` keyword, then parses variable declarations from it.
+    fn collect_action_trigger_vars(&self, position: Position, result: &mut Vec<VariableDecl>) {
+        let text = match std::str::from_utf8(self.source) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let cursor_line = position.line as usize;
+        if cursor_line >= lines.len() {
+            return;
+        }
+
+        // Walk backwards from the cursor to find a `begin` keyword, then
+        // a `var` keyword, then a `trigger ...()` line.
+        let mut begin_line = None;
+        let mut var_line = None;
+        let mut trigger_line = None;
+
+        for i in (0..=cursor_line).rev() {
+            let trimmed = lines[i].trim();
+            let lower = trimmed.to_lowercase();
+
+            if begin_line.is_none() {
+                if lower == "begin" {
+                    begin_line = Some(i);
+                }
+                continue;
+            }
+
+            if var_line.is_none() {
+                if lower == "var" {
+                    var_line = Some(i);
+                    continue;
+                }
+                // A declaration line (contains `:`) between begin and var — skip
+                if trimmed.contains(':') {
+                    continue;
+                }
+                // If we hit something else before finding `var`, this isn't
+                // a trigger-with-vars pattern. Check if it's the trigger line.
+                if lower.starts_with("trigger ") {
+                    // Trigger with no var section — no locals to add
+                    return;
+                }
+                // Not a var pattern — bail
+                return;
+            }
+
+            // We have both begin and var — look for the trigger line
+            if lower.starts_with("trigger ") {
+                trigger_line = Some(i);
+                break;
+            }
+            // Allow blank lines or declaration lines between var and trigger
+            if trimmed.is_empty() || trimmed.contains(':') {
+                continue;
+            }
+            // Non-declaration, non-trigger line — bail
+            return;
+        }
+
+        // If we didn't find the trigger pattern, bail
+        if trigger_line.is_none() || var_line.is_none() || begin_line.is_none() {
+            return;
+        }
+
+        let var_start = var_line.unwrap();
+        let begin_at = begin_line.unwrap();
+
+        // Parse variable declarations between `var` and `begin`
+        for line_idx in (var_start + 1)..begin_at {
+            if line_idx >= lines.len() {
+                break;
+            }
+            let line = lines[line_idx];
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Parse "VarName: Type" or "VarName: Type \"Subtype\""
+            if let Some(colon_pos) = trimmed.find(':') {
+                let var_name = trimmed[..colon_pos].trim();
+                let type_part = trimmed[colon_pos + 1..].trim().trim_end_matches(';');
+                if var_name.is_empty() || type_part.is_empty() {
+                    continue;
+                }
+                let (type_name, type_subtype) = parse_type_text(type_part);
+                let col = line.find(var_name).unwrap_or(0);
+                result.push(VariableDecl {
+                    name: var_name.to_string(),
+                    type_name,
+                    type_subtype,
+                    is_var: false,
+                    scope: VariableScope::Local,
+                    range: tree_sitter::Range {
+                        start_byte: 0,
+                        end_byte: 0,
+                        start_point: tree_sitter::Point {
+                            row: line_idx,
+                            column: col,
+                        },
+                        end_point: tree_sitter::Point {
+                            row: line_idx,
+                            column: col + trimmed.len(),
+                        },
+                    },
+                });
+            }
+        }
     }
 
     /// Extract text from a node, removing surrounding quotes.
@@ -481,6 +755,24 @@ impl<'a> TypeResolver<'a> {
         } else {
             Some(clean)
         }
+    }
+}
+
+/// Parse a type expression from plain text (e.g., `Record "Customer"` → ("Record", Some("Customer"))).
+fn parse_type_text(type_text: &str) -> (String, Option<String>) {
+    let trimmed = type_text.trim();
+    // Split on first space — the type keyword is before, subtype after
+    if let Some(space_pos) = trimmed.find(|c: char| c.is_whitespace()) {
+        let type_name = trimmed[..space_pos].to_string();
+        let rest = trimmed[space_pos..].trim();
+        let subtype = rest.trim_matches('"').trim_matches('\'');
+        if subtype.is_empty() {
+            (type_name, None)
+        } else {
+            (type_name, Some(subtype.to_string()))
+        }
+    } else {
+        (trimmed.to_string(), None)
     }
 }
 
@@ -510,7 +802,13 @@ mod tests {
         let resolver = TypeResolver::new(&tree, &text);
 
         // Position inside the procedure body (line 6, "MyVar := 42")
-        let result = resolver.resolve_type("MyVar", Position { line: 6, character: 8 });
+        let result = resolver.resolve_type(
+            "MyVar",
+            Position {
+                line: 6,
+                character: 8,
+            },
+        );
         assert!(result.is_some(), "Should resolve MyVar");
         let decl = result.unwrap();
         assert_eq!(decl.name, "MyVar");
@@ -535,8 +833,13 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        let result =
-            resolver.resolve_type("CustomerRec", Position { line: 6, character: 8 });
+        let result = resolver.resolve_type(
+            "CustomerRec",
+            Position {
+                line: 6,
+                character: 8,
+            },
+        );
         assert!(result.is_some(), "Should resolve CustomerRec");
         let decl = result.unwrap();
         assert_eq!(decl.name, "CustomerRec");
@@ -557,8 +860,13 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        let result =
-            resolver.resolve_type("InputRec", Position { line: 4, character: 8 });
+        let result = resolver.resolve_type(
+            "InputRec",
+            Position {
+                line: 4,
+                character: 8,
+            },
+        );
         assert!(result.is_some(), "Should resolve InputRec");
         let decl = result.unwrap();
         assert_eq!(decl.name, "InputRec");
@@ -567,7 +875,13 @@ mod tests {
         assert!(decl.is_var);
         assert_eq!(decl.scope, VariableScope::Parameter);
 
-        let result = resolver.resolve_type("LineNo", Position { line: 4, character: 8 });
+        let result = resolver.resolve_type(
+            "LineNo",
+            Position {
+                line: 4,
+                character: 8,
+            },
+        );
         assert!(result.is_some(), "Should resolve LineNo");
         let decl = result.unwrap();
         assert_eq!(decl.name, "LineNo");
@@ -591,8 +905,13 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        let result =
-            resolver.resolve_type("GlobalAmount", Position { line: 7, character: 8 });
+        let result = resolver.resolve_type(
+            "GlobalAmount",
+            Position {
+                line: 7,
+                character: 8,
+            },
+        );
         assert!(result.is_some(), "Should resolve GlobalAmount");
         let decl = result.unwrap();
         assert_eq!(decl.name, "GlobalAmount");
@@ -615,8 +934,13 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        let result =
-            resolver.resolve_type("NonExistent", Position { line: 5, character: 8 });
+        let result = resolver.resolve_type(
+            "NonExistent",
+            Position {
+                line: 5,
+                character: 8,
+            },
+        );
         assert!(result.is_none(), "Should not resolve NonExistent");
     }
 
@@ -634,8 +958,13 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        let result =
-            resolver.resolve_type("SalesPost", Position { line: 6, character: 8 });
+        let result = resolver.resolve_type(
+            "SalesPost",
+            Position {
+                line: 6,
+                character: 8,
+            },
+        );
         assert!(result.is_some(), "Should resolve SalesPost");
         let decl = result.unwrap();
         assert_eq!(decl.type_name, "Codeunit");
@@ -658,12 +987,27 @@ mod tests {
         let (tree, text) = parse(src);
         let resolver = TypeResolver::new(&tree, &text);
 
-        let vars = resolver.variables_at(Position { line: 8, character: 8 });
+        let vars = resolver.variables_at(Position {
+            line: 8,
+            character: 8,
+        });
         let names: Vec<&str> = vars.iter().map(|v| v.name.as_str()).collect();
 
-        assert!(names.contains(&"LocalVar"), "Should include LocalVar: {:?}", names);
-        assert!(names.contains(&"Param1"), "Should include Param1: {:?}", names);
-        assert!(names.contains(&"GlobalVar"), "Should include GlobalVar: {:?}", names);
+        assert!(
+            names.contains(&"LocalVar"),
+            "Should include LocalVar: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"Param1"),
+            "Should include Param1: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"GlobalVar"),
+            "Should include GlobalVar: {:?}",
+            names
+        );
     }
 
     #[test]
@@ -680,7 +1024,13 @@ mod tests {
         let resolver = TypeResolver::new(&tree, &text);
 
         // AL is case-insensitive, so "MYVAR" should match "myVar"
-        let result = resolver.resolve_type("MYVAR", Position { line: 5, character: 8 });
+        let result = resolver.resolve_type(
+            "MYVAR",
+            Position {
+                line: 5,
+                character: 8,
+            },
+        );
         assert!(result.is_some(), "Should resolve case-insensitively");
         assert_eq!(result.unwrap().name, "myVar");
     }
@@ -703,12 +1053,64 @@ mod tests {
         let resolver = TypeResolver::new(&tree, &text);
 
         // Position inside the trigger body
-        let result = resolver.resolve_type("Rec", Position { line: 9, character: 8 });
+        let result = resolver.resolve_type(
+            "Rec",
+            Position {
+                line: 9,
+                character: 8,
+            },
+        );
         assert!(result.is_some(), "Should resolve Rec in table trigger");
         let decl = result.unwrap();
         assert_eq!(decl.type_name, "Record");
         assert_eq!(decl.type_subtype, Some("My Table".to_string()));
         assert_eq!(decl.scope, VariableScope::TriggerImplicit);
+    }
+
+    #[test]
+    fn test_resolve_dataitem_variable() {
+        let src = r#"report 50200 "Test Report"
+{
+    dataset
+    {
+        dataitem(StagingRec; "Item Journal Staging")
+        {
+            trigger OnPreDataItem()
+            begin
+                StagingRec.ModifyAll(Status, StagingRec.Status::Posting, true);
+            end;
+        }
+    }
+    var
+        APIHelper: Codeunit "IJL API Helper";
+}"#;
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        // Position inside the trigger body (line 8)
+        let result = resolver.resolve_type(
+            "StagingRec",
+            Position {
+                line: 8,
+                character: 16,
+            },
+        );
+        assert!(
+            result.is_some(),
+            "Should resolve dataitem variable StagingRec. Available vars: {:?}",
+            resolver
+                .variables_at(Position {
+                    line: 8,
+                    character: 16
+                })
+                .iter()
+                .map(|v| &v.name)
+                .collect::<Vec<_>>()
+        );
+        let decl = result.unwrap();
+        assert_eq!(decl.name, "StagingRec");
+        assert_eq!(decl.type_name, "Record");
+        assert_eq!(decl.type_subtype, Some("Item Journal Staging".to_string()));
     }
 
     #[test]
@@ -730,16 +1132,76 @@ mod tests {
         let resolver = TypeResolver::new(&tree, &text);
 
         let this_decl = resolver
-            .resolve_type("this", Position { line: 9, character: 8 })
+            .resolve_type(
+                "this",
+                Position {
+                    line: 9,
+                    character: 8,
+                },
+            )
             .unwrap();
         assert_eq!(this_decl.scope, VariableScope::SelfImplicit);
-        assert_eq!(this_decl.type_name, "page");
+        assert_eq!(this_decl.type_name, "Page");
         assert_eq!(this_decl.type_subtype, Some("Customer List".to_string()));
 
         let rec_decl = resolver
-            .resolve_type("Rec", Position { line: 10, character: 8 })
+            .resolve_type(
+                "Rec",
+                Position {
+                    line: 10,
+                    character: 8,
+                },
+            )
             .unwrap();
         assert_eq!(rec_decl.type_name, "Record");
         assert_eq!(rec_decl.type_subtype, Some("Customer".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_local_var_in_action_trigger() {
+        let src = r#"page 50100 "Staging List"
+{
+    SourceTable = "Item Journal Staging";
+
+    actions
+    {
+        area(Processing)
+        {
+            action(RunPrecheck)
+            {
+                Caption = 'Run Precheck';
+
+                trigger OnAction()
+                var
+                    StagingRec: Record "Item Journal Staging";
+                    ProcessReport: Report "IJL Process Staging";
+                begin
+                    CurrPage.SetSelectionFilter(StagingRec);
+                    ProcessReport.SetAction(ActionType::Precheck);
+                end;
+            }
+        }
+    }
+}"#;
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        // Position inside the action trigger body (line 18, "ProcessReport.SetAction")
+        let pos = Position { line: 18, character: 20 };
+
+        let all_vars = resolver.variables_at(pos);
+        let names: Vec<&str> = all_vars.iter().map(|v| v.name.as_str()).collect();
+
+        let result = resolver.resolve_type("ProcessReport", pos);
+        assert!(
+            result.is_some(),
+            "Should resolve ProcessReport in action trigger. Available vars: {:?}",
+            names
+        );
+        let decl = result.unwrap();
+        assert_eq!(decl.name, "ProcessReport");
+        assert_eq!(decl.type_name, "Report");
+        assert_eq!(decl.type_subtype, Some("IJL Process Staging".to_string()));
+        assert_eq!(decl.scope, VariableScope::Local);
     }
 }

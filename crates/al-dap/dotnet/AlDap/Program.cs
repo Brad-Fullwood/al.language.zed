@@ -200,10 +200,22 @@ class Program
         var server = parms["server"]?.GetValue<string>() ?? "";
         var serverInstance = parms["serverInstance"]?.GetValue<string>() ?? "";
         var tenant = parms["tenant"]?.GetValue<string>() ?? "default";
-        var authentication = parms["authentication"]?.GetValue<string>() ?? "UserPassword";
-        var breakOnError = parms["breakpointOnError"]?.GetValue<string>() ?? "All";
+        var authentication = parms["authentication"]?.GetValue<string>() ?? "";
+        var breakOnError = parms["breakpointOnError"]?.GetValue<string>()
+                           ?? parms["breakOnError"]?.GetValue<string>() ?? "All";
+        var environmentType = parms["environmentType"]?.GetValue<string>();
+        var environmentName = parms["environmentName"]?.GetValue<string>();
+        var breakOnRecordWrite = parms["breakOnRecordWrite"]?.GetValue<string>();
 
-        Console.Error.WriteLine($"Connecting to {server}/{serverInstance} tenant={tenant} auth={authentication}");
+        // For cloud environments, default to AAD authentication
+        var isCloud = environmentType is "Sandbox" or "Production" || environmentName != null;
+        if (string.IsNullOrEmpty(authentication))
+            authentication = isCloud ? "AAD" : "UserPassword";
+
+        if (isCloud)
+            Console.Error.WriteLine($"Connecting to cloud: type={environmentType} env={environmentName} tenant={tenant} auth={authentication}");
+        else
+            Console.Error.WriteLine($"Connecting to {server}/{serverInstance} tenant={tenant} auth={authentication}");
 
         // Step 1: Load the debug assembly
         if (!LoadDebugAssembly())
@@ -223,7 +235,8 @@ class Program
         // Step 4: Create and connect the debug session
         try
         {
-            _debugSession = CreateDebugSession(server, serverInstance, tenant, authentication, breakOnError);
+            _debugSession = CreateDebugSession(server, serverInstance, tenant, authentication, breakOnError,
+                environmentType, environmentName, breakOnRecordWrite);
             if (_debugSession == null)
             {
                 return MakeError("Failed to create debug session — see stderr for details");
@@ -264,10 +277,10 @@ class Program
                 else
                 {
                     // Try common method names
-                    TryInvoke(_debugSession, "Disconnect") ||
-                    TryInvoke(_debugSession, "Close") ||
-                    TryInvoke(_debugSession, "Dispose") ||
-                    TryInvoke(_debugSession, "Stop");
+                    _ = TryInvoke(_debugSession, "Disconnect") ||
+                        TryInvoke(_debugSession, "Close") ||
+                        TryInvoke(_debugSession, "Dispose") ||
+                        TryInvoke(_debugSession, "Stop");
                 }
 
                 // If the session is IDisposable, dispose it
@@ -1023,7 +1036,8 @@ class Program
 
     /// Create and connect a debug session using discovered types.
     static object? CreateDebugSession(string server, string serverInstance, string tenant,
-        string authentication, string breakOnError)
+        string authentication, string breakOnError,
+        string? environmentType = null, string? environmentName = null, string? breakOnRecordWrite = null)
     {
         if (_sessionType == null) return null;
 
@@ -1087,14 +1101,32 @@ class Program
                 var session = defaultCtor.Invoke(null);
 
                 // Try to set connection properties
-                SetPropertyIfExists(session, "Server", serverUrl);
-                SetPropertyIfExists(session, "ServerUrl", serverUrl);
-                SetPropertyIfExists(session, "ServerInstance", serverInstance);
-                SetPropertyIfExists(session, "Instance", serverInstance);
+                if (!string.IsNullOrEmpty(serverUrl))
+                {
+                    SetPropertyIfExists(session, "Server", serverUrl);
+                    SetPropertyIfExists(session, "ServerUrl", serverUrl);
+                }
+                if (!string.IsNullOrEmpty(serverInstance))
+                {
+                    SetPropertyIfExists(session, "ServerInstance", serverInstance);
+                    SetPropertyIfExists(session, "Instance", serverInstance);
+                }
                 SetPropertyIfExists(session, "Tenant", tenant);
                 SetPropertyIfExists(session, "TenantId", tenant);
                 SetPropertyIfExists(session, "Authentication", authentication);
                 SetPropertyIfExists(session, "AuthenticationType", authentication);
+
+                // Cloud-specific properties
+                if (environmentType != null)
+                {
+                    SetPropertyIfExists(session, "EnvironmentType", environmentType);
+                    TrySetEnum(session, "EnvironmentType", environmentType);
+                }
+                if (environmentName != null)
+                {
+                    SetPropertyIfExists(session, "EnvironmentName", environmentName);
+                    SetPropertyIfExists(session, "Environment", environmentName);
+                }
 
                 // Try enum-based auth type
                 TrySetAuthEnum(session, authentication);
@@ -1102,6 +1134,10 @@ class Program
                 // Try to set break-on-error
                 SetPropertyIfExists(session, "BreakOnError", breakOnError);
                 SetPropertyIfExists(session, "BreakpointOnError", breakOnError);
+                if (breakOnRecordWrite != null)
+                {
+                    SetPropertyIfExists(session, "BreakOnRecordWrite", breakOnRecordWrite);
+                }
 
                 Console.Error.WriteLine($"Session created via default constructor with properties set");
                 return session;
@@ -1265,8 +1301,8 @@ class Program
                     _breakpointMap[bpId] = bpResult;
 
                     // Try to read the actual verified line from the result
-                    var resultLine = GetPropertyValue<int>(bpResult, "Line", "LineNumber") ?? line;
-                    var verified = GetPropertyValue<bool>(bpResult, "Verified", "IsVerified", "IsValid") ?? true;
+                    var resultLine = (int)GetPropertyOr(bpResult, (long)line, "Line", "LineNumber");
+                    var verified = GetPropertyOr(bpResult, true, "Verified", "IsVerified", "IsValid");
                     var msg = GetPropertyValue<string>(bpResult, "Message", "ErrorMessage");
 
                     return (verified, resultLine, msg);
@@ -1467,7 +1503,7 @@ class Program
                 {
                     result = ExtractCollection(threads, obj =>
                     {
-                        var id = GetPropertyValue<long>(obj, "Id", "ThreadId", "SessionId") ?? 0;
+                        var id = GetPropertyOr(obj, 0L, "Id", "ThreadId", "SessionId");
                         var name = GetPropertyValue<string>(obj, "Name", "ThreadName", "SessionName", "Description") ?? $"Thread {id}";
                         return (id, name);
                     });
@@ -1494,7 +1530,7 @@ class Program
                     {
                         result = ExtractCollection(threads, obj =>
                         {
-                            var id = GetPropertyValue<long>(obj, "Id", "ThreadId", "SessionId") ?? 0;
+                            var id = GetPropertyOr(obj, 0L, "Id", "ThreadId", "SessionId");
                             var name = GetPropertyValue<string>(obj, "Name", "ThreadName", "Description") ?? $"Thread {id}";
                             return (id, name);
                         });
@@ -1546,11 +1582,12 @@ class Program
                 {
                     result = ExtractCollection(stackResult, obj =>
                     {
-                        var id = GetPropertyValue<long>(obj, "Id", "FrameId", "Index") ?? frameIdCounter++;
+                        var id = GetPropertyOr(obj, 0L, "Id", "FrameId", "Index");
+                        if (id == 0) id = frameIdCounter++;
                         var name = GetPropertyValue<string>(obj, "Name", "FunctionName", "MethodName", "ProcedureName")
                                    ?? GetPropertyValue<string>(obj, "ObjectName", "CodeunitName") ?? "Unknown";
-                        var line = (int)(GetPropertyValue<long>(obj, "Line", "LineNumber", "LineNo") ?? 0);
-                        var column = (int)(GetPropertyValue<long>(obj, "Column", "ColumnNumber") ?? 0);
+                        var line = (int)GetPropertyOr(obj, 0L, "Line", "LineNumber", "LineNo");
+                        var column = (int)GetPropertyOr(obj, 0L, "Column", "ColumnNumber");
                         var source = GetPropertyValue<string>(obj, "FileName", "FilePath", "Source", "SourceFile", "Path");
                         return (id, name, line, column, source);
                     });
@@ -1579,10 +1616,11 @@ class Program
                     {
                         result = ExtractCollection(stack, obj =>
                         {
-                            var id = GetPropertyValue<long>(obj, "Id", "FrameId") ?? frameIdCounter++;
+                            var id = GetPropertyOr(obj, 0L, "Id", "FrameId");
+                            if (id == 0) id = frameIdCounter++;
                             var name = GetPropertyValue<string>(obj, "Name", "FunctionName", "MethodName") ?? "Unknown";
-                            var line = (int)(GetPropertyValue<long>(obj, "Line", "LineNumber") ?? 0);
-                            var column = (int)(GetPropertyValue<long>(obj, "Column") ?? 0);
+                            var line = (int)GetPropertyOr(obj, 0L, "Line", "LineNumber");
+                            var column = (int)GetPropertyOr(obj, 0L, "Column");
                             var source = GetPropertyValue<string>(obj, "FileName", "FilePath", "Source");
                             return (id, name, line, column, source);
                         });
@@ -1630,7 +1668,7 @@ class Program
                     result = ExtractCollection(scopesResult, obj =>
                     {
                         var name = GetPropertyValue<string>(obj, "Name", "ScopeName") ?? "Variables";
-                        var expensive = GetPropertyValue<bool>(obj, "Expensive") ?? false;
+                        var expensive = GetPropertyOr(obj, false, "Expensive");
 
                         // Allocate a variablesReference and track what scope it maps to
                         var varRef = _nextVariableRef++;
@@ -1731,7 +1769,7 @@ class Program
 
                         // Check if this variable has children (for records, arrays, etc.)
                         long childRef = 0;
-                        var hasChildren = GetPropertyValue<bool>(obj, "HasChildren", "HasMembers", "IsComplex") ?? false;
+                        var hasChildren = GetPropertyOr(obj, false, "HasChildren", "HasMembers", "IsComplex");
                         if (!hasChildren)
                         {
                             // Also check for a Children/Members property
@@ -1784,7 +1822,7 @@ class Program
                             var type = GetPropertyValue<string>(obj, "Type", "TypeName", "DataType");
 
                             long childRef = 0;
-                            var hasChildren = GetPropertyValue<bool>(obj, "HasChildren", "HasMembers") ?? false;
+                            var hasChildren = GetPropertyOr(obj, false, "HasChildren", "HasMembers");
                             if (hasChildren)
                             {
                                 childRef = _nextVariableRef++;
@@ -1923,8 +1961,34 @@ class Program
         return false;
     }
 
-    /// Get a property value from an object, trying multiple names.
-    static T? GetPropertyValue<T>(object obj, params string[] names)
+    /// Get a property value from an object, trying multiple names (for reference types).
+    static T? GetPropertyValue<T>(object obj, params string[] names) where T : class
+    {
+        var raw = GetPropertyRaw(obj, names);
+        if (raw is T typed) return typed;
+        if (raw != null)
+        {
+            try { return (T)Convert.ChangeType(raw, typeof(T)); }
+            catch { /* ignore */ }
+        }
+        return null;
+    }
+
+    /// Get a value-type property with a fallback, trying multiple names.
+    static T GetPropertyOr<T>(object obj, T fallback, params string[] names) where T : struct
+    {
+        var raw = GetPropertyRaw(obj, names);
+        if (raw is T typed) return typed;
+        if (raw != null)
+        {
+            try { return (T)Convert.ChangeType(raw, typeof(T)); }
+            catch { /* ignore */ }
+        }
+        return fallback;
+    }
+
+    /// Raw property lookup returning boxed value.
+    static object? GetPropertyRaw(object obj, params string[] names)
     {
         var flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase;
         foreach (var name in names)
@@ -1935,18 +1999,12 @@ class Program
                 if (prop != null)
                 {
                     var val = prop.GetValue(obj);
-                    if (val is T typed) return typed;
-                    if (val != null)
-                    {
-                        // Try conversion
-                        try { return (T)Convert.ChangeType(val, typeof(T)); }
-                        catch { /* ignore conversion failures */ }
-                    }
+                    if (val != null) return val;
                 }
             }
             catch { /* ignore */ }
         }
-        return default;
+        return null;
     }
 
     /// Set a property on an object if it exists.
@@ -1994,6 +2052,21 @@ class Program
     }
 
     /// Try to set authentication enum on the session object.
+    /// Try to set a property as an enum value by property name.
+    static void TrySetEnum(object session, string propertyName, string value)
+    {
+        var prop = session.GetType().GetProperty(propertyName,
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+        if (prop == null || !prop.CanWrite || !prop.PropertyType.IsEnum) return;
+        try
+        {
+            var enumValue = Enum.Parse(prop.PropertyType, value, ignoreCase: true);
+            prop.SetValue(session, enumValue);
+            Console.Error.WriteLine($"Set enum {prop.Name} = {enumValue}");
+        }
+        catch { /* value doesn't match the enum */ }
+    }
+
     static void TrySetAuthEnum(object session, string authString)
     {
         if (_debugAssembly == null) return;

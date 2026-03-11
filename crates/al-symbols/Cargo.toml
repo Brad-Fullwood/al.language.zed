@@ -9,6 +9,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 dashmap = { workspace = true }
+dirs = "6"
 zip = { workspace = true }
 quick-xml = { workspace = true }
 reqwest = { workspace = true, optional = true }

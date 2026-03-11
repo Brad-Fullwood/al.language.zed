@@ -22,3 +22,9 @@ tracing-subscriber = { workspace = true }
 reqwest = { workspace = true }
 tower-lsp = { workspace = true }
 tree-sitter = "0.25"
+dirs = "6"
+al-diag = { path = "../al-diag", optional = true }
+
+[features]
+default = ["diagnostics"]
+diagnostics = ["al-diag"]

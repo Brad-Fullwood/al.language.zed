@@ -105,19 +105,30 @@ impl Default for Capabilities {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlLaunchConfig {
-    /// BC server URL (e.g., "http://localhost").
+    /// BC server URL (e.g., "http://localhost"). Empty for cloud.
+    #[serde(default)]
     pub server: String,
-    /// BC server instance name (e.g., "BC").
+    /// BC server instance name (e.g., "BC"). Empty for cloud.
+    #[serde(default)]
     pub server_instance: String,
     /// Tenant name/ID.
     #[serde(default = "default_tenant")]
     pub tenant: String,
     /// Authentication method: "UserPassword" or "AAD".
-    #[serde(default = "default_authentication")]
+    #[serde(default)]
     pub authentication: String,
+    /// Environment type: "OnPrem", "Sandbox", or "Production".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_type: Option<String>,
+    /// Environment name for cloud (e.g., "sandbox", "production").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment_name: Option<String>,
     /// Break on error: "None", "All", or "Unhandled".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub breakpoint_on_error: Option<String>,
+    /// Break on record write: "None", "All".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub break_on_record_write: Option<String>,
     /// Whether to launch a browser session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_browser: Option<bool>,
@@ -127,14 +138,43 @@ pub struct AlLaunchConfig {
     /// Startup object type (e.g., "Page").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub startup_object_type: Option<String>,
+    /// Enable SQL information in debugger.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_sql_information_debugger: Option<bool>,
+    /// Enable long running SQL statement tracking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_long_running_sql_statements: Option<bool>,
+    /// Threshold in ms for long running SQL statements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub long_running_sql_statements_threshold: Option<u64>,
+    /// Number of SQL statements to collect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number_of_sql_statements: Option<u64>,
+}
+
+impl AlLaunchConfig {
+    /// Whether this is a cloud (SaaS) configuration.
+    pub fn is_cloud(&self) -> bool {
+        matches!(
+            self.environment_type.as_deref(),
+            Some("Sandbox" | "Production")
+        ) || self.environment_name.is_some()
+    }
+
+    /// Effective authentication method (defaults to AAD for cloud, UserPassword for on-prem).
+    pub fn effective_authentication(&self) -> &str {
+        if !self.authentication.is_empty() {
+            &self.authentication
+        } else if self.is_cloud() {
+            "AAD"
+        } else {
+            "UserPassword"
+        }
+    }
 }
 
 fn default_tenant() -> String {
     "default".to_string()
-}
-
-fn default_authentication() -> String {
-    "UserPassword".to_string()
 }
 
 // ---------------------------------------------------------------------------

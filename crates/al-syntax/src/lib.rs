@@ -20,7 +20,7 @@ pub use navigation::{
     find_node_at_position, find_object_declaration, find_procedure_at,
     find_variable_references, ObjectInfo, ProcedureInfo, ParameterInfo,
 };
-pub use type_resolver::{TypeResolver, VariableDecl, VariableScope};
+pub use type_resolver::{TypeResolver, VariableDecl, VariableScope, object_kind_to_al_type};
 pub use context::{detect_context, extract_last_identifier, find_call_context, CompletionContext};
 
 /// Convert a tree-sitter Range to an LSP Range.

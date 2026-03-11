@@ -27,6 +27,7 @@ pub(crate) fn handle_document_symbol(
 
     let symbols = al_syntax::extract_document_symbols(&tree, &text);
 
+    tracing::debug!(symbol_count = symbols.len(), "document_symbol: returning symbols");
     Some(DocumentSymbolResponse::Nested(symbols))
 }
 
@@ -39,6 +40,7 @@ pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<F
     let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let ranges = al_syntax::extract_folding_ranges(&tree, &text);
+    tracing::debug!(range_count = ranges.len(), "folding_range: returning ranges");
     Some(ranges)
 }
 
@@ -66,6 +68,7 @@ pub(crate) fn handle_semantic_tokens(
         })
         .collect();
 
+    tracing::debug!(token_count = lsp_tokens.len(), "semantic_tokens: returning tokens");
     Some(SemanticTokensResult::Tokens(SemanticTokens {
         result_id: None,
         data: lsp_tokens,
@@ -98,6 +101,8 @@ pub(crate) fn handle_signature_help(
     // Walk backwards to find the opening paren and count commas
     let (func_name, active_param) = find_call_context(prefix)?;
 
+    tracing::debug!(func_name = %func_name, active_param = active_param, "signature: find_call_context result");
+
     // Look up the procedure in the current file
     let tree = {
         let (_, t) = parsing::get_or_parse(server, uri)?;
@@ -106,12 +111,14 @@ pub(crate) fn handle_signature_help(
 
     // Search document symbols for the function
     let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
+    tracing::debug!(func_name = %func_name, doc_symbol_count = doc_symbols.len(), "signature: searching document symbols");
     for sym in &doc_symbols {
         if let Some(children) = &sym.children {
             for child in children {
                 if child.name.eq_ignore_ascii_case(func_name)
                     && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
                 {
+                    tracing::debug!(func_name = %func_name, matched = %child.name, "signature: matched document symbol");
                     let detail = child.detail.as_deref().unwrap_or("()");
                     return Some(SignatureHelp {
                         signatures: vec![SignatureInformation {
@@ -127,12 +134,236 @@ pub(crate) fn handle_signature_help(
             }
         }
     }
+    tracing::debug!(func_name = %func_name, "signature: no document symbol match, trying receiver resolution");
+
+    // Look up through receiver type resolution (cross-file workspace procedures)
+    // If the call is `receiver.Method(...)`, resolve the receiver type and search
+    // the target workspace file's procedures.
+    if let Some(sig) = resolve_receiver_signature(server, uri, &text, &tree, prefix, func_name, active_param, position) {
+        tracing::debug!(func_name = %func_name, "signature: matched via receiver resolution");
+        return Some(sig);
+    }
+    tracing::debug!(func_name = %func_name, "signature: no receiver match, trying package symbols");
 
     // Look up in package symbols
     let symbols = server.symbols.search(func_name, 5);
+    tracing::debug!(func_name = %func_name, package_results = symbols.len(), "signature: package symbol lookup");
     for entry in &symbols {
         for method in &entry.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
+                tracing::debug!(func_name = %func_name, object = %entry.name, "signature: matched package symbol method");
+                let params: Vec<ParameterInformation> = method
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        let var_prefix = if p.is_var { "var " } else { "" };
+                        ParameterInformation {
+                            label: ParameterLabel::Simple(format!(
+                                "{}{}: {}",
+                                var_prefix, p.name, p.type_name
+                            )),
+                            documentation: None,
+                        }
+                    })
+                    .collect();
+
+                let params_str: Vec<String> = method
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        let var_prefix = if p.is_var { "var " } else { "" };
+                        format!("{}{}: {}", var_prefix, p.name, p.type_name)
+                    })
+                    .collect();
+                let return_str = method
+                    .return_type
+                    .as_ref()
+                    .map(|r| format!(": {}", r))
+                    .unwrap_or_default();
+
+                return Some(SignatureHelp {
+                    signatures: vec![SignatureInformation {
+                        label: format!(
+                            "{}({}){}",
+                            method.name,
+                            params_str.join("; "),
+                            return_str
+                        ),
+                        documentation: None,
+                        parameters: Some(params),
+                        active_parameter: Some(active_param),
+                    }],
+                    active_signature: Some(0),
+                    active_parameter: Some(active_param),
+                });
+            }
+        }
+    }
+    tracing::debug!(func_name = %func_name, "signature: no package symbol match, trying builtins");
+
+    // Look up in built-in types — collect all overloads
+    let builtins = server.builtins.read().unwrap().clone();
+    tracing::debug!(func_name = %func_name, builtin_types = builtins.len(), "signature: builtin lookup");
+    let mut signatures = Vec::new();
+    for bt in builtins.iter() {
+        for method in &bt.methods {
+            if method.name.eq_ignore_ascii_case(func_name) {
+                let params: Vec<ParameterInformation> = method
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        let var_prefix = if p.is_var { "var " } else { "" };
+                        ParameterInformation {
+                            label: ParameterLabel::Simple(format!(
+                                "{}{}: {}",
+                                var_prefix, p.name, p.type_name
+                            )),
+                            documentation: None,
+                        }
+                    })
+                    .collect();
+
+                let params_str: Vec<String> = method
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        let var_prefix = if p.is_var { "var " } else { "" };
+                        format!("{}{}: {}", var_prefix, p.name, p.type_name)
+                    })
+                    .collect();
+                let return_str = method
+                    .return_type
+                    .as_ref()
+                    .map(|r| format!(": {}", r))
+                    .unwrap_or_default();
+
+                let doc = if method.documentation.is_empty() {
+                    None
+                } else {
+                    Some(Documentation::String(
+                        crate::resolution::strip_xml_tags(&method.documentation),
+                    ))
+                };
+
+                signatures.push(SignatureInformation {
+                    label: format!(
+                        "{}.{}({}){}",
+                        bt.name,
+                        method.name,
+                        params_str.join("; "),
+                        return_str
+                    ),
+                    documentation: doc,
+                    parameters: Some(params),
+                    active_parameter: Some(active_param),
+                });
+            }
+        }
+    }
+    if !signatures.is_empty() {
+        tracing::debug!(func_name = %func_name, overloads = signatures.len(), "signature: matched builtin overloads");
+        // Pick the best active_signature based on parameter count matching active_param
+        let active_sig = signatures.iter().position(|s| {
+            s.parameters.as_ref().map_or(false, |p| p.len() as u32 > active_param)
+        }).unwrap_or(0) as u32;
+        return Some(SignatureHelp {
+            signatures,
+            active_signature: Some(active_sig),
+            active_parameter: Some(active_param),
+        });
+    }
+
+    tracing::debug!(func_name = %func_name, "signature: no match found");
+    None
+}
+
+// find_call_context and extract_trailing_identifier moved to al_syntax::context
+use al_syntax::find_call_context;
+
+/// Resolve signature help through receiver type for cross-file workspace procedures.
+///
+/// Given `ProcessReport.SetAction(...)`, resolves `ProcessReport` to its type
+/// (e.g., Report "IJL Process Staging"), then searches that workspace file's
+/// procedures for `SetAction`.
+fn resolve_receiver_signature(
+    server: &AlServer,
+    uri: &Url,
+    text: &str,
+    tree: &tree_sitter::Tree,
+    prefix: &str,
+    func_name: &str,
+    active_param: u32,
+    position: Position,
+) -> Option<SignatureHelp> {
+    // Find the open paren for this call to get the text before it
+    let paren_pos = prefix.rfind('(')?;
+    let before_paren = prefix[..paren_pos].trim_end();
+
+    // Check if there's a dot before the function name
+    let dot_pos = before_paren.rfind('.')?;
+    let receiver_text = before_paren[..dot_pos].trim();
+
+    // Extract the receiver identifier
+    let receiver_name = al_syntax::extract_last_identifier(receiver_text);
+    if receiver_name.is_empty() {
+        tracing::debug!(func_name = %func_name, "signature: receiver resolution — empty receiver name");
+        return None;
+    }
+
+    tracing::debug!(func_name = %func_name, receiver_name = %receiver_name, "signature: receiver resolution — resolving type");
+
+    // Resolve the receiver type using TypeResolver
+    let resolver = al_syntax::TypeResolver::new(tree, text);
+    let decl = resolver.resolve_type(receiver_name, position)?;
+
+    // Get the subtype (e.g., "IJL Process Staging" from Report "IJL Process Staging")
+    let subtype = decl.type_subtype.as_deref()?;
+
+    tracing::debug!(func_name = %func_name, receiver_name = %receiver_name, resolved_type = %decl.type_name, subtype = %subtype, "signature: receiver resolution — type resolved");
+
+    // Search workspace objects for this subtype
+    let obj_key = subtype.to_lowercase();
+    let file_path_entry = server.workspace_objects.get(&obj_key)?;
+    let file_path = file_path_entry.value();
+    let file_text_entry = server.workspace_files.get(file_path)?;
+    let file_text = file_text_entry.value();
+
+    let mut parser = server.parser.lock().unwrap();
+    let result = parser.parse(file_text);
+
+    // Search for the method in the target file's document symbols
+    let doc_symbols = al_syntax::extract_document_symbols(&result.tree, file_text);
+    tracing::debug!(func_name = %func_name, subtype = %subtype, target_symbols = doc_symbols.len(), "signature: receiver resolution — searching target file symbols");
+    for sym in &doc_symbols {
+        if let Some(children) = &sym.children {
+            for child in children {
+                if child.name.eq_ignore_ascii_case(func_name)
+                    && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
+                {
+                    tracing::debug!(func_name = %func_name, matched = %child.name, subtype = %subtype, "signature: receiver resolution — matched workspace procedure");
+                    let detail = child.detail.as_deref().unwrap_or("()");
+                    return Some(SignatureHelp {
+                        signatures: vec![SignatureInformation {
+                            label: format!("{}{}", child.name, detail),
+                            documentation: None,
+                            parameters: None,
+                            active_parameter: Some(active_param),
+                        }],
+                        active_signature: Some(0),
+                        active_parameter: Some(active_param),
+                    });
+                }
+            }
+        }
+    }
+
+    // Also check package symbols for the resolved type
+    let pkg_symbols = server.symbols.get_by_name(subtype);
+    tracing::debug!(func_name = %func_name, subtype = %subtype, pkg_results = pkg_symbols.len(), "signature: receiver resolution — searching package symbols");
+    for entry in &pkg_symbols {
+        for method in &entry.methods {
+            if method.name.eq_ignore_ascii_case(func_name) {
+                tracing::debug!(func_name = %func_name, object = %entry.name, subtype = %subtype, "signature: receiver resolution — matched package method");
                 let params: Vec<ParameterInformation> = method
                     .parameters
                     .iter()
@@ -181,71 +412,9 @@ pub(crate) fn handle_signature_help(
         }
     }
 
-    // Look up in built-in types
-    let builtins = server.builtins.read().unwrap().clone();
-    for bt in builtins.iter() {
-        for method in &bt.methods {
-            if method.name.eq_ignore_ascii_case(func_name) {
-                let params: Vec<ParameterInformation> = method
-                    .parameters
-                    .iter()
-                    .map(|p| {
-                        let var_prefix = if p.is_var { "var " } else { "" };
-                        ParameterInformation {
-                            label: ParameterLabel::Simple(format!(
-                                "{}{}: {}",
-                                var_prefix, p.name, p.type_name
-                            )),
-                            documentation: None,
-                        }
-                    })
-                    .collect();
-
-                let params_str: Vec<String> = method
-                    .parameters
-                    .iter()
-                    .map(|p| {
-                        let var_prefix = if p.is_var { "var " } else { "" };
-                        format!("{}{}: {}", var_prefix, p.name, p.type_name)
-                    })
-                    .collect();
-                let return_str = method
-                    .return_type
-                    .as_ref()
-                    .map(|r| format!(": {}", r))
-                    .unwrap_or_default();
-
-                let doc = if method.documentation.is_empty() {
-                    None
-                } else {
-                    Some(Documentation::String(method.documentation.clone()))
-                };
-
-                return Some(SignatureHelp {
-                    signatures: vec![SignatureInformation {
-                        label: format!(
-                            "{}.{}({}){}",
-                            bt.name,
-                            method.name,
-                            params_str.join("; "),
-                            return_str
-                        ),
-                        documentation: doc,
-                        parameters: Some(params),
-                        active_parameter: Some(active_param),
-                    }],
-                    active_signature: Some(0),
-                    active_parameter: Some(active_param),
-                });
-            }
-        }
-    }
-
+    tracing::debug!(func_name = %func_name, subtype = %subtype, "signature: receiver resolution — no match found in workspace or packages");
     None
 }
-
-// find_call_context and extract_trailing_identifier moved to al_syntax::context
-use al_syntax::find_call_context;
 
 // ---------------------------------------------------------------------------
 // Code actions
@@ -260,6 +429,8 @@ pub(crate) fn handle_code_action(
 ) -> Option<Vec<CodeActionOrCommand>> {
     let text = server.documents.get_text(uri)?;
     let mut actions = Vec::new();
+
+    tracing::debug!(diagnostic_count = diagnostics.len(), "code_action: processing diagnostics");
 
     // --- Diagnostic-based quick fixes ---
     for diag in diagnostics {
@@ -452,6 +623,8 @@ pub(crate) fn handle_code_action(
             actions.push(action);
         }
     }
+
+    tracing::debug!(action_count = actions.len(), "code_action: returning actions");
 
     if actions.is_empty() {
         None
@@ -843,6 +1016,17 @@ pub(crate) fn handle_inlay_hint(
     let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
 
     collect_inlay_hints(root, source, server, &doc_symbols, &range, &mut hints);
+
+    let parameter_hints = hints.iter().filter(|h| h.kind == Some(InlayHintKind::PARAMETER)).count();
+    let type_hints = hints.iter().filter(|h| h.kind == Some(InlayHintKind::TYPE)).count();
+    let other_hints = hints.len() - parameter_hints - type_hints;
+    tracing::debug!(
+        hint_count = hints.len(),
+        parameter_hints = parameter_hints,
+        type_hints = type_hints,
+        other_hints = other_hints,
+        "inlay_hint: returning hints"
+    );
 
     if hints.is_empty() {
         None

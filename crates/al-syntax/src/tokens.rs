@@ -1,5 +1,6 @@
 //! Semantic token extraction from tree-sitter trees.
 
+use tracing::{debug, trace};
 use tree_sitter::{Node, Tree};
 
 /// Semantic token type indices — must match the legend registered with the LSP client.
@@ -93,6 +94,7 @@ pub fn extract_semantic_tokens(tree: &Tree, text: &str) -> Vec<SemanticToken> {
         prev_start = col;
     }
 
+    debug!(total = tokens.len(), "extract_semantic_tokens: complete");
     tokens
 }
 
@@ -139,7 +141,7 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
 
 /// Classify a tree-sitter node kind to a semantic token type.
 /// Returns `None` for nodes that should not be highlighted or should recurse.
-fn classify_node(kind: &str, node: Node, _source: &[u8]) -> Option<u32> {
+fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
     match kind {
         // Keywords (AL-specific keyword nodes from the external scanner)
         "kw_begin" | "kw_end" | "kw_var" | "kw_if" | "kw_then" | "kw_else" | "kw_for"
@@ -263,7 +265,7 @@ fn classify_node(kind: &str, node: Node, _source: &[u8]) -> Option<u32> {
 
         // Names and quoted object/type references need context-sensitive handling.
         "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
-            classify_name_like_node(node)
+            classify_name_like_node(node, source)
         }
         "verbatim_string" => Some(token_types::STRING),
 
@@ -283,7 +285,7 @@ fn classify_node(kind: &str, node: Node, _source: &[u8]) -> Option<u32> {
 }
 
 /// Classify identifiers and quoted names based on parent/ancestor context.
-fn classify_name_like_node(node: Node) -> Option<u32> {
+fn classify_name_like_node(node: Node, _source: &[u8]) -> Option<u32> {
     let parent = node.parent()?;
     match parent.kind() {
         // Function/procedure names
@@ -332,6 +334,9 @@ fn classify_name_like_node(node: Node) -> Option<u32> {
         "property_assignment" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::PROPERTY)
+            } else if matches!(node.kind(), "quoted_identifier") {
+                // In AL, double-quoted values in properties are always object references
+                Some(token_types::TYPE)
             } else {
                 None
             }
@@ -365,7 +370,17 @@ fn classify_name_like_node(node: Node) -> Option<u32> {
                 Some(token_types::TYPE)
             } else if matches!(node.kind(), "string" | "verbatim_string") {
                 Some(token_types::STRING)
+            } else if matches!(node.kind(), "quoted_identifier") {
+                // Double-quoted identifiers in AL are always object/identifier references
+                Some(token_types::TYPE)
             } else {
+                trace!(
+                    node_kind = node.kind(),
+                    parent_kind = parent.kind(),
+                    line = node.start_position().row,
+                    col = node.start_position().column,
+                    "classify_name_like_node: unclassified name-like node"
+                );
                 None
             }
         }
@@ -678,5 +693,40 @@ mod tests {
 
         assert_token_type_for_text(source, &tokens, "FirstVar", token_types::VARIABLE);
         assert_token_type_for_text(source, &tokens, r#""Second Var""#, token_types::VARIABLE);
+    }
+
+    #[test]
+    fn test_permissions_parse_tree_query() {
+        let src = r#"report 50200 "IJL Process Staging"
+{
+    Permissions = tabledata "Item Journal Staging" = rm;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let lang = result.tree.language();
+
+        // Test the highlights.scm query pattern for property values
+        let query_src = r#"
+(property_assignment
+  name: (_)
+  (name (quoted_identifier) @type_builtin))
+"#;
+        let query = tree_sitter::Query::new(&lang, query_src).expect("query should parse");
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut found = false;
+        {
+            use tree_sitter::StreamingIterator;
+            let mut captures = cursor.captures(&query, result.tree.root_node(), src.as_bytes());
+            while let Some((qm, idx)) = captures.next() {
+                let cap = &qm.captures[*idx];
+                let text = cap.node.utf8_text(src.as_bytes()).unwrap();
+                eprintln!("  capture = {} {:?}", cap.node.kind(), text);
+                if text == r#""Item Journal Staging""# {
+                    found = true;
+                }
+            }
+        }
+
+        assert!(found, "Query should capture \"Item Journal Staging\" as type.builtin");
     }
 }

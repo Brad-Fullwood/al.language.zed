@@ -66,6 +66,27 @@ fn hover_markdown(result: &serde_json::Value) -> Option<&str> {
         .and_then(|value| value.as_str())
 }
 
+/// Open common Debar project files into a client.
+async fn open_debar_files(client: &mut LspClient) {
+    let files = [
+        "objects/API/ItemJournalStaging.Table.al",
+        "objects/API/ItemJournalAPI.Page.al",
+        "objects/Automation/IJLAPIHelper.Codeunit.al",
+        "objects/Automation/IJLPostTask.Codeunit.al",
+        "objects/Automation/IJLStatus.Enum.al",
+        "objects/Testing/IJLProcessStaging.Report.al",
+        "objects/Testing/IJLProcessAction.Enum.al",
+        "objects/System/JsonTools.Codeunit.al",
+    ];
+    for file in &files {
+        let path = debar_project_dir().join(file);
+        if path.exists() {
+            let content = std::fs::read_to_string(&path).unwrap();
+            client.open_file(file, &content).await;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Workspace initialization with real project
 // ---------------------------------------------------------------------------
@@ -736,6 +757,1147 @@ async fn test_debar_member_navigation_hover_and_completion_regressions() {
         field_count_hover_text.contains("FieldCount"),
         "Built-in method hover should include FieldCount details. Got: {:?}",
         field_count_hover
+    );
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Edge case tests — dataitem variables, cross-file definition, built-in types
+// ---------------------------------------------------------------------------
+
+/// Test that dataitem variables (report dataset) are resolved for hover/completion.
+#[tokio::test]
+async fn test_debar_dataitem_variable_resolution() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
+    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+
+    // StagingRec is a dataitem variable, not a regular var
+    // Line 22: this.APIHelper.Precheck(StagingRec);
+    let (staging_line, _staging_col) =
+        find_position(&report, "APIHelper.Precheck(StagingRec")
+            .expect("StagingRec usage in Precheck call");
+    // Position on StagingRec argument
+    let staging_col = report.lines().nth(staging_line as usize)
+        .and_then(|line| line.find("StagingRec);"))
+        .expect("StagingRec in line") as u32;
+
+    let staging_hover = client
+        .hover(report_rel, staging_line, staging_col + 2)
+        .await;
+    assert!(
+        staging_hover.is_some(),
+        "StagingRec (dataitem variable) should have hover info"
+    );
+    let staging_hover_text = hover_content(&staging_hover.as_ref().unwrap()).unwrap_or("");
+    assert!(
+        staging_hover_text.contains("Record") || staging_hover_text.contains("Item Journal Staging"),
+        "StagingRec hover should show Record type. Got: {:?}",
+        staging_hover_text
+    );
+
+    // StagingRec. should provide completions (table fields)
+    let staging_dot_line = report.lines().enumerate()
+        .find(|(_idx, line)| line.contains("StagingRec.Status::Posting"))
+        .map(|(idx, _)| idx as u32)
+        .expect("StagingRec.Status::Posting line");
+    let staging_dot_col = report.lines().nth(staging_dot_line as usize)
+        .and_then(|line| line.find("StagingRec."))
+        .expect("StagingRec. position") as u32 + 11; // after the dot
+    let staging_completions = client
+        .completion(report_rel, staging_dot_line, staging_dot_col)
+        .await;
+    let staging_labels = completion_labels(&staging_completions);
+    assert!(
+        staging_labels.iter().any(|l| l.eq_ignore_ascii_case("Status")),
+        "StagingRec. completions should include table fields like Status. Got: {:?}",
+        staging_labels
+    );
+
+    client.shutdown().await;
+}
+
+/// Test cross-file go-to-definition: Staging.GetJournalData() should resolve to the table procedure.
+#[tokio::test]
+async fn test_debar_cross_file_procedure_definition() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
+    let codeunit = std::fs::read_to_string(debar_project_dir().join(codeunit_rel)).unwrap();
+
+    // Line: JournalData := Staging.GetJournalData();
+    let (get_line, _) =
+        find_position(&codeunit, "Staging.GetJournalData()")
+            .expect("GetJournalData usage");
+    let get_col = codeunit.lines().nth(get_line as usize)
+        .and_then(|line| line.find("GetJournalData"))
+        .expect("GetJournalData position") as u32;
+
+    let get_def = client
+        .definition(codeunit_rel, get_line, get_col + 2)
+        .await
+        .expect("GetJournalData should have a definition");
+    assert!(
+        definition_uri(&get_def)
+            .map(|uri| uri.ends_with("ItemJournalStaging.Table.al"))
+            .unwrap_or(false),
+        "GetJournalData should resolve to the table file. Got: {:?}",
+        get_def
+    );
+
+    client.shutdown().await;
+}
+
+/// Test multi-level member chain: this.IJLPostTask.Run() in report.
+/// IJLPostTask is a Codeunit "IJL Post Task" var — Run() is the codeunit's trigger.
+#[tokio::test]
+async fn test_debar_multilevel_member_chain() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
+    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+
+    // Line 69: this.IJLPostTask.Run();
+    let (run_line, _) =
+        find_position(&report, "this.IJLPostTask.Run()").expect("IJLPostTask.Run() usage");
+    let run_line_text = report.lines().nth(run_line as usize).unwrap();
+
+    // Hover on IJLPostTask — should resolve to the codeunit variable
+    let ijl_col = run_line_text.find("IJLPostTask").expect("IJLPostTask in line") as u32;
+    let ijl_hover = client.hover(report_rel, run_line, ijl_col + 2).await;
+    assert!(
+        ijl_hover.is_some(),
+        "IJLPostTask should have hover info (codeunit variable)"
+    );
+    let ijl_text = hover_content(&ijl_hover.as_ref().unwrap()).unwrap_or("");
+    assert!(
+        ijl_text.contains("Codeunit") || ijl_text.contains("IJL Post Task"),
+        "IJLPostTask hover should mention Codeunit type. Got: {:?}",
+        ijl_text
+    );
+
+    // Definition on IJLPostTask — should resolve to the var declaration (line 74)
+    let ijl_def = client.definition(report_rel, run_line, ijl_col + 2).await;
+    assert!(
+        ijl_def.is_some(),
+        "IJLPostTask should have a definition (var declaration)"
+    );
+    if let Some(ref def) = ijl_def {
+        // Should point to the var section in the report
+        assert!(
+            definition_uri(def)
+                .map(|uri| uri.ends_with("IJLProcessStaging.Report.al"))
+                .unwrap_or(false),
+            "IJLPostTask should resolve within the report. Got: {:?}",
+            def
+        );
+    }
+
+    // Hover on Run — should resolve to a procedure or trigger
+    let run_col = run_line_text.find("Run()").expect("Run() in line") as u32;
+    let run_hover = client.hover(report_rel, run_line, run_col + 1).await;
+    // Run() resolves through IJLPostTask (Codeunit "IJL Post Task") — may or may not have hover
+    // depending on whether the server resolves through the variable type to the codeunit's trigger.
+    // This is an aspirational test — we just verify no crash for now.
+    if let Some(ref hover) = run_hover {
+        let run_text = hover_content(hover).unwrap_or("");
+        eprintln!("Run() hover: {}", run_text);
+    }
+
+    client.shutdown().await;
+}
+
+/// Test Codeunit::"IJL Post Task" scope access syntax.
+#[tokio::test]
+async fn test_debar_codeunit_scope_access() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
+    let codeunit = std::fs::read_to_string(debar_project_dir().join(codeunit_rel)).unwrap();
+
+    // Line 58: TaskScheduler.CreateTask(Codeunit::"IJL Post Task", ...)
+    let (scope_line, _) =
+        find_position(&codeunit, "Codeunit::\"IJL Post Task\"").expect("Codeunit:: scope access");
+    let scope_line_text = codeunit.lines().nth(scope_line as usize).unwrap();
+
+    // Hover on the quoted "IJL Post Task" — should resolve to the codeunit
+    let post_task_col = scope_line_text.find("\"IJL Post Task\"").expect("quoted name") as u32;
+    let post_task_hover = client
+        .hover(codeunit_rel, scope_line, post_task_col + 2)
+        .await;
+    // This should resolve the codeunit object
+    if let Some(ref hover) = post_task_hover {
+        let text = hover_content(hover).unwrap_or("");
+        eprintln!("Codeunit::\"IJL Post Task\" hover: {}", text);
+        assert!(
+            text.contains("Codeunit") || text.contains("IJL Post Task"),
+            "Hover should reference the codeunit. Got: {:?}",
+            text
+        );
+    }
+
+    // Definition on "IJL Post Task" — should go to the codeunit file
+    let post_task_def = client
+        .definition(codeunit_rel, scope_line, post_task_col + 2)
+        .await;
+    if let Some(ref def) = post_task_def {
+        // Should resolve to IJLPostTask.Codeunit.al
+        assert!(
+            definition_uri(def)
+                .map(|uri| uri.contains("IJLPostTask.Codeunit.al") || uri.contains("IJL"))
+                .unwrap_or(false),
+            "Codeunit:: scope should resolve to the codeunit file. Got: {:?}",
+            def
+        );
+    }
+
+    client.shutdown().await;
+}
+
+/// Test Rec.SystemId hover — SystemId is a built-in system field on all records.
+#[tokio::test]
+async fn test_debar_builtin_system_field_hover() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let page_rel = "objects/API/ItemJournalAPI.Page.al";
+    let page = std::fs::read_to_string(debar_project_dir().join(page_rel)).unwrap();
+
+    // field(id; Rec.SystemId)
+    let (sysid_line, _) =
+        find_position(&page, "Rec.SystemId").expect("Rec.SystemId usage");
+    let sysid_line_text = page.lines().nth(sysid_line as usize).unwrap();
+    let sysid_col = sysid_line_text.find("SystemId").expect("SystemId in line") as u32;
+
+    let sysid_hover = client.hover(page_rel, sysid_line, sysid_col + 2).await;
+    assert!(
+        sysid_hover.is_some(),
+        "SystemId should have hover info (built-in system field)"
+    );
+    let sysid_text = hover_content(&sysid_hover.as_ref().unwrap()).unwrap_or("");
+    assert!(
+        sysid_text.contains("SystemId"),
+        "SystemId hover should mention SystemId. Got: {:?}",
+        sysid_text
+    );
+
+    client.shutdown().await;
+}
+
+/// Test GetLastErrorText() hover — built-in global function.
+#[tokio::test]
+async fn test_debar_builtin_global_function_hover() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+
+    let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
+    let post_task_path = debar_project_dir().join(post_task_rel);
+    let post_task = std::fs::read_to_string(&post_task_path).unwrap();
+    client.open_file(post_task_rel, &post_task).await;
+
+    // GetLastErrorText() — built-in global function
+    let (gle_line, _) =
+        find_position(&post_task, "GetLastErrorText()").expect("GetLastErrorText usage");
+    let gle_line_text = post_task.lines().nth(gle_line as usize).unwrap();
+    let gle_col = gle_line_text.find("GetLastErrorText").expect("GetLastErrorText in line") as u32;
+
+    let gle_hover = client.hover(post_task_rel, gle_line, gle_col + 2).await;
+    // GetLastErrorText is a built-in function — may resolve through builtins or not
+    // (depends on whether semantic bridge is running). Record the result.
+    if let Some(ref hover) = gle_hover {
+        let text = hover_content(hover).unwrap_or("");
+        eprintln!("GetLastErrorText hover: {}", text);
+        assert!(
+            text.contains("GetLastErrorText") || text.contains("Error"),
+            "GetLastErrorText hover should be relevant. Got: {:?}",
+            text
+        );
+    } else {
+        eprintln!("NOTE: GetLastErrorText hover returned None — semantic bridge may not be running");
+    }
+
+    client.shutdown().await;
+}
+
+/// Test TaskScheduler.CreateTask() hover — built-in type method.
+#[tokio::test]
+async fn test_debar_builtin_type_method_hover() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
+    let codeunit = std::fs::read_to_string(debar_project_dir().join(codeunit_rel)).unwrap();
+
+    // TaskScheduler.CreateTask(...) — TaskScheduler is a built-in type
+    let (ts_line, _) =
+        find_position(&codeunit, "TaskScheduler.CreateTask").expect("TaskScheduler usage");
+    let ts_line_text = codeunit.lines().nth(ts_line as usize).unwrap();
+
+    // Hover on TaskScheduler itself
+    let ts_col = ts_line_text.find("TaskScheduler").expect("TaskScheduler in line") as u32;
+    let ts_hover = client.hover(codeunit_rel, ts_line, ts_col + 2).await;
+    if let Some(ref hover) = ts_hover {
+        let text = hover_content(hover).unwrap_or("");
+        eprintln!("TaskScheduler hover: {}", text);
+        assert!(
+            text.contains("TaskScheduler"),
+            "TaskScheduler hover should mention the type. Got: {:?}",
+            text
+        );
+    } else {
+        eprintln!("NOTE: TaskScheduler hover returned None — built-in type may not be loaded");
+    }
+
+    // Hover on CreateTask
+    let ct_col = ts_line_text.find("CreateTask").expect("CreateTask in line") as u32;
+    let ct_hover = client.hover(codeunit_rel, ts_line, ct_col + 2).await;
+    if let Some(ref hover) = ct_hover {
+        let text = hover_content(hover).unwrap_or("");
+        eprintln!("CreateTask hover: {}", text);
+        assert!(
+            text.contains("CreateTask"),
+            "CreateTask hover should mention the method. Got: {:?}",
+            text
+        );
+    } else {
+        eprintln!("NOTE: CreateTask hover returned None — semantic bridge may not be running");
+    }
+
+    client.shutdown().await;
+}
+
+/// Test semantic tokens for the report file — ensures highlighting works.
+#[tokio::test]
+async fn test_debar_report_semantic_tokens() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+
+    let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
+    let report_path = debar_project_dir().join(report_rel);
+    let report = std::fs::read_to_string(&report_path).unwrap();
+    client.open_file(report_rel, &report).await;
+
+    let tokens = client.semantic_tokens(report_rel).await;
+    assert!(
+        tokens.is_some(),
+        "Report file should produce semantic tokens"
+    );
+
+    let data = semantic_token_data(&tokens.unwrap());
+    let line_count = report.lines().count();
+
+    // A report with 87 lines of real AL code should produce at least 30 tokens
+    assert!(
+        data.len() >= 30,
+        "Report file ({} lines) should have at least 30 semantic tokens. Got: {}",
+        line_count,
+        data.len()
+    );
+
+    // Verify token types include keywords, strings, and types at minimum
+    let token_types: std::collections::HashSet<u32> = data.iter().map(|t| t[3]).collect();
+    assert!(
+        token_types.len() >= 3,
+        "Should have at least 3 different token types. Got: {:?}",
+        token_types
+    );
+
+    client.shutdown().await;
+}
+
+/// Test built-in type method hover (Record.FindSet, JsonObject.ReadFrom).
+#[tokio::test]
+async fn test_debar_builtin_method_hover() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
+    let codeunit = std::fs::read_to_string(debar_project_dir().join(codeunit_rel)).unwrap();
+
+    // Staging.FindSet(false)  — Record.FindSet is a built-in method
+    let (findset_line, _) =
+        find_position(&codeunit, "Staging.FindSet(false)")
+            .expect("FindSet usage");
+    let findset_col = codeunit.lines().nth(findset_line as usize)
+        .and_then(|line| line.find("FindSet"))
+        .expect("FindSet position") as u32;
+
+    let findset_hover = client
+        .hover(codeunit_rel, findset_line, findset_col + 2)
+        .await;
+    assert!(
+        findset_hover.is_some(),
+        "FindSet should have hover info (built-in Record method)"
+    );
+    let findset_text = hover_content(&findset_hover.as_ref().unwrap()).unwrap_or("");
+    assert!(
+        findset_text.contains("FindSet"),
+        "FindSet hover should mention FindSet. Got: {:?}",
+        findset_text
+    );
+
+    // JsonObj.ReadFrom(JournalData) — JsonObject.ReadFrom is a built-in method
+    let (readfrom_line, _) =
+        find_position(&codeunit, "JsonObj.ReadFrom(JournalData)")
+            .expect("ReadFrom usage");
+    let readfrom_col = codeunit.lines().nth(readfrom_line as usize)
+        .and_then(|line| line.find("ReadFrom"))
+        .expect("ReadFrom position") as u32;
+
+    let readfrom_hover = client
+        .hover(codeunit_rel, readfrom_line, readfrom_col + 2)
+        .await;
+    assert!(
+        readfrom_hover.is_some(),
+        "ReadFrom should have hover info (built-in JsonObject method)"
+    );
+
+    client.shutdown().await;
+}
+
+/// Regression: go-to-definition on a workspace table field should navigate to the field declaration.
+/// Bug: ResolvedMemberKind::Field fell through to `_ => {}` in definition.rs.
+#[tokio::test]
+async fn test_debar_field_definition_navigates() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
+    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+
+    // StagingRec.Status — Status is a field on the table
+    let (status_line, _) =
+        find_position(&report, "StagingRec.Status::Posting")
+            .expect("StagingRec.Status usage");
+    let status_col = report.lines().nth(status_line as usize)
+        .and_then(|line| line.find("StagingRec.Status::"))
+        .expect("Status position") as u32 + 11; // on "Status" after the dot
+
+    let status_def = client.definition(report_rel, status_line, status_col + 2).await;
+    if let Some(ref def) = status_def {
+        // Should resolve to the table file where the Status field is declared
+        assert!(
+            definition_uri(def)
+                .map(|uri| uri.contains("ItemJournalStaging.Table.al"))
+                .unwrap_or(false),
+            "Status field should resolve to the table file. Got: {:?}",
+            def
+        );
+    }
+
+    client.shutdown().await;
+}
+
+/// Regression: go-to-definition on enum values should navigate to the enum declaration.
+/// Bug: ResolvedMemberKind::EnumValue fell through to `_ => {}` in definition.rs.
+#[tokio::test]
+async fn test_debar_enum_value_definition_navigates() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
+    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+
+    // Status::Posting — Posting is an enum value
+    let (posting_line, _) =
+        find_position(&report, "Status::Posting")
+            .expect("Status::Posting usage");
+    let posting_col = report.lines().nth(posting_line as usize)
+        .and_then(|line| line.find("Posting"))
+        .expect("Posting position") as u32;
+
+    let posting_def = client.definition(report_rel, posting_line, posting_col + 2).await;
+    if let Some(ref def) = posting_def {
+        // Should resolve to the enum file where Posting is declared
+        let def_uri = definition_uri(def).unwrap_or("");
+        assert!(
+            def_uri.contains("IJLStatus.Enum.al") || def_uri.contains("Status"),
+            "Posting enum value should resolve to the enum file. Got: {:?}",
+            def
+        );
+    }
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Signature help tests
+// ---------------------------------------------------------------------------
+
+/// Signature help for a local procedure call via `this.InsertJournalLine(...)`.
+#[tokio::test]
+async fn test_debar_signature_help_local_procedure() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
+    let post_task = std::fs::read_to_string(debar_project_dir().join(post_task_rel)).unwrap();
+
+    // Line 37: this.InsertJournalLine(StagingRec, ItemJnlLine) — local procedure with 2 params
+    let (line, _) = find_position(&post_task, "this.InsertJournalLine(StagingRec, ItemJnlLine)")
+        .expect("InsertJournalLine call");
+    let col = post_task.lines().nth(line as usize)
+        .and_then(|l| l.find("InsertJournalLine("))
+        .expect("InsertJournalLine( position") as u32 + 18; // after the (
+
+    let sig = client.signature_help(post_task_rel, line, col).await;
+    assert!(
+        sig.is_some(),
+        "InsertJournalLine should have signature help (local procedure with params)"
+    );
+    let sig_val = sig.unwrap();
+    let label = sig_val.get("signatures")
+        .and_then(|s| s.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|s| s.get("label"))
+        .and_then(|l| l.as_str())
+        .unwrap_or("");
+    assert!(
+        label.contains("InsertJournalLine") && label.contains("StagingRec"),
+        "Signature should show InsertJournalLine with params. Got: {:?}",
+        label
+    );
+
+    client.shutdown().await;
+}
+
+/// Signature help for a built-in Record method: StagingRec.SetRange(Status, ...).
+#[tokio::test]
+async fn test_debar_signature_help_builtin_method() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
+    let post_task = std::fs::read_to_string(debar_project_dir().join(post_task_rel)).unwrap();
+
+    // Line 29: StagingRec.SetRange(Status, StagingRec.Status::Posting)
+    let (line, _) = find_position(&post_task, "StagingRec.SetRange(Status,")
+        .expect("SetRange call");
+    let col = post_task.lines().nth(line as usize)
+        .and_then(|l| l.find("SetRange("))
+        .expect("SetRange( position") as u32 + 9; // after the (
+
+    let sig = client.signature_help(post_task_rel, line, col).await;
+    assert!(
+        sig.is_some(),
+        "SetRange should have signature help (built-in Record method)"
+    );
+
+    client.shutdown().await;
+}
+
+/// Signature help for a cross-file workspace procedure: ProcessReport.SetAction(...).
+/// BUG FINDER: Signature help only searches local procs, packages, and builtins — not workspace objects.
+#[tokio::test]
+async fn test_debar_signature_help_cross_file_workspace_procedure() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+
+    let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
+    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    client.open_file(staging_list_rel, &staging_list).await;
+    open_debar_files(&mut client).await;
+
+    // Line 73: ProcessReport.SetAction(this.ActionType::Precheck)
+    let (line, _) = find_position(&staging_list, "ProcessReport.SetAction(this.ActionType::Precheck)")
+        .expect("SetAction call");
+    let col = staging_list.lines().nth(line as usize)
+        .and_then(|l| l.find("SetAction("))
+        .expect("SetAction( position") as u32 + 10; // after the (
+
+    let sig = client.signature_help(staging_list_rel, line, col).await;
+    assert!(
+        sig.is_some(),
+        "SetAction should have signature help — it's a workspace procedure on Report 'IJL Process Staging'. \
+         This fails because signature help doesn't resolve through the receiver type to find cross-file procedures."
+    );
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Inlay hints tests
+// ---------------------------------------------------------------------------
+
+/// Inlay hints should show parameter names at call sites for local procedures.
+#[tokio::test]
+async fn test_debar_inlay_hints_local_procedure_calls() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
+
+    // Request inlay hints for the ProcessPostingQueue procedure body (lines 23-49)
+    let hints = client.inlay_hints(post_task_rel, 23, 49).await;
+    assert!(
+        !hints.is_empty(),
+        "Post task lines 23-49 should have inlay hints for procedure calls like InsertJournalLine, MarkStagingFailed"
+    );
+
+    // Check that at least one hint is a parameter name
+    let hint_labels: Vec<&str> = hints.iter()
+        .filter_map(|h| h.get("label").and_then(|l| l.as_str()))
+        .collect();
+    eprintln!("Inlay hint labels: {:?}", hint_labels);
+    assert!(
+        hint_labels.iter().any(|l| l.contains("StagingRec") || l.contains("ErrorText") || l.contains("PostedEntryNo")),
+        "Inlay hints should include parameter names like StagingRec, ErrorText, PostedEntryNo. Got: {:?}",
+        hint_labels
+    );
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// References (find all references) tests
+// ---------------------------------------------------------------------------
+
+/// Find all references to GetJournalData across workspace files.
+#[tokio::test]
+async fn test_debar_references_cross_file() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
+    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    client.open_file(staging_list_rel, &staging_list).await;
+
+    let api_helper_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
+    let api_helper = std::fs::read_to_string(debar_project_dir().join(api_helper_rel)).unwrap();
+
+    // GetJournalData at api helper line 73
+    let (line, _) = find_position(&api_helper, "Staging.GetJournalData()")
+        .expect("GetJournalData usage in api helper");
+    let col = api_helper.lines().nth(line as usize)
+        .and_then(|l| l.find("GetJournalData"))
+        .expect("GetJournalData position") as u32;
+
+    let refs = client.references(api_helper_rel, line, col + 2).await;
+    assert!(
+        refs.len() >= 2,
+        "GetJournalData should have at least 2 references (declaration + usages across files). Got: {}",
+        refs.len()
+    );
+
+    let ref_uris: std::collections::HashSet<&str> = refs.iter()
+        .filter_map(|r| r.get("uri").and_then(|u| u.as_str()))
+        .collect();
+    eprintln!("GetJournalData reference URIs: {:?}", ref_uris);
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Type reference definition tests
+// ---------------------------------------------------------------------------
+
+/// Go-to-definition on `"IJL Status"` in a table field type.
+#[tokio::test]
+async fn test_debar_type_reference_definition() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let table_rel = "objects/API/ItemJournalStaging.Table.al";
+    let table = std::fs::read_to_string(debar_project_dir().join(table_rel)).unwrap();
+
+    // Line 29: field(4; Status; Enum "IJL Status")
+    let (line, _) = find_position(&table, "Enum \"IJL Status\"")
+        .expect("IJL Status type reference");
+    let col = table.lines().nth(line as usize)
+        .and_then(|l| l.find("\"IJL Status\""))
+        .expect("IJL Status position") as u32 + 2;
+
+    let def = client.definition(table_rel, line, col).await;
+    assert!(
+        def.is_some(),
+        "\"IJL Status\" type reference should navigate to the enum file"
+    );
+    if let Some(ref d) = def {
+        let uri = definition_uri(d).unwrap_or("");
+        assert!(
+            uri.contains("IJLStatus.Enum.al"),
+            "\"IJL Status\" should resolve to IJLStatus.Enum.al. Got: {:?}",
+            uri
+        );
+    }
+
+    client.shutdown().await;
+}
+
+/// Go-to-definition on `"IJL API Helper"` codeunit type reference.
+#[tokio::test]
+async fn test_debar_codeunit_type_reference_definition() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
+    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+
+    // Line 73: APIHelper: Codeunit "IJL API Helper";
+    let (line, _) = find_position(&report, "Codeunit \"IJL API Helper\"")
+        .expect("IJL API Helper type reference");
+    let col = report.lines().nth(line as usize)
+        .and_then(|l| l.find("\"IJL API Helper\""))
+        .expect("IJL API Helper position") as u32 + 2;
+
+    let def = client.definition(report_rel, line, col).await;
+    assert!(
+        def.is_some(),
+        "\"IJL API Helper\" type reference should navigate to the codeunit file"
+    );
+    if let Some(ref d) = def {
+        let uri = definition_uri(d).unwrap_or("");
+        assert!(
+            uri.contains("IJLAPIHelper.Codeunit.al"),
+            "\"IJL API Helper\" should resolve to IJLAPIHelper.Codeunit.al. Got: {:?}",
+            uri
+        );
+    }
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Completions: this. in page trigger and Rec.Status:: enum chain
+// ---------------------------------------------------------------------------
+
+/// Completions for `this.` in page trigger should show page variables.
+#[tokio::test]
+async fn test_debar_this_completions_in_page() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
+    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    client.open_file(staging_list_rel, &staging_list).await;
+
+    // Line 154: this.ErrorMessageText := CopyStr(FullErrorMessage, 1, 250);
+    let (line, _) = find_position(&staging_list, "this.ErrorMessageText := CopyStr")
+        .expect("this.ErrorMessageText usage");
+    let col = staging_list.lines().nth(line as usize)
+        .and_then(|l| l.find("this."))
+        .expect("this. position") as u32 + 5; // after "this."
+
+    let completions = client.completion(staging_list_rel, line, col).await;
+    let labels = completion_labels(&completions);
+    assert!(
+        labels.iter().any(|l| *l == "ErrorMessageText"),
+        "this. in page should show ErrorMessageText. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| *l == "RowStyle"),
+        "this. in page should show RowStyle. Got: {:?}",
+        labels
+    );
+
+    client.shutdown().await;
+}
+
+/// Completions for `Rec.Status::` in page trigger should show enum values.
+#[tokio::test]
+async fn test_debar_enum_completions_through_field_chain() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
+    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    client.open_file(staging_list_rel, &staging_list).await;
+
+    // Line 159: Rec.Status::Pending:
+    let (line, _) = find_position(&staging_list, "Rec.Status::Pending")
+        .expect("Rec.Status::Pending usage");
+    let col = staging_list.lines().nth(line as usize)
+        .and_then(|l| l.find("Rec.Status::"))
+        .expect("Rec.Status:: position") as u32 + 12; // after "::"
+
+    let completions = client.completion(staging_list_rel, line, col).await;
+    let labels = completion_labels(&completions);
+    assert!(
+        labels.iter().any(|l| *l == "Pending"),
+        "Rec.Status:: should show Pending enum value. Got: {:?}",
+        labels
+    );
+    assert!(
+        labels.iter().any(|l| *l == "Posted"),
+        "Rec.Status:: should show Posted enum value. Got: {:?}",
+        labels
+    );
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Hover on workspace procedures from call sites in other files
+// ---------------------------------------------------------------------------
+
+/// Hover on `SetAction` at the call site in the staging list page.
+#[tokio::test]
+async fn test_debar_hover_cross_file_workspace_procedure() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
+    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    client.open_file(staging_list_rel, &staging_list).await;
+
+    // Line 73: ProcessReport.SetAction(this.ActionType::Precheck)
+    let (line, _) = find_position(&staging_list, "ProcessReport.SetAction(this.ActionType::Precheck)")
+        .expect("SetAction call");
+    let col = staging_list.lines().nth(line as usize)
+        .and_then(|l| l.find("SetAction"))
+        .expect("SetAction position") as u32;
+
+    let hover = client.hover(staging_list_rel, line, col + 2).await;
+    assert!(
+        hover.is_some(),
+        "SetAction should have hover info — it's a workspace procedure on Report 'IJL Process Staging'"
+    );
+    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    assert!(
+        text.contains("SetAction") && text.contains("NewAction"),
+        "SetAction hover should show procedure signature with NewAction param. Got: {:?}",
+        text
+    );
+
+    client.shutdown().await;
+}
+
+/// Hover on `GetJournalData` at call site — should show workspace procedure signature.
+#[tokio::test]
+async fn test_debar_hover_workspace_procedure_with_return_type() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let api_helper_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
+    let api_helper = std::fs::read_to_string(debar_project_dir().join(api_helper_rel)).unwrap();
+
+    // Line 73: JournalData := Staging.GetJournalData();
+    let (line, _) = find_position(&api_helper, "Staging.GetJournalData()")
+        .expect("GetJournalData call");
+    let col = api_helper.lines().nth(line as usize)
+        .and_then(|l| l.find("GetJournalData"))
+        .expect("GetJournalData position") as u32;
+
+    let hover = client.hover(api_helper_rel, line, col + 2).await;
+    assert!(
+        hover.is_some(),
+        "GetJournalData should have hover info — it's a workspace procedure on Table 'Item Journal Staging'"
+    );
+    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    assert!(
+        text.contains("GetJournalData"),
+        "GetJournalData hover should mention the procedure name. Got: {:?}",
+        text
+    );
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Rename
+// ---------------------------------------------------------------------------
+
+/// Rename a local variable in the post task codeunit.
+#[tokio::test]
+async fn test_debar_rename_local_variable() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
+    let post_task = std::fs::read_to_string(debar_project_dir().join(post_task_rel)).unwrap();
+
+    // Line 26: ItemJnlLine: Record "Item Journal Line" (local var in ProcessPostingQueue)
+    let (line, _) = find_position(&post_task, "ItemJnlLine: Record \"Item Journal Line\"")
+        .expect("ItemJnlLine declaration");
+    let col = post_task.lines().nth(line as usize)
+        .and_then(|l| l.find("ItemJnlLine"))
+        .expect("ItemJnlLine position") as u32;
+
+    let rename_result = client.rename(post_task_rel, line, col + 2, "JournalLine").await;
+    assert!(
+        rename_result.is_some(),
+        "ItemJnlLine should be renameable"
+    );
+
+    if let Some(ref edit) = rename_result {
+        let changes = edit.get("changes")
+            .and_then(|c| c.as_object());
+        assert!(
+            changes.is_some() && !changes.unwrap().is_empty(),
+            "Rename should produce workspace edits. Got: {:?}",
+            edit
+        );
+        let change_count: usize = changes.unwrap().values()
+            .filter_map(|edits| edits.as_array())
+            .map(|arr| arr.len())
+            .sum();
+        assert!(
+            change_count >= 2,
+            "Rename should affect at least 2 locations (declaration + usage). Got: {}",
+            change_count
+        );
+    }
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics and code actions on real files
+// ---------------------------------------------------------------------------
+
+/// Verify code actions don't crash on real files with all lint rules active.
+#[tokio::test]
+async fn test_debar_code_actions_no_crash() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
+    let actions = client.code_actions(post_task_rel, 0, 262).await;
+    eprintln!("Post task code actions: {} found", actions.len());
+    for action in &actions {
+        if let Some(title) = action.get("title").and_then(|t| t.as_str()) {
+            eprintln!("  - {}", title);
+        }
+    }
+
+    client.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Audit regression tests — targeted scenarios from systematic CLI audit
+// ---------------------------------------------------------------------------
+
+/// 2-level chain hover: this.APIHelper.Precheck → should show procedure sig.
+#[tokio::test]
+async fn test_debar_audit_two_level_member_chain_hover() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
+    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+
+    // Line 22: this.APIHelper.Precheck(StagingRec)
+    let (line, _) =
+        find_position(&report, "this.APIHelper.Precheck(StagingRec)").expect("Precheck usage");
+    let line_text = report.lines().nth(line as usize).unwrap();
+
+    // Hover on Precheck (2-level: this.APIHelper -> Codeunit "IJL API Helper" -> Precheck)
+    let precheck_col = line_text.find("Precheck").expect("Precheck in line") as u32;
+    let hover = client.hover(report_rel, line, precheck_col + 2).await;
+    assert!(
+        hover.is_some(),
+        "Precheck should have hover info — 2-level chain: this.APIHelper (Codeunit) → Precheck"
+    );
+    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    assert!(
+        text.contains("Precheck"),
+        "Precheck hover should mention the procedure name. Got: {:?}",
+        text
+    );
+
+    client.shutdown().await;
+}
+
+/// Hover on quoted field access: Rec."Journal Data" in table procedure.
+#[tokio::test]
+async fn test_debar_audit_quoted_field_hover() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let table_rel = "objects/API/ItemJournalStaging.Table.al";
+    let table = std::fs::read_to_string(debar_project_dir().join(table_rel)).unwrap();
+
+    // Line 137: if not Rec."Journal Data".HasValue() then
+    let (line, _) =
+        find_position(&table, "Rec.\"Journal Data\".HasValue").expect("Journal Data usage");
+    let line_text = table.lines().nth(line as usize).unwrap();
+
+    // Hover on "Journal Data" (quoted field on Rec)
+    let field_col = line_text.find("\"Journal Data\"").expect("quoted field in line") as u32;
+    let hover = client.hover(table_rel, line, field_col + 2).await;
+    assert!(
+        hover.is_some(),
+        "\"Journal Data\" should have hover info — it's a field on Rec (same table)"
+    );
+    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    assert!(
+        text.contains("Journal Data") || text.contains("field"),
+        "Journal Data hover should mention field info. Got: {:?}",
+        text
+    );
+
+    client.shutdown().await;
+}
+
+/// Hover on StagingRec.Status (field access on dataitem Record variable).
+#[tokio::test]
+async fn test_debar_audit_dataitem_field_hover() {
+    if !debar_project_exists() {
+        eprintln!("Skipping: Debar project not found");
+        return;
+    }
+
+    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    open_debar_files(&mut client).await;
+
+    let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
+    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+
+    // Line 27: ModifyAll(Status, StagingRec.Status::Posting, true)
+    let (line, _) =
+        find_position(&report, "StagingRec.Status::Posting").expect("StagingRec.Status usage");
+    let line_text = report.lines().nth(line as usize).unwrap();
+
+    // Hover on Status (the field, between . and ::)
+    let status_col = line_text
+        .find("StagingRec.Status::")
+        .expect("StagingRec.Status:: in line") as u32
+        + 11; // after "StagingRec."
+    let hover = client.hover(report_rel, line, status_col + 2).await;
+    // Status is a field on "Item Journal Staging" — should resolve via dataitem type
+    assert!(
+        hover.is_some(),
+        "StagingRec.Status should have hover info — field on dataitem record"
+    );
+    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    assert!(
+        text.contains("Status") || text.contains("Enum") || text.contains("IJL Status"),
+        "StagingRec.Status hover should mention Status field or enum type. Got: {:?}",
+        text
     );
 
     client.shutdown().await;

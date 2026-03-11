@@ -135,12 +135,15 @@ pub(crate) fn handle_completion(
     let text = server.documents.get_text(uri)?;
     let context = detect_context(&text, position);
 
+    tracing::debug!(context = ?context, line = position.line, character = position.character, "completion: detected context");
+
     let mut items = Vec::new();
 
     match context {
         CompletionContext::MemberAccess => {
             if let Some((file_text, tree)) = parsing::get_or_parse(server, uri) {
                 if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, position) {
+                    tracing::debug!(receiver_expr = %receiver_expr, "completion: MemberAccess receiver");
                     if let Some(receiver) = resolution::resolve_expression_type(
                         server,
                         uri,
@@ -149,7 +152,9 @@ pub(crate) fn handle_completion(
                         &receiver_expr,
                         position,
                     ) {
+                        tracing::debug!(receiver_type = %receiver, "completion: MemberAccess resolved type");
                         items.extend(resolution::completion_items_for_receiver(server, &receiver));
+                        tracing::debug!(item_count = items.len(), "completion: MemberAccess items");
                     }
                 }
             }
@@ -158,6 +163,7 @@ pub(crate) fn handle_completion(
         CompletionContext::EnumAccess => {
             if let Some((file_text, tree)) = parsing::get_or_parse(server, uri) {
                 if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, position) {
+                    tracing::debug!(receiver_expr = %receiver_expr, "completion: EnumAccess receiver");
                     if let Some(enum_type) = resolution::resolve_expression_type(
                         server,
                         uri,
@@ -166,7 +172,9 @@ pub(crate) fn handle_completion(
                         &receiver_expr,
                         position,
                     ) {
+                        tracing::debug!(enum_type = %enum_type, "completion: EnumAccess resolved type");
                         items.extend(resolution::enum_completion_items(server, &enum_type));
+                        tracing::debug!(item_count = items.len(), "completion: EnumAccess items");
                     }
                 }
             }
@@ -181,6 +189,7 @@ pub(crate) fn handle_completion(
                     ..Default::default()
                 });
             }
+            let type_keyword_count = items.len();
 
             // Add object type names from the index (tables, enums, codeunits, etc.)
             for kind in &[
@@ -199,6 +208,8 @@ pub(crate) fn handle_completion(
                     });
                 }
             }
+            let index_count = items.len() - type_keyword_count;
+            tracing::debug!(type_keywords = type_keyword_count, index_results = index_count, "completion: TypePosition items");
         }
 
         CompletionContext::TriggerBody => {
@@ -211,6 +222,7 @@ pub(crate) fn handle_completion(
                     ..Default::default()
                 });
             }
+            tracing::debug!(trigger_variables = TRIGGER_VARIABLES.len(), "completion: TriggerBody variables");
             // Also include default items
             add_default_completions(server, uri, &text, position, &mut items);
         }
@@ -223,13 +235,17 @@ pub(crate) fn handle_completion(
     if items.is_empty() {
         None
     } else {
+        let pre_dedup = items.len();
         finalize_completion_items(&mut items);
+        tracing::debug!(pre_dedup = pre_dedup, final_count = items.len(), "completion: returning items after dedup");
         Some(CompletionResponse::Array(items))
     }
 }
 
 /// Add default completions: keywords, local procedures, variables, symbols.
 fn add_default_completions(server: &AlServer, uri: &Url, text: &str, position: Position, items: &mut Vec<CompletionItem>) {
+    let base_count = items.len();
+
     // Keywords
     for kw in AL_KEYWORDS {
         items.push(CompletionItem {
@@ -238,8 +254,15 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, position: P
             ..Default::default()
         });
     }
+    let keyword_count = items.len() - base_count;
 
     // Extract procedures from the current file + add visible variables via TypeResolver
+    let mut procedure_count = 0;
+    let mut local_vars = 0;
+    let mut param_vars = 0;
+    let mut global_vars = 0;
+    let mut self_vars = 0;
+    let mut trigger_vars = 0;
     if let Some((file_text, tree)) = parsing::get_or_parse(server, uri) {
         let doc_symbols = al_syntax::extract_document_symbols(&tree, text);
         for sym in &doc_symbols {
@@ -252,6 +275,7 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, position: P
                             detail: child.detail.clone(),
                             ..Default::default()
                         });
+                        procedure_count += 1;
                     }
                 }
             }
@@ -265,11 +289,11 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, position: P
                 .map(|s| format!(" \"{}\"", s))
                 .unwrap_or_default();
             let scope_label = match var.scope {
-                al_syntax::type_resolver::VariableScope::Local => "local",
-                al_syntax::type_resolver::VariableScope::Parameter => "parameter",
-                al_syntax::type_resolver::VariableScope::Global => "global",
-                al_syntax::type_resolver::VariableScope::SelfImplicit => "self",
-                al_syntax::type_resolver::VariableScope::TriggerImplicit => "trigger",
+                al_syntax::type_resolver::VariableScope::Local => { local_vars += 1; "local" },
+                al_syntax::type_resolver::VariableScope::Parameter => { param_vars += 1; "parameter" },
+                al_syntax::type_resolver::VariableScope::Global => { global_vars += 1; "global" },
+                al_syntax::type_resolver::VariableScope::SelfImplicit => { self_vars += 1; "self" },
+                al_syntax::type_resolver::VariableScope::TriggerImplicit => { trigger_vars += 1; "trigger" },
             };
             items.push(CompletionItem {
                 label: var.name.clone(),
@@ -283,6 +307,7 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, position: P
 
     // Add symbols from index (top-level objects, limited)
     let index_results = server.symbols.search("", 30);
+    let index_count = index_results.len();
     for entry in &index_results {
         items.push(CompletionItem {
             label: entry.name.clone(),
@@ -306,6 +331,7 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, position: P
 
     // Add built-in type names
     let builtins = server.builtins.read().unwrap().clone();
+    let builtin_count = builtins.len();
     for bt in builtins.iter() {
         items.push(CompletionItem {
             label: bt.name.clone(),
@@ -314,6 +340,19 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, position: P
             ..Default::default()
         });
     }
+
+    tracing::debug!(
+        keywords = keyword_count,
+        procedures = procedure_count,
+        local_vars = local_vars,
+        param_vars = param_vars,
+        global_vars = global_vars,
+        self_vars = self_vars,
+        trigger_vars = trigger_vars,
+        index_results = index_count,
+        builtins = builtin_count,
+        "completion: add_default_completions counts"
+    );
 }
 
 fn finalize_completion_items(items: &mut Vec<CompletionItem>) {

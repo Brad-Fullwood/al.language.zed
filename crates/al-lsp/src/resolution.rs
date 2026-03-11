@@ -24,6 +24,15 @@ pub(crate) struct ResolvedType {
     pub type_subtype: Option<String>,
 }
 
+impl std::fmt::Display for ResolvedType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.type_subtype {
+            Some(sub) => write!(f, "{} \"{}\"", self.type_name, sub),
+            None => write!(f, "{}", self.type_name),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum ResolvedMemberKind {
     Variable {
@@ -40,8 +49,12 @@ pub(crate) enum ResolvedMemberKind {
         documentation: Option<String>,
         return_type: Option<String>,
     },
-    Field,
-    EnumValue,
+    Field {
+        range: Option<Range>,
+    },
+    EnumValue {
+        range: Option<Range>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -55,10 +68,20 @@ pub(crate) struct ResolvedMember {
 
 pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Option<AccessPath> {
     if let Some(path) = access_path_from_text(text, position) {
+        tracing::debug!(
+            receiver = %path.receiver,
+            member = %path.member,
+            kind = ?path.kind,
+            source = "text",
+            "access_path_at: found via text-based parsing"
+        );
         return Some(path);
     }
 
-    let node = al_syntax::find_node_at_position(tree, position)?;
+    let Some(node) = al_syntax::find_node_at_position(tree, position) else {
+        tracing::debug!(line = position.line, character = position.character, "access_path_at: no tree-sitter node at position");
+        return None;
+    };
     let mut current = node;
 
     loop {
@@ -68,6 +91,10 @@ pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Opt
                 if member_node.start_byte() <= node.start_byte() && member_node.end_byte() >= node.end_byte() {
                     let postfix = current.parent()?;
                     if postfix.kind() != "postfix_expression" {
+                        tracing::debug!(
+                            parent_kind = postfix.kind(),
+                            "access_path_at: parent is not postfix_expression"
+                        );
                         return None;
                     }
                     let receiver = text[postfix.start_byte()..current.start_byte()].trim().to_string();
@@ -81,6 +108,14 @@ pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Opt
                     } else {
                         AccessKind::Member
                     };
+                    tracing::debug!(
+                        receiver = %receiver,
+                        member = %member,
+                        kind = ?kind,
+                        source = "tree",
+                        node_kind = current.kind(),
+                        "access_path_at: found via tree-sitter"
+                    );
                     return Some(AccessPath {
                         receiver,
                         member,
@@ -105,6 +140,7 @@ pub(crate) fn receiver_chain_before(text: &str, position: Position) -> Option<(S
     } else if trimmed.ends_with('.') {
         (AccessKind::Member, trimmed.len().saturating_sub(1))
     } else {
+        tracing::debug!(line = position.line, "receiver_chain_before: no trailing '.' or '::'");
         return None;
     };
 
@@ -116,13 +152,16 @@ pub(crate) fn receiver_chain_before(text: &str, position: Position) -> Option<(S
         left_cursor = prev_start;
     }
 
-    Some((trimmed[receiver_start..token_end].trim().to_string(), kind))
+    let receiver = trimmed[receiver_start..token_end].trim().to_string();
+    tracing::debug!(receiver = %receiver, kind = ?kind, "receiver_chain_before: detected");
+    Some((receiver, kind))
 }
 
 fn access_path_from_text(text: &str, position: Position) -> Option<AccessPath> {
     let line = text.lines().nth(position.line as usize)?;
     let bytes = line.as_bytes();
     if bytes.is_empty() {
+        tracing::trace!("access_path_from_text: empty line");
         return None;
     }
 
@@ -131,6 +170,7 @@ fn access_path_from_text(text: &str, position: Position) -> Option<AccessPath> {
         if idx > 0 && is_access_char(bytes[idx - 1]) {
             idx -= 1;
         } else {
+            tracing::trace!(line = position.line, character = position.character, "access_path_from_text: not on access char");
             return None;
         }
     }
@@ -156,7 +196,16 @@ fn access_path_from_text(text: &str, position: Position) -> Option<AccessPath> {
     let part_index = parts
         .iter()
         .position(|(start, end)| idx >= *start && idx < *end)?;
+
+    tracing::debug!(
+        parts = parts.len(),
+        separators = separators.len(),
+        part_index = part_index,
+        "access_path_from_text: parsed chain"
+    );
+
     if part_index == 0 {
+        tracing::debug!("access_path_from_text: cursor on part 0 (receiver position), returning None");
         return None;
     }
 
@@ -292,20 +341,35 @@ pub(crate) fn resolve_expression_type(
 ) -> Option<ResolvedType> {
     let expr = expr.trim();
     if expr.is_empty() {
+        tracing::debug!("resolve_type: empty expression");
         return None;
     }
 
     if let Some((lhs, _)) = split_last(expr, "::") {
+        tracing::debug!(expr = %expr, lhs = %lhs, "resolve_type: scope split, recursing on lhs");
         return resolve_expression_type(server, uri, text, tree, lhs, position);
     }
 
     if let Some((lhs, rhs)) = split_last(expr, ".") {
+        tracing::debug!(expr = %expr, lhs = %lhs, rhs = %rhs, "resolve_type: dot split, resolving receiver then member");
         let receiver = resolve_expression_type(server, uri, text, tree, lhs, position)?;
-        return resolve_member(server, uri, &receiver, rhs)?.type_info;
+        let result = resolve_member(server, uri, &receiver, rhs)?.type_info;
+        tracing::debug!(
+            expr = %expr,
+            result = ?result.as_ref().map(|r| format!("{}({})", r.type_name, r.type_subtype.as_deref().unwrap_or(""))),
+            "resolve_type: dot chain result"
+        );
+        return result;
     }
 
     let resolver = al_syntax::TypeResolver::new(tree, text);
     if let Some(decl) = resolver.resolve_type(expr, position) {
+        tracing::debug!(
+            expr = %expr,
+            type_name = %decl.type_name,
+            type_subtype = ?decl.type_subtype,
+            "resolve_type: found via TypeResolver"
+        );
         return Some(ResolvedType {
             type_name: decl.type_name,
             type_subtype: decl.type_subtype,
@@ -313,10 +377,11 @@ pub(crate) fn resolve_expression_type(
     }
 
     if let Some(path) = server.workspace_objects.get(&expr.to_lowercase()) {
+        tracing::debug!(expr = %expr, path = %path.value().display(), "resolve_type: found in workspace_objects");
         return workspace_object_type(server, path.value());
     }
 
-    server
+    let result = server
         .symbols
         .get_by_name(expr)
         .into_iter()
@@ -324,7 +389,18 @@ pub(crate) fn resolve_expression_type(
         .map(|entry| ResolvedType {
             type_name: entry.kind.to_string(),
             type_subtype: Some(entry.name.clone()),
-        })
+        });
+
+    match &result {
+        Some(resolved) => tracing::debug!(
+            expr = %expr,
+            type_name = %resolved.type_name,
+            type_subtype = ?resolved.type_subtype,
+            "resolve_type: found in symbol index"
+        ),
+        None => tracing::debug!(expr = %expr, "resolve_type: no match found"),
+    }
+    result
 }
 
 pub(crate) fn resolve_member(
@@ -334,10 +410,22 @@ pub(crate) fn resolve_member(
     member_name: &str,
 ) -> Option<ResolvedMember> {
     let target_name = member_name.trim_matches('"');
+    tracing::debug!(
+        receiver = %receiver.type_name,
+        receiver_subtype = ?receiver.type_subtype,
+        member = %target_name,
+        "resolve_member: start"
+    );
 
     if let Some(subtype) = receiver.type_subtype.as_deref() {
         if let Some(path) = resolve_object_path(server, Some(uri), subtype) {
             if let Some(member) = workspace_member(server, &path, target_name) {
+                tracing::debug!(
+                    member = %target_name,
+                    result = "workspace_member",
+                    found = %member.name,
+                    "resolve_member: found in workspace file"
+                );
                 return Some(member);
             }
         }
@@ -345,6 +433,13 @@ pub(crate) fn resolve_member(
         for entry in server.symbols.get_by_name(subtype) {
             for method in &entry.methods {
                 if method.name.eq_ignore_ascii_case(target_name) {
+                    tracing::debug!(
+                        member = %target_name,
+                        result = "Procedure",
+                        source = "symbol_index",
+                        package = %entry.package,
+                        "resolve_member: found method in symbol index"
+                    );
                     return Some(ResolvedMember {
                         name: method.name.clone(),
                         type_info: method.return_type.as_deref().map(parse_type_expr),
@@ -361,18 +456,32 @@ pub(crate) fn resolve_member(
 
             for field in &entry.fields {
                 if field.name.eq_ignore_ascii_case(target_name) {
+                    tracing::debug!(
+                        member = %target_name,
+                        result = "Field",
+                        source = "symbol_index",
+                        package = %entry.package,
+                        "resolve_member: found field in symbol index"
+                    );
                     return Some(ResolvedMember {
                         name: field.name.clone(),
                         type_info: Some(parse_type_expr(&field.type_name)),
                         package: Some(entry.package.clone()),
                         uri: None,
-                        kind: ResolvedMemberKind::Field,
+                        kind: ResolvedMemberKind::Field { range: None },
                     });
                 }
             }
 
             for value in &entry.enum_values {
                 if value.name.eq_ignore_ascii_case(target_name) {
+                    tracing::debug!(
+                        member = %target_name,
+                        result = "EnumValue",
+                        source = "symbol_index",
+                        package = %entry.package,
+                        "resolve_member: found enum value in symbol index"
+                    );
                     return Some(ResolvedMember {
                         name: value.name.clone(),
                         type_info: Some(ResolvedType {
@@ -381,7 +490,7 @@ pub(crate) fn resolve_member(
                         }),
                         package: Some(entry.package.clone()),
                         uri: None,
-                        kind: ResolvedMemberKind::EnumValue,
+                        kind: ResolvedMemberKind::EnumValue { range: None },
                     });
                 }
             }
@@ -398,6 +507,12 @@ pub(crate) fn resolve_member(
         {
             for method in &builtin.methods {
                 if method.name.eq_ignore_ascii_case(target_name) {
+                    tracing::debug!(
+                        member = %target_name,
+                        result = "BuiltinMethod",
+                        builtin_type = %builtin.name,
+                        "resolve_member: found in builtins"
+                    );
                     return Some(ResolvedMember {
                         name: method.name.clone(),
                         type_info: method.return_type.as_deref().map(parse_type_expr),
@@ -418,8 +533,70 @@ pub(crate) fn resolve_member(
         }
     }
 
+    tracing::debug!(
+        receiver = %receiver.type_name,
+        receiver_subtype = ?receiver.type_subtype,
+        member = %target_name,
+        "resolve_member: no match found"
+    );
     let _ = uri;
     None
+}
+
+/// Resolve ALL overloads of a builtin method for hover/signature display.
+pub(crate) fn resolve_builtin_overloads(
+    server: &AlServer,
+    receiver: &ResolvedType,
+    target_name: &str,
+) -> Vec<ResolvedMember> {
+    let mut results = Vec::new();
+    let builtins = server.builtins.read().unwrap().clone();
+    for builtin in builtins.iter() {
+        if builtin.name.eq_ignore_ascii_case(&receiver.type_name)
+            || receiver
+                .type_subtype
+                .as_deref()
+                .is_some_and(|s| builtin.name.eq_ignore_ascii_case(s))
+        {
+            for method in &builtin.methods {
+                if method.name.eq_ignore_ascii_case(target_name) {
+                    results.push(ResolvedMember {
+                        name: method.name.clone(),
+                        type_info: method.return_type.as_deref().map(parse_type_expr),
+                        package: None,
+                        uri: None,
+                        kind: ResolvedMemberKind::BuiltinMethod {
+                            signature: format_builtin_signature(method),
+                            documentation: if method.documentation.is_empty() {
+                                None
+                            } else {
+                                Some(strip_xml_tags(&method.documentation))
+                            },
+                            return_type: method.return_type.clone(),
+                        },
+                    });
+                }
+            }
+        }
+    }
+    results
+}
+
+/// Strip XML tags from documentation strings (e.g. <summary>...</summary>).
+pub(crate) fn strip_xml_tags(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => result.push(ch),
+            _ => {}
+        }
+    }
+    // Clean up whitespace: collapse multiple newlines, trim lines
+    let lines: Vec<&str> = result.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    lines.join("\n")
 }
 
 pub(crate) fn resolve_workspace_object_definition(server: &AlServer, name: &str) -> Option<(Url, Range)> {
@@ -436,7 +613,18 @@ pub(crate) fn completion_items_for_receiver(
     server: &AlServer,
     receiver: &ResolvedType,
 ) -> Vec<tower_lsp::lsp_types::CompletionItem> {
+    tracing::debug!(
+        receiver = %receiver.type_name,
+        receiver_subtype = ?receiver.type_subtype,
+        "completion_items_for_receiver: start"
+    );
     let mut items = Vec::new();
+    let mut workspace_vars = 0usize;
+    let mut workspace_symbols = 0usize;
+    let mut workspace_fields = 0usize;
+    let mut index_methods = 0usize;
+    let mut index_fields = 0usize;
+    let mut builtin_methods = 0usize;
 
     if let Some(subtype) = receiver.type_subtype.as_deref() {
         if let Some(path) = resolve_object_path(server, None, subtype) {
@@ -449,6 +637,7 @@ pub(crate) fn completion_items_for_receiver(
                     if var.scope != al_syntax::VariableScope::Global {
                         continue;
                     }
+                    workspace_vars += 1;
                     items.push(tower_lsp::lsp_types::CompletionItem {
                         label: var.name.clone(),
                         kind: Some(tower_lsp::lsp_types::CompletionItemKind::VARIABLE),
@@ -463,6 +652,7 @@ pub(crate) fn completion_items_for_receiver(
                             if child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
                                 || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT
                             {
+                                workspace_symbols += 1;
                                 items.push(tower_lsp::lsp_types::CompletionItem {
                                     label: child.name,
                                     kind: Some(tower_lsp::lsp_types::CompletionItemKind::METHOD),
@@ -474,7 +664,9 @@ pub(crate) fn completion_items_for_receiver(
                     }
                 }
 
-                for field in workspace_field_items(file_text.value()) {
+                let field_items = workspace_field_items(file_text.value());
+                workspace_fields = field_items.len();
+                for field in field_items {
                     items.push(field);
                 }
             }
@@ -485,6 +677,7 @@ pub(crate) fn completion_items_for_receiver(
                 if method.is_local {
                     continue;
                 }
+                index_methods += 1;
                 items.push(tower_lsp::lsp_types::CompletionItem {
                     label: method.name.clone(),
                     kind: Some(tower_lsp::lsp_types::CompletionItemKind::METHOD),
@@ -493,6 +686,7 @@ pub(crate) fn completion_items_for_receiver(
                 });
             }
             for field in &entry.fields {
+                index_fields += 1;
                 items.push(tower_lsp::lsp_types::CompletionItem {
                     label: field.name.clone(),
                     kind: Some(tower_lsp::lsp_types::CompletionItemKind::FIELD),
@@ -512,6 +706,7 @@ pub(crate) fn completion_items_for_receiver(
                 .is_some_and(|s| builtin.name.eq_ignore_ascii_case(s))
         {
             for method in &builtin.methods {
+                builtin_methods += 1;
                 items.push(tower_lsp::lsp_types::CompletionItem {
                     label: method.name.clone(),
                     kind: Some(tower_lsp::lsp_types::CompletionItemKind::METHOD),
@@ -532,15 +727,31 @@ pub(crate) fn completion_items_for_receiver(
         }
     }
 
+    tracing::debug!(
+        receiver = %receiver.type_name,
+        workspace_vars,
+        workspace_symbols,
+        workspace_fields,
+        index_methods,
+        index_fields,
+        builtin_methods,
+        total = items.len(),
+        "completion_items_for_receiver: done"
+    );
     items
 }
 
 pub(crate) fn enum_completion_items(server: &AlServer, enum_type: &ResolvedType) -> Vec<tower_lsp::lsp_types::CompletionItem> {
     let Some(subtype) = enum_type.type_subtype.as_deref() else {
+        tracing::debug!("enum_completion_items: no subtype on enum type");
         return Vec::new();
     };
+    tracing::debug!(subtype = %subtype, "enum_completion_items: start");
 
     let mut items = Vec::new();
+    let mut workspace_values = 0usize;
+    let mut index_values = 0usize;
+
     if let Some(path) = server.workspace_objects.get(&subtype.to_lowercase()) {
         if let Some(file_text) = server.workspace_files.get(path.value()) {
             let mut parser = server.parser.lock().unwrap();
@@ -552,6 +763,7 @@ pub(crate) fn enum_completion_items(server: &AlServer, enum_type: &ResolvedType)
                 if let Some(children) = symbol.children {
                     for child in children {
                         if child.kind == tower_lsp::lsp_types::SymbolKind::ENUM_MEMBER {
+                            workspace_values += 1;
                             items.push(tower_lsp::lsp_types::CompletionItem {
                                 label: child.name,
                                 kind: Some(tower_lsp::lsp_types::CompletionItemKind::ENUM_MEMBER),
@@ -570,6 +782,7 @@ pub(crate) fn enum_completion_items(server: &AlServer, enum_type: &ResolvedType)
             continue;
         }
         for value in &entry.enum_values {
+            index_values += 1;
             items.push(tower_lsp::lsp_types::CompletionItem {
                 label: value.name.clone(),
                 kind: Some(tower_lsp::lsp_types::CompletionItemKind::ENUM_MEMBER),
@@ -578,6 +791,14 @@ pub(crate) fn enum_completion_items(server: &AlServer, enum_type: &ResolvedType)
             });
         }
     }
+
+    tracing::debug!(
+        subtype = %subtype,
+        workspace_values,
+        index_values,
+        total = items.len(),
+        "enum_completion_items: done"
+    );
     items
 }
 
@@ -594,7 +815,7 @@ fn workspace_object_type(server: &AlServer, path: &Path) -> Option<ResolvedType>
     let result = parser.parse(file_text.value());
     let obj = al_syntax::find_object_declaration(&result.tree, file_text.value())?;
     Some(ResolvedType {
-        type_name: obj.kind,
+        type_name: al_syntax::object_kind_to_al_type(&obj.kind).to_string(),
         type_subtype: Some(obj.name),
     })
 }
@@ -606,12 +827,14 @@ fn resolve_object_path(server: &AlServer, current_uri: Option<&Url>, name: &str)
                 .as_deref()
                 .is_some_and(|object_name| object_name.eq_ignore_ascii_case(name))
             {
+                tracing::debug!(name = %name, source = "current_file", "resolve_object_path: matched current file");
                 return Some(current_path);
             }
         }
     }
 
     if let Some(path) = server.workspace_objects.get(&name.to_lowercase()) {
+        tracing::debug!(name = %name, source = "workspace_index", path = %path.value().display(), "resolve_object_path: found in workspace index");
         return Some(path.value().clone());
     }
 
@@ -620,10 +843,12 @@ fn resolve_object_path(server: &AlServer, current_uri: Option<&Url>, name: &str)
             .as_deref()
             .is_some_and(|object_name| object_name.eq_ignore_ascii_case(name))
         {
+            tracing::debug!(name = %name, source = "file_scan", path = %entry.key().display(), "resolve_object_path: found via file scan");
             return Some(entry.key().clone());
         }
     }
 
+    tracing::debug!(name = %name, "resolve_object_path: not found");
     None
 }
 
@@ -635,6 +860,11 @@ fn workspace_object_name(server: &AlServer, path: &Path) -> Option<String> {
 }
 
 fn workspace_member(server: &AlServer, path: &Path, member_name: &str) -> Option<ResolvedMember> {
+    tracing::debug!(
+        path = %path.display(),
+        member = %member_name,
+        "workspace_member: searching"
+    );
     let file_text = server.workspace_files.get(path)?;
     let content = file_text.value();
     let mut parser = server.parser.lock().unwrap();
@@ -647,6 +877,12 @@ fn workspace_member(server: &AlServer, path: &Path, member_name: &str) -> Option
                     || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT)
                     && child.name.eq_ignore_ascii_case(member_name)
                 {
+                    tracing::debug!(
+                        member = %member_name,
+                        found = "procedure",
+                        name = %child.name,
+                        "workspace_member: found procedure"
+                    );
                     return Some(ResolvedMember {
                         name: child.name.clone(),
                         type_info: child.detail.as_deref().and_then(extract_return_type).map(parse_type_expr),
@@ -667,6 +903,12 @@ fn workspace_member(server: &AlServer, path: &Path, member_name: &str) -> Option
                 if child.kind == tower_lsp::lsp_types::SymbolKind::ENUM_MEMBER
                     && child.name.eq_ignore_ascii_case(member_name)
                 {
+                    tracing::debug!(
+                        member = %member_name,
+                        found = "enum_member",
+                        name = %child.name,
+                        "workspace_member: found enum member"
+                    );
                     return Some(ResolvedMember {
                         name: child.name.clone(),
                         type_info: Some(ResolvedType {
@@ -675,7 +917,9 @@ fn workspace_member(server: &AlServer, path: &Path, member_name: &str) -> Option
                         }),
                         package: None,
                         uri: Url::from_file_path(path).ok(),
-                        kind: ResolvedMemberKind::EnumValue,
+                        kind: ResolvedMemberKind::EnumValue {
+                            range: Some(child.selection_range),
+                        },
                     });
                 }
             }
@@ -685,6 +929,13 @@ fn workspace_member(server: &AlServer, path: &Path, member_name: &str) -> Option
     let resolver = al_syntax::TypeResolver::new(&result.tree, content);
     for var in resolver.variables_at(Position { line: 0, character: 0 }) {
         if var.scope == al_syntax::VariableScope::Global && var.name.eq_ignore_ascii_case(member_name) {
+            tracing::debug!(
+                member = %member_name,
+                found = "variable",
+                name = %var.name,
+                type_name = %var.type_name,
+                "workspace_member: found global variable"
+            );
             return Some(ResolvedMember {
                 name: var.name.clone(),
                 type_info: Some(ResolvedType {
@@ -701,17 +952,34 @@ fn workspace_member(server: &AlServer, path: &Path, member_name: &str) -> Option
         }
     }
 
-    find_workspace_field_type(content, member_name).map(|field_type| ResolvedMember {
+    let result = find_workspace_field(content, member_name).map(|(field_type, field_range)| ResolvedMember {
         name: member_name.to_string(),
         type_info: Some(field_type),
         package: None,
         uri: Url::from_file_path(path).ok(),
-        kind: ResolvedMemberKind::Field,
-    })
+        kind: ResolvedMemberKind::Field {
+            range: Some(field_range),
+        },
+    });
+
+    match &result {
+        Some(member) => tracing::debug!(
+            member = %member_name,
+            found = "field",
+            name = %member.name,
+            "workspace_member: found field"
+        ),
+        None => tracing::debug!(
+            member = %member_name,
+            path = %path.display(),
+            "workspace_member: nothing found"
+        ),
+    }
+    result
 }
 
-fn find_workspace_field_type(text: &str, field_name: &str) -> Option<ResolvedType> {
-    for line in text.lines() {
+fn find_workspace_field(text: &str, field_name: &str) -> Option<(ResolvedType, Range)> {
+    for (line_idx, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if !trimmed.starts_with("field(") {
             continue;
@@ -719,12 +987,19 @@ fn find_workspace_field_type(text: &str, field_name: &str) -> Option<ResolvedTyp
         let inside = trimmed.strip_prefix("field(")?.split(')').next()?;
         let mut parts = inside.splitn(3, ';');
         let _ = parts.next()?;
-        let candidate_name = parts.next()?.trim().trim_matches('"');
+        let name_part = parts.next()?.trim();
+        let candidate_name = name_part.trim_matches('"');
         if !candidate_name.eq_ignore_ascii_case(field_name) {
             continue;
         }
         let ty = parts.next()?.trim();
-        return Some(parse_type_expr(ty));
+        let col_start = line.find(name_part).unwrap_or(0) as u32;
+        let col_end = col_start + name_part.len() as u32;
+        let range = Range {
+            start: Position { line: line_idx as u32, character: col_start },
+            end: Position { line: line_idx as u32, character: col_end },
+        };
+        return Some((parse_type_expr(ty), range));
     }
     None
 }
@@ -819,6 +1094,8 @@ fn extract_return_type(detail: &str) -> Option<&str> {
     Some(ret)
 }
 
+/// Map AL object kind names (from `find_object_declaration`) to their
+/// corresponding builtin type names used in the semantic bridge.
 fn extract_doc_comment(text: &str, line_idx: usize) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     if line_idx == 0 || line_idx > lines.len() {

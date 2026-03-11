@@ -21,16 +21,20 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
     let clean_name = node_text.trim_matches('"');
 
     if clean_name.is_empty() {
+        tracing::debug!("hover: empty clean_name, returning None");
         return None;
     }
 
-    tracing::debug!(name = %clean_name, node_kind = %node.kind(), "hover: looking up symbol");
+    tracing::debug!(name = %clean_name, node_kind = %node.kind(), line = position.line, character = position.character, "hover: looking up symbol");
 
     if let Some(access) = resolution::access_path_at(&tree, &text, position) {
+        tracing::debug!(receiver = %access.receiver, member = %access.member, "hover: access path found");
         if let Some(receiver) =
             resolution::resolve_expression_type(server, uri, &text, &tree, &access.receiver, position)
         {
+            tracing::debug!(receiver_type = %receiver.type_name, receiver_subtype = ?receiver.type_subtype, "hover: receiver type resolved");
             if let Some(member) = resolution::resolve_member(server, uri, &receiver, &access.member) {
+                tracing::debug!(member_name = %member.name, member_kind = ?member.kind, "hover: member resolved");
                 let value = match member.kind {
                     ResolvedMemberKind::Variable { scope, .. } => {
                         let type_info = member.type_info.as_ref()?;
@@ -52,15 +56,33 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
                         }
                         content
                     }
-                    ResolvedMemberKind::BuiltinMethod { signature, documentation, .. } => {
-                        let mut content = format!("```al\n{}\n```", signature);
-                        if let Some(doc) = documentation {
-                            content.push_str("\n\n");
-                            content.push_str(&doc);
+                    ResolvedMemberKind::BuiltinMethod { ref signature, ref documentation, .. } => {
+                        // Collect all overloads for this builtin method
+                        let overloads = resolution::resolve_builtin_overloads(server, &receiver, &access.member);
+                        if overloads.len() > 1 {
+                            let mut content = String::new();
+                            for (i, overload) in overloads.iter().enumerate() {
+                                if let ResolvedMemberKind::BuiltinMethod { signature: ref sig, documentation: ref doc, .. } = overload.kind {
+                                    if i > 0 { content.push_str("\n\n---\n\n"); }
+                                    content.push_str(&format!("```al\n{}\n```", sig));
+                                    if let Some(d) = doc {
+                                        content.push_str("\n\n");
+                                        content.push_str(d);
+                                    }
+                                }
+                            }
+                            content.push_str(&format!("\n\n*({} overload{})*", overloads.len(), if overloads.len() == 1 { "" } else { "s" }));
+                            content
+                        } else {
+                            let mut content = format!("```al\n{}\n```", signature);
+                            if let Some(doc) = documentation {
+                                content.push_str("\n\n");
+                                content.push_str(doc);
+                            }
+                            content
                         }
-                        content
                     }
-                    ResolvedMemberKind::Field => {
+                    ResolvedMemberKind::Field { .. } => {
                         let type_info = member.type_info.as_ref()?;
                         format!(
                             "```al\n{}: {}\n```\n*(field)*",
@@ -71,7 +93,7 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
                             ),
                         )
                     }
-                    ResolvedMemberKind::EnumValue => {
+                    ResolvedMemberKind::EnumValue { .. } => {
                         let type_info = member.type_info.as_ref()?;
                         format!(
                             "```al\n{}\n```\n*(enum value of {})*",
@@ -80,6 +102,7 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
                         )
                     }
                 };
+                tracing::debug!(name = %clean_name, "hover: returning access path member result");
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
                         kind: MarkupKind::Markdown,
@@ -87,13 +110,21 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
                     }),
                     range: Some(al_syntax::ts_range_to_lsp(&node.range())),
                 });
+            } else {
+                tracing::debug!(receiver_type = %receiver.type_name, member = %access.member, "hover: member resolution failed");
             }
+        } else {
+            tracing::debug!(receiver = %access.receiver, "hover: receiver type resolution failed");
         }
+    } else {
+        tracing::debug!(name = %clean_name, "hover: no access path at position");
     }
 
     // 1. Check if we're on a procedure name or a local parameter
     if let Some(proc_info) = al_syntax::find_procedure_at(&tree, &text, position) {
+        tracing::debug!(proc_name = %proc_info.name, clean_name = %clean_name, "hover: procedure found at position");
         if proc_info.name.eq_ignore_ascii_case(clean_name) {
+            tracing::debug!(name = %clean_name, "hover: returning procedure name match");
             let content = format_procedure_hover(&proc_info);
             return Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
@@ -107,6 +138,7 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
         // 2. Check local parameter declarations in the current procedure
         for param in &proc_info.parameters {
             if param.name.eq_ignore_ascii_case(clean_name) {
+                tracing::debug!(param_name = %param.name, param_type = %param.type_name, "hover: returning parameter match");
                 let content = format!(
                     "```al\n{}{}: {}\n```\n*(parameter)*",
                     format_param_prefix(param.is_var), param.name, param.type_name
@@ -126,6 +158,12 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
     {
         let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &text);
         if let Some(decl) = resolver.resolve_type(clean_name, position) {
+            tracing::debug!(
+                name = %clean_name,
+                type_name = %decl.type_name,
+                scope = ?decl.scope,
+                "hover: TypeResolver found declaration"
+            );
             let scope_label = match decl.scope {
                 al_syntax::type_resolver::VariableScope::Local => "local variable",
                 al_syntax::type_resolver::VariableScope::Parameter => "parameter",
@@ -172,6 +210,7 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
         tracing::debug!(name = %clean_name, builtin_types = builtins.len(), "hover: checking builtins");
         for bt in builtins.iter() {
             if bt.name.eq_ignore_ascii_case(clean_name) {
+                tracing::debug!(builtin_type = %bt.name, method_count = bt.methods.len(), "hover: matched built-in type");
                 let methods_list: Vec<String> = bt
                     .methods
                     .iter()
@@ -193,25 +232,34 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
                 });
             }
 
-            // Check if it's a method on a built-in type
-            for method in &bt.methods {
-                if method.name.eq_ignore_ascii_case(clean_name) {
+            // Check if it's a method on a built-in type — collect all overloads
+            let overloads: Vec<_> = bt.methods.iter()
+                .filter(|m| m.name.eq_ignore_ascii_case(clean_name))
+                .collect();
+            if !overloads.is_empty() {
+                tracing::debug!(builtin_type = %bt.name, method_name = %clean_name, overloads = overloads.len(), "hover: matched built-in method");
+                let mut content = String::new();
+                for (i, method) in overloads.iter().enumerate() {
+                    if i > 0 { content.push_str("\n\n---\n\n"); }
                     let sig = format_builtin_method(method);
-                    let doc = if method.documentation.is_empty() {
-                        String::new()
-                    } else {
-                        format!("\n\n{}", method.documentation)
-                    };
-                    let content =
-                        format!("```al\n{}\n```\n*({}.{})*{}", sig, bt.name, method.name, doc);
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: content,
-                        }),
-                        range: Some(al_syntax::ts_range_to_lsp(&node.range())),
-                    });
+                    content.push_str(&format!("```al\n{}\n```", sig));
+                    if !method.documentation.is_empty() {
+                        content.push_str("\n\n");
+                        content.push_str(&resolution::strip_xml_tags(&method.documentation));
+                    }
                 }
+                if overloads.len() > 1 {
+                    content.push_str(&format!("\n\n*({} overloads on {})*", overloads.len(), bt.name));
+                } else {
+                    content.push_str(&format!("\n\n*({}.{})*", bt.name, clean_name));
+                }
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: content,
+                    }),
+                    range: Some(al_syntax::ts_range_to_lsp(&node.range())),
+                });
             }
         }
     }
@@ -220,10 +268,16 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
     tracing::debug!(name = %clean_name, workspace_objects = server.workspace_objects.len(), "hover: checking workspace objects");
     if let Some(file_path_entry) = server.workspace_objects.get(&clean_name.to_lowercase()) {
         let file_path = file_path_entry.value();
+        tracing::debug!(name = %clean_name, path = ?file_path, "hover: workspace object index hit");
         if let Some(file_text) = server.workspace_files.get(file_path) {
             let mut parser = server.parser.lock().unwrap();
             let result = parser.parse(file_text.value());
             if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text.value()) {
+                tracing::debug!(
+                    obj_kind = %obj_info.kind,
+                    obj_name = %obj_info.name,
+                    "hover: returning workspace object match"
+                );
                 let content = format!(
                     "```al\n{} {} \"{}\"\n```\n*(workspace)*",
                     obj_info.kind,
@@ -241,6 +295,7 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
         }
     }
 
+    tracing::debug!(name = %clean_name, "hover: no result found");
     None
 }
 

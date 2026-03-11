@@ -2,6 +2,7 @@
 
 #[allow(deprecated)]
 use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind};
+use tracing::debug;
 use tree_sitter::{Node, Tree};
 
 use crate::ts_range_to_lsp;
@@ -38,6 +39,7 @@ pub fn extract_document_symbols(tree: &Tree, text: &str) -> Vec<DocumentSymbol> 
         }
     }
 
+    debug!(total = symbols.len(), "extract_document_symbols: complete");
     symbols
 }
 
@@ -239,6 +241,14 @@ fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
         .trim_matches('"')
         .to_string();
 
+    if name == "(unnamed)" {
+        debug!(
+            node_kind = node.kind(),
+            line = node.start_position().row,
+            "extract_procedure_symbol: unnamed procedure (possible grammar issue)"
+        );
+    }
+
     let params = node
         .child_by_field_name("parameters")
         .and_then(|n| n.utf8_text(source).ok())
@@ -375,11 +385,39 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     })
 }
 
+/// Page control keywords that appear as metadata_keyword nodes in the grammar.
+/// These produce a pattern: metadata_keyword + parenthesized_block + braced_block
+const PAGE_CONTROL_KEYWORDS: &[&str] = &[
+    "area", "group", "repeater", "field", "part", "action", "separator",
+    "cuegroup", "grid", "fixed", "usercontrol", "label", "dataitem",
+    "column", "filter", "addfirst", "addlast", "addafter", "addbefore",
+    "modify", "moveafter", "movebefore", "actionref",
+];
+
+fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
+    match keyword {
+        "field" | "column" | "filter" => SymbolKind::FIELD,
+        "action" | "actionref" | "separator" => SymbolKind::EVENT,
+        "area" | "group" | "repeater" | "cuegroup" | "grid" | "fixed" => SymbolKind::STRUCT,
+        "part" | "usercontrol" => SymbolKind::CLASS,
+        "dataitem" => SymbolKind::STRUCT,
+        "label" => SymbolKind::CONSTANT,
+        _ => SymbolKind::NAMESPACE,
+    }
+}
+
 /// Extract children from braced blocks within sections (fields, keys, etc.)
+///
+/// Page controls in the grammar appear as sibling sequences:
+///   metadata_keyword ("area") + parenthesized_block ("(Content)") + braced_block ("{ ... }")
+/// Uses next_sibling() for zero-allocation look-ahead instead of collecting all children.
 #[allow(deprecated)]
 fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     let mut cursor = body.walk();
-    for child in body.children(&mut cursor) {
+    if !cursor.goto_first_child() { return; }
+
+    loop {
+        let child = cursor.node();
         match child.kind() {
             "object_section" => {
                 if let Some(sym) = extract_section_symbol(child, source) {
@@ -406,13 +444,113 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
                     symbols.push(sym);
                 }
             }
+            "metadata_keyword" => {
+                if let Some(sym) = try_extract_page_control(child, source) {
+                    // Skip siblings consumed by the page control (paren + braced_block)
+                    loop {
+                        if !cursor.goto_next_sibling() { break; }
+                        if cursor.node().kind() == "braced_block" {
+                            // consumed the body — advance past it
+                            break;
+                        }
+                    }
+                    symbols.push(sym);
+                }
+            }
             "braced_block" => {
-                // Recurse into nested braced blocks (common in page layouts)
                 extract_section_body_children(child, source, symbols);
             }
             _ => {}
         }
+        if !cursor.goto_next_sibling() { break; }
     }
+}
+
+/// Try to extract a page control symbol from a metadata_keyword node.
+/// Looks ahead at next_sibling() for parenthesized_block and braced_block.
+#[allow(deprecated)]
+fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
+    let kw_text = kw_node.utf8_text(source).ok()?;
+
+    if !PAGE_CONTROL_KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(kw_text)) {
+        return None;
+    }
+
+    // Walk next siblings to find parenthesized_block and braced_block
+    let mut paren_node = None;
+    let mut body_node = None;
+    let mut sibling = kw_node.next_sibling();
+    while let Some(sib) = sibling {
+        match sib.kind() {
+            "parenthesized_block" if paren_node.is_none() => paren_node = Some(sib),
+            "braced_block" => { body_node = Some(sib); break; }
+            "semicolon" => {}
+            _ => break,
+        }
+        sibling = sib.next_sibling();
+    }
+
+    // Extract the control name from the parenthesized_block
+    let name = if let Some(paren) = paren_node {
+        extract_control_name(paren, source)
+    } else {
+        kw_text.to_string()
+    };
+
+    let sym_kind = control_keyword_to_symbol_kind(kw_text);
+
+    // Compute range from keyword start to body end (or paren end if no body)
+    let end_node = body_node.or(paren_node).unwrap_or(kw_node);
+    let range = tower_lsp::lsp_types::Range {
+        start: tower_lsp::lsp_types::Position {
+            line: kw_node.start_position().row as u32,
+            character: kw_node.start_position().column as u32,
+        },
+        end: tower_lsp::lsp_types::Position {
+            line: end_node.end_position().row as u32,
+            character: end_node.end_position().column as u32,
+        },
+    };
+
+    let selection_range = paren_node
+        .map(|p| ts_range_to_lsp(&p.range()))
+        .unwrap_or(ts_range_to_lsp(&kw_node.range()));
+
+    // Extract children from the body braced_block
+    let mut nested = Vec::new();
+    if let Some(body) = body_node {
+        extract_section_body_children(body, source, &mut nested);
+    }
+
+    Some(DocumentSymbol {
+        name,
+        detail: Some(kw_text.to_string()),
+        kind: sym_kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children: if nested.is_empty() { None } else { Some(nested) },
+    })
+}
+
+/// Extract the control name from a parenthesized block like (Content), (Records), ("Entry No."; Rec."Entry No.").
+fn extract_control_name(paren: Node, source: &[u8]) -> String {
+    let mut cursor = paren.walk();
+    for child in paren.children(&mut cursor) {
+        match child.kind() {
+            "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
+                if let Ok(text) = child.utf8_text(source) {
+                    return text.trim_matches('"').to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    // Fallback: show the full paren text without parens
+    paren.utf8_text(source)
+        .map(|t| t.trim_matches(|c| c == '(' || c == ')').trim().to_string())
+        .unwrap_or_default()
 }
 
 #[allow(deprecated)]

@@ -3,8 +3,9 @@
 //! Lookup order:
 //! 1. Local definitions (variables, parameters in the same procedure)
 //! 2. Cross-file definitions (procedures in workspace .al files)
-//! 3. Package symbol definitions (objects from .app files — no location, just name match)
+//! 3. Package symbol definitions (objects from .app files — virtual file generation)
 
+use al_symbols::SymbolEntry;
 use tower_lsp::lsp_types::*;
 
 use crate::parsing;
@@ -25,88 +26,125 @@ pub(crate) fn handle_definition(
     let clean_name = node_text.trim_matches('"');
 
     if clean_name.is_empty() {
+        tracing::debug!("definition: empty clean_name, returning None");
         return None;
     }
 
-    tracing::debug!(name = %clean_name, node_kind = %node.kind(), "definition: looking up");
+    let looks_like_object_name_early = node.kind() == "quoted_identifier" || clean_name.contains(' ');
+    tracing::debug!(
+        name = %clean_name,
+        node_kind = %node.kind(),
+        looks_like_object_name = looks_like_object_name_early,
+        "definition: looking up"
+    );
 
     if let Some(access) = resolution::access_path_at(&tree, &text, position) {
+        tracing::debug!(receiver = %access.receiver, member = %access.member, "definition: access path found");
         if let Some(receiver) =
             resolution::resolve_expression_type(server, uri, &text, &tree, &access.receiver, position)
         {
+            tracing::debug!(receiver_type = %receiver.type_name, receiver_subtype = ?receiver.type_subtype, "definition: receiver type resolved");
             if let Some(member) = resolution::resolve_member(server, uri, &receiver, &access.member) {
+                tracing::debug!(member_name = %member.name, member_kind = ?member.kind, "definition: member resolved");
                 match member.kind {
                     ResolvedMemberKind::Variable { range: Some(range), .. }
-                    | ResolvedMemberKind::Procedure { range: Some(range), .. } => {
+                    | ResolvedMemberKind::Procedure { range: Some(range), .. }
+                    | ResolvedMemberKind::Field { range: Some(range) }
+                    | ResolvedMemberKind::EnumValue { range: Some(range) } => {
+                        tracing::debug!(name = %clean_name, ?range, "definition: returning access path member with range");
                         return Some(GotoDefinitionResponse::Scalar(Location {
                             uri: member.uri.unwrap_or_else(|| uri.clone()),
                             range,
                         }));
                     }
-                    _ => {}
+                    _ => {
+                        // Member resolved but no range — try virtual file from package symbols
+                        tracing::debug!(member_kind = ?member.kind, "definition: access path member has no range, trying package symbol");
+                        if let Some(entry) = find_package_entry_for_type(server, &receiver.type_name, receiver.type_subtype.as_deref()) {
+                            if let Some((file_uri, range)) = get_or_create_virtual_file(&entry) {
+                                return Some(GotoDefinitionResponse::Scalar(Location {
+                                    uri: file_uri,
+                                    range,
+                                }));
+                            }
+                        }
+                    }
                 }
+            } else {
+                tracing::debug!(receiver_type = %receiver.type_name, member = %access.member, "definition: member resolution failed");
             }
+        } else {
+            tracing::debug!(receiver = %access.receiver, "definition: receiver type resolution failed");
         }
+    } else {
+        tracing::debug!(name = %clean_name, "definition: no access path at position");
     }
 
     let looks_like_object_name = node.kind() == "quoted_identifier" || clean_name.contains(' ');
     if looks_like_object_name {
+        tracing::debug!(name = %clean_name, "definition: checking workspace object (looks like object name)");
         if let Some((obj_uri, range)) = resolution::resolve_workspace_object_definition(server, clean_name) {
+            tracing::debug!(name = %clean_name, uri = %obj_uri, ?range, "definition: returning workspace object definition");
             return Some(GotoDefinitionResponse::Scalar(Location { uri: obj_uri, range }));
+        } else {
+            tracing::debug!(name = %clean_name, "definition: workspace object not found");
         }
 
-        if server
-            .symbols
-            .get_by_name(clean_name)
-            .into_iter()
-            .any(|entry| {
-                matches!(
-                    entry.kind,
-                    al_symbols::ObjectKind::Table
-                        | al_symbols::ObjectKind::Page
-                        | al_symbols::ObjectKind::Codeunit
-                        | al_symbols::ObjectKind::Report
-                        | al_symbols::ObjectKind::Query
-                        | al_symbols::ObjectKind::XmlPort
-                        | al_symbols::ObjectKind::Enum
-                        | al_symbols::ObjectKind::Interface
-                        | al_symbols::ObjectKind::PermissionSet
-                        | al_symbols::ObjectKind::Profile
-                        | al_symbols::ObjectKind::PageCustomization
-                        | al_symbols::ObjectKind::ControlAddIn
-                        | al_symbols::ObjectKind::Entitlement
-                )
-            })
-        {
-            tracing::debug!(
-                name = %clean_name,
-                "definition: package object found but no file location is available"
-            );
-            return None;
+        // Try package symbols — generate virtual AL file for navigation
+        let pkg_entries = server.symbols.get_by_name(clean_name);
+        if let Some(entry) = pkg_entries.into_iter().find(|e| !e.kind.is_extension()) {
+            if let Some((file_uri, range)) = get_or_create_virtual_file(&entry) {
+                tracing::debug!(
+                    name = %clean_name,
+                    package = %entry.package,
+                    kind = %entry.kind,
+                    uri = %file_uri,
+                    "definition: returning virtual file for package object"
+                );
+                return Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: file_uri,
+                    range,
+                }));
+            }
         }
     }
 
     let resolver = al_syntax::TypeResolver::new(&tree, &text);
     if let Some(decl) = resolver.resolve_type(clean_name, position) {
+        tracing::debug!(
+            name = %clean_name,
+            type_name = %decl.type_name,
+            scope = ?decl.scope,
+            "definition: TypeResolver found declaration"
+        );
         let def_range = al_syntax::ts_range_to_lsp(&decl.range);
         if def_range.start != position {
+            tracing::debug!(name = %clean_name, ?def_range, "definition: returning TypeResolver result (different position)");
             return Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
                 range: def_range,
             }));
+        } else {
+            tracing::debug!(name = %clean_name, "definition: TypeResolver range matches cursor, skipping");
         }
+    } else {
+        tracing::debug!(name = %clean_name, "definition: TypeResolver found nothing");
     }
 
     // 1. Local textual fallback
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
+    tracing::debug!(name = %clean_name, ref_count = refs.len(), "definition: textual fallback references");
     if refs.len() > 1 {
         let first = &refs[0];
         let def_range = al_syntax::ts_range_to_lsp(first);
         if def_range.start != position {
+            tracing::debug!(name = %clean_name, ?def_range, "definition: returning first textual reference");
             return Some(GotoDefinitionResponse::Scalar(Location {
                 uri: uri.clone(),
                 range: def_range,
             }));
+        } else {
+            tracing::debug!(name = %clean_name, "definition: first textual ref matches cursor, skipping");
         }
     }
 
@@ -116,6 +154,7 @@ pub(crate) fn handle_definition(
     // 2. Cross-file definitions: check workspace object name index first
     if let Some(obj_path_entry) = server.workspace_objects.get(&clean_name.to_lowercase()) {
         let file_path = obj_path_entry.value().clone();
+        tracing::debug!(name = %clean_name, path = ?file_path, "definition: cross-file workspace object index hit");
         // Skip the current file
         let is_current = current_path.as_ref().map_or(false, |cp| *cp == file_path);
         if !is_current {
@@ -125,6 +164,13 @@ pub(crate) fn handle_definition(
                 let result = parser.parse(file_text);
                 if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
                     if let Ok(file_uri) = Url::from_file_path(&file_path) {
+                        tracing::debug!(
+                            name = %clean_name,
+                            obj_kind = %obj_info.kind,
+                            obj_name = %obj_info.name,
+                            uri = %file_uri,
+                            "definition: returning cross-file workspace object"
+                        );
                         return Some(GotoDefinitionResponse::Scalar(Location {
                             uri: file_uri,
                             range: al_syntax::ts_range_to_lsp(&obj_info.range),
@@ -132,10 +178,14 @@ pub(crate) fn handle_definition(
                     }
                 }
             }
+        } else {
+            tracing::debug!(name = %clean_name, "definition: cross-file workspace object is current file, skipping");
         }
     }
 
     // 2b. Search workspace files for matching procedures (not in the name index)
+    let workspace_file_count = server.workspace_files.len();
+    tracing::debug!(name = %clean_name, file_count = workspace_file_count, "definition: scanning workspace files for procedures");
     for entry in server.workspace_files.iter() {
         let file_path = entry.key();
         let file_text = entry.value();
@@ -157,6 +207,12 @@ pub(crate) fn handle_definition(
                         && child.name.eq_ignore_ascii_case(clean_name)
                     {
                         if let Ok(file_uri) = Url::from_file_path(file_path) {
+                            tracing::debug!(
+                                name = %clean_name,
+                                file = ?file_path,
+                                symbol_kind = ?child.kind,
+                                "definition: found matching procedure in workspace file"
+                            );
                             return Some(GotoDefinitionResponse::Scalar(Location {
                                 uri: file_uri,
                                 range: child.selection_range,
@@ -168,26 +224,81 @@ pub(crate) fn handle_definition(
         }
     }
 
-    // 3. Package symbols — no file location available, but we can note the package
+    // 3. Package symbols — generate virtual AL file
     let symbols = server.symbols.get_by_name(clean_name);
-    if !symbols.is_empty() {
-        tracing::debug!(
-            name = %clean_name,
-            count = symbols.len(),
-            packages = ?symbols.iter().map(|s| s.package.as_str()).collect::<Vec<_>>(),
-            "definition: found in packages but no file location"
-        );
-    } else {
-        tracing::debug!(
-            name = %clean_name,
-            index_size = server.symbols.len(),
-            workspace_files = server.workspace_files.len(),
-            workspace_objects = server.workspace_objects.len(),
-            "definition: symbol not found anywhere"
-        );
+    if let Some(entry) = symbols.into_iter().find(|e| !e.kind.is_extension()) {
+        if let Some((file_uri, range)) = get_or_create_virtual_file(&entry) {
+            tracing::debug!(
+                name = %clean_name,
+                package = %entry.package,
+                kind = %entry.kind,
+                "definition: returning virtual file for package symbol (fallback)"
+            );
+            return Some(GotoDefinitionResponse::Scalar(Location {
+                uri: file_uri,
+                range,
+            }));
+        }
     }
 
+    tracing::debug!(
+        name = %clean_name,
+        index_size = server.symbols.len(),
+        workspace_files = server.workspace_files.len(),
+        workspace_objects = server.workspace_objects.len(),
+        "definition: symbol not found anywhere"
+    );
     None
+}
+
+// ---------------------------------------------------------------------------
+// Virtual file helpers (delegates to al_symbols::virtual_file)
+// ---------------------------------------------------------------------------
+
+/// Get or create a virtual AL file for a package symbol, returning LSP types.
+fn get_or_create_virtual_file(entry: &SymbolEntry) -> Option<(Url, Range)> {
+    match al_symbols::virtual_file::get_or_create(entry) {
+        Ok(path) => {
+            let uri = Url::from_file_path(&path).ok()?;
+            let range = Range::new(Position::new(0, 0), Position::new(0, 0));
+            Some((uri, range))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to create virtual file for package symbol");
+            None
+        }
+    }
+}
+
+/// Find the package SymbolEntry for a resolved type (e.g., Record "Customer" → Customer table entry).
+fn find_package_entry_for_type(
+    server: &AlServer,
+    type_name: &str,
+    subtype: Option<&str>,
+) -> Option<std::sync::Arc<SymbolEntry>> {
+    // For typed objects (Record, Page, Codeunit, etc.), the subtype is the object name
+    let obj_name = subtype.or_else(|| {
+        // If no subtype, the type_name itself might be the object name (e.g., Enum "Status")
+        if !matches!(type_name, "Record" | "Page" | "Codeunit" | "Report" | "Query" | "Xmlport"
+            | "Integer" | "Text" | "Code" | "Decimal" | "Boolean" | "Date" | "Time" | "DateTime"
+            | "BigInteger" | "Guid" | "Blob" | "Media" | "MediaSet" | "Option" | "Duration"
+            | "RecordId" | "RecordRef" | "FieldRef" | "FilterPageBuilder" | "JsonToken"
+            | "JsonValue" | "JsonObject" | "JsonArray" | "HttpClient" | "HttpContent"
+            | "HttpHeaders" | "HttpRequestMessage" | "HttpResponseMessage" | "XmlDocument"
+            | "XmlElement" | "XmlAttribute" | "XmlNode" | "TextBuilder" | "Label" | "Variant"
+            | "Dialog" | "File" | "InStream" | "OutStream" | "List" | "Dictionary"
+            | "Notification" | "Action" | "Char" | "Byte") {
+            Some(type_name)
+        } else {
+            None
+        }
+    })?;
+
+    server
+        .symbols
+        .get_by_name(obj_name)
+        .into_iter()
+        .find(|e| !e.kind.is_extension())
 }
 
 /// Handle textDocument/references.
@@ -208,10 +319,13 @@ pub(crate) fn handle_references(
         return None;
     }
 
+    tracing::debug!(name = %clean_name, include_declaration, "references: looking up");
+
     let mut locations = Vec::new();
 
     // Find references in the current file
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
+    tracing::debug!(name = %clean_name, current_file_refs = refs.len(), "references: current file");
     for r in &refs {
         let range = al_syntax::ts_range_to_lsp(r);
         if !include_declaration && range.start == position {
@@ -238,6 +352,9 @@ pub(crate) fn handle_references(
         let result = parser.parse(file_text);
         let refs = al_syntax::find_variable_references(&result.tree, file_text, clean_name);
 
+        if !refs.is_empty() {
+            tracing::debug!(name = %clean_name, file = ?file_path, ref_count = refs.len(), "references: found in workspace file");
+        }
         for r in &refs {
             if let Ok(file_uri) = Url::from_file_path(file_path) {
                 locations.push(Location {
@@ -248,6 +365,7 @@ pub(crate) fn handle_references(
         }
     }
 
+    tracing::debug!(name = %clean_name, total_refs = locations.len(), "references: total results");
     if locations.is_empty() {
         None
     } else {
@@ -291,10 +409,13 @@ pub(crate) fn handle_rename(
         return None;
     }
 
+    tracing::debug!(name = %clean_name, new_name = %new_name, "rename: looking up");
+
     let mut changes = std::collections::HashMap::new();
 
     // --- Current file ---
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
+    tracing::debug!(name = %clean_name, current_file_edits = refs.len(), "rename: current file");
     if !refs.is_empty() {
         let edits: Vec<TextEdit> = refs
             .iter()
@@ -332,6 +453,7 @@ pub(crate) fn handle_rename(
         let refs = al_syntax::find_variable_references(&result.tree, file_text, clean_name);
 
         if !refs.is_empty() {
+            tracing::debug!(name = %clean_name, file = ?file_path, edit_count = refs.len(), "rename: found edits in workspace file");
             let edits: Vec<TextEdit> = refs
                 .iter()
                 .map(|r| {
@@ -347,7 +469,11 @@ pub(crate) fn handle_rename(
         }
     }
 
+    let total_files = changes.len();
+    let total_edits: usize = changes.values().map(|v| v.len()).sum();
+    tracing::debug!(name = %clean_name, files = total_files, total_edits, "rename: total results");
     if changes.is_empty() {
+        tracing::debug!(name = %clean_name, "rename: no edits found");
         return None;
     }
 

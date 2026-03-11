@@ -3,6 +3,7 @@
 //! Extracted from al-lsp so both the LSP and CLI can use them.
 
 use tower_lsp::lsp_types::Position;
+use tracing::debug;
 
 /// Detected completion context from cursor position.
 #[derive(Debug, PartialEq)]
@@ -24,47 +25,58 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
     let line_idx = position.line as usize;
     let col = position.character as usize;
 
-    let line = match text.lines().nth(line_idx) {
-        Some(l) => l,
-        None => return CompletionContext::Default,
-    };
+    let result = (|| {
+        let line = match text.lines().nth(line_idx) {
+            Some(l) => l,
+            None => return CompletionContext::Default,
+        };
 
-    let prefix = if col <= line.len() {
-        &line[..col]
-    } else {
-        line
-    };
+        let prefix = if col <= line.len() {
+            &line[..col]
+        } else {
+            line
+        };
 
-    let trimmed = prefix.trim_end();
+        let trimmed = prefix.trim_end();
 
-    if trimmed.ends_with("::") {
-        return CompletionContext::EnumAccess;
-    }
+        if trimmed.ends_with("::") {
+            return CompletionContext::EnumAccess;
+        }
 
-    if trimmed.ends_with('.') {
-        return CompletionContext::MemberAccess;
-    }
+        if trimmed.ends_with('.') {
+            return CompletionContext::MemberAccess;
+        }
 
-    // Check if we're in a type position: look for "name:" or "name :" pattern
-    let before_cursor = prefix.trim();
-    if before_cursor.ends_with(':') && !before_cursor.ends_with(":=") {
-        return CompletionContext::TypePosition;
-    }
+        // Check if we're in a type position: look for "name:" or "name :" pattern
+        // Exclude case labels like `Status::Posting:` where `::` indicates an enum scope
+        let before_cursor = prefix.trim();
+        if before_cursor.ends_with(':') && !before_cursor.ends_with(":=") && !before_cursor.contains("::") {
+            return CompletionContext::TypePosition;
+        }
 
-    // Check if the line before has a var declaration pattern
-    // but exclude lines that contain := (assignment)
-    if !before_cursor.contains(":=") {
-        if let Some(colon_pos) = before_cursor.rfind(':') {
-            let after_colon = before_cursor[colon_pos + 1..].trim();
-            // If there's a colon earlier on the line and we're typing the type
-            if !after_colon.is_empty() {
-                // Likely typing a type name
-                return CompletionContext::TypePosition;
+        // Check if the line before has a var declaration pattern
+        // but exclude lines that contain := (assignment) or :: (enum scope / case label)
+        if !before_cursor.contains(":=") && !before_cursor.contains("::") {
+            if let Some(colon_pos) = before_cursor.rfind(':') {
+                let after_colon = before_cursor[colon_pos + 1..].trim();
+                // If there's a colon earlier on the line and we're typing the type
+                if !after_colon.is_empty() {
+                    // Likely typing a type name
+                    return CompletionContext::TypePosition;
+                }
             }
         }
-    }
 
-    CompletionContext::Default
+        CompletionContext::Default
+    })();
+
+    debug!(
+        line = line_idx,
+        col,
+        context = ?result,
+        "detect_context"
+    );
+    result
 }
 
 /// Extract the last identifier from a string (e.g., "Rec" from "x.Rec").
@@ -108,6 +120,11 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
                     // Found the matching open paren
                     let before_paren = prefix[..i].trim_end();
                     let func_name = extract_trailing_identifier(before_paren)?;
+                    debug!(
+                        function = func_name,
+                        active_param = comma_count,
+                        "find_call_context: found"
+                    );
                     return Some((func_name, comma_count));
                 }
             }
@@ -118,6 +135,7 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
         }
     }
 
+    debug!("find_call_context: no call context found");
     None
 }
 
@@ -267,6 +285,27 @@ mod tests {
         let pos = Position { line: 0, character: 12 };
         let ctx = detect_context(text, pos);
         assert_eq!(ctx, CompletionContext::TypePosition);
+    }
+
+    #[test]
+    fn test_detect_context_case_label_not_type_position() {
+        // "Status::Posting:" — the trailing : is a case separator, not a type annotation
+        let text = "            Status::Posting:\n";
+        let pos = Position { line: 0, character: 27 };
+        let ctx = detect_context(text, pos);
+        assert_ne!(ctx, CompletionContext::TypePosition,
+            "Case label with :: should not be TypePosition");
+        assert_eq!(ctx, CompletionContext::Default);
+    }
+
+    #[test]
+    fn test_detect_context_case_label_expression_not_type() {
+        // After case label separator, typing expression should not be TypePosition
+        let text = "            Status::Posting: DoSom\n";
+        let pos = Position { line: 0, character: 33 };
+        let ctx = detect_context(text, pos);
+        assert_ne!(ctx, CompletionContext::TypePosition,
+            "Expression after case label should not be TypePosition");
     }
 
     #[test]

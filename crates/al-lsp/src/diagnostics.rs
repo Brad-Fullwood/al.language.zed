@@ -11,14 +11,19 @@ use crate::server::AlServer;
 
 /// Run two-phase diagnostics and publish results to the client.
 pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str) {
+    tracing::debug!(uri = %uri, text_len = text.len(), "publish_diagnostics: entry");
     let mut diagnostics = Vec::new();
 
     // Phase 1: Instant syntax + lint
     {
+        let parse_start = std::time::Instant::now();
         let result = {
             let mut parser = server.parser.lock().unwrap();
             parser.parse(text)
         };
+        let parse_elapsed = parse_start.elapsed();
+        let error_count = result.errors.len();
+        tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: parsed");
 
         // Cache the tree for subsequent handler calls at this version
         let version = server.documents.get_version(uri).unwrap_or(0);
@@ -30,13 +35,19 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
         }
 
         // Native lint rules
+        let lint_start = std::time::Instant::now();
         let lint_results = al_syntax::lint(&result.tree, text);
+        let lint_elapsed = lint_start.elapsed();
+        let lint_count = lint_results.len();
+        tracing::debug!(uri = %uri, lint_count, lint_us = lint_elapsed.as_micros() as u64, "publish_diagnostics: linted");
         for lint in lint_results {
             diagnostics.push(lint_to_diagnostic(&lint));
         }
     }
 
     // Publish phase 1 immediately
+    let phase1_count = diagnostics.len();
+    tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
     server
         .client
         .publish_diagnostics(uri.clone(), diagnostics.clone(), None)
@@ -45,6 +56,8 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     // Phase 2: Async semantic analysis (if bridge available)
     {
         let semantic = server.semantic.read().await;
+        let bridge_available = semantic.is_some();
+        tracing::debug!(uri = %uri, bridge_available, "publish_diagnostics: phase 2 check");
         if let Some(bridge) = semantic.as_ref() {
             let file_path = uri
                 .to_file_path()
@@ -63,14 +76,26 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
                 package_cache,
             };
 
-            if let Ok(results) = bridge.analyze(req).await {
-                for entry in results {
-                    diagnostics.push(semantic_to_diagnostic(&entry));
+            let semantic_start = std::time::Instant::now();
+            match bridge.analyze(req).await {
+                Ok(results) => {
+                    let semantic_elapsed = semantic_start.elapsed();
+                    let semantic_count = results.len();
+                    tracing::debug!(uri = %uri, semantic_count, semantic_us = semantic_elapsed.as_micros() as u64, "publish_diagnostics: semantic analysis complete");
+                    for entry in results {
+                        diagnostics.push(semantic_to_diagnostic(&entry));
+                    }
+                    let total_count = diagnostics.len();
+                    tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");
+                    server
+                        .client
+                        .publish_diagnostics(uri.clone(), diagnostics, None)
+                        .await;
                 }
-                server
-                    .client
-                    .publish_diagnostics(uri.clone(), diagnostics, None)
-                    .await;
+                Err(error) => {
+                    let semantic_elapsed = semantic_start.elapsed();
+                    tracing::debug!(uri = %uri, %error, semantic_us = semantic_elapsed.as_micros() as u64, "publish_diagnostics: semantic analysis failed");
+                }
             }
         }
     }

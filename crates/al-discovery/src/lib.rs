@@ -418,36 +418,37 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
     };
 
     let mut searched = Vec::new();
-    let mut current = Some(start.as_path());
 
+    // Phase 1: Search upward from start directory
+    let mut current = Some(start.as_path());
     while let Some(dir) = current {
         searched.push(dir.to_path_buf());
-        let app_json_path = dir.join("app.json");
-
-        if app_json_path.is_file() {
-            let content = std::fs::read_to_string(&app_json_path)?;
-            let manifest: AppManifest =
-                serde_json::from_str(&content).map_err(|e| DiscoveryError::InvalidAppJson {
-                    path: app_json_path.clone(),
-                    error: e.to_string(),
-                })?;
-
-            let packages_dir = dir.join(".alpackages");
-            let packages = scan_packages(&packages_dir);
-            let server_configs = launch::find_launch_config(dir)
-                .map(|lf| lf.configs)
-                .unwrap_or_default();
-
-            return Ok(AlProject {
-                root: dir.to_path_buf(),
-                app_json: manifest,
-                packages_dir,
-                packages,
-                server_configs,
-            });
+        if let Some(project) = try_load_project(dir)? {
+            return Ok(project);
         }
-
         current = dir.parent();
+    }
+
+    // Phase 2: Search immediate subdirectories of the start directory.
+    // Handles multi-app workspaces where app.json lives in a child folder
+    // (e.g., workspace root contains Core/, Implementation/, etc.).
+    if let Ok(entries) = std::fs::read_dir(&start) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let dir_name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if dir_name.starts_with('.') || dir_name == "node_modules" {
+                    continue;
+                }
+                searched.push(path.clone());
+                if let Some(project) = try_load_project(&path)? {
+                    return Ok(project);
+                }
+            }
+        }
     }
 
     let searched_str = searched
@@ -460,6 +461,35 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
         start: start.to_path_buf(),
         searched: searched_str,
     })
+}
+
+/// Try to load an AL project from a specific directory (checks for app.json).
+fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
+    let app_json_path = dir.join("app.json");
+    if !app_json_path.is_file() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&app_json_path)?;
+    let manifest: AppManifest =
+        serde_json::from_str(&content).map_err(|e| DiscoveryError::InvalidAppJson {
+            path: app_json_path.clone(),
+            error: e.to_string(),
+        })?;
+
+    let packages_dir = dir.join(".alpackages");
+    let packages = scan_packages(&packages_dir);
+    let server_configs = launch::find_launch_config(dir)
+        .map(|lf| lf.configs)
+        .unwrap_or_default();
+
+    Ok(Some(AlProject {
+        root: dir.to_path_buf(),
+        app_json: manifest,
+        packages_dir,
+        packages,
+        server_configs,
+    }))
 }
 
 /// Scan a `.alpackages/` directory for `.app` files.

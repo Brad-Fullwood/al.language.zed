@@ -289,15 +289,30 @@ impl DapSession {
             None => {
                 return self.error_response(
                     request,
-                    "Missing or invalid launch configuration. Required: server, serverInstance",
+                    "Missing or invalid launch configuration",
                 );
             }
         };
 
-        info!(
-            "Launching debug session: {}:{} tenant={}",
-            config.server, config.server_instance, config.tenant
-        );
+        // On-prem requires server + serverInstance; cloud uses environmentType/environmentName
+        if !config.is_cloud() && config.server.is_empty() {
+            return self.error_response(
+                request,
+                "On-prem launch requires 'server' and 'serverInstance'. For cloud, set 'environmentType' to 'Sandbox' or 'Production'.",
+            );
+        }
+
+        if config.is_cloud() {
+            info!(
+                "Launching cloud debug session: type={:?} env={:?} tenant={}",
+                config.environment_type, config.environment_name, config.tenant
+            );
+        } else {
+            info!(
+                "Launching debug session: {}:{} tenant={}",
+                config.server, config.server_instance, config.tenant
+            );
+        }
 
         // Spawn the .NET bridge
         let bridge = match BcBridge::spawn(&self.toolchain).await {

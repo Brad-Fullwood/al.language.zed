@@ -190,8 +190,11 @@ impl LanguageServer for AlServer {
             let mut parser = self.parser.lock().unwrap();
             let result = parser.parse(&text);
             if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &text) {
+                tracing::debug!(uri = %uri, object_name = %obj_info.name, "did_open: added to workspace_objects");
                 self.workspace_objects
                     .insert(obj_info.name.to_lowercase(), path);
+            } else {
+                tracing::debug!(uri = %uri, "did_open: no object declaration found, not added to workspace_objects");
             }
         }
 
@@ -201,12 +204,14 @@ impl LanguageServer for AlServer {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.clone();
-        tracing::debug!(uri = %uri, changes = params.content_changes.len(), "did_change");
+        let change_count = params.content_changes.len();
+        tracing::debug!(uri = %uri, change_count, "did_change");
 
         self.documents.apply_changes(&uri, &params.content_changes);
 
         // Get updated text for diagnostics
         if let Some(text) = self.documents.get_text(&uri) {
+            tracing::debug!(uri = %uri, text_len = text.len(), "did_change: updated text");
             // Update workspace files map and object name index
             if let Ok(path) = uri.to_file_path() {
                 self.workspace_files.insert(path.clone(), text.clone());
@@ -246,8 +251,10 @@ impl LanguageServer for AlServer {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         self.ensure_builtins_loaded().await;
+        let start = std::time::Instant::now();
         let result = hover::handle_hover(self, uri, position);
-        tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), "hover");
+        let elapsed = start.elapsed();
+        tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "hover");
         Ok(result)
     }
 
@@ -257,12 +264,14 @@ impl LanguageServer for AlServer {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         self.ensure_builtins_loaded().await;
+        let start = std::time::Instant::now();
         let result = completions::handle_completion(self, uri, position);
+        let elapsed = start.elapsed();
         let count = result.as_ref().map(|r| match r {
             CompletionResponse::Array(v) => v.len(),
             CompletionResponse::List(l) => l.items.len(),
         }).unwrap_or(0);
-        tracing::debug!(uri = %uri, line = position.line, col = position.character, count, "completion");
+        tracing::debug!(uri = %uri, line = position.line, col = position.character, count, elapsed_us = elapsed.as_micros() as u64, "completion");
         Ok(result)
     }
 
@@ -274,8 +283,10 @@ impl LanguageServer for AlServer {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+        let start = std::time::Instant::now();
         let result = definition::handle_definition(self, uri, position);
-        tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), "goto_definition");
+        let elapsed = start.elapsed();
+        tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "goto_definition");
         Ok(result)
     }
 
@@ -285,9 +296,11 @@ impl LanguageServer for AlServer {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
+        let start = std::time::Instant::now();
         let result = definition::handle_references(self, uri, position, include_declaration);
+        let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
-        tracing::debug!(uri = %uri, line = position.line, col = position.character, count, "references");
+        tracing::debug!(uri = %uri, line = position.line, col = position.character, count, elapsed_us = elapsed.as_micros() as u64, "references");
         Ok(result)
     }
 
@@ -298,8 +311,10 @@ impl LanguageServer for AlServer {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
+        let start = std::time::Instant::now();
         let result = handlers::handle_document_symbol(self, uri);
-        tracing::debug!(uri = %uri, found = result.is_some(), "document_symbol");
+        let elapsed = start.elapsed();
+        tracing::debug!(uri = %uri, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "document_symbol");
         Ok(result)
     }
 
@@ -307,9 +322,11 @@ impl LanguageServer for AlServer {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
+        let start = std::time::Instant::now();
         let result = formatting::handle_formatting(self, uri, &params.options);
+        let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
-        tracing::debug!(uri = %uri, edits = count, "formatting");
+        tracing::debug!(uri = %uri, edits = count, elapsed_us = elapsed.as_micros() as u64, "formatting");
         Ok(result)
     }
 
@@ -317,9 +334,11 @@ impl LanguageServer for AlServer {
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
+        let start = std::time::Instant::now();
         let result = handlers::handle_folding_range(self, uri);
+        let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
-        tracing::debug!(uri = %uri, ranges = count, "folding_range");
+        tracing::debug!(uri = %uri, ranges = count, elapsed_us = elapsed.as_micros() as u64, "folding_range");
         Ok(result)
     }
 
@@ -330,12 +349,14 @@ impl LanguageServer for AlServer {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
+        let start = std::time::Instant::now();
         let result = handlers::handle_semantic_tokens(self, uri);
+        let elapsed = start.elapsed();
         let count = result.as_ref().map(|r| match r {
             SemanticTokensResult::Tokens(t) => t.data.len(),
             SemanticTokensResult::Partial(t) => t.data.len(),
         }).unwrap_or(0);
-        tracing::debug!(uri = %uri, tokens = count, "semantic_tokens_full");
+        tracing::debug!(uri = %uri, tokens = count, elapsed_us = elapsed.as_micros() as u64, "semantic_tokens_full");
         Ok(result)
     }
 
@@ -344,8 +365,10 @@ impl LanguageServer for AlServer {
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+        let start = std::time::Instant::now();
         let result = handlers::handle_signature_help(self, uri, position);
-        tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), "signature_help");
+        let elapsed = start.elapsed();
+        tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "signature_help");
         Ok(result)
     }
 
@@ -355,9 +378,11 @@ impl LanguageServer for AlServer {
         let uri = &params.text_document.uri;
         let range = params.range;
         let diagnostics = &params.context.diagnostics;
+        let start = std::time::Instant::now();
         let result = handlers::handle_code_action(self, uri, range, diagnostics);
+        let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
-        tracing::debug!(uri = %uri, actions = count, "code_action");
+        tracing::debug!(uri = %uri, actions = count, elapsed_us = elapsed.as_micros() as u64, "code_action");
         Ok(result)
     }
 
@@ -367,8 +392,10 @@ impl LanguageServer for AlServer {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let new_name = params.new_name.clone();
+        let start = std::time::Instant::now();
         let result = definition::handle_rename(self, uri, position, params.new_name);
-        tracing::debug!(uri = %uri, new_name = %new_name, found = result.is_some(), "rename");
+        let elapsed = start.elapsed();
+        tracing::debug!(uri = %uri, new_name = %new_name, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "rename");
         Ok(result)
     }
 
@@ -378,7 +405,11 @@ impl LanguageServer for AlServer {
     ) -> Result<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
         let position = params.position;
-        Ok(definition::handle_prepare_rename(self, uri, position))
+        let start = std::time::Instant::now();
+        let result = definition::handle_prepare_rename(self, uri, position);
+        let elapsed = start.elapsed();
+        tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "prepare_rename");
+        Ok(result)
     }
 
     // -- Workspace symbols --
@@ -387,9 +418,11 @@ impl LanguageServer for AlServer {
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
+        let start = std::time::Instant::now();
         let result = workspace::handle_workspace_symbol(self, &params.query);
+        let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
-        tracing::debug!(query = %params.query, count, "workspace_symbol");
+        tracing::debug!(query = %params.query, count, elapsed_us = elapsed.as_micros() as u64, "workspace_symbol");
         Ok(result)
     }
 
@@ -398,9 +431,11 @@ impl LanguageServer for AlServer {
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
         let range = params.range;
+        let start = std::time::Instant::now();
         let result = handlers::handle_inlay_hint(self, uri, range);
+        let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
-        tracing::debug!(uri = %uri, hints = count, "inlay_hint");
+        tracing::debug!(uri = %uri, hints = count, elapsed_us = elapsed.as_micros() as u64, "inlay_hint");
         Ok(result)
     }
 
@@ -409,7 +444,8 @@ impl LanguageServer for AlServer {
     async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {
         tracing::info!(command = %params.command, "execute_command");
 
-        match params.command.as_str() {
+        let start = std::time::Instant::now();
+        let result = match params.command.as_str() {
             "al.downloadSymbols" => {
                 workspace::download_symbols_command(self).await;
                 Ok(None)
@@ -418,7 +454,10 @@ impl LanguageServer for AlServer {
                 tracing::warn!(command = %params.command, "Unknown command");
                 Ok(None)
             }
-        }
+        };
+        let elapsed = start.elapsed();
+        tracing::debug!(command = %params.command, elapsed_us = elapsed.as_micros() as u64, "execute_command");
+        result
     }
 }
 
