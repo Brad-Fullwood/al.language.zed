@@ -145,6 +145,33 @@ pub struct AttributeSymbol {
     pub arguments: Vec<String>,
 }
 
+/// A property on an object, field, key, etc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropertyValue {
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+/// A key on a table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeySymbol {
+    pub name: String,
+    pub field_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<PropertyValue>,
+}
+
+/// A global variable on an object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VariableSymbol {
+    pub name: String,
+    #[serde(default)]
+    pub type_name: String,
+    #[serde(default)]
+    pub is_protected: bool,
+}
+
 /// A field on a table or table extension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldSymbol {
@@ -152,6 +179,8 @@ pub struct FieldSymbol {
     pub name: String,
     #[serde(default)]
     pub type_name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<PropertyValue>,
 }
 
 /// A control on a page or page extension.
@@ -191,6 +220,12 @@ pub struct SymbolEntry {
     pub controls: Vec<ControlSymbol>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enum_values: Vec<EnumValueSymbol>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<KeySymbol>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<PropertyValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<VariableSymbol>,
 }
 
 /// A parsed symbol package (one .app file).
@@ -319,6 +354,12 @@ pub(crate) struct ObjectJson {
     pub controls: Vec<ControlJson>,
     #[serde(alias = "EnumValues", alias = "Values", default)]
     pub enum_values: Vec<EnumValueJson>,
+    #[serde(alias = "Keys", default)]
+    pub keys: Vec<KeyJson>,
+    #[serde(alias = "Properties", default)]
+    pub properties: Vec<PropertyJson>,
+    #[serde(alias = "Variables", default)]
+    pub variables: Vec<VariableJson>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -349,12 +390,40 @@ pub(crate) struct ParameterJson {
 pub(crate) struct TypeDefJson {
     #[serde(alias = "Name", default)]
     pub name: String,
+    #[serde(alias = "Subtype", default)]
+    pub subtype: Option<SubtypeJson>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct SubtypeJson {
+    #[serde(alias = "Name", default)]
+    pub name: String,
+    #[serde(alias = "Id", default)]
+    pub id: i32,
+}
+
+impl TypeDefJson {
+    /// Full type string including subtype, e.g. `Record "Customer"` or `Code[20]`.
+    pub fn full_type(&self) -> String {
+        match &self.subtype {
+            Some(sub) if !sub.name.is_empty() => {
+                if sub.name.contains(' ') || sub.name.contains('.') {
+                    format!("{} \"{}\"", self.name, sub.name)
+                } else {
+                    format!("{} \"{}\"", self.name, sub.name)
+                }
+            }
+            _ => self.name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ReturnTypeJson {
     #[serde(alias = "Name", default)]
     pub name: String,
+    #[serde(alias = "Subtype", default)]
+    pub subtype: Option<SubtypeJson>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -379,6 +448,36 @@ pub(crate) struct FieldJson {
     pub name: String,
     #[serde(alias = "TypeDefinition", default)]
     pub type_definition: Option<TypeDefJson>,
+    #[serde(alias = "Properties", default)]
+    pub properties: Vec<PropertyJson>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct PropertyJson {
+    #[serde(alias = "Name", default)]
+    pub name: String,
+    #[serde(alias = "Value", default)]
+    pub value: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct KeyJson {
+    #[serde(alias = "Name", default)]
+    pub name: String,
+    #[serde(alias = "FieldNames", default)]
+    pub field_names: Vec<String>,
+    #[serde(alias = "Properties", default)]
+    pub properties: Vec<PropertyJson>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct VariableJson {
+    #[serde(alias = "Name", default)]
+    pub name: String,
+    #[serde(alias = "TypeDefinition", default)]
+    pub type_definition: Option<TypeDefJson>,
+    #[serde(alias = "Protected", default)]
+    pub protected: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -496,6 +595,9 @@ impl ObjectJson {
             fields: self.fields.into_iter().map(|f| f.into_field()).collect(),
             controls: self.controls.into_iter().map(|c| c.into_control()).collect(),
             enum_values: self.enum_values.into_iter().map(|v| v.into_value()).collect(),
+            keys: self.keys.into_iter().map(|k| k.into_key()).collect(),
+            properties: self.properties.into_iter().map(|p| PropertyValue { name: p.name, value: p.value }).collect(),
+            variables: self.variables.into_iter().map(|v| v.into_var()).collect(),
         }
     }
 }
@@ -505,7 +607,12 @@ impl MethodJson {
         MethodSymbol {
             name: self.name,
             parameters: self.parameters.into_iter().map(|p| p.into_param()).collect(),
-            return_type: self.return_type.map(|r| r.name),
+            return_type: self.return_type.map(|r| {
+                match &r.subtype {
+                    Some(sub) if !sub.name.is_empty() => format!("{} \"{}\"", r.name, sub.name),
+                    _ => r.name,
+                }
+            }),
             attributes: self.attributes.into_iter().map(|a| a.into_attr()).collect(),
             is_local: self.is_local,
         }
@@ -516,7 +623,7 @@ impl ParameterJson {
     fn into_param(self) -> ParameterSymbol {
         ParameterSymbol {
             name: self.name,
-            type_name: self.type_definition.map(|t| t.name).unwrap_or_default(),
+            type_name: self.type_definition.map(|t| t.full_type()).unwrap_or_default(),
             is_var: self.is_var,
         }
     }
@@ -536,7 +643,28 @@ impl FieldJson {
         FieldSymbol {
             id: self.id,
             name: self.name,
-            type_name: self.type_definition.map(|t| t.name).unwrap_or_default(),
+            type_name: self.type_definition.map(|t| t.full_type()).unwrap_or_default(),
+            properties: self.properties.into_iter().map(|p| PropertyValue { name: p.name, value: p.value }).collect(),
+        }
+    }
+}
+
+impl KeyJson {
+    fn into_key(self) -> KeySymbol {
+        KeySymbol {
+            name: self.name,
+            field_names: self.field_names,
+            properties: self.properties.into_iter().map(|p| PropertyValue { name: p.name, value: p.value }).collect(),
+        }
+    }
+}
+
+impl VariableJson {
+    fn into_var(self) -> VariableSymbol {
+        VariableSymbol {
+            name: self.name,
+            type_name: self.type_definition.map(|t| t.full_type()).unwrap_or_default(),
+            is_protected: self.protected,
         }
     }
 }
@@ -710,6 +838,9 @@ mod tests {
             fields: vec![],
             controls: vec![],
             enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         assert!(entry.extends.is_none());
         assert!(entry.methods.is_empty());
@@ -843,6 +974,9 @@ mod tests {
                 EnumValueSymbol { ordinal: 0, name: "None".to_string() },
                 EnumValueSymbol { ordinal: 1, name: "Active".to_string() },
             ],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         let json = serde_json::to_string(&entry).unwrap();
         let deserialized: SymbolEntry = serde_json::from_str(&json).unwrap();

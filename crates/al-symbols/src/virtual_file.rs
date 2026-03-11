@@ -44,7 +44,7 @@ fn sanitize_filename(s: &str) -> String {
 
 /// Generate AL source from a SymbolEntry for read-only navigation.
 pub fn generate_al(entry: &SymbolEntry) -> String {
-    let mut out = String::with_capacity(4096);
+    let mut out = String::with_capacity(8192);
 
     // Header comment
     out.push_str(&format!(
@@ -58,23 +58,16 @@ pub fn generate_al(entry: &SymbolEntry) -> String {
     match entry.kind {
         ObjectKind::Table => {
             out.push_str(&format!("table {} {}\n{{\n", entry.id, name_quoted));
-            if !entry.fields.is_empty() {
-                out.push_str("    fields\n    {\n");
-                for f in &entry.fields {
-                    let fname = quote_name(&f.name);
-                    let ftype = if f.type_name.is_empty() { "Text" } else { &f.type_name };
-                    out.push_str(&format!(
-                        "        field({}; {}; {})\n        {{\n        }}\n",
-                        f.id, fname, ftype
-                    ));
-                }
-                out.push_str("    }\n\n");
-            }
+            write_object_properties(&mut out, &entry.properties);
+            write_fields(&mut out, &entry.fields);
+            write_keys(&mut out, &entry.keys);
+            write_variables(&mut out, &entry.variables);
             write_methods(&mut out, &entry.methods);
             out.push_str("}\n");
         }
         ObjectKind::Enum => {
             out.push_str(&format!("enum {} {}\n{{\n", entry.id, name_quoted));
+            write_object_properties(&mut out, &entry.properties);
             for v in &entry.enum_values {
                 out.push_str(&format!(
                     "    value({}; {}) {{ }}\n",
@@ -82,6 +75,7 @@ pub fn generate_al(entry: &SymbolEntry) -> String {
                     quote_name(&v.name)
                 ));
             }
+            out.push('\n');
             write_methods(&mut out, &entry.methods);
             out.push_str("}\n");
         }
@@ -96,17 +90,98 @@ pub fn generate_al(entry: &SymbolEntry) -> String {
         | ObjectKind::Query
         | ObjectKind::XmlPort => {
             out.push_str(&format!("{} {} {}\n{{\n", kind_lower, entry.id, name_quoted));
+            write_object_properties(&mut out, &entry.properties);
+            write_variables(&mut out, &entry.variables);
             write_methods(&mut out, &entry.methods);
             out.push_str("}\n");
         }
         _ => {
             out.push_str(&format!("{} {} {}\n{{\n", kind_lower, entry.id, name_quoted));
+            write_object_properties(&mut out, &entry.properties);
             write_methods(&mut out, &entry.methods);
             out.push_str("}\n");
         }
     }
 
     out
+}
+
+/// Write object-level properties (Caption, LookupPageID, etc.).
+fn write_object_properties(out: &mut String, properties: &[crate::PropertyValue]) {
+    if properties.is_empty() {
+        return;
+    }
+    for p in properties {
+        let val = escape_property_value(&p.value);
+        out.push_str(&format!("    {} = {};\n", p.name, val));
+    }
+    out.push('\n');
+}
+
+/// Write fields with their properties.
+fn write_fields(out: &mut String, fields: &[crate::FieldSymbol]) {
+    if fields.is_empty() {
+        return;
+    }
+    out.push_str("    fields\n    {\n");
+    for f in fields {
+        let fname = quote_name(&f.name);
+        let ftype = if f.type_name.is_empty() { "Text" } else { &f.type_name };
+        out.push_str(&format!("        field({}; {}; {})\n", f.id, fname, ftype));
+        out.push_str("        {\n");
+        for p in &f.properties {
+            let val = escape_property_value(&p.value);
+            out.push_str(&format!("            {} = {};\n", p.name, val));
+        }
+        out.push_str("        }\n");
+    }
+    out.push_str("    }\n\n");
+}
+
+/// Write keys section.
+fn write_keys(out: &mut String, keys: &[crate::KeySymbol]) {
+    if keys.is_empty() {
+        return;
+    }
+    out.push_str("    keys\n    {\n");
+    for k in keys {
+        let fields: Vec<String> = k.field_names.iter().map(|f| quote_name(f)).collect();
+        out.push_str(&format!("        key({}; {})\n", k.name, fields.join(", ")));
+        out.push_str("        {\n");
+        for p in &k.properties {
+            let val = escape_property_value(&p.value);
+            out.push_str(&format!("            {} = {};\n", p.name, val));
+        }
+        out.push_str("        }\n");
+    }
+    out.push_str("    }\n\n");
+}
+
+/// Write variable declarations.
+fn write_variables(out: &mut String, variables: &[crate::VariableSymbol]) {
+    let public_vars: Vec<_> = variables.iter().filter(|v| !v.is_protected).collect();
+    if public_vars.is_empty() {
+        return;
+    }
+    out.push_str("    var\n");
+    for v in &public_vars {
+        out.push_str(&format!("        {}: {};\n", v.name, v.type_name));
+    }
+    out.push('\n');
+}
+
+/// Escape a property value for AL syntax.
+fn escape_property_value(val: &str) -> String {
+    // If it looks like a boolean or number, don't quote
+    if val == "0" || val == "1" || val.eq_ignore_ascii_case("true") || val.eq_ignore_ascii_case("false") {
+        return val.to_string();
+    }
+    // If it already has quotes or is a complex expression, use as-is
+    if val.contains('"') || val.contains('\'') || val.contains('\n') || val.contains('\r') {
+        return format!("'{}'", val.replace('\'', "''"));
+    }
+    // Simple string values get single quotes
+    format!("'{}'", val)
 }
 
 /// Write public method declarations.
@@ -170,11 +245,14 @@ mod tests {
             package: "Microsoft.Application".to_string(),
             methods: vec![],
             fields: vec![
-                FieldSymbol { id: 1, name: "No.".to_string(), type_name: "Code[20]".to_string() },
-                FieldSymbol { id: 2, name: "Name".to_string(), type_name: "Text[100]".to_string() },
+                FieldSymbol { id: 1, name: "No.".to_string(), type_name: "Code[20]".to_string(), properties: vec![] },
+                FieldSymbol { id: 2, name: "Name".to_string(), type_name: "Text[100]".to_string(), properties: vec![] },
             ],
             controls: vec![],
             enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         let al = generate_al(&entry);
         assert!(al.contains("table 18 Customer"));
@@ -197,6 +275,9 @@ mod tests {
                 EnumValueSymbol { ordinal: 0, name: "Pending".to_string() },
                 EnumValueSymbol { ordinal: 1, name: "Posted".to_string() },
             ],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         let al = generate_al(&entry);
         assert!(al.contains("enum 50100 \"IJL Status\""));
@@ -233,6 +314,9 @@ mod tests {
             fields: vec![],
             controls: vec![],
             enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         let al = generate_al(&entry);
         assert!(al.contains("codeunit 80 \"Sales Post\""));
@@ -252,6 +336,9 @@ mod tests {
             fields: vec![],
             controls: vec![],
             enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         let path = get_or_create(&entry).unwrap();
         assert!(path.exists());

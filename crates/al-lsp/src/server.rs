@@ -141,7 +141,10 @@ impl LanguageServer for AlServer {
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["al.downloadSymbols".to_string()],
+                    commands: vec![
+                        "al.downloadSymbols".to_string(),
+                        "al.clearSymbolCache".to_string(),
+                    ],
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -431,6 +434,7 @@ impl LanguageServer for AlServer {
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
         let range = params.range;
+        self.ensure_builtins_loaded().await;
         let start = std::time::Instant::now();
         let result = handlers::handle_inlay_hint(self, uri, range);
         let elapsed = start.elapsed();
@@ -448,6 +452,24 @@ impl LanguageServer for AlServer {
         let result = match params.command.as_str() {
             "al.downloadSymbols" => {
                 workspace::download_symbols_command(self).await;
+                Ok(None)
+            }
+            "al.clearSymbolCache" => {
+                let cache_dir = al_symbols::virtual_file::cache_dir();
+                match std::fs::remove_dir_all(&cache_dir) {
+                    Ok(()) => {
+                        tracing::info!(path = ?cache_dir, "Cleared symbol cache");
+                        self.client
+                            .show_message(MessageType::INFO, "Symbol cache cleared")
+                            .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to clear symbol cache");
+                        self.client
+                            .show_message(MessageType::WARNING, format!("Failed to clear cache: {e}"))
+                            .await;
+                    }
+                }
                 Ok(None)
             }
             _ => {

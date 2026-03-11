@@ -82,10 +82,13 @@ pub struct CompletionItem {
 
 /// A built-in AL type from CodeAnalysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuiltinType {
     pub name: String,
     #[serde(default)]
     pub methods: Vec<BuiltinMethod>,
+    #[serde(default)]
+    pub enum_values: Vec<String>,
 }
 
 /// A method on a built-in type.
@@ -534,6 +537,7 @@ mod tests {
                     documentation: "Copies a substring.".to_string(),
                 },
             ],
+            enum_values: vec![],
         };
         let json = serde_json::to_string(&bt).unwrap();
         let parsed: BuiltinType = serde_json::from_str(&json).unwrap();
@@ -542,6 +546,14 @@ mod tests {
         assert_eq!(parsed.methods[0].name, "StrLen");
         assert_eq!(parsed.methods[1].parameters.len(), 2);
         assert!(!parsed.methods[1].parameters[0].is_var);
+    }
+
+    #[test]
+    fn test_builtin_type_with_enum_values() {
+        let json = r#"{"name":"TextEncoding","methods":[],"enumValues":["MsDos","UTF8","UTF16","Windows"]}"#;
+        let parsed: BuiltinType = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.name, "TextEncoding");
+        assert_eq!(parsed.enum_values, vec!["MsDos", "UTF8", "UTF16", "Windows"]);
     }
 
     #[test]

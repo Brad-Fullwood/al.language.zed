@@ -624,6 +624,18 @@ pub(crate) fn handle_code_action(
         }
     }
 
+    // --- Workspace commands (always available) ---
+    actions.push(CodeActionOrCommand::Command(Command {
+        title: "AL: Download Symbols".to_string(),
+        command: "al.downloadSymbols".to_string(),
+        arguments: None,
+    }));
+    actions.push(CodeActionOrCommand::Command(Command {
+        title: "AL: Clear Symbol Cache".to_string(),
+        command: "al.clearSymbolCache".to_string(),
+        arguments: None,
+    }));
+
     tracing::debug!(action_count = actions.len(), "code_action: returning actions");
 
     if actions.is_empty() {
@@ -1015,7 +1027,7 @@ pub(crate) fn handle_inlay_hint(
     // Extract document symbols once for the whole file (used for local procedure lookups)
     let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
 
-    collect_inlay_hints(root, source, server, &doc_symbols, &range, &mut hints);
+    collect_inlay_hints(root, source, &text, &tree, server, &doc_symbols, &range, &mut hints);
 
     let parameter_hints = hints.iter().filter(|h| h.kind == Some(InlayHintKind::PARAMETER)).count();
     let type_hints = hints.iter().filter(|h| h.kind == Some(InlayHintKind::TYPE)).count();
@@ -1039,6 +1051,8 @@ pub(crate) fn handle_inlay_hint(
 fn collect_inlay_hints(
     node: tree_sitter::Node<'_>,
     source: &[u8],
+    text: &str,
+    tree: &tree_sitter::Tree,
     server: &AlServer,
     doc_symbols: &[DocumentSymbol],
     range: &Range,
@@ -1053,12 +1067,17 @@ fn collect_inlay_hints(
 
     // Look for procedure/function calls with arguments
     if node.kind() == "argument_list" || node.kind() == "call_arguments" {
-        // Try to find the function name from the parent expression
         if let Some(parent) = node.parent() {
-            let func_name = extract_call_name(parent, source);
-            if let Some(name) = func_name {
-                // Look up parameters from local procedures, index, or builtins
-                let param_names = lookup_parameter_names(server, doc_symbols, &name);
+            let call_info = extract_call_info(parent, source);
+            if let Some((func_name, receiver_name)) = call_info {
+                let position = Position {
+                    line: node.start_position().row as u32,
+                    character: node.start_position().column as u32,
+                };
+                let arg_types = infer_argument_types(node, source, text, tree, position);
+                let param_names = lookup_parameter_names(
+                    server, doc_symbols, &func_name, receiver_name.as_deref(), text, tree, position, &arg_types,
+                );
                 if !param_names.is_empty() {
                     add_parameter_hints(node, source, &param_names, hints);
                 }
@@ -1068,39 +1087,162 @@ fn collect_inlay_hints(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_inlay_hints(child, source, server, doc_symbols, range, hints);
+        collect_inlay_hints(child, source, text, tree, server, doc_symbols, range, hints);
     }
 }
 
-/// Extract the function name from a call expression node.
-fn extract_call_name(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
-    // Look for identifier children that represent the function name
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let kind = child.kind();
-        if kind == "identifier" || kind == "quoted_identifier" || kind == "name" {
-            if let Ok(text) = child.utf8_text(source) {
-                return Some(text.trim_matches('"').to_string());
-            }
+/// An inferred type for a call argument.
+#[derive(Debug, Clone)]
+struct InferredType {
+    base: String,
+    subtype: Option<String>,
+}
+
+/// An overload candidate with parameter names and types.
+struct OverloadCandidate {
+    names: Vec<String>,
+    types: Vec<String>, // full type strings, e.g. "Record \"Customer\"", "TextEncoding"
+}
+
+/// Infer the type of a single argument expression node.
+fn infer_argument_type(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    text: &str,
+    tree: &tree_sitter::Tree,
+    position: Position,
+) -> Option<InferredType> {
+    let expr = node.utf8_text(source).ok()?;
+    let expr = expr.trim();
+
+    // Scope access: TextEncoding::UTF8 → base type is "TextEncoding"
+    if let Some(idx) = expr.find("::") {
+        let base = expr[..idx].trim().trim_matches('"');
+        if !base.is_empty() {
+            return Some(InferredType { base: base.to_string(), subtype: None });
         }
     }
+
+    // String literal: 'hello' → Text
+    if expr.starts_with('\'') {
+        return Some(InferredType { base: "Text".to_string(), subtype: None });
+    }
+
+    // Numeric literal
+    if !expr.is_empty() && expr.bytes().next().map_or(false, |b| b.is_ascii_digit() || b == b'-') {
+        let numeric_part = expr.trim_start_matches('-');
+        if numeric_part.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+            let base = if expr.contains('.') { "Decimal" } else { "Integer" };
+            return Some(InferredType { base: base.to_string(), subtype: None });
+        }
+    }
+
+    // Boolean
+    if expr.eq_ignore_ascii_case("true") || expr.eq_ignore_ascii_case("false") {
+        return Some(InferredType { base: "Boolean".to_string(), subtype: None });
+    }
+
+    // Variable name: resolve via TypeResolver
+    let var_name = expr.trim_matches('"');
+    let resolver = al_syntax::TypeResolver::new(tree, text);
+    if let Some(decl) = resolver.resolve_type(var_name, position) {
+        return Some(InferredType { base: decl.type_name, subtype: decl.type_subtype });
+    }
+
     None
 }
 
-/// Look up parameter names for a function from local procedures, index, or builtins.
-#[allow(deprecated)]
-fn lookup_parameter_names(server: &AlServer, doc_symbols: &[DocumentSymbol], func_name: &str) -> Vec<String> {
-    // Check local procedures in current file FIRST
-    for sym in doc_symbols {
-        if let Some(children) = &sym.children {
-            for child in children {
-                if child.name.eq_ignore_ascii_case(func_name)
-                    && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
-                {
-                    if let Some(detail) = &child.detail {
-                        let names = parse_parameter_names_from_detail(detail);
-                        if !names.is_empty() {
-                            return names;
+/// Infer types for all arguments in a call's argument list.
+fn infer_argument_types(
+    arg_list: tree_sitter::Node<'_>,
+    source: &[u8],
+    text: &str,
+    tree: &tree_sitter::Tree,
+    position: Position,
+) -> Vec<Option<InferredType>> {
+    let expr_parent = arg_list
+        .children(&mut arg_list.walk())
+        .find(|c| c.kind() == "expression_list")
+        .unwrap_or(arg_list);
+
+    let mut cursor = expr_parent.walk();
+    let mut types = Vec::new();
+
+    for child in expr_parent.children(&mut cursor) {
+        let kind = child.kind();
+        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon" {
+            continue;
+        }
+        types.push(infer_argument_type(child, source, text, tree, position));
+    }
+    types
+}
+
+/// Parse a full type string into (base_type, optional_subtype).
+///
+/// Examples:
+/// - `"Record \"Customer\""` → ("Record", Some("Customer"))
+/// - `"OutStream"` → ("OutStream", None)
+/// - `"Code[20]"` → ("Code", None)
+fn parse_type_string(type_str: &str) -> (&str, Option<&str>) {
+    let trimmed = type_str.trim();
+
+    // Handle escaped quotes first: Record \"Customer\"
+    if let Some(quote_start) = trimmed.find("\\\"") {
+        let base = trimmed[..quote_start].trim();
+        let rest = &trimmed[quote_start + 2..];
+        if let Some(quote_end) = rest.find("\\\"") {
+            let subtype = &rest[..quote_end];
+            return (base, Some(subtype));
+        }
+    }
+
+    // Handle plain quoted subtypes: Record "Customer", Codeunit "Sales-Post"
+    if let Some(quote_start) = trimmed.find('"') {
+        let base = trimmed[..quote_start].trim();
+        let rest = &trimmed[quote_start + 1..];
+        if let Some(quote_end) = rest.find('"') {
+            let subtype = &rest[..quote_end];
+            return (base, Some(subtype));
+        }
+    }
+
+    (trimmed.split_whitespace().next().unwrap_or(trimmed), None)
+}
+
+/// Score an overload candidate against inferred argument types.
+///
+/// Higher score = better match. Considers:
+/// - Parameter count match (strong signal)
+/// - Base type match per argument
+/// - Subtype match per argument (for Record/Codeunit etc.)
+fn score_overload(candidate: &OverloadCandidate, arg_types: &[Option<InferredType>]) -> u32 {
+    let arg_count = arg_types.len();
+    let mut score = 0u32;
+
+    // Parameter count matching
+    if candidate.types.len() == arg_count {
+        score += 1000;
+    } else if candidate.types.len() > arg_count {
+        // Has enough params but more than needed — possible but less likely
+        score += 100;
+    }
+    // If fewer params than args, score stays low (can't match)
+
+    // Per-argument type matching
+    for (i, arg_type) in arg_types.iter().enumerate() {
+        if let Some(param_type_str) = candidate.types.get(i) {
+            if let Some(inferred) = arg_type {
+                let (param_base, param_subtype) = parse_type_string(param_type_str);
+
+                // Base type match
+                if param_base.eq_ignore_ascii_case(&inferred.base) {
+                    score += 50;
+
+                    // Subtype match (e.g., both are Record "Customer")
+                    if let (Some(p_sub), Some(a_sub)) = (param_subtype, inferred.subtype.as_deref()) {
+                        if p_sub.eq_ignore_ascii_case(a_sub) {
+                            score += 25;
                         }
                     }
                 }
@@ -1108,27 +1250,238 @@ fn lookup_parameter_names(server: &AlServer, doc_symbols: &[DocumentSymbol], fun
         }
     }
 
-    // Check package symbols
-    let symbols = server.symbols.search(func_name, 5);
-    for entry in &symbols {
-        for method in &entry.methods {
-            if method.name.eq_ignore_ascii_case(func_name) {
-                return method.parameters.iter().map(|p| p.name.clone()).collect();
+    score
+}
+
+/// Select the best overload from candidates using type-aware scoring.
+fn select_best_overload(
+    candidates: &[OverloadCandidate],
+    arg_types: &[Option<InferredType>],
+) -> Option<Vec<String>> {
+    candidates.iter()
+        .max_by_key(|c| score_overload(c, arg_types))
+        .map(|c| c.names.clone())
+}
+
+/// Extract function name and optional receiver name from a call parent node.
+///
+/// Returns `(method_name, Option<receiver_name>)`.
+fn extract_call_info(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(String, Option<String>)> {
+    match node.kind() {
+        "member_call_suffix" | "scope_call_suffix" => {
+            // .Method(args) or ::Method(args) — use the "member" field
+            let member = node.child_by_field_name("member")?;
+            let method_name = member.utf8_text(source).ok()?.trim_matches('"').to_string();
+            let receiver = extract_receiver_before(node, source);
+            Some((method_name, receiver))
+        }
+        "call_suffix" => {
+            // Bare call: postfix_expression → primary_expression + call_suffix(arglist)
+            if let Some(prev) = node.prev_sibling() {
+                let name = prev.utf8_text(source).ok()?.trim_matches('"').to_string();
+                return Some((name, None));
+            }
+            None
+        }
+        _ => {
+            // Fallback: look for any identifier child
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                let kind = child.kind();
+                if kind == "identifier" || kind == "quoted_identifier" || kind == "name" {
+                    if let Ok(t) = child.utf8_text(source) {
+                        return Some((t.trim_matches('"').to_string(), None));
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Extract the receiver identifier from the sibling preceding a member_call/scope_call suffix.
+fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let prev = suffix_node.prev_sibling()?;
+    match prev.kind() {
+        "primary_expression" => {
+            // Simple: JsonTools.Rec2Json(...) → receiver is "JsonTools"
+            Some(prev.utf8_text(source).ok()?.trim_matches('"').to_string())
+        }
+        "member_suffix" | "member_call_suffix" => {
+            // Chained: this.StagingRec.SetJournalData(...) → receiver is "StagingRec"
+            let member = prev.child_by_field_name("member")?;
+            Some(member.utf8_text(source).ok()?.trim_matches('"').to_string())
+        }
+        _ => None,
+    }
+}
+
+
+
+/// Look up parameter names for a function, with receiver type resolution.
+///
+/// Uses inferred argument types to select the correct overload when a method
+/// has multiple signatures (matching on both parameter count and types).
+#[allow(deprecated)]
+fn lookup_parameter_names(
+    server: &AlServer,
+    doc_symbols: &[DocumentSymbol],
+    func_name: &str,
+    receiver_name: Option<&str>,
+    text: &str,
+    tree: &tree_sitter::Tree,
+    position: Position,
+    arg_types: &[Option<InferredType>],
+) -> Vec<String> {
+    // 1. Check local procedures in current file (collect all overloads)
+    let mut candidates: Vec<OverloadCandidate> = Vec::new();
+    for sym in doc_symbols {
+        if let Some(children) = &sym.children {
+            for child in children {
+                if child.name.eq_ignore_ascii_case(func_name)
+                    && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
+                {
+                    if let Some(detail) = &child.detail {
+                        let params = parse_parameters_from_detail(detail);
+                        if !params.is_empty() {
+                            candidates.push(OverloadCandidate {
+                                names: params.iter().map(|(n, _)| n.clone()).collect(),
+                                types: params.iter().map(|(_, t)| t.clone()).collect(),
+                            });
+                        }
+                    }
+                }
             }
         }
     }
-
-    // Check built-in types
-    let builtins = server.builtins.read().unwrap().clone();
-    for bt in builtins.iter() {
-        for method in &bt.methods {
-            if method.name.eq_ignore_ascii_case(func_name) {
-                return method.parameters.iter().map(|p| p.name.clone()).collect();
-            }
+    if !candidates.is_empty() {
+        if let Some(best) = select_best_overload(&candidates, arg_types) {
+            return best;
         }
+    }
+
+    // 2. If we have a receiver, resolve its type and look up the method on that type
+    if let Some(recv) = receiver_name {
+        if let Some(names) = lookup_via_receiver(server, func_name, recv, text, tree, position, arg_types) {
+            return names;
+        }
+    }
+
+    // 3. Fallback: search package symbols by method name
+    let symbols = server.symbols.search(func_name, 5);
+    let candidates: Vec<OverloadCandidate> = symbols.iter()
+        .flat_map(|e| e.methods.iter())
+        .filter(|m| m.name.eq_ignore_ascii_case(func_name))
+        .map(|m| OverloadCandidate {
+            names: m.parameters.iter().map(|p| p.name.clone()).collect(),
+            types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
+        })
+        .collect();
+    if let Some(best) = select_best_overload(&candidates, arg_types) {
+        return best;
+    }
+
+    // 4. Fallback: search all builtins by method name
+    let builtins = server.builtins.read().unwrap().clone();
+    let candidates: Vec<OverloadCandidate> = builtins.iter()
+        .flat_map(|bt| bt.methods.iter())
+        .filter(|m| m.name.eq_ignore_ascii_case(func_name))
+        .map(|m| OverloadCandidate {
+            names: m.parameters.iter().map(|p| p.name.clone()).collect(),
+            types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
+        })
+        .collect();
+    if let Some(best) = select_best_overload(&candidates, arg_types) {
+        return best;
     }
 
     Vec::new()
+}
+
+/// Resolve receiver type and look up method parameters on that type.
+fn lookup_via_receiver(
+    server: &AlServer,
+    func_name: &str,
+    receiver_name: &str,
+    text: &str,
+    tree: &tree_sitter::Tree,
+    position: Position,
+    arg_types: &[Option<InferredType>],
+) -> Option<Vec<String>> {
+    let resolver = al_syntax::TypeResolver::new(tree, text);
+    let decl = resolver.resolve_type(receiver_name, position)?;
+
+    // Check builtins filtered by receiver type
+    let builtins = server.builtins.read().unwrap().clone();
+    let candidates: Vec<OverloadCandidate> = builtins.iter()
+        .filter(|bt| {
+            bt.name.eq_ignore_ascii_case(&decl.type_name)
+                || decl.type_subtype.as_deref().is_some_and(|s| bt.name.eq_ignore_ascii_case(s))
+        })
+        .flat_map(|bt| bt.methods.iter())
+        .filter(|m| m.name.eq_ignore_ascii_case(func_name))
+        .map(|m| OverloadCandidate {
+            names: m.parameters.iter().map(|p| p.name.clone()).collect(),
+            types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
+        })
+        .collect();
+    if let Some(best) = select_best_overload(&candidates, arg_types) {
+        return Some(best);
+    }
+
+    // Check package symbols by resolved subtype
+    if let Some(subtype) = &decl.type_subtype {
+        let candidates: Vec<OverloadCandidate> = server.symbols.get_by_name(subtype).iter()
+            .flat_map(|e| e.methods.iter())
+            .filter(|m| m.name.eq_ignore_ascii_case(func_name))
+            .map(|m| OverloadCandidate {
+                names: m.parameters.iter().map(|p| p.name.clone()).collect(),
+                types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
+            })
+            .collect();
+        if let Some(best) = select_best_overload(&candidates, arg_types) {
+            return Some(best);
+        }
+    }
+
+    // Check workspace objects by resolved subtype
+    if let Some(subtype) = &decl.type_subtype {
+        let obj_key = subtype.to_lowercase();
+        if let Some(file_path) = server.workspace_objects.get(&obj_key) {
+            let file_path = file_path.value().clone();
+            if let Some(file_text) = server.workspace_files.get(&file_path) {
+                let content = file_text.value();
+                let mut parser = server.parser.lock().unwrap();
+                let result = parser.parse(content);
+                let target_symbols = al_syntax::extract_document_symbols(&result.tree, content);
+                let mut candidates: Vec<OverloadCandidate> = Vec::new();
+                for sym in &target_symbols {
+                    if let Some(children) = &sym.children {
+                        for child in children {
+                            if child.name.eq_ignore_ascii_case(func_name)
+                                && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
+                            {
+                                if let Some(detail) = &child.detail {
+                                    let params = parse_parameters_from_detail(detail);
+                                    if !params.is_empty() {
+                                        candidates.push(OverloadCandidate {
+                                            names: params.iter().map(|(n, _)| n.clone()).collect(),
+                                            types: params.iter().map(|(_, t)| t.clone()).collect(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(best) = select_best_overload(&candidates, arg_types) {
+                    return Some(best);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Parse parameter names from a procedure's detail string.
@@ -1198,6 +1551,65 @@ fn parse_parameter_names_from_detail(detail: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parse parameter names AND types from a procedure's detail string.
+///
+/// Returns `Vec<(name, type_name)>` pairs.
+/// Detail format: `"(var param1: Type1; param2: Type2): ReturnType"`
+fn parse_parameters_from_detail(detail: &str) -> Vec<(String, String)> {
+    let trimmed = detail.trim();
+
+    let start = match trimmed.find('(') {
+        Some(i) => i + 1,
+        None => return Vec::new(),
+    };
+
+    let mut depth = 1;
+    let mut end = start;
+    for (i, ch) in trimmed[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let params_str = &trimmed[start..end];
+    if params_str.trim().is_empty() {
+        return Vec::new();
+    }
+
+    params_str
+        .split(';')
+        .filter_map(|param| {
+            let param = param.trim();
+            if param.is_empty() {
+                return None;
+            }
+            let param = param.strip_prefix("var ").unwrap_or(param).trim();
+            if let Some(colon_pos) = param.find(':') {
+                let name = param[..colon_pos].trim().trim_matches('"');
+                let type_name = param[colon_pos + 1..].trim();
+                if !name.is_empty() {
+                    return Some((name.to_string(), type_name.to_string()));
+                }
+            }
+            // No colon — name only, unknown type
+            let name = param.trim().trim_matches('"');
+            if !name.is_empty() {
+                Some((name.to_string(), String::new()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Add parameter name hints for arguments in a call.
 fn add_parameter_hints(
     arg_list: tree_sitter::Node<'_>,
@@ -1205,13 +1617,21 @@ fn add_parameter_hints(
     param_names: &[String],
     hints: &mut Vec<InlayHint>,
 ) {
-    let mut cursor = arg_list.walk();
+    // argument_list grammar: '(' expression_list? ')'
+    // We need to iterate the expression children inside expression_list,
+    // not argument_list itself (which has expression_list as a single child).
+    let expr_parent = arg_list
+        .children(&mut arg_list.walk())
+        .find(|c| c.kind() == "expression_list")
+        .unwrap_or(arg_list);
+
+    let mut cursor = expr_parent.walk();
     let mut param_idx = 0;
 
-    for child in arg_list.children(&mut cursor) {
-        // Skip delimiters and whitespace
+    for child in expr_parent.children(&mut cursor) {
         let kind = child.kind();
-        if !child.is_named() || kind == "," || kind == "(" || kind == ")" || kind == "semicolon" {
+        // Skip commas, parentheses, and other delimiters
+        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon" {
             continue;
         }
 
@@ -1596,5 +2016,113 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(diag_code_str(&diag), Some("42".to_string()));
+    }
+
+    // --- overload resolution tests ---
+
+    #[test]
+    fn test_score_overload_exact_count_match() {
+        let candidate_1 = OverloadCandidate {
+            names: vec!["OutStream".into()],
+            types: vec!["OutStream".into()],
+        };
+        let candidate_2 = OverloadCandidate {
+            names: vec!["OutStream".into(), "Encoding".into()],
+            types: vec!["OutStream".into(), "TextEncoding".into()],
+        };
+        // 2 arguments: should prefer candidate_2
+        let arg_types = vec![
+            Some(InferredType { base: "OutStream".into(), subtype: None }),
+            Some(InferredType { base: "TextEncoding".into(), subtype: None }),
+        ];
+        assert!(score_overload(&candidate_2, &arg_types) > score_overload(&candidate_1, &arg_types));
+    }
+
+    #[test]
+    fn test_score_overload_type_matching() {
+        // Two overloads with same param count but different types
+        let candidate_a = OverloadCandidate {
+            names: vec!["Rec".into()],
+            types: vec!["Record \"Customer\"".into()],
+        };
+        let candidate_b = OverloadCandidate {
+            names: vec!["Rec".into()],
+            types: vec!["Record \"Item\"".into()],
+        };
+        // Passing a Record "Customer" should prefer candidate_a
+        let arg_types = vec![
+            Some(InferredType { base: "Record".into(), subtype: Some("Customer".into()) }),
+        ];
+        assert!(score_overload(&candidate_a, &arg_types) > score_overload(&candidate_b, &arg_types));
+    }
+
+    #[test]
+    fn test_score_overload_base_type_match_no_subtype() {
+        // Both match on base type, neither has subtype info in args
+        let candidate_a = OverloadCandidate {
+            names: vec!["Value".into()],
+            types: vec!["Integer".into()],
+        };
+        let candidate_b = OverloadCandidate {
+            names: vec!["Value".into()],
+            types: vec!["Text".into()],
+        };
+        let arg_types = vec![
+            Some(InferredType { base: "Integer".into(), subtype: None }),
+        ];
+        assert!(score_overload(&candidate_a, &arg_types) > score_overload(&candidate_b, &arg_types));
+    }
+
+    #[test]
+    fn test_select_best_overload_picks_type_match() {
+        let candidates = vec![
+            OverloadCandidate {
+                names: vec!["OutStream".into()],
+                types: vec!["OutStream".into()],
+            },
+            OverloadCandidate {
+                names: vec!["OutStream".into(), "Encoding".into()],
+                types: vec!["OutStream".into(), "TextEncoding".into()],
+            },
+        ];
+        let arg_types = vec![
+            Some(InferredType { base: "OutStream".into(), subtype: None }),
+            Some(InferredType { base: "TextEncoding".into(), subtype: None }),
+        ];
+        let result = select_best_overload(&candidates, &arg_types);
+        assert_eq!(result, Some(vec!["OutStream".into(), "Encoding".into()]));
+    }
+
+    #[test]
+    fn test_parse_type_string_simple() {
+        assert_eq!(parse_type_string("OutStream"), ("OutStream", None));
+        assert_eq!(parse_type_string("Integer"), ("Integer", None));
+    }
+
+    #[test]
+    fn test_parse_type_string_with_subtype() {
+        assert_eq!(parse_type_string("Record \"Customer\""), ("Record", Some("Customer")));
+    }
+
+    #[test]
+    fn test_parse_type_string_escaped_quotes() {
+        // Input with literal backslash-quote pairs (as from JSON-escaped strings)
+        assert_eq!(parse_type_string(r#"Record \"Customer\""#), ("Record", Some("Customer")));
+    }
+
+    #[test]
+    fn test_parse_parameters_from_detail() {
+        let params = parse_parameters_from_detail("(var OutStream: OutStream; Encoding: TextEncoding)");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0], ("OutStream".into(), "OutStream".into()));
+        assert_eq!(params[1], ("Encoding".into(), "TextEncoding".into()));
+    }
+
+    #[test]
+    fn test_parse_parameters_from_detail_record_subtype() {
+        let params = parse_parameters_from_detail("(var Rec: Record \"Customer\")");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "Rec");
+        assert_eq!(params[0].1, "Record \"Customer\"");
     }
 }

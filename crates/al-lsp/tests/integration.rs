@@ -177,20 +177,26 @@ fn build_test_index() -> SymbolIndex {
                     id: 1,
                     name: "No.".to_string(),
                     type_name: "Code".to_string(),
+                    properties: vec![],
                 },
                 FieldSymbol {
                     id: 2,
                     name: "Name".to_string(),
                     type_name: "Text".to_string(),
+                    properties: vec![],
                 },
                 FieldSymbol {
                     id: 3,
                     name: "Blocked".to_string(),
                     type_name: "Enum".to_string(),
+                    properties: vec![],
                 },
             ],
             controls: vec![],
             enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         },
         SymbolEntry {
             kind: ObjectKind::Codeunit,
@@ -212,6 +218,9 @@ fn build_test_index() -> SymbolIndex {
             fields: vec![],
             controls: vec![],
             enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         },
         SymbolEntry {
             kind: ObjectKind::Enum,
@@ -240,6 +249,9 @@ fn build_test_index() -> SymbolIndex {
                     name: "All".to_string(),
                 },
             ],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         },
     ]);
     index

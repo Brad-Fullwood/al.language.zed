@@ -89,6 +89,9 @@ mod tests {
             fields,
             controls: Vec::new(),
             enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
         }
     }
 
@@ -103,6 +106,9 @@ mod tests {
             fields,
             controls: Vec::new(),
             enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
         }
     }
 
@@ -117,6 +123,9 @@ mod tests {
             fields: Vec::new(),
             controls: Vec::new(),
             enum_values: values,
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
         }
     }
 
@@ -131,6 +140,9 @@ mod tests {
             fields: Vec::new(),
             controls: Vec::new(),
             enum_values: values,
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
         }
     }
 
@@ -139,8 +151,8 @@ mod tests {
         let index = SymbolIndex::new();
         index.add_entries(&[
             make_table(18, "Customer", vec![
-                FieldSymbol { id: 1, name: "No.".into(), type_name: "Code".into() },
-                FieldSymbol { id: 2, name: "Name".into(), type_name: "Text".into() },
+                FieldSymbol { id: 1, name: "No.".into(), type_name: "Code".into(), properties: vec![] },
+                FieldSymbol { id: 2, name: "Name".into(), type_name: "Text".into(), properties: vec![] },
             ], vec![
                 MethodSymbol {
                     name: "GetFullName".into(),
@@ -151,7 +163,7 @@ mod tests {
                 },
             ]),
             make_table_ext(50100, "Cust Ext 1", "Customer", vec![
-                FieldSymbol { id: 50100, name: "Custom Field".into(), type_name: "Boolean".into() },
+                FieldSymbol { id: 50100, name: "Custom Field".into(), type_name: "Boolean".into(), properties: vec![] },
             ], vec![
                 MethodSymbol {
                     name: "GetCustomValue".into(),
@@ -162,7 +174,7 @@ mod tests {
                 },
             ]),
             make_table_ext(50101, "Cust Ext 2", "Customer", vec![
-                FieldSymbol { id: 50101, name: "Another Field".into(), type_name: "Integer".into() },
+                FieldSymbol { id: 50101, name: "Another Field".into(), type_name: "Integer".into(), properties: vec![] },
             ], Vec::new()),
         ]);
 
@@ -217,7 +229,7 @@ mod tests {
         let index = SymbolIndex::new();
         index.add_entries(&[
             make_table(50100, "Standalone", vec![
-                FieldSymbol { id: 1, name: "F1".into(), type_name: "Text".into() },
+                FieldSymbol { id: 1, name: "F1".into(), type_name: "Text".into(), properties: vec![] },
             ], Vec::new()),
         ]);
 

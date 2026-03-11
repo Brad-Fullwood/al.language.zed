@@ -1824,6 +1824,10 @@ class CodeAnalysisBridge
             Console.Error.WriteLine($"Error extracting builtins: {ex}");
         }
 
+        // Log enum value summary
+        var withEnumValues = typesDict.Values.Count(t => t.EnumValues.Count > 0);
+        Console.Error.WriteLine($"  Types with enum values: {withEnumValues}");
+
         // Convert to output format
         return typesDict.Values.Select(t => new
         {
@@ -1840,6 +1844,7 @@ class CodeAnalysisBridge
                 returnType = m.ReturnType,
                 documentation = m.Documentation ?? "",
             }).ToArray(),
+            enumValues = t.EnumValues.ToArray(),
         }).ToArray();
     }
 
@@ -2272,6 +2277,16 @@ class CodeAnalysisBridge
                                             {
                                                 AddMethodToType(kvp.Key, member, typesDict, iParameterSymbol);
                                             }
+                                            else if (kind == "Field" || kind == "EnumValue" || kind == "EnumMember")
+                                            {
+                                                // Capture enum values / option fields
+                                                var memberName = GetPropertyValue(member, member.GetType(), "Name")?.ToString();
+                                                if (!string.IsNullOrEmpty(memberName) && typesDict.TryGetValue(kvp.Key, out var ti))
+                                                {
+                                                    if (!ti.EnumValues.Contains(memberName))
+                                                        ti.EnumValues.Add(memberName);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -2569,6 +2584,7 @@ class BuiltinTypeInfo
 {
     public string Name { get; set; } = "";
     public List<AlMethodInfo> Methods { get; set; } = new();
+    public List<string> EnumValues { get; set; } = new();
 }
 
 /// <summary>Accumulated info about a method during extraction.</summary>

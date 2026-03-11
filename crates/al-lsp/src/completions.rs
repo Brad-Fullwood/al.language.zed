@@ -164,18 +164,22 @@ pub(crate) fn handle_completion(
             if let Some((file_text, tree)) = parsing::get_or_parse(server, uri) {
                 if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, position) {
                     tracing::debug!(receiver_expr = %receiver_expr, "completion: EnumAccess receiver");
-                    if let Some(enum_type) = resolution::resolve_expression_type(
-                        server,
-                        uri,
-                        &file_text,
-                        &tree,
-                        &receiver_expr,
-                        position,
-                    ) {
-                        tracing::debug!(enum_type = %enum_type, "completion: EnumAccess resolved type");
-                        items.extend(resolution::enum_completion_items(server, &enum_type));
-                        tracing::debug!(item_count = items.len(), "completion: EnumAccess items");
-                    }
+                    // Try full expression type resolution first (for variables of enum type)
+                    let enum_type = resolution::resolve_expression_type(
+                        server, uri, &file_text, &tree, &receiver_expr, position,
+                    );
+                    // If resolution fails, treat the receiver as a direct enum type name
+                    // (for bare enum names like WebServiceActionResultCode::)
+                    let enum_type = enum_type.unwrap_or_else(|| {
+                        tracing::debug!(receiver_expr = %receiver_expr, "completion: EnumAccess fallback to direct name");
+                        resolution::ResolvedType {
+                            type_name: receiver_expr.clone(),
+                            type_subtype: Some(receiver_expr.clone()),
+                        }
+                    });
+                    tracing::debug!(enum_type = %enum_type, "completion: EnumAccess resolved type");
+                    items.extend(resolution::enum_completion_items(server, &enum_type));
+                    tracing::debug!(item_count = items.len(), "completion: EnumAccess items");
                 }
             }
         }

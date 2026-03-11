@@ -2,11 +2,6 @@
 ; AUTO-GENERATED - DO NOT EDIT
 ; All basic token captures are dynamically extracted from the VS Code AL extension's TextMate grammar
 
-; --- XML Doc Comments (/// <summary> etc.) ---
-; Must come BEFORE the generic (comment) rule so it takes priority
-((comment) @comment.doc
- (#match? @comment.doc "^///"))
-
 ; --- Basic Literals (dynamically extracted from TextMate scopes) ---
 (comment) @comment
 (string) @string
@@ -295,14 +290,15 @@
 ; Property names in assignments like: Caption = 'value';
 (property_assignment name: (_) @property)
 
-; Property values - identifiers like r, RIMD, All, true, false (after name: field)
+; Property values - identifiers like r, RIMD, All, true, false
+; Uses name: anchor to prevent matching the property name identifier
 (property_assignment
   name: (_)
   (name (identifier) @constant.builtin))
-; Property values - table/object names in permissions (after name: field)
-(property_assignment
-  name: (_)
-  (name (quoted_identifier) @type.builtin))
+; Property values - table/object names in double quotes (e.g. permissions, TableRelation)
+; AL property names are never quoted, so any quoted_identifier is always a value reference.
+; Using kind-only match (no field anchor) for maximum compatibility.
+(property_assignment (name (quoted_identifier) @type))
 
 ; --- Attributes ---
 ; Attribute names like [EventSubscriber(...)], [Test], etc.
@@ -350,3 +346,8 @@
 ; Type::Member references (like ObjectType::Codeunit, Enum::Value)
 (scope_suffix member: (name (identifier) @type.builtin))
 (scope_suffix member: (name (quoted_identifier) @type.builtin))
+
+; --- XML Doc Comments (/// <summary> etc.) ---
+; Must come AFTER generic (comment) @comment for last-wins precedence
+((comment) @comment.doc
+ (#match? @comment.doc "^///"))

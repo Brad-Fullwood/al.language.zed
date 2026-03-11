@@ -696,37 +696,19 @@ mod tests {
     }
 
     #[test]
-    fn test_permissions_parse_tree_query() {
+    fn test_permissions_table_name_highlighted_as_type() {
         let src = r#"report 50200 "IJL Process Staging"
 {
     Permissions = tabledata "Item Journal Staging" = rm;
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        let lang = result.tree.language();
-
-        // Test the highlights.scm query pattern for property values
-        let query_src = r#"
-(property_assignment
-  name: (_)
-  (name (quoted_identifier) @type_builtin))
-"#;
-        let query = tree_sitter::Query::new(&lang, query_src).expect("query should parse");
-        let mut cursor = tree_sitter::QueryCursor::new();
-        let mut found = false;
-        {
-            use tree_sitter::StreamingIterator;
-            let mut captures = cursor.captures(&query, result.tree.root_node(), src.as_bytes());
-            while let Some((qm, idx)) = captures.next() {
-                let cap = &qm.captures[*idx];
-                let text = cap.node.utf8_text(src.as_bytes()).unwrap();
-                eprintln!("  capture = {} {:?}", cap.node.kind(), text);
-                if text == r#""Item Journal Staging""# {
-                    found = true;
-                }
-            }
-        }
-
-        assert!(found, "Query should capture \"Item Journal Staging\" as type.builtin");
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            r#""Item Journal Staging""#,
+            token_types::TYPE,
+        );
     }
 }

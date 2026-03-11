@@ -742,22 +742,24 @@ pub(crate) fn completion_items_for_receiver(
 }
 
 pub(crate) fn enum_completion_items(server: &AlServer, enum_type: &ResolvedType) -> Vec<tower_lsp::lsp_types::CompletionItem> {
-    let Some(subtype) = enum_type.type_subtype.as_deref() else {
-        tracing::debug!("enum_completion_items: no subtype on enum type");
-        return Vec::new();
-    };
-    tracing::debug!(subtype = %subtype, "enum_completion_items: start");
+    // For enum access, the name might be the type_name (for system enums used directly)
+    // or the type_subtype (for Enum "MyEnum" declarations)
+    let enum_name = enum_type.type_subtype.as_deref()
+        .unwrap_or(&enum_type.type_name);
+    tracing::debug!(enum_name = %enum_name, type_name = %enum_type.type_name, "enum_completion_items: start");
 
     let mut items = Vec::new();
     let mut workspace_values = 0usize;
     let mut index_values = 0usize;
+    let mut builtin_values = 0usize;
 
-    if let Some(path) = server.workspace_objects.get(&subtype.to_lowercase()) {
+    // Check workspace enum objects
+    if let Some(path) = server.workspace_objects.get(&enum_name.to_lowercase()) {
         if let Some(file_text) = server.workspace_files.get(path.value()) {
             let mut parser = server.parser.lock().unwrap();
             let result = parser.parse(file_text.value());
             for symbol in al_syntax::extract_document_symbols(&result.tree, file_text.value()) {
-                if !symbol.name.eq_ignore_ascii_case(subtype) {
+                if !symbol.name.eq_ignore_ascii_case(enum_name) {
                     continue;
                 }
                 if let Some(children) = symbol.children {
@@ -777,7 +779,8 @@ pub(crate) fn enum_completion_items(server: &AlServer, enum_type: &ResolvedType)
         }
     }
 
-    for entry in server.symbols.get_by_name(subtype) {
+    // Check package symbol index
+    for entry in server.symbols.get_by_name(enum_name) {
         if !matches!(entry.kind, al_symbols::ObjectKind::Enum | al_symbols::ObjectKind::EnumExtension) {
             continue;
         }
@@ -792,10 +795,30 @@ pub(crate) fn enum_completion_items(server: &AlServer, enum_type: &ResolvedType)
         }
     }
 
+    // Check builtin types for system enums (e.g., TextEncoding, WebServiceActionResultCode)
+    if items.is_empty() {
+        let builtins = server.builtins.read().unwrap().clone();
+        for bt in builtins.iter() {
+            if bt.name.eq_ignore_ascii_case(enum_name) && !bt.enum_values.is_empty() {
+                for value in &bt.enum_values {
+                    builtin_values += 1;
+                    items.push(tower_lsp::lsp_types::CompletionItem {
+                        label: value.clone(),
+                        kind: Some(tower_lsp::lsp_types::CompletionItemKind::ENUM_MEMBER),
+                        detail: Some(format!("{}::{}", bt.name, value)),
+                        ..Default::default()
+                    });
+                }
+                break;
+            }
+        }
+    }
+
     tracing::debug!(
-        subtype = %subtype,
+        enum_name = %enum_name,
         workspace_values,
         index_values,
+        builtin_values,
         total = items.len(),
         "enum_completion_items: done"
     );

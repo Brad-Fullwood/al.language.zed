@@ -245,6 +245,9 @@ mod tests {
                 fields: Vec::new(),
                 controls: Vec::new(),
                 enum_values: Vec::new(),
+                keys: Vec::new(),
+                properties: Vec::new(),
+                variables: Vec::new(),
             },
             SymbolEntry {
                 kind: ObjectKind::Codeunit,
@@ -272,6 +275,9 @@ mod tests {
                 fields: Vec::new(),
                 controls: Vec::new(),
                 enum_values: Vec::new(),
+                keys: Vec::new(),
+                properties: Vec::new(),
+                variables: Vec::new(),
             },
         ]
     }

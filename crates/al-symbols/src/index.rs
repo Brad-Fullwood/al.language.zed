@@ -239,6 +239,9 @@ mod tests {
             fields: Vec::new(),
             controls: Vec::new(),
             enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
         }
     }
 
@@ -253,6 +256,9 @@ mod tests {
             fields: Vec::new(),
             controls: Vec::new(),
             enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
         }
     }
 
@@ -364,6 +370,7 @@ mod tests {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
+                properties: vec![],
             },
         ];
         entry.methods = vec![

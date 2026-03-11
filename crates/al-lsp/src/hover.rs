@@ -463,9 +463,13 @@ mod tests {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),
+                properties: vec![],
             }],
             controls: vec![],
             enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         let result = format_symbol_hover(&entry);
         assert!(result.contains("Table"));

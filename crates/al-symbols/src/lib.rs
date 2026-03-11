@@ -29,8 +29,9 @@ pub mod nuget;
 // Re-export primary types for convenience.
 pub use index::SymbolIndex;
 pub use model::{
-    AttributeSymbol, ComposedObject, ControlSymbol, EnumValueSymbol, FieldSymbol, MethodSymbol,
-    ObjectKind, ParameterSymbol, SymbolEntry, SymbolPackage,
+    AttributeSymbol, ComposedObject, ControlSymbol, EnumValueSymbol, FieldSymbol, KeySymbol,
+    MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue, SymbolEntry, SymbolPackage,
+    VariableSymbol,
 };
 
 // Re-export key functions and types from submodules.
