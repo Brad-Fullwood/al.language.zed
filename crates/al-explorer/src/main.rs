@@ -302,11 +302,13 @@ impl App {
                             let mut zed_url = format!("zed://file{}", path_str);
                             
                             if let Some(member) = target_member {
-                                if let Some(line) = al_symbols::virtual_file::find_member_line_with_kind(
+                                let line = al_symbols::virtual_file::find_member_line_with_kind(
                                     &abs_path,
                                     &member.name,
                                     member.to_member_kind(),
-                                ) {
+                                )
+                                .or_else(|| al_symbols::virtual_file::find_member_line(&abs_path, &member.name));
+                                if let Some(line) = line {
                                     zed_url = format!("zed://file{}:{}:1", path_str, line + 1);
                                 }
                             }

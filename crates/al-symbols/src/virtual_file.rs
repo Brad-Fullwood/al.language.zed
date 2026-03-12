@@ -18,9 +18,12 @@ pub fn get_or_create(
     app_path: Option<&Path>,
     allow_outline_fallback: bool,
 ) -> std::io::Result<PathBuf> {
-    let pkg_dir = cache_dir().join(sanitize_filename(&entry.package));
+    let cache_root = cache_dir();
+    let pkg_dir = cache_root.join(sanitize_filename(&entry.package));
     let filename = format!("{} {} {}.al", entry.kind, entry.id, entry.name);
     let file_path = pkg_dir.join(sanitize_filename(&filename));
+
+    ensure_readonly_settings(&cache_root);
 
     if !file_path.exists() {
         let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
@@ -38,14 +41,9 @@ pub fn get_or_create(
 
         fs::create_dir_all(&pkg_dir)?;
         fs::write(&file_path, &source)?;
-        // Mark read-only
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&file_path, fs::Permissions::from_mode(0o444));
-        }
     }
 
+    enforce_readonly(&file_path);
     Ok(file_path)
 }
 
@@ -142,6 +140,60 @@ fn generate_al(entry: &SymbolEntry) -> String {
     out
 }
 
+fn enforce_readonly(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o444);
+            let _ = fs::set_permissions(path, perms);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if let Ok(meta) = fs::metadata(path) {
+            let mut perms = meta.permissions();
+            perms.set_readonly(true);
+            let _ = fs::set_permissions(path, perms);
+        }
+    }
+}
+
+fn ensure_readonly_settings(cache_root: &Path) {
+    let settings_dir = cache_root.join(".zed");
+    let settings_path = settings_dir.join("settings.json");
+    let _ = fs::create_dir_all(&settings_dir);
+
+    let mut settings: serde_json::Value = if let Ok(text) = fs::read_to_string(&settings_path) {
+        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let list = settings
+        .get_mut("read_only_files")
+        .and_then(|v| v.as_array_mut());
+
+    let pattern = "symbols/**/*.al";
+    match list {
+        Some(arr) => {
+            let exists = arr.iter().any(|v| v.as_str() == Some(pattern));
+            if !exists {
+                arr.push(serde_json::Value::String(pattern.to_string()));
+            }
+        }
+        None => {
+            settings["read_only_files"] =
+                serde_json::Value::Array(vec![serde_json::Value::String(pattern.to_string())]);
+        }
+    }
+
+    if let Ok(text) = serde_json::to_string_pretty(&settings) {
+        let _ = fs::write(&settings_path, text);
+    }
+}
+
 fn find_member_range_in_text(
     content: &str,
     member_name: &str,
@@ -185,7 +237,7 @@ fn find_procedure_range(line: &str, needle: &str) -> Option<(usize, usize)> {
                 i += 1;
             }
             let word = &line[start..i];
-            if word.eq_ignore_ascii_case("procedure") {
+            if word.eq_ignore_ascii_case("procedure") || word.eq_ignore_ascii_case("trigger") {
                 let mut j = i;
                 while j < bytes.len() && bytes[j].is_ascii_whitespace() {
                     j += 1;
@@ -338,6 +390,7 @@ fn parse_name_token(
         && bytes[i] != b';'
         && bytes[i] != b','
         && bytes[i] != b')'
+        && bytes[i] != b'('
     {
         i += 1;
     }
