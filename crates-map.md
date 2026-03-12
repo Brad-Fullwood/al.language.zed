@@ -48,108 +48,61 @@ This document defines the target crate layout, responsibilities, and file/module
 
 ## `al-core` (new)
 - `crates/al-core/src/lib.rs` — Public API surface for all shared operations.
-- `crates/al-core/src/workspace.rs` — `Workspace` model, caches, and lifecycle.
-- `crates/al-core/src/documents.rs` — Document store, rope handling, parse cache.
+- `crates/al-core/src/workspace.rs` — `Workspace` struct; owns `DocumentStore`, `SymbolIndex`, and `SemanticBridge`.
+- `crates/al-core/src/documents.rs` — `DocumentStore` struct; handles rope-based text and parse tree caching.
 - `crates/al-core/src/parsing.rs` — Parse orchestration and caching strategy.
-- `crates/al-core/src/queries/mod.rs` — LSP-style query entrypoints.
-- `crates/al-core/src/queries/hover.rs` — Hover resolution pipeline.
-- `crates/al-core/src/queries/definition.rs` — Go-to definition pipeline.
-- `crates/al-core/src/queries/references.rs` — Reference search pipeline.
-- `crates/al-core/src/queries/completions.rs` — Completion pipeline.
-- `crates/al-core/src/queries/signature.rs` — Signature help pipeline.
-- `crates/al-core/src/queries/rename.rs` — Rename pipeline.
-- `crates/al-core/src/queries/semantic_tokens.rs` — Tokenization pipeline.
-- `crates/al-core/src/queries/folding.rs` — Folding range pipeline.
-- `crates/al-core/src/queries/inlay_hints.rs` — Inlay hint pipeline.
-- `crates/al-core/src/queries/code_actions.rs` — Quickfix and source actions.
-- `crates/al-core/src/formatting.rs` — Formatting orchestration (delegates to `al-syntax`).
-- `crates/al-core/src/linting.rs` — Lint orchestration (delegates to `al-syntax` + `al-semantic`).
-- `crates/al-core/src/symbols.rs` — Package loading, symbol indexing, composition.
-- `crates/al-core/src/semantic.rs` — Semantic bridge wrapper and cache strategy.
-- `crates/al-core/src/project.rs` — Project discovery and `app.json` parsing.
-- `crates/al-core/src/toolchain.rs` — Toolchain discovery and validation.
+- `crates/al-core/src/queries/mod.rs` — Query entrypoints; routes requests to submodules.
+- `crates/al-core/src/queries/hover.rs` — Hover resolution (AST + Symbols + Semantic).
+- `crates/al-core/src/queries/definition.rs` — Go-to definition (Workspace + Symbols).
+- `crates/al-core/src/queries/references.rs` — Reference search (Workspace + Symbols).
+- `crates/al-core/src/queries/completions.rs` — Completion provider (Context + Semantic).
+- `crates/al-core/src/queries/signature.rs` — Signature help.
+- `crates/al-core/src/queries/rename.rs` — Rename orchestration.
+- `crates/al-core/src/queries/semantic_tokens.rs` — Semantic highlighting.
+- `crates/al-core/src/queries/folding.rs` — Folding ranges.
+- `crates/al-core/src/queries/inlay_hints.rs` — Inlay hints.
+- `crates/al-core/src/queries/code_actions.rs` — Quickfixes and Insight triggers.
+- `crates/al-core/src/formatting.rs` — Formatting orchestration.
+- `crates/al-core/src/linting.rs` — Lint orchestration (Syntax rules + Semantic diagnostics).
+- `crates/al-core/src/symbols.rs` — Index orchestration; manages package loading and composition.
+- `crates/al-core/src/semantic.rs` — .NET bridge lifecycle; owns the `SemanticBridge` process.
+- `crates/al-core/src/project.rs` — `app.json` parsing and project discovery.
+- `crates/al-core/src/toolchain.rs` — `ALTool` discovery and validation.
 - `crates/al-core/src/launch.rs` — `launch.json` parsing.
-- `crates/al-core/src/jsonrpc.rs` — JSON-RPC helper types.
+- `crates/al-core/src/jsonrpc.rs` — Shared JSON-RPC types for internal/external use.
 - `crates/al-core/src/insight/mod.rs` — Insight engine entrypoint.
-- `crates/al-core/src/insight/index.rs` — Graph builders and incremental updates.
-- `crates/al-core/src/insight/graph.rs` — Graph types and algorithms.
-- `crates/al-core/src/insight/search.rs` — Ranking and search utilities.
-- `crates/al-core/src/config.rs` — Explicit path config and runtime options.
-- `crates/al-core/src/auth.rs` — Authentication flows and credential handling.
-- `crates/al-core/src/errors.rs` — Shared error types for CLI/LSP/MCP.
+- `crates/al-core/src/insight/index.rs` — Graph builders (Call, Event, Table).
+- `crates/al-core/src/insight/graph.rs` — Graph data structures (Petgraph).
+- `crates/al-core/src/insight/search.rs` — Ranking and search for entry points.
+- `crates/al-core/src/config.rs` — Unified configuration (Settings + CLI flags).
+- `crates/al-core/src/auth.rs` — Authentication for NuGet and BC Server.
+- `crates/al-core/src/errors.rs` — Unified error hierarchy for the entire workspace.
 
 ## `al-cli`
 - `crates/al-cli/src/main.rs` — CLI args and dispatch only.
-- `crates/al-cli/src/commands/mod.rs` — Command routing into `al-core`.
-- `crates/al-cli/src/commands/*.rs` — One file per subcommand or command group.
-- `crates/al-cli/src/output.rs` — JSON and human-readable formatting.
+- `crates/al-cli/src/commands/mod.rs` — Command routing.
+- `crates/al-cli/src/commands/*.rs` — Command implementations (thin wrappers over `al-core`).
+- `crates/al-cli/src/output.rs` — Formatting logic (JSON/Text).
 
 ## `al-lsp`
-- `crates/al-lsp/src/main.rs` — Binary entrypoint only.
-- `crates/al-lsp/src/server.rs` — LSP server wiring and request routing.
-- `crates/al-lsp/src/handlers.rs` — Thin adapters calling `al-core::queries`.
-- `crates/al-lsp/src/diagnostics.rs` — LSP publish diagnostics wiring only.
-- `crates/al-lsp/src/dap.rs` — DAP proxy integration (moved from `al-dap`).
-- `crates/al-lsp/src/editor_services.rs` — EditorServices.Host location logic.
+- `crates/al-lsp/src/main.rs` — Binary entrypoint.
+- `crates/al-lsp/src/server.rs` — LSP server wiring; routes requests to `al-core::queries`.
+- `crates/al-lsp/src/handlers.rs` — Translates LSP types to/from `al-core` types.
+- `crates/al-lsp/src/diagnostics.rs` — Push-based diagnostic wiring.
+- `crates/al-lsp/src/dap.rs` — DAP proxy and EditorServices.Host management.
 
 ## `al-explorer`
-- `crates/al-explorer/src/main.rs` — TUI wiring only.
-- `crates/al-explorer/src/app.rs` — App state, panes, and navigation.
-- `crates/al-explorer/src/ui.rs` — Rendering and layout.
-- `crates/al-explorer/src/actions.rs` — User actions and command routing.
-- `crates/al-explorer/src/data.rs` — Calls into `al-core` for queries and symbols.
- - `crates/al-explorer/src/insight.rs` — Trace and graph views (Insight mode).
+- `crates/al-explorer/src/main.rs` — TUI wiring.
+- `crates/al-explorer/src/app.rs` — State and navigation.
+- `crates/al-explorer/src/ui.rs` — Ratatui layout and rendering.
+- `crates/al-explorer/src/actions.rs` — User input handling.
+- `crates/al-explorer/src/data.rs` — Data fetching from `al-core`.
 
-## `al-syntax`
-- `crates/al-syntax/src/lib.rs` — Public API exports.
-- `crates/al-syntax/src/parser.rs` — Tree-sitter integration and parsing.
-- `crates/al-syntax/src/context.rs` — Context detection and call-site extraction.
-- `crates/al-syntax/src/navigation.rs` — AST navigation helpers.
-- `crates/al-syntax/src/type_resolver.rs` — Type inference and resolver.
-- `crates/al-syntax/src/formatting/mod.rs` — Formatting orchestration.
-- `crates/al-syntax/src/formatting/*.rs` — Formatting rules by construct.
-- `crates/al-syntax/src/lint/mod.rs` — Lint runner and rule registry.
-- `crates/al-syntax/src/lint/rules/*.rs` — Individual lint rules.
-- `crates/al-syntax/src/tokens.rs` — Semantic token extraction.
-- `crates/al-syntax/src/folding.rs` — Folding range extraction.
-- `crates/al-syntax/src/symbols.rs` — Document symbols extraction.
-
-## `al-symbols`
-- `crates/al-symbols/src/lib.rs` — Public API exports.
-- `crates/al-symbols/src/model.rs` — Symbol data model.
-- `crates/al-symbols/src/app_reader.rs` — `.app` parsing and decompression.
-- `crates/al-symbols/src/manifest.rs` — NavxManifest parsing.
-- `crates/al-symbols/src/index.rs` — Symbol index and search.
-- `crates/al-symbols/src/composition.rs` — Object composition logic.
-- `crates/al-symbols/src/events.rs` — Event discovery.
-- `crates/al-symbols/src/source_index.rs` — Source indexing within packages.
-- `crates/al-symbols/src/virtual_file.rs` — Source extraction helpers.
-- `crates/al-symbols/src/types.rs` — `AppDependency`, `NuGetFeed`, shared fetch types.
-- `crates/al-symbols/src/fetch/mod.rs` — Download orchestration (NuGet or server).
-- `crates/al-symbols/src/fetch/nuget.rs` — NuGet client.
-- `crates/al-symbols/src/fetch/bc_server.rs` — Server download.
-- `crates/al-symbols/src/fetch/oauth.rs` — Auth helpers.
-
-## `al-semantic`
-- `crates/al-semantic/src/lib.rs` — Public API exports and `SemanticBridge`.
-- `crates/al-semantic/src/host.rs` — .NET host loading and call dispatch.
-- `crates/al-semantic/src/protocol.rs` — JSON protocol structs.
-- `crates/al-semantic/src/cache.rs` — Disk cache for builtins and error codes.
-
-## `al-diag`
-- `crates/al-diag/src/lib.rs` — Public API exports.
-- `crates/al-diag/src/layer.rs` — Tracing layer implementation.
-- `crates/al-diag/src/writer.rs` — SQLite writer.
-- `crates/al-diag/src/query.rs` — Query API.
-
-## `al-mcp`
-- `crates/al-mcp/src/lib.rs` — MCP server and tool definitions.
-- `crates/al-mcp/src/tools/*.rs` — One file per MCP tool group.
-
-## `al-test-harness`
-- `crates/al-test-harness/src/lib.rs` — Harness utilities.
-- `crates/al-test-harness/src/protocol.rs` — Test protocol and fixtures.
-- `crates/al-test-harness/tests/*.rs` — Integration tests.
+## .NET Bridge Process Ownership
+- **Owner**: `al-core::semantic::SemanticBridgeHost`
+- **Lifetime**: One instance per `Workspace`.
+- **Communication**: JSON-RPC over stdio.
+- **Responsibility**: `al-core` ensures the bridge is restarted if it crashes and handles concurrency via a request queue.
 
 ---
 

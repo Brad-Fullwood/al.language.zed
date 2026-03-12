@@ -3,9 +3,9 @@
 This document describes the final target architecture and data flows.
 
 ## Layers
-1. UI and Binaries: `zed-al` (WASM), `al-lsp`, `al-cli`, `al-explorer`.
-2. Core: `al-core` (shared analysis, workspace model, insight engine).
-3. Libraries: `al-syntax`, `al-symbols`, `al-semantic`, `al-diag`.
+1. **UI and Binaries**: `zed-al` (WASM), `al-lsp`, `al-cli`, `al-explorer`. These are "thin adapters".
+2. **Core**: `al-core`. The central engine that owns all state and orchestration.
+3. **Libraries**: `al-syntax`, `al-symbols`, `al-semantic`, `al-diag`. Specialized logic without workspace awareness.
 
 ## Ownership Rules
 1. Only `al-core` orchestrates parsing, symbols, and semantic analysis.
@@ -13,6 +13,28 @@ This document describes the final target architecture and data flows.
 3. Only `al-cli` handles CLI parsing and output formatting.
 4. Only `al-explorer` handles TUI rendering and user input.
 5. All insight graphs and trace features live in `al-core::insight`.
+
+## State Management
+The `al-core::Workspace` struct is the single source of truth for a project. It owns:
+- **DocumentStore**: Open files with rope-based text and parse tree caches.
+- **SymbolIndex**: Loaded `.app` packages and their composed objects.
+- **SemanticBridge**: The active .NET host process for advanced analysis.
+- **Project Configuration**: Discovered toolchains and project manifests.
+
+## Caching Strategy
+1. **In-Memory**:
+   - Parse trees are cached per document version.
+   - Composed objects (base + extensions) are cached with LRU eviction.
+   - Event search results are cached per symbol index version.
+2. **On-Disk**:
+   - Extracted symbol metadata is cached in a workspace-local `.alcache` directory.
+   - Semantic bridge results (builtins, error codes) are cached globally.
+
+## Diagnostics and Observability (`al-diag`)
+`al-diag` provides a tracing layer that:
+1. Records LSP request latency and success/failure rates.
+2. Captures panic traces and internal errors into a SQLite database.
+3. Allows the CLI and Explorer to query historical performance data via `al-core`.
 
 ## Data Flows
 1. **Zed LSP**
