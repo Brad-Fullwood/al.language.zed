@@ -4,42 +4,44 @@
 1. You own execution. Keep scope, order, and quality on track.
 2. Before any code changes, read `crates-map.md` and all files in `docs/`.
 3. Create `/task` and write one task file per Work Package using `task/_template.md`.
-4. You have the freedom to decompose these packages into smaller tasks.
-5. Update `docs/progress.md` after every milestone with evidence.
+4. **MANDATORY**: As your first action, create `claude.md` at the project root. This file must contain your expert distillation of the project roadmap, architectural goals, and crucially, the **strict test procedures and adversarial rules** that all subsequent agents must follow. It is your "Constitution" for the project.
+5. You have the freedom to decompose these packages into smaller tasks.
+6. Update `docs/progress.md` after every milestone with evidence.
 
 ## Strategic Guardrails
 - **The "Thin Adapter" Rule**: Binaries and the WASM entry point (`zed-al`) contain ZERO business logic.
 - **Unified Analysis Engine**: All logic lives in `al-core` for 1:1 consistency between Zed and Agents.
-- **Dual-Pass Validation Protocol**: For every feature, agents must perform multiple validation passes:
-    1. **Adversarial Pass (Negative)**: Intentionally provide invalid input or break the logic to prove the `al-test-harness` accurately detects and reports the failure.
-    2. **Fidelity Pass (Positive)**: Confirm the feature works perfectly across LSP (Zed), CLI, and MCP.
+- **Dual-Pass Validation & Centralized Evidence**: For every feature, agents must perform multiple validation passes. All results (Failures and Successes) must be outputted to the **Centralized Evidence TOML** (`docs/proof_of_functionality.toml`).
 - **Agentic Validation & Adversarial Evolution**: Agents MUST NOT ask the user to test. Every task requires a "Proof of Functionality" (PoF). The `al-test-harness` is an adversarial system; it is constantly improved to "break" the current implementation.
-- **Zero-Tolerance for Zed Regression**: It is considered a **complete project failure** if the harness or an agent claims a feature works (even if it works in CLI/MCP) but it fails in the actual Zed environment. 
-- **Persistent Adversarial Agent**: A sub-agent is **constantly deployed** to WPX. Their sole purpose is to hunt for regressions, find gaps in Zed-fidelity, and feed discovered issues back to the PM as Priority-0 tasks.
+- **Zero-Tolerance for Zed Regression**: It is considered a **complete project failure** if the harness or an agent claims a feature works but it fails in the actual Zed environment. 
+- **Persistent Adversarial Agent**: A sub-agent is **constantly deployed** to WPX to hunt for regressions and interrogate the TOML log for suspicious "Success-only" trends.
 
 ## Quality Gates (Non‑Negotiable)
-1. **Multiple Failure Proofs**: Every Task must provide logs of the `al-test-harness` failing as expected before passing. If a test can't fail, it isn't a test.
-2. **Zed-Fidelity Simulation**: All LSP changes MUST be verified by the `al-test-harness` LSP simulator using real-world `.al` project fixtures.
-3. **Adversarial Feedback Loop**: The harness must be updated alongside every feature to include negative test cases.
+1. **claude.md Created**: The project constitution must be established first.
+2. **Red-to-Green TOML Evidence**: Every Task must append a structured entry to `docs/proof_of_functionality.toml` showing the `al-test-harness` failing as expected before passing. **No Red, No Merge.**
+3. **Zed-Fidelity Simulation**: All LSP changes MUST be verified by the `al-test-harness` LSP simulator using real-world `.al` project fixtures.
+4. **Adversarial Feedback Loop**: The harness must be updated alongside every feature to include negative test cases.
 
 ---
 
 # Execution Phases & Work Packages
 
 ## Phase 0: The Adversarial Foundation
-**WP0: The Agentic & Adversarial Harness**
-- **Goal**: Build the project's "Immune System."
-- **Scope**: Build an LSP simulator with high Zed-fidelity. Create a suite of "Error Fixtures" (broken AL code, missing symbols, corrupt packages).
+**WP0: Project Constitution & The Adversarial Harness**
+- **Goal**: Establish the project's rules and build its "Immune System."
+- **Scope**: 
+    - Create `claude.md` as the project's rulebook.
+    - Build an LSP simulator with high Zed-fidelity in `al-test-harness`.
+    - Implement the **Centralized Evidence Log** system to capture all test passes/failures.
 - **Imperative**: The harness's reliability is the project's single point of failure.
 
 **WPX: Continuous Adversarial Evolution (Persistent)**
-- **Goal**: A sub-agent MUST be **permanently deployed** to this package to find ways to break the code.
-- **Scope**: Identify where the harness lacks Zed-fidelity (e.g., specific Zed-WASM quirks). Stress-test with large projects, complex event recursion, and malformed symbols.
+- **Goal**: A sub-agent is **permanently deployed** to break the code and interrogate the log.
+- **Scope**: Identify where the harness lacks Zed-fidelity. Interrogate the `proof_of_functionality.log` for tasks with insufficient negative testing.
 - **Feedback**: Discovered gaps are reported to the PM as immediate blocking issues.
 
 ## Phase 1: Foundation & Core Refactor
-...
-...
+**WP1: al-core Skeleton & Discovery Migration**
 - **Goal**: Establish the central "brain" and project discovery logic.
 - **Scope**: Create `al-core`, implement the `Workspace` state container, and migrate `al-discovery` (project/toolchain/launch) into `al-core`.
 - **Zed Impact**: Provides the foundation for project loading and toolchain detection in Zed.
