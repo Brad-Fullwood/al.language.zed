@@ -1,17 +1,25 @@
 //! Project and workspace management.
 //!
 //! Handles workspace initialization: discovering the project, loading packages,
-//! scanning workspace .al files, and spawning the semantic bridge.
+//! scanning workspace .al files, and initializing the semantic bridge lazily.
 //! Auto-downloads missing BC symbol packages via BC server (launch.json) or NuGet.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
+use al_syntax::AlParser;
 use tower_lsp::lsp_types::*;
 use tracing::{debug, info, warn};
 
 use crate::server::AlServer;
 
+/// Where to download symbol packages from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum DownloadSource {
+    /// From a running BC instance (uses .zed/debug.json connection details).
+    Server,
+    /// From NuGet package feeds.
+    NuGet,
+}
 
 /// Initialize the workspace: discover toolchain, load packages, scan files.
 ///
@@ -24,17 +32,8 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
             info!(version = %tc.version, "Found AL toolchain");
             *server.toolchain.write().await = Some(tc.clone());
 
-            // 3. Spawn semantic bridge (optional)
-            match al_semantic::SemanticBridge::spawn(&tc).await {
-                Ok(bridge) => {
-                    info!("Semantic bridge spawned successfully");
-                    *server.semantic.write().await = Some(bridge);
-                    server.ensure_builtins_loaded().await;
-                }
-                Err(e) => {
-                    warn!(error = %e, "Failed to spawn semantic bridge (continuing without)");
-                }
-            }
+            // Load builtins + error codes from disk cache (no bridge needed, <1ms)
+            server.load_caches_from_disk(&tc.version).await;
         }
         Err(e) => {
             warn!(error = %e, "AL toolchain not found (continuing without)");
@@ -55,17 +54,22 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
             );
 
             // Auto-download missing packages if needed.
-            // Strategy: try BC server (launch.json) first, fall back to NuGet.
+            // Prompt the user and let them choose the download source.
             if project.packages.is_empty() {
                 let deps = project.all_dependencies();
                 if !deps.is_empty() {
-                    let downloaded =
-                        download_symbols_from_server(&project, &deps).await;
-                    if !downloaded.is_empty() {
-                        project.packages = downloaded;
-                    } else {
-                        // Fall back to NuGet
-                        let downloaded = download_packages_nuget(&deps).await;
+                    let has_server = !project.server_configs.is_empty();
+                    if let Some(source) =
+                        prompt_download_symbols(&server.client, deps.len(), has_server).await
+                    {
+                        let downloaded = match source {
+                            DownloadSource::Server => {
+                                download_symbols_from_server(&project, &deps, &server.client).await
+                            }
+                            DownloadSource::NuGet => {
+                                download_packages_nuget(&deps, &project.packages_dir).await
+                            }
+                        };
                         if !downloaded.is_empty() {
                             project.packages = downloaded;
                         }
@@ -83,6 +87,12 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
                 );
             }
 
+            // Check for packages without source and prompt before generating outlines
+            check_source_availability(server, &project.packages).await;
+
+            // Load runtime enum definitions (compiler built-ins not in any package)
+            server.symbols.load_runtime_enums();
+
             *server.project.write().await = Some(project.clone());
 
             // 5. Scan workspace for .al files
@@ -97,19 +107,117 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
     }
 }
 
-/// Get the symbol cache directory (~/.cache/al-lsp/packages/).
-/// Creates the directory if it doesn't exist.
-fn symbol_cache_dir() -> PathBuf {
-    let cache_dir = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("al-lsp")
-        .join("packages");
+/// Check which loaded packages lack `.al` source files and prompt the user
+/// before generating symbol outlines as a fallback.
+async fn check_source_availability(server: &AlServer, packages: &[PathBuf]) {
+    let no_source: Vec<String> = packages
+        .iter()
+        .filter_map(|path| {
+            if al_symbols::virtual_file::app_has_source(path) {
+                return None;
+            }
+            // Extract a readable name from the filename
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+            Some(stem.to_string())
+        })
+        .collect();
 
-    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-        warn!(error = %e, path = %cache_dir.display(), "Failed to create cache directory");
+    if no_source.is_empty() {
+        // All packages have source — allow fallback unconditionally (shouldn't be needed)
+        server
+            .outline_fallback_approved
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
     }
 
-    cache_dir
+    let names = no_source.join(", ");
+    let message = format!(
+        "No source available for the following dependencies: {}. Generate outline from symbols?",
+        names
+    );
+
+    let actions = vec![
+        MessageActionItem {
+            title: "Yes".to_string(),
+            properties: Default::default(),
+        },
+        MessageActionItem {
+            title: "No".to_string(),
+            properties: Default::default(),
+        },
+    ];
+
+    match server
+        .client
+        .show_message_request(MessageType::INFO, message, Some(actions))
+        .await
+    {
+        Ok(Some(action)) if action.title == "Yes" => {
+            info!(
+                packages = ?no_source,
+                "User approved symbol outline generation for packages without source"
+            );
+            server
+                .outline_fallback_approved
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        _ => {
+            info!("User declined symbol outline generation");
+        }
+    }
+}
+
+/// Prompt the user to choose a download source via `window/showMessageRequest`.
+///
+/// Returns `Some(source)` if the user picks an option, `None` if dismissed.
+async fn prompt_download_symbols(
+    client: &tower_lsp::Client,
+    dep_count: usize,
+    has_server_config: bool,
+) -> Option<DownloadSource> {
+    let message = format!(
+        "AL project has {} missing symbol package{}. Download now?",
+        dep_count,
+        if dep_count == 1 { "" } else { "s" }
+    );
+
+    let mut actions = Vec::new();
+    if has_server_config {
+        actions.push(MessageActionItem {
+            title: "From Server".to_string(),
+            properties: Default::default(),
+        });
+    }
+    actions.push(MessageActionItem {
+        title: "From NuGet".to_string(),
+        properties: Default::default(),
+    });
+
+    match client
+        .show_message_request(MessageType::INFO, message, Some(actions))
+        .await
+    {
+        Ok(Some(action)) if action.title == "From Server" => {
+            info!("User chose to download from BC server");
+            Some(DownloadSource::Server)
+        }
+        Ok(Some(action)) if action.title == "From NuGet" => {
+            info!("User chose to download from NuGet");
+            Some(DownloadSource::NuGet)
+        }
+        Ok(_) => {
+            info!("User dismissed symbol download prompt");
+            None
+        }
+        Err(e) => {
+            // Fall back to NuGet if the client doesn't support showMessageRequest
+            warn!(error = %e, "showMessageRequest failed, falling back to NuGet");
+            Some(DownloadSource::NuGet)
+        }
+    }
 }
 
 /// Download symbols from a running BC instance defined in launch.json.
@@ -118,6 +226,7 @@ fn symbol_cache_dir() -> PathBuf {
 async fn download_symbols_from_server(
     project: &al_discovery::AlProject,
     deps: &[al_discovery::AppDependency],
+    lsp_client: &tower_lsp::Client,
 ) -> Vec<PathBuf> {
     let configs = &project.server_configs;
     if configs.is_empty() {
@@ -133,7 +242,17 @@ async fn download_symbols_from_server(
     );
 
     let dest = project.root.join(".alpackages");
-    let client = al_symbols::bc_server::BcServerClient::new(config.clone());
+    // Wire auth messages to LSP showMessage so the user sees device code prompts
+    let lsp = lsp_client.clone();
+    let message_sink: al_symbols::bc_server::MessageSink =
+        std::sync::Arc::new(move |msg| {
+            let c = lsp.clone();
+            let m = msg.to_string();
+            tokio::spawn(async move {
+                c.show_message(tower_lsp::lsp_types::MessageType::INFO, m).await;
+            });
+        });
+    let client = al_symbols::bc_server::BcServerClient::new(config.clone(), message_sink);
     let results = client.download_all(deps, &dest).await;
 
     let mut downloaded = Vec::new();
@@ -160,16 +279,17 @@ async fn download_symbols_from_server(
     downloaded
 }
 
-/// Download missing symbol packages from NuGet to the cache directory.
+/// Download symbol packages from NuGet into the project's .alpackages directory.
 ///
 /// Returns paths to successfully downloaded .app files.
-async fn download_packages_nuget(deps: &[al_discovery::AppDependency]) -> Vec<PathBuf> {
-    let cache_dir = symbol_cache_dir();
-
+async fn download_packages_nuget(
+    deps: &[al_discovery::AppDependency],
+    dest: &Path,
+) -> Vec<PathBuf> {
     info!(
         count = deps.len(),
-        cache = %cache_dir.display(),
-        "Downloading missing symbol packages"
+        dest = %dest.display(),
+        "Downloading symbol packages from NuGet"
     );
 
     // Convert al_discovery types to al_symbols::nuget types
@@ -191,7 +311,7 @@ async fn download_packages_nuget(deps: &[al_discovery::AppDependency]) -> Vec<Pa
         .collect();
 
     let client = al_symbols::nuget::NuGetClient::new(feeds);
-    let results = client.download_all(&nuget_deps, &cache_dir).await;
+    let results = client.download_all(&nuget_deps, dest).await;
 
     let mut downloaded = Vec::new();
     for (i, result) in results.into_iter().enumerate() {
@@ -200,7 +320,7 @@ async fn download_packages_nuget(deps: &[al_discovery::AppDependency]) -> Vec<Pa
                 info!(
                     package = %deps[i].name,
                     path = %path.display(),
-                    "Downloaded symbol package"
+                    "Downloaded symbol package from NuGet"
                 );
                 downloaded.push(path);
             }
@@ -208,21 +328,8 @@ async fn download_packages_nuget(deps: &[al_discovery::AppDependency]) -> Vec<Pa
                 warn!(
                     package = %deps[i].name,
                     error = %e,
-                    "Failed to download symbol package (continuing without)"
+                    "Failed to download symbol package from NuGet"
                 );
-            }
-        }
-    }
-
-    // Also scan cache dir for any previously downloaded .app files
-    if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("app")) {
-                if !downloaded.contains(&path) {
-                    debug!(path = %path.display(), "Found cached package");
-                    downloaded.push(path);
-                }
             }
         }
     }
@@ -230,11 +337,10 @@ async fn download_packages_nuget(deps: &[al_discovery::AppDependency]) -> Vec<Pa
     downloaded
 }
 
-/// Handle the `al.downloadSymbols` command.
+/// Handle the `al.downloadSymbols*` commands.
 ///
-/// Downloads symbols from the BC server (launch.json), falling back to NuGet.
-/// Reloads the symbol index after download.
-pub(crate) async fn download_symbols_command(server: &AlServer) {
+/// Downloads symbols from the specified source and reloads the symbol index.
+pub(crate) async fn download_symbols_command(server: &AlServer, source: DownloadSource) {
     let project = server.project.read().await.clone();
     let Some(project) = project else {
         warn!("No AL project found — cannot download symbols");
@@ -255,36 +361,44 @@ pub(crate) async fn download_symbols_command(server: &AlServer) {
         return;
     }
 
+    let source_name = match source {
+        DownloadSource::Server => "BC server",
+        DownloadSource::NuGet => "NuGet",
+    };
+
     server
         .client
         .show_message(
             MessageType::INFO,
-            format!("Downloading {} symbol packages...", deps.len()),
+            format!("Downloading {} symbol packages from {}...", deps.len(), source_name),
         )
         .await;
 
-    // Try BC server first, then NuGet
-    let downloaded = download_symbols_from_server(&project, &deps).await;
-    let packages = if !downloaded.is_empty() {
-        downloaded
-    } else {
-        info!("BC server download failed or unavailable, falling back to NuGet");
-        download_packages_nuget(&deps).await
+    let packages = match source {
+        DownloadSource::Server => download_symbols_from_server(&project, &deps, &server.client).await,
+        DownloadSource::NuGet => {
+            download_packages_nuget(&deps, &project.packages_dir).await
+        }
     };
 
     if packages.is_empty() {
         server
             .client
-            .show_message(MessageType::WARNING, "Failed to download symbol packages")
+            .show_message(
+                MessageType::WARNING,
+                format!("Failed to download symbol packages from {}", source_name),
+            )
             .await;
         return;
     }
 
     // Reload symbol index
     let loaded = server.symbols.load_packages(&packages);
+    server.symbols.load_runtime_enums();
     info!(
         loaded = loaded.len(),
         total_symbols = server.symbols.len(),
+        source = source_name,
         "Reloaded symbol packages after download"
     );
 
@@ -293,25 +407,33 @@ pub(crate) async fn download_symbols_command(server: &AlServer) {
         .show_message(
             MessageType::INFO,
             format!(
-                "Downloaded {} packages ({} symbols)",
+                "Downloaded {} packages from {} ({} symbols)",
                 loaded.len(),
+                source_name,
                 server.symbols.len()
             ),
         )
         .await;
 }
 
+/// Maximum number of .al files to scan. Prevents runaway memory usage
+/// if a workspace root accidentally includes a huge directory tree.
+const MAX_WORKSPACE_FILES: usize = 10_000;
+
 /// Scan a directory for .al files and add them to the workspace_files map.
 fn scan_workspace_files(server: &AlServer, root: &Path) {
     let mut count = 0;
     scan_dir_recursive(root, server, &mut count, 0);
     if count > 0 {
+        if count >= MAX_WORKSPACE_FILES {
+            warn!(count, limit = MAX_WORKSPACE_FILES, "Workspace scan hit file limit — some files may be missing");
+        }
         info!(count, "Scanned workspace .al files");
     }
 }
 
 fn scan_dir_recursive(dir: &Path, server: &AlServer, count: &mut usize, depth: usize) {
-    if depth > 10 {
+    if depth > 10 || *count >= MAX_WORKSPACE_FILES {
         return;
     }
 
@@ -340,15 +462,16 @@ fn scan_dir_recursive(dir: &Path, server: &AlServer, count: &mut usize, depth: u
             scan_dir_recursive(&path, server, count, depth + 1);
         } else if path
             .extension()
-            .map_or(false, |ext| ext.eq_ignore_ascii_case("al"))
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("al"))
         {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 // Index the object name for fast lookups
                 {
-                    let mut parser = server.parser.lock().unwrap();
-                    let result = parser.parse(&content);
+                    let result = AlParser::parse_quick(&content);
                     if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &content) {
-                        server.workspace_objects.insert(obj_info.name.to_lowercase(), path.clone());
+                        let obj_name = obj_info.name.to_lowercase();
+                        server.workspace_objects.insert(obj_name.clone(), path.clone());
+                        server.file_to_object.insert(path.clone(), obj_name);
                     }
                 }
                 server.workspace_files.insert(path, content);
@@ -417,8 +540,7 @@ pub(crate) fn handle_workspace_symbol(
 
         if let Some(file_text_entry) = server.workspace_files.get(file_path) {
             let file_text = file_text_entry.value();
-            let mut parser = server.parser.lock().unwrap();
-            let result = parser.parse(file_text);
+            let result = AlParser::parse_quick(file_text);
 
             if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
                 if let Ok(file_uri) = Url::from_file_path(file_path) {

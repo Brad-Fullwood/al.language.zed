@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 al-discovery = { path = "../al-discovery" }
+netcorehost = "0.17"
+dirs = "6"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

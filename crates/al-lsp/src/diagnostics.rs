@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use al_syntax::AlParser;
 use tower_lsp::lsp_types::*;
 
 use crate::server::AlServer;
@@ -17,10 +18,7 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     // Phase 1: Instant syntax + lint
     {
         let parse_start = std::time::Instant::now();
-        let result = {
-            let mut parser = server.parser.lock().unwrap();
-            parser.parse(text)
-        };
+        let result = AlParser::parse_quick(text);
         let parse_elapsed = parse_start.elapsed();
         let error_count = result.errors.len();
         tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: parsed");
@@ -53,12 +51,9 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
         .publish_diagnostics(uri.clone(), diagnostics.clone(), None)
         .await;
 
-    // Phase 2: Async semantic analysis (if bridge available)
-    {
-        let semantic = server.semantic.read().await;
-        let bridge_available = semantic.is_some();
-        tracing::debug!(uri = %uri, bridge_available, "publish_diagnostics: phase 2 check");
-        if let Some(bridge) = semantic.as_ref() {
+    // Phase 2: Async semantic analysis (lazy bridge init)
+    if let Some(guard) = server.get_or_init_bridge().await {
+        if let Some(bridge) = guard.as_ref() {
             let file_path = uri
                 .to_file_path()
                 .unwrap_or_else(|_| PathBuf::from(uri.path()));
@@ -82,8 +77,18 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
                     let semantic_elapsed = semantic_start.elapsed();
                     let semantic_count = results.len();
                     tracing::debug!(uri = %uri, semantic_count, semantic_us = semantic_elapsed.as_micros() as u64, "publish_diagnostics: semantic analysis complete");
+                    // Load error codes if not yet cached (lazy, one-time)
+                    server.ensure_error_codes_loaded().await;
+
                     for entry in results {
-                        diagnostics.push(semantic_to_diagnostic(&entry));
+                        let mut diag = semantic_to_diagnostic(&entry);
+                        // Enrich with error code description if available
+                        if let Some(desc) = server.error_code_description(&entry.code) {
+                            if !diag.message.contains(&desc) {
+                                diag.message = format!("{} — {}", diag.message, desc);
+                            }
+                        }
+                        diagnostics.push(diag);
                     }
                     let total_count = diagnostics.len();
                     tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");

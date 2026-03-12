@@ -3,8 +3,6 @@
 //! Tests parsing, document symbols, semantic tokens, folding ranges,
 //! formatting, and lint rules with realistic AL code.
 
-use std::collections::HashSet;
-
 use al_syntax::tokens::token_types;
 use al_syntax::{
     extract_document_symbols, extract_folding_ranges, extract_semantic_tokens, format_al,

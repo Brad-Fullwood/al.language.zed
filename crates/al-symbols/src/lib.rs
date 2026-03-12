@@ -25,6 +25,8 @@ pub mod virtual_file;
 pub mod bc_server;
 #[cfg(feature = "nuget")]
 pub mod nuget;
+#[cfg(feature = "nuget")]
+pub mod oauth;
 
 // Re-export primary types for convenience.
 pub use index::SymbolIndex;

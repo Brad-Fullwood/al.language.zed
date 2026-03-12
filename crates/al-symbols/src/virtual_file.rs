@@ -1,14 +1,16 @@
-//! Virtual AL file generation from package symbols.
+//! Virtual AL file extraction / generation for package symbols.
 //!
-//! Generates read-only `.al` source files from `SymbolEntry` data so that
-//! go-to-definition can navigate into package objects (`.app` files).
-//! Files are cached at `~/.cache/al-lsp/symbols/{package}/`.
+//! When the `.app` package contains actual `.al` source files, the matching
+//! source is extracted and cached. Otherwise a stub is generated from the
+//! `SymbolEntry` data. Files are cached at `~/.cache/al-lsp/symbols/{package}/`.
 
-use std::path::PathBuf;
+use std::io::{Cursor, Read};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use crate::{MethodSymbol, ObjectKind, SymbolEntry};
 
-/// Cache directory for generated virtual AL files.
+/// Cache directory for extracted / generated virtual AL files.
 pub fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -17,19 +19,117 @@ pub fn cache_dir() -> PathBuf {
 }
 
 /// Get or create a virtual AL file for a package symbol entry.
-/// Returns the file path on disk.
-pub fn get_or_create(entry: &SymbolEntry) -> std::io::Result<PathBuf> {
+///
+/// When `app_path` is provided, the real `.al` source is extracted from the
+/// `.app` ZIP archive if available. Falls back to generating a stub from
+/// symbol data.
+pub fn get_or_create(
+    entry: &SymbolEntry,
+    app_path: Option<&Path>,
+    allow_outline_fallback: bool,
+) -> std::io::Result<PathBuf> {
     let pkg_dir = cache_dir().join(sanitize_filename(&entry.package));
     let filename = format!("{} {} {}.al", entry.kind, entry.id, entry.name);
     let file_path = pkg_dir.join(sanitize_filename(&filename));
 
     if !file_path.exists() {
-        let source = generate_al(entry);
+        // Try extracting real source from the .app first
+        let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
+
+        let source = match extracted {
+            Some(src) => src,
+            None if allow_outline_fallback => generate_al(entry),
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("no source in .app for {} \"{}\" and outline generation not approved", entry.kind, entry.name),
+                ));
+            }
+        };
+
         std::fs::create_dir_all(&pkg_dir)?;
         std::fs::write(&file_path, &source)?;
+        // Mark read-only so the editor prevents accidental edits
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o444))?;
     }
 
     Ok(file_path)
+}
+
+/// Try to extract the matching `.al` source file from an `.app` ZIP archive.
+///
+/// Returns `None` if the `.app` has no source files or the matching file isn't found.
+fn extract_source_from_app(app_path: &Path, entry: &SymbolEntry) -> Option<String> {
+    let data = std::fs::read(app_path).ok()?;
+
+    // Find ZIP offset (skip NAVX header)
+    let zip_offset = (4..data.len().saturating_sub(3))
+        .find(|&i| &data[i..i + 4] == b"\x50\x4B\x03\x04")?;
+
+    let cursor = Cursor::new(&data[zip_offset..]);
+    let mut archive = zip::ZipArchive::new(cursor).ok()?;
+
+    // Build match targets from the entry
+    let kind_str = entry.kind.to_string();
+    let name_nospace = entry.name.replace(' ', "").to_lowercase();
+    let kind_lower = kind_str.to_lowercase();
+
+    // Search for a matching .al file in the archive.
+    // File naming: PascalCase with no spaces (e.g., "ItemJournal.Page.al")
+    // Symbol names have spaces (e.g., "Item Journal")
+    let mut best_match: Option<String> = None;
+    for i in 0..archive.len() {
+        let file = archive.by_index(i).ok()?;
+        let file_name = file.name().to_string();
+        if !file_name.to_lowercase().ends_with(".al") {
+            continue;
+        }
+
+        let basename = file_name.rsplit('/').next().unwrap_or(&file_name);
+        let basename_lower = basename.to_lowercase();
+        let basename_nospace = basename_lower.replace(' ', "");
+
+        // Match pattern: "{Name}.{Kind}.al" (e.g., "ItemJournal.Page.al")
+        // Compare without spaces since filenames use PascalCase but symbols have spaces
+        if basename_nospace.contains(&name_nospace) && basename_lower.contains(&kind_lower) {
+            best_match = Some(file_name);
+            break;
+        }
+    }
+
+    let match_name = best_match?;
+    let mut file = archive.by_name(&match_name).ok()?;
+    let mut content = String::new();
+    file.read_to_string(&mut content).ok()?;
+
+    tracing::debug!(
+        app = %app_path.display(),
+        zip_entry = %match_name,
+        object = %entry.name,
+        "extracted real source from .app"
+    );
+
+    Some(content)
+}
+
+/// Check whether an `.app` file contains any `.al` source files.
+pub fn app_has_source(app_path: &Path) -> bool {
+    let Ok(data) = std::fs::read(app_path) else {
+        return false;
+    };
+    let Some(zip_offset) = (4..data.len().saturating_sub(3))
+        .find(|&i| &data[i..i + 4] == b"\x50\x4B\x03\x04")
+    else {
+        return false;
+    };
+    let Ok(archive) = zip::ZipArchive::new(Cursor::new(&data[zip_offset..])) else {
+        return false;
+    };
+    (0..archive.len()).any(|i| {
+        archive
+            .name_for_index(i)
+            .is_some_and(|n| n.to_lowercase().ends_with(".al"))
+    })
 }
 
 /// Sanitize a string for use as a filename.
@@ -340,11 +440,15 @@ mod tests {
             properties: vec![],
             variables: vec![],
         };
-        let path = get_or_create(&entry).unwrap();
+        let path = get_or_create(&entry, None, true).unwrap();
         assert!(path.exists());
         assert!(path.to_string_lossy().contains("Microsoft.Application"));
         assert!(path.to_string_lossy().ends_with(".al"));
-        // Cleanup
-        let _ = std::fs::remove_file(&path);
+        // Verify the file is read-only
+        let perms = std::fs::metadata(&path).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, 0o444, "virtual file should be read-only");
+        // Cleanup — make writable first so remove succeeds
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_file(&path).unwrap();
     }
 }

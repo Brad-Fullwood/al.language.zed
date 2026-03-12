@@ -1,5 +1,5 @@
 use std::fs;
-use zed_extension_api::{self as zed, settings::LspSettings, Result};
+use zed_extension_api::{self as zed, lsp::CompletionKind, lsp::SymbolKind, settings::LspSettings, CodeLabel, CodeLabelSpan, Result};
 
 struct AlExtension {
     cached_binary_path: Option<String>,
@@ -51,6 +51,7 @@ impl AlExtension {
         match zed::download_file(&download_url, &install_dir, zed::DownloadedFileType::GzipTar) {
             Ok(()) => {
                 zed::make_file_executable(&binary_path)?;
+                remove_outdated_versions(&install_dir);
                 self.cached_binary_path = Some(binary_path.clone());
                 Ok(binary_path)
             }
@@ -127,6 +128,87 @@ impl zed::Extension for AlExtension {
     ) -> Result<Option<zed::serde_json::Value>> {
         let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
         Ok(settings.settings)
+    }
+
+    // ── Completion & Symbol Labels ────────────────────────────────
+
+    fn label_for_completion(
+        &self,
+        _language_server_id: &zed::LanguageServerId,
+        completion: zed::lsp::Completion,
+    ) -> Option<CodeLabel> {
+        let kind = completion.kind?;
+        let label = &completion.label;
+        let detail = completion.detail.as_deref();
+
+        let (highlight, show_detail) = match kind {
+            CompletionKind::Function | CompletionKind::Method | CompletionKind::Event => {
+                ("function", true)
+            }
+            CompletionKind::Variable => ("variable", true),
+            CompletionKind::Keyword => ("keyword", false),
+            CompletionKind::Struct
+            | CompletionKind::Class
+            | CompletionKind::Module
+            | CompletionKind::Enum
+            | CompletionKind::Interface
+            | CompletionKind::Reference => ("type", true),
+            CompletionKind::Field | CompletionKind::Property => ("property", true),
+            CompletionKind::EnumMember | CompletionKind::Constant => ("constant", false),
+            CompletionKind::Snippet => ("keyword", false),
+            _ => return None,
+        };
+
+        let mut spans = vec![CodeLabelSpan::literal(
+            label.clone(),
+            Some(highlight.to_string()),
+        )];
+
+        if show_detail {
+            if let Some(d) = detail {
+                if !d.is_empty() {
+                    spans.push(CodeLabelSpan::literal(
+                        format!("  {d}"),
+                        Some("comment".to_string()),
+                    ));
+                }
+            }
+        }
+
+        Some(CodeLabel {
+            filter_range: (0..label.len()).into(),
+            spans,
+            code: String::new(),
+        })
+    }
+
+    fn label_for_symbol(
+        &self,
+        _language_server_id: &zed::LanguageServerId,
+        symbol: zed::lsp::Symbol,
+    ) -> Option<CodeLabel> {
+        let name = &symbol.name;
+
+        let kind_keyword = match symbol.kind {
+            SymbolKind::Struct => "table",
+            SymbolKind::Class => "page",
+            SymbolKind::Module => "codeunit",
+            SymbolKind::Enum => "enum",
+            SymbolKind::Interface => "interface",
+            SymbolKind::File => "report",
+            SymbolKind::Function | SymbolKind::Method => "procedure",
+            SymbolKind::Object => "xmlport",
+            _ => return None,
+        };
+
+        Some(CodeLabel {
+            filter_range: (0..(kind_keyword.len() + 1 + name.len())).into(),
+            spans: vec![
+                CodeLabelSpan::literal(kind_keyword, Some("keyword".to_string())),
+                CodeLabelSpan::literal(format!(" {name}"), Some("type".to_string())),
+            ],
+            code: String::new(),
+        })
     }
 
     // ── Debug Adapter Protocol ───────────────────────────────────
@@ -254,5 +336,20 @@ fn arch_str(arch: zed::Architecture) -> &'static str {
         zed::Architecture::Aarch64 => "aarch64",
         zed::Architecture::X8664 => "x86_64",
         zed::Architecture::X86 => "x86",
+    }
+}
+
+/// Remove old al-lsp version directories after a successful download.
+fn remove_outdated_versions(current_dir: &str) {
+    let Ok(entries) = fs::read_dir(".") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(String::from) else {
+            continue;
+        };
+        if name.starts_with("al-lsp-") && name != current_dir {
+            let _ = fs::remove_dir_all(entry.path());
+        }
     }
 }

@@ -8,6 +8,7 @@
 //! - textDocument/codeAction
 //! - textDocument/inlayHint
 
+use al_syntax::AlParser;
 use tower_lsp::lsp_types::*;
 
 use crate::parsing;
@@ -264,7 +265,7 @@ pub(crate) fn handle_signature_help(
         tracing::debug!(func_name = %func_name, overloads = signatures.len(), "signature: matched builtin overloads");
         // Pick the best active_signature based on parameter count matching active_param
         let active_sig = signatures.iter().position(|s| {
-            s.parameters.as_ref().map_or(false, |p| p.len() as u32 > active_param)
+            s.parameters.as_ref().is_some_and(|p| p.len() as u32 > active_param)
         }).unwrap_or(0) as u32;
         return Some(SignatureHelp {
             signatures,
@@ -285,9 +286,10 @@ use al_syntax::find_call_context;
 /// Given `ProcessReport.SetAction(...)`, resolves `ProcessReport` to its type
 /// (e.g., Report "IJL Process Staging"), then searches that workspace file's
 /// procedures for `SetAction`.
+#[allow(clippy::too_many_arguments)]
 fn resolve_receiver_signature(
     server: &AlServer,
-    uri: &Url,
+    _uri: &Url,
     text: &str,
     tree: &tree_sitter::Tree,
     prefix: &str,
@@ -328,8 +330,7 @@ fn resolve_receiver_signature(
     let file_text_entry = server.workspace_files.get(file_path)?;
     let file_text = file_text_entry.value();
 
-    let mut parser = server.parser.lock().unwrap();
-    let result = parser.parse(file_text);
+    let result = AlParser::parse_quick(file_text);
 
     // Search for the method in the target file's document symbols
     let doc_symbols = al_syntax::extract_document_symbols(&result.tree, file_text);
@@ -624,16 +625,36 @@ pub(crate) fn handle_code_action(
         }
     }
 
-    // --- Workspace commands (always available) ---
-    actions.push(CodeActionOrCommand::Command(Command {
-        title: "AL: Download Symbols".to_string(),
-        command: "al.downloadSymbols".to_string(),
-        arguments: None,
+    // --- Source actions (workspace commands surfaced as code actions) ---
+    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+        title: "AL: Download Symbols (Server)".to_string(),
+        kind: Some(CodeActionKind::SOURCE),
+        command: Some(Command {
+            title: "AL: Download Symbols (Server)".to_string(),
+            command: "al.downloadSymbolsServer".to_string(),
+            arguments: None,
+        }),
+        ..Default::default()
     }));
-    actions.push(CodeActionOrCommand::Command(Command {
+    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+        title: "AL: Download Symbols (NuGet)".to_string(),
+        kind: Some(CodeActionKind::SOURCE),
+        command: Some(Command {
+            title: "AL: Download Symbols (NuGet)".to_string(),
+            command: "al.downloadSymbolsNuget".to_string(),
+            arguments: None,
+        }),
+        ..Default::default()
+    }));
+    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
         title: "AL: Clear Symbol Cache".to_string(),
-        command: "al.clearSymbolCache".to_string(),
-        arguments: None,
+        kind: Some(CodeActionKind::SOURCE),
+        command: Some(Command {
+            title: "AL: Clear Symbol Cache".to_string(),
+            command: "al.clearSymbolCache".to_string(),
+            arguments: None,
+        }),
+        ..Default::default()
     }));
 
     tracing::debug!(action_count = actions.len(), "code_action: returning actions");
@@ -647,9 +668,9 @@ pub(crate) fn handle_code_action(
 
 /// Helper to extract a diagnostic code as a string.
 fn diag_code_str(diag: &Diagnostic) -> Option<String> {
-    diag.code.as_ref().and_then(|c| match c {
-        NumberOrString::String(s) => Some(s.clone()),
-        NumberOrString::Number(n) => Some(n.to_string()),
+    diag.code.as_ref().map(|c| match c {
+        NumberOrString::String(s) => s.clone(),
+        NumberOrString::Number(n) => n.to_string(),
     })
 }
 
@@ -708,25 +729,24 @@ fn compute_remove_begin_end(text: &str, diag: &Diagnostic) -> Option<Vec<TextEdi
         return None;
     }
 
-    let mut edits = Vec::new();
-
-    // Remove the begin line
-    edits.push(TextEdit {
-        range: Range {
-            start: Position { line: start_line as u32, character: 0 },
-            end: Position { line: (start_line + 1) as u32, character: 0 },
+    let edits = vec![
+        // Remove the begin line
+        TextEdit {
+            range: Range {
+                start: Position { line: start_line as u32, character: 0 },
+                end: Position { line: (start_line + 1) as u32, character: 0 },
+            },
+            new_text: String::new(),
         },
-        new_text: String::new(),
-    });
-
-    // Remove the end line
-    edits.push(TextEdit {
-        range: Range {
-            start: Position { line: end_line as u32, character: 0 },
-            end: Position { line: (end_line + 1) as u32, character: 0 },
+        // Remove the end line
+        TextEdit {
+            range: Range {
+                start: Position { line: end_line as u32, character: 0 },
+                end: Position { line: (end_line + 1) as u32, character: 0 },
+            },
+            new_text: String::new(),
         },
-        new_text: String::new(),
-    });
+    ];
 
     Some(edits)
 }
@@ -1048,6 +1068,7 @@ pub(crate) fn handle_inlay_hint(
 }
 
 /// Recursively collect inlay hints from the AST, limited to the requested range.
+#[allow(clippy::too_many_arguments)]
 fn collect_inlay_hints(
     node: tree_sitter::Node<'_>,
     source: &[u8],
@@ -1129,7 +1150,7 @@ fn infer_argument_type(
     }
 
     // Numeric literal
-    if !expr.is_empty() && expr.bytes().next().map_or(false, |b| b.is_ascii_digit() || b == b'-') {
+    if !expr.is_empty() && expr.bytes().next().is_some_and(|b| b.is_ascii_digit() || b == b'-') {
         let numeric_part = expr.trim_start_matches('-');
         if numeric_part.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
             let base = if expr.contains('.') { "Decimal" } else { "Integer" };
@@ -1323,6 +1344,7 @@ fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) ->
 /// Uses inferred argument types to select the correct overload when a method
 /// has multiple signatures (matching on both parameter count and types).
 #[allow(deprecated)]
+#[allow(clippy::too_many_arguments)]
 fn lookup_parameter_names(
     server: &AlServer,
     doc_symbols: &[DocumentSymbol],
@@ -1395,6 +1417,11 @@ fn lookup_parameter_names(
         return best;
     }
 
+    // 5. Fallback: embedded built-in parameter names (no .NET bridge needed)
+    if let Some(names) = lookup_embedded_builtin(func_name) {
+        return names;
+    }
+
     Vec::new()
 }
 
@@ -1451,8 +1478,7 @@ fn lookup_via_receiver(
             let file_path = file_path.value().clone();
             if let Some(file_text) = server.workspace_files.get(&file_path) {
                 let content = file_text.value();
-                let mut parser = server.parser.lock().unwrap();
-                let result = parser.parse(content);
+                let result = AlParser::parse_quick(content);
                 let target_symbols = al_syntax::extract_document_symbols(&result.tree, content);
                 let mut candidates: Vec<OverloadCandidate> = Vec::new();
                 for sym in &target_symbols {
@@ -1481,7 +1507,47 @@ fn lookup_via_receiver(
         }
     }
 
-    None
+    // Fallback: embedded built-in parameter names
+    lookup_embedded_builtin(func_name)
+}
+
+/// Look up parameter names for a built-in method from hardcoded common methods.
+///
+/// This is a fallback when the builtins bridge isn't available. Only covers
+/// the most common AL built-in methods.
+fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
+    // Common built-in method parameter names (subset — bridge provides the full set)
+    let names: &[&str] = match func_name.to_lowercase().as_str() {
+        "message" => &["Value"],
+        "error" => &["Value"],
+        "confirm" => &["Question"],
+        "strmenu" => &["OptionString"],
+        "format" => &["Value"],
+        "strlen" | "maxstrlen" => return Some(vec![]),
+        "copystr" => &["Position", "Length"],
+        "selectstr" => &["Number", "CommaString"],
+        "strpos" => &["SubString"],
+        "contains" | "startswith" | "endswith" => &["Value"],
+        "get" | "findset" | "findfirst" | "findlast" => return Some(vec![]),
+        "setrange" => &["FieldNo", "FromValue", "ToValue"],
+        "setfilter" => &["FieldNo", "String"],
+        "setrecfilter" => return Some(vec![]),
+        "insert" => &["RunTrigger"],
+        "modify" => &["RunTrigger"],
+        "delete" => &["RunTrigger"],
+        "fieldno" => &["FieldName"],
+        "getposition" => return Some(vec![]),
+        "setposition" => &["Position"],
+        "count" => return Some(vec![]),
+        "isempty" => return Some(vec![]),
+        "reset" => return Some(vec![]),
+        "read" | "write" => &["Value"],
+        "run" => &["Record"],
+        "setrecord" => &["Record"],
+        "getrecord" => &["Record"],
+        _ => return None,
+    };
+    Some(names.iter().map(|s| s.to_string()).collect())
 }
 
 /// Parse parameter names from a procedure's detail string.

@@ -704,7 +704,7 @@ fn check_single_global_var(node: Node, source: &[u8], diagnostics: &mut Vec<Lint
                 return;
             }
             // Single lowercase letter variables are suspicious for globals
-            if clean.len() == 1 && clean.chars().next().map_or(false, |c| c.is_lowercase()) {
+            if clean.len() == 1 && clean.chars().next().is_some_and(|c| c.is_lowercase()) {
                 diagnostics.push(LintDiagnostic {
                     code: "AL-L015".to_string(),
                     message: format!(
@@ -850,7 +850,7 @@ fn check_record_variable_naming(
                                 // or use "Rec" / table abbreviation patterns
                                 // Flag single-letter names
                                 if clean.len() == 1
-                                    && clean.chars().next().map_or(false, |c| c.is_lowercase())
+                                    && clean.chars().next().is_some_and(|c| c.is_lowercase())
                                 {
                                     diagnostics.push(LintDiagnostic {
                                         code: "AL-L018".to_string(),

@@ -359,14 +359,59 @@ fn add_default_completions(server: &AlServer, uri: &Url, text: &str, position: P
     );
 }
 
+/// Count parameters in an AL procedure signature detail string.
+///
+/// AL separates parameters with semicolons: `(A: Text; B: Integer)`
+fn count_params(detail: &str) -> usize {
+    let start = match detail.find('(') {
+        Some(i) => i + 1,
+        None => return 0,
+    };
+    let end = match detail.rfind(')') {
+        Some(i) => i,
+        None => return 0,
+    };
+    if start >= end {
+        return 0;
+    }
+    let inner = detail[start..end].trim();
+    if inner.is_empty() {
+        return 0;
+    }
+    let mut count = 1usize;
+    let mut depth = 0i32;
+    for ch in inner.chars() {
+        match ch {
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' => depth -= 1,
+            ';' if depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
 fn finalize_completion_items(items: &mut Vec<CompletionItem>) {
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.label.to_lowercase()));
+
     for item in items.iter_mut() {
-        if item.sort_text.is_none() {
+        if item.sort_text.is_some() {
+            continue;
+        }
+        // Sort functions/methods by parameter count so simpler overloads appear first
+        let is_callable = matches!(
+            item.kind,
+            Some(CompletionItemKind::FUNCTION) | Some(CompletionItemKind::METHOD)
+        );
+        if is_callable {
+            let pc = item.detail.as_deref().map(count_params).unwrap_or(0);
+            item.sort_text = Some(format!("1_{pc:02}_{}", item.label.to_lowercase()));
+        } else {
             item.sort_text = Some(format!("1_{}", item.label.to_lowercase()));
         }
     }
+
     items.sort_by(|a, b| {
         a.sort_text
             .as_deref()
@@ -383,6 +428,17 @@ mod tests {
     use super::*;
     use crate::server::test_server;
     use std::path::PathBuf;
+
+    #[test]
+    fn count_params_works() {
+        assert_eq!(count_params("()"), 0);
+        assert_eq!(count_params(""), 0);
+        assert_eq!(count_params("(A: Text)"), 1);
+        assert_eq!(count_params("(A: Text; B: Integer)"), 2);
+        assert_eq!(count_params("(A: Text; B: Integer; C: Boolean)"), 3);
+        assert_eq!(count_params("(A: List of [Text]; B: Integer)"), 2);
+        assert_eq!(count_params("(A: Text): Boolean"), 1);
+    }
 
     #[test]
     fn member_completion_uses_receiver_chain_before_cursor() {
@@ -503,5 +559,46 @@ mod tests {
         let labels = items.into_iter().map(|item| item.label).collect::<Vec<_>>();
         assert!(labels.iter().any(|label| label == "Pending"));
         assert!(labels.iter().any(|label| label == "Posting"));
+    }
+
+    #[test]
+    fn enum_completion_includes_runtime_enum_values() {
+        let server = test_server();
+        // Load runtime enums into the symbol index
+        server.symbols.load_runtime_enums();
+
+        let page_path = PathBuf::from("/tmp/api-page.al");
+        let uri = Url::from_file_path(&page_path).expect("file uri");
+        let source = r#"page 50100 "My API"
+{
+    trigger OnAfterGetRecord()
+    begin
+        actionContext.SetResultCode(WebServiceActionResultCode::);
+    end;
+}"#;
+
+        server.documents.open(uri.clone(), source.to_string());
+        server.workspace_files.insert(page_path.clone(), source.to_string());
+        server.workspace_objects.insert("my api".to_string(), page_path);
+
+        // Position after `::`
+        let response = handle_completion(
+            &server,
+            &uri,
+            Position {
+                line: 4,
+                character: 64,
+            },
+        )
+        .expect("runtime enum completion response");
+
+        let items = match response {
+            CompletionResponse::Array(items) => items,
+            CompletionResponse::List(list) => list.items,
+        };
+        let labels = items.into_iter().map(|item| item.label).collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == "Updated"), "expected 'Updated' in {:?}", labels);
+        assert!(labels.iter().any(|label| label == "Created"), "expected 'Created' in {:?}", labels);
+        assert!(labels.iter().any(|label| label == "Deleted"), "expected 'Deleted' in {:?}", labels);
     }
 }

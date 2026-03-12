@@ -1,0 +1,18 @@
+[
+  {
+    "token_type": "directive",
+    "style": ["keyword.directive", "keyword"]
+  },
+  {
+    "token_type": "objectKeyword",
+    "style": ["keyword.type", "keyword"]
+  },
+  {
+    "token_type": "builtinType",
+    "style": ["type.builtin", "type"]
+  },
+  {
+    "token_type": "selfKeyword",
+    "style": ["variable.special", "variable.builtin", "variable"]
+  }
+]

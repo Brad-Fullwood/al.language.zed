@@ -12,7 +12,15 @@ pub struct DocumentStore {
 
 struct Document {
     text: Rope,
+    /// Cached String form — updated on every change, avoids repeated Rope::to_string().
+    text_cache: String,
     version: i32,
+}
+
+impl Default for DocumentStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DocumentStore {
@@ -28,6 +36,7 @@ impl DocumentStore {
             uri,
             Document {
                 text: Rope::from_str(&text),
+                text_cache: text,
                 version: 0,
             },
         );
@@ -39,7 +48,7 @@ impl DocumentStore {
     }
 
     pub fn get_text(&self, uri: &Url) -> Option<String> {
-        self.docs.get(uri).map(|d| d.text.to_string())
+        self.docs.get(uri).map(|d| d.text_cache.clone())
     }
 
     pub fn get_version(&self, uri: &Url) -> Option<i32> {
@@ -64,6 +73,7 @@ impl DocumentStore {
                     doc.text = Rope::from_str(&change.text);
                 }
             }
+            doc.text_cache = doc.text.to_string();
             doc.version += 1;
             // Invalidate cached tree since the document changed
             self.trees.remove(uri);

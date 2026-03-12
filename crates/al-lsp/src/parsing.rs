@@ -1,5 +1,6 @@
 //! Parse tree caching — avoids redundant re-parses for the same document version.
 
+use al_syntax::AlParser;
 use tower_lsp::lsp_types::Url;
 
 use crate::server::AlServer;
@@ -25,10 +26,7 @@ pub(crate) fn get_or_parse(server: &AlServer, uri: &Url) -> Option<(String, tree
 
     // Parse and cache
     tracing::debug!(uri = %uri, version, len = text.len(), "get_or_parse: parsing");
-    let tree = {
-        let mut parser = server.parser.lock().unwrap();
-        parser.parse(&text).tree
-    };
+    let tree = AlParser::parse_quick(&text).tree;
     server.documents.cache_tree(uri, version, tree.clone());
     Some((text, tree))
 }

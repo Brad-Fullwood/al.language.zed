@@ -37,51 +37,13 @@ fn extract_structural_ranges(node: Node, ranges: &mut Vec<FoldingRange>) {
             }
         }
 
-        // Procedure and trigger declarations fold from declaration to end
-        "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
-            if node.start_position().row < node.end_position().row {
-                add_range(node, FoldingRangeKind::Region, ranges);
-            }
-        }
-
-        // begin..end blocks
-        "begin_end_block" => {
-            if node.start_position().row < node.end_position().row {
-                add_range(node, FoldingRangeKind::Region, ranges);
-            }
-        }
-
-        // Object sections (fields, keys, layout, actions, etc.)
-        "object_section" => {
-            if node.start_position().row < node.end_position().row {
-                add_range(node, FoldingRangeKind::Region, ranges);
-            }
-        }
-
-        // Braced blocks (common containers)
-        "object_body" | "braced_block" => {
-            if node.start_position().row < node.end_position().row {
-                add_range(node, FoldingRangeKind::Region, ranges);
-            }
-        }
-
-        // var sections
-        "var_section" | "object_var_section" => {
-            if node.start_position().row < node.end_position().row {
-                add_range(node, FoldingRangeKind::Region, ranges);
-            }
-        }
-
-        // Control flow that has bodies
-        "if_statement" | "case_statement" | "for_statement" | "foreach_statement"
-        | "while_statement" | "repeat_statement" | "with_statement" => {
-            if node.start_position().row < node.end_position().row {
-                add_range(node, FoldingRangeKind::Region, ranges);
-            }
-        }
-
-        // Enum value declarations with bodies
-        "enum_value_declaration" => {
+        // Multi-line structural nodes: procedures, blocks, sections, control flow
+        "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+        | "begin_end_block" | "object_section" | "object_body" | "braced_block"
+        | "var_section" | "object_var_section"
+        | "if_statement" | "case_statement" | "for_statement" | "foreach_statement"
+        | "while_statement" | "repeat_statement" | "with_statement"
+        | "enum_value_declaration" => {
             if node.start_position().row < node.end_position().row {
                 add_range(node, FoldingRangeKind::Region, ranges);
             }
@@ -233,7 +195,7 @@ codeunit 50100 Test
             }
         }
         // Just verify it doesn't panic
-        assert!(ranges.len() >= 0);
+        let _ = ranges.len();
     }
 
     #[test]

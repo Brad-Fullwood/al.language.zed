@@ -160,11 +160,10 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // `else` after single-statement if-then: drain remaining single-stmt depth
         if !is_close
             && (trimmed_lower == "else" || trimmed_lower.starts_with("else "))
+            && single_stmt_depth > 0
         {
-            if single_stmt_depth > 0 {
-                indent_level = (indent_level - single_stmt_depth).max(0);
-                single_stmt_depth = 0;
-            }
+            indent_level = (indent_level - single_stmt_depth).max(0);
+            single_stmt_depth = 0;
         }
 
         // `until` closes a `repeat` block

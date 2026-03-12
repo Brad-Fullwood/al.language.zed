@@ -153,19 +153,7 @@
         "text": "#D4D4D4",
         "text.placeholder": "#A6A6A6",
         "title_bar.background": "#1D1D1D",
-        "toolbar.background": "#1E1E1E",
-        "warning": "#C8A86Eff",
-        "warning.background": "#C8A86E18",
-        "warning.border": "#C8A86E50",
-        "error": "#D4787Bff",
-        "error.background": "#D4787B18",
-        "error.border": "#D4787B50",
-        "info": "#6BA3D6ff",
-        "info.background": "#6BA3D618",
-        "info.border": "#6BA3D650",
-        "hint": "#909090ff",
-        "hint.background": "#90909018",
-        "hint.border": "#90909050"
+        "toolbar.background": "#1E1E1E"
       }
     },
     {
@@ -318,19 +306,7 @@
         "text": "#202428",
         "text.placeholder": "#56616C",
         "title_bar.background": "#F7F7F7",
-        "toolbar.background": "#FFFFFF",
-        "warning": "#8B7030ff",
-        "warning.background": "#8B703018",
-        "warning.border": "#8B703050",
-        "error": "#C04548ff",
-        "error.background": "#C0454818",
-        "error.border": "#C0454850",
-        "info": "#2B6DA0ff",
-        "info.background": "#2B6DA018",
-        "info.border": "#2B6DA050",
-        "hint": "#808080ff",
-        "hint.background": "#80808018",
-        "hint.border": "#80808050"
+        "toolbar.background": "#FFFFFF"
       }
     }
   ]

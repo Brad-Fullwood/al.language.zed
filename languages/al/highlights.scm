@@ -33,7 +33,7 @@
  (#match? @variable.builtin "^this$"))
 
 ; --- Well-known Built-in Variables ---
-; Rec, xRec, CurrPage, CurrReport, etc. are implicit variables in AL
+; AUTO-GENERATED from builtin_variables.json — implicit trigger variables in AL
 ((identifier) @variable.builtin
  (#match? @variable.builtin "^(Rec|xRec|CurrPage|CurrReport|CurrFieldNo|RequestOptionsPage)$"))
 

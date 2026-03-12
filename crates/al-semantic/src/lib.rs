@@ -1,33 +1,22 @@
 //! .NET bridge for CodeAnalysis API — semantic analysis, analyzers, compilation.
 //!
-//! Spawns a .NET subprocess (AlSemantic) and communicates via JSON-RPC over
-//! stdin/stdout. The bridge provides access to the full CodeAnalysis API for
-//! semantic analysis, diagnostics, type resolution, and compilation.
+//! Hosts the .NET CLR in-process via `netcorehost` and communicates with a thin
+//! C# bridge DLL using JSON-in/JSON-out over function pointers. No subprocess.
+//!
+//! Architecture: Rust → netcorehost → Bridge.dll → CodeAnalysis.dll
 
-pub mod process;
+pub mod cache;
+pub mod host;
 pub mod protocol;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use al_discovery::AlToolchain;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::process::{ChildStdin, ChildStdout};
-use tokio::sync::Mutex;
 
-use crate::protocol::{Request, Response};
-
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-/// Default timeout for RPC responses.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Default idle timeout before the bridge can be considered stale.
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+use crate::host::DotNetHost;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -35,6 +24,7 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Request to analyze a file with CodeAnalysis analyzers.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AnalyzeRequest {
     pub file: PathBuf,
     pub source: String,
@@ -44,6 +34,7 @@ pub struct AnalyzeRequest {
 
 /// Result of a compilation invocation.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompileResult {
     pub success: bool,
     pub diagnostics: Vec<DiagnosticEntry>,
@@ -52,6 +43,7 @@ pub struct CompileResult {
 
 /// A single diagnostic from compilation or analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiagnosticEntry {
     pub file: PathBuf,
     pub line: u32,
@@ -131,11 +123,11 @@ pub struct ErrorCodeInfo {
 /// Errors from the semantic bridge.
 #[derive(Debug, thiserror::Error)]
 pub enum SemanticError {
-    #[error("Failed to spawn .NET bridge: {0}")]
-    SpawnFailed(String),
+    #[error("Failed to initialize .NET host: {0}")]
+    HostInit(String),
 
-    #[error("Bridge process died unexpectedly")]
-    ProcessDied,
+    #[error("Bridge not initialized")]
+    NotInitialized,
 
     #[error("RPC response timed out after {0:?}")]
     Timeout(Duration),
@@ -151,131 +143,67 @@ pub enum SemanticError {
 }
 
 // ---------------------------------------------------------------------------
-// Internal IO state (behind Mutex)
-// ---------------------------------------------------------------------------
-
-struct BridgeIo {
-    stdin: BufWriter<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
-    last_request: Instant,
-}
-
-// ---------------------------------------------------------------------------
 // SemanticBridge
 // ---------------------------------------------------------------------------
 
-/// Async bridge to the .NET CodeAnalysis subprocess.
+/// Async bridge to the .NET CodeAnalysis API.
 ///
-/// Uses `&self` with interior mutability (`tokio::sync::Mutex`) so the bridge
-/// can be shared across tasks. The child process is killed when the bridge
-/// is dropped.
+/// Uses in-process .NET hosting via `netcorehost`. The .NET runtime is loaded
+/// once and stays alive for the lifetime of the bridge. All calls go through
+/// function pointers — no subprocess, no JSON-RPC, no stdio.
+///
+/// Thread-safe: can be shared across tokio tasks via `Arc`.
 pub struct SemanticBridge {
-    child: Mutex<tokio::process::Child>,
-    io: Mutex<BridgeIo>,
-    next_id: AtomicU64,
+    host: Arc<DotNetHost>,
+    version: String,
     timeout: Duration,
-    idle_timeout: Duration,
 }
 
+/// Default timeout for bridge calls.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl SemanticBridge {
-    /// Spawn a new .NET bridge subprocess using the given toolchain.
-    pub async fn spawn(toolchain: &AlToolchain) -> Result<Self, SemanticError> {
-        let mut child = process::spawn_dotnet_bridge(toolchain)?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| SemanticError::SpawnFailed("Failed to capture child stdin".into()))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| SemanticError::SpawnFailed("Failed to capture child stdout".into()))?;
+    /// Initialize the .NET bridge using the given toolchain.
+    ///
+    /// This loads the CLR in-process and initializes the bridge DLL.
+    pub fn new(toolchain: &AlToolchain) -> Result<Self, SemanticError> {
+        let (bridge_dll, runtime_config) = host::find_bridge_dll()?;
+        let host = DotNetHost::new(&bridge_dll, &runtime_config, &toolchain.code_analysis)?;
 
         Ok(Self {
-            child: Mutex::new(child),
-            io: Mutex::new(BridgeIo {
-                stdin: BufWriter::new(stdin),
-                stdout: BufReader::new(stdout),
-                last_request: Instant::now(),
-            }),
-            next_id: AtomicU64::new(1),
+            host: Arc::new(host),
+            version: toolchain.version.clone(),
             timeout: DEFAULT_TIMEOUT,
-            idle_timeout: DEFAULT_IDLE_TIMEOUT,
         })
     }
 
-    /// Send a request and wait for the matching response.
+    /// The toolchain version this bridge was initialized with.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Internal: call with timeout on a blocking thread.
     async fn call(
         &self,
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, SemanticError> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let host = self.host.clone();
+        let method = method.to_string();
+        let timeout = self.timeout;
 
-        let request = Request {
-            id,
-            method: method.to_string(),
-            params: if params.is_null() { None } else { Some(params) },
-        };
+        // Run the .NET call on a blocking thread to avoid blocking the tokio runtime
+        let result = tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || {
+            host.call(&method, params)
+        }))
+        .await;
 
-        let mut request_line = serde_json::to_string(&request)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
-        request_line.push('\n');
-
-        let mut io = self.io.lock().await;
-        io.last_request = Instant::now();
-
-        // Write the request
-        io.stdin
-            .write_all(request_line.as_bytes())
-            .await
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::BrokenPipe {
-                    SemanticError::ProcessDied
-                } else {
-                    SemanticError::IoError(e)
-                }
-            })?;
-        io.stdin.flush().await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                SemanticError::ProcessDied
-            } else {
-                SemanticError::IoError(e)
-            }
-        })?;
-
-        // Read the response (with timeout)
-        let mut line = String::new();
-        let read_result = tokio::time::timeout(self.timeout, io.stdout.read_line(&mut line)).await;
-
-        match read_result {
-            Ok(Ok(0)) => Err(SemanticError::ProcessDied),
-            Ok(Ok(_)) => {
-                let response: Response = serde_json::from_str(line.trim()).map_err(|e| {
-                    SemanticError::SerializationError(format!(
-                        "Failed to parse response: {e}. Raw: {line}"
-                    ))
-                })?;
-
-                if response.id != id {
-                    return Err(SemanticError::SerializationError(format!(
-                        "Response id mismatch: expected {id}, got {}",
-                        response.id
-                    )));
-                }
-
-                if let Some(err) = response.error {
-                    return Err(SemanticError::RpcError {
-                        code: err.code,
-                        message: err.message,
-                    });
-                }
-
-                Ok(response.result.unwrap_or(serde_json::Value::Null))
-            }
-            Ok(Err(e)) => Err(SemanticError::IoError(e)),
-            Err(_) => Err(SemanticError::Timeout(self.timeout)),
+        match result {
+            Ok(Ok(inner)) => inner,
+            Ok(Err(join_err)) => Err(SemanticError::HostInit(format!(
+                "Bridge call panicked: {join_err}"
+            ))),
+            Err(_) => Err(SemanticError::Timeout(timeout)),
         }
     }
 
@@ -287,14 +215,8 @@ impl SemanticBridge {
         let params = serde_json::to_value(&req)
             .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
         let result = self.call("analyze", params).await?;
-        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
-    }
-
-    /// Invoke the CodeAnalysis Compilation API on a project directory.
-    pub async fn compile(&self, project: &Path) -> Result<CompileResult, SemanticError> {
-        let params = serde_json::json!({ "project": project });
-        let result = self.call("compile", params).await?;
-        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
+        serde_json::from_value(result)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))
     }
 
     /// Resolve the type of the symbol at the given position.
@@ -329,63 +251,83 @@ impl SemanticBridge {
             "column": pos.1,
         });
         let result = self.call("completions", params).await?;
-        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
+        serde_json::from_value(result)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))
     }
 
     /// Extract all built-in types and methods from CodeAnalysis.
+    ///
+    /// Checks disk cache first. On cache miss, calls the bridge and caches the result.
     pub async fn builtin_types(&self) -> Result<Vec<BuiltinType>, SemanticError> {
+        // Check cache
+        if let Some(cached) = cache::read_builtins(&self.version) {
+            return Ok(cached);
+        }
+
         let result = self.call("builtins", serde_json::Value::Null).await?;
-        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
+        let types: Vec<BuiltinType> = serde_json::from_value(result)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
+
+        // Cache for next time
+        cache::write_builtins(&self.version, &types);
+
+        Ok(types)
     }
 
     /// List all compiler error codes from CodeAnalysis.
+    ///
+    /// Default: cached. Set `AL_ERROR_CODES_LIVE=1` for fresh extraction.
     pub async fn error_codes(&self) -> Result<Vec<ErrorCodeInfo>, SemanticError> {
+        let live = std::env::var("AL_ERROR_CODES_LIVE").is_ok();
+
+        if !live {
+            if let Some(cached) = cache::read_error_codes(&self.version) {
+                return Ok(cached);
+            }
+        }
+
         let result = self.call("errorCodes", serde_json::Value::Null).await?;
-        serde_json::from_value(result).map_err(|e| SemanticError::SerializationError(e.to_string()))
+        let codes: Vec<ErrorCodeInfo> = serde_json::from_value(result)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
+
+        cache::write_error_codes(&self.version, &codes);
+
+        Ok(codes)
     }
 
-    /// Health check — verifies the .NET process is alive and responsive.
+    /// Compile an AL project using alc (the Microsoft AL compiler).
+    ///
+    /// This invokes alc as a subprocess via the .NET bridge, parses the SARIF
+    /// error log for structured diagnostics, and returns the path to the .app file.
+    pub async fn compile(
+        &self,
+        project: &Path,
+        alc_path: Option<&Path>,
+        package_cache: Option<&Path>,
+    ) -> Result<CompileResult, SemanticError> {
+        let mut params = serde_json::json!({ "project": project });
+        if let Some(alc) = alc_path {
+            params["alcPath"] = serde_json::Value::String(alc.to_string_lossy().into_owned());
+        }
+        if let Some(pkg) = package_cache {
+            params["packageCachePath"] =
+                serde_json::Value::String(pkg.to_string_lossy().into_owned());
+        }
+        let result = self.call("compile", params).await?;
+        serde_json::from_value(result)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+    }
+
+    /// Health check — verifies the .NET bridge is responsive.
     pub async fn ping(&self) -> Result<(), SemanticError> {
-        let result = self.call("ping", serde_json::Value::Null).await?;
-        // Accept any successful response as a valid ping
-        let _ = result;
+        let _ = self.call("ping", serde_json::Value::Null).await?;
         Ok(())
     }
 
-    /// Check whether the bridge has been idle longer than the idle timeout.
-    ///
-    /// Returns `true` if the bridge has been idle and should be shut down.
-    pub async fn check_idle(&self) -> bool {
-        let io = self.io.lock().await;
-        io.last_request.elapsed() > self.idle_timeout
-    }
-
-    /// Gracefully shut down the bridge subprocess.
-    ///
-    /// Sends a "shutdown" request then kills the process if it doesn't exit.
+    /// Graceful shutdown. The CLR is cleaned up when DotNetHost is dropped.
     pub async fn shutdown(self) {
-        // Try to send shutdown request (ignore errors — process might already be dead)
-        let _ = self.call("shutdown", serde_json::Value::Null).await;
-
-        // Give the process a moment to exit gracefully
-        let mut child = self.child.into_inner();
-        match tokio::time::timeout(Duration::from_secs(3), child.wait()).await {
-            Ok(_) => {}
-            Err(_) => {
-                // Force kill
-                let _ = child.kill().await;
-            }
-        }
-    }
-
-    /// Check if the child process is still running.
-    pub async fn is_alive(&self) -> bool {
-        let mut child = self.child.lock().await;
-        match child.try_wait() {
-            Ok(None) => true,     // Still running
-            Ok(Some(_)) => false, // Exited
-            Err(_) => false,      // Error checking
-        }
+        // Nothing to do — CLR shuts down with the DotNetHost drop.
+        // This method exists for API compatibility.
     }
 }
 
@@ -396,7 +338,6 @@ impl SemanticBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol;
 
     // -- Serialization tests --
 
@@ -411,6 +352,8 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["file"], "/src/MyTable.al");
         assert_eq!(json["analyzers"].as_array().unwrap().len(), 2);
+        // Verify camelCase serialization
+        assert!(json.get("packageCache").is_some());
     }
 
     #[test]
@@ -418,7 +361,7 @@ mod tests {
         let json = serde_json::json!({
             "success": true,
             "diagnostics": [],
-            "app_path": "/output/My.app"
+            "appPath": "/output/My.app"
         });
         let result: CompileResult = serde_json::from_value(json).unwrap();
         assert!(result.success);
@@ -435,14 +378,14 @@ mod tests {
                     "file": "/src/test.al",
                     "line": 10,
                     "column": 5,
-                    "end_line": 10,
-                    "end_column": 15,
+                    "endLine": 10,
+                    "endColumn": 15,
                     "severity": "Error",
                     "code": "AL0001",
                     "message": "Syntax error"
                 }
             ],
-            "app_path": null
+            "appPath": null
         });
         let result: CompileResult = serde_json::from_value(json).unwrap();
         assert!(!result.success);
@@ -553,7 +496,10 @@ mod tests {
         let json = r#"{"name":"TextEncoding","methods":[],"enumValues":["MsDos","UTF8","UTF16","Windows"]}"#;
         let parsed: BuiltinType = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.name, "TextEncoding");
-        assert_eq!(parsed.enum_values, vec!["MsDos", "UTF8", "UTF16", "Windows"]);
+        assert_eq!(
+            parsed.enum_values,
+            vec!["MsDos", "UTF8", "UTF16", "Windows"]
+        );
     }
 
     #[test]
@@ -572,14 +518,14 @@ mod tests {
 
     #[test]
     fn test_semantic_error_display() {
-        let err = SemanticError::SpawnFailed("dotnet not found".to_string());
+        let err = SemanticError::HostInit("dotnet not found".to_string());
         assert_eq!(
             err.to_string(),
-            "Failed to spawn .NET bridge: dotnet not found"
+            "Failed to initialize .NET host: dotnet not found"
         );
 
-        let err = SemanticError::ProcessDied;
-        assert_eq!(err.to_string(), "Bridge process died unexpectedly");
+        let err = SemanticError::NotInitialized;
+        assert_eq!(err.to_string(), "Bridge not initialized");
 
         let err = SemanticError::Timeout(Duration::from_secs(30));
         assert_eq!(err.to_string(), "RPC response timed out after 30s");
@@ -600,88 +546,6 @@ mod tests {
         let err = SemanticError::IoError(io_err);
         assert!(err.to_string().contains("IO error"));
     }
-
-    // -- Request/response matching tests --
-
-    #[test]
-    fn test_request_id_generation() {
-        let counter = AtomicU64::new(1);
-        let id1 = counter.fetch_add(1, Ordering::Relaxed);
-        let id2 = counter.fetch_add(1, Ordering::Relaxed);
-        let id3 = counter.fetch_add(1, Ordering::Relaxed);
-        assert_eq!(id1, 1);
-        assert_eq!(id2, 2);
-        assert_eq!(id3, 3);
-    }
-
-    #[test]
-    fn test_request_response_id_matching() {
-        let req = protocol::Request {
-            id: 42,
-            method: "ping".to_string(),
-            params: None,
-        };
-        let req_json = serde_json::to_string(&req).unwrap();
-
-        // Simulate a response with matching id
-        let resp_json = r#"{"id":42,"result":{"status":"ok"}}"#;
-        let resp: protocol::Response = serde_json::from_str(resp_json).unwrap();
-        assert_eq!(req.id, resp.id);
-
-        // Simulate a response with non-matching id
-        let bad_resp_json = r#"{"id":99,"result":"pong"}"#;
-        let bad_resp: protocol::Response = serde_json::from_str(bad_resp_json).unwrap();
-        assert_ne!(req.id, bad_resp.id);
-
-        // Verify the request was serialized correctly
-        let val: serde_json::Value = serde_json::from_str(&req_json).unwrap();
-        assert_eq!(val["id"], 42);
-    }
-
-    #[test]
-    fn test_rpc_error_in_response() {
-        let resp_json = r#"{"id":1,"error":{"code":-32603,"message":"Internal error"}}"#;
-        let resp: protocol::Response = serde_json::from_str(resp_json).unwrap();
-        assert!(resp.error.is_some());
-        let err = resp.error.unwrap();
-        assert_eq!(err.code, -32603);
-    }
-
-    // -- Spawn failure test --
-
-    #[tokio::test]
-    async fn test_spawn_fails_gracefully_without_dotnet() {
-        let toolchain = AlToolchain {
-            alc: PathBuf::from("/nonexistent/alc.dll"),
-            aldoc: None,
-            code_analysis: PathBuf::from("/nonexistent/CodeAnalysis.dll"),
-            analyzers: al_discovery::AnalyzerPaths {
-                code_cop: PathBuf::from("/nonexistent/CodeCop.dll"),
-                app_source_cop: PathBuf::from("/nonexistent/AppSourceCop.dll"),
-                ui_cop: PathBuf::from("/nonexistent/UICop.dll"),
-                per_tenant_cop: PathBuf::from("/nonexistent/PerTenantCop.dll"),
-                common: PathBuf::from("/nonexistent/Common.dll"),
-            },
-            dotnet_root: PathBuf::from("/nonexistent"),
-            version: "0.0.0".to_string(),
-        };
-
-        let result = SemanticBridge::spawn(&toolchain).await;
-        // Should return an error, not panic
-        match result {
-            Ok(_bridge) => {
-                // If spawn somehow succeeds (e.g., dotnet project found), that's ok
-            }
-            Err(e) => {
-                assert!(
-                    matches!(e, SemanticError::SpawnFailed(_)),
-                    "Expected SpawnFailed, got: {e:?}"
-                );
-            }
-        }
-    }
-
-    // -- Method parameter tests --
 
     #[test]
     fn test_method_parameter_is_var() {

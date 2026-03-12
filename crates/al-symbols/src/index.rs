@@ -28,6 +28,8 @@ pub struct SymbolIndex {
     all: DashMap<usize, (Arc<SymbolEntry>, String)>,
     /// Next ID for the `all` map.
     next_id: std::sync::atomic::AtomicUsize,
+    /// Maps lowercase package name → .app file path on disk.
+    app_paths: DashMap<String, std::path::PathBuf>,
 }
 
 impl Default for SymbolIndex {
@@ -46,6 +48,7 @@ impl SymbolIndex {
             by_extends: DashMap::new(),
             all: DashMap::new(),
             next_id: std::sync::atomic::AtomicUsize::new(0),
+            app_paths: DashMap::new(),
         }
     }
 
@@ -64,6 +67,7 @@ impl SymbolIndex {
                         objects = pkg.objects.len(),
                         "Loaded package"
                     );
+                    self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
                     self.add_entries(&pkg.objects);
                     packages.push(pkg);
                 }
@@ -81,6 +85,58 @@ impl SymbolIndex {
         let pkg = app_reader::read_app_bytes(data)?;
         self.add_entries(&pkg.objects);
         Ok(pkg)
+    }
+
+    /// Load well-known runtime enum types that are built into the AL compiler
+    /// but not published in any .app package's SymbolReference.json.
+    pub fn load_runtime_enums(&self) {
+        use crate::model::{EnumValueSymbol, SymbolEntry};
+
+        let runtime_enums: &[(&str, &[&str])] = &[
+            ("WebServiceActionResultCode", &["None", "Get", "Created", "Updated", "Deleted"]),
+            ("SecurityFilter", &["Validated", "Filtered", "Ignored", "Disallowed"]),
+            ("DataScope", &["Module", "Company", "User", "CompanyAndUser"]),
+            ("ErrorBehavior", &["ThrowError", "Collect"]),
+            ("TestPermissions", &["Disabled", "Restrictive", "NonRestrictive", "InheritFromTestCodounit"]),
+            ("TransactionModel", &["AutoCommit", "AutoRollback"]),
+            ("CommitBehavior", &["Ignore", "Error"]),
+            ("InherentPermissionsScope", &["Permissions", "Entitlements", "Both"]),
+        ];
+
+        let mut entries = Vec::new();
+        for (name, values) in runtime_enums {
+            // Skip if already present in the index (from a package)
+            if !self.get_by_name(name).is_empty() {
+                continue;
+            }
+            let enum_values: Vec<EnumValueSymbol> = values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| EnumValueSymbol {
+                    ordinal: i as i32,
+                    name: v.to_string(),
+                })
+                .collect();
+            entries.push(SymbolEntry {
+                kind: ObjectKind::Enum,
+                id: -1,
+                name: name.to_string(),
+                extends: None,
+                package: "Runtime".to_string(),
+                methods: Vec::new(),
+                fields: Vec::new(),
+                controls: Vec::new(),
+                enum_values,
+                keys: Vec::new(),
+                properties: Vec::new(),
+                variables: Vec::new(),
+            });
+        }
+
+        if !entries.is_empty() {
+            debug!(count = entries.len(), "Loaded runtime enum definitions");
+            self.add_entries(&entries);
+        }
     }
 
     /// Add a collection of symbol entries to the index.
@@ -195,6 +251,11 @@ impl SymbolIndex {
     /// Whether the index is empty.
     pub fn is_empty(&self) -> bool {
         self.all.is_empty()
+    }
+
+    /// Get the `.app` file path for a package name.
+    pub fn app_path(&self, package_name: &str) -> Option<std::path::PathBuf> {
+        self.app_paths.get(&package_name.to_lowercase()).map(|v| v.clone())
     }
 
     /// Get a composed view of an object by merging the base with all extensions.

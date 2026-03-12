@@ -13,9 +13,11 @@ use serde::Serialize;
 
 use al_discovery::{find_project, find_toolchain, AlProject};
 use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
-use al_syntax::{AlParser, TypeResolver};
 #[cfg(test)]
 use al_syntax::lint::LintSeverity;
+#[cfg(test)]
+use std::str::FromStr;
+use al_syntax::{AlParser, TypeResolver};
 
 // ---------------------------------------------------------------------------
 // CLI structure
@@ -38,11 +40,14 @@ enum Commands {
     Setup,
     /// Diagnose issues (green/red checklist)
     Doctor,
-    /// Download symbols from NuGet for current project
+    /// Download symbols for current project
     DownloadSymbols {
         /// Project directory (default: current dir)
         #[arg(short, long)]
         project: Option<String>,
+        /// Download source: "server" (from BC instance via debug.json) or "nuget" (from NuGet feeds)
+        #[arg(short, long)]
+        source: Option<String>,
     },
     /// Fuzzy symbol search across packages
     Search {
@@ -76,6 +81,15 @@ enum Commands {
     Packages,
     /// Show dependency graph
     Deps,
+    /// Compile the AL project using alc (produces .app file)
+    Compile {
+        /// Project directory (default: current dir)
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Path to alc compiler (auto-detected from toolchain if omitted)
+        #[arg(long)]
+        alc: Option<String>,
+    },
     /// Run native lint rules on AL file(s)
     Lint {
         /// File or directory to lint (default: current dir with --all)
@@ -102,9 +116,7 @@ enum Commands {
         all: bool,
     },
     /// Extract document symbols (file outline) from an AL file
-    Symbols {
-        file: String,
-    },
+    Symbols { file: String },
     /// Show type info at a position (hover equivalent)
     Hover {
         file: String,
@@ -169,20 +181,19 @@ enum Commands {
     },
     /// List all lint rules
     Rules,
+    /// List all compiler error codes from CodeAnalysis
+    #[command(name = "error-codes")]
+    ErrorCodes,
+    /// List all built-in types and methods from CodeAnalysis
+    Builtins,
     /// Show version info
     Version,
     /// Show folding ranges for an AL file
-    Folding {
-        file: String,
-    },
+    Folding { file: String },
     /// Show semantic tokens for an AL file
-    Tokens {
-        file: String,
-    },
+    Tokens { file: String },
     /// Parse an AL file and show parse info
-    Parse {
-        file: String,
-    },
+    Parse { file: String },
     /// Show inlay hints for an AL file
     Hints {
         file: String,
@@ -400,6 +411,8 @@ struct DoctorJson {
     package_count: usize,
     symbols_loadable: bool,
     symbol_count: usize,
+    bridge_ok: bool,
+    bridge_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -471,36 +484,6 @@ fn print_json<T: Serialize>(value: &T) {
     println!("{}", serde_json::to_string_pretty(value).unwrap());
 }
 
-fn object_kind_from_str(s: &str) -> Result<ObjectKind, String> {
-    match s.to_lowercase().as_str() {
-        "table" => Ok(ObjectKind::Table),
-        "tableextension" | "table_extension" | "table-extension" => Ok(ObjectKind::TableExtension),
-        "page" => Ok(ObjectKind::Page),
-        "pageextension" | "page_extension" | "page-extension" => Ok(ObjectKind::PageExtension),
-        "codeunit" => Ok(ObjectKind::Codeunit),
-        "report" => Ok(ObjectKind::Report),
-        "reportextension" | "report_extension" | "report-extension" => Ok(ObjectKind::ReportExtension),
-        "xmlport" => Ok(ObjectKind::XmlPort),
-        "query" => Ok(ObjectKind::Query),
-        "enum" => Ok(ObjectKind::Enum),
-        "enumextension" | "enum_extension" | "enum-extension" => Ok(ObjectKind::EnumExtension),
-        "interface" => Ok(ObjectKind::Interface),
-        "permissionset" | "permission_set" | "permission-set" => Ok(ObjectKind::PermissionSet),
-        "permissionsetextension" | "permission_set_extension" | "permission-set-extension" => {
-            Ok(ObjectKind::PermissionSetExtension)
-        }
-        "profile" => Ok(ObjectKind::Profile),
-        "pagecustomization" | "page_customization" | "page-customization" => {
-            Ok(ObjectKind::PageCustomization)
-        }
-        "controladdin" | "control_addin" | "control-addin" | "controlad-in" => {
-            Ok(ObjectKind::ControlAddIn)
-        }
-        "entitlement" => Ok(ObjectKind::Entitlement),
-        _ => Err(format!("Unknown object kind: '{}'. Valid kinds: table, page, codeunit, report, xmlport, query, enum, interface, permissionset, profile, controladdin, entitlement (and their extension variants)", s)),
-    }
-}
-
 /// Convert user-provided 1-based line/col to 0-based Position.
 fn parse_position(line: u32, col: u32) -> tower_lsp::lsp_types::Position {
     tower_lsp::lsp_types::Position {
@@ -531,7 +514,10 @@ fn collect_al_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
                 continue;
             }
             collect_al_files_recursive(&path, files);
-        } else if path.extension().map_or(false, |e| e.eq_ignore_ascii_case("al")) {
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("al"))
+        {
             files.push(path);
         }
     }
@@ -550,9 +536,10 @@ fn doc_symbol_to_json(sym: &tower_lsp::lsp_types::DocumentSymbol) -> DocumentSym
             end_line: sym.range.end.line + 1,
             end_col: sym.range.end.character + 1,
         },
-        children: sym.children.as_ref().map(|kids| {
-            kids.iter().map(doc_symbol_to_json).collect()
-        }),
+        children: sym
+            .children
+            .as_ref()
+            .map(|kids| kids.iter().map(doc_symbol_to_json).collect()),
     }
 }
 
@@ -579,8 +566,6 @@ fn symbol_kind_str(kind: tower_lsp::lsp_types::SymbolKind) -> String {
 
 /// Workspace helper — loads all .al files and builds an object name index.
 struct CliWorkspace {
-    #[allow(dead_code)]
-    root: PathBuf,
     files: HashMap<PathBuf, String>,
     objects: HashMap<String, PathBuf>,
     parser: AlParser,
@@ -589,7 +574,6 @@ struct CliWorkspace {
 impl CliWorkspace {
     fn load(root: PathBuf) -> Self {
         let mut ws = Self {
-            root: root.clone(),
             files: HashMap::new(),
             objects: HashMap::new(),
             parser: AlParser::new(),
@@ -599,7 +583,8 @@ impl CliWorkspace {
             if let Ok(text) = std::fs::read_to_string(&path) {
                 let result = ws.parser.parse(&text);
                 if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &text) {
-                    ws.objects.insert(obj_info.name.to_lowercase(), path.clone());
+                    ws.objects
+                        .insert(obj_info.name.to_lowercase(), path.clone());
                 }
                 ws.files.insert(path, text);
             }
@@ -608,7 +593,8 @@ impl CliWorkspace {
     }
 }
 
-fn load_project_symbols() -> Result<(AlProject, SymbolIndex, Vec<al_symbols::SymbolPackage>), String> {
+fn load_project_symbols() -> Result<(AlProject, SymbolIndex, Vec<al_symbols::SymbolPackage>), String>
+{
     let cwd = std::env::current_dir().map_err(|e| format!("Cannot get current directory: {e}"))?;
     let project = find_project(&cwd).map_err(|e| format!("{e}"))?;
     let index = SymbolIndex::new();
@@ -630,7 +616,10 @@ fn get_dotnet_version() -> Option<String> {
 
 /// Print a single symbol entry in human-readable format.
 fn print_entry(e: &SymbolEntry) {
-    println!("{} {} \"{}\" (package: {})", e.kind, e.id, e.name, e.package);
+    println!(
+        "{} {} \"{}\" (package: {})",
+        e.kind, e.id, e.name, e.package
+    );
     if let Some(ref ext) = e.extends {
         println!("  extends: {ext}");
     }
@@ -643,13 +632,17 @@ fn print_entry(e: &SymbolEntry) {
     if !e.methods.is_empty() {
         println!("  methods:");
         for m in &e.methods {
-            let params: Vec<String> = m.parameters.iter().map(|p| {
-                if p.is_var {
-                    format!("var {}: {}", p.name, p.type_name)
-                } else {
-                    format!("{}: {}", p.name, p.type_name)
-                }
-            }).collect();
+            let params: Vec<String> = m
+                .parameters
+                .iter()
+                .map(|p| {
+                    if p.is_var {
+                        format!("var {}: {}", p.name, p.type_name)
+                    } else {
+                        format!("{}: {}", p.name, p.type_name)
+                    }
+                })
+                .collect();
             let ret = m.return_type.as_deref().unwrap_or("void");
             let scope = if m.is_local { " [local]" } else { "" };
             println!("    {}({}): {}{}", m.name, params.join("; "), ret, scope);
@@ -725,7 +718,10 @@ fn cmd_doctor(json: bool) -> ExitCode {
 
     let project_found = project.is_ok();
     let project_name = project.as_ref().ok().map(|p| p.app_json.name.clone());
-    let packages_dir_exists = project.as_ref().map(|p| p.packages_dir.is_dir()).unwrap_or(false);
+    let packages_dir_exists = project
+        .as_ref()
+        .map(|p| p.packages_dir.is_dir())
+        .unwrap_or(false);
     let package_count = project.as_ref().map(|p| p.packages.len()).unwrap_or(0);
 
     // Try loading symbols
@@ -737,6 +733,20 @@ fn cmd_doctor(json: bool) -> ExitCode {
         (!pkgs.is_empty() || proj.packages.is_empty(), count)
     } else {
         (false, 0)
+    };
+
+    // Try initializing the .NET bridge
+    let (bridge_ok, bridge_error) = if let Ok(toolchain) = &tc {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        match al_semantic::SemanticBridge::new(toolchain) {
+            Ok(bridge) => match rt.block_on(bridge.ping()) {
+                Ok(()) => (true, None),
+                Err(e) => (false, Some(e.to_string())),
+            },
+            Err(e) => (false, Some(e.to_string())),
+        }
+    } else {
+        (false, Some("No ALTool installed".into()))
     };
 
     if json {
@@ -751,6 +761,8 @@ fn cmd_doctor(json: bool) -> ExitCode {
             package_count,
             symbols_loadable,
             symbol_count,
+            bridge_ok,
+            bridge_error: bridge_error.clone(),
         });
         return ExitCode::SUCCESS;
     }
@@ -764,26 +776,58 @@ fn cmd_doctor(json: bool) -> ExitCode {
         }
     };
 
-    check(dotnet_version.is_some(), ".NET SDK",
-        &dotnet_version.clone().unwrap_or_else(|| "not installed".into()));
+    check(
+        dotnet_version.is_some(),
+        ".NET SDK",
+        &dotnet_version
+            .clone()
+            .unwrap_or_else(|| "not installed".into()),
+    );
 
-    check(altool_installed, "ALTool",
-        &altool_version.clone().unwrap_or_else(|| "not installed".into()));
+    check(
+        altool_installed,
+        "ALTool",
+        &altool_version
+            .clone()
+            .unwrap_or_else(|| "not installed".into()),
+    );
 
-    check(project_found, "AL Project",
-        &project_name.clone().unwrap_or_else(|| "no app.json found".into()));
+    check(
+        project_found,
+        "AL Project",
+        &project_name
+            .clone()
+            .unwrap_or_else(|| "no app.json found".into()),
+    );
 
-    check(packages_dir_exists, ".alpackages",
-        &format!("{} .app files", package_count));
+    check(
+        packages_dir_exists,
+        ".alpackages",
+        &format!("{} .app files", package_count),
+    );
 
-    check(symbols_loadable, "Symbols",
-        &format!("{} objects indexed", symbol_count));
+    check(
+        symbols_loadable,
+        "Symbols",
+        &format!("{} objects indexed", symbol_count),
+    );
+
+    check(
+        bridge_ok,
+        "CodeAnalysis Bridge",
+        &if bridge_ok {
+            "in-process .NET hosting OK".to_string()
+        } else {
+            bridge_error.unwrap_or_else(|| "unknown error".into())
+        },
+    );
 
     ExitCode::SUCCESS
 }
 
-fn cmd_download_symbols(project_dir: Option<String>, json: bool) -> ExitCode {
-    let start = project_dir.map(PathBuf::from)
+fn cmd_download_symbols(project_dir: Option<String>, source: Option<String>, json: bool) -> ExitCode {
+    let start = project_dir
+        .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
     let project = match find_project(&start) {
@@ -809,37 +853,81 @@ fn cmd_download_symbols(project_dir: Option<String>, json: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Convert discovery deps to NuGet deps
-    let nuget_deps: Vec<al_symbols::AppDependency> = all_deps.iter().map(|d| {
-        al_symbols::AppDependency {
-            id: d.id.clone(),
-            name: d.name.clone(),
-            publisher: d.publisher.clone(),
-            version: d.version.clone(),
+    // Determine source: --source server|nuget, default to nuget
+    let use_server = match source.as_deref() {
+        Some("server") => true,
+        Some("nuget") | None => false,
+        Some(other) => {
+            if json {
+                print_json(&serde_json::json!({ "error": format!("Unknown source: {other}. Use 'server' or 'nuget'.") }));
+            } else {
+                eprintln!("Unknown source: {other}. Use 'server' or 'nuget'.");
+            }
+            return ExitCode::FAILURE;
         }
-    }).collect();
-
-    let feeds = al_discovery::nuget_feeds();
-    let nuget_feeds: Vec<al_symbols::NuGetFeed> = feeds
-        .iter()
-        .map(|f| al_symbols::NuGetFeed {
-            index_url: f.index_url.clone(),
-        })
-        .collect();
+    };
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let nuget_client = al_symbols::NuGetClient::new(nuget_feeds);
     let dest = &project.packages_dir;
+    let source_name = if use_server { "server" } else { "nuget" };
 
-    let results = rt.block_on(nuget_client.download_all(&nuget_deps, dest));
+    let results: Vec<(String, Result<std::path::PathBuf, String>)> = if use_server {
+        if project.server_configs.is_empty() {
+            if json {
+                print_json(&serde_json::json!({ "error": "No BC server config found in .zed/debug.json or .vscode/launch.json" }));
+            } else {
+                eprintln!("No BC server config found in .zed/debug.json or .vscode/launch.json");
+            }
+            return ExitCode::FAILURE;
+        }
+        let config = &project.server_configs[0];
+        if !json {
+            eprintln!("Downloading from BC server: {} ...", config.display_name());
+        }
+        let client = al_symbols::bc_server::BcServerClient::new_cli(config.clone());
+        let bc_results = rt.block_on(client.download_all(&all_deps, dest));
+        bc_results
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| (all_deps[i].name.clone(), r.map_err(|e| e.to_string())))
+            .collect()
+    } else {
+        if !json {
+            eprintln!("Downloading from NuGet ...");
+        }
+        let nuget_deps: Vec<al_symbols::AppDependency> = all_deps
+            .iter()
+            .map(|d| al_symbols::AppDependency {
+                id: d.id.clone(),
+                name: d.name.clone(),
+                publisher: d.publisher.clone(),
+                version: d.version.clone(),
+            })
+            .collect();
+
+        let feeds = al_discovery::nuget_feeds();
+        let nuget_feeds: Vec<al_symbols::NuGetFeed> = feeds
+            .iter()
+            .map(|f| al_symbols::NuGetFeed {
+                index_url: f.index_url.clone(),
+            })
+            .collect();
+
+        let nuget_client = al_symbols::NuGetClient::new(nuget_feeds);
+        let nuget_results = rt.block_on(nuget_client.download_all(&nuget_deps, dest));
+        nuget_results
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| (nuget_deps[i].name.clone(), r.map_err(|e| e.to_string())))
+            .collect()
+    };
 
     let mut success_count = 0;
     let mut fail_count = 0;
 
     if json {
         let mut items = Vec::new();
-        for (i, result) in results.iter().enumerate() {
-            let dep_name = &nuget_deps[i].name;
+        for (dep_name, result) in &results {
             match result {
                 Ok(path) => {
                     success_count += 1;
@@ -860,13 +948,13 @@ fn cmd_download_symbols(project_dir: Option<String>, json: bool) -> ExitCode {
             }
         }
         print_json(&serde_json::json!({
+            "source": source_name,
             "downloaded": success_count,
             "failed": fail_count,
             "results": items
         }));
     } else {
-        for (i, result) in results.iter().enumerate() {
-            let dep_name = &nuget_deps[i].name;
+        for (dep_name, result) in &results {
             match result {
                 Ok(path) => {
                     success_count += 1;
@@ -878,7 +966,7 @@ fn cmd_download_symbols(project_dir: Option<String>, json: bool) -> ExitCode {
                 }
             }
         }
-        eprintln!("\n{} downloaded, {} failed", success_count, fail_count);
+        eprintln!("\n{} downloaded, {} failed (source: {})", success_count, fail_count, source_name);
     }
 
     if fail_count > 0 {
@@ -912,7 +1000,7 @@ fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
             return ExitCode::SUCCESS;
         }
         // Table header
-        println!("{:<18} {:>6}  {:<40} {}", "KIND", "ID", "NAME", "PACKAGE");
+        println!("{:<18} {:>6}  {:<40} PACKAGE", "KIND", "ID", "NAME");
         println!("{}", "-".repeat(80));
         for e in &results {
             println!("{:<18} {:>6}  {:<40} {}", e.kind, e.id, e.name, e.package);
@@ -924,7 +1012,7 @@ fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
 }
 
 fn cmd_object(kind_str: &str, name: &str, json: bool) -> ExitCode {
-    let kind = match object_kind_from_str(kind_str) {
+    let kind = match kind_str.parse::<ObjectKind>() {
         Ok(k) => k,
         Err(e) => {
             if json {
@@ -978,7 +1066,7 @@ fn cmd_object(kind_str: &str, name: &str, json: bool) -> ExitCode {
 }
 
 fn cmd_by_id(kind_str: &str, id: i32, json: bool) -> ExitCode {
-    let kind = match object_kind_from_str(kind_str) {
+    let kind = match kind_str.parse::<ObjectKind>() {
         Ok(k) => k,
         Err(e) => {
             if json {
@@ -1046,22 +1134,24 @@ fn cmd_events(name: &str, json: bool) -> ExitCode {
     let results = al_symbols::get_events(&index, name);
 
     if json {
-        let publishers: Vec<EventPublisherJson> = results.publishers.iter().map(|p| {
-            EventPublisherJson {
+        let publishers: Vec<EventPublisherJson> = results
+            .publishers
+            .iter()
+            .map(|p| EventPublisherJson {
                 object_kind: p.object.kind.to_string(),
                 object_name: p.object.name.clone(),
                 method_name: p.method.name.clone(),
                 event_type: p.event_type.to_string(),
                 parameters: p.method.parameters.clone(),
-            }
-        }).collect();
+            })
+            .collect();
         print_json(&publishers);
     } else {
         if results.publishers.is_empty() {
             eprintln!("No event publishers matching '{name}'");
             return ExitCode::SUCCESS;
         }
-        println!("{:<14} {:<30} {:<30} {}", "TYPE", "OBJECT", "EVENT", "EVENT TYPE");
+        println!("{:<14} {:<30} {:<30} EVENT TYPE", "TYPE", "OBJECT", "EVENT");
         println!("{}", "-".repeat(90));
         for p in &results.publishers {
             println!(
@@ -1091,22 +1181,27 @@ fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
     let results = al_symbols::get_events(&index, event);
 
     if json {
-        let subscribers: Vec<EventSubscriberJson> = results.subscribers.iter().map(|s| {
-            EventSubscriberJson {
+        let subscribers: Vec<EventSubscriberJson> = results
+            .subscribers
+            .iter()
+            .map(|s| EventSubscriberJson {
                 object_name: s.object.name.clone(),
                 method_name: s.method.name.clone(),
                 target_object_type: s.target_object_type.clone(),
                 target_object_name: s.target_object_name.clone(),
                 target_event_name: s.target_event_name.clone(),
-            }
-        }).collect();
+            })
+            .collect();
         print_json(&subscribers);
     } else {
         if results.subscribers.is_empty() {
             eprintln!("No event subscribers matching '{event}'");
             return ExitCode::SUCCESS;
         }
-        println!("{:<30} {:<30} {:<30} {}", "SUBSCRIBER", "METHOD", "TARGET OBJECT", "TARGET EVENT");
+        println!(
+            "{:<30} {:<30} {:<30} TARGET EVENT",
+            "SUBSCRIBER", "METHOD", "TARGET OBJECT"
+        );
         println!("{}", "-".repeat(120));
         for s in &results.subscribers {
             println!(
@@ -1121,7 +1216,7 @@ fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
 }
 
 fn cmd_composed(kind_str: &str, name: &str, json: bool) -> ExitCode {
-    let kind = match object_kind_from_str(kind_str) {
+    let kind = match kind_str.parse::<ObjectKind>() {
         Ok(k) => k,
         Err(e) => {
             if json {
@@ -1152,7 +1247,10 @@ fn cmd_composed(kind_str: &str, name: &str, json: bool) -> ExitCode {
             if json {
                 print_json(&c);
             } else {
-                println!("{} {} \"{}\" (composed)", c.base.kind, c.base.id, c.base.name);
+                println!(
+                    "{} {} \"{}\" (composed)",
+                    c.base.kind, c.base.id, c.base.name
+                );
                 println!("  {} extension(s) merged", c.extensions.len());
                 for ext in &c.extensions {
                     println!("    - {} (id {}, pkg: {})", ext.name, ext.id, ext.package);
@@ -1166,13 +1264,17 @@ fn cmd_composed(kind_str: &str, name: &str, json: bool) -> ExitCode {
                 if !c.all_methods.is_empty() {
                     println!("  methods ({}):", c.all_methods.len());
                     for m in &c.all_methods {
-                        let params: Vec<String> = m.parameters.iter().map(|p| {
-                            if p.is_var {
-                                format!("var {}: {}", p.name, p.type_name)
-                            } else {
-                                format!("{}: {}", p.name, p.type_name)
-                            }
-                        }).collect();
+                        let params: Vec<String> = m
+                            .parameters
+                            .iter()
+                            .map(|p| {
+                                if p.is_var {
+                                    format!("var {}: {}", p.name, p.type_name)
+                                } else {
+                                    format!("{}: {}", p.name, p.type_name)
+                                }
+                            })
+                            .collect();
                         let ret = m.return_type.as_deref().unwrap_or("void");
                         println!("    {}({}): {}", m.name, params.join("; "), ret);
                     }
@@ -1188,7 +1290,9 @@ fn cmd_composed(kind_str: &str, name: &str, json: bool) -> ExitCode {
         }
         None => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("No {} named '{}' found for composition", kind, name) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("No {} named '{}' found for composition", kind, name) }),
+                );
             } else {
                 eprintln!("No {} named '{}' found for composition", kind, name);
             }
@@ -1211,24 +1315,37 @@ fn cmd_packages(json: bool) -> ExitCode {
     };
 
     if json {
-        let items: Vec<PackageJson> = packages.iter().map(|p| PackageJson {
-            name: p.name.clone(),
-            publisher: p.publisher.clone(),
-            version: p.version.clone(),
-            object_count: p.objects.len(),
-        }).collect();
+        let items: Vec<PackageJson> = packages
+            .iter()
+            .map(|p| PackageJson {
+                name: p.name.clone(),
+                publisher: p.publisher.clone(),
+                version: p.version.clone(),
+                object_count: p.objects.len(),
+            })
+            .collect();
         print_json(&items);
     } else {
         if packages.is_empty() {
             eprintln!("No packages loaded (is .alpackages/ empty?)");
             return ExitCode::SUCCESS;
         }
-        println!("{:<40} {:<25} {:<15} {:>8}", "NAME", "PUBLISHER", "VERSION", "OBJECTS");
+        println!(
+            "{:<40} {:<25} {:<15} {:>8}",
+            "NAME", "PUBLISHER", "VERSION", "OBJECTS"
+        );
         println!("{}", "-".repeat(90));
         for p in &packages {
-            println!("{:<40} {:<25} {:<15} {:>8}", p.name, p.publisher, p.version, p.objects.len());
+            println!(
+                "{:<40} {:<25} {:<15} {:>8}",
+                p.name,
+                p.publisher,
+                p.version,
+                p.objects.len()
+            );
         }
-        eprintln!("\n{} packages, {} total objects",
+        eprintln!(
+            "\n{} packages, {} total objects",
             packages.len(),
             packages.iter().map(|p| p.objects.len()).sum::<usize>()
         );
@@ -1254,12 +1371,15 @@ fn cmd_deps(json: bool) -> ExitCode {
     let deps = &project.app_json.dependencies;
 
     if json {
-        let items: Vec<DepJson> = deps.iter().map(|d| DepJson {
-            id: d.id.clone(),
-            name: d.name.clone(),
-            publisher: d.publisher.clone(),
-            version: d.version.clone(),
-        }).collect();
+        let items: Vec<DepJson> = deps
+            .iter()
+            .map(|d| DepJson {
+                id: d.id.clone(),
+                name: d.name.clone(),
+                publisher: d.publisher.clone(),
+                version: d.version.clone(),
+            })
+            .collect();
         print_json(&serde_json::json!({
             "project": {
                 "name": project.app_json.name,
@@ -1271,10 +1391,9 @@ fn cmd_deps(json: bool) -> ExitCode {
             "dependencies": items,
         }));
     } else {
-        println!("{} v{} by {}",
-            project.app_json.name,
-            project.app_json.version,
-            project.app_json.publisher,
+        println!(
+            "{} v{} by {}",
+            project.app_json.name, project.app_json.version, project.app_json.publisher,
         );
         if let Some(ref app) = project.app_json.application {
             println!("  application: {app}");
@@ -1287,7 +1406,10 @@ fn cmd_deps(json: bool) -> ExitCode {
         } else {
             println!("  dependencies:");
             for d in deps {
-                println!("    {} v{} by {} [{}]", d.name, d.version, d.publisher, d.id);
+                println!(
+                    "    {} v{} by {} [{}]",
+                    d.name, d.version, d.publisher, d.id
+                );
             }
         }
     }
@@ -1299,12 +1421,18 @@ fn lint_single_file(file: &str, parser: &mut AlParser) -> (Vec<LintDiagJson>, bo
     let source = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
-            return (vec![LintDiagJson {
-                code: "IO".to_string(),
-                message: format!("Cannot read '{}': {}", file, e),
-                severity: "error".to_string(),
-                line: 0, column: 0, end_line: 0, end_column: 0,
-            }], true);
+            return (
+                vec![LintDiagJson {
+                    code: "IO".to_string(),
+                    message: format!("Cannot read '{}': {}", file, e),
+                    severity: "error".to_string(),
+                    line: 0,
+                    column: 0,
+                    end_line: 0,
+                    end_column: 0,
+                }],
+                true,
+            );
         }
     };
 
@@ -1341,6 +1469,124 @@ fn lint_single_file(file: &str, parser: &mut AlParser) -> (Vec<LintDiagJson>, bo
     (all_diags, has_errors)
 }
 
+fn cmd_compile(project_dir: Option<String>, alc_path: Option<String>, json: bool) -> ExitCode {
+    let start = project_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let project = match find_project(&start) {
+        Ok(p) => p,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": e.to_string() }));
+            } else {
+                eprintln!("Error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let tc = match find_toolchain() {
+        Ok(tc) => tc,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": e.to_string() }));
+            } else {
+                eprintln!("Error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result = rt.block_on(async {
+        let bridge = al_semantic::SemanticBridge::new(&tc)?;
+        bridge
+            .compile(
+                &project.root,
+                alc_path.as_deref().map(Path::new),
+                Some(&project.packages_dir),
+            )
+            .await
+    });
+
+    match result {
+        Ok(compile_result) => {
+            if json {
+                print_json(&serde_json::json!({
+                    "success": compile_result.success,
+                    "diagnostics": compile_result.diagnostics.iter().map(|d| {
+                        serde_json::json!({
+                            "file": d.file,
+                            "line": d.line,
+                            "column": d.column,
+                            "endLine": d.end_line,
+                            "endColumn": d.end_column,
+                            "severity": d.severity,
+                            "code": d.code,
+                            "message": d.message,
+                        })
+                    }).collect::<Vec<_>>(),
+                    "appPath": compile_result.app_path,
+                }));
+            } else {
+                if compile_result.diagnostics.is_empty() && compile_result.success {
+                    if let Some(app) = &compile_result.app_path {
+                        println!("Compilation succeeded: {}", app.display());
+                    } else {
+                        println!("Compilation succeeded.");
+                    }
+                } else {
+                    for d in &compile_result.diagnostics {
+                        let loc = if d.line > 0 {
+                            format!("{}({}:{})", d.file.display(), d.line, d.column)
+                        } else {
+                            d.file.display().to_string()
+                        };
+                        eprintln!("{}: {} {}: {}", loc, d.severity, d.code, d.message);
+                    }
+                    let errors = compile_result
+                        .diagnostics
+                        .iter()
+                        .filter(|d| d.severity.eq_ignore_ascii_case("error"))
+                        .count();
+                    let warnings = compile_result
+                        .diagnostics
+                        .iter()
+                        .filter(|d| d.severity.eq_ignore_ascii_case("warning"))
+                        .count();
+                    eprintln!(
+                        "\nBuild {}: {} error(s), {} warning(s)",
+                        if compile_result.success {
+                            "succeeded"
+                        } else {
+                            "FAILED"
+                        },
+                        errors,
+                        warnings
+                    );
+                    if let Some(app) = &compile_result.app_path {
+                        println!("Output: {}", app.display());
+                    }
+                }
+            }
+            if compile_result.success {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": e.to_string() }));
+            } else {
+                eprintln!("Error: {e}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, json: bool) -> ExitCode {
     let mut parser = AlParser::new();
 
@@ -1349,8 +1595,9 @@ fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, json: bool) -> ExitCo
         return cmd_lint_semantic(file, all, json);
     }
 
-    if all || file.map_or(false, |f| Path::new(f).is_dir()) {
-        let dir = file.map(PathBuf::from)
+    if all || file.is_some_and(|f| Path::new(f).is_dir()) {
+        let dir = file
+            .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let al_files = collect_al_files(&dir);
 
@@ -1370,9 +1617,14 @@ fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, json: bool) -> ExitCo
             for path in &al_files {
                 let file_str = path.display().to_string();
                 let (diags, has_errors) = lint_single_file(&file_str, &mut parser);
-                if has_errors { any_errors = true; }
+                if has_errors {
+                    any_errors = true;
+                }
                 if !diags.is_empty() {
-                    file_results.push(FileLintJson { file: file_str, diagnostics: diags });
+                    file_results.push(FileLintJson {
+                        file: file_str,
+                        diagnostics: diags,
+                    });
                 }
             }
             print_json(&file_results);
@@ -1381,7 +1633,9 @@ fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, json: bool) -> ExitCo
             for path in &al_files {
                 let file_str = path.display().to_string();
                 let (diags, has_errors) = lint_single_file(&file_str, &mut parser);
-                if has_errors { any_errors = true; }
+                if has_errors {
+                    any_errors = true;
+                }
                 total_diags += diags.len();
                 for d in &diags {
                     println!(
@@ -1390,10 +1644,18 @@ fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, json: bool) -> ExitCo
                     );
                 }
             }
-            eprintln!("\n{} file(s) checked, {} diagnostic(s)", al_files.len(), total_diags);
+            eprintln!(
+                "\n{} file(s) checked, {} diagnostic(s)",
+                al_files.len(),
+                total_diags
+            );
         }
 
-        if any_errors { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+        if any_errors {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        }
     } else {
         // Single file mode
         let file = match file {
@@ -1426,7 +1688,11 @@ fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, json: bool) -> ExitCo
             eprintln!("\n{} diagnostic(s)", all_diags.len());
         }
 
-        if has_errors { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+        if has_errors {
+            ExitCode::FAILURE
+        } else {
+            ExitCode::SUCCESS
+        }
     }
 }
 
@@ -1460,7 +1726,9 @@ fn cmd_lint_semantic(file: Option<&str>, _all: bool, json: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {e}", file_path.display()) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {e}", file_path.display()) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {e}", file_path.display());
             }
@@ -1479,7 +1747,9 @@ fn cmd_lint_semantic(file: Option<&str>, _all: bool, json: bool) -> ExitCode {
         Ok(rt) => rt,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Failed to create runtime: {e}") }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Failed to create runtime: {e}") }),
+                );
             } else {
                 eprintln!("Error: Failed to create runtime: {e}");
             }
@@ -1488,22 +1758,24 @@ fn cmd_lint_semantic(file: Option<&str>, _all: bool, json: bool) -> ExitCode {
     };
 
     let result = rt.block_on(async {
-        let bridge = al_semantic::SemanticBridge::spawn(&tc).await?;
-        let diags = bridge.analyze(al_semantic::AnalyzeRequest {
-            file: file_path.clone(),
-            source,
-            analyzers: vec!["CodeCop".to_string()],
-            package_cache: packages_dir,
-        }).await?;
-        bridge.shutdown().await;
+        let bridge = al_semantic::SemanticBridge::new(&tc)?;
+        let diags = bridge
+            .analyze(al_semantic::AnalyzeRequest {
+                file: file_path.clone(),
+                source,
+                analyzers: vec!["CodeCop".to_string()],
+                package_cache: packages_dir,
+            })
+            .await?;
         Ok::<Vec<al_semantic::DiagnosticEntry>, al_semantic::SemanticError>(diags)
     });
 
     match result {
         Ok(diags) => {
             if json {
-                let items: Vec<LintDiagJson> = diags.iter().map(|d| {
-                    LintDiagJson {
+                let items: Vec<LintDiagJson> = diags
+                    .iter()
+                    .map(|d| LintDiagJson {
                         code: d.code.clone(),
                         message: d.message.clone(),
                         severity: d.severity.to_lowercase(),
@@ -1511,26 +1783,32 @@ fn cmd_lint_semantic(file: Option<&str>, _all: bool, json: bool) -> ExitCode {
                         column: d.column as usize,
                         end_line: d.end_line as usize,
                         end_column: d.end_column as usize,
-                    }
-                }).collect();
+                    })
+                    .collect();
                 print_json(&items);
+            } else if diags.is_empty() {
+                eprintln!("No semantic issues found");
             } else {
-                if diags.is_empty() {
-                    eprintln!("No semantic issues found");
-                } else {
-                    for d in &diags {
-                        println!("{}:{}:{}: {}: {} [{}]",
-                            file_path.display(), d.line, d.column,
-                            d.severity.to_lowercase(), d.message, d.code);
-                    }
-                    eprintln!("\n{} semantic diagnostic(s)", diags.len());
+                for d in &diags {
+                    println!(
+                        "{}:{}:{}: {}: {} [{}]",
+                        file_path.display(),
+                        d.line,
+                        d.column,
+                        d.severity.to_lowercase(),
+                        d.message,
+                        d.code
+                    );
                 }
+                eprintln!("\n{} semantic diagnostic(s)", diags.len());
             }
             ExitCode::SUCCESS
         }
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Semantic analysis failed: {e}") }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Semantic analysis failed: {e}") }),
+                );
             } else {
                 eprintln!("Error: Semantic analysis failed: {e}");
             }
@@ -1539,11 +1817,18 @@ fn cmd_lint_semantic(file: Option<&str>, _all: bool, json: bool) -> ExitCode {
     }
 }
 
-fn cmd_format(file: Option<&str>, check: bool, from_stdin: bool, all: bool, json: bool) -> ExitCode {
+fn cmd_format(
+    file: Option<&str>,
+    check: bool,
+    from_stdin: bool,
+    all: bool,
+    json: bool,
+) -> ExitCode {
     let options = al_syntax::FormatOptions::default();
 
-    if all || file.map_or(false, |f| Path::new(f).is_dir()) {
-        let dir = file.map(PathBuf::from)
+    if all || file.is_some_and(|f| Path::new(f).is_dir()) {
+        let dir = file
+            .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let al_files = collect_al_files(&dir);
 
@@ -1610,14 +1895,20 @@ fn cmd_format(file: Option<&str>, check: bool, from_stdin: bool, all: bool, json
                 }));
             }
         } else if check {
-            eprintln!("\n{} file(s) checked, {} need formatting", al_files.len(), needs_formatting);
+            eprintln!(
+                "\n{} file(s) checked, {} need formatting",
+                al_files.len(),
+                needs_formatting
+            );
         } else {
-            eprintln!("\n{} file(s) checked, {} formatted", al_files.len(), formatted_count);
+            eprintln!(
+                "\n{} file(s) checked, {} formatted",
+                al_files.len(),
+                formatted_count
+            );
         }
 
-        if check && needs_formatting > 0 {
-            ExitCode::FAILURE
-        } else if error_count > 0 {
+        if (check && needs_formatting > 0) || error_count > 0 {
             ExitCode::FAILURE
         } else {
             ExitCode::SUCCESS
@@ -1633,15 +1924,13 @@ fn cmd_format(file: Option<&str>, check: bool, from_stdin: bool, all: bool, json
             (buf, None)
         } else {
             match file {
-                Some(f) => {
-                    match std::fs::read_to_string(f) {
-                        Ok(s) => (s, Some(f.to_string())),
-                        Err(e) => {
-                            eprintln!("Error: Cannot read '{}': {}", f, e);
-                            return ExitCode::FAILURE;
-                        }
+                Some(f) => match std::fs::read_to_string(f) {
+                    Ok(s) => (s, Some(f.to_string())),
+                    Err(e) => {
+                        eprintln!("Error: Cannot read '{}': {}", f, e);
+                        return ExitCode::FAILURE;
                     }
-                }
+                },
                 None => {
                     eprintln!("Error: Provide a file path, use --stdin, or use --all");
                     return ExitCode::FAILURE;
@@ -1700,7 +1989,9 @@ fn cmd_symbols(file: &str, json: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -1744,7 +2035,9 @@ fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -1784,12 +2077,26 @@ fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
     if let Some(proc_info) = al_syntax::find_procedure_at(&result.tree, &source, position) {
         if proc_info.name.eq_ignore_ascii_case(clean_name) {
             let local = if proc_info.is_local { "local " } else { "" };
-            let params: Vec<String> = proc_info.parameters.iter().map(|p| {
-                let var_prefix = if p.is_var { "var " } else { "" };
-                format!("{}{}: {}", var_prefix, p.name, p.type_name)
-            }).collect();
-            let ret = proc_info.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
-            let sig = format!("{}procedure {}({}){}", local, proc_info.name, params.join("; "), ret);
+            let params: Vec<String> = proc_info
+                .parameters
+                .iter()
+                .map(|p| {
+                    let var_prefix = if p.is_var { "var " } else { "" };
+                    format!("{}{}: {}", var_prefix, p.name, p.type_name)
+                })
+                .collect();
+            let ret = proc_info
+                .return_type
+                .as_ref()
+                .map(|r| format!(": {}", r))
+                .unwrap_or_default();
+            let sig = format!(
+                "{}procedure {}({}){}",
+                local,
+                proc_info.name,
+                params.join("; "),
+                ret
+            );
 
             if json {
                 print_json(&HoverJson {
@@ -1822,7 +2129,10 @@ fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
                         source_package: None,
                     });
                 } else {
-                    println!("{}{}: {} (parameter)", var_prefix, param.name, param.type_name);
+                    println!(
+                        "{}{}: {} (parameter)",
+                        var_prefix, param.name, param.type_name
+                    );
                 }
                 return ExitCode::SUCCESS;
             }
@@ -1839,7 +2149,9 @@ fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
             al_syntax::VariableScope::SelfImplicit => "self",
             al_syntax::VariableScope::TriggerImplicit => "trigger variable",
         };
-        let subtype_str = decl.type_subtype.as_ref()
+        let subtype_str = decl
+            .type_subtype
+            .as_ref()
             .map(|s| format!(" \"{}\"", s))
             .unwrap_or_default();
         let var_prefix = if decl.is_var { "var " } else { "" };
@@ -1855,7 +2167,10 @@ fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
                 source_package: None,
             });
         } else {
-            println!("{}{}: {}{} ({})", var_prefix, decl.name, decl.type_name, subtype_str, scope_label);
+            println!(
+                "{}{}: {}{} ({})",
+                var_prefix, decl.name, decl.type_name, subtype_str, scope_label
+            );
         }
         return ExitCode::SUCCESS;
     }
@@ -1868,7 +2183,10 @@ fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
             if json {
                 print_json(&serde_json::json!(null));
             } else {
-                eprintln!("No symbol info for '{}' at {}:{}:{}", clean_name, file, line, col);
+                eprintln!(
+                    "No symbol info for '{}' at {}:{}:{}",
+                    clean_name, file, line, col
+                );
             }
             return ExitCode::SUCCESS;
         }
@@ -1888,7 +2206,10 @@ fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
                 source_package: Some(entry.package.clone()),
             });
         } else {
-            println!("{} {} \"{}\" (package: {})", entry.kind, entry.id, entry.name, entry.package);
+            println!(
+                "{} {} \"{}\" (package: {})",
+                entry.kind, entry.id, entry.name, entry.package
+            );
             if !entry.fields.is_empty() {
                 println!("  {} field(s)", entry.fields.len());
             }
@@ -1899,10 +2220,43 @@ fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // 4. Bridge fallback — CodeAnalysis type resolution
+    if let Ok(tc) = find_toolchain() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let file_path = std::path::Path::new(file).canonicalize().unwrap_or_else(|_| PathBuf::from(file));
+        let result: Result<Option<al_semantic::TypeInfo>, _> = rt.block_on(async {
+            let bridge = al_semantic::SemanticBridge::new(&tc)?;
+            bridge.type_at(&file_path, (line, col)).await
+        });
+        if let Ok(Some(info)) = result {
+            if json {
+                print_json(&HoverJson {
+                    name: info.name.clone(),
+                    kind: info.kind.clone(),
+                    type_name: Some(info.name.clone()),
+                    type_subtype: None,
+                    scope: None,
+                    signature: None,
+                    source_package: Some("CodeAnalysis".to_string()),
+                });
+            } else {
+                let mut out = format!("{} ({})", info.name, info.kind);
+                if let Some(doc) = &info.documentation {
+                    out.push_str(&format!("\n  {doc}"));
+                }
+                println!("{out}");
+            }
+            return ExitCode::SUCCESS;
+        }
+    }
+
     if json {
         print_json(&serde_json::json!(null));
     } else {
-        eprintln!("No symbol info for '{}' at {}:{}:{}", clean_name, file, line, col);
+        eprintln!(
+            "No symbol info for '{}' at {}:{}:{}",
+            clean_name, file, line, col
+        );
     }
     ExitCode::SUCCESS
 }
@@ -1912,7 +2266,9 @@ fn cmd_definition(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -1927,16 +2283,22 @@ fn cmd_definition(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
     let node = match al_syntax::find_node_at_position(&result.tree, position) {
         Some(n) => n,
         None => {
-            if json { print_json(&serde_json::json!(null)); }
-            else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+            if json {
+                print_json(&serde_json::json!(null));
+            } else {
+                eprintln!("No symbol at {}:{}:{}", file, line, col);
+            }
             return ExitCode::SUCCESS;
         }
     };
     let node_text = node.utf8_text(source.as_bytes()).unwrap_or("");
     let clean_name = node_text.trim_matches('"');
     if clean_name.is_empty() {
-        if json { print_json(&serde_json::json!(null)); }
-        else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+        if json {
+            print_json(&serde_json::json!(null));
+        } else {
+            eprintln!("No symbol at {}:{}:{}", file, line, col);
+        }
         return ExitCode::SUCCESS;
     }
 
@@ -1954,7 +2316,9 @@ fn cmd_definition(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
             if *obj_path != file_abs {
                 if let Some(file_text) = ws.files.get(obj_path) {
                     let ws_result = parser.parse(file_text);
-                    if let Some(obj_info) = al_syntax::find_object_declaration(&ws_result.tree, file_text) {
+                    if let Some(obj_info) =
+                        al_syntax::find_object_declaration(&ws_result.tree, file_text)
+                    {
                         let def_line = obj_info.range.start_point.row as u32 + 1;
                         let def_col = obj_info.range.start_point.column as u32 + 1;
                         if json {
@@ -1980,7 +2344,7 @@ fn cmd_definition(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
         if let Ok((_project, index, _packages)) = load_project_symbols() {
             let entries = index.get_by_name(clean_name);
             if let Some(entry) = entries.into_iter().find(|e| !e.kind.is_extension()) {
-                match al_symbols::virtual_file::get_or_create(&entry) {
+                match al_symbols::virtual_file::get_or_create(&entry, None, true) {
                     Ok(vpath) => {
                         if json {
                             print_json(&LocationJson {
@@ -2032,7 +2396,9 @@ fn cmd_definition(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
         let ws = CliWorkspace::load(cwd);
         let file_abs = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
         for (path, text) in &ws.files {
-            if *path == file_abs { continue; }
+            if *path == file_abs {
+                continue;
+            }
             let ws_result = parser.parse(text);
             let doc_symbols = al_syntax::extract_document_symbols(&ws_result.tree, text);
             for sym in &doc_symbols {
@@ -2060,8 +2426,11 @@ fn cmd_definition(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
         }
     }
 
-    if json { print_json(&serde_json::json!(null)); }
-    else { eprintln!("Definition not found for '{}'", clean_name); }
+    if json {
+        print_json(&serde_json::json!(null));
+    } else {
+        eprintln!("Definition not found for '{}'", clean_name);
+    }
     ExitCode::SUCCESS
 }
 
@@ -2070,7 +2439,9 @@ fn cmd_references(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -2085,16 +2456,22 @@ fn cmd_references(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
     let node = match al_syntax::find_node_at_position(&result.tree, position) {
         Some(n) => n,
         None => {
-            if json { print_json(&serde_json::json!([])); }
-            else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+            if json {
+                print_json(&serde_json::json!([]));
+            } else {
+                eprintln!("No symbol at {}:{}:{}", file, line, col);
+            }
             return ExitCode::SUCCESS;
         }
     };
     let node_text = node.utf8_text(source.as_bytes()).unwrap_or("");
     let clean_name = node_text.trim_matches('"');
     if clean_name.is_empty() {
-        if json { print_json(&serde_json::json!([])); }
-        else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+        if json {
+            print_json(&serde_json::json!([]));
+        } else {
+            eprintln!("No symbol at {}:{}:{}", file, line, col);
+        }
         return ExitCode::SUCCESS;
     }
 
@@ -2119,7 +2496,9 @@ fn cmd_references(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
         let ws = CliWorkspace::load(cwd);
 
         for (path, text) in &ws.files {
-            if *path == file_abs { continue; }
+            if *path == file_abs {
+                continue;
+            }
             let ws_result = parser.parse(text);
             let ws_refs = al_syntax::find_variable_references(&ws_result.tree, text, clean_name);
             for r in &ws_refs {
@@ -2136,15 +2515,13 @@ fn cmd_references(file: &str, line: u32, col: u32, workspace: bool, json: bool) 
 
     if json {
         print_json(&locations);
+    } else if locations.is_empty() {
+        eprintln!("No references found for '{}'", clean_name);
     } else {
-        if locations.is_empty() {
-            eprintln!("No references found for '{}'", clean_name);
-        } else {
-            for loc in &locations {
-                println!("{}:{}:{}", loc.file, loc.line, loc.column);
-            }
-            eprintln!("\n{} reference(s)", locations.len());
+        for loc in &locations {
+            println!("{}:{}:{}", loc.file, loc.line, loc.column);
         }
+        eprintln!("\n{} reference(s)", locations.len());
     }
 
     ExitCode::SUCCESS
@@ -2155,7 +2532,9 @@ fn cmd_signature(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -2170,18 +2549,28 @@ fn cmd_signature(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
     let text_line = match source.lines().nth(line_idx) {
         Some(l) => l,
         None => {
-            if json { print_json(&serde_json::json!(null)); }
-            else { eprintln!("Line {} out of range", line); }
+            if json {
+                print_json(&serde_json::json!(null));
+            } else {
+                eprintln!("Line {} out of range", line);
+            }
             return ExitCode::SUCCESS;
         }
     };
 
-    let prefix = if col_idx <= text_line.len() { &text_line[..col_idx] } else { text_line };
+    let prefix = if col_idx <= text_line.len() {
+        &text_line[..col_idx]
+    } else {
+        text_line
+    };
     let (func_name, active_param) = match al_syntax::find_call_context(prefix) {
         Some(v) => v,
         None => {
-            if json { print_json(&serde_json::json!(null)); }
-            else { eprintln!("No function call context at {}:{}:{}", file, line, col); }
+            if json {
+                print_json(&serde_json::json!(null));
+            } else {
+                eprintln!("No function call context at {}:{}:{}", file, line, col);
+            }
             return ExitCode::SUCCESS;
         }
     };
@@ -2201,17 +2590,26 @@ fn cmd_signature(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
                         if json {
                             print_json(&SignatureJson {
                                 label,
-                                parameters: param_names.iter().map(|(n, t)| SignatureParamJson {
-                                    name: n.clone(), type_name: t.clone(),
-                                }).collect(),
+                                parameters: param_names
+                                    .iter()
+                                    .map(|(n, t)| SignatureParamJson {
+                                        name: n.clone(),
+                                        type_name: t.clone(),
+                                    })
+                                    .collect(),
                                 active_parameter: active_param,
                             });
                         } else {
                             println!("{label}");
                             if !param_names.is_empty() {
-                                println!("  active parameter: {} (index {})",
-                                    param_names.get(active_param as usize).map(|(n, _)| n.as_str()).unwrap_or("?"),
-                                    active_param);
+                                println!(
+                                    "  active parameter: {} (index {})",
+                                    param_names
+                                        .get(active_param as usize)
+                                        .map(|(n, _)| n.as_str())
+                                        .unwrap_or("?"),
+                                    active_param
+                                );
                             }
                         }
                         return ExitCode::SUCCESS;
@@ -2227,26 +2625,45 @@ fn cmd_signature(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         for entry in &symbols {
             for method in &entry.methods {
                 if method.name.eq_ignore_ascii_case(func_name) {
-                    let params: Vec<String> = method.parameters.iter().map(|p| {
-                        let var_prefix = if p.is_var { "var " } else { "" };
-                        format!("{}{}: {}", var_prefix, p.name, p.type_name)
-                    }).collect();
-                    let ret = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
+                    let params: Vec<String> = method
+                        .parameters
+                        .iter()
+                        .map(|p| {
+                            let var_prefix = if p.is_var { "var " } else { "" };
+                            format!("{}{}: {}", var_prefix, p.name, p.type_name)
+                        })
+                        .collect();
+                    let ret = method
+                        .return_type
+                        .as_ref()
+                        .map(|r| format!(": {}", r))
+                        .unwrap_or_default();
                     let label = format!("{}({}){}", method.name, params.join("; "), ret);
 
                     if json {
                         print_json(&SignatureJson {
                             label,
-                            parameters: method.parameters.iter().map(|p| SignatureParamJson {
-                                name: p.name.clone(), type_name: p.type_name.clone(),
-                            }).collect(),
+                            parameters: method
+                                .parameters
+                                .iter()
+                                .map(|p| SignatureParamJson {
+                                    name: p.name.clone(),
+                                    type_name: p.type_name.clone(),
+                                })
+                                .collect(),
                             active_parameter: active_param,
                         });
                     } else {
                         println!("{label}");
-                        println!("  active parameter: {} (index {})",
-                            method.parameters.get(active_param as usize).map(|p| p.name.as_str()).unwrap_or("?"),
-                            active_param);
+                        println!(
+                            "  active parameter: {} (index {})",
+                            method
+                                .parameters
+                                .get(active_param as usize)
+                                .map(|p| p.name.as_str())
+                                .unwrap_or("?"),
+                            active_param
+                        );
                     }
                     return ExitCode::SUCCESS;
                 }
@@ -2254,8 +2671,11 @@ fn cmd_signature(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         }
     }
 
-    if json { print_json(&serde_json::json!(null)); }
-    else { eprintln!("No signature found for '{}'", func_name); }
+    if json {
+        print_json(&serde_json::json!(null));
+    } else {
+        eprintln!("No signature found for '{}'", func_name);
+    }
     ExitCode::SUCCESS
 }
 
@@ -2273,27 +2693,37 @@ fn parse_param_names_from_detail(detail: &str) -> Vec<(String, String)> {
             '(' => depth += 1,
             ')' => {
                 depth -= 1;
-                if depth == 0 { end = start + i; break; }
+                if depth == 0 {
+                    end = start + i;
+                    break;
+                }
             }
             _ => {}
         }
     }
     let params_str = &trimmed[start..end];
-    if params_str.trim().is_empty() { return Vec::new(); }
+    if params_str.trim().is_empty() {
+        return Vec::new();
+    }
 
-    params_str.split(';').filter_map(|param| {
-        let param = param.trim();
-        if param.is_empty() { return None; }
-        let param = param.strip_prefix("var ").unwrap_or(param).trim();
-        if let Some(colon_pos) = param.find(':') {
-            let name = param[..colon_pos].trim().trim_matches('"').to_string();
-            let type_name = param[colon_pos + 1..].trim().to_string();
-            if !name.is_empty() {
-                return Some((name, type_name));
+    params_str
+        .split(';')
+        .filter_map(|param| {
+            let param = param.trim();
+            if param.is_empty() {
+                return None;
             }
-        }
-        None
-    }).collect()
+            let param = param.strip_prefix("var ").unwrap_or(param).trim();
+            if let Some(colon_pos) = param.find(':') {
+                let name = param[..colon_pos].trim().trim_matches('"').to_string();
+                let type_name = param[colon_pos + 1..].trim().to_string();
+                if !name.is_empty() {
+                    return Some((name, type_name));
+                }
+            }
+            None
+        })
+        .collect()
 }
 
 fn cmd_completions(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
@@ -2301,7 +2731,9 @@ fn cmd_completions(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -2339,7 +2771,9 @@ fn cmd_completions(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
                         if let Some(ref subtype) = resolved_subtype {
                             for entry in index.get_by_name(subtype) {
                                 for method in &entry.methods {
-                                    if method.is_local { continue; }
+                                    if method.is_local {
+                                        continue;
+                                    }
                                     items.push(CompletionItemJson {
                                         label: method.name.clone(),
                                         kind: "method".to_string(),
@@ -2358,7 +2792,9 @@ fn cmd_completions(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
                         // By var name directly
                         for entry in index.get_by_name(var_name) {
                             for method in &entry.methods {
-                                if method.is_local { continue; }
+                                if method.is_local {
+                                    continue;
+                                }
                                 items.push(CompletionItemJson {
                                     label: method.name.clone(),
                                     kind: "method".to_string(),
@@ -2405,11 +2841,37 @@ fn cmd_completions(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         al_syntax::CompletionContext::TypePosition => {
             // Type keywords
             for kw in &[
-                "Integer", "Decimal", "Text", "Code", "Boolean", "Date", "Time",
-                "DateTime", "Guid", "BigInteger", "Char", "Byte", "Blob", "Option",
-                "Record", "Variant", "List", "Dictionary", "JsonObject", "JsonArray",
-                "HttpClient", "HttpContent", "HttpResponseMessage", "Label",
-                "Enum", "Interface", "Codeunit", "Page", "Report", "Query", "XmlPort",
+                "Integer",
+                "Decimal",
+                "Text",
+                "Code",
+                "Boolean",
+                "Date",
+                "Time",
+                "DateTime",
+                "Guid",
+                "BigInteger",
+                "Char",
+                "Byte",
+                "Blob",
+                "Option",
+                "Record",
+                "Variant",
+                "List",
+                "Dictionary",
+                "JsonObject",
+                "JsonArray",
+                "HttpClient",
+                "HttpContent",
+                "HttpResponseMessage",
+                "Label",
+                "Enum",
+                "Interface",
+                "Codeunit",
+                "Page",
+                "Report",
+                "Query",
+                "XmlPort",
             ] {
                 items.push(CompletionItemJson {
                     label: kw.to_string(),
@@ -2424,7 +2886,11 @@ fn cmd_completions(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
             let resolver = TypeResolver::new(&result.tree, &source);
             let vars = resolver.variables_at(position);
             for var in &vars {
-                let subtype = var.type_subtype.as_ref().map(|s| format!(" \"{}\"", s)).unwrap_or_default();
+                let subtype = var
+                    .type_subtype
+                    .as_ref()
+                    .map(|s| format!(" \"{}\"", s))
+                    .unwrap_or_default();
                 items.push(CompletionItemJson {
                     label: var.name.clone(),
                     kind: "variable".to_string(),
@@ -2451,9 +2917,29 @@ fn cmd_completions(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
             }
 
             // Keywords
-            for kw in &["begin", "end", "var", "procedure", "trigger", "if", "then",
-                "else", "case", "for", "to", "do", "while", "repeat", "until",
-                "exit", "true", "false", "not", "and", "or"] {
+            for kw in &[
+                "begin",
+                "end",
+                "var",
+                "procedure",
+                "trigger",
+                "if",
+                "then",
+                "else",
+                "case",
+                "for",
+                "to",
+                "do",
+                "while",
+                "repeat",
+                "until",
+                "exit",
+                "true",
+                "false",
+                "not",
+                "and",
+                "or",
+            ] {
                 items.push(CompletionItemJson {
                     label: kw.to_string(),
                     kind: "keyword".to_string(),
@@ -2463,41 +2949,74 @@ fn cmd_completions(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         }
     }
 
+    // Bridge fallback — CodeAnalysis completions when native returns nothing for MemberAccess
+    if items.is_empty() && matches!(context, al_syntax::CompletionContext::MemberAccess) {
+        if let Ok(tc) = find_toolchain() {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let file_path = std::path::Path::new(file).canonicalize().unwrap_or_else(|_| PathBuf::from(file));
+            let result: Result<Vec<al_semantic::CompletionItem>, _> = rt.block_on(async {
+                let bridge = al_semantic::SemanticBridge::new(&tc)?;
+                bridge.completions_at(&file_path, (line, col)).await
+            });
+            if let Ok(bridge_items) = result {
+                for item in bridge_items {
+                    items.push(CompletionItemJson {
+                        label: item.label,
+                        kind: item.kind.to_lowercase(),
+                        detail: item.detail,
+                    });
+                }
+            }
+        }
+    }
+
     // Dedup by label
     items.dedup_by(|a, b| a.label == b.label);
 
     if json {
         print_json(&items);
+    } else if items.is_empty() {
+        eprintln!("No completions at {}:{}:{}", file, line, col);
     } else {
-        if items.is_empty() {
-            eprintln!("No completions at {}:{}:{}", file, line, col);
-        } else {
-            for item in &items {
-                let detail = item.detail.as_deref().unwrap_or("");
-                println!("{:<30} {:<10} {}", item.label, item.kind, detail);
-            }
-            eprintln!("\n{} completion(s)", items.len());
+        for item in &items {
+            let detail = item.detail.as_deref().unwrap_or("");
+            println!("{:<30} {:<10} {}", item.label, item.kind, detail);
         }
+        eprintln!("\n{} completion(s)", items.len());
     }
 
     ExitCode::SUCCESS
 }
 
 fn format_method_params(method: &al_symbols::MethodSymbol) -> String {
-    let params: Vec<String> = method.parameters.iter().map(|p| {
-        let var_prefix = if p.is_var { "var " } else { "" };
-        format!("{}{}: {}", var_prefix, p.name, p.type_name)
-    }).collect();
+    let params: Vec<String> = method
+        .parameters
+        .iter()
+        .map(|p| {
+            let var_prefix = if p.is_var { "var " } else { "" };
+            format!("{}{}: {}", var_prefix, p.name, p.type_name)
+        })
+        .collect();
     let ret = method.return_type.as_deref().unwrap_or("void");
     format!("({}): {}", params.join("; "), ret)
 }
 
-fn cmd_rename(file: &str, line: u32, col: u32, new_name: &str, dry_run: bool, workspace: bool, json: bool) -> ExitCode {
+fn cmd_rename(
+    file: &str,
+    line: u32,
+    col: u32,
+    new_name: &str,
+    dry_run: bool,
+    workspace: bool,
+    json: bool,
+) -> ExitCode {
     let source = match std::fs::read_to_string(file) {
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -2512,16 +3031,22 @@ fn cmd_rename(file: &str, line: u32, col: u32, new_name: &str, dry_run: bool, wo
     let node = match al_syntax::find_node_at_position(&result.tree, position) {
         Some(n) => n,
         None => {
-            if json { print_json(&serde_json::json!({ "error": "No symbol at position" })); }
-            else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+            if json {
+                print_json(&serde_json::json!({ "error": "No symbol at position" }));
+            } else {
+                eprintln!("No symbol at {}:{}:{}", file, line, col);
+            }
             return ExitCode::FAILURE;
         }
     };
     let node_text = node.utf8_text(source.as_bytes()).unwrap_or("");
     let clean_name = node_text.trim_matches('"');
     if clean_name.is_empty() {
-        if json { print_json(&serde_json::json!({ "error": "No symbol at position" })); }
-        else { eprintln!("No symbol at {}:{}:{}", file, line, col); }
+        if json {
+            print_json(&serde_json::json!({ "error": "No symbol at position" }));
+        } else {
+            eprintln!("No symbol at {}:{}:{}", file, line, col);
+        }
         return ExitCode::FAILURE;
     }
 
@@ -2557,7 +3082,9 @@ fn cmd_rename(file: &str, line: u32, col: u32, new_name: &str, dry_run: bool, wo
         let ws = CliWorkspace::load(cwd);
 
         for (path, text) in &ws.files {
-            if *path == file_abs { continue; }
+            if *path == file_abs {
+                continue;
+            }
             let ws_result = parser.parse(text);
             let ws_refs = al_syntax::find_variable_references(&ws_result.tree, text, clean_name);
             for r in &ws_refs {
@@ -2575,23 +3102,37 @@ fn cmd_rename(file: &str, line: u32, col: u32, new_name: &str, dry_run: bool, wo
     }
 
     if all_edits.is_empty() {
-        if json { print_json(&serde_json::json!({ "changes": [] })); }
-        else { eprintln!("No references found for '{}'", clean_name); }
+        if json {
+            print_json(&serde_json::json!({ "changes": [] }));
+        } else {
+            eprintln!("No references found for '{}'", clean_name);
+        }
         return ExitCode::SUCCESS;
     }
 
     if json {
         print_json(&serde_json::json!({ "changes": all_edits }));
     } else if dry_run {
-        println!("Rename '{}' -> '{}' ({} edit(s)):", clean_name, new_name, all_edits.len());
+        println!(
+            "Rename '{}' -> '{}' ({} edit(s)):",
+            clean_name,
+            new_name,
+            all_edits.len()
+        );
         for edit in &all_edits {
-            println!("  {}:{}:{} -> {}", edit.file, edit.line, edit.column, edit.new_text);
+            println!(
+                "  {}:{}:{} -> {}",
+                edit.file, edit.line, edit.column, edit.new_text
+            );
         }
     } else {
         // Group edits by file and apply in reverse order (to preserve positions)
         let mut edits_by_file: HashMap<String, Vec<&RenameEditJson>> = HashMap::new();
         for edit in &all_edits {
-            edits_by_file.entry(edit.file.clone()).or_default().push(edit);
+            edits_by_file
+                .entry(edit.file.clone())
+                .or_default()
+                .push(edit);
         }
 
         for (file_path, mut edits) in edits_by_file {
@@ -2604,14 +3145,14 @@ fn cmd_rename(file: &str, line: u32, col: u32, new_name: &str, dry_run: bool, wo
             };
 
             // Sort edits in reverse order by position
-            edits.sort_by(|a, b| {
-                b.line.cmp(&a.line).then(b.column.cmp(&a.column))
-            });
+            edits.sort_by(|a, b| b.line.cmp(&a.line).then(b.column.cmp(&a.column)));
 
             // Apply edits (reverse order keeps earlier positions valid)
             let mut lines: Vec<String> = text.lines().map(String::from).collect();
             // Handle trailing newline
-            if text.ends_with('\n') { lines.push(String::new()); }
+            if text.ends_with('\n') {
+                lines.push(String::new());
+            }
 
             for edit in &edits {
                 let start_line = (edit.line - 1) as usize;
@@ -2643,23 +3184,134 @@ fn cmd_rules(json: bool) -> ExitCode {
     let rules = al_syntax::lint_rules();
 
     if json {
-        let items: Vec<LintRuleJson> = rules.iter().map(|r| LintRuleJson {
-            code: r.code,
-            name: r.name,
-            severity: r.severity.to_string(),
-            description: r.description,
-        }).collect();
+        let items: Vec<LintRuleJson> = rules
+            .iter()
+            .map(|r| LintRuleJson {
+                code: r.code,
+                name: r.name,
+                severity: r.severity.to_string(),
+                description: r.description,
+            })
+            .collect();
         print_json(&items);
     } else {
-        println!("{:<10} {:<25} {:<10} {}", "CODE", "NAME", "SEVERITY", "DESCRIPTION");
+        println!(
+            "{:<10} {:<25} {:<10} DESCRIPTION",
+            "CODE", "NAME", "SEVERITY"
+        );
         println!("{}", "-".repeat(85));
         for r in rules {
-            println!("{:<10} {:<25} {:<10} {}", r.code, r.name, r.severity, r.description);
+            println!(
+                "{:<10} {:<25} {:<10} {}",
+                r.code, r.name, r.severity, r.description
+            );
         }
         eprintln!("\n{} rules", rules.len());
     }
 
     ExitCode::SUCCESS
+}
+
+fn cmd_error_codes(json: bool) -> ExitCode {
+    let tc = match find_toolchain() {
+        Ok(tc) => tc,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": e.to_string() }));
+            } else {
+                eprintln!("Error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result: Result<Vec<al_semantic::ErrorCodeInfo>, al_semantic::SemanticError> = rt.block_on(async {
+        let bridge = al_semantic::SemanticBridge::new(&tc)?;
+        bridge.error_codes().await
+    });
+
+    match result {
+        Ok(codes) => {
+            if json {
+                print_json(&codes);
+            } else {
+                println!("{:<10} {:<10} DESCRIPTION", "CODE", "SEVERITY");
+                println!("{}", "-".repeat(80));
+                for c in &codes {
+                    println!("{:<10} {:<10} {}", c.code, c.severity, c.message);
+                }
+                eprintln!("\n{} error codes", codes.len());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": e.to_string() }));
+            } else {
+                eprintln!("Error: {e}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_builtins(json: bool) -> ExitCode {
+    let tc = match find_toolchain() {
+        Ok(tc) => tc,
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": e.to_string() }));
+            } else {
+                eprintln!("Error: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let result: Result<Vec<al_semantic::BuiltinType>, al_semantic::SemanticError> = rt.block_on(async {
+        let bridge = al_semantic::SemanticBridge::new(&tc)?;
+        bridge.builtin_types().await
+    });
+
+    match result {
+        Ok(types) => {
+            if json {
+                print_json(&types);
+            } else {
+                for bt in &types {
+                    if bt.methods.is_empty() && bt.enum_values.is_empty() {
+                        println!("{}", bt.name);
+                    } else {
+                        println!("{} ({} methods, {} enum values)", bt.name, bt.methods.len(), bt.enum_values.len());
+                        for m in &bt.methods {
+                            let params: Vec<String> = m.parameters.iter().map(|p| {
+                                let var = if p.is_var { "var " } else { "" };
+                                format!("{}{}: {}", var, p.name, p.type_name)
+                            }).collect();
+                            let ret = m.return_type.as_deref().unwrap_or("");
+                            let ret_str = if ret.is_empty() { String::new() } else { format!(": {ret}") };
+                            println!("  .{}({}){}", m.name, params.join("; "), ret_str);
+                        }
+                        for ev in &bt.enum_values {
+                            println!("  ::{ev}");
+                        }
+                    }
+                }
+                eprintln!("\n{} built-in types", types.len());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            if json {
+                print_json(&serde_json::json!({ "error": e.to_string() }));
+            } else {
+                eprintln!("Error: {e}");
+            }
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_version(json: bool) -> ExitCode {
@@ -2679,7 +3331,9 @@ fn cmd_folding(file: &str, json: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -2692,8 +3346,9 @@ fn cmd_folding(file: &str, json: bool) -> ExitCode {
     let ranges = al_syntax::extract_folding_ranges(&result.tree, &source);
 
     if json {
-        let items: Vec<FoldingRangeJson> = ranges.iter().map(|r| {
-            FoldingRangeJson {
+        let items: Vec<FoldingRangeJson> = ranges
+            .iter()
+            .map(|r| FoldingRangeJson {
                 start_line: r.start_line + 1,
                 end_line: r.end_line + 1,
                 kind: r.kind.as_ref().map(|k| match k {
@@ -2701,25 +3356,27 @@ fn cmd_folding(file: &str, json: bool) -> ExitCode {
                     tower_lsp::lsp_types::FoldingRangeKind::Imports => "imports".to_string(),
                     tower_lsp::lsp_types::FoldingRangeKind::Region => "region".to_string(),
                 }),
-            }
-        }).collect();
+            })
+            .collect();
         print_json(&items);
+    } else if ranges.is_empty() {
+        eprintln!("No folding ranges in {file}");
     } else {
-        if ranges.is_empty() {
-            eprintln!("No folding ranges in {file}");
-        } else {
-            for r in &ranges {
-                let start = r.start_line + 1;
-                let end = r.end_line + 1;
-                let kind = r.kind.as_ref().map(|k| match k {
+        for r in &ranges {
+            let start = r.start_line + 1;
+            let end = r.end_line + 1;
+            let kind = r
+                .kind
+                .as_ref()
+                .map(|k| match k {
                     tower_lsp::lsp_types::FoldingRangeKind::Comment => "comment",
                     tower_lsp::lsp_types::FoldingRangeKind::Imports => "imports",
                     tower_lsp::lsp_types::FoldingRangeKind::Region => "region",
-                }).unwrap_or("region");
-                println!("line {}..{} ({})", start, end, kind);
-            }
-            eprintln!("\n{} folding range(s)", ranges.len());
+                })
+                .unwrap_or("region");
+            println!("line {}..{} ({})", start, end, kind);
         }
+        eprintln!("\n{} folding range(s)", ranges.len());
     }
 
     ExitCode::SUCCESS
@@ -2730,7 +3387,9 @@ fn cmd_tokens(file: &str, json: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -2746,21 +3405,24 @@ fn cmd_tokens(file: &str, json: bool) -> ExitCode {
         // Convert delta-encoded tokens to absolute positions
         let mut abs_line: u32 = 0;
         let mut abs_char: u32 = 0;
-        let items: Vec<SemanticTokenJson> = tokens.iter().map(|t| {
-            if t.delta_line > 0 {
-                abs_line += t.delta_line;
-                abs_char = t.delta_start;
-            } else {
-                abs_char += t.delta_start;
-            }
-            SemanticTokenJson {
-                line: abs_line + 1,
-                character: abs_char + 1,
-                length: t.length,
-                token_type: token_type_name(t.token_type),
-                modifiers: t.token_modifiers,
-            }
-        }).collect();
+        let items: Vec<SemanticTokenJson> = tokens
+            .iter()
+            .map(|t| {
+                if t.delta_line > 0 {
+                    abs_line += t.delta_line;
+                    abs_char = t.delta_start;
+                } else {
+                    abs_char += t.delta_start;
+                }
+                SemanticTokenJson {
+                    line: abs_line + 1,
+                    character: abs_char + 1,
+                    length: t.length,
+                    token_type: token_type_name(t.token_type).to_string(),
+                    modifiers: t.token_modifiers,
+                }
+            })
+            .collect();
         print_json(&items);
     } else {
         // Summarize by type
@@ -2780,22 +3442,22 @@ fn cmd_tokens(file: &str, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn token_type_name(id: u32) -> String {
+fn token_type_name(id: u32) -> &'static str {
     use al_syntax::tokens::token_types;
     match id {
-        token_types::KEYWORD => "keyword".to_string(),
-        token_types::TYPE => "type".to_string(),
-        token_types::STRING => "string".to_string(),
-        token_types::NUMBER => "number".to_string(),
-        token_types::COMMENT => "comment".to_string(),
-        token_types::OPERATOR => "operator".to_string(),
-        token_types::PROPERTY => "property".to_string(),
-        token_types::VARIABLE => "variable".to_string(),
-        token_types::FUNCTION => "function".to_string(),
-        token_types::PARAMETER => "parameter".to_string(),
-        token_types::ENUM_MEMBER => "enumMember".to_string(),
-        token_types::NAMESPACE => "namespace".to_string(),
-        _ => format!("unknown({})", id),
+        token_types::KEYWORD => "keyword",
+        token_types::TYPE => "type",
+        token_types::STRING => "string",
+        token_types::NUMBER => "number",
+        token_types::COMMENT => "comment",
+        token_types::OPERATOR => "operator",
+        token_types::PROPERTY => "property",
+        token_types::VARIABLE => "variable",
+        token_types::FUNCTION => "function",
+        token_types::PARAMETER => "parameter",
+        token_types::ENUM_MEMBER => "enumMember",
+        token_types::NAMESPACE => "namespace",
+        _ => "unknown",
     }
 }
 
@@ -2804,7 +3466,9 @@ fn cmd_parse(file: &str, json: bool) -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -2821,22 +3485,28 @@ fn cmd_parse(file: &str, json: bool) -> ExitCode {
 
     if json {
         print_json(&ParseInfoJson {
-            errors: result.errors.iter().map(|e| ParseErrorJson {
-                line: e.range.start_point.row + 1,
-                column: e.range.start_point.column + 1,
-                message: e.message.clone(),
-            }).collect(),
+            errors: result
+                .errors
+                .iter()
+                .map(|e| ParseErrorJson {
+                    line: e.range.start_point.row + 1,
+                    column: e.range.start_point.column + 1,
+                    message: e.message.clone(),
+                })
+                .collect(),
             node_count,
             parse_time_ms: elapsed.as_secs_f64() * 1000.0,
         });
     } else {
-        println!("Parsed in {:.1}ms, {} nodes, {} error(s)",
+        println!(
+            "Parsed in {:.1}ms, {} nodes, {} error(s)",
             elapsed.as_secs_f64() * 1000.0,
             node_count,
             result.errors.len(),
         );
         for err in &result.errors {
-            println!("  {}:{}: {}",
+            println!(
+                "  {}:{}: {}",
                 err.range.start_point.row + 1,
                 err.range.start_point.column + 1,
                 err.message,
@@ -2870,7 +3540,9 @@ fn cmd_hints(file: &str, start_line: Option<u32>, end_line: Option<u32>, json: b
         Ok(s) => s,
         Err(e) => {
             if json {
-                print_json(&serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }));
+                print_json(
+                    &serde_json::json!({ "error": format!("Cannot read '{}': {}", file, e) }),
+                );
             } else {
                 eprintln!("Error: Cannot read '{}': {}", file, e);
             }
@@ -2909,19 +3581,24 @@ fn cmd_hints(file: &str, start_line: Option<u32>, end_line: Option<u32>, json: b
     let range_end = end_line.map(|l| l.saturating_sub(1)).unwrap_or(u32::MAX);
 
     let mut hints: Vec<InlayHintJson> = Vec::new();
-    collect_cli_hints(result.tree.root_node(), source.as_bytes(), &proc_params, range_start, range_end, &mut hints);
+    collect_cli_hints(
+        result.tree.root_node(),
+        source.as_bytes(),
+        &proc_params,
+        range_start,
+        range_end,
+        &mut hints,
+    );
 
     if json {
         print_json(&hints);
+    } else if hints.is_empty() {
+        eprintln!("No inlay hints in {file}");
     } else {
-        if hints.is_empty() {
-            eprintln!("No inlay hints in {file}");
-        } else {
-            for h in &hints {
-                println!("{}:{} {}", h.line, h.character, h.label);
-            }
-            eprintln!("\n{} hint(s)", hints.len());
+        for h in &hints {
+            println!("{}:{} {}", h.line, h.character, h.label);
         }
+        eprintln!("\n{} hint(s)", hints.len());
     }
 
     ExitCode::SUCCESS
@@ -2949,7 +3626,12 @@ fn collect_cli_hints(
                     let mut param_idx = 0;
                     for child in node.children(&mut cursor) {
                         let kind = child.kind();
-                        if !child.is_named() || kind == "," || kind == "(" || kind == ")" || kind == "semicolon" {
+                        if !child.is_named()
+                            || kind == ","
+                            || kind == "("
+                            || kind == ")"
+                            || kind == "semicolon"
+                        {
                             continue;
                         }
                         if let Some(name) = param_names.get(param_idx) {
@@ -2991,17 +3673,27 @@ fn extract_cli_call_name(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<S
 // Fix command
 // ---------------------------------------------------------------------------
 
-fn cmd_fix(file: Option<&str>, all: bool, dry_run: bool, rule_filter: Option<&str>, json: bool) -> ExitCode {
+fn cmd_fix(
+    file: Option<&str>,
+    all: bool,
+    dry_run: bool,
+    rule_filter: Option<&str>,
+    json: bool,
+) -> ExitCode {
     let mut parser = AlParser::new();
 
-    if all || file.map_or(false, |f| Path::new(f).is_dir()) {
-        let dir = file.map(PathBuf::from)
+    if all || file.is_some_and(|f| Path::new(f).is_dir()) {
+        let dir = file
+            .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let al_files = collect_al_files(&dir);
 
         if al_files.is_empty() {
-            if json { print_json(&serde_json::json!([])); }
-            else { eprintln!("No .al files found"); }
+            if json {
+                print_json(&serde_json::json!([]));
+            } else {
+                eprintln!("No .al files found");
+            }
             return ExitCode::SUCCESS;
         }
 
@@ -3010,7 +3702,8 @@ fn cmd_fix(file: Option<&str>, all: bool, dry_run: bool, rule_filter: Option<&st
 
         for path in &al_files {
             let file_str = path.display().to_string();
-            let (fixes_count, fix_result) = fix_single_file(&file_str, &mut parser, dry_run, rule_filter, json);
+            let (fixes_count, fix_result) =
+                fix_single_file(&file_str, &mut parser, dry_run, rule_filter);
             total_fixes += fixes_count;
             if fixes_count > 0 {
                 results.push(fix_result);
@@ -3020,7 +3713,12 @@ fn cmd_fix(file: Option<&str>, all: bool, dry_run: bool, rule_filter: Option<&st
         if json {
             print_json(&results);
         } else {
-            eprintln!("{} file(s) checked, {} fix(es) {}", al_files.len(), total_fixes, if dry_run { "available" } else { "applied" });
+            eprintln!(
+                "{} file(s) checked, {} fix(es) {}",
+                al_files.len(),
+                total_fixes,
+                if dry_run { "available" } else { "applied" }
+            );
         }
 
         ExitCode::SUCCESS
@@ -3028,32 +3726,53 @@ fn cmd_fix(file: Option<&str>, all: bool, dry_run: bool, rule_filter: Option<&st
         let file = match file {
             Some(f) => f,
             None => {
-                if json { print_json(&serde_json::json!({ "error": "Provide a file path or use --all" })); }
-                else { eprintln!("Error: Provide a file path or use --all"); }
+                if json {
+                    print_json(&serde_json::json!({ "error": "Provide a file path or use --all" }));
+                } else {
+                    eprintln!("Error: Provide a file path or use --all");
+                }
                 return ExitCode::FAILURE;
             }
         };
 
-        let (fixes_count, fix_result) = fix_single_file(file, &mut parser, dry_run, rule_filter, json);
+        let (fixes_count, fix_result) =
+            fix_single_file(file, &mut parser, dry_run, rule_filter);
 
         if json {
             print_json(&fix_result);
+        } else if fixes_count == 0 {
+            eprintln!("No fixes available for {file}");
         } else {
-            if fixes_count == 0 {
-                eprintln!("No fixes available for {file}");
-            } else {
-                eprintln!("{} fix(es) {} in {}", fixes_count, if dry_run { "available" } else { "applied" }, file);
-            }
+            eprintln!(
+                "{} fix(es) {} in {}",
+                fixes_count,
+                if dry_run { "available" } else { "applied" },
+                file
+            );
         }
 
         ExitCode::SUCCESS
     }
 }
 
-fn fix_single_file(file: &str, parser: &mut AlParser, dry_run: bool, rule_filter: Option<&str>, json: bool) -> (usize, FixResultJson) {
+fn fix_single_file(
+    file: &str,
+    parser: &mut AlParser,
+    dry_run: bool,
+    rule_filter: Option<&str>,
+) -> (usize, FixResultJson) {
     let source = match std::fs::read_to_string(file) {
         Ok(s) => s,
-        Err(_) => return (0, FixResultJson { file: file.to_string(), fixes_applied: 0, fixes: vec![] }),
+        Err(_) => {
+            return (
+                0,
+                FixResultJson {
+                    file: file.to_string(),
+                    fixes_applied: 0,
+                    fixes: vec![],
+                },
+            )
+        }
     };
 
     let result = parser.parse(&source);
@@ -3141,7 +3860,8 @@ fn fix_single_file(file: &str, parser: &mut AlParser, dry_run: bool, rule_filter
                         let name = &line_text[diag_start_col..diag_end_col];
                         let name = name.trim_matches('"');
                         if let Some(first) = name.chars().next() {
-                            let fixed = format!("{}{}", first.to_uppercase(), &name[first.len_utf8()..]);
+                            let fixed =
+                                format!("{}{}", first.to_uppercase(), &name[first.len_utf8()..]);
                             fixes.push(FixActionJson {
                                 title: "Fix procedure name to PascalCase".to_string(),
                                 rule: diag.code.clone(),
@@ -3177,7 +3897,9 @@ fn fix_single_file(file: &str, parser: &mut AlParser, dry_run: bool, rule_filter
 
             if edit.new_text.is_empty() && start_line < mod_lines.len() {
                 // Remove lines
-                let remove_count = end_line.saturating_sub(start_line).min(mod_lines.len() - start_line);
+                let remove_count = end_line
+                    .saturating_sub(start_line)
+                    .min(mod_lines.len() - start_line);
                 for _ in 0..remove_count {
                     if start_line < mod_lines.len() {
                         mod_lines.remove(start_line);
@@ -3196,7 +3918,12 @@ fn fix_single_file(file: &str, parser: &mut AlParser, dry_run: bool, rule_filter
                 let start_col = (edit.character as usize).saturating_sub(1);
                 let end_col = (edit.end_character as usize).saturating_sub(1);
                 if end_col <= line.len() {
-                    let new_line = format!("{}{}{}", &line[..start_col], edit.new_text, &line[end_col..]);
+                    let new_line = format!(
+                        "{}{}{}",
+                        &line[..start_col],
+                        edit.new_text,
+                        &line[end_col..]
+                    );
                     mod_lines[start_line] = new_line;
                 }
             }
@@ -3212,17 +3939,14 @@ fn fix_single_file(file: &str, parser: &mut AlParser, dry_run: bool, rule_filter
         }
     }
 
-    if !json && !dry_run && fixes_count > 0 {
-        // Print summary per rule
-        let mut rule_counts: HashMap<String, usize> = HashMap::new();
-        for f in &fixes {
-            *rule_counts.entry(f.rule.clone()).or_insert(0) += 1;
-        }
-        let summary: Vec<String> = rule_counts.iter().map(|(rule, count)| format!("{} ({})", rule, count)).collect();
-        println!("Applied {} fix(es): {}", fixes_count, summary.join(", "));
-    }
-
-    (fixes_count, FixResultJson { file: file.to_string(), fixes_applied: fixes_count, fixes })
+    (
+        fixes_count,
+        FixResultJson {
+            file: file.to_string(),
+            fixes_applied: fixes_count,
+            fixes,
+        },
+    )
 }
 
 fn get_line_indent(lines: &[&str], line: usize) -> String {
@@ -3270,8 +3994,10 @@ fn cmd_diag(action: DiagAction, json: bool) -> ExitCode {
             if json {
                 println!("{}", serde_json::to_string_pretty(&summary).unwrap());
             } else {
-                println!("Session {} — {} events, {} failures",
-                    summary.session_id, summary.total_events, summary.failure_count);
+                println!(
+                    "Session {} — {} events, {} failures",
+                    summary.session_id, summary.total_events, summary.failure_count
+                );
                 println!("\nBy level:");
                 for (level, count) in &summary.by_level {
                     println!("  {level:>5}: {count}");
@@ -3285,14 +4011,27 @@ fn cmd_diag(action: DiagAction, json: bool) -> ExitCode {
                 }
             }
         }
-        DiagAction::Recent { limit, level, target } => {
-            let events = al_diag::query::recent_events(&conn, limit, level.as_deref(), target.as_deref());
+        DiagAction::Recent {
+            limit,
+            level,
+            target,
+        } => {
+            let events =
+                al_diag::query::recent_events(&conn, limit, level.as_deref(), target.as_deref());
             if json {
                 println!("{}", serde_json::to_string_pretty(&events).unwrap());
             } else {
                 for e in events.iter().rev() {
-                    let spans = if e.spans.is_empty() { String::new() } else { format!(" [{}]", e.spans) };
-                    let fields = if e.fields.is_empty() { String::new() } else { format!(" {}", e.fields) };
+                    let spans = if e.spans.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", e.spans)
+                    };
+                    let fields = if e.fields.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", e.fields)
+                    };
                     println!("{:>5} {}{}: {}{}", e.level, e.target, spans, e.msg, fields);
                 }
             }
@@ -3301,16 +4040,22 @@ fn cmd_diag(action: DiagAction, json: bool) -> ExitCode {
             let failures = al_diag::query::resolution_failures(&conn, None);
             if json {
                 println!("{}", serde_json::to_string_pretty(&failures).unwrap());
+            } else if failures.is_empty() {
+                println!("No resolution failures found in latest session.");
             } else {
-                if failures.is_empty() {
-                    println!("No resolution failures found in latest session.");
-                } else {
-                    println!("{} resolution failures:", failures.len());
-                    for e in &failures {
-                        let spans = if e.spans.is_empty() { String::new() } else { format!(" [{}]", e.spans) };
-                        let fields = if e.fields.is_empty() { String::new() } else { format!(" {}", e.fields) };
-                        println!("  {}{}: {}{}", e.target, spans, e.msg, fields);
-                    }
+                println!("{} resolution failures:", failures.len());
+                for e in &failures {
+                    let spans = if e.spans.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", e.spans)
+                    };
+                    let fields = if e.fields.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", e.fields)
+                    };
+                    println!("  {}{}: {}{}", e.target, spans, e.msg, fields);
                 }
             }
         }
@@ -3318,15 +4063,17 @@ fn cmd_diag(action: DiagAction, json: bool) -> ExitCode {
             let slow = al_diag::query::slow_spans(&conn, limit);
             if json {
                 println!("{}", serde_json::to_string_pretty(&slow).unwrap());
+            } else if slow.is_empty() {
+                println!("No span timings recorded.");
             } else {
-                if slow.is_empty() {
-                    println!("No span timings recorded.");
-                } else {
-                    println!("Slowest operations:");
-                    for s in &slow {
-                        let fields = if s.fields.is_empty() { String::new() } else { format!(" {}", s.fields) };
-                        println!("  {:>8}µs  {}{}", s.duration_us, s.name, fields);
-                    }
+                println!("Slowest operations:");
+                for s in &slow {
+                    let fields = if s.fields.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", s.fields)
+                    };
+                    println!("  {:>8}µs  {}{}", s.duration_us, s.name, fields);
                 }
             }
         }
@@ -3336,8 +4083,16 @@ fn cmd_diag(action: DiagAction, json: bool) -> ExitCode {
                 println!("{}", serde_json::to_string_pretty(&results).unwrap());
             } else {
                 for e in results.iter().rev() {
-                    let spans = if e.spans.is_empty() { String::new() } else { format!(" [{}]", e.spans) };
-                    let fields = if e.fields.is_empty() { String::new() } else { format!(" {}", e.fields) };
+                    let spans = if e.spans.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", e.spans)
+                    };
+                    let fields = if e.fields.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {}", e.fields)
+                    };
                     println!("{:>5} {}{}: {}{}", e.level, e.target, spans, e.msg, fields);
                 }
             }
@@ -3348,8 +4103,10 @@ fn cmd_diag(action: DiagAction, json: bool) -> ExitCode {
                 println!("{}", serde_json::to_string_pretty(&sessions).unwrap());
             } else {
                 for s in &sessions {
-                    println!("Session {} — started {} (pid {}) — {} events",
-                        s.id, s.started_at, s.pid, s.event_count);
+                    println!(
+                        "Session {} — started {} (pid {}) — {} events",
+                        s.id, s.started_at, s.pid, s.event_count
+                    );
                 }
             }
         }
@@ -3367,7 +4124,7 @@ fn main() -> ExitCode {
     match cli.command {
         Commands::Setup => cmd_setup(cli.json),
         Commands::Doctor => cmd_doctor(cli.json),
-        Commands::DownloadSymbols { project } => cmd_download_symbols(project, cli.json),
+        Commands::DownloadSymbols { project, source } => cmd_download_symbols(project, source, cli.json),
         Commands::Search { query, limit } => cmd_search(&query, limit, cli.json),
         Commands::Object { kind, name } => cmd_object(&kind, &name, cli.json),
         Commands::ById { kind, id } => cmd_by_id(&kind, id, cli.json),
@@ -3376,22 +4133,60 @@ fn main() -> ExitCode {
         Commands::Composed { kind, name } => cmd_composed(&kind, &name, cli.json),
         Commands::Packages => cmd_packages(cli.json),
         Commands::Deps => cmd_deps(cli.json),
-        Commands::Lint { file, all, semantic } => cmd_lint(file.as_deref(), all, semantic, cli.json),
-        Commands::Format { file, check, stdin, all } => cmd_format(file.as_deref(), check, stdin, all, cli.json),
+        Commands::Compile { project, alc } => cmd_compile(project, alc, cli.json),
+        Commands::Lint {
+            file,
+            all,
+            semantic,
+        } => cmd_lint(file.as_deref(), all, semantic, cli.json),
+        Commands::Format {
+            file,
+            check,
+            stdin,
+            all,
+        } => cmd_format(file.as_deref(), check, stdin, all, cli.json),
         Commands::Symbols { file } => cmd_symbols(&file, cli.json),
         Commands::Hover { file, line, col } => cmd_hover(&file, line, col, cli.json),
-        Commands::Definition { file, line, col, workspace } => cmd_definition(&file, line, col, workspace, cli.json),
-        Commands::References { file, line, col, workspace } => cmd_references(&file, line, col, workspace, cli.json),
+        Commands::Definition {
+            file,
+            line,
+            col,
+            workspace,
+        } => cmd_definition(&file, line, col, workspace, cli.json),
+        Commands::References {
+            file,
+            line,
+            col,
+            workspace,
+        } => cmd_references(&file, line, col, workspace, cli.json),
         Commands::Signature { file, line, col } => cmd_signature(&file, line, col, cli.json),
         Commands::Completions { file, line, col } => cmd_completions(&file, line, col, cli.json),
-        Commands::Rename { file, line, col, new_name, dry_run, workspace } => cmd_rename(&file, line, col, &new_name, dry_run, workspace, cli.json),
+        Commands::Rename {
+            file,
+            line,
+            col,
+            new_name,
+            dry_run,
+            workspace,
+        } => cmd_rename(&file, line, col, &new_name, dry_run, workspace, cli.json),
         Commands::Rules => cmd_rules(cli.json),
+        Commands::ErrorCodes => cmd_error_codes(cli.json),
+        Commands::Builtins => cmd_builtins(cli.json),
         Commands::Version => cmd_version(cli.json),
         Commands::Folding { file } => cmd_folding(&file, cli.json),
         Commands::Tokens { file } => cmd_tokens(&file, cli.json),
         Commands::Parse { file } => cmd_parse(&file, cli.json),
-        Commands::Hints { file, start_line, end_line } => cmd_hints(&file, start_line, end_line, cli.json),
-        Commands::Fix { file, all, dry_run, rule } => cmd_fix(file.as_deref(), all, dry_run, rule.as_deref(), cli.json),
+        Commands::Hints {
+            file,
+            start_line,
+            end_line,
+        } => cmd_hints(&file, start_line, end_line, cli.json),
+        Commands::Fix {
+            file,
+            all,
+            dry_run,
+            rule,
+        } => cmd_fix(file.as_deref(), all, dry_run, rule.as_deref(), cli.json),
         #[cfg(feature = "diagnostics")]
         Commands::Diag { action } => cmd_diag(action, cli.json),
     }
@@ -3407,38 +4202,80 @@ mod tests {
 
     #[test]
     fn test_object_kind_from_str_basic() {
-        assert_eq!(object_kind_from_str("table").unwrap(), ObjectKind::Table);
-        assert_eq!(object_kind_from_str("Table").unwrap(), ObjectKind::Table);
-        assert_eq!(object_kind_from_str("TABLE").unwrap(), ObjectKind::Table);
-        assert_eq!(object_kind_from_str("page").unwrap(), ObjectKind::Page);
-        assert_eq!(object_kind_from_str("codeunit").unwrap(), ObjectKind::Codeunit);
-        assert_eq!(object_kind_from_str("report").unwrap(), ObjectKind::Report);
-        assert_eq!(object_kind_from_str("xmlport").unwrap(), ObjectKind::XmlPort);
-        assert_eq!(object_kind_from_str("query").unwrap(), ObjectKind::Query);
-        assert_eq!(object_kind_from_str("enum").unwrap(), ObjectKind::Enum);
-        assert_eq!(object_kind_from_str("interface").unwrap(), ObjectKind::Interface);
-        assert_eq!(object_kind_from_str("permissionset").unwrap(), ObjectKind::PermissionSet);
-        assert_eq!(object_kind_from_str("profile").unwrap(), ObjectKind::Profile);
-        assert_eq!(object_kind_from_str("controladdin").unwrap(), ObjectKind::ControlAddIn);
-        assert_eq!(object_kind_from_str("entitlement").unwrap(), ObjectKind::Entitlement);
+        assert_eq!(ObjectKind::from_str("table").unwrap(), ObjectKind::Table);
+        assert_eq!(ObjectKind::from_str("Table").unwrap(), ObjectKind::Table);
+        assert_eq!(ObjectKind::from_str("TABLE").unwrap(), ObjectKind::Table);
+        assert_eq!(ObjectKind::from_str("page").unwrap(), ObjectKind::Page);
+        assert_eq!(
+            ObjectKind::from_str("codeunit").unwrap(),
+            ObjectKind::Codeunit
+        );
+        assert_eq!(ObjectKind::from_str("report").unwrap(), ObjectKind::Report);
+        assert_eq!(
+            ObjectKind::from_str("xmlport").unwrap(),
+            ObjectKind::XmlPort
+        );
+        assert_eq!(ObjectKind::from_str("query").unwrap(), ObjectKind::Query);
+        assert_eq!(ObjectKind::from_str("enum").unwrap(), ObjectKind::Enum);
+        assert_eq!(
+            ObjectKind::from_str("interface").unwrap(),
+            ObjectKind::Interface
+        );
+        assert_eq!(
+            ObjectKind::from_str("permissionset").unwrap(),
+            ObjectKind::PermissionSet
+        );
+        assert_eq!(
+            ObjectKind::from_str("profile").unwrap(),
+            ObjectKind::Profile
+        );
+        assert_eq!(
+            ObjectKind::from_str("controladdin").unwrap(),
+            ObjectKind::ControlAddIn
+        );
+        assert_eq!(
+            ObjectKind::from_str("entitlement").unwrap(),
+            ObjectKind::Entitlement
+        );
     }
 
     #[test]
     fn test_object_kind_from_str_extensions() {
-        assert_eq!(object_kind_from_str("tableextension").unwrap(), ObjectKind::TableExtension);
-        assert_eq!(object_kind_from_str("table-extension").unwrap(), ObjectKind::TableExtension);
-        assert_eq!(object_kind_from_str("table_extension").unwrap(), ObjectKind::TableExtension);
-        assert_eq!(object_kind_from_str("pageextension").unwrap(), ObjectKind::PageExtension);
-        assert_eq!(object_kind_from_str("enumextension").unwrap(), ObjectKind::EnumExtension);
-        assert_eq!(object_kind_from_str("reportextension").unwrap(), ObjectKind::ReportExtension);
-        assert_eq!(object_kind_from_str("permissionsetextension").unwrap(), ObjectKind::PermissionSetExtension);
+        assert_eq!(
+            ObjectKind::from_str("tableextension").unwrap(),
+            ObjectKind::TableExtension
+        );
+        assert_eq!(
+            ObjectKind::from_str("table-extension").unwrap(),
+            ObjectKind::TableExtension
+        );
+        assert_eq!(
+            ObjectKind::from_str("table_extension").unwrap(),
+            ObjectKind::TableExtension
+        );
+        assert_eq!(
+            ObjectKind::from_str("pageextension").unwrap(),
+            ObjectKind::PageExtension
+        );
+        assert_eq!(
+            ObjectKind::from_str("enumextension").unwrap(),
+            ObjectKind::EnumExtension
+        );
+        assert_eq!(
+            ObjectKind::from_str("reportextension").unwrap(),
+            ObjectKind::ReportExtension
+        );
+        assert_eq!(
+            ObjectKind::from_str("permissionsetextension").unwrap(),
+            ObjectKind::PermissionSetExtension
+        );
     }
 
     #[test]
     fn test_object_kind_from_str_invalid() {
-        assert!(object_kind_from_str("unknown").is_err());
-        assert!(object_kind_from_str("").is_err());
-        assert!(object_kind_from_str("notanobject").is_err());
+        assert!(ObjectKind::from_str("unknown").is_err());
+        assert!(ObjectKind::from_str("").is_err());
+        assert!(ObjectKind::from_str("notanobject").is_err());
     }
 
     #[test]
@@ -3642,7 +4479,7 @@ mod tests {
 
     #[test]
     fn test_doc_symbol_to_json() {
-        use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind, Range, Position};
+        use tower_lsp::lsp_types::{DocumentSymbol, Position, Range, SymbolKind};
 
         #[allow(deprecated)]
         let sym = DocumentSymbol {
@@ -3652,12 +4489,24 @@ mod tests {
             tags: None,
             deprecated: None,
             range: Range {
-                start: Position { line: 5, character: 4 },
-                end: Position { line: 10, character: 8 },
+                start: Position {
+                    line: 5,
+                    character: 4,
+                },
+                end: Position {
+                    line: 10,
+                    character: 8,
+                },
             },
             selection_range: Range {
-                start: Position { line: 5, character: 14 },
-                end: Position { line: 5, character: 20 },
+                start: Position {
+                    line: 5,
+                    character: 14,
+                },
+                end: Position {
+                    line: 5,
+                    character: 20,
+                },
             },
             children: None,
         };
@@ -3685,7 +4534,13 @@ mod tests {
     #[test]
     fn test_parse_param_names_from_detail() {
         let params = parse_param_names_from_detail("(x: Integer; y: Text)");
-        assert_eq!(params, vec![("x".to_string(), "Integer".to_string()), ("y".to_string(), "Text".to_string())]);
+        assert_eq!(
+            params,
+            vec![
+                ("x".to_string(), "Integer".to_string()),
+                ("y".to_string(), "Text".to_string())
+            ]
+        );
 
         let params = parse_param_names_from_detail("(Name: Text; Amount: Decimal): Boolean");
         assert_eq!(params.len(), 2);
@@ -3706,13 +4561,11 @@ mod tests {
     fn test_format_method_params() {
         let method = al_symbols::MethodSymbol {
             name: "GetBalance".to_string(),
-            parameters: vec![
-                al_symbols::ParameterSymbol {
-                    name: "CustNo".to_string(),
-                    type_name: "Code".to_string(),
-                    is_var: false,
-                },
-            ],
+            parameters: vec![al_symbols::ParameterSymbol {
+                name: "CustNo".to_string(),
+                type_name: "Code".to_string(),
+                is_var: false,
+            }],
             return_type: Some("Decimal".to_string()),
             attributes: vec![],
             is_local: false,
@@ -3740,7 +4593,12 @@ mod tests {
             name: "Test".to_string(),
             kind: "function".to_string(),
             detail: Some("(): Integer".to_string()),
-            range: RangeJson { start_line: 1, start_col: 1, end_line: 5, end_col: 4 },
+            range: RangeJson {
+                start_line: 1,
+                start_col: 1,
+                end_line: 5,
+                end_col: 4,
+            },
             children: None,
         };
         let json = serde_json::to_string(&sym).unwrap();
@@ -3829,8 +4687,14 @@ mod tests {
         let sig = SignatureJson {
             label: "DoWork(x: Integer; y: Text): Boolean".to_string(),
             parameters: vec![
-                SignatureParamJson { name: "x".to_string(), type_name: "Integer".to_string() },
-                SignatureParamJson { name: "y".to_string(), type_name: "Text".to_string() },
+                SignatureParamJson {
+                    name: "x".to_string(),
+                    type_name: "Integer".to_string(),
+                },
+                SignatureParamJson {
+                    name: "y".to_string(),
+                    type_name: "Text".to_string(),
+                },
             ],
             active_parameter: 0,
         };

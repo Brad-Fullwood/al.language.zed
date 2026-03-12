@@ -1,0 +1,32 @@
+[
+  {
+    "label": "AL: Download Symbols (Server)",
+    "command": "al",
+    "args": ["download-symbols", "--source", "server"],
+    "tags": ["al-download-symbols-server"]
+  },
+  {
+    "label": "AL: Download Symbols (NuGet)",
+    "command": "al",
+    "args": ["download-symbols", "--source", "nuget"],
+    "tags": ["al-download-symbols-nuget"]
+  },
+  {
+    "label": "AL: Lint File",
+    "command": "al",
+    "args": ["lint", "$ZED_FILE"],
+    "tags": ["al-lint"]
+  },
+  {
+    "label": "AL: Lint All",
+    "command": "al",
+    "args": ["lint", "--all"],
+    "tags": ["al-lint-all"]
+  },
+  {
+    "label": "AL: Format File",
+    "command": "al",
+    "args": ["format", "$ZED_FILE"],
+    "tags": ["al-format"]
+  }
+]

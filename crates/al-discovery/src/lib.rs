@@ -119,22 +119,22 @@ impl AlProject {
         // Add implicit System (platform) dependency.
         // The platform version in app.json is a minimum (often "1.0.0.0"),
         // so derive actual version from the application major version.
-        if self.app_json.platform.is_some() {
-            if !deps.iter().any(|d| d.id == SYSTEM_APP_ID) {
-                let platform_version = self
-                    .app_json
-                    .application
-                    .as_ref()
-                    .and_then(|v| v.split('.').next())
-                    .map(|major| format!("{}.0.0.0", major))
-                    .unwrap_or_else(|| "26.0.0.0".to_string());
-                deps.push(AppDependency {
-                    id: SYSTEM_APP_ID.to_string(),
-                    name: "System".to_string(),
-                    publisher: "Microsoft".to_string(),
-                    version: platform_version,
-                });
-            }
+        if self.app_json.platform.is_some()
+            && !deps.iter().any(|d| d.id == SYSTEM_APP_ID)
+        {
+            let platform_version = self
+                .app_json
+                .application
+                .as_ref()
+                .and_then(|v| v.split('.').next())
+                .map(|major| format!("{}.0.0.0", major))
+                .unwrap_or_else(|| "26.0.0.0".to_string());
+            deps.push(AppDependency {
+                id: SYSTEM_APP_ID.to_string(),
+                name: "System".to_string(),
+                publisher: "Microsoft".to_string(),
+                version: platform_version,
+            });
         }
 
         deps
@@ -294,7 +294,7 @@ fn extract_version_from_path(dir: &Path) -> String {
     for component in dir.components().rev() {
         if let std::path::Component::Normal(s) = component {
             let s = s.to_string_lossy();
-            if s.chars().next().map_or(false, |c| c.is_ascii_digit()) && s.contains('.') {
+            if s.chars().next().is_some_and(|c| c.is_ascii_digit()) && s.contains('.') {
                 let parts: Vec<&str> = s.split('.').collect();
                 if parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
                 {
@@ -389,11 +389,11 @@ fn search_system_path() -> Option<AlToolchain> {
 }
 
 /// Get the user's home directory.
-fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()
         .map(PathBuf::from)
-        .or_else(|| {
+        .or({
             #[cfg(target_os = "windows")]
             {
                 std::env::var("USERPROFILE").ok().map(PathBuf::from)
@@ -505,7 +505,7 @@ fn scan_packages(packages_dir: &Path) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| {
             p.extension()
-                .map_or(false, |ext| ext.eq_ignore_ascii_case("app"))
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
         })
         .collect();
 

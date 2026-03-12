@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
 // Core symbol types
@@ -58,6 +59,40 @@ impl fmt::Display for ObjectKind {
             ObjectKind::Entitlement => "Entitlement",
         };
         f.write_str(s)
+    }
+}
+
+impl FromStr for ObjectKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "table" => Ok(ObjectKind::Table),
+            "tableextension" | "table_extension" | "table-extension" => Ok(ObjectKind::TableExtension),
+            "page" => Ok(ObjectKind::Page),
+            "pageextension" | "page_extension" | "page-extension" => Ok(ObjectKind::PageExtension),
+            "codeunit" => Ok(ObjectKind::Codeunit),
+            "report" => Ok(ObjectKind::Report),
+            "reportextension" | "report_extension" | "report-extension" => Ok(ObjectKind::ReportExtension),
+            "xmlport" => Ok(ObjectKind::XmlPort),
+            "query" => Ok(ObjectKind::Query),
+            "enum" => Ok(ObjectKind::Enum),
+            "enumextension" | "enum_extension" | "enum-extension" => Ok(ObjectKind::EnumExtension),
+            "interface" => Ok(ObjectKind::Interface),
+            "permissionset" | "permission_set" | "permission-set" => Ok(ObjectKind::PermissionSet),
+            "permissionsetextension" | "permission_set_extension" | "permission-set-extension" => {
+                Ok(ObjectKind::PermissionSetExtension)
+            }
+            "profile" => Ok(ObjectKind::Profile),
+            "pagecustomization" | "page_customization" | "page-customization" => {
+                Ok(ObjectKind::PageCustomization)
+            }
+            "controladdin" | "control_addin" | "control-addin" | "controlad-in" => {
+                Ok(ObjectKind::ControlAddIn)
+            }
+            "entitlement" => Ok(ObjectKind::Entitlement),
+            _ => Err(format!("Unknown object kind: '{}'. Valid kinds: table, page, codeunit, report, xmlport, query, enum, interface, permissionset, profile, controladdin, entitlement (and their extension variants)", s)),
+        }
     }
 }
 
@@ -266,7 +301,7 @@ pub struct ComposedObject {
 ///
 /// BC packages since v20+ use nested `Namespaces` to organize symbols.
 /// All object types can appear at any level; we flatten recursively.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct SymbolReferenceJson {
     #[serde(alias = "Tables")]
@@ -311,31 +346,6 @@ pub(crate) struct SymbolReferenceJson {
     pub namespaces: Vec<SymbolReferenceJson>,
 }
 
-impl Default for SymbolReferenceJson {
-    fn default() -> Self {
-        Self {
-            tables: Vec::new(),
-            table_extensions: Vec::new(),
-            pages: Vec::new(),
-            page_extensions: Vec::new(),
-            codeunits: Vec::new(),
-            reports: Vec::new(),
-            report_extensions: Vec::new(),
-            xml_ports: Vec::new(),
-            queries: Vec::new(),
-            enums: Vec::new(),
-            enum_extensions: Vec::new(),
-            interfaces: Vec::new(),
-            permission_sets: Vec::new(),
-            permission_set_extensions: Vec::new(),
-            profiles: Vec::new(),
-            page_customizations: Vec::new(),
-            control_add_ins: Vec::new(),
-            entitlements: Vec::new(),
-            namespaces: Vec::new(),
-        }
-    }
-}
 
 /// Raw JSON shape of a single object in SymbolReference.json.
 #[derive(Debug, Deserialize)]
@@ -392,6 +402,9 @@ pub(crate) struct TypeDefJson {
     pub name: String,
     #[serde(alias = "Subtype", default)]
     pub subtype: Option<SubtypeJson>,
+    /// For Option-typed system enums: the list of valid option values.
+    #[serde(alias = "OptionMembers", default)]
+    pub option_members: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -399,6 +412,7 @@ pub(crate) struct SubtypeJson {
     #[serde(alias = "Name", default)]
     pub name: String,
     #[serde(alias = "Id", default)]
+    #[allow(dead_code)]
     pub id: i32,
 }
 
@@ -407,11 +421,7 @@ impl TypeDefJson {
     pub fn full_type(&self) -> String {
         match &self.subtype {
             Some(sub) if !sub.name.is_empty() => {
-                if sub.name.contains(' ') || sub.name.contains('.') {
-                    format!("{} \"{}\"", self.name, sub.name)
-                } else {
-                    format!("{} \"{}\"", self.name, sub.name)
-                }
+                format!("{} \"{}\"", self.name, sub.name)
             }
             _ => self.name.clone(),
         }
@@ -570,9 +580,82 @@ impl SymbolReferenceJson {
             (ObjectKind::Entitlement, self.entitlements),
         ];
 
+        // Collect Option-typed parameters to create synthetic enum entries.
+        // Scan all objects before converting, since we borrow their contents.
+        let mut option_enums: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut existing_enum_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for (kind, objects) in &collections {
+            // Track existing real enum names
+            if matches!(kind, ObjectKind::Enum | ObjectKind::EnumExtension) {
+                for obj in objects {
+                    existing_enum_names.insert(obj.name.to_lowercase());
+                }
+            }
+            // Scan methods/fields for Option params with OptionMembers
+            for obj in objects {
+                for method in &obj.methods {
+                    for param in &method.parameters {
+                        if let Some(td) = &param.type_definition {
+                            if td.name.eq_ignore_ascii_case("Option") && !td.option_members.is_empty() {
+                                let existing = option_enums.entry(param.name.clone()).or_default();
+                                if td.option_members.len() > existing.len() {
+                                    *existing = td.option_members.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+                for field in &obj.fields {
+                    if let Some(td) = &field.type_definition {
+                        if td.name.eq_ignore_ascii_case("Option") && !td.option_members.is_empty() {
+                            let existing = option_enums.entry(field.name.clone()).or_default();
+                            if td.option_members.len() > existing.len() {
+                                *existing = td.option_members.clone();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         for (kind, objects) in collections {
             for obj in objects {
                 entries.push(obj.into_entry(kind, &pkg));
+            }
+        }
+
+        // Create synthetic enum entries from Option-typed parameters.
+        for (name, members) in &option_enums {
+            if existing_enum_names.contains(&name.to_lowercase()) {
+                continue; // Skip if a real enum with this name exists
+            }
+            let enum_values: Vec<EnumValueSymbol> = members
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(i, v)| EnumValueSymbol {
+                    ordinal: i as i32,
+                    name: v.clone(),
+                })
+                .collect();
+            if !enum_values.is_empty() {
+                entries.push(SymbolEntry {
+                    kind: ObjectKind::Enum,
+                    id: -1,
+                    name: name.clone(),
+                    extends: None,
+                    package: pkg.clone(),
+                    methods: Vec::new(),
+                    fields: Vec::new(),
+                    controls: Vec::new(),
+                    enum_values,
+                    keys: Vec::new(),
+                    properties: Vec::new(),
+                    variables: Vec::new(),
+                });
             }
         }
 

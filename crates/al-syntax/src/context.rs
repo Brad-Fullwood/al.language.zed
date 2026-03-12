@@ -83,9 +83,9 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
 pub fn extract_last_identifier(s: &str) -> &str {
     let s = s.trim();
     // Handle quoted identifiers
-    if s.ends_with('"') {
-        if let Some(start) = s[..s.len() - 1].rfind('"') {
-            return &s[start + 1..s.len() - 1];
+    if let Some(stripped) = s.strip_suffix('"') {
+        if let Some(start) = stripped.rfind('"') {
+            return &stripped[start + 1..];
         }
     }
     // Find last word boundary

@@ -5,6 +5,7 @@
 //! 2. Package symbols from the SymbolIndex
 //! 3. Built-in types and methods from the semantic bridge
 
+use al_syntax::AlParser;
 use tower_lsp::lsp_types::*;
 
 use crate::parsing;
@@ -270,8 +271,7 @@ pub(crate) fn handle_hover(server: &AlServer, uri: &Url, position: Position) -> 
         let file_path = file_path_entry.value();
         tracing::debug!(name = %clean_name, path = ?file_path, "hover: workspace object index hit");
         if let Some(file_text) = server.workspace_files.get(file_path) {
-            let mut parser = server.parser.lock().unwrap();
-            let result = parser.parse(file_text.value());
+            let result = AlParser::parse_quick(file_text.value());
             if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text.value()) {
                 tracing::debug!(
                     obj_kind = %obj_info.kind,

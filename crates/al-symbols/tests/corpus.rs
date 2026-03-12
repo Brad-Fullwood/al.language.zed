@@ -1126,3 +1126,68 @@ fn test_get_by_kind_extensions() {
     let enum_exts = index.get_by_kind(ObjectKind::EnumExtension);
     assert_eq!(enum_exts.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Test: Option-typed parameters create synthetic enum entries
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_option_params_create_synthetic_enums() {
+    let symbol_json = r#"{
+        "AppId": "00000000-0000-0000-0000-000000000000",
+        "Name": "System",
+        "Publisher": "Microsoft",
+        "Version": "26.0.0.0",
+        "Codeunits": [{
+            "Id": 1,
+            "Name": "File Management",
+            "Methods": [{
+                "Name": "BLOBImportWithEncoding",
+                "Parameters": [
+                    { "Name": "TempBlob", "TypeDefinition": { "Name": "Record" }, "IsVar": true },
+                    { "Name": "TextEncoding", "TypeDefinition": { "Name": "Option", "OptionMembers": ["MSDos", "UTF8", "UTF16", "Windows"] } }
+                ],
+                "Attributes": [],
+                "IsLocal": false
+            }]
+        }],
+        "EnumTypes": []
+    }"#;
+
+    let manifest = r#"<?xml version="1.0" encoding="utf-8"?>
+    <Package><App Id="00000000-0000-0000-0000-000000000000" Name="System" Publisher="Microsoft" Version="26.0.0.0"/></Package>"#;
+
+    let data = build_test_app(manifest, symbol_json);
+    let index = SymbolIndex::new();
+    let pkg = index.load_package_bytes(&data).unwrap();
+    assert!(!pkg.objects.is_empty());
+
+    // The Option-typed parameter "TextEncoding" should create a synthetic enum
+    let results = index.get_by_name("TextEncoding");
+    assert!(!results.is_empty(), "TextEncoding should be indexed as synthetic enum");
+    let entry = &results[0];
+    assert_eq!(entry.kind, ObjectKind::Enum);
+    assert_eq!(entry.enum_values.len(), 4);
+    assert_eq!(entry.enum_values[0].name, "MSDos");
+    assert_eq!(entry.enum_values[1].name, "UTF8");
+    assert_eq!(entry.enum_values[2].name, "UTF16");
+    assert_eq!(entry.enum_values[3].name, "Windows");
+}
+
+// ---------------------------------------------------------------------------
+// Test: runtime enums are loaded into the index
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_runtime_enums_loaded() {
+    let index = SymbolIndex::new();
+    index.load_runtime_enums();
+
+    let results = index.get_by_name("WebServiceActionResultCode");
+    assert!(!results.is_empty(), "WebServiceActionResultCode should be in index");
+    let entry = &results[0];
+    assert_eq!(entry.kind, ObjectKind::Enum);
+    assert!(entry.enum_values.iter().any(|v| v.name == "Updated"));
+    assert!(entry.enum_values.iter().any(|v| v.name == "Created"));
+    assert!(entry.enum_values.iter().any(|v| v.name == "Deleted"));
+}

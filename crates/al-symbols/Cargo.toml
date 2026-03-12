@@ -13,12 +13,13 @@ dirs = "6"
 zip = { workspace = true }
 quick-xml = { workspace = true }
 reqwest = { workspace = true, optional = true }
+sha2 = { version = "0.10", optional = true }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 [features]
 default = ["nuget"]
-nuget = ["reqwest", "tokio"]
+nuget = ["reqwest", "sha2", "tokio"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

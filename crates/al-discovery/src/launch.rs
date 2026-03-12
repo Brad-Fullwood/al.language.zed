@@ -248,7 +248,7 @@ fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::err
     let configs: Vec<BcServerConfig> = configs_raw
         .into_iter()
         .filter(|c| c.adapter == "al" || c.environment_type.is_some())
-        .filter_map(|c| convert_zed_config(c))
+        .filter_map(convert_zed_config)
         .collect();
 
     Ok(DebugConfigFile {
@@ -268,7 +268,7 @@ fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std:
         .configurations
         .into_iter()
         .filter(|c| c.config_type == "al" || c.environment_type.is_some())
-        .filter_map(|c| convert_vscode_config(c))
+        .filter_map(convert_vscode_config)
         .collect();
 
     Ok(DebugConfigFile {
@@ -361,15 +361,61 @@ fn strip_json_comments(input: &str) -> String {
             continue;
         }
 
-        if !in_string && c == '/' {
-            if chars.peek() == Some(&'/') {
-                // Skip rest of line
-                for cc in chars.by_ref() {
-                    if cc == '\n' {
-                        result.push('\n');
-                        break;
-                    }
+        if !in_string && c == '/' && chars.peek() == Some(&'/') {
+            // Skip rest of line
+            for cc in chars.by_ref() {
+                if cc == '\n' {
+                    result.push('\n');
+                    break;
                 }
+            }
+            continue;
+        }
+
+        result.push(c);
+    }
+
+    // Strip trailing commas before ] and } (Zed config files allow them)
+    strip_trailing_commas(&result)
+}
+
+/// Remove trailing commas before `]` or `}` that serde_json rejects.
+fn strip_trailing_commas(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut escape_next = false;
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+
+    for i in 0..len {
+        let c = bytes[i] as char;
+
+        if escape_next {
+            result.push(c);
+            escape_next = false;
+            continue;
+        }
+
+        if c == '\\' && in_string {
+            result.push(c);
+            escape_next = true;
+            continue;
+        }
+
+        if c == '"' {
+            in_string = !in_string;
+            result.push(c);
+            continue;
+        }
+
+        if !in_string && c == ',' {
+            // Look ahead past whitespace for ] or }
+            let mut j = i + 1;
+            while j < len && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\n' || bytes[j] == b'\r') {
+                j += 1;
+            }
+            if j < len && (bytes[j] == b']' || bytes[j] == b'}') {
+                // Skip this trailing comma
                 continue;
             }
         }
@@ -479,6 +525,44 @@ mod tests {
 
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].name, "AL Server");
+    }
+
+    #[test]
+    fn parse_zed_config_with_trailing_commas() {
+        // Real-world Zed debug.json often has trailing commas
+        let json = r#"[
+            {
+                "adapter": "al",
+                "label": "Cloud Sandbox",
+                "request": "launch",
+                "environmentType": "Sandbox",
+                "environmentName": "sandbox",
+                "tenant": "2c53f084-1676-40ab-8c23-f0e8a466f455",
+                "startupObjectId": 22,
+            },
+        ]"#;
+
+        let clean = strip_json_comments(json);
+        let configs_raw: Vec<ZedDebugConfigJson> = serde_json::from_str(&clean).unwrap();
+        let configs: Vec<_> = configs_raw
+            .into_iter()
+            .filter_map(convert_zed_config)
+            .collect();
+
+        assert_eq!(configs.len(), 1);
+        let c = &configs[0];
+        assert_eq!(c.environment_type, EnvironmentType::Sandbox);
+        assert_eq!(
+            c.tenant.as_deref(),
+            Some("2c53f084-1676-40ab-8c23-f0e8a466f455")
+        );
+    }
+
+    #[test]
+    fn strip_trailing_commas_preserves_commas_in_strings() {
+        let input = r#"{"key": "value,}"#;
+        let result = strip_trailing_commas(input);
+        assert_eq!(result, input);
     }
 
     // -- VS Code format tests (fallback) --

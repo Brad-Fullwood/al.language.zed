@@ -5,7 +5,6 @@
 //! between al-syntax, al-symbols, and the al-lsp handler logic.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use al_symbols::{
     EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,

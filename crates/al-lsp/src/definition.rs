@@ -6,6 +6,7 @@
 //! 3. Package symbol definitions (objects from .app files — virtual file generation)
 
 use al_symbols::SymbolEntry;
+use al_syntax::AlParser;
 use tower_lsp::lsp_types::*;
 
 use crate::parsing;
@@ -61,7 +62,7 @@ pub(crate) fn handle_definition(
                         // Member resolved but no range — try virtual file from package symbols
                         tracing::debug!(member_kind = ?member.kind, "definition: access path member has no range, trying package symbol");
                         if let Some(entry) = find_package_entry_for_type(server, &receiver.type_name, receiver.type_subtype.as_deref()) {
-                            if let Some((file_uri, range)) = get_or_create_virtual_file(&entry) {
+                            if let Some((file_uri, range)) = get_or_create_virtual_file(server, &entry, Some(&access.member)) {
                                 return Some(GotoDefinitionResponse::Scalar(Location {
                                     uri: file_uri,
                                     range,
@@ -93,7 +94,7 @@ pub(crate) fn handle_definition(
         // Try package symbols — generate virtual AL file for navigation
         let pkg_entries = server.symbols.get_by_name(clean_name);
         if let Some(entry) = pkg_entries.into_iter().find(|e| !e.kind.is_extension()) {
-            if let Some((file_uri, range)) = get_or_create_virtual_file(&entry) {
+            if let Some((file_uri, range)) = get_or_create_virtual_file(server, &entry, None) {
                 tracing::debug!(
                     name = %clean_name,
                     package = %entry.package,
@@ -156,12 +157,11 @@ pub(crate) fn handle_definition(
         let file_path = obj_path_entry.value().clone();
         tracing::debug!(name = %clean_name, path = ?file_path, "definition: cross-file workspace object index hit");
         // Skip the current file
-        let is_current = current_path.as_ref().map_or(false, |cp| *cp == file_path);
+        let is_current = current_path.as_ref().is_some_and(|cp| *cp == file_path);
         if !is_current {
             if let Some(file_text_entry) = server.workspace_files.get(&file_path) {
                 let file_text = file_text_entry.value();
-                let mut parser = server.parser.lock().unwrap();
-                let result = parser.parse(file_text);
+                let result = AlParser::parse_quick(file_text);
                 if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
                     if let Ok(file_uri) = Url::from_file_path(&file_path) {
                         tracing::debug!(
@@ -195,8 +195,7 @@ pub(crate) fn handle_definition(
             continue;
         }
 
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(file_text);
+        let result = AlParser::parse_quick(file_text);
 
         // Check procedures in other files
         let doc_symbols = al_syntax::extract_document_symbols(&result.tree, file_text);
@@ -227,7 +226,7 @@ pub(crate) fn handle_definition(
     // 3. Package symbols — generate virtual AL file
     let symbols = server.symbols.get_by_name(clean_name);
     if let Some(entry) = symbols.into_iter().find(|e| !e.kind.is_extension()) {
-        if let Some((file_uri, range)) = get_or_create_virtual_file(&entry) {
+        if let Some((file_uri, range)) = get_or_create_virtual_file(server, &entry, None) {
             tracing::debug!(
                 name = %clean_name,
                 package = %entry.package,
@@ -256,11 +255,25 @@ pub(crate) fn handle_definition(
 // ---------------------------------------------------------------------------
 
 /// Get or create a virtual AL file for a package symbol, returning LSP types.
-fn get_or_create_virtual_file(entry: &SymbolEntry) -> Option<(Url, Range)> {
-    match al_symbols::virtual_file::get_or_create(entry) {
+///
+/// When `member_name` is provided, the returned range points to the specific
+/// field / method / enum-value definition inside the generated file instead
+/// of falling back to the top of the file.
+fn get_or_create_virtual_file(
+    server: &AlServer,
+    entry: &SymbolEntry,
+    member_name: Option<&str>,
+) -> Option<(Url, Range)> {
+    let app_path = server.symbols.app_path(&entry.package);
+    let allow_fallback = server
+        .outline_fallback_approved
+        .load(std::sync::atomic::Ordering::Relaxed);
+    match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref(), allow_fallback) {
         Ok(path) => {
             let uri = Url::from_file_path(&path).ok()?;
-            let range = Range::new(Position::new(0, 0), Position::new(0, 0));
+            let range = member_name
+                .and_then(|name| find_member_range_in_file(&path, name))
+                .unwrap_or_default();
             Some((uri, range))
         }
         Err(e) => {
@@ -270,6 +283,56 @@ fn get_or_create_virtual_file(entry: &SymbolEntry) -> Option<(Url, Range)> {
     }
 }
 
+/// Scan a generated virtual AL file for the line that declares `member_name`
+/// and return an LSP range pointing at the name within that line.
+fn find_member_range_in_file(path: &std::path::Path, member_name: &str) -> Option<Range> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let needle = member_name.to_lowercase();
+
+    for (line_idx, line) in content.lines().enumerate() {
+        let lower = line.to_lowercase();
+
+        // Only look at declaration lines:
+        //   field(N; "Member Name"; Type)
+        //   value(N; "Member Name") { }
+        //   procedure MemberName(...)
+        let is_decl = lower.contains("field(")
+            || lower.contains("value(")
+            || lower.contains("procedure ");
+
+        if !is_decl {
+            continue;
+        }
+
+        // Try quoted form first: "Member Name"
+        let quoted = format!("\"{}\"", needle);
+        if let Some(pos) = lower.find(&quoted) {
+            let col = pos + 1; // skip opening quote — cursor on the name
+            return Some(Range::new(
+                Position::new(line_idx as u32, col as u32),
+                Position::new(line_idx as u32, (col + member_name.len()) as u32),
+            ));
+        }
+
+        // Unquoted form (single-word names): match after "; " or "procedure "
+        if let Some(pos) = lower.find(&needle) {
+            // Simple boundary check within the line
+            let before_ok = pos == 0 || !line.as_bytes()[pos - 1].is_ascii_alphanumeric();
+            let after_pos = pos + needle.len();
+            let after_ok =
+                after_pos >= line.len() || !line.as_bytes()[after_pos].is_ascii_alphanumeric();
+            if before_ok && after_ok {
+                return Some(Range::new(
+                    Position::new(line_idx as u32, pos as u32),
+                    Position::new(line_idx as u32, after_pos as u32),
+                ));
+            }
+        }
+    }
+
+    None
+}
+
 /// Find the package SymbolEntry for a resolved type (e.g., Record "Customer" → Customer table entry).
 fn find_package_entry_for_type(
     server: &AlServer,
@@ -277,7 +340,7 @@ fn find_package_entry_for_type(
     subtype: Option<&str>,
 ) -> Option<std::sync::Arc<SymbolEntry>> {
     // For typed objects (Record, Page, Codeunit, etc.), the subtype is the object name
-    let obj_name = subtype.or_else(|| {
+    let obj_name = subtype.or({
         // If no subtype, the type_name itself might be the object name (e.g., Enum "Status")
         if !matches!(type_name, "Record" | "Page" | "Codeunit" | "Report" | "Query" | "Xmlport"
             | "Integer" | "Text" | "Code" | "Decimal" | "Boolean" | "Date" | "Time" | "DateTime"
@@ -348,8 +411,7 @@ pub(crate) fn handle_references(
             continue;
         }
 
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(file_text);
+        let result = AlParser::parse_quick(file_text);
         let refs = al_syntax::find_variable_references(&result.tree, file_text, clean_name);
 
         if !refs.is_empty() {
@@ -448,8 +510,7 @@ pub(crate) fn handle_rename(
             Err(_) => continue,
         };
 
-        let mut parser = server.parser.lock().unwrap();
-        let result = parser.parse(file_text);
+        let result = AlParser::parse_quick(file_text);
         let refs = al_syntax::find_variable_references(&result.tree, file_text, clean_name);
 
         if !refs.is_empty() {

@@ -555,7 +555,7 @@ async fn test_goto_definition_cross_procedure_same_file() {
     // In Precheck, "this.PrecheckRecord" calls a local procedure
     // "PrecheckRecord" on line 11 (in repeat block)
     // The identifier "PrecheckRecord" should go to its declaration
-    let def = client.definition("objects/codeunit.al", 11, 23).await;
+    let _def = client.definition("objects/codeunit.al", 11, 23).await;
     // PrecheckRecord is a local procedure in the same file, should find it
     // (this depends on find_variable_references finding cross-procedure refs)
 
@@ -636,7 +636,7 @@ async fn test_completion_after_dot() {
     client.open_file("objects/test.al", code).await;
 
     // After "Staging." on line 6, col 16
-    let completions = client.completion("objects/test.al", 6, 16).await;
+    let _completions = client.completion("objects/test.al", 6, 16).await;
     // Should return at least some completions (even if just keywords)
     // The important thing is it doesn't crash
 
@@ -694,7 +694,7 @@ async fn test_diagnostics_syntax_error() {
     tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
 
     let diags = client.drain_diagnostics();
-    let all_messages: Vec<&str> = diags
+    let _all_messages: Vec<&str> = diags
         .values()
         .flat_map(|d| d.iter())
         .filter_map(|d| d.get("message").and_then(|m| m.as_str()))
@@ -776,7 +776,7 @@ async fn test_formatting_idempotent() {
     // Already well-formatted code — formatting should be idempotent
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
-    let edits = client.format("objects/codeunit.al").await;
+    let _edits = client.format("objects/codeunit.al").await;
     // Either no edits (already formatted) or edits that produce the same result
     // This test mainly verifies it doesn't crash on complex real code
 
@@ -907,7 +907,7 @@ async fn test_inlay_hints_on_procedure_call() {
 
     client.open_file("objects/test.al", code).await;
 
-    let hints = client.inlay_hints("objects/test.al", 0, 12).await;
+    let _hints = client.inlay_hints("objects/test.al", 0, 12).await;
     // May or may not produce hints depending on whether the call is detected
 
     client.shutdown().await;
@@ -933,7 +933,7 @@ async fn test_code_action_empty_begin_end() {
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     // Get code actions at the empty begin..end
-    let actions = client.code_actions("objects/test.al", 3, 5).await;
+    let _actions = client.code_actions("objects/test.al", 3, 5).await;
     // Even if empty, shouldn't crash
 
     client.shutdown().await;
@@ -997,7 +997,7 @@ async fn test_hover_on_keyword() {
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
     // Hover on "begin" keyword - should return None (keywords don't have hover info)
-    let hover = client.hover("objects/codeunit.al", 6, 4).await;
+    let _hover = client.hover("objects/codeunit.al", 6, 4).await;
     // This is fine if it returns None or Some
 
     client.shutdown().await;
@@ -1011,7 +1011,7 @@ async fn test_hover_on_string_literal() {
     client.open_file("objects/codeunit.al", CODEUNIT_AL).await;
 
     // Hover on a string literal - should return None
-    let hover = client.hover("objects/codeunit.al", 28, 35).await;
+    let _hover = client.hover("objects/codeunit.al", 28, 35).await;
     // This is fine if it returns None or Some
 
     client.shutdown().await;
@@ -1024,10 +1024,10 @@ async fn test_empty_file() {
 
     client.open_file("objects/empty.al", "").await;
 
-    let symbols = client.document_symbols("objects/empty.al").await;
+    let _symbols = client.document_symbols("objects/empty.al").await;
     // Should handle empty file without crashing
-    let tokens = client.semantic_tokens("objects/empty.al").await;
-    let ranges = client.folding_ranges("objects/empty.al").await;
+    let _tokens = client.semantic_tokens("objects/empty.al").await;
+    let _ranges = client.folding_ranges("objects/empty.al").await;
 
     client.shutdown().await;
 }
@@ -1046,9 +1046,9 @@ async fn test_incomplete_code() {
     client.open_file("objects/incomplete.al", code).await;
 
     // Should handle gracefully - no crash
-    let symbols = client.document_symbols("objects/incomplete.al").await;
-    let tokens = client.semantic_tokens("objects/incomplete.al").await;
-    let hover = client.hover("objects/incomplete.al", 2, 10).await;
+    let _symbols = client.document_symbols("objects/incomplete.al").await;
+    let _tokens = client.semantic_tokens("objects/incomplete.al").await;
+    let _hover = client.hover("objects/incomplete.al", 2, 10).await;
 
     client.shutdown().await;
 }

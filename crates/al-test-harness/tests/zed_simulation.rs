@@ -308,7 +308,7 @@ async fn test_debar_diagnostics_on_real_files() {
     // Wait for diagnostics
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-    let diags = client.drain_diagnostics();
+    let _diags = client.drain_diagnostics();
     // Real AL code should compile cleanly (no syntax errors)
     // but may have lint warnings
 
@@ -343,7 +343,7 @@ async fn test_debar_cross_file_goto_definition() {
         if line.contains("\"Item Journal Staging\"") {
             // This is a reference to the table - try go-to-definition
             if let Some(pos) = line.find("\"Item Journal Staging\"") {
-                let def = client.definition(
+                let _def = client.definition(
                     "objects/Automation/IJLAPIHelper.Codeunit.al",
                     i as u32,
                     (pos + 1) as u32,

@@ -47,6 +47,17 @@ impl AlParser {
         let errors = collect_errors(&tree, text);
         ParseResult { tree, errors }
     }
+
+    /// Parse using a thread-local parser, avoiding repeated `Parser::new()` + `set_language()`.
+    ///
+    /// Preferred over `AlParser::new()` + `parse()` in hot paths where the parser
+    /// is used once and discarded.
+    pub fn parse_quick(text: &str) -> ParseResult {
+        thread_local! {
+            static PARSER: std::cell::RefCell<AlParser> = std::cell::RefCell::new(AlParser::new());
+        }
+        PARSER.with(|p| p.borrow_mut().parse(text))
+    }
 }
 
 impl Default for AlParser {
