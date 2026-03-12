@@ -8,24 +8,38 @@
 5. Update `docs/progress.md` after every milestone with evidence.
 
 ## Strategic Guardrails
-- **The "Thin Adapter" Rule**: Binaries (`al-cli`, `al-lsp`, `al-explorer`) and the WASM entry point (`zed-al`) must contain ZERO business logic. They handle transport, UI, and Zed-specific protocol glue only.
-- **Unified Analysis Engine**: All analysis, indexing, and logic live in `al-core`. This ensures that what a dev sees in Zed is 100% consistent with what an AI agent sees via the CLI/MCP.
-- **Zed-Native Performance**: Meet all latency targets in `docs/performance-plan.md` to ensure Zed feels "instant." Use incremental parsing and indexing.
-- **Agentic Context Density**: CLI/MCP outputs must be high-density (e.g., event traces) to minimize token usage, replacing expensive multi-file reads for agents.
+- **The "Thin Adapter" Rule**: Binaries and the WASM entry point (`zed-al`) contain ZERO business logic.
+- **Unified Analysis Engine**: All logic lives in `al-core` for 1:1 consistency between Zed and Agents.
+- **Dual-Pass Validation Protocol**: For every feature, agents must perform multiple validation passes:
+    1. **Adversarial Pass (Negative)**: Intentionally provide invalid input or break the logic to prove the `al-test-harness` accurately detects and reports the failure.
+    2. **Fidelity Pass (Positive)**: Confirm the feature works perfectly across LSP (Zed), CLI, and MCP.
+- **Agentic Validation & Adversarial Evolution**: Agents MUST NOT ask the user to test. Every task requires a "Proof of Functionality" (PoF). The `al-test-harness` is an adversarial system; it is constantly improved to "break" the current implementation.
+- **Zero-Tolerance for Zed Regression**: It is considered a **complete project failure** if the harness or an agent claims a feature works (even if it works in CLI/MCP) but it fails in the actual Zed environment. 
+- **Persistent Adversarial Agent**: A sub-agent is **constantly deployed** to WPX. Their sole purpose is to hunt for regressions, find gaps in Zed-fidelity, and feed discovered issues back to the PM as Priority-0 tasks.
 
 ## Quality Gates (Non‑Negotiable)
-1. No direct `AlParser::parse_quick` or `extract_document_symbols` outside `al-core`.
-2. No `SymbolIndex::new` in CLI, LSP, or Explorer binaries.
-3. `al-discovery` and `al-dap` crates must be removed; logic folded into `al-core` and `al-lsp`.
-4. `al-mcp` must be a library calling `al-core` directly, maintaining 1:1 parity with CLI features.
-5. All Work Packages must include verification via `al-test-harness`.
+1. **Multiple Failure Proofs**: Every Task must provide logs of the `al-test-harness` failing as expected before passing. If a test can't fail, it isn't a test.
+2. **Zed-Fidelity Simulation**: All LSP changes MUST be verified by the `al-test-harness` LSP simulator using real-world `.al` project fixtures.
+3. **Adversarial Feedback Loop**: The harness must be updated alongside every feature to include negative test cases.
 
 ---
 
 # Execution Phases & Work Packages
 
+## Phase 0: The Adversarial Foundation
+**WP0: The Agentic & Adversarial Harness**
+- **Goal**: Build the project's "Immune System."
+- **Scope**: Build an LSP simulator with high Zed-fidelity. Create a suite of "Error Fixtures" (broken AL code, missing symbols, corrupt packages).
+- **Imperative**: The harness's reliability is the project's single point of failure.
+
+**WPX: Continuous Adversarial Evolution (Persistent)**
+- **Goal**: A sub-agent MUST be **permanently deployed** to this package to find ways to break the code.
+- **Scope**: Identify where the harness lacks Zed-fidelity (e.g., specific Zed-WASM quirks). Stress-test with large projects, complex event recursion, and malformed symbols.
+- **Feedback**: Discovered gaps are reported to the PM as immediate blocking issues.
+
 ## Phase 1: Foundation & Core Refactor
-**WP1: al-core Skeleton & Discovery Migration**
+...
+...
 - **Goal**: Establish the central "brain" and project discovery logic.
 - **Scope**: Create `al-core`, implement the `Workspace` state container, and migrate `al-discovery` (project/toolchain/launch) into `al-core`.
 - **Zed Impact**: Provides the foundation for project loading and toolchain detection in Zed.
