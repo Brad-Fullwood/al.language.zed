@@ -1,0 +1,33 @@
+# Centralized Proof of Functionality (PoF) Evidence Log
+# ---------------------------------------------------------
+# INSTRUCTIONS FOR IMPLEMENTATION AGENTS:
+# 1. This file is a TOML document. Append new [[entries]] to the bottom.
+# 2. Every entry MUST follow the "Red-to-Green" flow: show the failure first, then the success.
+# 3. Use multi-line strings (""" """) for log outputs to keep them readable.
+# 4. Success-only entries without an Adversarial Pass are invalid.
+# ---------------------------------------------------------
+
+[[entries]]
+date = "2026-03-12"
+work_package = "WP2: Query Engine"
+task_id = "T104: Hover Logic"
+
+[entries.adversarial_pass]
+context = "Hovering over a non-existent symbol 'NonExistentTable'."
+expected = "SymbolIndex returns None, Hover handler returns Empty response."
+actual_log = """
+[DEBUG] al_lsp::hover: resolving symbol 'NonExistentTable'
+[ERROR] al_symbols::index: symbol 'NonExistentTable' not found in workspace or packages.
+[TRACE] al_lsp::handlers: hover result: None (Correct)
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Hovering over 'Customer' table in HelloWorld.al."
+expected = "Returns Markdown with Table 18 'Customer' + documentation."
+actual_log = """
+[DEBUG] al_lsp::hover: resolving symbol 'Customer'
+[INFO]  al_symbols::index: found Table 18 "Customer" in Microsoft_Base Application.app
+[TRACE] al_lsp::handlers: hover result: Some(Markdown("Table 18 Customer...")) (Correct)
+"""
+status = "SUCCESS"
