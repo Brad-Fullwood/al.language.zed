@@ -10,31 +10,15 @@ This document describes the final target architecture and data flows.
 ## Ownership Rules
 1. Only `al-core` orchestrates parsing, symbols, and semantic analysis.
 2. Only `al-lsp` handles LSP transport and DAP integration.
-3. Only `al-cli` handles CLI parsing and output formatting.
+3. Only `al-cli` and `al-mcp` handle high-density agentic discovery and I/O.
 4. Only `al-explorer` handles TUI rendering and user input.
 5. All insight graphs and trace features live in `al-core::insight`.
 
-## State Management
-The `al-core::Workspace` struct is the single source of truth for a project. It owns:
-- **DocumentStore**: Open files with rope-based text and parse tree caches.
-- **SymbolIndex**: Loaded `.app` packages and their composed objects.
-- **SemanticBridge**: The active .NET host process for advanced analysis.
-- **Project Configuration**: Discovered toolchains and project manifests.
-
-## Caching Strategy
-1. **In-Memory**:
-   - Parse trees are cached per document version.
-   - Composed objects (base + extensions) are cached with LRU eviction.
-   - Event search results are cached per symbol index version.
-2. **On-Disk**:
-   - Extracted symbol metadata is cached in a workspace-local `.alcache` directory.
-   - Semantic bridge results (builtins, error codes) are cached globally.
-
-## Diagnostics and Observability (`al-diag`)
-`al-diag` provides a tracing layer that:
-1. Records LSP request latency and success/failure rates.
-2. Captures panic traces and internal errors into a SQLite database.
-3. Allows the CLI and Explorer to query historical performance data via `al-core`.
+## Agentic Interfaces (CLI & MCP)
+A core architectural goal is **Agentic Efficiency**. Unlike traditional tools that assume a human is reading the output, the CLI and MCP are designed to be "context-dense" interfaces for AI agents:
+- **Token Optimization**: Output formats (JSON/Text) are minified and structured to provide the maximum information in the minimum number of tokens.
+- **Discovery vs. Reading**: Instead of an agent reading 10 separate files to understand an event chain (costing 2000+ tokens), a single CLI/MCP call to the Insight engine provides a 200-line trace, saving time and context window.
+- **Surgical Access**: Agents can query specific symbols, dependencies, or code paths without loading the entire project into their active context.
 
 ## Data Flows
 1. **Zed LSP**
@@ -42,10 +26,10 @@ The `al-core::Workspace` struct is the single source of truth for a project. It 
    2. `al-lsp` receives LSP requests and delegates to `al-core::queries`.
    3. `al-core` uses `al-syntax`, `al-symbols`, and `al-semantic` to fulfill requests.
    4. `al-lsp` returns LSP responses to Zed.
-2. **CLI**
-   1. `al-cli` parses args and calls `al-core` query APIs.
-   2. `al-core` executes queries and returns structured results.
-   3. `al-cli` formats output as JSON or human-readable text.
+2. **CLI & MCP (Agent Discovery)**
+   1. `al-cli` or `al-mcp` receives a high-level discovery request (e.g., `trace-events`).
+   2. `al-core` executes the query across the workspace and package symbols.
+   3. Results are formatted as high-density, agent-optimized JSON/Text.
 3. **Explorer and Insight**
    1. `al-explorer` loads workspace state from `al-core::workspace`.
    2. Insight views request graphs from `al-core::insight`.

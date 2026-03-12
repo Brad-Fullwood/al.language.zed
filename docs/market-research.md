@@ -44,15 +44,15 @@ Key features called out in the repository description:
 2. VS Code TypeScript refactoring emphasizes safe rename and move workflows plus source actions like organize imports on save.
 3. VS Code IntelliSense docs highlight high-quality completion, signature help, and rich symbol navigation as baseline expectations.
 
+## Beyond Parity: Agentic Development
+Traditional AL tools (VS Code, Object Designer) focus on the human-to-IDE interface. Zed AL introduces a second, high-efficiency interface for **Agentic Development**:
+1. **Context Window Efficiency**: By providing a surgical, high-density discovery layer (CLI/MCP), agents can perform complex tasks (e.g., event tracing) without reading entire files, reducing cost and latency.
+2. **Deterministic Discovery**: Instead of an agent "guessing" where a subscriber might be, the `al-core::insight` engine provides a deterministic list, preventing hallucination.
+3. **Multi-File Orchestration**: The tools empower agents to handle larger codebases by providing an abstraction over the file system and package symbols.
+
 ## Implications for Zed AL
-1. Event discovery and code path tracing must be first-class features.
-2. Object overview and event browsing should be built into the Insight tools.
-3. CSV export and dependency graphs are required for parity with community workflows.
-4. Reorganize and rename workflows and naming pattern automation should be provided.
-5. Linting must be configurable with custom rulesets.
-6. Inlay hints and runnable code lenses should be first-class Zed features.
-7. Rename and refactoring workflows must be reliable and fast.
-8. AL Explorer parity requires object, event, API, and extensible enum views.
+1. Event discovery and code path tracing must be first-class features for both humans (TUI) and agents (CLI/MCP).
+2. Agentic efficiency must be a non-negotiable architectural gate.
 
 ## Sources
 1. `https://learn.microsoft.com/en-us/dynamics365/business-central/dev-itpro/developer/devenv-events-discoverability`

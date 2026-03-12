@@ -18,6 +18,13 @@ This document defines the AL Insight capabilities and how they are implemented.
 1. TUI Mode. `al-explorer` includes Insight mode with Search, Trace, Events, Tables, and Graph tabs.
 2. LSP Code Actions. Provide actions to trace paths, list publishers/subscribers, and open Insight views.
 3. Zed Tasks. Add tasks to open Insight mode, export graphs, and run entry point searches.
+4. Agentic Integration (CLI/MCP). Direct tool access for AI agents to perform complex discoveries without manual file scanning.
+
+## Agentic High-Density Output
+To optimize for AI context windows, the Insight engine (via CLI and MCP) provides **Agentic High-Density** summaries:
+- **Event Trace Summary**: Instead of providing full source for 10 subscribers, return a 1-line summary per subscriber (object ID, object name, trigger point).
+- **Symbol Resolution**: Resolve cross-package symbols instantly and provide a minimal "Reference Set" for the agent to use in its next turn.
+- **Surgical Extraction**: Extract only the relevant procedure bodies and variable declarations for a specific call chain, omitting irrelevant file contents.
 
 ## Data Sources
 1. Workspace AST via `al-syntax`.

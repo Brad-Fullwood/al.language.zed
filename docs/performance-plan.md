@@ -35,12 +35,7 @@ This document lists concrete performance work and explicit targets.
 2. Move heavyweight queries to background tasks and return partial results when possible.
 3. Use cancellation tokens in long-running requests (format, workspace symbols, etc.).
 
-## I/O and Caching
-1. Standardize a cache root for all CLI/LSP data.
-2. Persist symbol index metadata for fast warm-starts.
-3. Avoid repeated JSON parsing for large files by caching parsed structures.
-
-## Benchmarks and Telemetry
-1. Add repeatable benchmarks for parse/hover/definition/completion latency.
-2. Add metrics hooks behind a feature flag for local profiling.
-3. Maintain a regression dashboard of parse rate and LSP responsiveness.
+## Agentic Efficiency Metrics
+1. **Token Density**: Discovery outputs (event traces, symbol lookups) must provide 10x information density compared to raw file reads.
+2. **Path Discovery**: Large cross-file traces must return in < 100 ms to support real-time agentic orchestration.
+3. **Caching**: High-usage discovery queries (e.g., "find publisher") must be cached with < 5 ms response time.
