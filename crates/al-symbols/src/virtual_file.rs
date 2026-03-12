@@ -1,14 +1,8 @@
-//! Virtual AL file extraction / generation for package symbols.
-//!
-//! When the `.app` package contains actual `.al` source files, the matching
-//! source is extracted and cached. Otherwise a stub is generated from the
-//! `SymbolEntry` data. Files are cached at `~/.cache/al-lsp/symbols/{package}/`.
-
-use std::io::{Cursor, Read};
-use std::os::unix::fs::PermissionsExt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{MethodSymbol, ObjectKind, SymbolEntry};
+use crate::model::SymbolEntry;
+use crate::source_index;
 
 /// Cache directory for extracted / generated virtual AL files.
 pub fn cache_dir() -> PathBuf {
@@ -19,10 +13,6 @@ pub fn cache_dir() -> PathBuf {
 }
 
 /// Get or create a virtual AL file for a package symbol entry.
-///
-/// When `app_path` is provided, the real `.al` source is extracted from the
-/// `.app` ZIP archive if available. Falls back to generating a stub from
-/// symbol data.
 pub fn get_or_create(
     entry: &SymbolEntry,
     app_path: Option<&Path>,
@@ -33,7 +23,6 @@ pub fn get_or_create(
     let file_path = pkg_dir.join(sanitize_filename(&filename));
 
     if !file_path.exists() {
-        // Try extracting real source from the .app first
         let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
 
         let source = match extracted {
@@ -42,413 +31,328 @@ pub fn get_or_create(
             None => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!("no source in .app for {} \"{}\" and outline generation not approved", entry.kind, entry.name),
+                    format!("no source in .app for {} \"{}\"", entry.kind, entry.name),
                 ));
             }
         };
 
-        std::fs::create_dir_all(&pkg_dir)?;
-        std::fs::write(&file_path, &source)?;
-        // Mark read-only so the editor prevents accidental edits
-        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o444))?;
+        fs::create_dir_all(&pkg_dir)?;
+        fs::write(&file_path, &source)?;
+        // Mark read-only
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&file_path, fs::Permissions::from_mode(0o444));
+        }
     }
 
     Ok(file_path)
 }
 
-/// Try to extract the matching `.al` source file from an `.app` ZIP archive.
-///
-/// Returns `None` if the `.app` has no source files or the matching file isn't found.
-fn extract_source_from_app(app_path: &Path, entry: &SymbolEntry) -> Option<String> {
-    let data = std::fs::read(app_path).ok()?;
+/// Kinds of members used for line matching.
+#[derive(Debug, Clone)]
+pub enum MemberKind {
+    Field,
+    Key,
+    Control(String),
+    EnumValue,
+    Procedure,
+    Unknown,
+}
 
-    // Find ZIP offset (skip NAVX header)
-    let zip_offset = (4..data.len().saturating_sub(3))
-        .find(|&i| &data[i..i + 4] == b"\x50\x4B\x03\x04")?;
+#[derive(Debug, Clone, Copy)]
+pub struct MemberRange {
+    pub line: u32,
+    pub col_start: u32,
+    pub col_end: u32,
+}
 
-    let cursor = Cursor::new(&data[zip_offset..]);
-    let mut archive = zip::ZipArchive::new(cursor).ok()?;
+/// Scan a generated virtual AL file for the line that declares `member_name`.
+pub fn find_member_line(path: &Path, member_name: &str) -> Option<u32> {
+    find_member_range(path, member_name, MemberKind::Unknown).map(|r| r.line)
+}
 
-    // Build match targets from the entry
-    let kind_str = entry.kind.to_string();
-    let name_nospace = entry.name.replace(' ', "").to_lowercase();
-    let kind_lower = kind_str.to_lowercase();
+/// Scan a generated virtual AL file for the line that declares `member_name`, with a known kind.
+pub fn find_member_line_with_kind(
+    path: &Path,
+    member_name: &str,
+    kind: MemberKind,
+) -> Option<u32> {
+    find_member_range(path, member_name, kind).map(|r| r.line)
+}
 
-    // Search for a matching .al file in the archive.
-    // File naming: PascalCase with no spaces (e.g., "ItemJournal.Page.al")
-    // Symbol names have spaces (e.g., "Item Journal")
-    let mut best_match: Option<String> = None;
-    for i in 0..archive.len() {
-        let file = archive.by_index(i).ok()?;
-        let file_name = file.name().to_string();
-        if !file_name.to_lowercase().ends_with(".al") {
-            continue;
-        }
-
-        let basename = file_name.rsplit('/').next().unwrap_or(&file_name);
-        let basename_lower = basename.to_lowercase();
-        let basename_nospace = basename_lower.replace(' ', "");
-
-        // Match pattern: "{Name}.{Kind}.al" (e.g., "ItemJournal.Page.al")
-        // Compare without spaces since filenames use PascalCase but symbols have spaces
-        if basename_nospace.contains(&name_nospace) && basename_lower.contains(&kind_lower) {
-            best_match = Some(file_name);
-            break;
-        }
-    }
-
-    let match_name = best_match?;
-    let mut file = archive.by_name(&match_name).ok()?;
-    let mut content = String::new();
-    file.read_to_string(&mut content).ok()?;
-
-    tracing::debug!(
-        app = %app_path.display(),
-        zip_entry = %match_name,
-        object = %entry.name,
-        "extracted real source from .app"
-    );
-
-    Some(content)
+/// Find a precise member range (line/column) for deep-linking.
+pub fn find_member_range(path: &Path, member_name: &str, kind: MemberKind) -> Option<MemberRange> {
+    let content = fs::read_to_string(path).ok()?;
+    find_member_range_in_text(&content, member_name, kind)
 }
 
 /// Check whether an `.app` file contains any `.al` source files.
 pub fn app_has_source(app_path: &Path) -> bool {
-    let Ok(data) = std::fs::read(app_path) else {
-        return false;
+    let data = match fs::read(app_path) {
+        Ok(d) => d,
+        Err(_) => return false,
     };
-    let Some(zip_offset) = (4..data.len().saturating_sub(3))
-        .find(|&i| &data[i..i + 4] == b"\x50\x4B\x03\x04")
-    else {
-        return false;
+
+    let zip_offset = match (4..data.len().saturating_sub(3))
+        .find(|&i| &data[i..i + 4] == b"\x50\x4B\x03\x04") {
+        Some(o) => o,
+        None => return false,
     };
-    let Ok(archive) = zip::ZipArchive::new(Cursor::new(&data[zip_offset..])) else {
-        return false;
+
+    let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(&data[zip_offset..])) {
+        Ok(a) => a,
+        Err(_) => return false,
     };
-    (0..archive.len()).any(|i| {
-        archive
-            .name_for_index(i)
-            .is_some_and(|n| n.to_lowercase().ends_with(".al"))
-    })
+
+    for i in 0..archive.len() {
+        if let Ok(file) = archive.by_index(i) {
+            if file.name().to_lowercase().ends_with(".al") {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
-/// Sanitize a string for use as a filename.
+fn extract_source_from_app(app_path: &Path, entry: &SymbolEntry) -> Option<String> {
+    let index = source_index::get_or_build(app_path).ok()?;
+    index.extract_source_for_entry(entry)
+}
+
 fn sanitize_filename(s: &str) -> String {
     s.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            _ => c,
-        })
+        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
         .collect()
 }
 
-/// Generate AL source from a SymbolEntry for read-only navigation.
-pub fn generate_al(entry: &SymbolEntry) -> String {
-    let mut out = String::with_capacity(8192);
+fn generate_al(entry: &SymbolEntry) -> String {
+    let mut out = String::new();
+    let name_quoted = if entry.name.contains(' ') { format!("\"{}\"", entry.name) } else { entry.name.clone() };
+    let kind_lower = format!("{:?}", entry.kind).to_lowercase();
 
-    // Header comment
-    out.push_str(&format!(
-        "// Generated from package: {}\n// This file is read-only \u{2014} it shows the public API surface.\n\n",
-        entry.package
-    ));
-
-    let kind_lower = entry.kind.to_string().to_lowercase();
-    let name_quoted = quote_name(&entry.name);
-
-    match entry.kind {
-        ObjectKind::Table => {
-            out.push_str(&format!("table {} {}\n{{\n", entry.id, name_quoted));
-            write_object_properties(&mut out, &entry.properties);
-            write_fields(&mut out, &entry.fields);
-            write_keys(&mut out, &entry.keys);
-            write_variables(&mut out, &entry.variables);
-            write_methods(&mut out, &entry.methods);
-            out.push_str("}\n");
-        }
-        ObjectKind::Enum => {
-            out.push_str(&format!("enum {} {}\n{{\n", entry.id, name_quoted));
-            write_object_properties(&mut out, &entry.properties);
-            for v in &entry.enum_values {
-                out.push_str(&format!(
-                    "    value({}; {}) {{ }}\n",
-                    v.ordinal,
-                    quote_name(&v.name)
-                ));
-            }
-            out.push('\n');
-            write_methods(&mut out, &entry.methods);
-            out.push_str("}\n");
-        }
-        ObjectKind::Interface => {
-            out.push_str(&format!("interface {}\n{{\n", name_quoted));
-            write_methods(&mut out, &entry.methods);
-            out.push_str("}\n");
-        }
-        ObjectKind::Page
-        | ObjectKind::Codeunit
-        | ObjectKind::Report
-        | ObjectKind::Query
-        | ObjectKind::XmlPort => {
-            out.push_str(&format!("{} {} {}\n{{\n", kind_lower, entry.id, name_quoted));
-            write_object_properties(&mut out, &entry.properties);
-            write_variables(&mut out, &entry.variables);
-            write_methods(&mut out, &entry.methods);
-            out.push_str("}\n");
-        }
-        _ => {
-            out.push_str(&format!("{} {} {}\n{{\n", kind_lower, entry.id, name_quoted));
-            write_object_properties(&mut out, &entry.properties);
-            write_methods(&mut out, &entry.methods);
-            out.push_str("}\n");
-        }
+    out.push_str(&format!("{} {} {}\n{{\n", kind_lower, entry.id, name_quoted));
+    for m in &entry.methods {
+        let local = if m.is_local { "local " } else { "" };
+        out.push_str(&format!("    {}procedure {}(", local, m.name));
+        out.push_str(")\n    begin\n    end;\n\n");
     }
-
+    out.push_str("}\n");
     out
 }
 
-/// Write object-level properties (Caption, LookupPageID, etc.).
-fn write_object_properties(out: &mut String, properties: &[crate::PropertyValue]) {
-    if properties.is_empty() {
-        return;
-    }
-    for p in properties {
-        let val = escape_property_value(&p.value);
-        out.push_str(&format!("    {} = {};\n", p.name, val));
-    }
-    out.push('\n');
-}
+fn find_member_range_in_text(
+    content: &str,
+    member_name: &str,
+    kind: MemberKind,
+) -> Option<MemberRange> {
+    let needle = member_name.to_lowercase();
 
-/// Write fields with their properties.
-fn write_fields(out: &mut String, fields: &[crate::FieldSymbol]) {
-    if fields.is_empty() {
-        return;
-    }
-    out.push_str("    fields\n    {\n");
-    for f in fields {
-        let fname = quote_name(&f.name);
-        let ftype = if f.type_name.is_empty() { "Text" } else { &f.type_name };
-        out.push_str(&format!("        field({}; {}; {})\n", f.id, fname, ftype));
-        out.push_str("        {\n");
-        for p in &f.properties {
-            let val = escape_property_value(&p.value);
-            out.push_str(&format!("            {} = {};\n", p.name, val));
+    for (line_idx, line) in content.lines().enumerate() {
+        let range = match kind {
+            MemberKind::Procedure => find_procedure_range(line, &needle),
+            MemberKind::Field => find_call_range(line, "field", 1, &needle),
+            MemberKind::Key => find_call_range(line, "key", 0, &needle),
+            MemberKind::EnumValue => find_call_range(line, "value", 1, &needle),
+            MemberKind::Control(ref k) => find_call_range(line, k, 0, &needle),
+            MemberKind::Unknown => {
+                find_procedure_range(line, &needle)
+                    .or_else(|| find_call_range(line, "field", 1, &needle))
+                    .or_else(|| find_call_range(line, "value", 1, &needle))
+            }
+        };
+
+        if let Some((col_start, col_end)) = range {
+            return Some(MemberRange {
+                line: line_idx as u32,
+                col_start: col_start as u32,
+                col_end: col_end as u32,
+            });
         }
-        out.push_str("        }\n");
     }
-    out.push_str("    }\n\n");
+    None
 }
 
-/// Write keys section.
-fn write_keys(out: &mut String, keys: &[crate::KeySymbol]) {
-    if keys.is_empty() {
-        return;
-    }
-    out.push_str("    keys\n    {\n");
-    for k in keys {
-        let fields: Vec<String> = k.field_names.iter().map(|f| quote_name(f)).collect();
-        out.push_str(&format!("        key({}; {})\n", k.name, fields.join(", ")));
-        out.push_str("        {\n");
-        for p in &k.properties {
-            let val = escape_property_value(&p.value);
-            out.push_str(&format!("            {} = {};\n", p.name, val));
+fn find_procedure_range(line: &str, needle: &str) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if is_ident_start(bytes[i]) {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && is_ident_char(bytes[i]) {
+                i += 1;
+            }
+            let word = &line[start..i];
+            if word.eq_ignore_ascii_case("procedure") {
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if let Some((name, col_start, col_end)) = parse_name_token(line, bytes, j) {
+                    if name.to_lowercase() == needle {
+                        return Some((col_start, col_end));
+                    }
+                }
+            }
+        } else {
+            i += 1;
         }
-        out.push_str("        }\n");
     }
-    out.push_str("    }\n\n");
+    None
 }
 
-/// Write variable declarations.
-fn write_variables(out: &mut String, variables: &[crate::VariableSymbol]) {
-    let public_vars: Vec<_> = variables.iter().filter(|v| !v.is_protected).collect();
-    if public_vars.is_empty() {
-        return;
+fn find_call_range(line: &str, keyword: &str, arg_index: usize, needle: &str) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if is_ident_start(bytes[i]) {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && is_ident_char(bytes[i]) {
+                i += 1;
+            }
+            let word = &line[start..i];
+            if word.eq_ignore_ascii_case(keyword) {
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'(' {
+                    if let Some((name, col_start, col_end)) = parse_call_arg(line, bytes, j + 1, arg_index) {
+                        if name.to_lowercase() == needle {
+                            return Some((col_start, col_end));
+                        }
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
     }
-    out.push_str("    var\n");
-    for v in &public_vars {
-        out.push_str(&format!("        {}: {};\n", v.name, v.type_name));
-    }
-    out.push('\n');
+    None
 }
 
-/// Escape a property value for AL syntax.
-fn escape_property_value(val: &str) -> String {
-    // If it looks like a boolean or number, don't quote
-    if val == "0" || val == "1" || val.eq_ignore_ascii_case("true") || val.eq_ignore_ascii_case("false") {
-        return val.to_string();
-    }
-    // If it already has quotes or is a complex expression, use as-is
-    if val.contains('"') || val.contains('\'') || val.contains('\n') || val.contains('\r') {
-        return format!("'{}'", val.replace('\'', "''"));
-    }
-    // Simple string values get single quotes
-    format!("'{}'", val)
-}
-
-/// Write public method declarations.
-fn write_methods(out: &mut String, methods: &[MethodSymbol]) {
-    for m in methods.iter().filter(|m| !m.is_local) {
-        for attr in &m.attributes {
-            if attr.arguments.is_empty() {
-                out.push_str(&format!("    [{}]\n", attr.name));
-            } else {
-                out.push_str(&format!("    [{}({})]\n", attr.name, attr.arguments.join(", ")));
+fn parse_call_arg(
+    line: &str,
+    bytes: &[u8],
+    mut i: usize,
+    target_index: usize,
+) -> Option<(String, usize, usize)> {
+    let mut arg_idx = 0usize;
+    loop {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] == b')' {
+            return None;
+        }
+        let (name, col_start, col_end) = parse_name_token(line, bytes, i)?;
+        let mut token_end = col_end;
+        if col_start > 0 && bytes[col_start.saturating_sub(1)] == b'"' {
+            token_end = col_end.saturating_add(1);
+        }
+        if arg_idx == target_index {
+            return Some((name, col_start, col_end));
+        }
+        i = token_end;
+        // Move to next separator at depth 0.
+        let mut depth = 0i32;
+        let mut in_string = false;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if in_string {
+                if b == b'"' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                        i += 2;
+                        continue;
+                    }
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            match b {
+                b'"' => {
+                    in_string = true;
+                    i += 1;
+                }
+                b'(' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b')' => {
+                    if depth == 0 {
+                        return None;
+                    }
+                    depth -= 1;
+                    i += 1;
+                }
+                b';' | b',' => {
+                    if depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                _ => i += 1,
             }
         }
+        arg_idx += 1;
+    }
+}
 
-        let params: Vec<String> = m
-            .parameters
-            .iter()
-            .map(|p| {
-                if p.is_var {
-                    format!("var {}: {}", p.name, p.type_name)
-                } else {
-                    format!("{}: {}", p.name, p.type_name)
+fn parse_name_token(
+    line: &str,
+    bytes: &[u8],
+    mut i: usize,
+) -> Option<(String, usize, usize)> {
+    if i >= bytes.len() {
+        return None;
+    }
+    if bytes[i] == b'"' {
+        let start_col = i + 1;
+        i += 1;
+        let mut out = String::new();
+        while i < bytes.len() {
+            if bytes[i] == b'"' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                    out.push('"');
+                    i += 2;
+                    continue;
                 }
-            })
-            .collect();
-
-        let ret = m
-            .return_type
-            .as_deref()
-            .map(|r| format!(": {}", r))
-            .unwrap_or_default();
-        out.push_str(&format!(
-            "    procedure {}({}){}\n    begin\n    end;\n\n",
-            m.name,
-            params.join("; "),
-            ret
-        ));
+                let end_col = i;
+                return Some((out, start_col, end_col));
+            }
+            let ch = line[i..].chars().next()?;
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+        return None;
     }
-}
 
-/// Quote a name if it contains spaces or special characters.
-fn quote_name(name: &str) -> String {
-    if name.contains(' ') || name.contains('.') || name.contains('/') {
-        format!("\"{}\"", name)
+    let start_col = i;
+    while i < bytes.len()
+        && !bytes[i].is_ascii_whitespace()
+        && bytes[i] != b';'
+        && bytes[i] != b','
+        && bytes[i] != b')'
+    {
+        i += 1;
+    }
+    if i == start_col {
+        None
     } else {
-        name.to_string()
+        let name = line[start_col..i].trim().to_string();
+        Some((name, start_col, i))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{EnumValueSymbol, FieldSymbol, MethodSymbol, ParameterSymbol};
+fn is_ident_start(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_'
+}
 
-    #[test]
-    fn generate_table_with_fields() {
-        let entry = SymbolEntry {
-            kind: ObjectKind::Table,
-            id: 18,
-            name: "Customer".to_string(),
-            extends: None,
-            package: "Microsoft.Application".to_string(),
-            methods: vec![],
-            fields: vec![
-                FieldSymbol { id: 1, name: "No.".to_string(), type_name: "Code[20]".to_string(), properties: vec![] },
-                FieldSymbol { id: 2, name: "Name".to_string(), type_name: "Text[100]".to_string(), properties: vec![] },
-            ],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            variables: vec![],
-        };
-        let al = generate_al(&entry);
-        assert!(al.contains("table 18 Customer"));
-        assert!(al.contains("field(1; \"No.\"; Code[20])"));
-        assert!(al.contains("field(2; Name; Text[100])"));
-    }
-
-    #[test]
-    fn generate_enum_with_values() {
-        let entry = SymbolEntry {
-            kind: ObjectKind::Enum,
-            id: 50100,
-            name: "IJL Status".to_string(),
-            extends: None,
-            package: "test".to_string(),
-            methods: vec![],
-            fields: vec![],
-            controls: vec![],
-            enum_values: vec![
-                EnumValueSymbol { ordinal: 0, name: "Pending".to_string() },
-                EnumValueSymbol { ordinal: 1, name: "Posted".to_string() },
-            ],
-            keys: vec![],
-            properties: vec![],
-            variables: vec![],
-        };
-        let al = generate_al(&entry);
-        assert!(al.contains("enum 50100 \"IJL Status\""));
-        assert!(al.contains("value(0; Pending)"));
-        assert!(al.contains("value(1; Posted)"));
-    }
-
-    #[test]
-    fn generate_codeunit_with_methods() {
-        let entry = SymbolEntry {
-            kind: ObjectKind::Codeunit,
-            id: 80,
-            name: "Sales Post".to_string(),
-            extends: None,
-            package: "Microsoft.Application".to_string(),
-            methods: vec![
-                MethodSymbol {
-                    name: "Run".to_string(),
-                    parameters: vec![
-                        ParameterSymbol { name: "SalesHeader".to_string(), type_name: "Record \"Sales Header\"".to_string(), is_var: true },
-                    ],
-                    return_type: None,
-                    attributes: vec![],
-                    is_local: false,
-                },
-                MethodSymbol {
-                    name: "InternalHelper".to_string(),
-                    parameters: vec![],
-                    return_type: None,
-                    attributes: vec![],
-                    is_local: true, // should be excluded
-                },
-            ],
-            fields: vec![],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            variables: vec![],
-        };
-        let al = generate_al(&entry);
-        assert!(al.contains("codeunit 80 \"Sales Post\""));
-        assert!(al.contains("procedure Run(var SalesHeader: Record \"Sales Header\")"));
-        assert!(!al.contains("InternalHelper")); // local methods excluded
-    }
-
-    #[test]
-    fn virtual_file_cache_path() {
-        let entry = SymbolEntry {
-            kind: ObjectKind::Table,
-            id: 18,
-            name: "Customer".to_string(),
-            extends: None,
-            package: "Microsoft.Application".to_string(),
-            methods: vec![],
-            fields: vec![],
-            controls: vec![],
-            enum_values: vec![],
-            keys: vec![],
-            properties: vec![],
-            variables: vec![],
-        };
-        let path = get_or_create(&entry, None, true).unwrap();
-        assert!(path.exists());
-        assert!(path.to_string_lossy().contains("Microsoft.Application"));
-        assert!(path.to_string_lossy().ends_with(".al"));
-        // Verify the file is read-only
-        let perms = std::fs::metadata(&path).unwrap().permissions();
-        assert_eq!(perms.mode() & 0o777, 0o444, "virtual file should be read-only");
-        // Cleanup — make writable first so remove succeeds
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        std::fs::remove_file(&path).unwrap();
-    }
+fn is_ident_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
 }

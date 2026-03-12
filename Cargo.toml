@@ -31,3 +31,4 @@ zip = "2"
 quick-xml = { version = "0.37", features = ["serialize"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+memmap2 = "0.9"

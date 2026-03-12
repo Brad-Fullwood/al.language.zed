@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("AlBridge")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2f8141baa6380b83cd34621942b1087b125984a2")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+af0f1f38b81f2e33694f4a08be61c61d0561adbf")]
 [assembly: System.Reflection.AssemblyProductAttribute("AlBridge")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AlBridge")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

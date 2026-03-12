@@ -28,17 +28,19 @@ pub struct SymbolIndex {
     all: DashMap<usize, (Arc<SymbolEntry>, String)>,
     /// Next ID for the `all` map.
     next_id: std::sync::atomic::AtomicUsize,
-    /// Maps lowercase package name → .app file path on disk.
+    /// Maps lowercase package name -> .app file path on disk.
     app_paths: DashMap<String, std::path::PathBuf>,
-}
+    /// Lazy-loaded mapping of (PackageName, ObjectKind, ID) -> ZIP internal path.
+    source_path_cache: DashMap<(String, ObjectKind, i32), String>,
+    }
 
-impl Default for SymbolIndex {
+    impl Default for SymbolIndex {
     fn default() -> Self {
         Self::new()
     }
-}
+    }
 
-impl SymbolIndex {
+    impl SymbolIndex {
     /// Create an empty index.
     pub fn new() -> Self {
         Self {
@@ -49,7 +51,24 @@ impl SymbolIndex {
             all: DashMap::new(),
             next_id: std::sync::atomic::AtomicUsize::new(0),
             app_paths: DashMap::new(),
+            source_path_cache: DashMap::new(),
         }
+    }
+
+    /// Store a cached source path mapping.
+    pub fn cache_source_path(&self, package: String, kind: ObjectKind, id: i32, path: String) {
+        self.source_path_cache.insert((package.to_lowercase(), kind, id), path);
+    }
+
+    /// Retrieve a cached source path mapping.
+    pub fn get_cached_source_path(&self, package: &str, kind: ObjectKind, id: i32) -> Option<String> {
+        self.source_path_cache.get(&(package.to_lowercase(), kind, id)).map(|s| s.value().clone())
+    }
+
+    /// Check if a package has been indexed for source paths.
+    pub fn is_package_indexed(&self, package: &str) -> bool {
+        let pkg = package.to_lowercase();
+        self.source_path_cache.iter().any(|entry| entry.key().0 == pkg)
     }
 
     /// Load and index all .app files from the given paths.
@@ -202,6 +221,25 @@ impl SymbolIndex {
                     if results.len() >= limit {
                         break;
                     }
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Search for objects within a specific package, case-insensitive substring search.
+    pub fn search_in_package(&self, package_name: &str, query: &str) -> Vec<Arc<SymbolEntry>> {
+        let mut results = Vec::new();
+        let query_lower = query.to_lowercase();
+        // The package name on the entry might be differently cased, but usually it matches
+        let target_pkg = package_name.to_lowercase();
+
+        for entry in self.all.iter() {
+            let (arc, name_lower) = entry.value();
+            if arc.package.to_lowercase() == target_pkg {
+                if query_lower.is_empty() || name_lower.contains(&query_lower) {
+                    results.push(Arc::clone(arc));
                 }
             }
         }

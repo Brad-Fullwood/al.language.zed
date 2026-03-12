@@ -121,6 +121,30 @@ impl ObjectKind {
         }
     }
 
+    /// Short alias used in physical file names inside .app packages (e.g., Tab, Pag, Cod).
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            ObjectKind::Table => "Tab",
+            ObjectKind::TableExtension => "TableExt",
+            ObjectKind::Page => "Pag",
+            ObjectKind::PageExtension => "PageExt",
+            ObjectKind::Codeunit => "Cod",
+            ObjectKind::Report => "Rep",
+            ObjectKind::ReportExtension => "ReportExt",
+            ObjectKind::XmlPort => "Xml",
+            ObjectKind::Query => "Que",
+            ObjectKind::Enum => "Enum",
+            ObjectKind::EnumExtension => "EnumExt",
+            ObjectKind::Interface => "Interface",
+            ObjectKind::PermissionSet => "Perm",
+            ObjectKind::PermissionSetExtension => "PermExt",
+            ObjectKind::Profile => "Prof",
+            ObjectKind::PageCustomization => "PageCust",
+            ObjectKind::ControlAddIn => "ControlAddIn",
+            ObjectKind::Entitlement => "Entitlement",
+        }
+    }
+
     /// Whether this kind is an extension type.
     pub fn is_extension(&self) -> bool {
         self.base_kind().is_some()

@@ -11,6 +11,7 @@ SHELL := /bin/bash
 ROOT := $(shell pwd)
 LSP_BIN := $(ROOT)/target/debug/al-lsp
 CLI_BIN := $(ROOT)/target/debug/al-cli
+EXPLORER_BIN := $(ROOT)/target/debug/al-explorer
 INSTALL_DIR := $(HOME)/.local/bin
 ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 
@@ -39,6 +40,12 @@ install: build
 		echo "Symlinked al-cli -> $(INSTALL_DIR)/al-cli"; \
 	else \
 		echo "al-cli already in $(INSTALL_DIR) (OK)"; \
+	fi
+	@if [ ! -L "$(INSTALL_DIR)/al-explorer" ] && [ ! -f "$(INSTALL_DIR)/al-explorer" ]; then \
+		ln -sf "$(EXPLORER_BIN)" "$(INSTALL_DIR)/al-explorer"; \
+		echo "Symlinked al-explorer -> $(INSTALL_DIR)/al-explorer"; \
+	else \
+		echo "al-explorer already in $(INSTALL_DIR) (OK)"; \
 	fi
 	@mkdir -p "$(ZED_EXT_DIR)"
 	@if [ ! -L "$(ZED_EXT_DIR)/al" ] && [ ! -d "$(ZED_EXT_DIR)/al" ]; then \

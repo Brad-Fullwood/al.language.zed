@@ -1,0 +1,14 @@
+[package]
+name = "al-explorer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+al-discovery = { version = "0.1.0", path = "../al-discovery" }
+al-symbols = { version = "0.1.0", path = "../al-symbols" }
+crossterm = "0.29.0"
+open = "5.3.3"
+ratatui = "0.30.0"
+tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true

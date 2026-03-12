@@ -11,6 +11,8 @@
 use al_syntax::AlParser;
 use tower_lsp::lsp_types::*;
 
+use crate::diagnostics;
+use crate::formatting;
 use crate::parsing;
 use crate::server::AlServer;
 
@@ -28,7 +30,10 @@ pub(crate) fn handle_document_symbol(
 
     let symbols = al_syntax::extract_document_symbols(&tree, &text);
 
-    tracing::debug!(symbol_count = symbols.len(), "document_symbol: returning symbols");
+    tracing::debug!(
+        symbol_count = symbols.len(),
+        "document_symbol: returning symbols"
+    );
     Some(DocumentSymbolResponse::Nested(symbols))
 }
 
@@ -41,7 +46,10 @@ pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<F
     let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let ranges = al_syntax::extract_folding_ranges(&tree, &text);
-    tracing::debug!(range_count = ranges.len(), "folding_range: returning ranges");
+    tracing::debug!(
+        range_count = ranges.len(),
+        "folding_range: returning ranges"
+    );
     Some(ranges)
 }
 
@@ -50,10 +58,7 @@ pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<F
 // ---------------------------------------------------------------------------
 
 /// Handle textDocument/semanticTokens/full.
-pub(crate) fn handle_semantic_tokens(
-    server: &AlServer,
-    uri: &Url,
-) -> Option<SemanticTokensResult> {
+pub(crate) fn handle_semantic_tokens(server: &AlServer, uri: &Url) -> Option<SemanticTokensResult> {
     let (text, tree) = parsing::get_or_parse(server, uri)?;
 
     let tokens = al_syntax::extract_semantic_tokens(&tree, &text);
@@ -69,7 +74,10 @@ pub(crate) fn handle_semantic_tokens(
         })
         .collect();
 
-    tracing::debug!(token_count = lsp_tokens.len(), "semantic_tokens: returning tokens");
+    tracing::debug!(
+        token_count = lsp_tokens.len(),
+        "semantic_tokens: returning tokens"
+    );
     Some(SemanticTokensResult::Tokens(SemanticTokens {
         result_id: None,
         data: lsp_tokens,
@@ -123,7 +131,7 @@ pub(crate) fn handle_signature_help(
                     let detail = child.detail.as_deref().unwrap_or("()");
                     return Some(SignatureHelp {
                         signatures: vec![SignatureInformation {
-                            label: format!("{}{}",  child.name, detail),
+                            label: format!("{}{}", child.name, detail),
                             documentation: None,
                             parameters: None,
                             active_parameter: Some(active_param),
@@ -140,7 +148,16 @@ pub(crate) fn handle_signature_help(
     // Look up through receiver type resolution (cross-file workspace procedures)
     // If the call is `receiver.Method(...)`, resolve the receiver type and search
     // the target workspace file's procedures.
-    if let Some(sig) = resolve_receiver_signature(server, uri, &text, &tree, prefix, func_name, active_param, position) {
+    if let Some(sig) = resolve_receiver_signature(
+        server,
+        uri,
+        &text,
+        &tree,
+        prefix,
+        func_name,
+        active_param,
+        position,
+    ) {
         tracing::debug!(func_name = %func_name, "signature: matched via receiver resolution");
         return Some(sig);
     }
@@ -184,12 +201,7 @@ pub(crate) fn handle_signature_help(
 
                 return Some(SignatureHelp {
                     signatures: vec![SignatureInformation {
-                        label: format!(
-                            "{}({}){}",
-                            method.name,
-                            params_str.join("; "),
-                            return_str
-                        ),
+                        label: format!("{}({}){}", method.name, params_str.join("; "), return_str),
                         documentation: None,
                         parameters: Some(params),
                         active_parameter: Some(active_param),
@@ -241,9 +253,9 @@ pub(crate) fn handle_signature_help(
                 let doc = if method.documentation.is_empty() {
                     None
                 } else {
-                    Some(Documentation::String(
-                        crate::resolution::strip_xml_tags(&method.documentation),
-                    ))
+                    Some(Documentation::String(crate::resolution::strip_xml_tags(
+                        &method.documentation,
+                    )))
                 };
 
                 signatures.push(SignatureInformation {
@@ -264,9 +276,14 @@ pub(crate) fn handle_signature_help(
     if !signatures.is_empty() {
         tracing::debug!(func_name = %func_name, overloads = signatures.len(), "signature: matched builtin overloads");
         // Pick the best active_signature based on parameter count matching active_param
-        let active_sig = signatures.iter().position(|s| {
-            s.parameters.as_ref().is_some_and(|p| p.len() as u32 > active_param)
-        }).unwrap_or(0) as u32;
+        let active_sig = signatures
+            .iter()
+            .position(|s| {
+                s.parameters
+                    .as_ref()
+                    .is_some_and(|p| p.len() as u32 > active_param)
+            })
+            .unwrap_or(0) as u32;
         return Some(SignatureHelp {
             signatures,
             active_signature: Some(active_sig),
@@ -396,12 +413,7 @@ fn resolve_receiver_signature(
 
                 return Some(SignatureHelp {
                     signatures: vec![SignatureInformation {
-                        label: format!(
-                            "{}({}){}",
-                            method.name,
-                            params_str.join("; "),
-                            return_str
-                        ),
+                        label: format!("{}({}){}", method.name, params_str.join("; "), return_str),
                         documentation: None,
                         parameters: Some(params),
                         active_parameter: Some(active_param),
@@ -431,7 +443,10 @@ pub(crate) fn handle_code_action(
     let text = server.documents.get_text(uri)?;
     let mut actions = Vec::new();
 
-    tracing::debug!(diagnostic_count = diagnostics.len(), "code_action: processing diagnostics");
+    tracing::debug!(
+        diagnostic_count = diagnostics.len(),
+        "code_action: processing diagnostics"
+    );
 
     // --- Diagnostic-based quick fixes ---
     for diag in diagnostics {
@@ -446,24 +461,31 @@ pub(crate) fn handle_code_action(
                 };
                 let indent = detect_indent(&text, diag.range.start.line);
                 let edit = TextEdit {
-                    range: Range { start: insert_pos, end: insert_pos },
+                    range: Range {
+                        start: insert_pos,
+                        end: insert_pos,
+                    },
                     new_text: format!("{}    // TODO: Implement\n", indent),
                 };
-                actions.push(make_quickfix(
-                    "Add TODO comment",
-                    uri,
-                    diag,
-                    vec![edit],
-                ));
+                actions.push(make_quickfix("Add TODO comment", uri, diag, vec![edit]));
             }
 
             Some("AL-L005") => {
                 // Unused variable — offer to remove the declaration line
                 // The diagnostic range covers the variable name; remove the whole line
-                let line_start = Position { line: diag.range.start.line, character: 0 };
-                let line_end = Position { line: diag.range.start.line + 1, character: 0 };
+                let line_start = Position {
+                    line: diag.range.start.line,
+                    character: 0,
+                };
+                let line_end = Position {
+                    line: diag.range.start.line + 1,
+                    character: 0,
+                };
                 let edit = TextEdit {
-                    range: Range { start: line_start, end: line_end },
+                    range: Range {
+                        start: line_start,
+                        end: line_end,
+                    },
                     new_text: String::new(),
                 };
                 actions.push(make_quickfix(
@@ -482,7 +504,10 @@ pub(crate) fn handle_code_action(
                 };
                 let indent = detect_indent(&text, diag.range.start.line);
                 let edit = TextEdit {
-                    range: Range { start: insert_pos, end: insert_pos },
+                    range: Range {
+                        start: insert_pos,
+                        end: insert_pos,
+                    },
                     new_text: format!("{}        // TODO: Implement trigger\n", indent),
                 };
                 actions.push(make_quickfix(
@@ -495,10 +520,19 @@ pub(crate) fn handle_code_action(
 
             Some("AL-L007") => {
                 // TODO/FIXME comment — offer to remove (mark as resolved)
-                let line_start = Position { line: diag.range.start.line, character: 0 };
-                let line_end = Position { line: diag.range.start.line + 1, character: 0 };
+                let line_start = Position {
+                    line: diag.range.start.line,
+                    character: 0,
+                };
+                let line_end = Position {
+                    line: diag.range.start.line + 1,
+                    character: 0,
+                };
                 let edit = TextEdit {
-                    range: Range { start: line_start, end: line_end },
+                    range: Range {
+                        start: line_start,
+                        end: line_end,
+                    },
                     new_text: String::new(),
                 };
                 actions.push(make_quickfix(
@@ -539,11 +573,11 @@ pub(crate) fn handle_code_action(
                 };
                 let indent = detect_indent(&text, diag.range.start.line);
                 let edit = TextEdit {
-                    range: Range { start: insert_pos, end: insert_pos },
-                    new_text: format!(
-                        "{}    else\n{}        ; // default case\n",
-                        indent, indent
-                    ),
+                    range: Range {
+                        start: insert_pos,
+                        end: insert_pos,
+                    },
+                    new_text: format!("{}    else\n{}        ; // default case\n", indent, indent),
                 };
                 actions.push(make_quickfix(
                     "Add missing 'else' branch",
@@ -573,7 +607,10 @@ pub(crate) fn handle_code_action(
                 };
                 let indent = detect_indent(&text, diag.range.start.line);
                 let edit = TextEdit {
-                    range: Range { start: insert_pos, end: insert_pos },
+                    range: Range {
+                        start: insert_pos,
+                        end: insert_pos,
+                    },
                     new_text: format!("{}    // TODO: Add loop body\n", indent),
                 };
                 actions.push(make_quickfix(
@@ -599,12 +636,7 @@ pub(crate) fn handle_code_action(
             Some("AL-L017") => {
                 // Hard-coded string — extract to Label variable
                 if let Some(edits) = compute_extract_to_label(&text, diag) {
-                    actions.push(make_quickfix(
-                        "Extract to Label variable",
-                        uri,
-                        diag,
-                        edits,
-                    ));
+                    actions.push(make_quickfix("Extract to Label variable", uri, diag, edits));
                 }
             }
 
@@ -626,38 +658,58 @@ pub(crate) fn handle_code_action(
     }
 
     // --- Source actions (workspace commands surfaced as code actions) ---
+    // Format File (calculate edits directly)
+    if let Some(edits) = formatting::handle_formatting(
+        server,
+        uri,
+        &FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            ..Default::default()
+        },
+    ) {
+        if !edits.is_empty() {
+            let mut changes = std::collections::HashMap::new();
+            changes.insert(uri.clone(), edits);
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "AL: Format File".to_string(),
+                kind: Some(CodeActionKind::SOURCE),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }));
+        } else {
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "AL: Format File".to_string(),
+                kind: Some(CodeActionKind::SOURCE),
+                command: Some(Command {
+                    title: "AL: Format File".to_string(),
+                    command: "al.formatFile".to_string(),
+                    arguments: serde_json::to_value(uri).ok().map(|v| vec![v]),
+                }),
+                ..Default::default()
+            }));
+        }
+    }
+
+    // Lint File (still a command because it triggers an async side effect)
     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "AL: Download Symbols (Server)".to_string(),
+        title: "AL: Lint File".to_string(),
         kind: Some(CodeActionKind::SOURCE),
         command: Some(Command {
-            title: "AL: Download Symbols (Server)".to_string(),
-            command: "al.downloadSymbolsServer".to_string(),
-            arguments: None,
-        }),
-        ..Default::default()
-    }));
-    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "AL: Download Symbols (NuGet)".to_string(),
-        kind: Some(CodeActionKind::SOURCE),
-        command: Some(Command {
-            title: "AL: Download Symbols (NuGet)".to_string(),
-            command: "al.downloadSymbolsNuget".to_string(),
-            arguments: None,
-        }),
-        ..Default::default()
-    }));
-    actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "AL: Clear Symbol Cache".to_string(),
-        kind: Some(CodeActionKind::SOURCE),
-        command: Some(Command {
-            title: "AL: Clear Symbol Cache".to_string(),
-            command: "al.clearSymbolCache".to_string(),
-            arguments: None,
+            title: "AL: Lint File".to_string(),
+            command: "al.lintFile".to_string(),
+            arguments: serde_json::to_value(uri).ok().map(|v| vec![v]),
         }),
         ..Default::default()
     }));
 
-    tracing::debug!(action_count = actions.len(), "code_action: returning actions");
+    tracing::debug!(
+        action_count = actions.len(),
+        "code_action: returning actions"
+    );
 
     if actions.is_empty() {
         None
@@ -733,16 +785,28 @@ fn compute_remove_begin_end(text: &str, diag: &Diagnostic) -> Option<Vec<TextEdi
         // Remove the begin line
         TextEdit {
             range: Range {
-                start: Position { line: start_line as u32, character: 0 },
-                end: Position { line: (start_line + 1) as u32, character: 0 },
+                start: Position {
+                    line: start_line as u32,
+                    character: 0,
+                },
+                end: Position {
+                    line: (start_line + 1) as u32,
+                    character: 0,
+                },
             },
             new_text: String::new(),
         },
         // Remove the end line
         TextEdit {
             range: Range {
-                start: Position { line: end_line as u32, character: 0 },
-                end: Position { line: (end_line + 1) as u32, character: 0 },
+                start: Position {
+                    line: end_line as u32,
+                    character: 0,
+                },
+                end: Position {
+                    line: (end_line + 1) as u32,
+                    character: 0,
+                },
             },
             new_text: String::new(),
         },
@@ -823,10 +887,7 @@ fn compute_extract_to_label(text: &str, diag: &Diagnostic) -> Option<Vec<TextEdi
     // Find the var section to insert the label declaration
     // Search backwards for a line containing 'var' (simple heuristic)
     let indent = detect_indent(text, diag.range.start.line);
-    let label_decl = format!(
-        "{}    {}: Label {};\n",
-        indent, label_name, string_literal
-    );
+    let label_decl = format!("{}    {}: Label {};\n", indent, label_name, string_literal);
 
     // Try to find a 'var' section above the current line
     let mut var_line = None;
@@ -837,8 +898,10 @@ fn compute_extract_to_label(text: &str, diag: &Diagnostic) -> Option<Vec<TextEdi
             break;
         }
         // Stop at procedure/trigger declaration
-        if l.starts_with("procedure ") || l.starts_with("local procedure ")
-            || l.starts_with("trigger ") || l.starts_with("begin")
+        if l.starts_with("procedure ")
+            || l.starts_with("local procedure ")
+            || l.starts_with("trigger ")
+            || l.starts_with("begin")
         {
             break;
         }
@@ -851,7 +914,10 @@ fn compute_extract_to_label(text: &str, diag: &Diagnostic) -> Option<Vec<TextEdi
             character: 0,
         };
         edits.push(TextEdit {
-            range: Range { start: insert_pos, end: insert_pos },
+            range: Range {
+                start: insert_pos,
+                end: insert_pos,
+            },
             new_text: label_decl,
         });
     } else {
@@ -861,7 +927,10 @@ fn compute_extract_to_label(text: &str, diag: &Diagnostic) -> Option<Vec<TextEdi
             character: 0,
         };
         edits.push(TextEdit {
-            range: Range { start: insert_pos, end: insert_pos },
+            range: Range {
+                start: insert_pos,
+                end: insert_pos,
+            },
             new_text: format!(
                 "{}// TODO: Add to var section: {}: Label {};\n",
                 indent, label_name, string_literal
@@ -964,7 +1033,10 @@ fn source_action_add_doc_comment(
                         character: 0,
                     };
                     let edit = TextEdit {
-                        range: Range { start: insert_pos, end: insert_pos },
+                        range: Range {
+                            start: insert_pos,
+                            end: insert_pos,
+                        },
                         new_text: doc,
                     };
 
@@ -990,25 +1062,33 @@ fn source_action_add_doc_comment(
 }
 
 /// Source action: Wrap selected code in //region ... //endregion.
-fn source_action_add_region(
-    uri: &Url,
-    text: &str,
-    range: Range,
-) -> Option<CodeActionOrCommand> {
+fn source_action_add_region(uri: &Url, text: &str, range: Range) -> Option<CodeActionOrCommand> {
     let indent = detect_indent(text, range.start.line);
 
     let region_start = TextEdit {
         range: Range {
-            start: Position { line: range.start.line, character: 0 },
-            end: Position { line: range.start.line, character: 0 },
+            start: Position {
+                line: range.start.line,
+                character: 0,
+            },
+            end: Position {
+                line: range.start.line,
+                character: 0,
+            },
         },
         new_text: format!("{}//region MyRegion\n", indent),
     };
 
     let region_end = TextEdit {
         range: Range {
-            start: Position { line: range.end.line + 1, character: 0 },
-            end: Position { line: range.end.line + 1, character: 0 },
+            start: Position {
+                line: range.end.line + 1,
+                character: 0,
+            },
+            end: Position {
+                line: range.end.line + 1,
+                character: 0,
+            },
         },
         new_text: format!("{}//endregion\n", indent),
     };
@@ -1017,7 +1097,7 @@ fn source_action_add_region(
     changes.insert(uri.clone(), vec![region_start, region_end]);
 
     Some(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Wrap in region".to_string(),
+        title: "AL: Wrap in region".to_string(),
         kind: Some(CodeActionKind::REFACTOR),
         diagnostics: None,
         edit: Some(WorkspaceEdit {
@@ -1047,10 +1127,25 @@ pub(crate) fn handle_inlay_hint(
     // Extract document symbols once for the whole file (used for local procedure lookups)
     let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
 
-    collect_inlay_hints(root, source, &text, &tree, server, &doc_symbols, &range, &mut hints);
+    collect_inlay_hints(
+        root,
+        source,
+        &text,
+        &tree,
+        server,
+        &doc_symbols,
+        &range,
+        &mut hints,
+    );
 
-    let parameter_hints = hints.iter().filter(|h| h.kind == Some(InlayHintKind::PARAMETER)).count();
-    let type_hints = hints.iter().filter(|h| h.kind == Some(InlayHintKind::TYPE)).count();
+    let parameter_hints = hints
+        .iter()
+        .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+        .count();
+    let type_hints = hints
+        .iter()
+        .filter(|h| h.kind == Some(InlayHintKind::TYPE))
+        .count();
     let other_hints = hints.len() - parameter_hints - type_hints;
     tracing::debug!(
         hint_count = hints.len(),
@@ -1097,7 +1192,14 @@ fn collect_inlay_hints(
                 };
                 let arg_types = infer_argument_types(node, source, text, tree, position);
                 let param_names = lookup_parameter_names(
-                    server, doc_symbols, &func_name, receiver_name.as_deref(), text, tree, position, &arg_types,
+                    server,
+                    doc_symbols,
+                    &func_name,
+                    receiver_name.as_deref(),
+                    text,
+                    tree,
+                    position,
+                    &arg_types,
                 );
                 if !param_names.is_empty() {
                     add_parameter_hints(node, source, &param_names, hints);
@@ -1140,34 +1242,61 @@ fn infer_argument_type(
     if let Some(idx) = expr.find("::") {
         let base = expr[..idx].trim().trim_matches('"');
         if !base.is_empty() {
-            return Some(InferredType { base: base.to_string(), subtype: None });
+            return Some(InferredType {
+                base: base.to_string(),
+                subtype: None,
+            });
         }
     }
 
     // String literal: 'hello' → Text
     if expr.starts_with('\'') {
-        return Some(InferredType { base: "Text".to_string(), subtype: None });
+        return Some(InferredType {
+            base: "Text".to_string(),
+            subtype: None,
+        });
     }
 
     // Numeric literal
-    if !expr.is_empty() && expr.bytes().next().is_some_and(|b| b.is_ascii_digit() || b == b'-') {
+    if !expr.is_empty()
+        && expr
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_digit() || b == b'-')
+    {
         let numeric_part = expr.trim_start_matches('-');
-        if numeric_part.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
-            let base = if expr.contains('.') { "Decimal" } else { "Integer" };
-            return Some(InferredType { base: base.to_string(), subtype: None });
+        if numeric_part
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'.')
+        {
+            let base = if expr.contains('.') {
+                "Decimal"
+            } else {
+                "Integer"
+            };
+            return Some(InferredType {
+                base: base.to_string(),
+                subtype: None,
+            });
         }
     }
 
     // Boolean
     if expr.eq_ignore_ascii_case("true") || expr.eq_ignore_ascii_case("false") {
-        return Some(InferredType { base: "Boolean".to_string(), subtype: None });
+        return Some(InferredType {
+            base: "Boolean".to_string(),
+            subtype: None,
+        });
     }
 
     // Variable name: resolve via TypeResolver
     let var_name = expr.trim_matches('"');
     let resolver = al_syntax::TypeResolver::new(tree, text);
     if let Some(decl) = resolver.resolve_type(var_name, position) {
-        return Some(InferredType { base: decl.type_name, subtype: decl.type_subtype });
+        return Some(InferredType {
+            base: decl.type_name,
+            subtype: decl.type_subtype,
+        });
     }
 
     None
@@ -1191,7 +1320,8 @@ fn infer_argument_types(
 
     for child in expr_parent.children(&mut cursor) {
         let kind = child.kind();
-        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon" {
+        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon"
+        {
             continue;
         }
         types.push(infer_argument_type(child, source, text, tree, position));
@@ -1261,7 +1391,8 @@ fn score_overload(candidate: &OverloadCandidate, arg_types: &[Option<InferredTyp
                     score += 50;
 
                     // Subtype match (e.g., both are Record "Customer")
-                    if let (Some(p_sub), Some(a_sub)) = (param_subtype, inferred.subtype.as_deref()) {
+                    if let (Some(p_sub), Some(a_sub)) = (param_subtype, inferred.subtype.as_deref())
+                    {
                         if p_sub.eq_ignore_ascii_case(a_sub) {
                             score += 25;
                         }
@@ -1279,7 +1410,8 @@ fn select_best_overload(
     candidates: &[OverloadCandidate],
     arg_types: &[Option<InferredType>],
 ) -> Option<Vec<String>> {
-    candidates.iter()
+    candidates
+        .iter()
         .max_by_key(|c| score_overload(c, arg_types))
         .map(|c| c.names.clone())
 }
@@ -1287,7 +1419,10 @@ fn select_best_overload(
 /// Extract function name and optional receiver name from a call parent node.
 ///
 /// Returns `(method_name, Option<receiver_name>)`.
-fn extract_call_info(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(String, Option<String>)> {
+fn extract_call_info(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+) -> Option<(String, Option<String>)> {
     match node.kind() {
         "member_call_suffix" | "scope_call_suffix" => {
             // .Method(args) or ::Method(args) — use the "member" field
@@ -1337,8 +1472,6 @@ fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) ->
     }
 }
 
-
-
 /// Look up parameter names for a function, with receiver type resolution.
 ///
 /// Uses inferred argument types to select the correct overload when a method
@@ -1384,14 +1517,17 @@ fn lookup_parameter_names(
 
     // 2. If we have a receiver, resolve its type and look up the method on that type
     if let Some(recv) = receiver_name {
-        if let Some(names) = lookup_via_receiver(server, func_name, recv, text, tree, position, arg_types) {
+        if let Some(names) =
+            lookup_via_receiver(server, func_name, recv, text, tree, position, arg_types)
+        {
             return names;
         }
     }
 
     // 3. Fallback: search package symbols by method name
     let symbols = server.symbols.search(func_name, 5);
-    let candidates: Vec<OverloadCandidate> = symbols.iter()
+    let candidates: Vec<OverloadCandidate> = symbols
+        .iter()
         .flat_map(|e| e.methods.iter())
         .filter(|m| m.name.eq_ignore_ascii_case(func_name))
         .map(|m| OverloadCandidate {
@@ -1405,7 +1541,8 @@ fn lookup_parameter_names(
 
     // 4. Fallback: search all builtins by method name
     let builtins = server.builtins.read().unwrap().clone();
-    let candidates: Vec<OverloadCandidate> = builtins.iter()
+    let candidates: Vec<OverloadCandidate> = builtins
+        .iter()
         .flat_map(|bt| bt.methods.iter())
         .filter(|m| m.name.eq_ignore_ascii_case(func_name))
         .map(|m| OverloadCandidate {
@@ -1440,10 +1577,14 @@ fn lookup_via_receiver(
 
     // Check builtins filtered by receiver type
     let builtins = server.builtins.read().unwrap().clone();
-    let candidates: Vec<OverloadCandidate> = builtins.iter()
+    let candidates: Vec<OverloadCandidate> = builtins
+        .iter()
         .filter(|bt| {
             bt.name.eq_ignore_ascii_case(&decl.type_name)
-                || decl.type_subtype.as_deref().is_some_and(|s| bt.name.eq_ignore_ascii_case(s))
+                || decl
+                    .type_subtype
+                    .as_deref()
+                    .is_some_and(|s| bt.name.eq_ignore_ascii_case(s))
         })
         .flat_map(|bt| bt.methods.iter())
         .filter(|m| m.name.eq_ignore_ascii_case(func_name))
@@ -1458,7 +1599,10 @@ fn lookup_via_receiver(
 
     // Check package symbols by resolved subtype
     if let Some(subtype) = &decl.type_subtype {
-        let candidates: Vec<OverloadCandidate> = server.symbols.get_by_name(subtype).iter()
+        let candidates: Vec<OverloadCandidate> = server
+            .symbols
+            .get_by_name(subtype)
+            .iter()
             .flat_map(|e| e.methods.iter())
             .filter(|m| m.name.eq_ignore_ascii_case(func_name))
             .map(|m| OverloadCandidate {
@@ -1485,7 +1629,8 @@ fn lookup_via_receiver(
                     if let Some(children) = &sym.children {
                         for child in children {
                             if child.name.eq_ignore_ascii_case(func_name)
-                                && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
+                                && (child.kind == SymbolKind::FUNCTION
+                                    || child.kind == SymbolKind::EVENT)
                             {
                                 if let Some(detail) = &child.detail {
                                     let params = parse_parameters_from_detail(detail);
@@ -1697,7 +1842,8 @@ fn add_parameter_hints(
     for child in expr_parent.children(&mut cursor) {
         let kind = child.kind();
         // Skip commas, parentheses, and other delimiters
-        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon" {
+        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon"
+        {
             continue;
         }
 
@@ -1825,7 +1971,10 @@ mod tests {
     #[test]
     fn test_generate_label_name() {
         assert_eq!(generate_label_name("Hello World"), "LblHelloWorld");
-        assert_eq!(generate_label_name("some text here extra"), "LblSomeTextHere");
+        assert_eq!(
+            generate_label_name("some text here extra"),
+            "LblSomeTextHere"
+        );
         assert_eq!(generate_label_name(""), "LblText");
     }
 
@@ -1834,8 +1983,14 @@ mod tests {
         let text = "    procedure myProc()\n    begin\n    end;";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 0, character: 14 },
-                end: Position { line: 0, character: 20 },
+                start: Position {
+                    line: 0,
+                    character: 14,
+                },
+                end: Position {
+                    line: 0,
+                    character: 20,
+                },
             },
             code: Some(NumberOrString::String("AL-L016".to_string())),
             message: "test".to_string(),
@@ -1850,8 +2005,14 @@ mod tests {
         let text = "    if x then\n    begin\n        Message('hi');\n    end;";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 1, character: 4 },
-                end: Position { line: 3, character: 8 },
+                start: Position {
+                    line: 1,
+                    character: 4,
+                },
+                end: Position {
+                    line: 3,
+                    character: 8,
+                },
             },
             code: Some(NumberOrString::String("AL-L011".to_string())),
             message: "test".to_string(),
@@ -1873,8 +2034,14 @@ mod tests {
         let text = "    // TODO: fix this\n    x := 1;";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 0, character: 4 },
-                end: Position { line: 0, character: 21 },
+                start: Position {
+                    line: 0,
+                    character: 4,
+                },
+                end: Position {
+                    line: 0,
+                    character: 21,
+                },
             },
             code: Some(NumberOrString::String("AL-L007".to_string())),
             message: "TODO/FIXME comment found".to_string(),
@@ -1886,10 +2053,19 @@ mod tests {
         assert_eq!(diag_code_str(&diag), Some("AL-L007".to_string()));
 
         // Verify the edit that would be produced
-        let line_start = Position { line: diag.range.start.line, character: 0 };
-        let line_end = Position { line: diag.range.start.line + 1, character: 0 };
+        let line_start = Position {
+            line: diag.range.start.line,
+            character: 0,
+        };
+        let line_end = Position {
+            line: diag.range.start.line + 1,
+            character: 0,
+        };
         let edit = TextEdit {
-            range: Range { start: line_start, end: line_end },
+            range: Range {
+                start: line_start,
+                end: line_end,
+            },
             new_text: String::new(),
         };
         // Removing a TODO comment line should produce an empty replacement
@@ -1904,28 +2080,50 @@ mod tests {
         let text = "    procedure DoSomething()\n    var\n        x: Integer;\n    begin\n        Message('Hello World');\n    end;";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 4, character: 16 },
-                end: Position { line: 4, character: 29 },
+                start: Position {
+                    line: 4,
+                    character: 16,
+                },
+                end: Position {
+                    line: 4,
+                    character: 29,
+                },
             },
             code: Some(NumberOrString::String("AL-L017".to_string())),
             message: "test".to_string(),
             ..Default::default()
         };
         let edits = compute_extract_to_label(text, &diag);
-        assert!(edits.is_some(), "Should produce edits for string extraction");
+        assert!(
+            edits.is_some(),
+            "Should produce edits for string extraction"
+        );
         let edits = edits.unwrap();
-        assert!(edits.len() >= 2, "Should have at least 2 edits (replace + insert)");
+        assert!(
+            edits.len() >= 2,
+            "Should have at least 2 edits (replace + insert)"
+        );
         // First edit replaces the string with label name
-        assert!(edits[0].new_text.starts_with("Lbl"), "Label should start with Lbl");
+        assert!(
+            edits[0].new_text.starts_with("Lbl"),
+            "Label should start with Lbl"
+        );
     }
 
     #[test]
     fn test_extract_to_label_no_var_section() {
-        let text = "    procedure DoSomething()\n    begin\n        Message('Test string');\n    end;";
+        let text =
+            "    procedure DoSomething()\n    begin\n        Message('Test string');\n    end;";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 2, character: 16 },
-                end: Position { line: 2, character: 29 },
+                start: Position {
+                    line: 2,
+                    character: 16,
+                },
+                end: Position {
+                    line: 2,
+                    character: 29,
+                },
             },
             code: Some(NumberOrString::String("AL-L017".to_string())),
             message: "test".to_string(),
@@ -1966,13 +2164,22 @@ mod tests {
         let text = "    if x then\n    notbegin\n        Message('hi');\n    end;";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 1, character: 4 },
-                end: Position { line: 3, character: 8 },
+                start: Position {
+                    line: 1,
+                    character: 4,
+                },
+                end: Position {
+                    line: 3,
+                    character: 8,
+                },
             },
             ..Default::default()
         };
         let edits = compute_remove_begin_end(text, &diag);
-        assert!(edits.is_none(), "Should not produce edits when line is not 'begin'");
+        assert!(
+            edits.is_none(),
+            "Should not produce edits when line is not 'begin'"
+        );
     }
 
     #[test]
@@ -1980,13 +2187,22 @@ mod tests {
         let text = "begin\nend";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 10, character: 0 },
-                end: Position { line: 20, character: 0 },
+                start: Position {
+                    line: 10,
+                    character: 0,
+                },
+                end: Position {
+                    line: 20,
+                    character: 0,
+                },
             },
             ..Default::default()
         };
         let edits = compute_remove_begin_end(text, &diag);
-        assert!(edits.is_none(), "Should not produce edits when out of range");
+        assert!(
+            edits.is_none(),
+            "Should not produce edits when out of range"
+        );
     }
 
     // --- compute_pascal_case_fix edge cases ---
@@ -1996,8 +2212,14 @@ mod tests {
         let text = "    procedure MyProc()\n    begin\n    end;";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 0, character: 14 },
-                end: Position { line: 0, character: 20 },
+                start: Position {
+                    line: 0,
+                    character: 14,
+                },
+                end: Position {
+                    line: 0,
+                    character: 20,
+                },
             },
             code: Some(NumberOrString::String("AL-L016".to_string())),
             message: "test".to_string(),
@@ -2013,8 +2235,14 @@ mod tests {
         let text = "short";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 100 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 100,
+                },
             },
             ..Default::default()
         };
@@ -2027,8 +2255,14 @@ mod tests {
         let text = "    procedure \"\"()\n    begin\n    end;";
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 0, character: 14 },
-                end: Position { line: 0, character: 16 },
+                start: Position {
+                    line: 0,
+                    character: 14,
+                },
+                end: Position {
+                    line: 0,
+                    character: 16,
+                },
             },
             ..Default::default()
         };
@@ -2098,10 +2332,18 @@ mod tests {
         };
         // 2 arguments: should prefer candidate_2
         let arg_types = vec![
-            Some(InferredType { base: "OutStream".into(), subtype: None }),
-            Some(InferredType { base: "TextEncoding".into(), subtype: None }),
+            Some(InferredType {
+                base: "OutStream".into(),
+                subtype: None,
+            }),
+            Some(InferredType {
+                base: "TextEncoding".into(),
+                subtype: None,
+            }),
         ];
-        assert!(score_overload(&candidate_2, &arg_types) > score_overload(&candidate_1, &arg_types));
+        assert!(
+            score_overload(&candidate_2, &arg_types) > score_overload(&candidate_1, &arg_types)
+        );
     }
 
     #[test]
@@ -2116,10 +2358,13 @@ mod tests {
             types: vec!["Record \"Item\"".into()],
         };
         // Passing a Record "Customer" should prefer candidate_a
-        let arg_types = vec![
-            Some(InferredType { base: "Record".into(), subtype: Some("Customer".into()) }),
-        ];
-        assert!(score_overload(&candidate_a, &arg_types) > score_overload(&candidate_b, &arg_types));
+        let arg_types = vec![Some(InferredType {
+            base: "Record".into(),
+            subtype: Some("Customer".into()),
+        })];
+        assert!(
+            score_overload(&candidate_a, &arg_types) > score_overload(&candidate_b, &arg_types)
+        );
     }
 
     #[test]
@@ -2133,10 +2378,13 @@ mod tests {
             names: vec!["Value".into()],
             types: vec!["Text".into()],
         };
-        let arg_types = vec![
-            Some(InferredType { base: "Integer".into(), subtype: None }),
-        ];
-        assert!(score_overload(&candidate_a, &arg_types) > score_overload(&candidate_b, &arg_types));
+        let arg_types = vec![Some(InferredType {
+            base: "Integer".into(),
+            subtype: None,
+        })];
+        assert!(
+            score_overload(&candidate_a, &arg_types) > score_overload(&candidate_b, &arg_types)
+        );
     }
 
     #[test]
@@ -2152,8 +2400,14 @@ mod tests {
             },
         ];
         let arg_types = vec![
-            Some(InferredType { base: "OutStream".into(), subtype: None }),
-            Some(InferredType { base: "TextEncoding".into(), subtype: None }),
+            Some(InferredType {
+                base: "OutStream".into(),
+                subtype: None,
+            }),
+            Some(InferredType {
+                base: "TextEncoding".into(),
+                subtype: None,
+            }),
         ];
         let result = select_best_overload(&candidates, &arg_types);
         assert_eq!(result, Some(vec!["OutStream".into(), "Encoding".into()]));
@@ -2167,18 +2421,25 @@ mod tests {
 
     #[test]
     fn test_parse_type_string_with_subtype() {
-        assert_eq!(parse_type_string("Record \"Customer\""), ("Record", Some("Customer")));
+        assert_eq!(
+            parse_type_string("Record \"Customer\""),
+            ("Record", Some("Customer"))
+        );
     }
 
     #[test]
     fn test_parse_type_string_escaped_quotes() {
         // Input with literal backslash-quote pairs (as from JSON-escaped strings)
-        assert_eq!(parse_type_string(r#"Record \"Customer\""#), ("Record", Some("Customer")));
+        assert_eq!(
+            parse_type_string(r#"Record \"Customer\""#),
+            ("Record", Some("Customer"))
+        );
     }
 
     #[test]
     fn test_parse_parameters_from_detail() {
-        let params = parse_parameters_from_detail("(var OutStream: OutStream; Encoding: TextEncoding)");
+        let params =
+            parse_parameters_from_detail("(var OutStream: OutStream; Encoding: TextEncoding)");
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], ("OutStream".into(), "OutStream".into()));
         assert_eq!(params[1], ("Encoding".into(), "TextEncoding".into()));

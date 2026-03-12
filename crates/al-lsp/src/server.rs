@@ -367,6 +367,8 @@ impl LanguageServer for AlServer {
                         "al.downloadSymbolsServer".to_string(),
                         "al.downloadSymbolsNuget".to_string(),
                         "al.clearSymbolCache".to_string(),
+                        "al.formatFile".to_string(),
+                        "al.lintFile".to_string(),
                         "al.getStatus".to_string(),
                         "al.reindex".to_string(),
                     ],
@@ -689,6 +691,33 @@ impl LanguageServer for AlServer {
                         self.client
                             .show_message(MessageType::WARNING, format!("Failed to clear cache: {e}"))
                             .await;
+                    }
+                }
+                Ok(None)
+            }
+            "al.formatFile" => {
+                // Formatting is now handled as a CodeAction with WorkspaceEdit directly in handlers.rs.
+                // This command is kept for backward compatibility or direct calls.
+                if let Some(uri) = params.arguments.first().and_then(|v| serde_json::from_value::<Url>(v.clone()).ok()) {
+                    if let Some(edits) = formatting::handle_formatting(self, &uri, &FormattingOptions {
+                        tab_size: 4,
+                        insert_spaces: true,
+                        ..Default::default()
+                    }) {
+                        let mut changes = std::collections::HashMap::new();
+                        changes.insert(uri.clone(), edits);
+                        self.client.apply_edit(WorkspaceEdit {
+                            changes: Some(changes),
+                            ..Default::default()
+                        }).await.ok();
+                    }
+                }
+                Ok(None)
+            }
+            "al.lintFile" => {
+                if let Some(uri) = params.arguments.first().and_then(|v| serde_json::from_value::<Url>(v.clone()).ok()) {
+                    if let Some(text) = self.documents.get_text(&uri) {
+                        diagnostics::publish_diagnostics(self, &uri, &text).await;
                     }
                 }
                 Ok(None)

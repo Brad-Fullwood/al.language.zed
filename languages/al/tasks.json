@@ -1,5 +1,13 @@
 [
   {
+    "label": "AL: Open Object Explorer",
+    "command": "al-explorer",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "tags": ["al-open-object-explorer"]
+  },
+  {
     "label": "AL: Download Symbols (Server)",
     "command": "al",
     "args": ["download-symbols", "--source", "server"],
@@ -12,21 +20,21 @@
     "tags": ["al-download-symbols-nuget"]
   },
   {
-    "label": "AL: Lint File",
-    "command": "al",
-    "args": ["lint", "$ZED_FILE"],
-    "tags": ["al-lint"]
-  },
-  {
     "label": "AL: Lint All",
     "command": "al",
     "args": ["lint", "--all"],
     "tags": ["al-lint-all"]
   },
   {
-    "label": "AL: Format File",
+    "label": "AL: Format All",
     "command": "al",
-    "args": ["format", "$ZED_FILE"],
-    "tags": ["al-format"]
+    "args": ["format", "--all"],
+    "tags": ["al-format-all"]
+  },
+  {
+    "label": "AL: Clear Symbol Cache",
+    "command": "al",
+    "args": ["clear-cache"],
+    "tags": ["al-clear-cache"]
   }
 ]

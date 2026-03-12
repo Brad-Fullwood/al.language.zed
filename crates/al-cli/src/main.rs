@@ -155,6 +155,9 @@ enum Commands {
         /// Column number (1-based)
         col: u32,
     },
+    /// Clear the local symbol cache
+    ClearCache,
+
     /// Get completions at a position
     Completions {
         file: String,
@@ -700,14 +703,40 @@ fn cmd_setup(json: bool) -> ExitCode {
         }
     }
 
-    if altool_installed && dotnet_version.is_some() {
+    if tc.is_ok() && dotnet_version.is_some() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
     }
-}
+    }
 
-fn cmd_doctor(json: bool) -> ExitCode {
+    fn cmd_clear_cache(json: bool) -> ExitCode {
+    let cache_dir = al_symbols::virtual_file::cache_dir();
+    if !cache_dir.exists() {
+        if !json {
+            eprintln!("Symbol cache directory does not exist: {}", cache_dir.display());
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    match std::fs::remove_dir_all(&cache_dir) {
+        Ok(()) => {
+            if !json {
+                eprintln!("Cleared symbol cache: {}", cache_dir.display());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            if !json {
+                eprintln!("Failed to clear symbol cache: {}", e);
+            }
+            ExitCode::FAILURE
+        }
+    }
+    }
+
+    fn cmd_doctor(json: bool) -> ExitCode {
+
     let tc = find_toolchain();
     let dotnet_version = get_dotnet_version();
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -4160,6 +4189,7 @@ fn main() -> ExitCode {
             workspace,
         } => cmd_references(&file, line, col, workspace, cli.json),
         Commands::Signature { file, line, col } => cmd_signature(&file, line, col, cli.json),
+        Commands::ClearCache => cmd_clear_cache(cli.json),
         Commands::Completions { file, line, col } => cmd_completions(&file, line, col, cli.json),
         Commands::Rename {
             file,
