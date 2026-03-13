@@ -25,13 +25,11 @@ The CLI and MCP are designed as **high-density agentic discovery engines** to re
 - Include `f` + `l` for actionable navigation (agent can jump to source).
 
 ### Slash Command Integration:
-The following Zed slash commands must be registered in `extension.toml` and implemented in `zed-al`:
+Zed slash commands are registered in `extension.toml` and implemented in `zed-al`. The authoritative catalog of all slash commands (with schemas) is in `docs/agentic-schemas.md`. Key examples:
 - `/al-symbols <query>` — search workspace + package symbols
 - `/al-events <name>` — trace event publisher/subscriber chains
 - `/al-object <name>` — full object API surface
 - `/al-trace <file> <line>` — call chain trace
-- `/al-deps` — dependency graph
-- `/al-lint` — current file diagnostics
 
 Each slash command invokes `al-cli --json` via `process::Command` and formats the result for AI context injection.
 

@@ -1,6 +1,7 @@
 /target
 /Cargo.lock
 *.wasm
+/grammars/
 .alpackages/
 .claude/worktrees/
 

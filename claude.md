@@ -33,7 +33,7 @@ al-cli and al-explorer currently import analysis libraries directly. They must b
 - `.app` format: 40-byte NAVX header + ZIP. `SymbolReference.json` has UTF-8 BOM, `EnumTypes` not `Enums`, `Kind` as integer in newer versions.
 - NuGet feed: `dynamicssmb2` (NOT `dynamicssmb`).
 - tree-sitter `braced_block` excludes action triggers — text-based fallback in TypeResolver.
-- tree-sitter-al is a submodule. All language data extracted from CodeAnalysis.dll — NO VS Code/Cursor extension dependency.
+- tree-sitter-al is a submodule. All language data extracted from CodeAnalysis.dll — NO VS Code extension dependency.
 - Without ALTool: no semantic analysis, compilation, or debugging. Syntax features still work.
 - EditorServices.Host required for debugging only. Must come from ALTool or explicit config, not VS Code.
 - 5 implicit BC dependency GUIDs hardcoded in `al-discovery`.
@@ -41,10 +41,16 @@ al-cli and al-explorer currently import analysis libraries directly. They must b
 ## Docs & Planning
 
 - `plan.md` — task sequences with IDs, file ownership, pass/fail criteria
-- `crates-map.md` — crate responsibilities and target module layout
-- `docs/architecture.md` — full architecture, .NET bridge, data flows
-- `docs/agentic-schemas.md` — CLI/MCP JSON output schemas
+- `docs/crates-map.md` — crate responsibilities and target module layout
+- `docs/architecture.md` — full architecture, .NET bridge, data flows, error taxonomy
+- `docs/agentic-schemas.md` — CLI/MCP/slash command JSON output schemas
 - `docs/agent-scenarios.md` — agent discovery scenarios (insight engine test cases)
 - `docs/adversarial-atlas.md` — stress tests and fidelity gaps
-- `docs/feature-parity.md` — feature scope, community tools, beyond-parity features
+- `docs/feature-scope.md` — feature scope: MS parity, community tools, beyond-parity
 - `docs/market-research.md` — competitive landscape
+- `docs/insight.md` — insight engine: graph model, capabilities, CLI surface
+- `docs/settings.md` — authoritative settings mapping (MS → Zed)
+- `docs/lsp-feature-matrix.md` — LSP request migration mapping
+- `docs/performance-plan.md` — latency and memory targets
+- `docs/release.md` — build and release pipeline
+- `docs/progress.md` — milestone tracker and evidence log

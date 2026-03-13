@@ -1,8 +1,8 @@
-# Cursor AL Extension Audit
+# MS AL Extension Audit
+
+> **Raw audit data** — findings incorporated into `feature-scope.md`, `settings.md`, and `architecture.md`. Retained as reference for verifying completeness.
 
 Generated: 2026-03-12T18:22:15
-
-This summarizes the locally installed Cursor/VS Code AL extension to drive feature parity planning.
 
 **Source**
 - `/home/bradf/.cursor/extensions/ms-dynamics-smb.al-18.0.2190758/package.json`
@@ -36,92 +36,7 @@ This summarizes the locally installed Cursor/VS Code AL extension to drive featu
 - `./snippets/xml.json` for language `xml`
 - `./snippets/entitlement.json` for language `al`
 
-## Commands
-- `al.go` — Go!
-- `al.newproject` — New Project
-- `al.package` — Package
-- `al.fullPackage` — Package full dependency tree for active project
-- `al.publish` — Publish with debugging
-- `al.publishNoDebug` — Publish without debugging
-- `al.incrementalPublish` — Rapid Application Publish with debugging
-- `al.incrementalPublishNoDebug` — Rapid Application Publish without debugging
-- `al.onlyDebug` — Debug without publishing
-- `al.initalizeSnapshotDebugging` — Initialize snapshot debugging
-- `al.finishSnapshotDebugging` — Finish snapshot debugging on the server
-- `al.snapshots` — Show all snapshots
-- `al.generateCpuProfileFile` — Generate profile file
-- `al.clearCredentialsCache` — Clear credentials cache
-- `al.generateManifest` — Generate manifest
-- `al.downloadSymbols` — Download symbols
-- `al.downloadSymbolsFromGlobalSources` — Download symbols from global sources
-- `al.downloadSource` — Download source code
-- `al.generatePermissionSetForExtensionObjects` — Generate permission set as AL object containing current extension objects
-- `al.generatePermissionSetForExtensionObjectsAsXml` — Generate permission set as XML file containing current extension objects
-- `al.openPageDesigner` — Publish and open in the designer
-- `al.openExternally` — Open Externally
-- `al.openEventRecorder` — Open Events Recorder
-- `al.insertEvent` — Find Event
-- `al.publishExistingExtension` — Publish extension without building
-- `al.explorer` — Explorer
-- `al.home` — Home
-- `al.clearProfileCodeLenses` — Clear Profile Code Lenses
-- `al.fullDependencyPublish` — Publish full dependency tree for active project
-- `al.explorer_refresh` — Refresh active AL Explorer tab
-- `al.explorer_reset_layout` — Reset settings for AL Explorer
-- `al.tests.refreshAll` — Refresh all tests
-
-## Configuration Keys (Top-Level)
-- `al` (45 keys)
-
-## Configuration Keys (Full List)
-- `al.algoSuggestedFolder`
-- `al.appLocalFolderPaths`
-- `al.areProfileLensesSupported`
-- `al.assemblyProbingPaths`
-- `al.backgroundCodeAnalysis`
-- `al.browser`
-- `al.codeAnalyzers`
-- `al.compilationOptions`
-- `al.disableTestRunning`
-- `al.editorServicesLogLevel`
-- `al.editorServicesPath`
-- `al.enableCodeActions`
-- `al.enableCodeAnalysis`
-- `al.enableExternalRulesets`
-- `al.enableScriptIntelliSense`
-- `al.entraIdAuthentication`
-- `al.extendGoToSymbolInWorkspace.IncludeSymbolFiles`
-- `al.extendGoToSymbolInWorkspace.ResultLimit`
-- `al.extendGoToSymbolInWorkspace.enabled`
-- `al.incognito`
-- `al.incrementalBuild`
-- `al.inlayhints.functionReturnTypes.enabled`
-- `al.inlayhints.parameterNames.enabled`
-- `al.namespaceTemplate`
-- `al.nugetFeeds`
-- `al.outputAnalyzerStatistics`
-- `al.packageCachePath`
-- `al.profilerColors`
-- `al.publisher`
-- `al.rootNamespace`
-- `al.ruleSetPath`
-- `al.semanticFolding.enabled`
-- `al.showExplorerAtStartup`
-- `al.showHomeAtStartup`
-- `al.snapshotDebuggerLinesHitDecoration`
-- `al.snapshotDebuggingPath`
-- `al.snapshotOutputPath`
-- `al.statementLensMin`
-- `al.symbolsCountryRegion`
-- `al.testCoverageCachePath`
-- `al.useInteractiveLogin`
-- `al.useLegacyRuntime`
-- `al.useOnlyCustomFeeds`
-- `al.useVsCodeAuthentication`
-- `al.vsCodeAuthenticationProvider`
-
 ## Language Configuration (al.configuration.json)
-- Path: `/home/bradf/.cursor/extensions/ms-dynamics-smb.al-18.0.2190758/al.configuration.json`
 - Line comment: `//`
 - Block comment: `['/*', '*/']`
 - Bracket pairs: 6
@@ -132,7 +47,6 @@ This summarizes the locally installed Cursor/VS Code AL extension to drive featu
 - Semantic highlighting: `True`
 
 ## Syntax Files
-- Directory: `/home/bradf/.cursor/extensions/ms-dynamics-smb.al-18.0.2190758/syntaxes`
 - `AnalysisViewSyntax.json`
 - `alsyntax.tmlanguage`
 - `appPropsSyntax.json`

@@ -11,6 +11,19 @@ All consumers (same code path):
                                                    al-diag
 ```
 
+## Table of Contents
+
+- [al-lsp: The Server](#al-lsp-the-server)
+- [al-core: The Brain](#al-core-the-brain)
+- [.NET Runtime Dependencies](#net-runtime-dependencies)
+- [Project & Package Dependencies](#project--package-dependencies)
+- [Zed Extension Integration](#zed-extension-integration)
+- [Error Taxonomy](#error-taxonomy)
+- [tree-sitter-al (Submodule)](#tree-sitter-al-submodule)
+- [Build System](#build-system)
+
+---
+
 **al-lsp** is the sole server binary. ALL consumers go through it. Two transport modes:
 - **LSP mode** (stdio): Zed spawns al-lsp, communicates via standard LSP protocol
 - **Daemon mode** (Unix socket): CLI/Explorer/MCP connect to a running al-lsp daemon via JSON-RPC
@@ -195,6 +208,8 @@ al_core::debug::stop(&DebugSession) → ()
 | textDocument/inlayHint | — | Working, migrate |
 | workspace/symbol | — | Working, migrate |
 
+For the file-to-entry-point migration mapping, see `docs/lsp-feature-matrix.md`.
+
 ### Execute Commands
 
 **Implemented:**
@@ -242,39 +257,7 @@ al_core::debug::stop(&DebugSession) → ()
 
 ### Configuration
 
-**Must support** (via `workspace/didChangeConfiguration` + `InitializationOptions`):
-
-| Setting | Purpose | Default |
-|---|---|---|
-| `al.enableCodeAnalysis` | Toggle CodeAnalysis bridge | `true` |
-| `al.backgroundCodeAnalysis` | Async vs sync analysis | `true` |
-| `al.codeAnalyzers` | Which analyzers to run (CodeCop, AppSourceCop, UICop, PerTenantCop) | `["CodeCop"]` |
-| `al.enableCodeActions` | Toggle code actions | `true` |
-| `al.enableExternalRulesets` | Load custom rulesets | `false` |
-| `al.ruleSetPath` | Path to custom ruleset | `""` |
-| `al.packageCachePath` | Override symbol cache path | `~/.cache/al-lsp/packages/` |
-| `al.nugetFeeds` | Custom NuGet feed URLs | `[]` (uses default BC feeds) |
-| `al.editorServicesPath` | Override EditorServices.Host path | auto-discover |
-| `al.editorServicesLogLevel` | Bridge log verbosity | `"Warning"` |
-| `al.assemblyProbingPaths` | Additional .NET assembly paths | `[]` |
-| `al.compilationOptions` | Extra compiler flags | `{}` |
-| `al.incrementalBuild` | Enable incremental compilation | `true` |
-| `al.rootNamespace` | Default namespace for new objects | `""` |
-| `al.symbolsCountryRegion` | Country filter for symbol downloads | `""` |
-| `al.useOnlyCustomFeeds` | Ignore default feeds, use only custom | `false` |
-| `al.inlayhints.functionReturnTypes.enabled` | Show return type inlay hints | `true` |
-| `al.inlayhints.parameterNames.enabled` | Show parameter name inlay hints | `true` |
-| `al.semanticFolding.enabled` | Semantic folding ranges | `true` |
-
-**Not implementing** (VS Code-specific or deprecated):
-
-| Setting | Reason |
-|---|---|
-| `al.enableScriptIntelliSense` | JS/TS for control add-ins — out of scope |
-| `al.useVsCodeAuthentication` / `al.vsCodeAuthenticationProvider` | VS Code auth API — not applicable |
-| `al.showExplorerAtStartup` / `al.showHomeAtStartup` | VS Code UI — not applicable |
-| `al.useLegacyRuntime` | Deprecated runtime — modern .NET only |
-| `al.profilerColors` / `al.snapshotDebuggerLinesHitDecoration` | VS Code decoration API — Zed has own theming |
+Settings are received via `workspace/didChangeConfiguration` and `InitializationOptions`. The authoritative settings catalog (59 settings with MS→Zed key mappings, defaults, and support status) is in `docs/settings.md`.
 
 ### Semantic Token Types
 
@@ -430,7 +413,7 @@ Spawned by al-dap as subprocess for DAP debugging sessions.
 
 **Discovery**: `al.editorServicesPath` setting → next to `alc.dll` → `~/.cache/al-lsp/editor-services/`.
 
-No VS Code/Cursor extension scanning. Must come from ALTool installation or explicit `al.editorServicesPath` setting.
+No VS Code extension scanning. Must come from ALTool installation or explicit `al.editorServicesPath` setting.
 
 ---
 
@@ -540,7 +523,7 @@ Standalone tree-sitter grammar for AL. Used by this extension and available to a
 
 ### Language Data Pipeline
 
-All AL language data is extracted from `Microsoft.Dynamics.Nav.CodeAnalysis.dll` — **not** from the VS Code/Cursor extension. No TextMate grammar dependency.
+All AL language data is extracted from `Microsoft.Dynamics.Nav.CodeAnalysis.dll` — **not** from the VS Code extension. No TextMate grammar dependency.
 
 ```
 CodeAnalysis.dll (from ALTool)

@@ -1,6 +1,6 @@
 # Zed AL Extension Settings
 
-This document defines supported settings and maps Cursor/VS Code `al.*` options to Zed equivalents.
+This document defines supported settings and maps MS VS Code `al.*` options to Zed equivalents.
 
 ## Status Definitions
 1. Supported: implemented and wired through `al-core` and LSP settings.
@@ -9,7 +9,7 @@ This document defines supported settings and maps Cursor/VS Code `al.*` options 
 
 ## Mapping Table
 
-| Cursor Key | Status | Zed Setting | Notes |
+| MS Key | Status | Zed Setting | Notes |
 | --- | --- | --- | --- |
 | `al.algoSuggestedFolder` | Supported | `al.project.scaffold.suggestedFolder` | Used by AL:Go scaffolder |
 | `al.appLocalFolderPaths` | Supported | `al.symbols.localAppPaths` | Extra local app roots for symbol indexing |

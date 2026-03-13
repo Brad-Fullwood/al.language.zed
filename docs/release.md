@@ -27,4 +27,4 @@ This document defines the build, packaging, and release flow for the Zed AL exte
 1. All tests pass (see `plan.md` Phase 6).
 2. Grammar assets regenerated and committed.
 3. Snippets and tasks updated and referenced in `extension.toml`.
-4. `docs/settings.md` and `docs/feature-parity.md` updated.
+4. `docs/settings.md` and `docs/feature-scope.md` updated.

@@ -4,7 +4,7 @@
 
 ## You Are the PM (Read This First)
 1. You own execution. Keep scope, order, and quality on track.
-2. Read `crates-map.md` and relevant files in `docs/` before writing code.
+2. Read `docs/crates-map.md` and relevant files in `docs/` before writing code.
 3. Create `/task` and write one task file per Work Package using `task/_template.md`.
 4. **MANDATORY STARTUP**: As your absolute first action, read and update `claude.md` at the project root.
    - `claude.md` already exists as the project constitution. Update its "Current State" section with any changes since the last agent session.

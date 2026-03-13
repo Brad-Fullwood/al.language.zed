@@ -1,16 +1,16 @@
-# Feature Parity Blueprint (Cursor AL Extension -> Zed AL Extension)
+# Feature Scope: Parity, Community, and Beyond
 
-This document finalizes parity decisions and mappings. There are no open decisions left.
+This document defines the full feature scope: MS AL extension parity, community extension features, and our unique differentiators. All decisions are finalized.
 
-## Parity Scope
+## MS Parity Scope
 1. Language grammar and syntax highlighting parity.
-2. Snippet parity for all Cursor AL snippets.
+2. Snippet parity for all MS AL snippets.
 3. Task and command parity where feasible in Zed.
 4. Debug adapter parity for common launch.json workflows.
 5. Settings parity as defined in `docs/settings.md`.
 
 ## Command Mapping
-| Cursor Command | Title | Status | Zed Equivalent | Notes |
+| MS Command | Title | Status | Zed Equivalent | Notes |
 | --- | --- | --- | --- | --- |
 | `al.go` | Go! | Supported | Zed task: AL: Go (scaffold) | Implements project scaffolding |
 | `al.newproject` | New Project | Supported | Zed task: AL: New Project | Alias of AL: Go |
@@ -46,9 +46,9 @@ This document finalizes parity decisions and mappings. There are no open decisio
 | `al.tests.refreshAll` | Refresh all tests | Planned | al cli: tests --refresh | Refresh test discovery |
 
 ## Snippet Parity
-1. All 23 Cursor snippet files will be imported into `snippets/`.
+1. All 23 MS AL snippet files will be imported into `snippets/`.
 2. `extension.toml` will reference all snippet files.
-3. Snippet prefixes will match Cursor where possible, with Zed-friendly defaults.
+3. Snippet prefixes will match MS where possible, with Zed-friendly defaults.
 
 ## Settings Parity
 1. Full mapping is defined in `docs/settings.md`.
@@ -61,7 +61,7 @@ This document finalizes parity decisions and mappings. There are no open decisio
 ## Acceptance Criteria
 1. All supported commands have Zed task or CLI equivalents.
 2. All snippets load correctly in Zed.
-3. Language config matches Cursor behavior where possible.
+3. Language config matches MS behavior where possible.
 4. Debugging tasks can run with standard launch.json configs.
 
 ## Community Extension Features (Beyond MS Official)
@@ -116,7 +116,7 @@ These features are found in popular community extensions and should be matched o
 Features that no existing AL tool provides well. These are our competitive differentiation.
 
 ### 1. Insight Tooling
-Defined in `docs/insight-tools.md`. Event graph, call trace, table relations, entry point finder.
+Defined in `docs/insight.md`. Event graph, call trace, table relations, entry point finder.
 
 ### 2. Dead Code Detection
 Cross-file analysis: unused procedures, unreachable triggers, unused table fields (never referenced in any page/report), unused event subscribers (publisher removed), unused permission sets.

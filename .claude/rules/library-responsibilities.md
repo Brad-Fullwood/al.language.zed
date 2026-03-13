@@ -1,7 +1,7 @@
 # Library Responsibilities & Code Reuse
 **Status: Non-Negotiable**
 
-Every crate in the workspace has a strictly defined set of responsibilities as documented in `crates-map.md`.
+Every crate in the workspace has a strictly defined set of responsibilities as documented in `docs/crates-map.md`.
 
 ### Rules:
 1. **Strict Boundary Adherence**: A library must never implement logic that falls under the jurisdiction of another crate.

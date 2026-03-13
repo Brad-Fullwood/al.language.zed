@@ -21,12 +21,12 @@ This file is maintained by the PM agent during execution. Updated after every mi
 - [x] `.claude/rules/` established (7 mandate files) — all sharpened with daemon architecture constraints.
 - [x] `docs/` documentation suite established and expanded:
   - [x] `docs/architecture.md` — rewritten for daemon architecture (layers, state management, .NET bridge lifecycle, error taxonomy, data flows)
-  - [x] `docs/feature-parity.md` — expanded with community extensions (AZ AL Dev Tools, NAB AL Tools, ALCops, AL Test Runner) and 11 beyond-parity features
+  - [x] `docs/feature-scope.md` — expanded with community extensions (AZ AL Dev Tools, NAB AL Tools, ALCops, AL Test Runner) and 11 beyond-parity features
   - [x] `docs/market-research.md` — expanded with competitive landscape, community pain points, BC26/27 changes
   - [x] `docs/adversarial-atlas.md` — NEW: 15 stress tests (ST-01 to ST-15) + 7 fidelity gaps (FG-01 to FG-07)
   - [x] `docs/agentic-schemas.md` — NEW: 10 slash command schemas, 18 CLI --json schemas, 16 MCP tool registrations (insight queries: tables, callgraph, intercept, subscribers, source)
   - [x] `docs/agent-scenarios.md` — NEW: 8 real-world agent discovery scenarios as test cases for insight engine
-- [x] `crates-map.md` rewritten for daemon architecture with target module layout.
+- [x] `docs/crates-map.md` rewritten for daemon architecture with target module layout.
 - [x] `plan.md` decomposed into 44 tasks across WP0-WP11 with IDs, file ownership, dependencies, pass/fail criteria, and critical path.
 - [ ] `al-test-harness` LSP simulator built with Zed-fidelity (T001).
 - [ ] Centralized evidence log (`proof_of_functionality.toml`) created (T002).
@@ -39,7 +39,7 @@ This file is maintained by the PM agent during execution. Updated after every mi
 
 ### Phase 1: Foundation & Core Refactor
 **WP1: al-core Skeleton & Discovery Migration**
-- [ ] `al-core` crate created with module tree per `crates-map.md`.
+- [ ] `al-core` crate created with module tree per `docs/crates-map.md`.
 - [ ] `Workspace` struct implemented with state transitions.
 - [ ] `al-discovery` logic migrated into `al-core::project` + `al-core::toolchain` + `al-core::launch`.
 - [ ] `AlError` unified error hierarchy implemented.
@@ -167,9 +167,18 @@ This file is maintained by the PM agent during execution. Updated after every mi
 - **Summary**: Zero-code strategic audit, documentation expansion, and architecture finalization.
 - **Architecture decision**: al-lsp is the sole server binary. Two modes: LSP (stdio, for Zed) and daemon (Unix socket, for CLI/Explorer/MCP). al-cli, al-explorer, al-mcp are pure JSON-RPC clients with zero compile-time dependency on al-core. This follows the industry-standard daemon pattern (gopls, rust-analyzer, sorbet).
 - **Files created**: `docs/adversarial-atlas.md`, `docs/agentic-schemas.md`.
-- **Files rewritten**: `docs/architecture.md`, `crates-map.md`, `claude.md`, `plan.md` (102→535 lines, 44 tasks), `.claude/rules/thin-adapters.md`, `.claude/rules/library-responsibilities.md`, `.claude/rules/maintenance-governance.md`.
-- **Files expanded**: `docs/feature-parity.md`, `docs/market-research.md`, `docs/progress.md`, `.claude/rules/validation-protocol.md`, `.claude/rules/zed-fidelity.md`, `.claude/rules/agentic-efficiency.md`, `.claude/rules/adversarial-evolution.md`.
+- **Files rewritten**: `docs/architecture.md`, `docs/crates-map.md`, `claude.md`, `plan.md` (102→535 lines, 44 tasks), `.claude/rules/thin-adapters.md`, `.claude/rules/library-responsibilities.md`, `.claude/rules/maintenance-governance.md`.
+- **Files expanded**: `docs/feature-scope.md`, `docs/market-research.md`, `docs/progress.md`, `.claude/rules/validation-protocol.md`, `.claude/rules/zed-fidelity.md`, `.claude/rules/agentic-efficiency.md`, `.claude/rules/adversarial-evolution.md`.
 - **Research**: AL community extensions (AZ AL Dev Tools, NAB AL Tools, ALCops, AL Test Runner, AL Dependency MCP Server), Zed extension API v0.7.0 (slash commands, indexed docs, context servers, DAP locators), BC26/27 language changes.
 - **Key findings**: ALCops has MCP server (direct competition), AL Dependency MCP Server (Stefan Maron) handles 50MB+ .app files, MS AL crashes on Linux (our #1 differentiator), grammar needs update for `continue`/`@'...'`/`List of [Interface]`.
 - **Plan decomposition**: 44 tasks across WP0-WP11. Critical path: T001→T305 = 17 tasks for minimum viable loop. Full production path = ~40 tasks.
 - **Audit status**: All documentation architecturally consistent. Daemon architecture verified across all 7 rules files, claude.md, architecture.md, crates-map.md, plan.md, and progress.md. No inconsistencies found.
+
+### 2026-03-13 — Documentation Reorganization & Repo Cleanup
+- **Summary**: Full documentation restructuring to achieve "perfect spec" quality before implementation.
+- **Repo cruft removed**: `grammars/` (3MB stale dir), `Prompt.md`, `docs/zed-extension-research.md`. Added `/grammars/` to `.gitignore`.
+- **Files moved/renamed**: `crates-map.md` → `docs/crates-map.md`, `docs/feature-parity.md` → `docs/feature-scope.md`, `docs/cursor-extension-audit.md` → `docs/ms-extension-audit.md` (trimmed: removed commands/config lists already in feature-scope/settings).
+- **Files consolidated**: `docs/insight-tools.md` + `docs/insight-graph-model.md` → `docs/insight.md`. Configuration table in `architecture.md` replaced with reference to `docs/settings.md` (authoritative source).
+- **Inconsistencies fixed**: Slash command list in `agentic-efficiency.md` now references `docs/agentic-schemas.md` as authoritative catalog. "Cursor" references replaced with "MS" in feature-scope.md. All cross-references updated across claude.md, plan.md, progress.md, release.md, library-responsibilities.md.
+- **Quality improvements**: TOC added to `architecture.md`, LSP cross-reference to `lsp-feature-matrix.md` added, gap-analysis language converted to forward-looking specs.
+- **Verification**: Grep confirms zero references to deleted/renamed files across docs/, claude.md, plan.md, and .claude/rules/.
