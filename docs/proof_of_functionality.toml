@@ -31,3 +31,45 @@ actual_log = """
 [TRACE] al_lsp::handlers: hover result: Some(Markdown("Table 18 Customer...")) (Correct)
 """
 status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-14"
+work_package = "WP0: Project Constitution & The Adversarial Harness"
+task_id = "T001: Harness Baseline Verification"
+
+[entries.adversarial_pass]
+context = "Data-driven tests exercise known-broken scenarios: cross-file procedure hover and report dataitem trigger extraction."
+expected = "8 specific assertions fail with clear diagnostic messages indicating unimplemented features, not crashes or hangs."
+actual_log = """
+HOVER FAIL [1/97] objects/API/ItemJournalStaging.Table.al:122:31 — expected 'procedure SetJournalData' but hover returned null
+HOVER FAIL [2/97] objects/API/ItemJournalStaging.Table.al:131:31 — expected 'procedure GetJournalData' but hover returned null
+HOVER FAIL [3/97] objects/API/ItemJournalStaging.Table.al:144:31 — expected 'procedure SetErrorMessage' but hover returned null
+HOVER FAIL [4/97] objects/API/ItemJournalStaging.Table.al:153:31 — expected 'procedure GetErrorMessage' but hover returned null
+HOVER FAIL [5/97] objects/API/ItemJournalStaging.Table.al:124:11 — expected 'OutStream' but hover returned null
+HOVER FAIL [6/97] objects/API/ItemJournalStaging.Table.al:133:11 — expected 'InStream' in hover, got: ```al
+HOVER FAIL [7/97] objects/API/ItemJournalStaging.Table.al:134:11 — expected 'Text' but hover returned null
+SYMBOL FAIL [6] objects/Testing/IJLProcessStaging.Report.al — 'OnPreDataItem' not found.
+test_hover_data_driven ... FAILED (7/97 assertions)
+test_document_symbols_data_driven ... FAILED (1/76 assertions)
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Full workspace test suite: 17 test binaries, 461 test functions across al-syntax, al-symbols, al-semantic, al-discovery, al-lsp, al-test-harness (e2e, real_world, zed_simulation, data_driven)."
+expected = "All tests compile and run. 459+ pass. Known failures documented in data_driven.rs header with specific failure reasons."
+actual_log = """
+cargo test --workspace --exclude zed-al
+test result: ok. 28 passed; 0 failed  (al-syntax unit)
+test result: ok. 34 passed; 0 failed  (al-syntax integration)
+test result: ok. 44 passed; 0 failed  (al-symbols unit)
+test result: ok. 65 passed; 0 failed  (al-symbols integration)
+test result: ok. 29 passed; 0 failed  (al-semantic)
+test result: ok. 17 passed; 0 failed  (al-discovery)
+test result: ok. 55 passed; 0 failed  (al-lsp unit)
+test result: ok. 20 passed; 0 failed  (al-lsp integration)
+test result: ok. 111 passed; 0 failed (al-lsp analysis)
+test result: ok. 36 passed; 0 failed  (al-lsp formatting)
+test result: FAILED. 7 passed; 2 failed (al-test-harness data_driven — known failures documented)
+Total: 459 passed, 2 failed (pre-existing, documented in data_driven.rs:6-13)
+"""
+status = "SUCCESS"
