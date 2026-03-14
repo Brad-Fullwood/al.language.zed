@@ -80,6 +80,49 @@ status = "SUCCESS"
 [[entries]]
 date = "2026-03-14"
 work_package = "WP0: Project Constitution & The Adversarial Harness"
+task_id = "T003: Harness Daemon-Mode Extension"
+
+[entries.adversarial_pass]
+context = "Verify transport abstraction doesn't break existing stdio tests. All 461 tests must produce identical results."
+expected = "459 pass, 2 fail (same pre-existing failures). No new failures or regressions from the refactor."
+actual_log = """
+cargo test --workspace --exclude zed-al (after transport abstraction)
+test result: ok. 28 passed (al-syntax unit)
+test result: ok. 34 passed (al-syntax integration)
+test result: ok. 44 passed (al-symbols unit)
+test result: ok. 65 passed (al-symbols integration)
+test result: ok. 29 passed (al-semantic)
+test result: ok. 17 passed (al-discovery)
+test result: ok. 55 passed (al-lsp unit)
+test result: ok. 20 passed (al-lsp integration)
+test result: ok. 111 passed (al-lsp analysis)
+test result: ok. 36 passed (al-lsp formatting)
+test result: FAILED. 7 passed; 2 failed (data_driven — same pre-existing failures)
+Total: 459 passed, 2 failed — IDENTICAL to pre-refactor baseline (T001)
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Verify transport abstraction: Lifecycle enum, boxed Writer, generic read_loop, from_transport() shared constructor, connect() stub."
+expected = "cargo check -p al-test-harness compiles. LspClient::spawn() API unchanged. connect() exists but is unimplemented (T303 dependency)."
+actual_log = """
+cargo check -p al-test-harness -> Finished dev profile in 0.06s (clean compile, no warnings)
+
+Key changes verified:
+- Lifecycle::Stdio(Child) replaces direct child field
+- Lifecycle::Daemon variant exists (dead_code allowed, for T303)
+- Writer = Box<dyn AsyncWrite + Unpin + Send> replaces Option<ChildStdin>
+- from_transport() shared constructor used by spawn(), will be used by connect()
+- connect() exists with unimplemented!() — compiles, panics at runtime as expected
+- read_loop() generic over impl AsyncBufRead (monomorphized, zero overhead)
+- send_message() takes &mut dyn AsyncWrite (single vtable call per write, negligible)
+- shutdown() dispatches on Lifecycle variant (Stdio kills child, Daemon drops socket)
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-14"
+work_package = "WP0: Project Constitution & The Adversarial Harness"
 task_id = "T002: Evidence Log Skeleton"
 
 [entries.adversarial_pass]

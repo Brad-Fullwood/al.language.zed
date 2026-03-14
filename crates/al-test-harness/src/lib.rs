@@ -3,6 +3,14 @@
 //! Spawns the `al-lsp` binary over stdio and speaks the LSP protocol,
 //! providing a high-level API for end-to-end testing of every capability.
 //!
+//! # Transport Abstraction
+//!
+//! The harness supports two transports:
+//! - **Stdio** (`LspClient::spawn`): spawns al-lsp as a child process
+//! - **Socket** (`LspClient::connect`): connects to a running al-lsp daemon
+//!
+//! Both share the same JSON-RPC protocol and `LspClient` API.
+//!
 //! # Usage
 //! ```no_run
 //! use al_test_harness::LspClient;
@@ -27,7 +35,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex};
 
 pub use protocol::*;
@@ -57,10 +65,25 @@ fn find_binary() -> PathBuf {
     PathBuf::from("al-lsp")
 }
 
-/// An LSP client that communicates with al-lsp over stdio.
+/// Lifecycle management for the server connection.
+///
+/// Stdio mode owns a child process; daemon mode connects to an existing server.
+enum Lifecycle {
+    /// al-lsp spawned as a child process, communicating over stdio.
+    Stdio(Child),
+    /// Connected to al-lsp daemon over Unix socket.
+    /// Full implementation in T303 when daemon mode exists.
+    #[allow(dead_code)]
+    Daemon,
+}
+
+/// Writer half of the transport — abstracted so stdio and socket share the same code path.
+type Writer = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+
+/// An LSP client that communicates with al-lsp over stdio or Unix socket.
 pub struct LspClient {
-    stdin: Option<ChildStdin>,
-    child: Child,
+    writer: Option<Writer>,
+    lifecycle: Lifecycle,
     next_id: AtomicI64,
     pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
     notifications: mpsc::UnboundedReceiver<(String, Value)>,
@@ -71,7 +94,9 @@ pub struct LspClient {
 }
 
 impl LspClient {
-    /// Spawn al-lsp and perform the initialize handshake.
+    /// Spawn al-lsp as a child process and perform the initialize handshake.
+    ///
+    /// This is the standard entry point for tests and Zed integration.
     pub async fn spawn(project_root: impl AsRef<Path>) -> Result<Self, Box<dyn std::error::Error>> {
         let binary = find_binary();
         let root_path = project_root.as_ref().to_path_buf();
@@ -89,31 +114,70 @@ impl LspClient {
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
 
+        let mut client = Self::from_transport(
+            Box::new(stdin),
+            BufReader::new(stdout),
+            Lifecycle::Stdio(child),
+            root_path,
+        );
+
+        client.initialize().await?;
+        Ok(client)
+    }
+
+    /// Connect to a running al-lsp daemon over a Unix socket.
+    ///
+    /// Requires al-lsp to be running in daemon mode (see T303).
+    /// The daemon handles project discovery from the `project_root`.
+    #[allow(dead_code)]
+    pub async fn connect(
+        _socket_path: impl AsRef<Path>,
+        project_root: impl AsRef<Path>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let _root_path = project_root.as_ref().to_path_buf();
+        // T303: Full implementation when daemon mode exists.
+        // Will:
+        // 1. Connect to Unix socket at socket_path
+        // 2. Split into read/write halves
+        // 3. Call Self::from_transport(writer, reader, Lifecycle::Daemon, root_path)
+        // 4. Run initialize handshake
+        unimplemented!(
+            "Daemon transport not yet implemented. \
+             Requires al-lsp daemon mode (T303)."
+        )
+    }
+
+    /// Construct an LspClient from transport halves.
+    ///
+    /// This is the shared constructor used by both `spawn` and `connect`.
+    /// The reader is consumed by a background task; the writer is stored
+    /// for sending requests and notifications.
+    fn from_transport(
+        writer: Writer,
+        reader: impl tokio::io::AsyncBufRead + Unpin + Send + 'static,
+        lifecycle: Lifecycle,
+        root_path: PathBuf,
+    ) -> Self {
         let pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let (notif_tx, notif_rx) = mpsc::unbounded_channel();
 
-        // Spawn reader task
+        // Spawn reader task — generic over the concrete reader type
         let pending_clone = pending.clone();
         tokio::spawn(async move {
-            read_loop(stdout, pending_clone, notif_tx).await;
+            read_loop(reader, pending_clone, notif_tx).await;
         });
 
-        let mut client = LspClient {
-            stdin: Some(stdin),
-            child,
+        LspClient {
+            writer: Some(writer),
+            lifecycle,
             next_id: AtomicI64::new(1),
             pending,
             notifications: notif_rx,
             buffered_notifications: Vec::new(),
             root_path,
             open_docs: HashMap::new(),
-        };
-
-        // Send initialize
-        client.initialize().await?;
-
-        Ok(client)
+        }
     }
 
     /// Send initialize request and initialized notification.
@@ -275,7 +339,7 @@ impl LspClient {
             "position": { "line": line, "character": character }
         });
 
-        let result = self.request("textDocument/definition", params).await.ok()?;
+        let result = self.request("textDocument/definition", params).await.ok()?; // test helper: LSP errors are non-fatal
         if result.is_null() { None } else { Some(result) }
     }
 
@@ -310,7 +374,7 @@ impl LspClient {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
 
-        let result = self.request("textDocument/semanticTokens/full", params).await.ok()?;
+        let result = self.request("textDocument/semanticTokens/full", params).await.ok()?; // test helper: LSP errors are non-fatal
         if result.is_null() { None } else { Some(result) }
     }
 
@@ -347,7 +411,7 @@ impl LspClient {
             "position": { "line": line, "character": character }
         });
 
-        let result = self.request("textDocument/signatureHelp", params).await.ok()?;
+        let result = self.request("textDocument/signatureHelp", params).await.ok()?; // test helper: LSP errors are non-fatal
         if result.is_null() { None } else { Some(result) }
     }
 
@@ -395,7 +459,7 @@ impl LspClient {
             "newName": new_name
         });
 
-        let result = self.request("textDocument/rename", params).await.ok()?;
+        let result = self.request("textDocument/rename", params).await.ok()?; // test helper: LSP errors are non-fatal
         if result.is_null() { None } else { Some(result) }
     }
 
@@ -436,16 +500,25 @@ impl LspClient {
     pub async fn shutdown(mut self) {
         let _ = self.request("shutdown", serde_json::json!(null)).await;
         let _ = self.notify("exit", serde_json::json!(null)).await;
-        // Drop stdin to signal EOF to the server and reader task
-        self.stdin.take();
-        // Wait with timeout to avoid hanging if the server doesn't exit
-        let _ = tokio::time::timeout(
-            tokio::time::Duration::from_secs(3),
-            self.child.wait(),
-        )
-        .await;
-        // Kill if still running
-        let _ = self.child.kill().await;
+        // Drop writer to signal EOF
+        self.writer.take();
+
+        match &mut self.lifecycle {
+            Lifecycle::Stdio(child) => {
+                // Wait with timeout to avoid hanging if the server doesn't exit
+                let _ = tokio::time::timeout(
+                    tokio::time::Duration::from_secs(3),
+                    child.wait(),
+                )
+                .await;
+                // Kill if still running
+                let _ = child.kill().await;
+            }
+            Lifecycle::Daemon => {
+                // Socket close (writer drop above) is sufficient.
+                // No child process to manage.
+            }
+        }
     }
 
     // -- Internal --
@@ -483,8 +556,8 @@ impl LspClient {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
-        let stdin = self.stdin.as_mut().ok_or("stdin closed")?;
-        send_message(stdin, &msg).await?;
+        let writer = self.writer.as_mut().ok_or("writer closed")?;
+        send_message(writer, &msg).await?;
 
         let response = tokio::time::timeout(
             tokio::time::Duration::from_secs(10),
@@ -508,27 +581,33 @@ impl LspClient {
             "params": params
         });
 
-        let stdin = self.stdin.as_mut().ok_or("stdin closed")?;
-        send_message(stdin, &msg).await?;
+        let writer = self.writer.as_mut().ok_or("writer closed")?;
+        send_message(writer, &msg).await?;
         Ok(())
     }
 }
 
-async fn send_message(stdin: &mut ChildStdin, msg: &Value) -> Result<(), Box<dyn std::error::Error>> {
+async fn send_message(
+    writer: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+    msg: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
     let body = serde_json::to_string(msg)?;
     let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    stdin.write_all(header.as_bytes()).await?;
-    stdin.write_all(body.as_bytes()).await?;
-    stdin.flush().await?;
+    writer.write_all(header.as_bytes()).await?;
+    writer.write_all(body.as_bytes()).await?;
+    writer.flush().await?;
     Ok(())
 }
 
+/// Read JSON-RPC messages from the transport and dispatch them.
+///
+/// Generic over the reader type so both stdio (BufReader<ChildStdout>) and
+/// socket (BufReader<OwnedReadHalf>) use the same code with zero dynamic dispatch.
 async fn read_loop(
-    stdout: ChildStdout,
+    mut reader: impl tokio::io::AsyncBufRead + Unpin,
     pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
     notif_tx: mpsc::UnboundedSender<(String, Value)>,
 ) {
-    let mut reader = BufReader::new(stdout);
     let mut header_buf = String::new();
 
     loop {
@@ -548,7 +627,7 @@ async fn read_loop(
             }
 
             if let Some(len_str) = line.strip_prefix("Content-Length: ") {
-                content_length = len_str.parse().ok();
+                content_length = len_str.parse().ok(); // non-numeric Content-Length is skipped (handled below)
             }
         }
 
