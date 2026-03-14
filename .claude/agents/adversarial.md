@@ -2,8 +2,8 @@
 name: adversarial
 description: "Adversarial tester: actively tries to break code by writing tests designed to find failures. Use proactively after ANY code change — spawn this agent in the background immediately after implementing a feature, fixing a bug, or migrating code. Do not wait for the user to ask."
 tools: Bash, Read, Grep, Glob, Edit, Write
-model: opus
-maxTurns: 30
+model: sonnet
+maxTurns: 15
 isolation: worktree
 ---
 

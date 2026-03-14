@@ -27,7 +27,7 @@ pub(crate) enum DownloadSource {
 /// do not prevent the server from operating (graceful degradation).
 pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Url>) {
     // 1. Discover toolchain
-    match al_discovery::find_toolchain() {
+    match al_core::toolchain::find_toolchain() {
         Ok(tc) => {
             info!(version = %tc.version, "Found AL toolchain");
             *server.toolchain.write().await = Some(tc.clone());
@@ -45,7 +45,7 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
         .and_then(|u| u.to_file_path().ok())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    match al_discovery::find_project(&workspace_root) {
+    match al_core::project::find_project(&workspace_root) {
         Ok(mut project) => {
             info!(
                 name = %project.app_json.name,
@@ -224,8 +224,8 @@ async fn prompt_download_symbols(
 ///
 /// Uses the first available server config. Returns downloaded .app file paths.
 async fn download_symbols_from_server(
-    project: &al_discovery::AlProject,
-    deps: &[al_discovery::AppDependency],
+    project: &al_core::project::AlProject,
+    deps: &[al_core::project::AppDependency],
     lsp_client: &tower_lsp::Client,
 ) -> Vec<PathBuf> {
     let configs = &project.server_configs;
@@ -252,8 +252,36 @@ async fn download_symbols_from_server(
                 c.show_message(tower_lsp::lsp_types::MessageType::INFO, m).await;
             });
         });
-    let client = al_symbols::bc_server::BcServerClient::new(config.clone(), message_sink);
-    let results = client.download_all(deps, &dest).await;
+    // Convert al_core types → al_discovery types for al-symbols boundary
+    let discovery_config = al_discovery::launch::BcServerConfig {
+        name: config.name.clone(),
+        environment_type: match config.environment_type {
+            al_core::launch::EnvironmentType::OnPrem => al_discovery::launch::EnvironmentType::OnPrem,
+            al_core::launch::EnvironmentType::Sandbox => al_discovery::launch::EnvironmentType::Sandbox,
+            al_core::launch::EnvironmentType::Production => al_discovery::launch::EnvironmentType::Production,
+        },
+        server: config.server.clone(),
+        server_instance: config.server_instance.clone(),
+        port: config.port,
+        environment_name: config.environment_name.clone(),
+        tenant: config.tenant.clone(),
+        authentication: match config.authentication {
+            al_core::launch::AuthMethod::Windows => al_discovery::launch::AuthMethod::Windows,
+            al_core::launch::AuthMethod::UserPassword => al_discovery::launch::AuthMethod::UserPassword,
+            al_core::launch::AuthMethod::AAD => al_discovery::launch::AuthMethod::AAD,
+        },
+    };
+    let discovery_deps: Vec<al_discovery::AppDependency> = deps
+        .iter()
+        .map(|d| al_discovery::AppDependency {
+            id: d.id.clone(),
+            name: d.name.clone(),
+            publisher: d.publisher.clone(),
+            version: d.version.clone(),
+        })
+        .collect();
+    let client = al_symbols::bc_server::BcServerClient::new(discovery_config, message_sink);
+    let results = client.download_all(&discovery_deps, &dest).await;
 
     let mut downloaded = Vec::new();
     for (i, result) in results.into_iter().enumerate() {
@@ -283,7 +311,7 @@ async fn download_symbols_from_server(
 ///
 /// Returns paths to successfully downloaded .app files.
 async fn download_packages_nuget(
-    deps: &[al_discovery::AppDependency],
+    deps: &[al_core::project::AppDependency],
     dest: &Path,
 ) -> Vec<PathBuf> {
     info!(
@@ -292,7 +320,7 @@ async fn download_packages_nuget(
         "Downloading symbol packages from NuGet"
     );
 
-    // Convert al_discovery types to al_symbols::nuget types
+    // Convert al_core types to al_symbols::nuget types
     let nuget_deps: Vec<al_symbols::nuget::AppDependency> = deps
         .iter()
         .map(|d| al_symbols::nuget::AppDependency {
@@ -303,7 +331,7 @@ async fn download_packages_nuget(
         })
         .collect();
 
-    let feeds: Vec<al_symbols::nuget::NuGetFeed> = al_discovery::nuget_feeds()
+    let feeds: Vec<al_symbols::nuget::NuGetFeed> = al_core::project::nuget_feeds()
         .iter()
         .map(|f| al_symbols::nuget::NuGetFeed {
             index_url: f.index_url.clone(),

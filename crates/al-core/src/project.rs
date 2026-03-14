@@ -1,38 +1,14 @@
-//! AL toolchain and project discovery.
+//! AL project discovery and manifest parsing.
 //!
-//! **DEPRECATED**: This crate's functionality has been migrated to `al-core`.
-//! Use `al_core::project`, `al_core::toolchain`, and `al_core::launch` instead.
-//! This crate remains only because `al-symbols`, `al-semantic`, and `al-dap`
-//! still reference its types. It will be removed in T104.
-
-pub mod jsonrpc;
-pub mod launch;
+//! Finds `app.json` manifests, parses them, locates `.alpackages`,
+//! and provides NuGet feed URLs for BC symbol packages.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
-/// Paths to the AL toolchain components.
-#[derive(Debug, Clone)]
-pub struct AlToolchain {
-    pub alc: PathBuf,
-    pub aldoc: Option<PathBuf>,
-    pub code_analysis: PathBuf,
-    pub analyzers: AnalyzerPaths,
-    pub dotnet_root: PathBuf,
-    pub version: String,
-}
-
-/// Paths to the official Microsoft analyzers.
-#[derive(Debug, Clone)]
-pub struct AnalyzerPaths {
-    pub code_cop: PathBuf,
-    pub app_source_cop: PathBuf,
-    pub ui_cop: PathBuf,
-    pub per_tenant_cop: PathBuf,
-    pub common: PathBuf,
-}
+use crate::errors::DiscoveryError;
+use crate::launch;
 
 /// A discovered AL project on disk.
 #[derive(Debug, Clone)]
@@ -92,14 +68,12 @@ impl AlProject {
     ///
     /// BC projects have implicit dependencies derived from `application` and `platform`
     /// properties in app.json:
-    /// - `application` → Application + System Application packages
-    /// - `platform` → System package (version derived from application major)
+    /// - `application` -> Application + System Application packages
+    /// - `platform` -> System package (version derived from application major)
     pub fn all_dependencies(&self) -> Vec<AppDependency> {
         let mut deps = self.app_json.dependencies.clone();
 
         // Add implicit Application dependency chain.
-        // "Application" is a stub that depends on "Base Application" + "Business Foundation".
-        // We need all of them for complete symbol coverage.
         if let Some(app_version) = &self.app_json.application {
             for (id, name) in [
                 (APPLICATION_APP_ID, "Application"),
@@ -119,8 +93,6 @@ impl AlProject {
         }
 
         // Add implicit System (platform) dependency.
-        // The platform version in app.json is a minimum (often "1.0.0.0"),
-        // so derive actual version from the application major version.
         if self.app_json.platform.is_some()
             && !deps.iter().any(|d| d.id == SYSTEM_APP_ID)
         {
@@ -143,274 +115,6 @@ impl AlProject {
     }
 }
 
-/// Errors with actionable messages.
-#[derive(Debug, Error)]
-pub enum DiscoveryError {
-    #[error("ALTool is not installed. Install it with: {install_cmd}")]
-    AlToolNotInstalled { install_cmd: String },
-
-    #[error(".NET SDK is not installed")]
-    DotNetNotInstalled,
-
-    #[error("No AL project found (no app.json). Searched from {start} upward through: {searched}")]
-    NoProjectFound { start: PathBuf, searched: String },
-
-    #[error("Invalid app.json at {path}: {error}")]
-    InvalidAppJson { path: PathBuf, error: String },
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const ALC_DLL: &str = "alc.dll";
-const ALDOC_DLL: &str = "aldoc.dll";
-const CODE_ANALYSIS_DLL: &str = "Microsoft.Dynamics.Nav.CodeAnalysis.dll";
-
-const ANALYZER_DLLS: [(&str, &str); 5] = [
-    ("code_cop", "Microsoft.Dynamics.Nav.CodeCop.dll"),
-    ("app_source_cop", "Microsoft.Dynamics.Nav.AppSourceCop.dll"),
-    ("ui_cop", "Microsoft.Dynamics.Nav.UICop.dll"),
-    (
-        "per_tenant_cop",
-        "Microsoft.Dynamics.Nav.PerTenantExtensionCop.dll",
-    ),
-    ("common", "Microsoft.Dynamics.Nav.Analyzers.Common.dll"),
-];
-
-const DOTNET_TOOL_PACKAGE_PREFIX: &str = "microsoft.dynamics.businesscentral.development.tools";
-
-const INSTALL_CMD: &str =
-    "dotnet tool install --global Microsoft.Dynamics.BusinessCentral.Development.Tools";
-
-// ---------------------------------------------------------------------------
-// find_toolchain
-// ---------------------------------------------------------------------------
-
-/// Discover the AL toolchain (ALTool installation).
-///
-/// Search order:
-/// 1. `$AL_TOOL_PATH` environment variable (points to the directory containing alc.dll)
-/// 2. `~/.dotnet/tools/.store/microsoft.dynamics.businesscentral.development.tools*/`
-/// 3. System PATH (`which alc`)
-pub fn find_toolchain() -> Result<AlToolchain, DiscoveryError> {
-    // Strategy 1: explicit env var
-    if let Ok(tool_path) = std::env::var("AL_TOOL_PATH") {
-        let dir = PathBuf::from(&tool_path);
-        if dir.join(ALC_DLL).is_file() {
-            return build_toolchain(&dir);
-        }
-        // The env var might point to a parent; search children
-        if let Some(tc) = search_dir_recursive(&dir) {
-            return Ok(tc);
-        }
-    }
-
-    // Strategy 2: dotnet tool store
-    if let Some(home) = home_dir() {
-        let store = home.join(".dotnet/tools/.store");
-        if store.is_dir() {
-            if let Some(tc) = search_dotnet_tool_store(&store) {
-                return Ok(tc);
-            }
-        }
-    }
-
-    // Strategy 3: system PATH — look for `alc` binary
-    if let Some(tc) = search_system_path() {
-        return Ok(tc);
-    }
-
-    Err(DiscoveryError::AlToolNotInstalled {
-        install_cmd: INSTALL_CMD.to_string(),
-    })
-}
-
-/// Build an `AlToolchain` from a directory known to contain `alc.dll`.
-fn build_toolchain(dir: &Path) -> Result<AlToolchain, DiscoveryError> {
-    let alc = dir.join(ALC_DLL);
-    if !alc.is_file() {
-        return Err(DiscoveryError::AlToolNotInstalled {
-            install_cmd: INSTALL_CMD.to_string(),
-        });
-    }
-
-    let aldoc = {
-        let p = dir.join(ALDOC_DLL);
-        if p.is_file() { Some(p) } else { None }
-    };
-
-    let code_analysis = dir.join(CODE_ANALYSIS_DLL);
-    if !code_analysis.is_file() {
-        return Err(DiscoveryError::AlToolNotInstalled {
-            install_cmd: format!(
-                "{INSTALL_CMD} (found alc.dll but missing {CODE_ANALYSIS_DLL} in {})",
-                dir.display()
-            ),
-        });
-    }
-
-    let analyzers = find_analyzers(dir);
-    let version = extract_version_from_path(dir);
-
-    Ok(AlToolchain {
-        alc,
-        aldoc,
-        code_analysis,
-        analyzers,
-        dotnet_root: dir.to_path_buf(),
-        version,
-    })
-}
-
-/// Find analyzer DLLs, looking in the given directory and common subdirectories.
-fn find_analyzers(dir: &Path) -> AnalyzerPaths {
-    let find_dll = |name: &str| -> PathBuf {
-        let p = dir.join(name);
-        if p.is_file() {
-            return p;
-        }
-        for subdir in &["Analyzers", "analyzers"] {
-            let p = dir.join(subdir).join(name);
-            if p.is_file() {
-                return p;
-            }
-        }
-        dir.join(name)
-    };
-
-    AnalyzerPaths {
-        code_cop: find_dll(ANALYZER_DLLS[0].1),
-        app_source_cop: find_dll(ANALYZER_DLLS[1].1),
-        ui_cop: find_dll(ANALYZER_DLLS[2].1),
-        per_tenant_cop: find_dll(ANALYZER_DLLS[3].1),
-        common: find_dll(ANALYZER_DLLS[4].1),
-    }
-}
-
-/// Try to extract a version string from the directory path.
-fn extract_version_from_path(dir: &Path) -> String {
-    for component in dir.components().rev() {
-        if let std::path::Component::Normal(s) = component {
-            let s = s.to_string_lossy();
-            if s.chars().next().is_some_and(|c| c.is_ascii_digit()) && s.contains('.') {
-                let parts: Vec<&str> = s.split('.').collect();
-                if parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
-                {
-                    return s.to_string();
-                }
-            }
-        }
-    }
-    "unknown".to_string()
-}
-
-/// Search the dotnet tool store for an ALTool installation.
-fn search_dotnet_tool_store(store: &Path) -> Option<AlToolchain> {
-    let entries = std::fs::read_dir(store).ok()?;
-
-    let mut package_dirs: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .to_lowercase()
-                .starts_with(DOTNET_TOOL_PACKAGE_PREFIX)
-        })
-        .map(|e| e.path())
-        .collect();
-
-    package_dirs.sort();
-    package_dirs.reverse();
-
-    for pkg_dir in package_dirs {
-        if let Some(tc) = search_dir_recursive(&pkg_dir) {
-            return Some(tc);
-        }
-    }
-
-    None
-}
-
-/// Recursively search a directory tree for `alc.dll`, returning the first valid toolchain found.
-fn search_dir_recursive(root: &Path) -> Option<AlToolchain> {
-    if root.join(ALC_DLL).is_file() {
-        return build_toolchain(root).ok();
-    }
-
-    let mut queue: Vec<(PathBuf, u8)> = vec![(root.to_path_buf(), 0)];
-    while let Some((dir, depth)) = queue.pop() {
-        if depth > 8 {
-            continue;
-        }
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if path.join(ALC_DLL).is_file() {
-                    if let Ok(tc) = build_toolchain(&path) {
-                        return Some(tc);
-                    }
-                }
-                queue.push((path, depth + 1));
-            }
-        }
-    }
-    None
-}
-
-/// Search the system PATH for `alc` and derive the toolchain directory from it.
-fn search_system_path() -> Option<AlToolchain> {
-    let output = std::process::Command::new("which")
-        .arg("alc")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let alc_path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    if !alc_path.is_file() {
-        return None;
-    }
-
-    let dir = alc_path.parent()?;
-
-    if dir.join(ALC_DLL).is_file() {
-        return build_toolchain(dir).ok();
-    }
-
-    search_dir_recursive(dir)
-}
-
-/// Get the user's home directory.
-pub fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or({
-            #[cfg(target_os = "windows")]
-            {
-                std::env::var("USERPROFILE").ok().map(PathBuf::from)
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                None
-            }
-        })
-}
-
-// ---------------------------------------------------------------------------
-// find_project
-// ---------------------------------------------------------------------------
-
 /// Find an AL project starting from the given directory, searching upward.
 pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
     let start = if start.is_absolute() {
@@ -432,8 +136,6 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
     }
 
     // Phase 2: Search immediate subdirectories of the start directory.
-    // Handles multi-app workspaces where app.json lives in a child folder
-    // (e.g., workspace root contains Core/, Implementation/, etc.).
     if let Ok(entries) = std::fs::read_dir(&start) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -515,10 +217,6 @@ fn scan_packages(packages_dir: &Path) -> Vec<PathBuf> {
     packages
 }
 
-// ---------------------------------------------------------------------------
-// nuget_feeds
-// ---------------------------------------------------------------------------
-
 /// Returns the 3 public BC NuGet feeds (Azure DevOps hosted).
 pub fn nuget_feeds() -> Vec<NuGetFeed> {
     vec![
@@ -537,9 +235,22 @@ pub fn nuget_feeds() -> Vec<NuGetFeed> {
     ]
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/// Get the user's home directory.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or({
+            #[cfg(target_os = "windows")]
+            {
+                std::env::var("USERPROFILE").ok().map(PathBuf::from)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                None
+            }
+        })
+}
 
 #[cfg(test)]
 mod tests {
@@ -657,106 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_version_from_path() {
-        assert_eq!(
-            extract_version_from_path(Path::new("/home/user/.dotnet/tools/.store/pkg/16.3.2065053/tools/net8.0/any")),
-            "16.3.2065053"
-        );
-        assert_eq!(extract_version_from_path(Path::new("/opt/altool/25.1.0")), "25.1.0");
-        assert_eq!(extract_version_from_path(Path::new("/opt/altool/bin")), "unknown");
-    }
-
-    #[test]
-    fn test_error_messages_are_actionable() {
-        let err = DiscoveryError::AlToolNotInstalled { install_cmd: INSTALL_CMD.to_string() };
-        assert!(err.to_string().contains("dotnet tool install"));
-
-        let err = DiscoveryError::NoProjectFound { start: PathBuf::from("/tmp/foo"), searched: "/tmp/foo, /tmp, /".to_string() };
-        assert!(err.to_string().contains("app.json"));
-    }
-
-    #[test]
-    fn test_build_toolchain_flat_dir() {
-        let tmp = tempdir();
-        let tool_dir = tmp.join("altool");
-        fs::create_dir_all(&tool_dir).unwrap();
-        fs::write(tool_dir.join(ALC_DLL), b"fake alc").unwrap();
-        fs::write(tool_dir.join(CODE_ANALYSIS_DLL), b"fake").unwrap();
-        for (_, dll) in &ANALYZER_DLLS {
-            fs::write(tool_dir.join(dll), b"fake").unwrap();
-        }
-
-        let tc = build_toolchain(&tool_dir).unwrap();
-        assert_eq!(tc.alc, tool_dir.join(ALC_DLL));
-        assert_eq!(tc.code_analysis, tool_dir.join(CODE_ANALYSIS_DLL));
-        assert!(tc.aldoc.is_none());
-    }
-
-    #[test]
-    fn test_build_toolchain_with_aldoc() {
-        let tmp = tempdir();
-        let tool_dir = tmp.join("altool-with-aldoc");
-        fs::create_dir_all(&tool_dir).unwrap();
-        fs::write(tool_dir.join(ALC_DLL), b"fake").unwrap();
-        fs::write(tool_dir.join(ALDOC_DLL), b"fake").unwrap();
-        fs::write(tool_dir.join(CODE_ANALYSIS_DLL), b"fake").unwrap();
-        for (_, dll) in &ANALYZER_DLLS { fs::write(tool_dir.join(dll), b"fake").unwrap(); }
-
-        let tc = build_toolchain(&tool_dir).unwrap();
-        assert_eq!(tc.aldoc, Some(tool_dir.join(ALDOC_DLL)));
-    }
-
-    #[test]
-    fn test_build_toolchain_missing_code_analysis() {
-        let tmp = tempdir();
-        let tool_dir = tmp.join("missing-ca");
-        fs::create_dir_all(&tool_dir).unwrap();
-        fs::write(tool_dir.join(ALC_DLL), b"fake").unwrap();
-        let err = build_toolchain(&tool_dir).unwrap_err();
-        assert!(err.to_string().contains(CODE_ANALYSIS_DLL));
-    }
-
-    #[test]
-    fn test_search_dir_recursive_nested() {
-        let tmp = tempdir();
-        let nested = tmp.join("dotnet-store/pkg/16.3.2065053/tools/net8.0/any");
-        fs::create_dir_all(&nested).unwrap();
-        fs::write(nested.join(ALC_DLL), b"fake").unwrap();
-        fs::write(nested.join(CODE_ANALYSIS_DLL), b"fake").unwrap();
-        for (_, dll) in &ANALYZER_DLLS { fs::write(nested.join(dll), b"fake").unwrap(); }
-
-        let tc = search_dir_recursive(&tmp.join("dotnet-store")).expect("Should find toolchain");
-        assert_eq!(tc.alc, nested.join(ALC_DLL));
-        assert_eq!(tc.version, "16.3.2065053");
-    }
-
-    #[test]
-    fn test_find_analyzers_in_subdirectory() {
-        let tmp = tempdir();
-        let tool_dir = tmp.join("altool-sub");
-        let analyzers_dir = tool_dir.join("Analyzers");
-        fs::create_dir_all(&analyzers_dir).unwrap();
-        fs::write(tool_dir.join(ALC_DLL), b"fake").unwrap();
-        fs::write(tool_dir.join(CODE_ANALYSIS_DLL), b"fake").unwrap();
-        for (_, dll) in &ANALYZER_DLLS { fs::write(analyzers_dir.join(dll), b"fake").unwrap(); }
-
-        let tc = build_toolchain(&tool_dir).unwrap();
-        assert_eq!(tc.analyzers.code_cop, analyzers_dir.join(ANALYZER_DLLS[0].1));
-    }
-
-    #[test]
-    fn test_scan_packages_filters_app_only() {
-        let tmp = tempdir();
-        let pkg_dir = tmp.join("mixed");
-        fs::create_dir_all(&pkg_dir).unwrap();
-        fs::write(pkg_dir.join("good.app"), b"data").unwrap();
-        fs::write(pkg_dir.join("also.APP"), b"data").unwrap();
-        fs::write(pkg_dir.join("skip.txt"), b"data").unwrap();
-        let packages = scan_packages(&pkg_dir);
-        assert_eq!(packages.len(), 2);
-    }
-
-    #[test]
     fn test_all_dependencies_includes_implicit() {
         let project = AlProject {
             root: PathBuf::from("/tmp/fake"),
@@ -775,7 +386,6 @@ mod tests {
             server_configs: vec![],
         };
         let all = project.all_dependencies();
-        // Should include Application, Base Application, Business Foundation, System Application, System
         assert!(all.len() >= 5, "Expected at least 5 implicit deps, got {}", all.len());
         let names: Vec<&str> = all.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"Application"));
@@ -809,7 +419,6 @@ mod tests {
 
     #[test]
     fn test_all_dependencies_no_duplicate_system_app() {
-        // If System Application is already in dependencies, it should not be duplicated
         let project = AlProject {
             root: PathBuf::from("/tmp/fake"),
             app_json: AppManifest {
@@ -862,6 +471,18 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_packages_filters_app_only() {
+        let tmp = tempdir();
+        let pkg_dir = tmp.join("mixed");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("good.app"), b"data").unwrap();
+        fs::write(pkg_dir.join("also.APP"), b"data").unwrap();
+        fs::write(pkg_dir.join("skip.txt"), b"data").unwrap();
+        let packages = scan_packages(&pkg_dir);
+        assert_eq!(packages.len(), 2);
+    }
+
+    #[test]
     fn test_scan_packages_empty_dir() {
         let tmp = tempdir();
         let pkg_dir = tmp.join("empty-packages");
@@ -877,18 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_version_edge_cases() {
-        // No version components
-        assert_eq!(extract_version_from_path(Path::new("/")), "unknown");
-        // Single digit version
-        assert_eq!(extract_version_from_path(Path::new("/opt/tools/1.0")), "1.0");
-        // Path with non-version numbers
-        assert_eq!(extract_version_from_path(Path::new("/home/user123/tools")), "unknown");
-    }
-
-    #[test]
     fn test_app_manifest_with_extra_fields() {
-        // app.json may contain additional fields not in our struct — serde should ignore them
         let json = serde_json::json!({
             "id": "00000000-0000-0000-0000-000000000000",
             "name": "Test",
@@ -900,7 +510,6 @@ mod tests {
         })
         .to_string();
         let manifest: Result<AppManifest, _> = serde_json::from_str(&json);
-        // This should not fail — serde default is to ignore unknown fields unless deny_unknown_fields
         assert!(manifest.is_ok(), "Should deserialize with unknown fields");
     }
 
@@ -914,11 +523,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_error_messages_are_actionable() {
+        let err = DiscoveryError::NoProjectFound { start: PathBuf::from("/tmp/foo"), searched: "/tmp/foo, /tmp, /".to_string() };
+        assert!(err.to_string().contains("app.json"));
+    }
+
     fn tempdir() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("al-discovery-test-{}-{}", std::process::id(), id));
+        let dir = std::env::temp_dir().join(format!("al-core-project-test-{}-{}", std::process::id(), id));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

@@ -7,10 +7,10 @@ edition = "2021"
 al-syntax = { path = "../al-syntax" }
 al-symbols = { path = "../al-symbols" }
 al-semantic = { path = "../al-semantic" }
-al-discovery = { path = "../al-discovery" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
+urlencoding = "2"

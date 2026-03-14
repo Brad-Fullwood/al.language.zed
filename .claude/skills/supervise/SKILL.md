@@ -10,39 +10,42 @@ Run supervision. This is the enforcement loop — not just reporting, but drivin
 Run `bash .claude/hooks/self-test.sh`. If any fail, run `/fix-infra` immediately.
 
 ## 2. Spawn Supervisor
-Use the Agent tool to spawn the `supervisor` agent. It will verify progress, test results, architecture, and triage every finding as STOP, PARALLEL, or SCHEDULE.
+Use the Agent tool to spawn the `supervisor` agent (sonnet, maxTurns 15). It will verify progress, test results, architecture, and triage every finding as STOP, PARALLEL, or SCHEDULE.
 
 ## 3. React to Triage
 
 Read the supervisor's report and act on each triage level:
 
 ### STOP items
-**You must fix these before doing anything else.** Either:
-- Fix directly if simple (e.g., a one-line compilation error you introduced)
-- Spawn the infra-fixer agent if it's infrastructure (hooks, rules, skills)
-- For code issues: fix them yourself — you are the PM, this is Priority-0
+**Fix before doing anything else.** Either:
+- Fix directly if simple (e.g., a one-line compilation error)
+- Spawn the infra-fixer agent if it's infrastructure
+- For code issues: fix them yourself — Priority-0
 
-Do NOT proceed to any other work until all STOP items are resolved. Re-run `/test` after fixing to confirm.
+Do NOT proceed until all STOP items are resolved. Re-run `/test` after fixing.
 
 ### PARALLEL items
-Spawn a background agent to fix these while you continue with task work:
-```
-Use Agent tool with:
-  - description: "Fix: <issue description>"
-  - model: sonnet
-  - isolation: worktree
-  - run_in_background: true
-```
-The background agent fixes the issue in a worktree. When it completes, review and merge its changes.
+Spawn a **sonnet** background agent to fix these in a worktree while you continue.
 
 ### SCHEDULE items
-These are logged to `docs/issues.md` by the supervisor. No immediate action needed — they'll be addressed in future tasks or sessions.
+Logged to `docs/issues.md` by the supervisor. No immediate action.
 
-## 4. Reset Gate
-After handling STOP items (or if there are none):
+## 4. Spawn Adversarial (WPX mandatory)
+After supervision, always spawn the adversarial agent in background to test recent changes:
+```
+Agent tool: subagent_type=adversarial, run_in_background=true, model=sonnet
+```
+Then record the adversarial run:
 ```bash
+cat /tmp/al-edit-count > /tmp/al-adversarial-last-run
+```
+
+## 5. Write Supervision Proof & Reset Gate
+```bash
+# Tamper-resistant marker: commit hash + timestamp + edit count
+echo "$(date +%s) $(git rev-parse HEAD 2>/dev/null) edits=$(cat /tmp/al-edit-count 2>/dev/null)" > /tmp/al-supervision-proof
 echo 0 > /tmp/al-edit-count
 ```
 
-## 5. Report to User
-Summarize: what was found, what was fixed, what's running in background, what was scheduled. Then continue with the current task.
+## 6. Report to User
+One-line summary: findings count, what was fixed, what's running in background. Then continue with current task.

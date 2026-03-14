@@ -4,4 +4,7 @@
 //! Analysis libraries (al-syntax, al-symbols, al-semantic) are standalone dependencies.
 
 pub mod errors;
+pub mod launch;
+pub mod project;
+pub mod toolchain;
 pub mod workspace;

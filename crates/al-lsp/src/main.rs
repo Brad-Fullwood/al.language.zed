@@ -128,8 +128,23 @@ async fn main() {
 
     if args.iter().any(|a| a == "--dap") {
         // DAP mode
-        let toolchain = al_discovery::find_toolchain().expect("ALTool not found");
-        let _ = al_dap::run_dap_server(&toolchain).await;
+        let toolchain = al_core::toolchain::find_toolchain().expect("ALTool not found");
+        // Convert al_core::AlToolchain → al_discovery::AlToolchain for al-dap boundary
+        let discovery_tc = al_discovery::AlToolchain {
+            alc: toolchain.alc.clone(),
+            aldoc: toolchain.aldoc.clone(),
+            code_analysis: toolchain.code_analysis.clone(),
+            analyzers: al_discovery::AnalyzerPaths {
+                code_cop: toolchain.analyzers.code_cop.clone(),
+                app_source_cop: toolchain.analyzers.app_source_cop.clone(),
+                ui_cop: toolchain.analyzers.ui_cop.clone(),
+                per_tenant_cop: toolchain.analyzers.per_tenant_cop.clone(),
+                common: toolchain.analyzers.common.clone(),
+            },
+            dotnet_root: toolchain.dotnet_root.clone(),
+            version: toolchain.version.clone(),
+        };
+        let _ = al_dap::run_dap_server(&discovery_tc).await;
     } else {
         // LSP mode
         al_lsp::server::run_lsp().await;

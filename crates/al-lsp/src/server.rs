@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use al_discovery::{AlProject, AlToolchain};
+use al_core::project::AlProject;
+use al_core::toolchain::AlToolchain;
 use al_semantic::BuiltinType;
 use al_symbols::SymbolIndex;
 use al_syntax::AlParser;
@@ -233,7 +234,22 @@ impl AlServer {
             return Some(write_guard.downgrade());
         }
 
-        match al_semantic::SemanticBridge::new(&toolchain) {
+        // Convert al_core::AlToolchain → al_discovery::AlToolchain for al-semantic boundary
+        let discovery_tc = al_discovery::AlToolchain {
+            alc: toolchain.alc.clone(),
+            aldoc: toolchain.aldoc.clone(),
+            code_analysis: toolchain.code_analysis.clone(),
+            analyzers: al_discovery::AnalyzerPaths {
+                code_cop: toolchain.analyzers.code_cop.clone(),
+                app_source_cop: toolchain.analyzers.app_source_cop.clone(),
+                ui_cop: toolchain.analyzers.ui_cop.clone(),
+                per_tenant_cop: toolchain.analyzers.per_tenant_cop.clone(),
+                common: toolchain.analyzers.common.clone(),
+            },
+            dotnet_root: toolchain.dotnet_root.clone(),
+            version: toolchain.version.clone(),
+        };
+        match al_semantic::SemanticBridge::new(&discovery_tc) {
             Ok(bridge) => {
                 tracing::info!("Semantic bridge initialized (lazy)");
                 *write_guard = Some(bridge);
