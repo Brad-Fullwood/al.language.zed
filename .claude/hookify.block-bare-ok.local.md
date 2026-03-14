@@ -8,8 +8,8 @@ conditions:
     operator: regex_match
     pattern: \.rs$
   - field: new_text
-    operator: regex_match
-    pattern: ^\s*Ok\(\(\)\)\s*$
+    operator: contains
+    pattern: Ok(())
 ---
 
 **Bare `Ok(())` detected**
