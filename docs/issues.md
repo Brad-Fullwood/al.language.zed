@@ -23,4 +23,18 @@ Run `/fix-infra` with the issue number, or spawn the infra-fixer agent directly.
 
 ## Open Issues
 
-_(none yet — issues will be logged here as agents encounter them)_
+### ISSUE-001: disable-model-invocation blocks Skill tool invocation
+- **Reporter**: main
+- **Date**: 2026-03-14
+- **Category**: skill
+- **Severity**: bug
+- **Description**: `disable-model-invocation: true` on skills blocks Skill tool invocation, not just auto-triggering. Removed from /start-work, /pof, /audit. These skills need to be callable by agents and the Skill tool, not just by user typing the slash command. Fix applied immediately — flag removed from all three skills.
+- **Status**: fixed
+
+### ISSUE-002: Supervisor blocks on pre-existing issues, preventing WP1 start
+- **Reporter**: main
+- **Date**: 2026-03-14
+- **Category**: agent
+- **Severity**: improvement
+- **Description**: Supervisor correctly identifies pre-existing issues (8 test failures in data_driven, 3 clippy errors in al-symbols, PoF placeholder entry) as blocking. These are application bugs predating the infrastructure work, not regressions. The supervisor/start-work flow needs guidance on distinguishing pre-existing baseline state from regressions — currently it blocks on everything, which would prevent WP1 from starting even though those failures exist in the committed baseline. Consider: (a) establishing a baseline test count at session start and only blocking on regressions, or (b) having the supervisor note known pre-existing failures separately from new regressions.
+- **Status**: open

@@ -1,7 +1,6 @@
 ---
 name: start-work
 description: "Initialize a work session: run supervision, find the next task, begin implementation. Use at the start of every session."
-disable-model-invocation: true
 allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Agent
 ---
 

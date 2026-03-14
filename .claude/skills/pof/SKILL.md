@@ -2,7 +2,6 @@
 name: pof
 description: "Create a Proof of Functionality entry in docs/proof_of_functionality.toml"
 argument-hint: "<WP name> <task ID>"
-disable-model-invocation: true
 allowed-tools: Read, Edit
 ---
 

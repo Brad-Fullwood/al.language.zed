@@ -2,7 +2,6 @@
 name: audit
 description: "Run milestone audit at end of Work Package"
 argument-hint: "<WP number and name>"
-disable-model-invocation: true
 context: fork
 agent: auditor
 allowed-tools: Bash, Read, Grep, Glob, Edit
