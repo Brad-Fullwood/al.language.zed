@@ -30,7 +30,7 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
     match al_core::toolchain::find_toolchain() {
         Ok(tc) => {
             info!(version = %tc.version, "Found AL toolchain");
-            *server.toolchain.write().await = Some(tc.clone());
+            *server.workspace.toolchain.write().await = Some(tc.clone());
 
             // Load builtins + error codes from disk cache (no bridge needed, <1ms)
             server.load_caches_from_disk(&tc.version).await;
@@ -79,10 +79,10 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
 
             // Load .alpackages / cached packages
             if !project.packages.is_empty() {
-                let loaded = server.symbols.load_packages(&project.packages);
+                let loaded = server.workspace.symbols.load_packages(&project.packages);
                 info!(
                     loaded = loaded.len(),
-                    total_symbols = server.symbols.len(),
+                    total_symbols = server.workspace.symbols.len(),
                     "Loaded symbol packages"
                 );
             }
@@ -91,9 +91,9 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
             check_source_availability(server, &project.packages).await;
 
             // Load runtime enum definitions (compiler built-ins not in any package)
-            server.symbols.load_runtime_enums();
+            server.workspace.symbols.load_runtime_enums();
 
-            *server.project.write().await = Some(project.clone());
+            *server.workspace.project.write().await = Some(project.clone());
 
             // 5. Scan workspace for .al files
             scan_workspace_files(server, &project.root);
@@ -128,7 +128,7 @@ async fn check_source_availability(server: &AlServer, packages: &[PathBuf]) {
     if no_source.is_empty() {
         // All packages have source — allow fallback unconditionally (shouldn't be needed)
         server
-            .outline_fallback_approved
+            .workspace.outline_fallback_approved
             .store(true, std::sync::atomic::Ordering::Relaxed);
         return;
     }
@@ -161,7 +161,7 @@ async fn check_source_availability(server: &AlServer, packages: &[PathBuf]) {
                 "User approved symbol outline generation for packages without source"
             );
             server
-                .outline_fallback_approved
+                .workspace.outline_fallback_approved
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         _ => {
@@ -252,36 +252,8 @@ async fn download_symbols_from_server(
                 c.show_message(tower_lsp::lsp_types::MessageType::INFO, m).await;
             });
         });
-    // Convert al_core types → al_discovery types for al-symbols boundary
-    let discovery_config = al_discovery::launch::BcServerConfig {
-        name: config.name.clone(),
-        environment_type: match config.environment_type {
-            al_core::launch::EnvironmentType::OnPrem => al_discovery::launch::EnvironmentType::OnPrem,
-            al_core::launch::EnvironmentType::Sandbox => al_discovery::launch::EnvironmentType::Sandbox,
-            al_core::launch::EnvironmentType::Production => al_discovery::launch::EnvironmentType::Production,
-        },
-        server: config.server.clone(),
-        server_instance: config.server_instance.clone(),
-        port: config.port,
-        environment_name: config.environment_name.clone(),
-        tenant: config.tenant.clone(),
-        authentication: match config.authentication {
-            al_core::launch::AuthMethod::Windows => al_discovery::launch::AuthMethod::Windows,
-            al_core::launch::AuthMethod::UserPassword => al_discovery::launch::AuthMethod::UserPassword,
-            al_core::launch::AuthMethod::AAD => al_discovery::launch::AuthMethod::AAD,
-        },
-    };
-    let discovery_deps: Vec<al_discovery::AppDependency> = deps
-        .iter()
-        .map(|d| al_discovery::AppDependency {
-            id: d.id.clone(),
-            name: d.name.clone(),
-            publisher: d.publisher.clone(),
-            version: d.version.clone(),
-        })
-        .collect();
-    let client = al_symbols::bc_server::BcServerClient::new(discovery_config, message_sink);
-    let results = client.download_all(&discovery_deps, &dest).await;
+    let client = al_symbols::bc_server::BcServerClient::new(config.clone(), message_sink);
+    let results = client.download_all(deps, &dest).await;
 
     let mut downloaded = Vec::new();
     for (i, result) in results.into_iter().enumerate() {
@@ -369,7 +341,7 @@ async fn download_packages_nuget(
 ///
 /// Downloads symbols from the specified source and reloads the symbol index.
 pub(crate) async fn download_symbols_command(server: &AlServer, source: DownloadSource) {
-    let project = server.project.read().await.clone();
+    let project = server.workspace.project.read().await.clone();
     let Some(project) = project else {
         warn!("No AL project found — cannot download symbols");
         server
@@ -421,11 +393,11 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
     }
 
     // Reload symbol index
-    let loaded = server.symbols.load_packages(&packages);
-    server.symbols.load_runtime_enums();
+    let loaded = server.workspace.symbols.load_packages(&packages);
+    server.workspace.symbols.load_runtime_enums();
     info!(
         loaded = loaded.len(),
-        total_symbols = server.symbols.len(),
+        total_symbols = server.workspace.symbols.len(),
         source = source_name,
         "Reloaded symbol packages after download"
     );
@@ -438,7 +410,7 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
                 "Downloaded {} packages from {} ({} symbols)",
                 loaded.len(),
                 source_name,
-                server.symbols.len()
+                server.workspace.symbols.len()
             ),
         )
         .await;
@@ -498,11 +470,11 @@ fn scan_dir_recursive(dir: &Path, server: &AlServer, count: &mut usize, depth: u
                     let result = AlParser::parse_quick(&content);
                     if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &content) {
                         let obj_name = obj_info.name.to_lowercase();
-                        server.workspace_objects.insert(obj_name.clone(), path.clone());
-                        server.file_to_object.insert(path.clone(), obj_name);
+                        server.workspace.workspace_objects.insert(obj_name.clone(), path.clone());
+                        server.workspace.file_to_object.insert(path.clone(), obj_name);
                     }
                 }
-                server.workspace_files.insert(path, content);
+                server.workspace.workspace_files.insert(path, content);
                 *count += 1;
             }
         }
@@ -518,9 +490,9 @@ pub(crate) fn handle_workspace_symbol(
 
     // Search symbol index
     let entries = if query.is_empty() {
-        server.symbols.search("", 50)
+        server.workspace.symbols.search("", 50)
     } else {
-        server.symbols.search(query, 50)
+        server.workspace.symbols.search(query, 50)
     };
 
     #[allow(deprecated)]
@@ -558,7 +530,7 @@ pub(crate) fn handle_workspace_symbol(
 
     // Search workspace files using the object name index
     let query_lower = query.to_lowercase();
-    for ws_entry in server.workspace_objects.iter() {
+    for ws_entry in server.workspace.workspace_objects.iter() {
         let obj_name_lower = ws_entry.key();
         let file_path = ws_entry.value();
 
@@ -566,7 +538,7 @@ pub(crate) fn handle_workspace_symbol(
             continue;
         }
 
-        if let Some(file_text_entry) = server.workspace_files.get(file_path) {
+        if let Some(file_text_entry) = server.workspace.workspace_files.get(file_path) {
             let file_text = file_text_entry.value();
             let result = AlParser::parse_quick(file_text);
 

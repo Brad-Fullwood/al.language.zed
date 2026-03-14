@@ -108,7 +108,7 @@ impl App {
 
     fn init_workspace(&mut self) -> Result<(), Box<dyn Error>> {
         let root = std::env::current_dir()?;
-        if let Ok(project) = al_discovery::find_project(&root) {
+        if let Ok(project) = al_protocol::project::find_project(&root) {
             let loaded = self.symbols.load_packages(&project.packages);
             
             // Extract unique package names directly from loaded data

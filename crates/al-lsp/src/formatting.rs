@@ -10,7 +10,7 @@ pub(crate) fn handle_formatting(
     uri: &Url,
     options: &FormattingOptions,
 ) -> Option<Vec<TextEdit>> {
-    let text = server.documents.get_text(uri)?;
+    let text = server.workspace.documents.get_text(uri)?;
 
     let format_options = al_syntax::FormatOptions {
         tab_size: options.tab_size as usize,

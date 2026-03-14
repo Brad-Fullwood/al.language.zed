@@ -1,174 +1,23 @@
-# Agent-Optimized Constraint Index
-# Machine-readable index of all architectural constraints.
-# Agents can query this file to find relevant rules without reading all docs.
-# Tags: architecture, testing, quality, performance, agentic, zed
+# Constraints Index
+# References hookify rules and project rules that enforce architecture boundaries.
+# This file is declarative — no executable code.
 
-[[constraints]]
-id = "ARCH-001"
-rule = "Thin adapters have zero compile-time dependency on al-core/al-syntax/al-symbols/al-semantic"
-tags = ["architecture"]
-crates = ["al-cli", "al-explorer", "al-mcp", "zed-al"]
-enforced_by = "hook:check-thin-adapter.sh"
-doc = ".claude/rules/thin-adapters.md"
+[architecture]
+description = "Crate dependency direction and layer isolation"
+enforced_by = ["hookify.block-adapter-cargo-deps", "hookify.block-adapter-rs-imports", "hookify.block-core-boundaries", "hookify.block-leaf-crate-boundaries"]
+context = [".claude/rules/architecture.md", ".claude/rules/code-boundaries.md", ".claude/rules/thin-adapters.md"]
 
-[[constraints]]
-id = "ARCH-002"
-rule = "al-lsp is the sole server binary. All analysis routes through al-lsp -> al-core"
-tags = ["architecture"]
-crates = ["al-lsp", "al-core"]
-enforced_by = "rule:architecture.md"
-doc = "docs/architecture.md"
+[analysis-libs]
+description = "al-syntax, al-symbols, al-semantic, al-diag are standalone — no upward deps"
+enforced_by = ["hookify.block-syntax-boundaries", "hookify.block-symbols-boundaries", "hookify.block-semantic-boundaries"]
+context = [".claude/rules/code-boundaries.md"]
 
-[[constraints]]
-id = "ARCH-003"
-rule = "One code path: CLI, Zed, MCP, Explorer all hit the same al-core query functions"
-tags = ["architecture"]
-crates = ["al-core"]
-enforced_by = "rule:architecture.md"
-doc = "docs/architecture.md"
+[testing]
+description = "Tests must run and pass before task completion"
+enforced_by = ["hookify.require-cargo-test-before-stop", "hookify.require-cargo-check-before-stop"]
+context = [".claude/rules/testing.md"]
 
-[[constraints]]
-id = "ARCH-004"
-rule = "Analysis libraries (al-syntax, al-symbols, al-semantic, al-diag) have no upward dependencies"
-tags = ["architecture"]
-crates = ["al-syntax", "al-symbols", "al-semantic", "al-diag"]
-enforced_by = "hook:enforce-boundaries.sh + agent:guardian"
-doc = "docs/crates-map.md"
-
-[[constraints]]
-id = "ARCH-005"
-rule = "Circular dependencies are forbidden"
-tags = ["architecture"]
-enforced_by = "agent:guardian"
-doc = "docs/crates-map.md"
-
-[[constraints]]
-id = "ARCH-006"
-rule = "JSON-RPC protocol types live in al-protocol (standalone types-only crate)"
-tags = ["architecture"]
-crates = ["al-protocol", "al-cli", "al-explorer", "al-mcp", "al-lsp"]
-enforced_by = "manual"
-doc = "docs/crates-map.md"
-
-[[constraints]]
-id = "BOUND-001"
-rule = "No duplicate types across crate boundaries. Import from the owner crate."
-tags = ["architecture", "quality"]
-enforced_by = "agent:guardian"
-doc = ".claude/rules/code-boundaries.md"
-
-[[constraints]]
-id = "BOUND-002"
-rule = "Errors must surface to user via window/showMessage or diagnostics. Silent failure is a bug."
-tags = ["quality"]
-enforced_by = "manual"
-doc = ".claude/rules/code-boundaries.md"
-
-[[constraints]]
-id = "BOUND-003"
-rule = "Banned: .ok()? without logging+notification, unwrap_or_default() on meaningful failures"
-tags = ["quality"]
-enforced_by = "hook:enforce-boundaries.sh (partial: .ok()? only)"
-doc = ".claude/rules/code-boundaries.md"
-
-[[constraints]]
-id = "TEST-001"
-rule = "Every completed task requires a dual-pass PoF entry (adversarial + fidelity)"
-tags = ["testing"]
-enforced_by = "skill:pof, agent:auditor"
-doc = ".claude/rules/testing.md"
-
-[[constraints]]
-id = "TEST-002"
-rule = "Every new LSP handler needs a Zed simulation test before merge"
-tags = ["testing", "zed"]
-crates = ["al-lsp", "al-test-harness"]
-enforced_by = "agent:auditor"
-doc = ".claude/rules/zed-fidelity.md"
-
-[[constraints]]
-id = "TEST-003"
-rule = "Every bug fix needs a regression test reproducing the original bug"
-tags = ["testing"]
-enforced_by = "agent:auditor"
-doc = ".claude/rules/testing.md"
-
-[[constraints]]
-id = "TEST-004"
-rule = "If harness passes but Zed fails, fix the harness first (Priority-0)"
-tags = ["testing", "zed"]
-crates = ["al-test-harness"]
-enforced_by = "manual"
-doc = ".claude/rules/zed-fidelity.md"
-
-[[constraints]]
-id = "PERF-001"
-rule = "Hover (cached) < 500us, completion < 3ms, workspace symbol < 5ms"
-tags = ["performance"]
-crates = ["al-core"]
-enforced_by = "benchmark"
-doc = "docs/performance-plan.md"
-
-[[constraints]]
-id = "PERF-002"
-rule = "Initial indexing (typical) < 2s, incremental reindex < 50ms"
-tags = ["performance"]
-crates = ["al-core", "al-symbols"]
-enforced_by = "benchmark"
-doc = "docs/performance-plan.md"
-
-[[constraints]]
-id = "PERF-003"
-rule = "WASM extension init < 10MB memory, daemon idle RSS < 80MB"
-tags = ["performance"]
-crates = ["zed-al", "al-lsp"]
-enforced_by = "benchmark"
-doc = "docs/performance-plan.md"
-
-[[constraints]]
-id = "PERF-004"
-rule = "CLI daemon round-trip < 10ms, token density > 10x vs raw file reads"
-tags = ["performance", "agentic"]
-crates = ["al-cli", "al-mcp"]
-enforced_by = "benchmark"
-doc = "docs/performance-plan.md"
-
-[[constraints]]
-id = "AGENT-001"
-rule = "JSON output uses short keys: k, n, id, f, l, c, t, pkg. Omit null/empty fields."
-tags = ["agentic"]
-crates = ["al-cli", "al-mcp"]
-enforced_by = "rule:agentic-output.md"
-doc = "docs/agentic-schemas.md"
-
-[[constraints]]
-id = "AGENT-002"
-rule = "Every CLI command must have an MCP equivalent using the same JSON schema"
-tags = ["agentic"]
-crates = ["al-cli", "al-mcp"]
-enforced_by = "rule:agentic-output.md"
-doc = "docs/agentic-schemas.md"
-
-[[constraints]]
-id = "ZED-001"
-rule = "file_uri() must percent-encode spaces for URI matching"
-tags = ["zed"]
-crates = ["al-lsp", "al-test-harness"]
-enforced_by = "test"
-doc = ".claude/rules/zed-fidelity.md"
-
-[[constraints]]
-id = "ZED-002"
-rule = "Publish empty diagnostic array when errors are fixed"
-tags = ["zed"]
-crates = ["al-lsp"]
-enforced_by = "test"
-doc = ".claude/rules/zed-fidelity.md"
-
-[[constraints]]
-id = "ZED-003"
-rule = "Extension must initialize with < 10MB WASM memory"
-tags = ["zed", "performance"]
-crates = ["zed-al"]
-enforced_by = "test"
-doc = ".claude/rules/zed-fidelity.md"
+[code-quality]
+description = "No bare Ok(()) — always propagate meaningful results"
+enforced_by = ["hookify.block-bare-ok"]
+context = []

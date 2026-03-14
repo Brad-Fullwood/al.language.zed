@@ -1,0 +1,15 @@
+# Deferred Issues
+# Known failures that are acceptable in the current phase.
+# These tasks depend on daemon mode (T303) which is not yet implemented.
+
+[T304]
+title = "al-cli as JSON-RPC Client"
+reason = "Requires T303 (daemon mode). al-cli currently calls al-core directly. Will be rewritten to connect to al-lsp daemon via JSON-RPC."
+acceptable_failures = ["al-cli imports al-core directly", "no daemon client code exists yet"]
+blocked_by = "T303"
+
+[T305]
+title = "al-mcp as JSON-RPC Client"
+reason = "Requires T303 (daemon mode). al-mcp currently calls al-core directly. Will be rewritten to connect to al-lsp daemon via JSON-RPC."
+acceptable_failures = ["al-mcp imports al-core directly", "no daemon client code exists yet"]
+blocked_by = "T303"

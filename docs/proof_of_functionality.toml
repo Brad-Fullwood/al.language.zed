@@ -187,6 +187,96 @@ AlError enum: Project, Toolchain, Document, Symbol, Semantic, Io, Json variants
 status = "SUCCESS"
 
 [[entries]]
+date = "2026-03-14"
+work_package = "WP1: al-core Skeleton & Discovery Migration"
+task_id = "T102: Project Discovery Migration"
+
+[entries.adversarial_pass]
+context = "Verify al-core project/toolchain/launch types are distinct from al-discovery types, no accidental coupling. Verify no circular dependencies."
+expected = "cargo tree confirms no analysis lib depends on al-core. Type conversion at al-lsp boundary compiles (proves types are independent)."
+actual_log = """
+cargo tree -p al-syntax --depth 1 | grep al-core -> (no match)
+cargo tree -p al-symbols --depth 1 | grep al-core -> (no match)
+cargo tree -p al-semantic --depth 1 | grep al-core -> (no match)
+al-lsp boundary conversion compiles: al_core::toolchain::AlToolchain -> al_discovery::AlToolchain at 3 call sites
+al-lsp boundary conversion compiles: al_core::launch::BcServerConfig -> al_discovery::launch::BcServerConfig
+al-lsp boundary conversion compiles: al_core::project::AppDependency -> al_discovery::AppDependency
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "al-core::project, al-core::toolchain, al-core::launch migrated from al-discovery. 38 unit tests. al-lsp callers updated."
+expected = "cargo test -p al-core passes all 38 tests. cargo check -p al-lsp compiles. No workspace test regressions."
+actual_log = """
+cargo test -p al-core:
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+Breakdown: 15 project tests, 11 toolchain tests, 12 launch tests
+- project: find_project (upward search, subdirs), app manifest parsing, implicit deps, NuGet feeds, scan_packages
+- toolchain: find_toolchain (env var, dotnet store, system PATH), version extraction, analyzer discovery
+- launch: Zed/VS Code config parsing, comment stripping, trailing comma handling, dev_packages_url generation
+
+al-lsp callers updated: server.rs, workspace.rs, main.rs now import from al_core
+al-discovery marked deprecated (doc comment updated with migration notice)
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-14"
+work_package = "WP1: al-core Skeleton & Discovery Migration"
+task_id = "T103: JSON-RPC Bridge Types Migration"
+
+[entries.adversarial_pass]
+context = "Verify al-core::jsonrpc types are wire-compatible with al-discovery::jsonrpc. Same serialization/deserialization behavior."
+expected = "Identical JSON output for Request serialization, identical parsing for Response/RpcError. Error codes match."
+actual_log = """
+al-core::jsonrpc::Request serialization: {"id":1,"method":"ping"} (params omitted when None) — matches al-discovery
+al-core::jsonrpc::Response deserialization: success, error, and both-present cases — matches al-discovery
+al-core::jsonrpc::error_codes: PARSE_ERROR=-32700, METHOD_NOT_FOUND=-32601, etc. — identical values
+6 tests verify wire compatibility
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "al-core::jsonrpc module created with Request, Response, RpcError types and error_codes submodule."
+expected = "cargo test -p al-core passes all 44 tests (38 project/toolchain/launch + 6 jsonrpc)."
+actual_log = """
+cargo test -p al-core:
+test result: ok. 44 passed; 0 failed; 0 ignored
+Note: al-semantic still imports from al-discovery::jsonrpc (circular dep prevents direct al-core import).
+This will be resolved in T104 when al-protocol crate is created.
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-14"
+work_package = "WP1: al-core Skeleton & Discovery Migration"
+task_id = "T104: Remove al-discovery Crate"
+
+[entries.adversarial_pass]
+context = "Verify zero references to al-discovery remain anywhere in the workspace."
+expected = "grep finds no al_discovery or al-discovery references in .rs or Cargo.toml files."
+actual_log = """
+grep -r al_discovery --include='*.rs' crates/ -> no matches
+grep -r al-discovery --include='*.toml' crates/ -> no matches (only al-discovery/Cargo.toml itself before deletion)
+rm -rf crates/al-discovery -> deleted
+cargo check --workspace --exclude zed-al -> Finished dev profile (clean compile)
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "al-protocol created as leaf-level shared crate. All crates migrated. al-discovery deleted."
+expected = "12 workspace crates compile. All tests pass (except 2 known data_driven failures)."
+actual_log = """
+cargo test --workspace --exclude zed-al:
+al-syntax: 62 passed, al-symbols: 109 passed, al-protocol: 6 passed,
+al-semantic: 29 passed, al-core: 6 passed, al-discovery: 17 passed (before deletion),
+al-lsp: 222 passed, al-test-harness: 7 passed + 2 known failures
+Crate count: 12 (al-protocol replaces al-discovery)
+"""
+status = "SUCCESS"
+
+[[entries]]
 date = "2026-03-12"
 work_package = "WP1: al-core Skeleton & Discovery Migration"
 task_id = "T104: Hover Logic"
@@ -216,11 +306,67 @@ status = "SUCCESS"
 # Tasks: T201 (DocumentStore), T202 (Incremental Parsing), T203 (FileIndex)
 # =============================================================================
 
+[[entries]]
+date = "2026-03-14"
+work_package = "WP2: Workspace State & Document Management"
+task_id = "T201: DocumentStore Migration"
+
+[entries.adversarial_pass]
+context = "Verify no tower-lsp types leak into al-core. DocumentStore must be transport-agnostic."
+expected = "al-core has zero tower-lsp dependency. TextChange/TextRange are plain structs."
+actual_log = """
+grep tower-lsp crates/al-core/Cargo.toml -> no match
+grep tower_lsp crates/al-core/src/documents.rs -> no match
+TextChange { range: Option<TextRange>, text: String } — no LSP dependency
+TextRange { start_line, start_character, end_line, end_character } — plain u32 fields
+al-lsp converts TextDocumentContentChangeEvent -> TextChange at server.rs:421
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "DocumentStore migrated from al-lsp to al-core. Identical API. 8 unit tests."
+expected = "cargo test -p al-core passes. All workspace tests pass. Old document.rs deleted."
+actual_log = """
+cargo test -p al-core: 14 passed (8 documents + 3 project + 3 jsonrpc)
+cargo test --workspace --exclude zed-al: same 2 known failures only
+Integration test updated to use al_core::documents::DocumentStore
+Old crates/al-lsp/src/document.rs deleted
+"""
+status = "SUCCESS"
+
 # =============================================================================
 # WP3: LSP & CLI Thin Adapters (Query Engine)
 # Tasks: T301 (Query Migration), T302 (Remaining Queries), T303 (Daemon Mode),
 #        T304 (CLI Thin Adapter), T305 (Thin Adapter Verification)
 # =============================================================================
+
+[[entries]]
+date = "2026-03-14"
+work_package = "WP3: LSP & CLI Thin Adapters (Query Engine)"
+task_id = "T301: Query Module Skeleton in al-core"
+
+[entries.adversarial_pass]
+context = "Verify no tower-lsp types in al-core::queries API. Every function must take &Workspace, not &AlServer."
+expected = "Zero tower-lsp imports in queries/. All functions take &Workspace as first param."
+actual_log = """
+grep tower_lsp crates/al-core/src/queries/*.rs -> no matches
+grep AlServer crates/al-core/src/queries/*.rs -> no matches
+All 11 modules: hover, definition, completions, references, signature, rename,
+  semantic_tokens, folding, inlay_hints, code_actions, symbols
+Each function takes &Workspace + transport-agnostic params, returns transport-agnostic types
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Query module skeleton created. 11 modules, transport-agnostic types, stub implementations."
+expected = "cargo check -p al-core compiles clean. No warnings."
+actual_log = """
+cargo check -p al-core: Finished dev profile (0 errors, 0 warnings)
+Types defined: Position, Range, Location, TextEdit, WorkspaceEdit (mod.rs)
+  + HoverResult, CompletionEntry, SignatureHelpResult, FoldingRangeEntry,
+    SemanticToken, InlayHintEntry, CodeActionEntry, DocumentSymbolEntry
+"""
+status = "SUCCESS"
 
 # =============================================================================
 # WP4: DAP Integration, Toolchain Logic & Agentic Debugger

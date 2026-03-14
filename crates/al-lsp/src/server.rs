@@ -1,12 +1,8 @@
 //! AlServer state and LSP lifecycle.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use al_core::project::AlProject;
-use al_core::toolchain::AlToolchain;
-use al_semantic::BuiltinType;
-use al_symbols::SymbolIndex;
+use al_core::workspace::Workspace;
 use al_syntax::AlParser;
 use dashmap::DashMap;
 use tokio::sync::RwLock;
@@ -17,7 +13,6 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use crate::completions;
 use crate::definition;
 use crate::diagnostics;
-use crate::document::DocumentStore;
 use crate::formatting;
 use crate::handlers;
 use crate::hover;
@@ -80,42 +75,17 @@ fn completion_kind_from_str(s: &str) -> CompletionItemKind {
 /// The AL language server.
 pub struct AlServer {
     pub(crate) client: Client,
-    pub(crate) symbols: Arc<SymbolIndex>,
-    pub(crate) semantic: RwLock<Option<al_semantic::SemanticBridge>>,
-    pub(crate) toolchain: RwLock<Option<AlToolchain>>,
-    pub(crate) project: RwLock<Option<AlProject>>,
-    pub(crate) documents: DocumentStore,
-    pub(crate) workspace_files: DashMap<PathBuf, String>,
-    /// Builtins loaded once at init, read-only afterward. Arc for cheap cloning.
-    pub(crate) builtins: std::sync::RwLock<Arc<Vec<BuiltinType>>>,
-    /// Compiler error codes — code → description mapping for diagnostic enrichment.
-    pub(crate) error_codes: std::sync::RwLock<Arc<DashMap<String, String>>>,
-    /// Object name -> file path index for fast workspace lookups.
-    pub(crate) workspace_objects: DashMap<String, PathBuf>,
-    /// Reverse index: file path -> object name (for O(1) cleanup in did_close).
-    pub(crate) file_to_object: DashMap<PathBuf, String>,
+    pub(crate) workspace: Workspace,
     /// Root URI from initialize params, used in initialized().
     pub(crate) root_uri: RwLock<Option<Url>>,
-    /// Whether the user approved generating symbol outlines for packages without source.
-    pub(crate) outline_fallback_approved: std::sync::atomic::AtomicBool,
 }
 
 impl AlServer {
     pub(crate) fn new(client: Client) -> Self {
         Self {
             client,
-            symbols: Arc::new(SymbolIndex::new()),
-            semantic: RwLock::new(None),
-            toolchain: RwLock::new(None),
-            project: RwLock::new(None),
-            documents: DocumentStore::new(),
-            workspace_files: DashMap::new(),
-            builtins: std::sync::RwLock::new(Arc::new(Vec::new())),
-            error_codes: std::sync::RwLock::new(Arc::new(DashMap::new())),
-            workspace_objects: DashMap::new(),
-            file_to_object: DashMap::new(),
+            workspace: Workspace::new(),
             root_uri: RwLock::new(None),
-            outline_fallback_approved: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -125,42 +95,42 @@ impl AlServer {
         let result = AlParser::parse_quick(text);
 
         // Cache the tree so publish_diagnostics can reuse it
-        let version = self.documents.get_version(uri).unwrap_or(0);
-        self.documents.cache_tree(uri, version, result.tree.clone());
+        let version = self.workspace.documents.get_version(uri).unwrap_or(0);
+        self.workspace.documents.cache_tree(uri, version, result.tree.clone());
 
         if let Ok(path) = uri.to_file_path() {
-            self.workspace_files.insert(path.clone(), text.to_string());
+            self.workspace.workspace_files.insert(path.clone(), text.to_string());
             if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, text) {
                 let obj_name = obj_info.name.to_lowercase();
-                self.workspace_objects.insert(obj_name.clone(), path.clone());
-                self.file_to_object.insert(path, obj_name);
+                self.workspace.workspace_objects.insert(obj_name.clone(), path.clone());
+                self.workspace.file_to_object.insert(path, obj_name);
             }
         }
     }
 
     /// Load builtins and error codes from disk cache (fast path, no bridge needed).
     pub(crate) async fn load_caches_from_disk(&self, version: &str) {
-        if self.builtins.read().unwrap().is_empty() {
+        if self.workspace.builtins.read().unwrap().is_empty() {
             if let Some(cached) = al_semantic::cache::read_builtins(version) {
                 tracing::info!(count = cached.len(), "Loaded built-in types from disk cache");
-                *self.builtins.write().unwrap() = Arc::new(cached);
+                *self.workspace.builtins.write().unwrap() = Arc::new(cached);
             }
         }
-        if self.error_codes.read().unwrap().is_empty() {
+        if self.workspace.error_codes.read().unwrap().is_empty() {
             if let Some(cached) = al_semantic::cache::read_error_codes(version) {
                 tracing::info!(count = cached.len(), "Loaded error codes from disk cache");
                 let map = DashMap::new();
                 for ec in cached {
                     map.insert(ec.code.clone(), ec.message.clone());
                 }
-                *self.error_codes.write().unwrap() = Arc::new(map);
+                *self.workspace.error_codes.write().unwrap() = Arc::new(map);
             }
         }
     }
 
     /// Ensure builtins are loaded. Tries disk cache first, then bridge.
     pub(crate) async fn ensure_builtins_loaded(&self) {
-        if !self.builtins.read().unwrap().is_empty() {
+        if !self.workspace.builtins.read().unwrap().is_empty() {
             return;
         }
 
@@ -170,7 +140,7 @@ impl AlServer {
                 match bridge.builtin_types().await {
                     Ok(types) => {
                         tracing::info!(count = types.len(), "Loaded built-in types via bridge");
-                        *self.builtins.write().unwrap() = Arc::new(types);
+                        *self.workspace.builtins.write().unwrap() = Arc::new(types);
                     }
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load built-in types via bridge");
@@ -182,7 +152,7 @@ impl AlServer {
 
     /// Ensure error codes are loaded. Tries disk cache first, then bridge.
     pub(crate) async fn ensure_error_codes_loaded(&self) {
-        if !self.error_codes.read().unwrap().is_empty() {
+        if !self.workspace.error_codes.read().unwrap().is_empty() {
             return;
         }
 
@@ -195,7 +165,7 @@ impl AlServer {
                         for ec in codes {
                             map.insert(ec.code.clone(), ec.message.clone());
                         }
-                        *self.error_codes.write().unwrap() = Arc::new(map);
+                        *self.workspace.error_codes.write().unwrap() = Arc::new(map);
                     }
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load error codes via bridge");
@@ -207,7 +177,7 @@ impl AlServer {
 
     /// Look up an error code description for diagnostic enrichment.
     pub(crate) fn error_code_description(&self, code: &str) -> Option<String> {
-        let map = self.error_codes.read().unwrap();
+        let map = self.workspace.error_codes.read().unwrap();
         map.get(code).map(|v| v.value().clone())
     }
 
@@ -219,37 +189,22 @@ impl AlServer {
     ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<al_semantic::SemanticBridge>>> {
         // Fast path: bridge already initialized
         {
-            let guard = self.semantic.read().await;
+            let guard = self.workspace.semantic.read().await;
             if guard.is_some() {
                 return Some(guard);
             }
         }
 
         // Slow path: initialize the bridge
-        let toolchain = self.toolchain.read().await.clone()?;
-        let mut write_guard = self.semantic.write().await;
+        let toolchain = self.workspace.toolchain.read().await.clone()?;
+        let mut write_guard = self.workspace.semantic.write().await;
 
         // Double-check after acquiring write lock (another task may have init'd)
         if write_guard.is_some() {
             return Some(write_guard.downgrade());
         }
 
-        // Convert al_core::AlToolchain → al_discovery::AlToolchain for al-semantic boundary
-        let discovery_tc = al_discovery::AlToolchain {
-            alc: toolchain.alc.clone(),
-            aldoc: toolchain.aldoc.clone(),
-            code_analysis: toolchain.code_analysis.clone(),
-            analyzers: al_discovery::AnalyzerPaths {
-                code_cop: toolchain.analyzers.code_cop.clone(),
-                app_source_cop: toolchain.analyzers.app_source_cop.clone(),
-                ui_cop: toolchain.analyzers.ui_cop.clone(),
-                per_tenant_cop: toolchain.analyzers.per_tenant_cop.clone(),
-                common: toolchain.analyzers.common.clone(),
-            },
-            dotnet_root: toolchain.dotnet_root.clone(),
-            version: toolchain.version.clone(),
-        };
-        match al_semantic::SemanticBridge::new(&discovery_tc) {
+        match al_semantic::SemanticBridge::new(&toolchain) {
             Ok(bridge) => {
                 tracing::info!("Semantic bridge initialized (lazy)");
                 *write_guard = Some(bridge);
@@ -412,7 +367,7 @@ impl LanguageServer for AlServer {
 
     async fn shutdown(&self) -> Result<()> {
         // Drop the semantic bridge (CLR shuts down with it)
-        let _ = self.semantic.write().await.take();
+        let _ = self.workspace.semantic.write().await.take();
         Ok(())
     }
 
@@ -423,7 +378,7 @@ impl LanguageServer for AlServer {
         let text = params.text_document.text.clone();
         tracing::info!(uri = %uri, len = text.len(), "did_open");
 
-        self.documents.open(uri.clone(), params.text_document.text);
+        self.workspace.documents.open(uri.clone(), params.text_document.text);
         self.update_workspace_index(&uri, &text);
 
         diagnostics::publish_diagnostics(self, &uri, &text).await;
@@ -433,9 +388,21 @@ impl LanguageServer for AlServer {
         let uri = params.text_document.uri.clone();
         tracing::debug!(uri = %uri, change_count = params.content_changes.len(), "did_change");
 
-        self.documents.apply_changes(&uri, &params.content_changes);
+        // Convert LSP types → al-core types at the boundary
+        let changes: Vec<al_core::documents::TextChange> = params.content_changes.iter().map(|c| {
+            al_core::documents::TextChange {
+                range: c.range.map(|r| al_core::documents::TextRange {
+                    start_line: r.start.line,
+                    start_character: r.start.character,
+                    end_line: r.end.line,
+                    end_character: r.end.character,
+                }),
+                text: c.text.clone(),
+            }
+        }).collect();
+        self.workspace.documents.apply_changes(&uri, &changes);
 
-        if let Some(text) = self.documents.get_text(&uri) {
+        if let Some(text) = self.workspace.documents.get_text(&uri) {
             self.update_workspace_index(&uri, &text);
             diagnostics::publish_diagnostics(self, &uri, &text).await;
         }
@@ -444,13 +411,13 @@ impl LanguageServer for AlServer {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         tracing::info!(uri = %uri, "did_close");
-        self.documents.close(&uri);
+        self.workspace.documents.close(&uri);
 
         if let Ok(path) = uri.to_file_path() {
-            self.workspace_files.remove(&path);
+            self.workspace.workspace_files.remove(&path);
             // O(1) removal via reverse index instead of O(N) retain
-            if let Some((_, obj_name)) = self.file_to_object.remove(&path) {
-                self.workspace_objects.remove(&obj_name);
+            if let Some((_, obj_name)) = self.workspace.file_to_object.remove(&path) {
+                self.workspace.workspace_objects.remove(&obj_name);
             }
         }
 
@@ -490,7 +457,7 @@ impl LanguageServer for AlServer {
         // Bridge fallback: if native returned nothing for a member access context,
         // try CodeAnalysis completions
         if result.is_none() {
-            if let Some(text) = self.documents.get_text(uri) {
+            if let Some(text) = self.workspace.documents.get_text(uri) {
                 let ctx = al_syntax::context::detect_context(&text, position);
                 if matches!(ctx, al_syntax::context::CompletionContext::MemberAccess) {
                     if let Some(items) = self.bridge_completions(uri, position).await {
@@ -732,19 +699,19 @@ impl LanguageServer for AlServer {
             }
             "al.lintFile" => {
                 if let Some(uri) = params.arguments.first().and_then(|v| serde_json::from_value::<Url>(v.clone()).ok()) {
-                    if let Some(text) = self.documents.get_text(&uri) {
+                    if let Some(text) = self.workspace.documents.get_text(&uri) {
                         diagnostics::publish_diagnostics(self, &uri, &text).await;
                     }
                 }
                 Ok(None)
             }
             "al.getStatus" => {
-                let has_bridge = self.semantic.read().await.is_some();
-                let has_toolchain = self.toolchain.read().await.is_some();
-                let indexed_symbols = self.symbols.len();
-                let workspace_files = self.workspace_files.len();
-                let workspace_objects = self.workspace_objects.len();
-                let builtins = self.builtins.read().unwrap().len();
+                let has_bridge = self.workspace.semantic.read().await.is_some();
+                let has_toolchain = self.workspace.toolchain.read().await.is_some();
+                let indexed_symbols = self.workspace.symbols.len();
+                let workspace_files = self.workspace.workspace_files.len();
+                let workspace_objects = self.workspace.workspace_objects.len();
+                let builtins = self.workspace.builtins.read().unwrap().len();
 
                 Ok(Some(serde_json::json!({
                     "version": env!("CARGO_PKG_VERSION"),

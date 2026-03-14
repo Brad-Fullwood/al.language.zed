@@ -24,8 +24,8 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
         tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: parsed");
 
         // Cache the tree for subsequent handler calls at this version
-        let version = server.documents.get_version(uri).unwrap_or(0);
-        server.documents.cache_tree(uri, version, result.tree.clone());
+        let version = server.workspace.documents.get_version(uri).unwrap_or(0);
+        server.workspace.documents.cache_tree(uri, version, result.tree.clone());
 
         // Syntax errors from tree-sitter
         for err in &result.errors {
@@ -58,7 +58,7 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
                 .to_file_path()
                 .unwrap_or_else(|_| PathBuf::from(uri.path()));
 
-            let package_cache = if let Some(project) = server.project.read().await.as_ref() {
+            let package_cache = if let Some(project) = server.workspace.project.read().await.as_ref() {
                 project.packages_dir.clone()
             } else {
                 PathBuf::from(".alpackages")

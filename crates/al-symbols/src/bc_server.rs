@@ -10,8 +10,8 @@ use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use al_discovery::launch::BcServerConfig;
-use al_discovery::AppDependency;
+use al_protocol::launch::BcServerConfig;
+use al_protocol::AppDependency;
 
 use crate::oauth;
 
@@ -147,7 +147,7 @@ impl BcServerClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::RequestBuilder, BcServerError> {
-        use al_discovery::launch::AuthMethod;
+        use al_protocol::launch::AuthMethod;
 
         match self.config.authentication {
             AuthMethod::UserPassword => {
@@ -195,7 +195,7 @@ impl BcServerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_discovery::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+    use al_protocol::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
     fn onprem_config() -> BcServerConfig {
         BcServerConfig {

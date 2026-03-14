@@ -11,7 +11,9 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
-use al_discovery::{find_project, find_toolchain, AlProject};
+use al_protocol::project::find_project;
+use al_protocol::toolchain::find_toolchain;
+use al_protocol::AlProject;
 use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
 #[cfg(test)]
 use al_syntax::lint::LintSeverity;
@@ -934,7 +936,7 @@ fn cmd_download_symbols(project_dir: Option<String>, source: Option<String>, jso
             })
             .collect();
 
-        let feeds = al_discovery::nuget_feeds();
+        let feeds = al_protocol::project::nuget_feeds();
         let nuget_feeds: Vec<al_symbols::NuGetFeed> = feeds
             .iter()
             .map(|f| al_symbols::NuGetFeed {
@@ -1724,7 +1726,7 @@ fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, json: bool) -> ExitCo
 }
 
 fn cmd_lint_semantic(file: Option<&str>, _all: bool, json: bool) -> ExitCode {
-    let tc = match al_discovery::find_toolchain() {
+    let tc = match al_protocol::toolchain::find_toolchain() {
         Ok(tc) => tc,
         Err(e) => {
             if json {
@@ -1765,7 +1767,7 @@ fn cmd_lint_semantic(file: Option<&str>, _all: bool, json: bool) -> ExitCode {
 
     // Find project for package cache path
     let cwd = std::env::current_dir().unwrap_or_default();
-    let packages_dir = match al_discovery::find_project(&cwd) {
+    let packages_dir = match al_protocol::project::find_project(&cwd) {
         Ok(p) => p.packages_dir,
         Err(_) => cwd.join(".alpackages"),
     };

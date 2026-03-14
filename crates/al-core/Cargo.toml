@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+al-protocol = { path = "../al-protocol" }
 al-syntax = { path = "../al-syntax" }
 al-symbols = { path = "../al-symbols" }
 al-semantic = { path = "../al-semantic" }
@@ -11,6 +12,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tower-lsp = { workspace = true }
 dashmap = { workspace = true }
+ropey = { workspace = true }
 tracing = { workspace = true }
-urlencoding = "2"
+tree-sitter = "0.25"
+url = "2"

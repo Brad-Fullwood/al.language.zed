@@ -1,59 +1,54 @@
 ---
 name: start-work
-description: "Initialize a work session: run supervision, find the next task, begin implementation. Use at the start of every session."
-allowed-tools: Bash, Read, Grep, Glob, Edit, Write, Agent
+description: Begin a work session — verify compilation, find next task from plan, start implementation with TDD
+user_invocable: true
 ---
 
-You are starting a work session. Follow these steps in order.
+# Start Work
 
-## Step 0: Quick Health Check
+You are beginning a work session on the Zed AL Extension project.
 
-Run these shell commands first (cheap, no agent needed):
+## Step 1: Health Check
+
+Run compilation check:
 ```bash
-cargo check --workspace --exclude zed-al 2>&1 | tail -5
-cargo test --workspace --exclude zed-al 2>&1 | tail -3
-bash .claude/hooks/self-test.sh 2>&1 | tail -3
+cargo check --workspace --exclude zed-al 2>&1 | tail -20
 ```
 
-If ALL pass: skip to Step 1 (no need for full supervision on a clean start).
-If ANY fail: run `/supervise` to triage and fix.
+If it fails, fix compilation errors before proceeding.
 
-## Step 1: Find Your Task
+## Step 2: Find Next Task
 
-Read `docs/plan.md` and `docs/progress.md`. Your task is the next unchecked item whose dependencies are all checked. Lowest task ID wins. Tell the user which task you're starting.
+Read `docs/progress.md` and `docs/plan.md`.
 
-## Step 2: Read Context
+In progress.md, find the first unchecked task (`- [ ]`). Cross-reference with plan.md to get:
+- Task ID and name
+- File ownership
+- Dependencies (verify they're complete)
+- Pass/fail criteria
 
-Read every file listed in the task's "Files" field. Read pass/fail criteria. Do not write code until you understand.
+If all tasks in the current WP are done, move to the next WP.
 
-## Step 3: Implement
+## Step 3: Announce
 
-Write the code. Hooks enforce constraints automatically. If blocked, read the error.
+Tell the user:
+- Which task you're starting (ID + name)
+- What it involves
+- Which files you'll touch
 
-## Step 4: Verify
+## Step 4: Implement
 
-1. Run `cargo test --workspace --exclude zed-al` directly (don't spawn an agent for this).
-2. Spawn adversarial agent in background: `Agent(subagent_type=adversarial, run_in_background=true)`
-3. Create PoF entry — pipe test output directly:
-   ```bash
-   cargo test --workspace --exclude zed-al 2>&1 | tail -20
-   ```
-   Then append the output to `docs/proof_of_functionality.toml` using Edit tool.
+Use `superpowers:test-driven-development` to implement the task:
+1. Write a failing test that validates the pass criteria
+2. Implement until the test passes
+3. Run `cargo test --workspace --exclude zed-al 2>&1 | tail -30` to verify
+4. Run `cargo clippy --workspace --exclude zed-al 2>&1 | tail -20` for lint
 
-## Step 5: Record
+## Step 5: Complete Task
 
-1. Check off the task in `docs/progress.md` with date and summary.
-2. Commit the changes.
+When implementation passes all tests:
 
-## Step 6: Continue or Stop
-
-Go back to Step 1. The Stop hook tracks edits — after 15 .rs edits it forces `/supervise`.
-
-At end of a Work Package, run `/audit <WP>`.
-
-## Token Efficiency Rules
-
-- Run cargo commands directly via Bash — do NOT spawn agents for mechanical tasks
-- Use `| tail -N` to limit output. Full cargo output wastes tokens.
-- Only spawn agents for tasks that need reasoning (adversarial, supervision triage)
-- For PoF entries: pipe real command output, don't have Claude rewrite it
+1. Create a PoF entry — invoke `/pof` with the task ID and WP name
+2. Update `docs/progress.md` — mark the task as `[x]`
+3. Spawn adversarial agent in background — invoke `/adversarial`
+4. **Continue to next task** — do not stop, immediately find and start the next task

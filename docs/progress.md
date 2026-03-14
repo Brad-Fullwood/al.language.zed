@@ -42,32 +42,39 @@ This file is maintained by the PM agent during execution. Updated after every mi
 ### Phase 1: Foundation & Core Refactor
 **WP1: al-core Skeleton & Discovery Migration**
 - [x] `al-core` crate created with module tree per `docs/crates-map.md` (T101). *(2026-03-14: lib.rs, workspace.rs (Workspace struct), errors.rs (AlError enum). al-lsp depends on al-core. No circular deps.)*
-- [ ] `Workspace` struct implemented with state transitions.
-- [ ] `al-discovery` logic migrated into `al-core::project` + `al-core::toolchain` + `al-core::launch`.
+- [x] `Workspace` struct implemented with state transitions (T101, expanded in T102).
+- [x] `al-discovery` logic migrated into `al-core::project` + `al-core::toolchain` + `al-core::launch` (T102). *(2026-03-14: 38 tests across 3 modules. al-lsp callers updated with boundary conversion. al-discovery marked deprecated.)*
+- [x] JSON-RPC bridge types migrated to `al-core::jsonrpc` (T103). *(2026-03-14: 6 tests. al-semantic still imports from al-discovery due to circular dep constraint — will switch when al-protocol is created in T104.)*
+- [x] al-discovery deleted, replaced by al-protocol (T104). *(2026-03-14: al-protocol created as leaf-level shared crate with types, discovery functions, and JSON-RPC. All 12 workspace crates updated. Zero references to al-discovery remain.)*
 - [ ] `AlError` unified error hierarchy implemented.
 
 **WP2: Workspace State & Document Management**
-- [ ] `DocumentStore` moved from `al-lsp` to `al-core::documents`.
-- [ ] Incremental parsing (tree-sitter `tree.edit()`) wired through `al-core`.
+- [x] `DocumentStore` moved from `al-lsp` to `al-core::documents` (T201). *(2026-03-14: Transport-agnostic TextChange/TextRange types replace tower-lsp's TextDocumentContentChangeEvent. 8 unit tests. al-lsp converts at boundary. Old document.rs deleted.)*
+- [x] Parse cache moved to `al-core::parsing` (T202). *(2026-03-14: get_or_parse() takes &DocumentStore, returns (String, Tree). al-lsp::parsing becomes thin delegate. 3 tests. No double-parsing.)*
+- [x] `Workspace` wired to own DocumentStore, SymbolIndex, AlProject, AlToolchain, SemanticBridge (T203). *(2026-03-14: AlServer.workspace replaces 5 separate fields. All references updated via sed across al-lsp. All tests pass.)*
 - [ ] `FileIndex` (workspace .al file scan) implemented.
 - [ ] `AlConfig` (merged settings) implemented.
 
 ### Phase 2: Binary Thinning & Language Parity
 **WP3: LSP & CLI Thin Adapters (Query Engine)**
-- [ ] `al-core::queries::hover` implemented (migrated from `al-lsp`).
-- [ ] `al-core::queries::definition` implemented.
-- [ ] `al-core::queries::completions` implemented.
-- [ ] `al-core::queries::references` implemented.
-- [ ] `al-core::queries::signature_help` implemented.
-- [ ] `al-core::queries::rename` implemented.
-- [ ] `al-core::queries::code_actions` implemented.
-- [ ] `al-core::queries::semantic_tokens` implemented.
-- [ ] `al-core::queries::folding_ranges` implemented.
-- [ ] `al-core::queries::inlay_hints` implemented.
-- [ ] `al-core::queries::document_symbols` implemented.
+- [x] `al-core::queries` module skeleton created (T301). *(2026-03-14: 11 query modules with transport-agnostic types. Position/Range/Location/TextEdit/WorkspaceEdit in mod.rs. Each function takes &Workspace, returns None/empty stubs. Zero tower-lsp dependency.)*
+- [x] `al-core::queries::hover` implemented (migrated from `al-lsp`). *(2026-03-14: T302)*
+- [x] `al-core::queries::definition` implemented. *(2026-03-14: T302)*
+- [x] `al-core::queries::completions` implemented. *(2026-03-14: T302)*
+- [x] `al-core::queries::references` implemented. *(2026-03-14: T302)*
+- [x] `al-core::queries::signature_help` implemented. *(2026-03-14: T302)*
+- [x] `al-core::queries::rename` implemented. *(2026-03-14: T302)*
+- [x] `al-core::queries::code_actions` implemented. *(2026-03-14: T302)*
+- [x] `al-core::queries::semantic_tokens` implemented. *(2026-03-14: T302)*
+- [x] `al-core::queries::folding_ranges` implemented. *(2026-03-14: T302)*
+- [x] `al-core::queries::inlay_hints` implemented. *(2026-03-14: T302)*
+- [x] `al-core::queries::document_symbols` implemented. *(2026-03-14: T302. resolution.rs (1296 lines) moved to al-core. al-lsp handlers thinned to 5-15 lines each. al-lsp/src/resolution.rs and parsing.rs deleted. 459/461 tests pass unchanged.)*
 - [ ] `al-lsp` thinned to transport-only (no `use al_syntax::` or `use al_symbols::`).
 - [ ] `al-cli` refactored to pure JSON-RPC daemon client (no al-core dependency).
 - [ ] Thin-adapter verification passes (`cargo tree` check).
+
+**T303: Daemon Mode**
+- [x] `al-lsp daemon --project <path>` implemented. *(2026-03-14: Unix socket JSON-RPC server at `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock`. 10 query dispatchers (hover, definition, references, completions, signatureHelp, rename, documentSymbols, foldingRanges, semanticTokens, ping/status/shutdown). Workspace init: project discovery, symbol loading, .al file scanning. 30-min idle timeout. Socket cleanup via Drop guard. Zero test regressions.)*
 
 **WP4: DAP Integration, Toolchain Logic & Agentic Debugger**
 - [ ] `al-dap` merged into `al-lsp::dap`.

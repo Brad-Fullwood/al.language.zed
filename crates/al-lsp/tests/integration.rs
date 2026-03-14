@@ -262,7 +262,7 @@ fn build_test_index() -> SymbolIndex {
 
 #[test]
 fn document_store_open_change_close_lifecycle() {
-    let store = al_lsp::document::DocumentStore::new();
+    let store = al_core::documents::DocumentStore::new();
     let uri = Url::parse("file:///test/lifecycle.al").unwrap();
 
     // Open
@@ -281,18 +281,13 @@ fn document_store_open_change_close_lifecycle() {
 
     store.apply_changes(
         &uri,
-        &[TextDocumentContentChangeEvent {
-            range: Some(Range {
-                start: Position {
-                    line,
-                    character: col as u32,
-                },
-                end: Position {
-                    line,
-                    character: (col + "HelloWorld".len()) as u32,
-                },
+        &[al_core::documents::TextChange {
+            range: Some(al_core::documents::TextRange {
+                start_line: line,
+                start_character: col as u32,
+                end_line: line,
+                end_character: (col + "HelloWorld".len()) as u32,
             }),
-            range_length: None,
             text: "Greet".to_string(),
         }],
     );

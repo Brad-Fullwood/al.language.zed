@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use al_discovery::AlToolchain;
+use al_protocol::AlToolchain;
 use tracing::info;
 
 use crate::DapError;
@@ -127,5 +127,17 @@ fn find_in_vscode_extensions() -> Option<PathBuf> {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    al_discovery::home_dir()
+    std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or({
+            #[cfg(target_os = "windows")]
+            {
+                std::env::var("USERPROFILE").ok().map(PathBuf::from)
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                None
+            }
+        })
 }

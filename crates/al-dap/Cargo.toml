@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-al-discovery = { path = "../al-discovery" }
+al-protocol = { path = "../al-protocol" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

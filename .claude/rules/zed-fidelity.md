@@ -1,24 +1,26 @@
----
-paths:
-  - "crates/al-lsp/**"
-  - "crates/al-test-harness/**"
-  - "crates/zed-al/**"
----
-# Zed Fidelity
+# Zed Fidelity Rules (Always Loaded)
 
-If the harness claims a feature works but it fails in Zed, that is a Priority-0 blocking issue. Update the harness before continuing.
+## WASM Constraints (zed-al)
+- Target: `wasm32-wasip1`
+- No filesystem access, no Unix sockets, no native dependencies
+- Communicates with al-lsp via stdio only (Zed spawns the process)
+- Uses `zed_extension_api` crate exclusively
 
-## Known Fidelity Risks
-| Risk | Mitigation |
-|---|---|
-| URI encoding (spaces, unicode) | `file_uri()` percent-encodes spaces |
-| Semantic token delta encoding | Compare against Zed's expected encoding |
-| Diagnostic lifecycle | Publish empty array when errors fixed |
-| Initialization race | Queue/reject requests during init |
-| WASM memory limits | Extension init < 10MB |
-| DAP adapter path | Test with multiple launch.json configs |
+## Extension Structure
+```
+languages/     — Zed language configuration (grammars, highlights, etc.)
+snippets/      — AL code snippets
+themes/        — Zed themes
+extension.toml — Zed extension manifest
+```
+These are standard Zed extension paths — DO NOT move them.
 
-## Requirements
-- Golden file comparison for semantic tokens and document symbols.
-- Zed simulation tests cover every LSP method in `docs/lsp-feature-matrix.md`.
-- If harness passes but Zed fails, fix the harness first (Priority-0).
+## LSP Fidelity
+- Test harness simulates Zed's LSP client behavior
+- Tests must reflect real Zed message sequences (initialize → open → requests → close)
+- Diagnostics arrive via `publishDiagnostics` notifications (push, not pull)
+- Document sync is `TextDocumentSyncKind::Full` (Zed sends full text on every change)
+
+## tree-sitter-al
+- `grammars/al/` is a symlink to `tree-sitter-al/` submodule
+- Grammar changes go through the submodule, not direct edits

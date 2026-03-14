@@ -1,19 +1,17 @@
----
-paths:
-  - "crates/al-cli/**"
-  - "crates/al-mcp/**"
----
-# Agentic Output Standards
+# Agentic Output Rules (Always Loaded)
 
-CLI `--json` and MCP responses must be high-density: 10x fewer tokens than raw file reads.
+## CLI JSON Output
+All al-cli commands support `--json` for machine-readable output. This enables:
+- MCP tool responses (al-mcp wraps CLI JSON)
+- Script/agent consumption
+- Piping between tools
 
-## JSON Key Conventions
-Short keys: `k` (kind), `n` (name), `id`, `f` (file), `l` (line), `c` (column), `t` (type), `pkg` (package).
-Omit null/empty fields. No wrapper objects. No verbose enums (`"Table"` not `"ObjectKind::Table"`).
-Include `f` + `l` for actionable navigation.
+## Output Conventions
+- Position arguments are 1-based in CLI (converted to 0-based internally)
+- Errors use structured JSON: `{"error": "message", "code": "ERROR_CODE"}`
+- List commands return JSON arrays
+- Detail commands return JSON objects
+- `--json` flag is consistent across all commands
 
-## Parity
-Every CLI command must have an MCP equivalent using the same JSON schema. Authoritative schemas: `docs/agentic-schemas.md`.
-
-## Verification
-For every new command/tool, measure token count vs raw file reads. Ratio must exceed 5x. Document in PoF entry.
+## Schemas
+See `docs/agentic-schemas.md` for complete JSON output schemas per command.

@@ -1,26 +1,47 @@
 ---
 name: report
-description: "Log an issue, improvement idea, or observation about infrastructure (hooks, rules, skills, agents, plans). Any agent can invoke this when they notice something wrong or could be better."
-argument-hint: "<description of the issue or idea>"
-allowed-tools: Read, Edit
+description: Generate a progress report showing completed tasks, current status, and what's next
+user_invocable: true
 ---
 
-Log an issue to `docs/issues.md`.
+# Progress Report
+
+Generate a concise progress report for the Zed AL Extension project.
 
 ## Steps
 
-1. Read `docs/issues.md` to find the next issue number (ISSUE-NNN).
-2. Determine category (hook/rule/skill/agent/plan/constraint/idea) and severity (bug/drift/improvement) from the description.
-3. Append an entry under "## Open Issues":
+### 1. Read Current State
+- Read `docs/progress.md` for task completion status
+- Read `docs/plan.md` for total task count and WP structure
+- Read `docs/proof_of_functionality.toml` for evidence log entries
+
+### 2. Calculate Metrics
+- Total tasks vs completed tasks
+- Current WP and its completion percentage
+- Next task to work on
+- Number of PoF entries
+
+### 3. Report Format
 
 ```
-### ISSUE-NNN: <brief title from $ARGUMENTS>
-- **Reporter**: <your agent name or "main">
-- **Date**: <today>
-- **Category**: <category>
-- **Severity**: <severity>
-- **Description**: $ARGUMENTS
-- **Status**: open
+## Progress Report — [DATE]
+
+### Summary
+- **Completed**: X/Y tasks (Z%)
+- **Current WP**: WPX — [NAME] (A/B tasks done)
+- **Next task**: TXXX — [NAME]
+- **PoF entries**: N
+
+### Recently Completed
+- TXXX: [NAME] — [DATE]
+- TXXX: [NAME] — [DATE]
+
+### Blocked / Deferred
+- TXXX: [REASON]
+
+### Next Steps
+1. TXXX — [DESCRIPTION]
+2. TXXX — [DESCRIPTION]
 ```
 
-4. If this is urgent (bug severity), add a system message recommending `/fix-infra ISSUE-NNN`.
+Keep it concise. Focus on actionable information.
