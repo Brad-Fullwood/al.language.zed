@@ -154,8 +154,37 @@ status = "SUCCESS"
 
 # =============================================================================
 # WP1: al-core Skeleton & Discovery Migration
-# Tasks: T101 (Skeleton), T102 (Discovery Migration), T103 (Workspace State), T104 (AlError)
+# Tasks: T101 (Skeleton), T102 (Discovery Migration), T103 (JSON-RPC Types), T104 (Remove al-discovery)
 # =============================================================================
+
+[[entries]]
+date = "2026-03-14"
+work_package = "WP1: al-core Skeleton & Discovery Migration"
+task_id = "T101: al-core Crate Skeleton"
+
+[entries.adversarial_pass]
+context = "Verify no circular dependencies introduced. Analysis libs must NOT depend on al-core."
+expected = "cargo tree shows al-syntax, al-symbols, al-semantic, al-diag have no al-core dependency."
+actual_log = """
+cargo tree -p al-syntax --depth 1 | grep al-core -> (no match - correct)
+cargo tree -p al-symbols --depth 1 | grep al-core -> (no match - correct)
+cargo tree -p al-semantic --depth 1 | grep al-core -> (no match - correct)
+cargo tree -p al-diag --depth 1 | grep al-core -> (no match - correct)
+Dependency direction verified: al-core -> {al-syntax, al-symbols, al-semantic, al-discovery}
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "al-core crate created with Workspace struct, AlError enum, module structure per crates-map.md."
+expected = "cargo check -p al-core succeeds. Workspace struct exists. al-lsp depends on al-core."
+actual_log = """
+cargo check -p al-core -> Finished dev profile in 0.11s (clean compile)
+ls crates/al-core/src/ -> lib.rs workspace.rs errors.rs
+grep al-core crates/al-lsp/Cargo.toml -> al-core = { path = "../al-core" }
+Workspace struct: pub struct Workspace {} with new() and Default impl
+AlError enum: Project, Toolchain, Document, Symbol, Semantic, Io, Json variants
+"""
+status = "SUCCESS"
 
 [[entries]]
 date = "2026-03-12"

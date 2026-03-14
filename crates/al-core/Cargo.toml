@@ -1,32 +1,16 @@
 [package]
-name = "al-lsp"
+name = "al-core"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "al-lsp"
-path = "src/main.rs"
-
 [dependencies]
-al-core = { path = "../al-core" }
 al-syntax = { path = "../al-syntax" }
 al-symbols = { path = "../al-symbols" }
 al-semantic = { path = "../al-semantic" }
 al-discovery = { path = "../al-discovery" }
-al-dap = { path = "../al-dap" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tower-lsp = { workspace = true }
 dashmap = { workspace = true }
-ropey = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tree-sitter = "0.25"
-dirs = "6"
-al-diag = { path = "../al-diag", optional = true }
-
-[features]
-default = ["diagnostics"]
-diagnostics = ["al-diag"]

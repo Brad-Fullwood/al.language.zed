@@ -41,7 +41,7 @@ This file is maintained by the PM agent during execution. Updated after every mi
 
 ### Phase 1: Foundation & Core Refactor
 **WP1: al-core Skeleton & Discovery Migration**
-- [ ] `al-core` crate created with module tree per `docs/crates-map.md`.
+- [x] `al-core` crate created with module tree per `docs/crates-map.md` (T101). *(2026-03-14: lib.rs, workspace.rs (Workspace struct), errors.rs (AlError enum). al-lsp depends on al-core. No circular deps.)*
 - [ ] `Workspace` struct implemented with state transitions.
 - [ ] `al-discovery` logic migrated into `al-core::project` + `al-core::toolchain` + `al-core::launch`.
 - [ ] `AlError` unified error hierarchy implemented.
