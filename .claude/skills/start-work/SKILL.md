@@ -35,9 +35,11 @@ Write the code. Hooks enforce constraints automatically. If blocked, read the er
 2. `/adversarial` — write breaking tests. Fix real issues.
 3. `/pof <WP> <task>` — create evidence entry with real test output.
 
-## Step 5: Record
+## Step 5: Simplify & Record
 
-Check off the task in `docs/progress.md` with date and summary.
+1. Run `/simplify` — reviews changed code for reuse, quality, and efficiency. Fix any issues it finds, then re-run `/test` to confirm nothing broke.
+2. Check off the task in `docs/progress.md` with date and summary.
+3. Commit the changes.
 
 ## Step 6: Continue or Stop
 

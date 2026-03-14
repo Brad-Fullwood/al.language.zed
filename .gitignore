@@ -5,8 +5,14 @@
 .alpackages/
 .claude/worktrees/
 
-# .NET build artifacts
+# .NET build artifacts (all obj/ and bin/ under any .NET project)
+**/obj/
+**/bin/
+crates/al-semantic/bridge/obj/
 crates/al-semantic/dotnet/AlSemantic/bin/
 crates/al-semantic/dotnet/AlSemantic/obj/
 crates/al-dap/dotnet/AlDap/bin/
 crates/al-dap/dotnet/AlDap/obj/
+
+# Supervisor state (machine-local runtime file)
+/tmp/al-*
