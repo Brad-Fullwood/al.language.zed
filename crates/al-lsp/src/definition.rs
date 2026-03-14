@@ -30,7 +30,7 @@ pub(crate) fn handle_definition(
         return None;
     }
 
-    let looks_like_object_name_early = node.kind() == "quoted_identifier" || clean_name.contains(' ');
+    let _looks_like_object_name_early = node.kind() == "quoted_identifier" || clean_name.contains(' ');
 
     if let Some(access) = resolution::access_path_at(&tree, &text, position) {
         if let Some(receiver) =

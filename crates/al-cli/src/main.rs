@@ -1558,8 +1558,7 @@ fn cmd_compile(project_dir: Option<String>, alc_path: Option<String>, json: bool
                     }).collect::<Vec<_>>(),
                     "appPath": compile_result.app_path,
                 }));
-            } else {
-                if compile_result.diagnostics.is_empty() && compile_result.success {
+            } else if compile_result.diagnostics.is_empty() && compile_result.success {
                     if let Some(app) = &compile_result.app_path {
                         println!("Compilation succeeded: {}", app.display());
                     } else {
@@ -1598,7 +1597,6 @@ fn cmd_compile(project_dir: Option<String>, alc_path: Option<String>, json: bool
                         println!("Output: {}", app.display());
                     }
                 }
-            }
             if compile_result.success {
                 ExitCode::SUCCESS
             } else {

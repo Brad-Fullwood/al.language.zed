@@ -224,7 +224,7 @@ async fn wait_for_auth_callback(
     let params = parse_query_string(query);
 
     // Send response page
-    let (status_line, body) = if params.get("error").is_some() {
+    let (status_line, body) = if params.contains_key("error") {
         let err = params.get("error").map(|s| s.as_str()).unwrap_or("unknown");
         let desc = params
             .get("error_description")
@@ -490,7 +490,7 @@ fn random_bytes(n: usize) -> Vec<u8> {
 fn base64url_encode(data: &[u8]) -> String {
     const TABLE: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;

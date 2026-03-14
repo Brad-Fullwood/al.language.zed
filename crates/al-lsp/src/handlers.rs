@@ -11,7 +11,6 @@
 use al_syntax::AlParser;
 use tower_lsp::lsp_types::*;
 
-use crate::diagnostics;
 use crate::formatting;
 use crate::parsing;
 use crate::server::AlServer;

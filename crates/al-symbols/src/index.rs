@@ -237,10 +237,10 @@ pub struct SymbolIndex {
 
         for entry in self.all.iter() {
             let (arc, name_lower) = entry.value();
-            if arc.package.to_lowercase() == target_pkg {
-                if query_lower.is_empty() || name_lower.contains(&query_lower) {
-                    results.push(Arc::clone(arc));
-                }
+            if arc.package.to_lowercase() == target_pkg
+                && (query_lower.is_empty() || name_lower.contains(&query_lower))
+            {
+                results.push(Arc::clone(arc));
             }
         }
 

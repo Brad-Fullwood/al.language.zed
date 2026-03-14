@@ -1,6 +1,16 @@
 //! Data-driven tests — hundreds of specific input→output assertions against the
 //! real Debar project.  Each test starts ONE server, opens ALL files, then runs
 //! a batch of checks so the total wall-clock time stays manageable.
+//!
+//! # Known Failures (T001 baseline, 2026-03-14)
+//!
+//! - `test_hover_data_driven`: 7/97 assertions fail in ItemJournalStaging.Table.al.
+//!   Procedures (SetJournalData, GetJournalData, SetErrorMessage, GetErrorMessage)
+//!   return null hover — cross-file procedure resolution not yet implemented.
+//!   Types (OutStream, InStream, Text) return null — builtin type hover incomplete.
+//!
+//! - `test_document_symbols_data_driven`: 1/76 assertions fail in IJLProcessStaging.Report.al.
+//!   `OnPreDataItem` trigger not found — report dataitem trigger extraction missing.
 
 use al_test_harness::*;
 use std::path::PathBuf;

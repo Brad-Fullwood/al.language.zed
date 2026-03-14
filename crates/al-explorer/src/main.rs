@@ -126,8 +126,8 @@ impl App {
     }
 
     fn update_objects_list(&mut self, reset_selection: bool) {
-        if let Some(selected) = self.package_list_state.selected() {
-            if let Some(pkg_name) = self.packages.get(selected) {
+        if let Some(selected) = self.package_list_state.selected()
+            && let Some(pkg_name) = self.packages.get(selected) {
                 // Fetch items based on global search or package scope
                 let results = if self.global_search && !self.search_query.is_empty() {
                     self.symbols.search(&self.search_query, 5000)
@@ -192,7 +192,6 @@ impl App {
                     self.object_list_state.select(None);
                     self.details_list_state.select(None);
                 }
-            }
         }
     }
 
@@ -287,36 +286,32 @@ impl App {
     fn open_selected_object(&mut self) {
         // Find if they clicked a specific member
         let mut target_member: Option<DetailTarget> = None;
-        if let Some(detail_idx) = self.details_list_state.selected() {
-            if let Some((Some(member), _)) = self.details_items.get(detail_idx) {
-                target_member = Some(member.clone());
-            }
+        if let Some(detail_idx) = self.details_list_state.selected()
+            && let Some((Some(member), _)) = self.details_items.get(detail_idx) {
+            target_member = Some(member.clone());
         }
 
-        if let Some(selected) = self.object_list_state.selected() {
-            if let Some(entry) = self.current_objects.get(selected) {
-                let app_path = self.symbols.app_path(&entry.package);
-                if let Ok(path) = al_symbols::virtual_file::get_or_create(entry, app_path.as_deref(), false) {
-                    if let Ok(abs_path) = std::fs::canonicalize(&path) {
-                        if let Some(path_str) = abs_path.to_str() {
-                            let mut zed_url = format!("zed://file{}", path_str);
-                            
-                            if let Some(member) = target_member {
-                                let line = al_symbols::virtual_file::find_member_line_with_kind(
-                                    &abs_path,
-                                    &member.name,
-                                    member.to_member_kind(),
-                                )
-                                .or_else(|| al_symbols::virtual_file::find_member_line(&abs_path, &member.name));
-                                if let Some(line) = line {
-                                    zed_url = format!("zed://file{}:{}:1", path_str, line + 1);
-                                }
-                            }
-                            
-                            let _ = open::that(zed_url);
-                        }
+        if let Some(selected) = self.object_list_state.selected()
+            && let Some(entry) = self.current_objects.get(selected) {
+            let app_path = self.symbols.app_path(&entry.package);
+            if let Ok(path) = al_symbols::virtual_file::get_or_create(entry, app_path.as_deref(), false)
+                && let Ok(abs_path) = std::fs::canonicalize(&path)
+                && let Some(path_str) = abs_path.to_str() {
+                let mut zed_url = format!("zed://file{}", path_str);
+
+                if let Some(member) = target_member {
+                    let line = al_symbols::virtual_file::find_member_line_with_kind(
+                        &abs_path,
+                        &member.name,
+                        member.to_member_kind(),
+                    )
+                    .or_else(|| al_symbols::virtual_file::find_member_line(&abs_path, &member.name));
+                    if let Some(line) = line {
+                        zed_url = format!("zed://file{}:{}:1", path_str, line + 1);
                     }
                 }
+
+                let _ = open::that(zed_url);
             }
         }
     }
@@ -768,9 +763,9 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     app.details_items.clear();
     
-    if let Some(selected) = app.object_list_state.selected() {
-        if let Some(entry) = app.current_objects.get(selected) {
-            app.details_items.push((None, Line::from(vec![
+    if let Some(selected) = app.object_list_state.selected()
+        && let Some(entry) = app.current_objects.get(selected) {
+        app.details_items.push((None, Line::from(vec![
                 Span::styled(format!("{:?} ", entry.kind), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 Span::styled(entry.id.to_string(), Style::default().fg(Color::Cyan)),
                 Span::raw(" ".to_string()),
@@ -857,7 +852,7 @@ fn ui(f: &mut Frame, app: &mut App) {
                     spans.push(Span::styled(m.name.clone(), Style::default().fg(Color::Green)));
                     spans.push(Span::raw("(".to_string()));
                     
-                    let params = m.parameters.iter().map(|p| format!("{}", p.name)).collect::<Vec<_>>().join(", ");
+                    let params = m.parameters.iter().map(|p| p.name.to_string()).collect::<Vec<_>>().join(", ");
                     spans.push(Span::raw(params));
                     
                     spans.push(Span::raw(")".to_string()));
@@ -868,7 +863,6 @@ fn ui(f: &mut Frame, app: &mut App) {
                     
                     app.details_items.push((Some(DetailTarget { name: m.name.clone(), kind: DetailTargetKind::Procedure }), Line::from(spans)));
                 }
-            }
         }
     }
 

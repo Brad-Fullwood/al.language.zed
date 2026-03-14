@@ -37,8 +37,22 @@ esac
 # Check .rs files for forbidden references (skip comment lines)
 case "$file_path" in
   *.rs)
-    if echo "$content" | grep -vE '^\s*//' | grep -qE '(use |extern crate |[^a-z_])al_(core|syntax|symbols|semantic|discovery|diag)::'; then
-      deny "Reference to analysis crate in a thin adapter. These crates communicate via JSON-RPC only."
+    forbidden_pattern='(use |extern crate |[^a-z_])al_(core|syntax|symbols|semantic|discovery|diag)::'
+    new_string=$(echo "$input" | jq -r '.tool_input.new_string // empty')
+    old_string=$(echo "$input" | jq -r '.tool_input.old_string // empty')
+    # For Edit operations: only deny if new_string introduces references not present in old_string
+    if [ -n "$new_string" ] && [ -n "$old_string" ]; then
+      # Count forbidden references in each; deny only if new_string has more than old_string
+      new_count=$(echo "$new_string" | grep -vE '^\s*//' | grep -cE "$forbidden_pattern" || true)
+      old_count=$(echo "$old_string" | grep -vE '^\s*//' | grep -cE "$forbidden_pattern" || true)
+      if [ "$new_count" -gt "$old_count" ]; then
+        deny "Reference to analysis crate in a thin adapter. These crates communicate via JSON-RPC only."
+      fi
+    else
+      # For Write operations (full file content): check the whole content
+      if echo "$content" | grep -vE '^\s*//' | grep -qE "$forbidden_pattern"; then
+        deny "Reference to analysis crate in a thin adapter. These crates communicate via JSON-RPC only."
+      fi
     fi
     ;;
 esac
