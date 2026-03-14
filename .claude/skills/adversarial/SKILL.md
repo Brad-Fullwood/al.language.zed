@@ -1,12 +1,12 @@
 ---
 name: adversarial
-description: Spawn adversarial testing agent in background to find edge cases and break recently completed code
+description: Spawn adversarial agent to find edge cases, fix what it can, and defer the rest
 user_invocable: true
 ---
 
 # Adversarial Testing
 
-Spawn the adversarial agent to stress-test recently completed work.
+Spawn the adversarial agent to stress-test recently completed work. The agent will find bugs, fix what it can, and defer what it can't.
 
 ## What To Do
 
@@ -24,14 +24,11 @@ Agent tool:
     Task just completed: [TASK_ID] - [TASK_NAME]
     Files changed: [LIST_FILES]
 
-    Your job:
-    1. Read the changed files
-    2. Write tests designed to BREAK the implementation
-    3. Focus on: edge cases, empty inputs, malformed data, concurrent access, off-by-one errors
-    4. Run `cargo test --workspace --exclude zed-al` to see if your tests expose bugs
-    5. If you find bugs, write a clear report of what broke and why
+    Phase 1: Find bugs in the changed files (edge cases, panics, logic errors).
+    Phase 2: Fix bugs you can fix now. Defer bugs that need other WPs.
 
-    Do NOT fix bugs — only find and report them.
+    For fixes: edit the code, run cargo test + clippy to verify.
+    For deferrals: append to .claude/deferred-issues.toml.
 
     Run: cargo test --workspace --exclude zed-al 2>&1 | tail -30
 ```
@@ -45,3 +42,11 @@ Replace `[TASK_ID]`, `[TASK_NAME]`, and `[LIST_FILES]` with actual values from t
 - When the user asks for stress testing
 
 The agent runs in background — do not wait for it. Continue to the next task.
+
+## When Results Come Back
+
+When you receive the adversarial agent's completion notification:
+1. Read the report summary
+2. If it fixed bugs: commit the fixes with message "Adversarial fix: [brief description]"
+3. If it deferred bugs: acknowledge and continue (they'll be picked up at the right stage)
+4. If tests broke: stop current work and fix the regression before continuing
