@@ -29,7 +29,7 @@ This file is maintained by the PM agent during execution. Updated after every mi
 - [x] `docs/crates-map.md` rewritten for daemon architecture with target module layout.
 - [x] `plan.md` decomposed into 44 tasks across WP0-WP11 with IDs, file ownership, dependencies, pass/fail criteria, and critical path.
 - [x] `al-test-harness` LSP simulator built with Zed-fidelity (T001). *(2026-03-14: Baseline verified — 459/461 tests pass, 2 known failures documented in data_driven.rs with specific failure reasons. PoF entry created.)*
-- [ ] Centralized evidence log (`proof_of_functionality.toml`) created (T002).
+- [x] Centralized evidence log (`proof_of_functionality.toml`) created (T002). *(2026-03-14: Restructured with WP0-WP11 section headers, template in header comments, dual-pass format verified. 3 entries, TOML parses.)*
 - [ ] Harness daemon-mode extension (T003).
 
 **WPX: Continuous Adversarial Evolution (Persistent)**
