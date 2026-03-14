@@ -17,7 +17,7 @@ This file is maintained by the PM agent during execution. Updated after every mi
 
 ### Phase 0: The Adversarial Foundation
 **WP0: Project Constitution & Adversarial Harness**
-- [x] `claude.md` created as project constitution.
+- [x] `CLAUDE.md` created as project constitution.
 - [x] `.claude/rules/` established (7 mandate files) — all sharpened with daemon architecture constraints.
 - [x] `docs/` documentation suite established and expanded:
   - [x] `docs/architecture.md` — rewritten for daemon architecture (layers, state management, .NET bridge lifecycle, error taxonomy, data flows)
@@ -33,9 +33,11 @@ This file is maintained by the PM agent during execution. Updated after every mi
 - [ ] Harness daemon-mode extension (T003).
 
 **WPX: Continuous Adversarial Evolution (Persistent)**
-- [ ] Adversarial sub-agent deployed.
-- [ ] `docs/adversarial-atlas.md` stress test catalog active.
-- [ ] Gap-finding protocol running.
+- [x] Adversarial sub-agent deployed (`.claude/agents/adversarial.md`, opus, worktree isolation).
+- [x] Supervisor agent deployed (`.claude/agents/supervisor.md`, periodic progress verification).
+- [x] Enforcement hooks active (PreToolUse blocks boundary violations, Stop blocks broken builds).
+- [ ] `docs/adversarial-atlas.md` stress test catalog active (tests to be written as code is implemented).
+- [ ] Gap-finding protocol running (adversarial agent writes tests, supervisor verifies coverage).
 
 ### Phase 1: Foundation & Core Refactor
 **WP1: al-core Skeleton & Discovery Migration**
@@ -167,12 +169,12 @@ This file is maintained by the PM agent during execution. Updated after every mi
 - **Summary**: Zero-code strategic audit, documentation expansion, and architecture finalization.
 - **Architecture decision**: al-lsp is the sole server binary. Two modes: LSP (stdio, for Zed) and daemon (Unix socket, for CLI/Explorer/MCP). al-cli, al-explorer, al-mcp are pure JSON-RPC clients with zero compile-time dependency on al-core. This follows the industry-standard daemon pattern (gopls, rust-analyzer, sorbet).
 - **Files created**: `docs/adversarial-atlas.md`, `docs/agentic-schemas.md`.
-- **Files rewritten**: `docs/architecture.md`, `docs/crates-map.md`, `claude.md`, `plan.md` (102→535 lines, 44 tasks), `.claude/rules/thin-adapters.md`, `.claude/rules/library-responsibilities.md`, `.claude/rules/maintenance-governance.md`.
+- **Files rewritten**: `docs/architecture.md`, `docs/crates-map.md`, `CLAUDE.md`, `plan.md` (102→535 lines, 44 tasks), `.claude/rules/thin-adapters.md`, `.claude/rules/library-responsibilities.md`, `.claude/rules/maintenance-governance.md`.
 - **Files expanded**: `docs/feature-scope.md`, `docs/market-research.md`, `docs/progress.md`, `.claude/rules/validation-protocol.md`, `.claude/rules/zed-fidelity.md`, `.claude/rules/agentic-efficiency.md`, `.claude/rules/adversarial-evolution.md`.
 - **Research**: AL community extensions (AZ AL Dev Tools, NAB AL Tools, ALCops, AL Test Runner, AL Dependency MCP Server), Zed extension API v0.7.0 (slash commands, indexed docs, context servers, DAP locators), BC26/27 language changes.
 - **Key findings**: ALCops has MCP server (direct competition), AL Dependency MCP Server (Stefan Maron) handles 50MB+ .app files, MS AL crashes on Linux (our #1 differentiator), grammar needs update for `continue`/`@'...'`/`List of [Interface]`.
 - **Plan decomposition**: 44 tasks across WP0-WP11. Critical path: T001→T305 = 17 tasks for minimum viable loop. Full production path = ~40 tasks.
-- **Audit status**: All documentation architecturally consistent. Daemon architecture verified across all 7 rules files, claude.md, architecture.md, crates-map.md, plan.md, and progress.md. No inconsistencies found.
+- **Audit status**: [SUPERSEDED by 2026-03-14 audit] Documentation was consistent at time of writing. Rules and file structure were subsequently restructured.
 
 ### 2026-03-13 — Documentation Reorganization & Repo Cleanup
 - **Summary**: Full documentation restructuring to achieve "perfect spec" quality before implementation.
@@ -182,3 +184,14 @@ This file is maintained by the PM agent during execution. Updated after every mi
 - **Inconsistencies fixed**: Slash command list in `agentic-efficiency.md` now references `docs/agentic-schemas.md` as authoritative catalog. "Cursor" references replaced with "MS" in feature-scope.md. All cross-references updated across claude.md, plan.md, progress.md, release.md, library-responsibilities.md.
 - **Quality improvements**: TOC added to `architecture.md`, LSP cross-reference to `lsp-feature-matrix.md` added, gap-analysis language converted to forward-looking specs.
 - **Verification**: Grep confirms zero references to deleted/renamed files across docs/, claude.md, plan.md, and .claude/rules/.
+
+### 2026-03-14 — Agent Infrastructure Audit & Restructuring
+- **Summary**: Pre-implementation audit of all documentation, rules, and agent infrastructure. Full restructuring of `.claude/` configuration.
+- **Rules restructured**: 7 always-loaded rules (~340 lines) → 6 rules: 1 always-loaded (18 lines) + 5 conditionally-scoped via `paths:` (~135 lines). Removed: `adversarial-evolution.md`, `maintenance-governance.md`, `library-responsibilities.md`, `validation-protocol.md`, `agentic-efficiency.md`. Added: `architecture.md`, `code-boundaries.md`, `testing.md`, `agentic-output.md`. Rewrote: `thin-adapters.md`, `zed-fidelity.md`.
+- **Agents created**: `test-runner` (haiku), `guardian` (sonnet), `auditor` (sonnet), `adversarial` (opus, worktree), `team-lead` (opus), `supervisor` (sonnet).
+- **Skills created**: `/test`, `/check`, `/adversarial`, `/audit`, `/pof`, `/supervise`.
+- **Hooks created**: `check-thin-adapter.sh` (PreToolUse, blocks), `enforce-boundaries.sh` (PreToolUse, blocks), `post-edit-compile.sh` (PostToolUse, async cargo check), `check-perf-impact.sh` (PostToolUse, advisory), `enforce-on-stop.sh` (Stop, blocks if code broken/tests fail).
+- **Files moved**: `plan.md` → `docs/plan.md`, `claude.md` → `CLAUDE.md` (uppercase).
+- **Docs fixed**: ST-06 factual error (bridge is in-process CLR, not subprocess), insight CLI naming (`al trace` not `al insight trace`), JSON-RPC types decision (`al-protocol` crate), `al suggest-event` schema added.
+- **External tools**: `rust-analyzer-mcp` installed and configured in `.mcp.json`.
+- **Infrastructure created**: `.claude/constraints.toml` (22-entry machine-readable index), `.claude/RATIONALE.md`, `docs/start-work.md` (reusable prompt).

@@ -359,6 +359,22 @@ All responses use `/al-debug` slash command schema. `--var` filter on history re
 ]}
 ```
 
+### `al suggest-event --json <description>`
+Given a business scenario, suggest the correct event publisher, subscriber pattern, and integration event chain.
+```json
+{"query":"validate customer credit limit on sales order","suggestions":[
+  {"event":"OnBeforePostSalesDoc","obj":"Sales-Post","type":"integration",
+   "params":["var SalesHeader: Record \"Sales Header\"","var IsHandled: Boolean"],
+   "why":"Fires before posting — subscriber can validate and set IsHandled to block",
+   "example":"[EventSubscriber(ObjectType::Codeunit, Codeunit::\"Sales-Post\", 'OnBeforePostSalesDoc', '', false, false)]"},
+  {"event":"OnAfterCheckCreditLimit","obj":"Cust. Check Cr. Limit","type":"business",
+   "params":["Customer: Record Customer","var CreditOK: Boolean"],
+   "why":"Fires after standard credit check — subscriber can override result via var CreditOK",
+   "example":"[EventSubscriber(ObjectType::Codeunit, Codeunit::\"Cust. Check Cr. Limit\", 'OnAfterCheckCreditLimit', '', false, false)]"}
+]}
+```
+`why` explains the recommendation. `example` provides a ready-to-paste subscriber attribute.
+
 ### `al tables --json <object> [--proc <name>]`
 Same as `/al-tables` slash command schema.
 
@@ -396,6 +412,7 @@ MCP tools use the same response schemas as CLI `--json` output. Tool registratio
   {"name":"al/subscribers","description":"All subscribers to events published by this object","inputSchema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}},
   {"name":"al/debug","description":"Headless debugger control","inputSchema":{"type":"object","properties":{"cmd":{"type":"string","enum":["start","breakpoint","state","eval","continue","step","history","stop"]},"file":{"type":"string"},"line":{"type":"integer"},"condition":{"type":"string"},"expr":{"type":"string"},"step_type":{"type":"string","enum":["over","into","out"]},"var":{"type":"string","description":"Filter history to snapshots where this variable changed"},"config":{"type":"string","description":"Launch config name"}},"required":["cmd"]}},
   {"name":"al/dead-code","description":"Find unused code","inputSchema":{"type":"object","properties":{}}},
+  {"name":"al/suggest-event","description":"Suggest event publisher/subscriber patterns for a business scenario","inputSchema":{"type":"object","properties":{"description":{"type":"string"}},"required":["description"]}},
   {"name":"al/permissions","description":"Generate permission set","inputSchema":{"type":"object","properties":{"format":{"type":"string","enum":["al","xml"]}}}}
 ]}
 ```

@@ -88,10 +88,16 @@ To optimize for AI context windows, the Insight engine (via CLI and MCP) provide
 
 ## CLI and API Surface
 
-1. `al insight trace --file <path> --line <n> --col <n>`
-2. `al insight events --name <event>`
-3. `al insight graph --object <name> --format dot|json`
-4. `al insight entrypoints --query <text>`
+Top-level commands (no `insight` prefix — see `docs/agentic-schemas.md` for authoritative schemas):
+
+1. `al trace --file <path> --line <n> --col <n>` — call chain trace
+2. `al tables <object> [--proc <name>]` — table impact analysis
+3. `al callgraph <object> [--proc <name>] [--depth N]` — transitive call graph
+4. `al intercept <object> [--field <name>] [--proc <name>]` — interception points
+5. `al subscribers <object>` — event subscriber discovery
+6. `al events <name>` — event publisher/subscriber chains
+7. `al impact <symbol>` — dependency impact analysis
+8. `al dead-code` — unused code detection
 
 ## Evidence of Completion
 

@@ -65,7 +65,7 @@ First-time operations or heavyweight queries with explicit upper bounds.
 
 | Resource | Target | Notes |
 |---|---|---|
-| WASM extension (zed-al) init | **< 5 MB** | Zed enforces limits; must stay well under |
+| WASM extension (zed-al) init | **< 10 MB** | Zed enforces limits; consistent with zed-fidelity rule |
 | SymbolIndex (30k symbols) | **< 50 MB** | `Arc<SymbolEntry>` sharing, no duplication |
 | Parse tree cache (50 open files) | **< 30 MB** | LRU eviction for closed files |
 | .app mmap (10 dependencies) | **< 200 MB virtual** | OS manages physical pages; zero RSS cost for untouched pages |

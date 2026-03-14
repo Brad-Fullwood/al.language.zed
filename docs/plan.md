@@ -1,17 +1,8 @@
-# Zed AL Extension Master Plan (PM First Prompt)
+# Zed AL Extension — Master Plan
 
-> **IMPORTANT**: All architectural mandates, strategic guardrails, and quality gates have been moved to the `.claude/rules/` directory. You MUST read and adhere to every rule in that directory before proceeding.
+44 tasks across WP0–WP11. Each task has an ID, file ownership, dependencies, and pass/fail criteria.
 
-## You Are the PM (Read This First)
-1. You own execution. Keep scope, order, and quality on track.
-2. Read `docs/crates-map.md` and relevant files in `docs/` before writing code.
-3. Create `/task` and write one task file per Work Package using `task/_template.md`.
-4. **MANDATORY STARTUP**: As your absolute first action, read and update `claude.md` at the project root.
-   - `claude.md` already exists as the project constitution. Update its "Current State" section with any changes since the last agent session.
-   - **Validation**: Evaluate if specialized Claude skills or dedicated sub-agent definitions are required.
-   - **Gating**: You are strictly prohibited from proceeding until you have read and validated `claude.md`.
-5. **Milestone Audits**: Every 3-5 tasks (or at the end of every Work Package), perform a **Surgical Audit** per `.claude/rules/maintenance-governance.md`.
-6. Update `docs/progress.md` after every milestone with evidence.
+To begin work, run `/start-work`.
 
 ---
 
@@ -61,7 +52,7 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
 **WP0: Project Constitution & The Adversarial Harness**
 - **Goal**: Establish the project's rules and build its "Immune System."
 - **Scope**:
-    - Create `claude.md` as the project's rulebook.
+    - Create `CLAUDE.md` as the project's rulebook.
     - Evaluate and define required Claude Skills or Agents for the workspace.
     - Build an LSP simulator with high Zed-fidelity in `al-test-harness`.
     - Implement the **Centralized Evidence Log** system in TOML.

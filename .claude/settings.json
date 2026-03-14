@@ -1,0 +1,73 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-thin-adapter.sh",
+            "statusMessage": "Checking thin-adapter compliance..."
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/enforce-boundaries.sh",
+            "statusMessage": "Checking code boundaries..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/post-edit-compile.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-perf-impact.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/track-edits.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/enforce-on-stop.sh",
+            "timeout": 300,
+            "statusMessage": "Verifying code quality..."
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"systemMessage\": \"ARCHITECTURE REMINDER (re-injected after compaction): Thin adapters (al-cli, al-explorer, al-mcp, zed-al) must have ZERO compile-time dependency on al-core/al-syntax/al-symbols/al-semantic. All analysis goes through al-lsp. See .claude/rules/architecture.md. After code changes, the adversarial agent MUST be spawned to validate.\"}'"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Read(~/.cargo/credentials.toml)",
+      "Read(~/.cargo/credentials)",
+      "Read(~/.cargo/registry/)"
+    ]
+  }
+}

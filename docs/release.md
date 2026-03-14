@@ -24,7 +24,7 @@ This document defines the build, packaging, and release flow for the Zed AL exte
 3. Record version compatibility between `zed-al` and `al-lsp`.
 
 ## Release Checklist
-1. All tests pass (see `plan.md` Phase 6).
+1. All tests pass (see `docs/plan.md` WP11).
 2. Grammar assets regenerated and committed.
 3. Snippets and tasks updated and referenced in `extension.toml`.
 4. `docs/settings.md` and `docs/feature-scope.md` updated.

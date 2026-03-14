@@ -28,6 +28,7 @@ This document defines the target crate layout, responsibilities, and file/module
 | `al-semantic` | Lib | Keep | .NET CodeAnalysis bridge, caches, semantic queries | Lifecycle managed by `al-core` |
 | `al-diag` | Lib | Keep | Diagnostics tracing layer and SQLite query API | Optional feature in `al-core` |
 | `al-mcp` | Bin | Keep | MCP server. Thin JSON-RPC adapter connecting to al-lsp daemon. | Same architecture as al-cli but MCP transport |
+| `al-protocol` | Lib (new) | Add | JSON-RPC request/response types, method names, error codes for daemon protocol. Serde structs only — no logic. | Depended on by al-lsp, al-cli, al-explorer, al-mcp |
 | `al-test-harness` | Lib | Keep | Full-stack integration harness: spawns al-lsp, tests via JSON-RPC, validates full pipeline | Depends on al-lsp (spawns it as a process) |
 
 **Dependency Direction (Target)**
@@ -57,9 +58,9 @@ Analysis libraries (no upward deps):
 - Toolchain model (`AlToolchain`, analyzer paths) → `al-core` (toolchain module)
 - Symbol model (`SymbolEntry`, `ObjectKind`, `SymbolPackage`) → `al-symbols`
 - Query results (hover, definition, completions, rename edits) → `al-core`
-- JSON-RPC protocol types (shared between al-lsp, al-cli, al-mcp, al-explorer) → `al-core::jsonrpc` (exported as a small standalone types crate or feature-gated)
+- JSON-RPC protocol types (shared between al-lsp, al-cli, al-mcp, al-explorer) → `al-protocol` (standalone types-only crate)
 
-**Note on JSON-RPC types**: al-cli, al-explorer, and al-mcp need to know the request/response JSON schemas to communicate with al-lsp. These types should be defined in a shared location. Options: (a) a small `al-protocol` crate with just the type definitions, (b) al-cli/al-explorer/al-mcp use raw serde_json, (c) al-core re-exports them behind a feature flag. Implementation agent decides.
+**Decision: `al-protocol` crate.** A tiny crate containing only the JSON-RPC request/response serde structs, method names, and error codes. Thin adapters depend on `al-protocol` (types only, no logic). al-lsp and al-core also depend on it. This preserves the thin-adapter mandate (no al-core dependency) while providing type safety (better than raw serde_json). The crate has no analysis logic — just `#[derive(Serialize, Deserialize)]` structs.
 
 ---
 
@@ -88,7 +89,7 @@ Analysis libraries (no upward deps):
 - `crates/al-core/src/project.rs` — `app.json` parsing and project discovery.
 - `crates/al-core/src/toolchain.rs` — `ALTool` discovery and validation.
 - `crates/al-core/src/launch.rs` — `launch.json` parsing.
-- `crates/al-core/src/jsonrpc.rs` — Shared JSON-RPC types for al-lsp daemon protocol.
+- ~~`crates/al-core/src/jsonrpc.rs`~~ — **Moved to `al-protocol` crate** (see shared types decision above).
 - `crates/al-core/src/insight/mod.rs` — Insight engine entrypoint.
 - `crates/al-core/src/insight/index.rs` — Graph builders (Call, Event, Table).
 - `crates/al-core/src/insight/graph.rs` — Graph data structures (Petgraph).

@@ -45,10 +45,10 @@ This atlas is a living document. New entries are added whenever a gap is discove
 
 ### ST-06: .NET Bridge Crash Recovery
 
-- **Scenario**: semantic bridge process killed mid-request, exits with segfault, returns malformed JSON
-- **Attack vectors**: deadlock waiting for response, orphan child process, state corruption
-- **Pass criteria**: bridge enters Failed state, auto-restarts (max 3), pending requests get BridgeCrashed error, no orphan processes
-- **Test method**: kill bridge process during lint request, verify recovery
+- **Scenario**: in-process CLR bridge (via `netcorehost`) throws unhandled exception, corrupts state, or hangs mid-request. NOTE: the bridge is NOT a subprocess — it is in-process CLR hosting. Failure means the host Rust process itself may be affected.
+- **Attack vectors**: CLR exception during reflection call, bridge state corruption, deadlock in function pointer call, malformed JSON response from AlBridge.dll
+- **Pass criteria**: bridge enters Failed state, `BridgeCrashed` error returned to pending requests, al-lsp continues serving syntax-only features without the bridge, bridge can be re-initialized (max 3 attempts)
+- **Test method**: inject malformed response from bridge, trigger exception via invalid analyzer path, verify graceful degradation to syntax-only mode
 
 ### ST-07: Multi-Root Workspace
 
