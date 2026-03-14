@@ -36,5 +36,5 @@ Run `/fix-infra` with the issue number, or spawn the infra-fixer agent directly.
 - **Date**: 2026-03-14
 - **Category**: agent
 - **Severity**: improvement
-- **Description**: Supervisor correctly identifies pre-existing issues (8 test failures in data_driven, 3 clippy errors in al-symbols, PoF placeholder entry) as blocking. These are application bugs predating the infrastructure work, not regressions. The supervisor/start-work flow needs guidance on distinguishing pre-existing baseline state from regressions — currently it blocks on everything, which would prevent WP1 from starting even though those failures exist in the committed baseline. Consider: (a) establishing a baseline test count at session start and only blocking on regressions, or (b) having the supervisor note known pre-existing failures separately from new regressions.
-- **Status**: open
+- **Description**: Supervisor was treating all issues as blocking. Redesigned: supervisor now triages each finding as STOP (must fix now), PARALLEL (fix in background), or SCHEDULE (log for later). The /supervise skill dispatches fixers based on triage — STOP items block, PARALLEL items spawn background agents, SCHEDULE items go to docs/issues.md. Pre-existing test failures get triaged as PARALLEL (fix in background) not STOP, so they don't block task work.
+- **Status**: fixed

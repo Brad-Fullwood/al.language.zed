@@ -8,7 +8,14 @@ You are starting a work session. Follow these steps in order.
 
 ## Step 0: Supervision
 
-Run `/supervise`. This runs the infrastructure self-test, verifies all previously claimed progress is real, and resets the edit counter. If it reports BLOCKED, fix those issues first.
+Run `/supervise`. It will:
+1. Run infrastructure CI (26 tests)
+2. Spawn supervisor to verify compilation, tests, progress, architecture
+3. Triage every finding as STOP / PARALLEL / SCHEDULE
+4. Fix STOP items immediately, dispatch PARALLEL fixers in background, log SCHEDULE items
+5. Reset the edit counter
+
+Do NOT proceed to Step 1 until all STOP items are resolved. PARALLEL fixers can run while you work.
 
 ## Step 1: Find Your Task
 
@@ -34,7 +41,7 @@ Check off the task in `docs/progress.md` with date and summary.
 
 ## Step 6: Continue or Stop
 
-Go back to Step 1 for the next task. The Stop hook tracks your edits — after 15 .rs edits it will block and force `/supervise`. You don't need to remember to call it.
+Go back to Step 1 for the next task. The Stop hook tracks your edits — after 15 .rs edits it will block and force `/supervise` which re-triages everything.
 
 At end of a Work Package, run `/audit <WP>`.
 
