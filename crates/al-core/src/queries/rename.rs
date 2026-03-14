@@ -51,13 +51,13 @@ pub fn rename(
     if !refs.is_empty() {
         let edits: Vec<TextEdit> = refs
             .iter()
-            .map(|r| {
-                let matched_text = &text[r.start_byte..r.end_byte];
+            .filter_map(|r| {
+                let matched_text = text.get(r.start_byte..r.end_byte)?;
                 let replacement = make_rename_text(node.kind(), matched_text, new_name);
-                TextEdit {
+                Some(TextEdit {
                     range: al_syntax::ts_range_to_lsp(r).into(),
                     new_text: replacement,
-                }
+                })
             })
             .collect();
         changes.push((uri.clone(), edits));
@@ -79,13 +79,13 @@ pub fn rename(
         if !refs.is_empty() {
             let edits: Vec<TextEdit> = refs
                 .iter()
-                .map(|r| {
-                    let matched_text = &file_text[r.start_byte..r.end_byte];
+                .filter_map(|r| {
+                    let matched_text = file_text.get(r.start_byte..r.end_byte)?;
                     let replacement = make_rename_text("", matched_text, new_name);
-                    TextEdit {
+                    Some(TextEdit {
                         range: al_syntax::ts_range_to_lsp(r).into(),
                         new_text: replacement,
-                    }
+                    })
                 })
                 .collect();
             changes.push((file_uri, edits));

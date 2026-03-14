@@ -163,7 +163,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
 
     // 4. Check built-in types
     {
-        let builtins = workspace.builtins.read().unwrap().clone();
+        let builtins = workspace.builtins.read().ok()?.clone();
         for bt in builtins.iter() {
             if bt.name.eq_ignore_ascii_case(clean_name) {
                 let methods_list: Vec<String> = bt

@@ -72,7 +72,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     // textual fallback
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-    if refs.len() > 1 {
+    if !refs.is_empty() {
         let first = &refs[0];
         let def_range: Range = al_syntax::ts_range_to_lsp(first).into();
         if def_range.start != position {

@@ -37,9 +37,22 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
     let text = workspace.documents.get_text(uri)?;
 
     let line_idx = lsp_pos.line as usize;
-    let col = lsp_pos.character as usize;
+    let col_utf16 = lsp_pos.character as usize;
     let line = text.lines().nth(line_idx)?;
-    let prefix = if col <= line.len() { &line[..col] } else { line };
+    // Convert UTF-16 column offset to a byte offset for slicing the &str.
+    let col_byte = {
+        let mut utf16_remaining = col_utf16;
+        let mut byte_off = line.len(); // default: end of line
+        for (byte_idx, ch) in line.char_indices() {
+            if utf16_remaining == 0 {
+                byte_off = byte_idx;
+                break;
+            }
+            utf16_remaining = utf16_remaining.saturating_sub(ch.len_utf16());
+        }
+        byte_off
+    };
+    let prefix = &line[..col_byte];
 
     let (func_name, active_param) = al_syntax::find_call_context(prefix)?;
 
@@ -109,7 +122,7 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
     }
 
     // Built-in types — collect all overloads
-    let builtins = workspace.builtins.read().unwrap().clone();
+    let builtins = workspace.builtins.read().ok()?.clone();
     let mut signatures = Vec::new();
     for bt in builtins.iter() {
         for method in &bt.methods {

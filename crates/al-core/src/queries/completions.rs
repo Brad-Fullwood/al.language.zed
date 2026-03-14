@@ -233,7 +233,10 @@ fn add_default_completions(
         });
     }
 
-    let builtins = workspace.builtins.read().unwrap().clone();
+    let builtins = match workspace.builtins.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return,
+    };
     for bt in builtins.iter() {
         items.push(CompletionEntry {
             label: bt.name.clone(),
@@ -254,8 +257,8 @@ fn count_params(detail: &str) -> usize {
     let mut depth = 0i32;
     for ch in inner.chars() {
         match ch {
-            '(' | '[' | '<' => depth += 1,
-            ')' | ']' | '>' => depth -= 1,
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
             ';' if depth == 0 => count += 1,
             _ => {}
         }
@@ -264,6 +267,9 @@ fn count_params(detail: &str) -> usize {
 }
 
 fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
+    // Sort so that non-keyword items precede keywords before dedup, ensuring
+    // a workspace procedure with the same name as a keyword is not shadowed.
+    items.sort_by_key(|item| if item.kind == CompletionKind::Keyword { 1u8 } else { 0u8 });
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.label.to_lowercase()));
 
