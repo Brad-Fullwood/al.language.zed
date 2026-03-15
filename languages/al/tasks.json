@@ -1,11 +1,27 @@
 [
   {
-    "label": "AL: Open Object Explorer",
-    "command": "al-explorer",
-    "use_new_terminal": true,
-    "allow_concurrent_runs": false,
-    "reveal": "always",
-    "tags": ["al-open-object-explorer"]
+    "label": "AL: Package (Compile)",
+    "command": "al",
+    "args": ["package"],
+    "tags": ["al-package"]
+  },
+  {
+    "label": "AL: Package (JSON output)",
+    "command": "al",
+    "args": ["package", "--json"],
+    "tags": ["al-package-json"]
+  },
+  {
+    "label": "AL: Debug Start",
+    "command": "al",
+    "args": ["debug", "start"],
+    "tags": ["al-debug-start"]
+  },
+  {
+    "label": "AL: Debug Stop",
+    "command": "al",
+    "args": ["debug", "stop"],
+    "tags": ["al-debug-stop"]
   },
   {
     "label": "AL: Download Symbols (Server)",
@@ -20,10 +36,22 @@
     "tags": ["al-download-symbols-nuget"]
   },
   {
+    "label": "AL: Lint Current File",
+    "command": "al",
+    "args": ["lint", "$ZED_FILE"],
+    "tags": ["al-lint"]
+  },
+  {
     "label": "AL: Lint All",
     "command": "al",
     "args": ["lint", "--all"],
     "tags": ["al-lint-all"]
+  },
+  {
+    "label": "AL: Format Current File",
+    "command": "al",
+    "args": ["format", "$ZED_FILE"],
+    "tags": ["al-format"]
   },
   {
     "label": "AL: Format All",
@@ -32,9 +60,41 @@
     "tags": ["al-format-all"]
   },
   {
+    "label": "AL: Doctor",
+    "command": "al",
+    "args": ["doctor"],
+    "tags": ["al-doctor"]
+  },
+  {
+    "label": "AL: New Project",
+    "command": "al",
+    "args": ["new", "."],
+    "tags": ["al-new-project"]
+  },
+  {
+    "label": "AL: Generate Permission Set",
+    "command": "al",
+    "args": ["permissions", "al", "GENERATED"],
+    "tags": ["al-permissions"]
+  },
+  {
+    "label": "AL: Open Object Explorer",
+    "command": "al-explorer",
+    "use_new_terminal": true,
+    "allow_concurrent_runs": false,
+    "reveal": "always",
+    "tags": ["al-open-object-explorer"]
+  },
+  {
     "label": "AL: Clear Symbol Cache",
     "command": "al",
     "args": ["clear-cache"],
     "tags": ["al-clear-cache"]
+  },
+  {
+    "label": "AL: Event Trace",
+    "command": "al",
+    "args": ["trace", "$ZED_SYMBOL", "--json"],
+    "tags": ["al-trace"]
   }
 ]

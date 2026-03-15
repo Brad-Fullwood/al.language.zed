@@ -71,3 +71,52 @@ Likely issue: workspace_with_files() doesn't properly populate file_index.files
 or tree-sitter node kinds don't match (procedure_declaration vs method_declaration).
 """
 reason = "Pre-existing dead_code module test failures — needs investigation of workspace fixture setup and tree-sitter grammar node kind alignment."
+
+[[issue]]
+id = "dead-code-tableextension-fields-not-checked"
+task = "dead-code-followup"
+file = "crates/al-core/src/queries/dead_code.rs"
+description = """
+find_unused_fields() only runs for objects where obj_kind_lower == "table".
+tableextension objects also define new fields (inside a fields { } block), but
+those added fields are never checked for deadness. A developer adding a field
+to a table extension that's never referenced from a page/codeunit won't be warned.
+"""
+reason = "Missing feature — tableextension field analysis uses the same grammar patterns but the object kind check needs to include 'tableextension'. Defer until dead-code detection is generally enabled."
+
+[[issue]]
+id = "dead-code-find-variable-references-name-collision"
+task = "dead-code-followup"
+file = "crates/al-core/src/queries/dead_code.rs"
+description = """
+find_variable_references() matches identifier/quoted_identifier/name nodes case-insensitively.
+For procedure detection, a procedure named 'Name' could match ANY 'Name' token in the file
+(including parameter names, record field access like Rec.Name, etc.). This causes false
+negatives: procedures with short common names like 'Init', 'Name', 'Code', 'Post' would
+never be flagged as unused because they match ubiquitous identifiers elsewhere.
+
+Similarly for table field detection: a field named 'Status' would appear in many other
+AL files as a local variable or different field reference, so it would never appear unused.
+
+The root cause is that find_variable_references is designed for local variable references
+within a procedure scope, not for cross-file symbol reference counting.
+"""
+reason = "Requires a smarter reference-counting approach: either scope-aware AST analysis or tracking qualified references (Object.ProcedureName). Architectural change needed in al-syntax or a new dedicated pass in dead_code.rs."
+
+[[issue]]
+id = "symbol-cache-concurrent-process-rename-race"
+task = "T801-followup"
+file = "crates/al-symbols/src/cache.rs"
+description = """
+The atomic write (write to .tmp then rename) prevents partial writes within one process,
+but does not handle the case of two daemon processes starting simultaneously with the same
+project path. Both will get a cache miss for the same .app file, both will parse it, and
+both will write to the same .tmp path and rename to the same .cache path. On Linux,
+rename(2) is atomic so the last rename wins cleanly. However, both processes independently
+wrote a .tmp file to the same path — the second fs::write to .tmp silently clobbers the
+first process's .tmp, and then the second rename is a no-op if the first already completed.
+In practice this is benign on Linux (both processes write identical data), but on Windows
+rename is not atomic and could corrupt the cache file. Also, the .tmp file from a crashed
+process is never cleaned up.
+"""
+reason = "Benign on Linux due to atomic rename and identical content. Fixing the Windows case and tmp cleanup requires either a per-process unique tmp filename (e.g. using PID or random suffix) or a file lock. Defer until Windows support is needed."

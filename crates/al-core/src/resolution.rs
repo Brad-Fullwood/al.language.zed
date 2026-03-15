@@ -360,7 +360,7 @@ fn is_access_char(ch: u8) -> bool {
 }
 
 fn is_identifier_char(ch: u8) -> bool {
-    ch.is_ascii_alphanumeric() || ch == b'_'
+    ch.is_ascii_alphanumeric() || ch == b'_' || ch >= 0x80
 }
 
 fn clean_access_text(value: &str) -> String {
@@ -1331,14 +1331,27 @@ mod tests {
     }
 
     #[test]
-    fn receiver_chain_before_non_ascii_identifier() {
-        // Line has a non-ASCII identifier before the dot.
-        // "Ønske." — 'Ø' is 2 UTF-8 bytes, 1 UTF-16 code unit.
-        // byte layout: Ø(2) n s k e . = bytes 0..7
-        // UTF-16:       0   1 2 3 4 5 = 6 code units for "Ønske."
-        // position.character = 6 (points just past the '.', i.e. end of "Ønske.")
-        let source = "Ønske.";
+    fn receiver_chain_before_non_ascii_prefix() {
+        // The line starts with a 2-byte UTF-8 character ('ÿ', U+00FF) followed by
+        // an ASCII identifier and a trailing dot.
+        //
+        //   "ÿRec."
+        //   bytes:    [0xC3, 0xBF, 'R', 'e', 'c', '.']   (6 bytes)
+        //   UTF-16:     0            1    2    3    4   -> utf16_len = 5
+        //
+        // OLD (buggy) code: prefix = &line[..5] = "ÿRec" (byte 5 is before '.')
+        //   trimmed has no trailing '.', returns None  <- wrong
+        //
+        // NEW (fixed) code: utf16_col_to_byte_offset converts col 5 -> byte 6
+        //   prefix = &line[..6] = "ÿRec." -> trimmed ends with '.'
+        //   is_identifier_char includes bytes >= 0x80, so the full token "ÿRec"
+        //   is extracted as the receiver.
+        let source = "ÿRec.";
         let utf16_len: usize = source.chars().map(|c| c.len_utf16()).sum();
+        // Sanity: 'ÿ' is 2 UTF-8 bytes but 1 UTF-16 unit, so lengths differ.
+        assert_eq!(source.len(), 6, "6 bytes");
+        assert_eq!(utf16_len, 5, "5 UTF-16 code units");
+
         let (receiver, kind) = receiver_chain_before(
             source,
             Position {
@@ -1346,8 +1359,10 @@ mod tests {
                 character: utf16_len as u32,
             },
         )
-        .expect("receiver before trailing dot with non-ASCII identifier");
-        assert_eq!(receiver, "Ønske");
+        // Before the fix this returned None because the prefix was sliced at byte 5
+        // (UTF-16 col used as byte index), cutting off the trailing '.'.
+        .expect("receiver before trailing dot when line has multi-byte prefix");
+        assert_eq!(receiver, "ÿRec");
         assert_eq!(kind, AccessKind::Member);
     }
 }

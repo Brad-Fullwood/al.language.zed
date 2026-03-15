@@ -7,10 +7,10 @@
 //! - `al debug start` (via al-dap-client, which has its own simpler version)
 
 use std::path::{Path, PathBuf};
-use std::process::Output;
 
 use al_protocol::AlToolchain;
 use serde::Serialize;
+use tokio::process::Command;
 
 use crate::errors::AlError;
 
@@ -54,10 +54,25 @@ pub enum DiagnosticSeverity {
 /// Returns a structured `CompileResult` with success/failure, the .app path,
 /// and parsed diagnostics. Does NOT fail on compilation errors — those are
 /// returned as diagnostics in the result.
-pub fn compile_project(
+///
+/// Uses `tokio::process::Command` to avoid blocking the tokio worker thread
+/// during what can be a 30+ second compilation.
+/// Optional list of analyzer names to enable (e.g., ["CodeCop", "AppSourceCop"]).
+/// If None, all available analyzers are used.
+pub async fn compile_project(
     toolchain: &AlToolchain,
     project_root: &Path,
     package_cache: Option<&Path>,
+) -> Result<CompileResult, AlError> {
+    compile_project_with_analyzers(toolchain, project_root, package_cache, None).await
+}
+
+/// Compile with specific analyzer selection.
+pub async fn compile_project_with_analyzers(
+    toolchain: &AlToolchain,
+    project_root: &Path,
+    package_cache: Option<&Path>,
+    analyzer_filter: Option<&[String]>,
 ) -> Result<CompileResult, AlError> {
     if !project_root.join("app.json").is_file() {
         return Err(AlError::DocumentNotOpen(format!(
@@ -66,7 +81,7 @@ pub fn compile_project(
         )));
     }
 
-    let mut cmd = std::process::Command::new("dotnet");
+    let mut cmd = Command::new("dotnet");
     cmd.arg(toolchain.alc.display().to_string());
     cmd.arg(format!("/project:{}", project_root.display()));
     cmd.arg(format!("/out:{}", project_root.display()));
@@ -79,17 +94,24 @@ pub fn compile_project(
         cmd.arg(format!("/packagecachepath:{}", pkg_dir.display()));
     }
 
-    // Add analyzers if available
+    // Add analyzers — filtered if a specific list is requested
+    let all_analyzers = [
+        ("CodeCop", &toolchain.analyzers.code_cop),
+        ("AppSourceCop", &toolchain.analyzers.app_source_cop),
+        ("UICop", &toolchain.analyzers.ui_cop),
+        ("PerTenantCop", &toolchain.analyzers.per_tenant_cop),
+    ];
     let mut analyzer_paths = Vec::new();
-    for analyzer in [
-        &toolchain.analyzers.code_cop,
-        &toolchain.analyzers.app_source_cop,
-        &toolchain.analyzers.ui_cop,
-        &toolchain.analyzers.per_tenant_cop,
-    ] {
-        if analyzer.is_file() {
-            analyzer_paths.push(analyzer.display().to_string());
+    for (name, path) in &all_analyzers {
+        if !path.is_file() {
+            continue;
         }
+        if let Some(filter) = analyzer_filter {
+            if !filter.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+                continue;
+            }
+        }
+        analyzer_paths.push(path.display().to_string());
     }
     if !analyzer_paths.is_empty() {
         cmd.arg(format!("/analyzer:{}", analyzer_paths.join(",")));
@@ -98,7 +120,7 @@ pub fn compile_project(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let output: Output = cmd.output()?;
+    let output = cmd.output().await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -185,15 +207,56 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
 }
 
 /// Find the .app file produced by compilation.
+///
+/// First tries to construct the expected filename from app.json
+/// (`{publisher}_{name}_{version}.app`) to avoid returning a stale artifact
+/// when multiple .app files from old builds are present in the project root.
+/// Falls back to the most-recently-modified .app file if the manifest cannot
+/// be read or the expected path does not exist.
 fn find_app_file(project_root: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(project_root).ok()?; // SILENT: dir read failure means no .app
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "app") {
-            return Some(path);
-        }
+    // Try the deterministic path derived from app.json
+    if let Some(path) = find_app_file_from_manifest(project_root) {
+        return Some(path);
     }
-    None
+
+    // Fallback: pick the most recently modified .app in the project root
+    let entries = std::fs::read_dir(project_root).ok()?; // SILENT: dir read failure means no .app
+    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension().is_some_and(|ext| ext == "app") {
+                let mtime = e.metadata().ok()?.modified().ok()?;
+                Some((mtime, path))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    candidates.sort_by(|a, b| b.0.cmp(&a.0)); // most-recent first
+    candidates.into_iter().next().map(|(_, path)| path)
+}
+
+/// Derive the expected .app filename from `app.json` fields.
+///
+/// alc names the output `{publisher}_{name}_{version}.app` in the directory
+/// passed to `/out:` (the project root in our case).
+fn find_app_file_from_manifest(project_root: &Path) -> Option<PathBuf> {
+    let manifest_bytes = std::fs::read(project_root.join("app.json")).ok()?; // SILENT: missing manifest handled by caller
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).ok()?; // SILENT: malformed JSON handled by caller
+
+    let publisher = manifest.get("publisher")?.as_str()?;
+    let name = manifest.get("name")?.as_str()?;
+    let version = manifest.get("version")?.as_str()?;
+
+    let filename = format!("{publisher}_{name}_{version}.app");
+    let path = project_root.join(&filename);
+    if path.is_file() {
+        Some(path)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -267,8 +330,8 @@ Build failed.";
         assert!(json.contains("\"diagnostics\""));
     }
 
-    #[test]
-    fn compile_no_app_json_returns_error() {
+    #[tokio::test]
+    async fn compile_no_app_json_returns_error() {
         let dir = tempfile::tempdir().unwrap();
         let tc = al_protocol::AlToolchain {
             version: "1.0.0".to_string(),
@@ -284,8 +347,42 @@ Build failed.";
                 common: PathBuf::new(),
             },
         };
-        let result = compile_project(&tc, dir.path(), None);
+        let result = compile_project(&tc, dir.path(), None).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("app.json"));
+    }
+
+    #[test]
+    fn find_app_file_prefers_manifest_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Write app.json
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
+        )
+        .unwrap();
+
+        // Create a stale .app with a different name (old build artifact)
+        std::fs::write(root.join("OldPub_OldApp_1.0.0.0.app"), b"stale").unwrap();
+
+        // Create the expected .app from the manifest
+        std::fs::write(root.join("MyPub_MyApp_2.0.0.0.app"), b"fresh").unwrap();
+
+        let result = find_app_file(root).unwrap();
+        assert_eq!(result.file_name().unwrap(), "MyPub_MyApp_2.0.0.0.app");
+    }
+
+    #[test]
+    fn find_app_file_falls_back_to_most_recent_when_no_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // No app.json — manifest lookup will fail gracefully
+        std::fs::write(root.join("Some_1.0.0.0.app"), b"only one").unwrap();
+
+        let result = find_app_file(root).unwrap();
+        assert_eq!(result.file_name().unwrap(), "Some_1.0.0.0.app");
     }
 }

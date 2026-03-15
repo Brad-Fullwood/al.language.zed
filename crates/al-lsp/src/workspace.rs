@@ -80,9 +80,10 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
                 }
             }
 
-            // Load .alpackages / cached packages
+            // Load .alpackages / cached packages (disk cache for fast warm starts)
             if !project.packages.is_empty() {
-                let loaded = server.workspace.symbols.load_packages(&project.packages);
+                let cache = al_core::symbols::cache::SymbolCache::default_location();
+                let loaded = server.workspace.symbols.load_packages_cached(&project.packages, &cache);
                 info!(
                     loaded = loaded.len(),
                     total_symbols = server.workspace.symbols.len(),
@@ -366,8 +367,9 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         return;
     }
 
-    // Reload symbol index
-    let loaded = server.workspace.symbols.load_packages(&packages);
+    // Reload symbol index (with cache for fast subsequent starts)
+    let cache = al_core::symbols::cache::SymbolCache::default_location();
+    let loaded = server.workspace.symbols.load_packages_cached(&packages, &cache);
     server.workspace.symbols.load_runtime_enums();
     info!(
         loaded = loaded.len(),

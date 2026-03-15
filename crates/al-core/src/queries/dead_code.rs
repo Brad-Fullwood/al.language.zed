@@ -142,18 +142,27 @@ fn find_unused_procedures(
             continue;
         }
 
-        // Check if this procedure name appears in ANY file (including its own)
-        let referenced = all_files.iter().any(|(other_path, other_text, other_tree)| {
-            // For the defining file, check if the name is referenced beyond its declaration
-            let refs = al_syntax::find_variable_references(other_tree, other_text, proc_name);
+        // Check if this procedure name appears anywhere (cross-file or same-file calls).
+        //
+        // In the declaring file, the procedure name appears at least twice in the tree
+        // (the `name` node and its `identifier` child inside the declaration). A same-file
+        // reference beyond the declaration means refs > 2.  In other files any match counts.
+        let referenced_in_other_file = all_files.iter().any(|(other_path, other_text, other_tree)| {
             if *other_path == file_path {
-                // In the same file, references beyond the declaration count
-                // (a procedure that's only mentioned once — at its declaration — is unused)
-                refs.len() > 1
-            } else {
-                !refs.is_empty()
+                return false;
             }
+            let refs = al_syntax::find_variable_references(other_tree, other_text, proc_name);
+            !refs.is_empty()
         });
+
+        let referenced_in_same_file = {
+            let refs = al_syntax::find_variable_references(file_tree, file_text, proc_name);
+            // The declaration itself produces 2 matching nodes (name + identifier child).
+            // Any additional match means the procedure is called within the file.
+            refs.len() > 2
+        };
+
+        let referenced = referenced_in_other_file || referenced_in_same_file;
 
         if !referenced {
             results.push(UnusedSymbol {
@@ -236,16 +245,14 @@ fn has_event_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
 fn find_unused_fields(
     file_path: &str,
     file_text: &str,
-    file_tree: &tree_sitter::Tree,
+    _file_tree: &tree_sitter::Tree,
     object_name: &str,
     all_files: &[(&str, &str, &tree_sitter::Tree)],
     results: &mut Vec<UnusedSymbol>,
 ) {
-    let root = file_tree.root_node();
-    let source = file_text.as_bytes();
     let mut fields = Vec::new();
 
-    collect_fields(root, source, &mut fields);
+    collect_fields_from_text(file_text, &mut fields);
 
     for (field_name, line) in &fields {
         // Check if this field name appears in any OTHER file
@@ -270,38 +277,35 @@ fn find_unused_fields(
     }
 }
 
-/// Recursively collect field declarations: (name, line_1based).
-fn collect_fields(node: tree_sitter::Node, source: &[u8], fields: &mut Vec<(String, u32)>) {
-    if node.kind() == "field_declaration" {
-        // Field name is the "name" field or the second meaningful child
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(name) = name_node.utf8_text(source) {
-                let name = name.trim_matches('"').to_string();
-                if !name.is_empty() {
-                    fields.push((name, node.start_position().row as u32 + 1));
-                }
-            }
-        } else {
-            // Fallback: look for quoted_identifier or string child
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if matches!(child.kind(), "quoted_identifier" | "string") {
-                    if let Ok(name) = child.utf8_text(source) {
-                        let name = name.trim_matches('"').trim_matches('\'').to_string();
-                        if !name.is_empty() {
-                            fields.push((name, node.start_position().row as u32 + 1));
-                            break;
-                        }
+/// Extract field names from AL table source text.
+///
+/// The grammar doesn't have a `field_declaration` node type, so we use
+/// text-based extraction matching `field(id; "Name"; Type)` patterns.
+fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
+    for (line_idx, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        // Match: field(id; "Name"; ...) or field(id; Name; ...)
+        if let Some(rest) = trimmed.strip_prefix("field(").or_else(|| trimmed.strip_prefix("field (")) {
+            // Extract name: skip the id part (before first ;), then get the name
+            if let Some(after_semi) = rest.find(';').map(|i| &rest[i + 1..]) {
+                let name_part = after_semi.trim();
+                // Name is either "quoted" or unquoted until next ;
+                let name = if let Some(stripped) = name_part.strip_prefix('"') {
+                    // Find closing quote
+                    stripped.find('"').map(|i| &stripped[..i])
+                } else {
+                    // Unquoted: take until ; or )
+                    let end = name_part.find([';', ')']).unwrap_or(name_part.len());
+                    Some(name_part[..end].trim())
+                };
+
+                if let Some(name) = name {
+                    if !name.is_empty() {
+                        fields.push((name.to_string(), line_idx as u32 + 1));
                     }
                 }
             }
         }
-        return;
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_fields(child, source, fields);
     }
 }
 
@@ -321,9 +325,18 @@ fn find_orphaned_subscribers(
     collect_event_subscribers(root, source, &mut subscribers);
 
     for (proc_name, target_object, _target_event, line) in &subscribers {
-        // Check if the target object exists in the symbol index OR in workspace files
+        // Skip entries where attribute parsing failed to extract a target object name.
+        // An empty target would cause false positives (nothing in the index matches "").
+        if target_object.is_empty() {
+            continue;
+        }
+
+        // Check if the target object exists in the symbol index OR in workspace files.
+        // Use get_by_name (exact, case-insensitive) rather than search (fuzzy substring)
+        // to avoid false negatives where an unrelated symbol name contains the target
+        // as a substring.
         let target_lower = target_object.to_lowercase();
-        let exists_in_symbols = !workspace.symbols.search(&target_lower, 1).is_empty();
+        let exists_in_symbols = !workspace.symbols.get_by_name(&target_lower).is_empty();
         let exists_in_workspace = workspace
             .file_index
             .find_by_object_name(&target_lower)
@@ -401,11 +414,12 @@ fn get_preceding_attribute(node: tree_sitter::Node, source: &[u8]) -> Option<Str
 /// Parse the target object and event from an EventSubscriber attribute text.
 /// Format: [EventSubscriber(ObjectType::Codeunit, Codeunit::"Name", 'Event', ...)]
 fn parse_subscriber_args(attr_text: &str) -> (String, String) {
-    // Find content between parentheses
-    let inner = attr_text
-        .find('(')
-        .and_then(|start| attr_text.rfind(')').map(|end| &attr_text[start + 1..end]))
-        .unwrap_or("");
+    // Find content between the first '(' and the last ')'.
+    // Guard against malformed text where '(' appears after ')'.
+    let inner = match (attr_text.find('('), attr_text.rfind(')')) {
+        (Some(start), Some(end)) if start < end => &attr_text[start + 1..end],
+        _ => "",
+    };
 
     // Split by commas, respecting quoted strings
     let args = split_args(inner);
@@ -468,7 +482,6 @@ fn split_args(s: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_index::FileIndex;
     use crate::workspace::Workspace;
     use std::path::PathBuf;
 

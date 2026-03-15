@@ -25,6 +25,23 @@ pub mod token_types {
     pub const BUILTIN_TYPE: u32 = 14;
     pub const SELF_KEYWORD: u32 = 15;
 
+    // Extended AL-specific types (MS parity)
+    pub const BUILTIN_FUNCTION: u32 = 16;
+    pub const GLOBAL_VARIABLE: u32 = 17;
+    pub const LOCAL_VARIABLE: u32 = 18;
+    pub const TABLE_FIELD: u32 = 19;
+    pub const PAGE_CONTROL: u32 = 20;
+    pub const PAGE_ACTION: u32 = 21;
+    pub const TRIGGER_NAME: u32 = 22;
+    pub const PREPROCESSOR_KEYWORD: u32 = 23;
+    pub const EXCLUDED_CODE: u32 = 24;
+    pub const TABLE_KEY: u32 = 25;
+    pub const TABLE_FIELD_GROUP: u32 = 26;
+    pub const REPORT_LABEL: u32 = 27;
+    pub const EVENT_CREATION: u32 = 28;
+    pub const EVENT_SUBSCRIPTION: u32 = 29;
+    pub const RETURN_PARAMETER: u32 = 30;
+
     /// The legend entries in order, for registering with the LSP server.
     pub const LEGEND: &[&str] = &[
         "keyword",
@@ -43,6 +60,21 @@ pub mod token_types {
         "objectKeyword",
         "builtinType",
         "selfKeyword",
+        "builtinFunction",
+        "globalVariable",
+        "localVariable",
+        "tableField",
+        "pageControl",
+        "pageAction",
+        "triggerName",
+        "preprocessorKeyword",
+        "excludedCode",
+        "tableKey",
+        "tableFieldGroup",
+        "reportLabel",
+        "eventCreation",
+        "eventSubscription",
+        "returnParameter",
     ];
 }
 
@@ -289,7 +321,8 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         "comment" => Some(token_types::COMMENT),
 
         // Directives (preprocessor) — distinguished from comments
-        "directive" | "inactive_code" => Some(token_types::DIRECTIVE),
+        "directive" => Some(token_types::PREPROCESSOR_KEYWORD),
+        "inactive_code" => Some(token_types::EXCLUDED_CODE),
 
         _ => None,
     }
@@ -320,13 +353,26 @@ fn is_trigger_variable(text: &str) -> bool {
 fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
     let parent = node.parent()?;
     match parent.kind() {
-        // Function/procedure names
-        "procedure_declaration"
-        | "trigger_declaration"
-        | "event_procedure_declaration"
-        | "event_declaration" => {
+        // Procedure names
+        "procedure_declaration" | "event_procedure_declaration" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::FUNCTION)
+            } else {
+                None
+            }
+        }
+        // Trigger names — distinct from procedures
+        "trigger_declaration" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::TRIGGER_NAME)
+            } else {
+                None
+            }
+        }
+        // Event declarations (IntegrationEvent, BusinessEvent)
+        "event_declaration" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::EVENT_CREATION)
             } else {
                 None
             }
@@ -339,15 +385,30 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 None
             }
         }
-        // Variable declarations
+        // Variable declarations (both local and global use the same grammar node)
         "regular_variable_declaration" => {
             if is_regular_variable_name(node, parent) {
-                Some(token_types::VARIABLE)
+                // Check if inside a procedure (local) vs object-level (global)
+                if has_ancestor_kind(node, "procedure_declaration")
+                    || has_ancestor_kind(node, "trigger_declaration")
+                {
+                    Some(token_types::LOCAL_VARIABLE)
+                } else {
+                    Some(token_types::GLOBAL_VARIABLE)
+                }
             } else {
                 None
             }
         }
-        "label_declaration" | "object_variable_declaration" => {
+        // Object-level variable declarations (explicit grammar node when present)
+        "object_variable_declaration" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::GLOBAL_VARIABLE)
+            } else {
+                None
+            }
+        }
+        "label_declaration" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::VARIABLE)
             } else {
@@ -377,6 +438,22 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         "attribute" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::NAMESPACE)
+            } else {
+                None
+            }
+        }
+        // Table field names
+        "field_declaration" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::TABLE_FIELD)
+            } else {
+                None
+            }
+        }
+        // Table key names
+        "key_declaration" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::TABLE_KEY)
             } else {
                 None
             }
@@ -738,8 +815,9 @@ mod tests {
         let result = parser.parse(source);
         let tokens = extract_semantic_tokens(&result.tree, source);
 
-        assert_token_type_for_text(source, &tokens, "FirstVar", token_types::VARIABLE);
-        assert_token_type_for_text(source, &tokens, r#""Second Var""#, token_types::VARIABLE);
+        // Object-level vars are GLOBAL_VARIABLE
+        assert_token_type_for_text(source, &tokens, "FirstVar", token_types::GLOBAL_VARIABLE);
+        assert_token_type_for_text(source, &tokens, r#""Second Var""#, token_types::GLOBAL_VARIABLE);
     }
 
     #[test]

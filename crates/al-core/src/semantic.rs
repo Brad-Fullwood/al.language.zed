@@ -240,6 +240,12 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
         .ok_or(AlError::NoToolchain)?;
 
     let mut write_guard = workspace.semantic.write().await;
+
+    // Double-check: another task may have re-initialized between our take() and this lock
+    if write_guard.is_some() {
+        return Ok(());
+    }
+
     let bridge = SemanticBridge::new(&toolchain)?;
     *write_guard = Some(bridge);
     Ok(())

@@ -1,14 +1,39 @@
 ; Outline/symbol rules for AL
+; Provides breadcrumb navigation and symbol outline in Zed
 
+; Top-level object declarations
 (object_declaration
   kind: (_) @context
   name: (_) @name) @item
 
+; Procedures and methods
 (procedure_declaration
   name: (_) @name) @item
 
+; Triggers (OnRun, OnInsert, etc.)
 (trigger_declaration
   name: (_) @name) @item
 
+; Event declarations
 (event_declaration
+  name: (_) @name) @item
+
+; Event procedure declarations
+(event_procedure_declaration
+  name: (_) @name) @item
+
+; Table field declarations
+(field_declaration
+  name: (_) @name) @item
+
+; Key declarations
+(key_declaration
+  name: (_) @name) @item
+
+; Enum value declarations
+(enum_value_declaration
+  name: (_) @name) @item
+
+; Variable declarations (global)
+(object_variable_declaration
   name: (_) @name) @item

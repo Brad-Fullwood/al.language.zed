@@ -95,6 +95,9 @@ enum Commands {
         /// Also run semantic diagnostics via .NET CodeAnalysis (requires ALTool)
         #[arg(long)]
         semantic: bool,
+        /// Analyzers to run (comma-separated: CodeCop,AppSourceCop,UICop,PerTenantCop)
+        #[arg(long)]
+        analyzers: Option<String>,
     },
     /// Format AL code
     Format {
@@ -262,6 +265,20 @@ enum Commands {
     /// Show insight graph statistics
     #[command(name = "insight-stats")]
     InsightStats,
+    /// Find unused code (procedures, fields, orphaned subscribers)
+    #[command(name = "dead-code")]
+    DeadCode,
+    /// Dependency impact analysis — who consumes this symbol?
+    Impact {
+        /// Symbol to analyze (e.g., "Customer", "Customer.\"Credit Limit\"", "Sales-Post.PostDocument")
+        symbol: String,
+    },
+    /// Suggest event publishers for a business scenario
+    #[command(name = "suggest-event")]
+    SuggestEvent {
+        /// Natural-language description of the business scenario
+        description: String,
+    },
     /// Query diagnostic trace database
     Diag {
         #[command(subcommand)]
@@ -834,12 +851,16 @@ fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
     }
 }
 
-fn cmd_lint(file: Option<&str>, all: bool, _semantic: bool, json: bool) -> ExitCode {
+fn cmd_lint(file: Option<&str>, all: bool, _semantic: bool, analyzers: Option<&str>, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
     let mut params = serde_json::json!({ "all": all });
+    if let Some(a) = analyzers {
+        let analyzer_list: Vec<&str> = a.split(',').map(|s| s.trim()).collect();
+        params["analyzers"] = serde_json::json!(analyzer_list);
+    }
     if let Some(f) = file {
         if let Some(uri) = file_to_uri(f) {
             params["uri"] = serde_json::json!(uri);
@@ -1468,6 +1489,110 @@ fn cmd_insight_stats(json: bool) -> ExitCode {
     }
 }
 
+fn cmd_dead_code(json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    match client.request("deadCode", None) {
+        Ok(result) => {
+            if json {
+                print_json_value(&result);
+            } else {
+                let unused = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                if unused.is_empty() {
+                    println!("No dead code found.");
+                } else {
+                    println!("{:<12} {:<30} {:<30} {}", "KIND", "NAME", "OBJECT", "REASON");
+                    println!("{}", "-".repeat(85));
+                    for item in unused {
+                        let kind = item.get("k").and_then(|v| v.as_str()).unwrap_or("?");
+                        let name = item.get("n").and_then(|v| v.as_str()).unwrap_or("?");
+                        let obj = item.get("obj").and_then(|v| v.as_str()).unwrap_or("?");
+                        let reason = item.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("{:<12} {:<30} {:<30} {}", kind, name, obj, reason);
+                    }
+                    eprintln!("\n{} unused symbols", unused.len());
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+fn cmd_impact(symbol: &str, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    match client.request("impact", Some(serde_json::json!({ "symbol": symbol }))) {
+        Ok(result) => {
+            if json {
+                print_json_value(&result);
+            } else {
+                let sym = result.get("symbol").and_then(|v| v.as_str()).unwrap_or(symbol);
+                let impacted = result.get("impacted").and_then(|v| v.as_array()).map(|v| &v[..]).unwrap_or(&[]);
+                if impacted.is_empty() {
+                    println!("No consumers found for '{sym}'.");
+                } else {
+                    println!("Impact analysis for '{sym}':\n");
+                    println!("{:<15} {:<30} {:<15} {}", "KIND", "NAME", "TYPE", "DETAIL");
+                    println!("{}", "-".repeat(75));
+                    for entry in impacted {
+                        let kind = entry.get("k").and_then(|v| v.as_str()).unwrap_or("?");
+                        let name = entry.get("n").and_then(|v| v.as_str()).unwrap_or("?");
+                        let impact_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                        let detail = entry.get("proc").and_then(|v| v.as_str())
+                            .or_else(|| entry.get("field").and_then(|v| v.as_str()))
+                            .unwrap_or("");
+                        println!("{:<15} {:<30} {:<15} {}", kind, name, impact_type, detail);
+                    }
+                    eprintln!("\n{} consumers", impacted.len());
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+fn cmd_suggest_event(description: &str, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    match client.request("suggestEvent", Some(serde_json::json!({ "description": description }))) {
+        Ok(result) => {
+            if json {
+                print_json_value(&result);
+            } else {
+                let suggestions = result.get("suggestions").and_then(|v| v.as_array()).map(|v| &v[..]).unwrap_or(&[]);
+                if suggestions.is_empty() {
+                    println!("No matching events found for: {description}");
+                } else {
+                    println!("Suggested events for: {description}\n");
+                    for (i, s) in suggestions.iter().enumerate() {
+                        let event = s.get("event").and_then(|v| v.as_str()).unwrap_or("?");
+                        let obj = s.get("obj").and_then(|v| v.as_str()).unwrap_or("?");
+                        let etype = s.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                        let why = s.get("why").and_then(|v| v.as_str()).unwrap_or("");
+                        let example = s.get("example").and_then(|v| v.as_str()).unwrap_or("");
+                        println!("{}. {} ({}) — {}", i + 1, event, etype, obj);
+                        println!("   {why}");
+                        println!("   {example}\n");
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
 fn cmd_diag(subcmd: &DiagCommands, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -1900,7 +2025,7 @@ fn main() -> ExitCode {
         Commands::Packages => cmd_packages(cli.json),
         Commands::Deps => cmd_deps(cli.json),
         Commands::Compile { project, alc: _ } => cmd_compile(project.as_deref(), cli.json),
-        Commands::Lint { file, all, semantic } => cmd_lint(file.as_deref(), all, semantic, cli.json),
+        Commands::Lint { file, all, semantic, analyzers } => cmd_lint(file.as_deref(), all, semantic, analyzers.as_deref(), cli.json),
         Commands::Format { file, check, stdin, all } => cmd_format(file.as_deref(), check, stdin, all, cli.json),
         Commands::Symbols { file } => cmd_symbols(&file, cli.json),
         Commands::Hover { file, line, col } => cmd_hover(&file, line, col, cli.json),
@@ -1938,6 +2063,9 @@ fn main() -> ExitCode {
         Commands::Entrypoints => cmd_entrypoints(cli.json),
         Commands::Graph { format } => cmd_graph(&format, cli.json),
         Commands::InsightStats => cmd_insight_stats(cli.json),
+        Commands::DeadCode => cmd_dead_code(cli.json),
+        Commands::Impact { symbol } => cmd_impact(&symbol, cli.json),
+        Commands::SuggestEvent { description } => cmd_suggest_event(&description, cli.json),
         Commands::Diag { subcmd } => cmd_diag(&subcmd, cli.json),
         Commands::Debug { subcmd } => cmd_debug(&subcmd, cli.json),
     }

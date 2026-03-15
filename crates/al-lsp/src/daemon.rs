@@ -223,10 +223,13 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "entrypoints" => dispatch_entrypoints(workspace, id),
         "graphExport" => dispatch_graph_export(workspace, id, &params),
         "insightStats" => dispatch_insight_stats(workspace, id),
+        "deadCode" => dispatch_dead_code(workspace, id),
+        "impact" => dispatch_impact(workspace, id, &params),
+        "suggestEvent" => dispatch_suggest_event(workspace, id, &params),
         // Semantic / toolchain
         "permissions" => dispatch_permissions(workspace, id, &params),
         "compile" => dispatch_compile(workspace, id),
-        "package" => dispatch_package(workspace, id),
+        "package" => dispatch_package(workspace, id).await,
         "newProject" => dispatch_new_project(id, &params),
         "errorCodes" => dispatch_error_codes(workspace, id),
         "builtinTypes" => dispatch_builtin_types(workspace, id),
@@ -242,7 +245,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
             Response { id, result: Some(serde_json::json!("ok")), error: None }
         }
         "status" => {
-            let cache_stats = workspace.semantic_cache.read().ok().map(|c| {
+            let cache_stats = workspace.semantic_cache.read().ok().map(|c| { // SILENT: avoid RwLock poison panic per CLAUDE.md
                 let (hits, misses) = c.stats();
                 serde_json::json!({ "types": c.len(), "hits": hits, "misses": misses, "version": c.version() })
             });
@@ -1036,6 +1039,59 @@ fn dispatch_source(workspace: &Workspace, id: u64, params: &serde_json::Value) -
 }
 
 // ---------------------------------------------------------------------------
+// Dead code detection
+// ---------------------------------------------------------------------------
+
+fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
+    let unused = al_core::queries::dead_code::dead_code(workspace);
+    Response {
+        id,
+        result: Some(serde_json::to_value(&unused).unwrap_or_default()),
+        error: None,
+    }
+}
+
+fn dispatch_impact(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let symbol = params.get("symbol").and_then(|v| v.as_str()).unwrap_or("");
+    if symbol.is_empty() {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: "Missing 'symbol' parameter".to_string(),
+            }),
+        };
+    }
+    let entries = al_core::queries::impact::impact(workspace, symbol);
+    Response {
+        id,
+        result: Some(serde_json::json!({ "symbol": symbol, "impacted": entries })),
+        error: None,
+    }
+}
+
+fn dispatch_suggest_event(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let description = params.get("description").and_then(|v| v.as_str()).unwrap_or("");
+    if description.is_empty() {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: "Missing 'description' parameter".to_string(),
+            }),
+        };
+    }
+    let suggestions = al_core::queries::suggest_event::suggest_event(workspace, description);
+    Response {
+        id,
+        result: Some(serde_json::json!({ "query": description, "suggestions": suggestions })),
+        error: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Permission set generation
 // ---------------------------------------------------------------------------
 
@@ -1188,7 +1244,7 @@ fn dispatch_compile(workspace: &Workspace, id: u64) -> Response {
     }
 }
 
-fn dispatch_package(workspace: &Workspace, id: u64) -> Response {
+async fn dispatch_package(workspace: &Workspace, id: u64) -> Response {
     let tc = match workspace.toolchain.try_read() {
         // SILENT: avoid RwLock poison panic per CLAUDE.md
         Ok(guard) => guard.clone(),
@@ -1244,7 +1300,7 @@ fn dispatch_package(workspace: &Workspace, id: u64) -> Response {
         }
     };
 
-    match al_core::build::compile_project(&toolchain, &project_root, None) {
+    match al_core::build::compile_project(&toolchain, &project_root, None).await {
         Ok(result) => Response {
             id,
             // SILENT: serialization of valid struct should not fail
@@ -1359,8 +1415,8 @@ fn dispatch_setup(workspace: &Workspace, id: u64) -> Response {
 
 fn dispatch_clear_cache(id: u64) -> Response {
     let cache_dir = dirs::cache_dir()
-        .map(|d| d.join("al-lsp").join("packages"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/packages"));
+        .map(|d| d.join("al-lsp").join("index"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/index"));
 
     let existed = cache_dir.exists();
     if existed {
@@ -2035,8 +2091,9 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
                 "daemon: project discovered"
             );
 
-            // Load symbol packages
-            let loaded = workspace.symbols.load_packages(&project.packages);
+            // Load symbol packages (with disk cache for fast warm starts)
+            let cache = al_core::symbols::cache::SymbolCache::default_location();
+            let loaded = workspace.symbols.load_packages_cached(&project.packages, &cache);
             let total_symbols: usize = loaded.iter().map(|p| p.objects.len()).sum();
             tracing::info!(packages = loaded.len(), symbols = total_symbols, "daemon: loaded symbol packages");
 

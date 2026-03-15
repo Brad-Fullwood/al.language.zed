@@ -281,8 +281,14 @@ fn merge_optional_path(
     key: &str,
     target: &mut Option<PathBuf>,
 ) {
-    if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
-        *target = if v.is_empty() { None } else { Some(PathBuf::from(v)) };
+    match obj.get(key) {
+        Some(serde_json::Value::Null) => *target = None,
+        Some(v) => {
+            if let Some(s) = v.as_str() {
+                *target = if s.is_empty() { None } else { Some(PathBuf::from(s)) };
+            }
+        }
+        None => {}
     }
 }
 
@@ -291,8 +297,14 @@ fn merge_optional_string(
     key: &str,
     target: &mut Option<String>,
 ) {
-    if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
-        *target = if v.is_empty() { None } else { Some(v.to_string()) };
+    match obj.get(key) {
+        Some(serde_json::Value::Null) => *target = None,
+        Some(v) => {
+            if let Some(s) = v.as_str() {
+                *target = if s.is_empty() { None } else { Some(s.to_string()) };
+            }
+        }
+        None => {}
     }
 }
 

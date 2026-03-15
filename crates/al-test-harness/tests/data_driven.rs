@@ -1,16 +1,6 @@
 //! Data-driven tests — hundreds of specific input→output assertions against the
 //! real Debar project.  Each test starts ONE server, opens ALL files, then runs
 //! a batch of checks so the total wall-clock time stays manageable.
-//!
-//! # Known Failures (T001 baseline, 2026-03-14)
-//!
-//! - `test_hover_data_driven`: 7/97 assertions fail in ItemJournalStaging.Table.al.
-//!   Procedures (SetJournalData, GetJournalData, SetErrorMessage, GetErrorMessage)
-//!   return null hover — cross-file procedure resolution not yet implemented.
-//!   Types (OutStream, InStream, Text) return null — builtin type hover incomplete.
-//!
-//! - `test_document_symbols_data_driven`: 1/76 assertions fail in IJLProcessStaging.Report.al.
-//!   `OnPreDataItem` trigger not found — report dataitem trigger extraction missing.
 
 use al_test_harness::*;
 use std::path::PathBuf;
@@ -127,15 +117,15 @@ async fn open_all_debar_files(client: &mut LspClient) {
 /// (file, line, col, substring_that_must_appear_in_hover)
 const HOVER_CASES: &[(&str, u32, u32, &str)] = &[
     // ── Table: ItemJournalStaging.Table.al ──
-    // Procedure declarations
-    ("objects/API/ItemJournalStaging.Table.al", 121, 30, "procedure SetJournalData"),
-    ("objects/API/ItemJournalStaging.Table.al", 130, 30, "procedure GetJournalData"),
-    ("objects/API/ItemJournalStaging.Table.al", 143, 30, "procedure SetErrorMessage"),
-    ("objects/API/ItemJournalStaging.Table.al", 152, 30, "procedure GetErrorMessage"),
-    // Local variable types
-    ("objects/API/ItemJournalStaging.Table.al", 123, 10, "OutStream"),         // OutStream var
-    ("objects/API/ItemJournalStaging.Table.al", 132, 10, "InStream"),          // InStream var
-    ("objects/API/ItemJournalStaging.Table.al", 133, 10, "Text"),              // Data: Text
+    // Procedure declarations (0-based line numbers; col 30 = inside procedure name)
+    ("objects/API/ItemJournalStaging.Table.al", 120, 30, "procedure SetJournalData"),
+    ("objects/API/ItemJournalStaging.Table.al", 129, 30, "procedure GetJournalData"),
+    ("objects/API/ItemJournalStaging.Table.al", 142, 30, "procedure SetErrorMessage"),
+    ("objects/API/ItemJournalStaging.Table.al", 151, 30, "procedure GetErrorMessage"),
+    // Local variable types (0-based line numbers; col 10 = inside variable name)
+    ("objects/API/ItemJournalStaging.Table.al", 122, 10, "OutStream"),         // OutStream var
+    ("objects/API/ItemJournalStaging.Table.al", 131, 10, "InStream"),          // InStream var
+    ("objects/API/ItemJournalStaging.Table.al", 132, 10, "Text"),              // Data: Text
 
     // ── Codeunit: IJLAPIHelper.Codeunit.al ──
     // Procedure declarations

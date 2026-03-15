@@ -14,6 +14,7 @@
 //! - [`nuget`] — NuGet v3 client for downloading symbol packages
 
 pub mod app_reader;
+pub mod cache;
 pub mod composition;
 pub mod events;
 pub mod index;

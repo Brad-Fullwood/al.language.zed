@@ -1,7 +1,5 @@
 //! AlServer state and LSP lifecycle.
 
-use std::sync::Arc;
-
 use al_core::workspace::Workspace;
 use al_core::syntax::AlParser;
 use tokio::sync::RwLock;
@@ -758,9 +756,9 @@ impl LanguageServer for AlServer {
 ///
 /// Uses `LspService::new` to get a real `Client` without starting I/O.
 #[cfg(test)]
-pub(crate) fn test_server() -> Arc<AlServer> {
+pub(crate) fn test_server() -> std::sync::Arc<AlServer> {
     let (service, _socket) = LspService::new(AlServer::new);
-    Arc::new(AlServer::new(service.inner().client.clone()))
+    std::sync::Arc::new(AlServer::new(service.inner().client.clone()))
 }
 
 /// Run the LSP server on stdin/stdout.

@@ -102,6 +102,54 @@ pub struct SymbolIndex {
         packages
     }
 
+    /// Load and index .app files with disk caching.
+    ///
+    /// For each .app file, checks the disk cache first. If the cache is valid
+    /// (same file modification time and size), loads from cache. Otherwise,
+    /// parses the .app file and saves the result to cache.
+    pub fn load_packages_cached(
+        &self,
+        paths: &[impl AsRef<Path>],
+        cache: &crate::cache::SymbolCache,
+    ) -> Vec<SymbolPackage> {
+        let mut packages = Vec::new();
+
+        for path in paths {
+            let path = path.as_ref();
+
+            // Try cache first
+            if let Some(pkg) = cache.load(path) {
+                self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
+                self.add_entries(&pkg.objects);
+                packages.push(pkg);
+                continue;
+            }
+
+            // Cache miss — parse from .app file
+            match app_reader::read_app_file(path) {
+                Ok(pkg) => {
+                    debug!(
+                        name = %pkg.name,
+                        objects = pkg.objects.len(),
+                        "Loaded package (cache miss)"
+                    );
+                    // Save to cache for next time
+                    if let Err(e) = cache.save(path, &pkg) {
+                        warn!(path = %path.display(), error = %e, "Failed to save to cache");
+                    }
+                    self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
+                    self.add_entries(&pkg.objects);
+                    packages.push(pkg);
+                }
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "Failed to load .app file");
+                }
+            }
+        }
+
+        packages
+    }
+
     /// Load a package from raw bytes (useful for in-memory / test scenarios).
     pub fn load_package_bytes(&self, data: &[u8]) -> Result<SymbolPackage, app_reader::AppReaderError> {
         let pkg = app_reader::read_app_bytes(data)?;

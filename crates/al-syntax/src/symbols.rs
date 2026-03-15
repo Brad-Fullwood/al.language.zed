@@ -466,6 +466,64 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
     }
 }
 
+/// Scan a `braced_block` for trigger declarations that the grammar parses as raw tokens.
+///
+/// Inside dataitem bodies and some action blocks, `trigger OnPreDataItem()` is not
+/// parsed as a `trigger_declaration` node — it appears as:
+///   `control_keyword("trigger")` + `identifier("OnPreDataItem")` + `parenthesized_block("()")`
+///
+/// This function walks the block's children looking for that pattern.
+#[allow(deprecated)]
+fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
+    let mut cursor = block.walk();
+    if !cursor.goto_first_child() { return; }
+
+    loop {
+        let child = cursor.node();
+        // Look for control_keyword with text "trigger"
+        if child.kind() == "control_keyword" {
+            if let Ok(text) = child.utf8_text(source) {
+                if text.eq_ignore_ascii_case("trigger") {
+                    // Next non-punctuation sibling should be the trigger name
+                    let trigger_kw_range = child.range();
+                    if let Some(name_node) = child.next_sibling() {
+                        let name_kind = name_node.kind();
+                        if matches!(name_kind, "identifier" | "name" | "name_or_keyword" | "keyword") {
+                            if let Ok(name_text) = name_node.utf8_text(source) {
+                                let name = name_text.trim_matches('"').to_string();
+                                if !name.is_empty() {
+                                    let range = tower_lsp::lsp_types::Range {
+                                        start: tower_lsp::lsp_types::Position {
+                                            line: trigger_kw_range.start_point.row as u32,
+                                            character: trigger_kw_range.start_point.column as u32,
+                                        },
+                                        end: tower_lsp::lsp_types::Position {
+                                            line: name_node.range().end_point.row as u32,
+                                            character: name_node.range().end_point.column as u32,
+                                        },
+                                    };
+                                    let selection_range = crate::ts_range_to_lsp(&name_node.range());
+                                    symbols.push(DocumentSymbol {
+                                        name,
+                                        detail: Some("trigger".to_string()),
+                                        kind: SymbolKind::EVENT,
+                                        tags: None,
+                                        deprecated: None,
+                                        range,
+                                        selection_range,
+                                        children: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !cursor.goto_next_sibling() { break; }
+    }
+}
+
 /// Try to extract a page control symbol from a metadata_keyword node.
 /// Looks ahead at next_sibling() for parenthesized_block and braced_block.
 #[allow(deprecated)]
@@ -516,10 +574,13 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
         .map(|p| ts_range_to_lsp(&p.range()))
         .unwrap_or(ts_range_to_lsp(&kw_node.range()));
 
-    // Extract children from the body braced_block
+    // Extract children from the body braced_block.
+    // Also scan for trigger declarations that the grammar parses as raw tokens
+    // (e.g., `trigger OnPreDataItem()` inside a dataitem body).
     let mut nested = Vec::new();
     if let Some(body) = body_node {
         extract_section_body_children(body, source, &mut nested);
+        extract_triggers_from_braced_block(body, source, &mut nested);
     }
 
     Some(DocumentSymbol {
@@ -916,5 +977,64 @@ mod tests {
         assert_eq!(vars[2].name, "CaptionLbl");
         assert_eq!(vars[2].detail.as_deref(), Some("Label"));
         assert!(vars.iter().all(|var| var.name != "(unnamed)"));
+    }
+
+    #[test]
+    fn test_extract_symbols_report_dataitem_trigger() {
+        let src = r#"report 50200 "IJL Process Staging"
+{
+    dataset
+    {
+        dataitem(StagingRec; "Item Journal Staging")
+        {
+            RequestFilterFields = "Entry No.", Status;
+
+            trigger OnPreDataItem()
+            begin
+                // body
+            end;
+        }
+    }
+
+    trigger OnPostReport()
+    begin
+    end;
+
+    procedure SetAction(NewAction: Enum "IJL Process Action")
+    begin
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let symbols = extract_document_symbols(&result.tree, src);
+
+        // Collect all names recursively
+        fn collect_names(syms: &[DocumentSymbol]) -> Vec<String> {
+            let mut names = Vec::new();
+            for sym in syms {
+                names.push(sym.name.clone());
+                if let Some(children) = &sym.children {
+                    names.extend(collect_names(children));
+                }
+            }
+            names
+        }
+
+        let all_names = collect_names(&symbols);
+        assert!(
+            all_names.iter().any(|n| n == "OnPreDataItem"),
+            "OnPreDataItem trigger should be in document symbols. Got: {:?}",
+            all_names
+        );
+        assert!(
+            all_names.iter().any(|n| n == "OnPostReport"),
+            "OnPostReport trigger should be in document symbols. Got: {:?}",
+            all_names
+        );
+        assert!(
+            all_names.iter().any(|n| n == "StagingRec"),
+            "StagingRec dataitem should be in document symbols. Got: {:?}",
+            all_names
+        );
     }
 }

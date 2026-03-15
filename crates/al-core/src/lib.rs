@@ -46,6 +46,9 @@ pub mod syntax {
 /// Re-exports from al-symbols for al-lsp consumption.
 pub mod symbols {
     pub use al_symbols::{ObjectKind, SymbolIndex};
+    pub mod cache {
+        pub use al_symbols::cache::SymbolCache;
+    }
     pub mod virtual_file {
         pub use al_symbols::virtual_file::{app_has_source, cache_dir};
     }
