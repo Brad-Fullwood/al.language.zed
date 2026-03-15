@@ -108,8 +108,16 @@ impl App {
 
     fn init_workspace(&mut self) -> Result<(), Box<dyn Error>> {
         let root = std::env::current_dir()?;
-        if let Ok(project) = al_protocol::project::find_project(&root) {
-            let loaded = self.symbols.load_packages(&project.packages);
+        let packages_dir = root.join(".alpackages");
+        let packages: Vec<std::path::PathBuf> = std::fs::read_dir(&packages_dir)
+            .into_iter()
+            .flat_map(|entries| entries.into_iter())
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("app")))
+            .collect();
+        if !packages.is_empty() {
+            let loaded = self.symbols.load_packages(&packages);
             
             // Extract unique package names directly from loaded data
             let mut pkg_names: Vec<String> = loaded.into_iter().map(|p| p.name).collect();

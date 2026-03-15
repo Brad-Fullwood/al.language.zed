@@ -5,6 +5,7 @@
 //! the responses for human or --json output.
 
 mod client;
+mod jsonrpc;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

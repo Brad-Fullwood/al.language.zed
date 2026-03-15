@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-al-protocol = { path = "../al-protocol" }
 al-syntax = { path = "../al-syntax" }
 al-symbols = { path = "../al-symbols" }
 al-semantic = { path = "../al-semantic" }
@@ -19,6 +18,7 @@ ropey = { workspace = true }
 tracing = { workspace = true }
 tree-sitter = "0.25"
 url = "2"
+urlencoding = "2"
 petgraph = { workspace = true }
 
 [dev-dependencies]

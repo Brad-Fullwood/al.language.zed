@@ -53,7 +53,7 @@ pub mod symbols {
         pub use al_symbols::virtual_file::{app_has_source, cache_dir};
     }
     pub mod bc_server {
-        pub use al_symbols::bc_server::{BcServerClient, MessageSink};
+        pub use al_symbols::bc_server::{AuthMethod, BcServerClient, MessageSink};
     }
     pub mod nuget {
         pub use al_symbols::nuget::{AppDependency, NuGetClient, NuGetFeed};

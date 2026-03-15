@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use al_protocol::AlToolchain;
+use crate::toolchain::AlToolchain;
 use serde::Serialize;
 use tokio::process::Command;
 
@@ -333,13 +333,13 @@ Build failed.";
     #[tokio::test]
     async fn compile_no_app_json_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let tc = al_protocol::AlToolchain {
+        let tc = crate::toolchain::AlToolchain {
             version: "1.0.0".to_string(),
             dotnet_root: PathBuf::from("/nonexistent"),
             alc: PathBuf::from("/nonexistent/alc.dll"),
             aldoc: None,
             code_analysis: PathBuf::new(),
-            analyzers: al_protocol::AnalyzerPaths {
+            analyzers: crate::toolchain::AnalyzerPaths {
                 code_cop: PathBuf::new(),
                 app_source_cop: PathBuf::new(),
                 ui_cop: PathBuf::new(),

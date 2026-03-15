@@ -402,12 +402,6 @@ pub struct SymbolIndex {
         crate::events::get_events(self, query)
     }
 
-    /// Create a symbol index pre-loaded with packages from an [`al_protocol::AlProject`].
-    pub fn from_project(project: &al_protocol::AlProject) -> Self {
-        let index = Self::new();
-        index.load_packages(&project.packages);
-        index
-    }
 }
 
 #[cfg(test)]

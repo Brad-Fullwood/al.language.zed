@@ -15,7 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use al_semantic::{BuiltinMethod, BuiltinType, SemanticBridge};
 use tokio::sync::RwLockReadGuard;
 
+
 use crate::workspace::Workspace;
+
 
 // ---------------------------------------------------------------------------
 // SemanticCache — in-memory builtin type index
@@ -198,7 +200,7 @@ pub async fn get_or_init_bridge(
         return Some(write_guard.downgrade());
     }
 
-    match SemanticBridge::new(&toolchain) {
+    match SemanticBridge::new(&toolchain.code_analysis, &toolchain.version) {
         Ok(bridge) => {
             tracing::info!("Semantic bridge initialized");
             *write_guard = Some(bridge);
@@ -246,7 +248,7 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
         return Ok(());
     }
 
-    let bridge = SemanticBridge::new(&toolchain)?;
+    let bridge = SemanticBridge::new(&toolchain.code_analysis, &toolchain.version)?;
     *write_guard = Some(bridge);
     Ok(())
 }

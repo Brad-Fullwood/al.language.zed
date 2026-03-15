@@ -1,13 +1,32 @@
 //! Unified error hierarchy for the AL workspace.
 //!
-//! `AlError` wraps crate-level errors from al-protocol, al-semantic, and
-//! al-symbols so that al-core functions can use `Result<T, AlError>` with
-//! `?` conversion throughout. Query functions that return `Option<T>` for
-//! "nothing found" cases do NOT use AlError — Option is the correct type there.
+//! `AlError` wraps crate-level errors from al-semantic and al-symbols so that
+//! al-core functions can use `Result<T, AlError>` with `?` conversion throughout.
+//! Query functions that return `Option<T>` for "nothing found" cases do NOT use
+//! AlError — Option is the correct type there.
 
-pub use al_protocol::errors::DiscoveryError;
+use std::path::PathBuf;
 
 use thiserror::Error;
+
+/// Errors from project/toolchain discovery.
+#[derive(Debug, Error)]
+pub enum DiscoveryError {
+    #[error("ALTool is not installed. Install it with: {install_cmd}")]
+    AlToolNotInstalled { install_cmd: String },
+
+    #[error(".NET SDK is not installed")]
+    DotNetNotInstalled,
+
+    #[error("No AL project found (no app.json). Searched from {start} upward through: {searched}")]
+    NoProjectFound { start: PathBuf, searched: String },
+
+    #[error("Invalid app.json at {path}: {error}")]
+    InvalidAppJson { path: PathBuf, error: String },
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
 
 /// Unified error type for al-core operations.
 #[derive(Error, Debug)]

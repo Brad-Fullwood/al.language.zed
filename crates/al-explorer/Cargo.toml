@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-al-protocol = { version = "0.1.0", path = "../al-protocol" }
+
 al-symbols = { version = "0.1.0", path = "../al-symbols" }
 crossterm = "0.29.0"
 open = "5.3.3"

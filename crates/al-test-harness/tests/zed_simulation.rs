@@ -17,15 +17,19 @@ fn test_project_dir() -> PathBuf {
 }
 
 fn test_project_exists() -> bool {
-    let dir = test_project_dir();
-    if dir.join("app.json").exists() {
+    let path = match std::env::var("AL_TEST_PROJECT_PATH") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => {
+            eprintln!("\n[zed_simulation] SKIPPING: AL_TEST_PROJECT_PATH not set.\n");
+            return false;
+        }
+    };
+    if path.join("app.json").exists() {
         return true;
     }
     eprintln!(
-        "\n[zed_simulation] SKIPPING: AL test fixture not found at: {}\n\
-         Set AL_TEST_PROJECT_PATH to point to a valid AL project directory with app.json.\n\
-         Example: AL_TEST_PROJECT_PATH=/path/to/AL/project cargo test -p al-test-harness\n",
-        dir.display()
+        "\n[zed_simulation] SKIPPING: AL test fixture not found at: {}\n",
+        path.display()
     );
     false
 }

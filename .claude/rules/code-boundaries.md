@@ -14,8 +14,8 @@ zed-al (WASM)   ->  al-lsp (stdio)
 al-cli          ->  al-lsp daemon (runtime JSON-RPC)
 al-explorer     ->  al-lsp daemon (runtime JSON-RPC)
 al-mcp          ->  al CLI binary (subprocess, no compile-time al-* deps)
-al-lsp          ->  al-core, al-protocol, al-dap-client
-al-core         ->  al-syntax, al-symbols, al-semantic, al-dap-client, al-protocol
+al-lsp          ->  al-core, al-dap-client
+al-core         ->  al-syntax, al-symbols, al-semantic, al-dap-client
 ```
 
 Circular dependencies are forbidden. One Code Path: a query via CLI, Zed, MCP, or Explorer hits the same al-lsp -> al-core code path.
@@ -26,35 +26,26 @@ Analysis libs MUST NOT depend on al-protocol. Domain types (AlToolchain, AppDepe
 
 | Crate | MAY import | MUST NOT import |
 |-------|-----------|-----------------|
-| al-lsp | al-core, al-protocol, al-dap-client | al-cli, al-explorer, al-mcp |
-| al-core | al-syntax, al-symbols, al-semantic, al-dap-client, al-protocol | al-lsp, al-cli, al-explorer, al-mcp |
-| al-syntax | tree-sitter, ropey, tower-lsp | al-core, al-lsp, al-protocol, al-symbols, al-semantic |
-| al-symbols | serde | al-core, al-lsp, al-protocol, al-syntax, al-semantic |
-| al-semantic | netcorehost, tokio | al-core, al-lsp, al-protocol, al-syntax, al-symbols |
-| al-dap-client | tokio, serde | al-core, al-lsp, al-protocol, al-syntax, al-symbols, al-semantic |
-| al-protocol | serde, std | al-core, al-lsp, al-syntax, al-symbols, al-semantic, al-dap-client |
-| al-cli | al-protocol | al-core, al-syntax, al-symbols, al-semantic |
-| al-explorer | al-protocol | al-core, al-syntax, al-symbols, al-semantic |
-| al-mcp | (none — shells out to `al` binary) | al-core, al-protocol, al-syntax, al-symbols, al-semantic |
-| zed-al | zed_extension_api | al-core, al-syntax, al-symbols, al-semantic, al-protocol |
+| al-lsp | al-core, al-dap-client | al-cli, al-explorer, al-mcp |
+| al-core | al-syntax, al-symbols, al-semantic, al-dap-client | al-lsp, al-cli, al-explorer, al-mcp |
+| al-syntax | tree-sitter, ropey, tower-lsp | al-core, al-lsp, al-symbols, al-semantic |
+| al-symbols | serde | al-core, al-lsp, al-syntax, al-semantic |
+| al-semantic | netcorehost, tokio | al-core, al-lsp, al-syntax, al-symbols |
+| al-dap-client | tokio, serde | al-core, al-lsp, al-syntax, al-symbols, al-semantic |
+| al-mcp | (none — shells out to `al` binary) | al-core, al-syntax, al-symbols, al-semantic |
+| zed-al | zed_extension_api | al-core, al-syntax, al-symbols, al-semantic |
 
 ## Adapter Patterns
 
-**al-cli**: Thin adapter. Imports al-protocol for shared JSON-RPC types, connects to al-lsp daemon via JSON-RPC at runtime.
+**al-cli**: Thin adapter. Connects to al-lsp daemon via JSON-RPC at runtime.
 
-**al-explorer**: Thin adapter. Connects to al-lsp daemon via JSON-RPC at runtime. Imports al-protocol only. Currently violates this by importing al-symbols directly (ISSUE-017: must be refactored).
+**al-explorer**: Thin adapter. Connects to al-lsp daemon via JSON-RPC at runtime. Currently violates adapter pattern by importing al-symbols directly (ISSUE-017: must be refactored).
 
 **al-mcp**: MCP server that wraps the `al` CLI binary. Runs `al <command> --json` as subprocesses. Zero compile-time al-* dependencies.
 
 **zed-al**: WASM extension on wasm32-wasip1 target. Zed spawns al-lsp as a child process and communicates via stdio. No Unix sockets, filesystem, or native dependencies.
 
-## al-protocol Contract
-al-protocol is types-only: JSON-RPC Request, Response, RpcError, method names, error codes. It MUST NOT contain:
-- Domain types (AlToolchain, AlProject, AppDependency, BcServerConfig)
-- Discovery logic (find_project, find_toolchain)
-- Any function that does I/O, filesystem access, or computation
 
-Current violations tracked in issues.toml (ISSUE-014, ISSUE-021).
 
 ## al-syntax tower-lsp Dependency
 al-syntax imports tower-lsp for `Position`, `Range`, `DocumentSymbol`, `SymbolKind`,

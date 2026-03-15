@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use al_core::workspace::Workspace;
-use al_protocol::jsonrpc::{error_codes, Request, Response, RpcError};
+use al_core::jsonrpc::{error_codes, Request, Response, RpcError};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{Mutex, Notify};
@@ -1489,8 +1489,24 @@ fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json
                         "error": "No BC server config found"
                     })];
                 }
-                let client = al_core::symbols::bc_server::BcServerClient::new_cli(project_configs[0].clone());
-                let bc_results = client.download_all(&all_deps, &dest).await;
+                let cfg = &project_configs[0];
+                let auth = match cfg.authentication {
+                    al_core::launch::AuthMethod::Windows => al_core::symbols::bc_server::AuthMethod::Windows,
+                    al_core::launch::AuthMethod::UserPassword => al_core::symbols::bc_server::AuthMethod::UserPassword,
+                    al_core::launch::AuthMethod::AAD => al_core::symbols::bc_server::AuthMethod::AAD,
+                };
+                let client = al_core::symbols::bc_server::BcServerClient::new_cli(auth, cfg.tenant.clone());
+                let url_deps: Vec<(String, al_core::symbols::AppDependency)> = all_deps
+                    .iter()
+                    .filter_map(|dep| {
+                        let sym_dep = al_core::symbols::AppDependency {
+                            id: dep.id.clone(), name: dep.name.clone(),
+                            publisher: dep.publisher.clone(), version: dep.version.clone(),
+                        };
+                        cfg.dev_packages_url(dep).map(|url| (url, sym_dep))
+                    })
+                    .collect();
+                let bc_results = client.download_all(&url_deps, &dest).await;
                 bc_results
                     .into_iter()
                     .enumerate()
@@ -1508,7 +1524,7 @@ fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json
                     })
                     .collect()
             } else {
-                let feeds = al_protocol::project::nuget_feeds();
+                let feeds = al_core::project::nuget_feeds();
                 let nuget_feeds: Vec<al_core::symbols::NuGetFeed> = feeds
                     .iter()
                     .map(|f| al_core::symbols::NuGetFeed {
@@ -1634,7 +1650,7 @@ fn dispatch_insight_stats(workspace: &Workspace, id: u64) -> Response {
 
 async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     use al_dap_client::session::DebugSession;
-    use al_protocol::jsonrpc::error_codes;
+    use al_core::jsonrpc::error_codes;
 
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
         Some(c) => c,
@@ -1687,7 +1703,7 @@ async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Val
             let result = tokio::task::spawn_blocking(move || {
                 let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
                 rt.block_on(async {
-                    DebugSession::start(&toolchain, &project_root, config_name_clone.as_deref())
+                    DebugSession::start(&toolchain.alc, &toolchain.dotnet_root, &project_root, config_name_clone.as_deref())
                         .await
                         .map_err(|e| e.to_string())
                 })

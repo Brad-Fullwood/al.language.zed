@@ -8,7 +8,6 @@ name = "al"
 path = "src/main.rs"
 
 [dependencies]
-al-protocol = { path = "../al-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }

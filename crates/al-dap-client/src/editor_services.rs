@@ -8,9 +8,8 @@
 //!
 //! If not found, returns an error with instructions to download.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use al_protocol::AlToolchain;
 use tracing::info;
 
 use crate::DapError;
@@ -30,7 +29,9 @@ const PLATFORM_DIR: &str = "darwin";
 const PLATFORM_DIR: &str = "win32";
 
 /// Find the EditorServices.Host binary.
-pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError> {
+///
+/// `dotnet_root` is the directory containing `alc.dll` (the toolchain root).
+pub fn find_editor_services(dotnet_root: &Path) -> Result<PathBuf, DapError> {
     // Strategy 1: explicit env var
     if let Ok(path) = std::env::var("AL_EDITOR_SERVICES_PATH") {
         let p = PathBuf::from(&path);
@@ -46,7 +47,7 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
     }
 
     // Strategy 2: next to alc.dll
-    let alongside_alc = toolchain.dotnet_root.join(HOST_BINARY);
+    let alongside_alc = dotnet_root.join(HOST_BINARY);
     if alongside_alc.is_file() {
         info!("Found EditorServices.Host next to ALTool: {}", alongside_alc.display());
         return Ok(alongside_alc);
@@ -77,7 +78,7 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
          3. Install the AL extension in VS Code or Cursor (the binary will be found automatically)\n\
          4. Download the .vsix from the VS Code marketplace and extract\n\
             extension/bin/{PLATFORM_DIR}/ to ~/.cache/al-lsp/editor-services/",
-        toolchain.dotnet_root.display()
+        dotnet_root.display()
     )))
 }
 
@@ -145,26 +146,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn find_editor_services_uses_toolchain() {
+    fn find_editor_services_uses_dotnet_root() {
         // We can't guarantee the binary won't be found (it may be installed
         // via VS Code/Cursor on the dev machine). Just verify the function
         // doesn't panic and returns a valid result type.
-        let tc = AlToolchain {
-            version: "1.0.0".to_string(),
-            dotnet_root: PathBuf::from("/nonexistent/dotnet"),
-            alc: PathBuf::from("/nonexistent/dotnet/alc.dll"),
-            aldoc: None,
-            code_analysis: PathBuf::new(),
-            analyzers: al_protocol::AnalyzerPaths {
-                code_cop: PathBuf::new(),
-                app_source_cop: PathBuf::new(),
-                ui_cop: PathBuf::new(),
-                per_tenant_cop: PathBuf::new(),
-                common: PathBuf::new(),
-            },
-        };
+        let dotnet_root = PathBuf::from("/nonexistent/dotnet");
 
-        match find_editor_services(&tc) {
+        match find_editor_services(&dotnet_root) {
             Ok(path) => {
                 // Found via VS Code/Cursor — verify it's a real file
                 assert!(path.is_file(), "Path should be a file: {}", path.display());

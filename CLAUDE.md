@@ -14,15 +14,14 @@ zed-al (WASM)         ->  al-lsp (stdio)                            ->  al-seman
 | Crate | Role |
 |-------|------|
 | al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket) |
-| al-core | All state, queries, orchestration |
-| al-protocol | Shared JSON-RPC types. Types only, no logic |
+| al-core | All state, queries, orchestration. Owns JSON-RPC types, domain types, discovery logic |
 | al-syntax | Parser, type resolver, tree-sitter |
 | al-symbols | Symbol index for .app packages |
 | al-semantic | In-process .NET CLR via `netcorehost` |
 | al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host |
 | al-test-harness | LSP integration + data-driven tests (dev only) |
-| al-cli | Thin adapter: JSON-RPC client to al-lsp daemon. Imports al-protocol only |
-| al-explorer | TUI symbol browser: connects to al-lsp daemon via JSON-RPC. Imports al-protocol only |
+| al-cli | Thin adapter: JSON-RPC client to al-lsp daemon |
+| al-explorer | TUI symbol browser: connects to al-lsp daemon via JSON-RPC |
 | al-mcp | MCP server: shells out to `al` CLI binary. No al-* compile-time dependencies |
 | zed-al | WASM extension: connects to al-lsp via stdio |
 

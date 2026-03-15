@@ -227,8 +227,23 @@ async fn download_symbols_from_server(
                 c.show_message(tower_lsp::lsp_types::MessageType::INFO, m).await;
             });
         });
-    let client = al_core::symbols::bc_server::BcServerClient::new(config.clone(), message_sink);
-    let results = client.download_all(deps, &dest).await;
+    let auth = match config.authentication {
+        al_core::launch::AuthMethod::Windows => al_core::symbols::bc_server::AuthMethod::Windows,
+        al_core::launch::AuthMethod::UserPassword => al_core::symbols::bc_server::AuthMethod::UserPassword,
+        al_core::launch::AuthMethod::AAD => al_core::symbols::bc_server::AuthMethod::AAD,
+    };
+    let client = al_core::symbols::bc_server::BcServerClient::new(auth, config.tenant.clone(), message_sink);
+    let url_deps: Vec<(String, al_core::symbols::AppDependency)> = deps
+        .iter()
+        .filter_map(|dep| {
+            let sym_dep = al_core::symbols::AppDependency {
+                id: dep.id.clone(), name: dep.name.clone(),
+                publisher: dep.publisher.clone(), version: dep.version.clone(),
+            };
+            config.dev_packages_url(dep).map(|url| (url, sym_dep))
+        })
+        .collect();
+    let results = client.download_all(&url_deps, &dest).await;
 
     let mut downloaded = Vec::new();
     for (i, result) in results.into_iter().enumerate() {

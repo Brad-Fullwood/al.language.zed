@@ -19,7 +19,7 @@ mod editor_services;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use al_protocol::AlToolchain;
+use al_core::toolchain::AlToolchain;
 use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info, warn};

@@ -8,6 +8,7 @@
 //! al-core, al-syntax, or al-symbols.
 
 pub mod client;
+pub mod config;
 pub mod editor_services;
 pub mod framing;
 pub mod protocol;

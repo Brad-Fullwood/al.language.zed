@@ -3,6 +3,10 @@
 //! This is the standard "Download Symbols" approach used in VS Code.
 //! The BC server exposes a `/dev/packages` endpoint that returns `.app` files
 //! when authenticated with appropriate credentials.
+//!
+//! The caller (al-core) is responsible for constructing per-package download URLs
+//! using its own `BcServerConfig`. This client handles only HTTP transport and
+//! authentication.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,10 +14,16 @@ use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use al_protocol::launch::BcServerConfig;
-use al_protocol::AppDependency;
-
+use crate::nuget::AppDependency;
 use crate::oauth;
+
+/// Authentication method for BC server connections.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AuthMethod {
+    Windows,
+    UserPassword,
+    AAD,
+}
 
 #[derive(Debug, Error)]
 pub enum BcServerError {
@@ -29,8 +39,6 @@ pub enum BcServerError {
     Io(#[from] std::io::Error),
     #[error("No credentials available. Set BC_USERNAME and BC_PASSWORD environment variables.")]
     CredentialsRequired,
-    #[error("Cannot construct download URL for this configuration")]
-    InvalidConfig,
     #[error("OAuth error: {0}")]
     OAuth(#[from] oauth::OAuthError),
 }
@@ -39,17 +47,22 @@ pub enum BcServerError {
 pub type MessageSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Client for downloading symbol packages from a BC instance's Dev API.
+///
+/// The caller is responsible for constructing the per-dependency download URL
+/// (e.g., using `BcServerConfig::dev_packages_url` in al-core) and passing it
+/// to [`download_one`].
 pub struct BcServerClient {
     client: reqwest::Client,
-    config: BcServerConfig,
+    auth: AuthMethod,
+    tenant: Option<String>,
     message_sink: MessageSink,
     /// Cached access token for the session (avoids re-auth per package).
     cached_token: tokio::sync::OnceCell<String>,
 }
 
 impl BcServerClient {
-    /// Create a new client with a custom message sink for auth prompts.
-    pub fn new(config: BcServerConfig, message_sink: MessageSink) -> Self {
+    /// Create a new client with explicit auth method and message sink for auth prompts.
+    pub fn new(auth: AuthMethod, tenant: Option<String>, message_sink: MessageSink) -> Self {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true) // On-prem often uses self-signed certs
             .timeout(std::time::Duration::from_secs(300)) // 5 min for large packages
@@ -58,33 +71,33 @@ impl BcServerClient {
 
         Self {
             client,
-            config,
+            auth,
+            tenant,
             message_sink,
             cached_token: tokio::sync::OnceCell::new(),
         }
     }
 
     /// Create a new client that prints auth messages to stderr (for CLI use).
-    pub fn new_cli(config: BcServerConfig) -> Self {
-        Self::new(config, Arc::new(|msg| eprintln!("{msg}")))
+    pub fn new_cli(auth: AuthMethod, tenant: Option<String>) -> Self {
+        Self::new(auth, tenant, Arc::new(|msg| eprintln!("{msg}")))
     }
 
     /// Download a single dependency from the BC Dev API.
     ///
+    /// `url` is the fully-constructed `/dev/packages` URL for this dependency.
+    /// The caller (al-core) constructs this URL using `BcServerConfig::dev_packages_url`.
+    ///
     /// Returns the path to the saved `.app` file.
     pub async fn download_one(
         &self,
+        url: &str,
         dep: &AppDependency,
         dest: &Path,
     ) -> Result<PathBuf, BcServerError> {
-        let url = self
-            .config
-            .dev_packages_url(dep)
-            .ok_or(BcServerError::InvalidConfig)?;
-
         debug!(url = %url, package = %dep.name, "Downloading from BC server");
 
-        let mut request = self.client.get(&url);
+        let mut request = self.client.get(url);
 
         // Add authentication
         request = self.add_auth(request).await?;
@@ -129,27 +142,28 @@ impl BcServerClient {
         }
     }
 
-    /// Download all dependencies, returning one result per dependency.
+    /// Download all dependencies, given pre-computed URLs for each.
+    ///
+    /// `url_deps` is a slice of `(url, dep)` pairs. The caller (al-core) is
+    /// responsible for pairing each dependency with its corresponding download URL.
     pub async fn download_all(
         &self,
-        deps: &[AppDependency],
+        url_deps: &[(String, AppDependency)],
         dest: &Path,
     ) -> Vec<Result<PathBuf, BcServerError>> {
         let mut results = Vec::new();
-        for dep in deps {
-            results.push(self.download_one(dep, dest).await);
+        for (url, dep) in url_deps {
+            results.push(self.download_one(url, dep, dest).await);
         }
         results
     }
 
-    /// Add authentication headers to the request based on the server config.
+    /// Add authentication headers to the request based on the auth method.
     async fn add_auth(
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<reqwest::RequestBuilder, BcServerError> {
-        use al_protocol::launch::AuthMethod;
-
-        match self.config.authentication {
+        match self.auth {
             AuthMethod::UserPassword => {
                 let username =
                     std::env::var("BC_USERNAME").map_err(|_| BcServerError::CredentialsRequired)?;
@@ -169,11 +183,7 @@ impl BcServerClient {
                     return Ok(request.bearer_auth(token));
                 }
 
-                let tenant = self
-                    .config
-                    .tenant
-                    .as_deref()
-                    .unwrap_or("common");
+                let tenant = self.tenant.as_deref().unwrap_or("common");
 
                 let sink = self.message_sink.clone();
                 let client = self.client.clone();
@@ -195,37 +205,6 @@ impl BcServerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_protocol::launch::{AuthMethod, BcServerConfig, EnvironmentType};
-
-    fn onprem_config() -> BcServerConfig {
-        BcServerConfig {
-            name: "Test".into(),
-            environment_type: EnvironmentType::OnPrem,
-            server: Some("https://erp.example.com".into()),
-            server_instance: Some("BC".into()),
-            port: Some(7049),
-            environment_name: None,
-            tenant: Some("default".into()),
-            authentication: AuthMethod::UserPassword,
-        }
-    }
-
-    #[test]
-    fn test_download_url_construction() {
-        let config = onprem_config();
-        let dep = AppDependency {
-            id: "xxx".into(),
-            name: "Base Application".into(),
-            publisher: "Microsoft".into(),
-            version: "26.5.0.0".into(),
-        };
-
-        let url = config.dev_packages_url(&dep).unwrap();
-        assert_eq!(
-            url,
-            "https://erp.example.com:7049/BC/dev/packages?publisher=Microsoft&appName=Base%20Application&versionText=26.5.0.0&tenant=default"
-        );
-    }
 
     #[test]
     fn test_app_filename() {
@@ -241,5 +220,13 @@ mod tests {
             dep.name.replace(' ', "_")
         );
         assert_eq!(filename, "Microsoft_System_Application.app");
+    }
+
+    #[test]
+    fn test_auth_method_variants() {
+        // Verify the local AuthMethod enum covers all three variants
+        let _u = AuthMethod::UserPassword;
+        let _w = AuthMethod::Windows;
+        let _a = AuthMethod::AAD;
     }
 }

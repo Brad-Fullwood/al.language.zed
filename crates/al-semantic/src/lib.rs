@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use al_protocol::AlToolchain;
 use serde::{Deserialize, Serialize};
 
 use crate::host::DotNetHost;
@@ -163,16 +162,19 @@ pub struct SemanticBridge {
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl SemanticBridge {
-    /// Initialize the .NET bridge using the given toolchain.
+    /// Initialize the .NET bridge with explicit paths.
+    ///
+    /// - `code_analysis`: path to `Microsoft.Dynamics.Nav.CodeAnalysis.dll`
+    /// - `version`: toolchain version string (used for cache keying)
     ///
     /// This loads the CLR in-process and initializes the bridge DLL.
-    pub fn new(toolchain: &AlToolchain) -> Result<Self, SemanticError> {
+    pub fn new(code_analysis: &Path, version: &str) -> Result<Self, SemanticError> {
         let (bridge_dll, runtime_config) = host::find_bridge_dll()?;
-        let host = DotNetHost::new(&bridge_dll, &runtime_config, &toolchain.code_analysis)?;
+        let host = DotNetHost::new(&bridge_dll, &runtime_config, code_analysis)?;
 
         Ok(Self {
             host: Arc::new(host),
-            version: toolchain.version.clone(),
+            version: version.to_string(),
             timeout: DEFAULT_TIMEOUT,
         })
     }

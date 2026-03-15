@@ -6,7 +6,8 @@
 
 use std::sync::Arc;
 
-use al_protocol::{AlProject, AlToolchain};
+use crate::project::AlProject;
+use crate::toolchain::AlToolchain;
 use al_semantic::BuiltinType;
 use al_symbols::SymbolIndex;
 use dashmap::DashMap;

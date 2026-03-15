@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use al_protocol::jsonrpc::{Request, Response};
+use crate::jsonrpc::{Request, Response};
 
 /// A client for the al-lsp daemon.
 pub struct DaemonClient {
@@ -267,7 +267,7 @@ mod tests {
                     Response {
                         id: req.id,
                         result: None,
-                        error: Some(al_protocol::jsonrpc::RpcError {
+                        error: Some(crate::jsonrpc::RpcError {
                             code: -32603,
                             message: "Workspace is initializing, try again".to_string(),
                         }),
@@ -334,7 +334,7 @@ mod tests {
                 let response = Response {
                     id: req.id,
                     result: None,
-                    error: Some(al_protocol::jsonrpc::RpcError {
+                    error: Some(crate::jsonrpc::RpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
                     }),

@@ -12,11 +12,10 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use al_protocol::launch::{self, BcServerConfig};
-use al_protocol::AlToolchain;
 use tracing::{info, warn};
 
 use crate::client::DapClient;
+use crate::config::{self, DapLaunchConfig};
 use crate::editor_services::find_editor_services;
 use crate::types::*;
 use crate::{DapError, Result};
@@ -35,9 +34,12 @@ pub struct DebugSession {
     breakpoints: HashMap<String, Vec<BreakpointInfo>>,
     history: VecDeque<BreakpointHit>,
     hit_counter: u32,
-    toolchain: AlToolchain,
+    /// Path to alc.dll (the AL compiler).
+    alc_path: PathBuf,
+    /// Root directory of the AL toolchain (dotnet_root), used to locate EditorServices.
+    dotnet_root: PathBuf,
     project_root: PathBuf,
-    launch_config: BcServerConfig,
+    launch_config: DapLaunchConfig,
 }
 
 #[allow(dead_code)]
@@ -45,24 +47,30 @@ impl DebugSession {
     /// Compile the AL project, spawn EditorServices.Host, and complete
     /// the DAP handshake (initialize → configurationDone → launch).
     ///
+    /// - `alc_path`: path to `alc.dll` (the AL compiler)
+    /// - `dotnet_root`: directory containing `alc.dll` (used to locate EditorServices.Host)
+    /// - `project_root`: root of the AL project (must contain `app.json`)
+    /// - `config_name`: optional name of the launch configuration to use
+    ///
     /// Returns a running `DebugSession` or an error if any step fails.
     /// Compilation timeout is 120 seconds. DAP handshake timeout is 30 seconds.
     pub async fn start(
-        toolchain: &AlToolchain,
+        alc_path: &Path,
+        dotnet_root: &Path,
         project_root: &Path,
         config_name: Option<&str>,
     ) -> Result<Self> {
         // 1. Resolve launch config
-        let launch_file = launch::find_launch_config(project_root);
-        let config = resolve_config(launch_file.as_ref(), config_name)?;
+        let launch_file = config::find_launch_config(project_root);
+        let launch_config = resolve_config(launch_file.as_ref(), config_name)?;
 
         // 2. Compile project
         info!(root = %project_root.display(), "Compiling AL project");
-        compile_project(toolchain, project_root).await?;
+        compile_project(alc_path, project_root).await?;
         info!("Compilation succeeded");
 
         // 3. Find EditorServices.Host
-        let host_path = find_editor_services(toolchain)?;
+        let host_path = find_editor_services(dotnet_root)?;
 
         // 4. Spawn DAP subprocess
         let root_str = project_root.display().to_string();
@@ -94,7 +102,7 @@ impl DebugSession {
             .await?;
 
         // 8. Launch with server config
-        let launch_args = build_launch_args(&config, project_root);
+        let launch_args = build_launch_args(&launch_config, project_root);
         client
             .send_request_timeout("launch", Some(launch_args), Duration::from_secs(30))
             .await?;
@@ -115,9 +123,10 @@ impl DebugSession {
             breakpoints: HashMap::new(),
             history: VecDeque::new(),
             hit_counter: 0,
-            toolchain: toolchain.clone(),
+            alc_path: alc_path.to_path_buf(),
+            dotnet_root: dotnet_root.to_path_buf(),
             project_root: project_root.to_path_buf(),
-            launch_config: config,
+            launch_config,
         })
     }
 
@@ -679,9 +688,9 @@ fn secs_to_datetime(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
 
 /// Resolve which launch config to use.
 fn resolve_config(
-    launch_file: Option<&launch::DebugConfigFile>,
+    launch_file: Option<&config::DebugConfigFile>,
     config_name: Option<&str>,
-) -> Result<BcServerConfig> {
+) -> Result<DapLaunchConfig> {
     let file = launch_file.ok_or_else(|| {
         DapError::CompilationFailed(
             "No launch configuration found. Create .zed/debug.json or .vscode/launch.json"
@@ -717,7 +726,9 @@ fn resolve_config(
 }
 
 /// Compile the AL project using `dotnet alc`.
-async fn compile_project(toolchain: &AlToolchain, project_root: &Path) -> Result<()> {
+///
+/// `alc_path` is the path to `alc.dll`.
+async fn compile_project(alc_path: &Path, project_root: &Path) -> Result<()> {
     if !project_root.join("app.json").is_file() {
         return Err(DapError::CompilationFailed(format!(
             "No app.json found in {}",
@@ -726,7 +737,7 @@ async fn compile_project(toolchain: &AlToolchain, project_root: &Path) -> Result
     }
 
     let mut cmd = tokio::process::Command::new("dotnet");
-    cmd.arg(toolchain.alc.display().to_string());
+    cmd.arg(alc_path.display().to_string());
     cmd.arg(format!("/project:{}", project_root.display()));
     cmd.arg(format!("/out:{}", project_root.display()));
 
@@ -752,12 +763,13 @@ async fn compile_project(toolchain: &AlToolchain, project_root: &Path) -> Result
     }
 }
 
-/// Build the DAP launch arguments from the BC server config.
-fn build_launch_args(config: &BcServerConfig, project_root: &Path) -> serde_json::Value {
+/// Build the DAP launch arguments from the local launch config.
+fn build_launch_args(config: &DapLaunchConfig, project_root: &Path) -> serde_json::Value {
+    use crate::config::AuthMethod;
     let auth_str = match config.authentication {
-        launch::AuthMethod::Windows => "Windows",
-        launch::AuthMethod::UserPassword => "UserPassword",
-        launch::AuthMethod::AAD => "AAD",
+        AuthMethod::Windows => "Windows",
+        AuthMethod::UserPassword => "UserPassword",
+        AuthMethod::AAD => "AAD",
     };
 
     let mut args = serde_json::json!({
@@ -793,34 +805,26 @@ fn build_launch_args(config: &BcServerConfig, project_root: &Path) -> serde_json
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{AuthMethod, DapLaunchConfig, EnvironmentType};
 
-    fn dummy_toolchain() -> AlToolchain {
-        AlToolchain {
-            version: "1.0.0".to_string(),
-            dotnet_root: PathBuf::from("/nonexistent"),
-            alc: PathBuf::from("/nonexistent/alc.dll"),
-            aldoc: None,
-            code_analysis: PathBuf::new(),
-            analyzers: al_protocol::AnalyzerPaths {
-                code_cop: PathBuf::new(),
-                app_source_cop: PathBuf::new(),
-                ui_cop: PathBuf::new(),
-                per_tenant_cop: PathBuf::new(),
-                common: PathBuf::new(),
-            },
-        }
+    fn dummy_alc_path() -> PathBuf {
+        PathBuf::from("/nonexistent/alc.dll")
     }
 
-    fn test_config(name: &str) -> BcServerConfig {
-        BcServerConfig {
+    fn dummy_dotnet_root() -> PathBuf {
+        PathBuf::from("/nonexistent")
+    }
+
+    fn test_config(name: &str) -> DapLaunchConfig {
+        DapLaunchConfig {
             name: name.to_string(),
-            environment_type: launch::EnvironmentType::OnPrem,
+            environment_type: EnvironmentType::OnPrem,
             server: Some("http://localhost".to_string()),
             server_instance: Some("BC".to_string()),
             port: Some(7049),
             environment_name: None,
             tenant: None,
-            authentication: launch::AuthMethod::Windows,
+            authentication: AuthMethod::Windows,
         }
     }
 
@@ -833,7 +837,7 @@ mod tests {
 
     #[test]
     fn resolve_config_empty_configs_returns_error() {
-        let file = launch::DebugConfigFile {
+        let file = config::DebugConfigFile {
             path: PathBuf::from("test"),
             configs: vec![],
         };
@@ -844,7 +848,7 @@ mod tests {
 
     #[test]
     fn resolve_config_first_by_default() {
-        let file = launch::DebugConfigFile {
+        let file = config::DebugConfigFile {
             path: PathBuf::from("test"),
             configs: vec![test_config("First")],
         };
@@ -858,7 +862,7 @@ mod tests {
         staging.server = Some("http://staging".to_string());
         staging.tenant = Some("default".to_string());
 
-        let file = launch::DebugConfigFile {
+        let file = config::DebugConfigFile {
             path: PathBuf::from("test"),
             configs: vec![test_config("Dev"), staging],
         };
@@ -870,7 +874,7 @@ mod tests {
 
     #[test]
     fn resolve_config_by_name_not_found() {
-        let file = launch::DebugConfigFile {
+        let file = config::DebugConfigFile {
             path: PathBuf::from("test"),
             configs: vec![test_config("Dev")],
         };
@@ -909,8 +913,7 @@ mod tests {
     #[tokio::test]
     async fn compile_project_no_app_json() {
         let dir = tempfile::tempdir().unwrap();
-        let tc = dummy_toolchain();
-        let result = compile_project(&tc, dir.path()).await;
+        let result = compile_project(&dummy_alc_path(), dir.path()).await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("No app.json"), "got: {msg}");
@@ -921,8 +924,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Create app.json but no launch config
         std::fs::write(dir.path().join("app.json"), "{}").unwrap();
-        let tc = dummy_toolchain();
-        let result = DebugSession::start(&tc, dir.path(), None).await;
+        let result =
+            DebugSession::start(&dummy_alc_path(), &dummy_dotnet_root(), dir.path(), None).await;
         assert!(result.is_err());
         // Should fail at launch config resolution (no .zed/debug.json or .vscode/launch.json)
         match result {
