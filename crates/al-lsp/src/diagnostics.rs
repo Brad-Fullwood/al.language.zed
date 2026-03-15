@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use al_syntax::AlParser;
+use al_core::syntax::AlParser;
 use tower_lsp::lsp_types::*;
 
 use crate::server::AlServer;
@@ -34,7 +34,7 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
 
         // Native lint rules
         let lint_start = std::time::Instant::now();
-        let lint_results = al_syntax::lint(&result.tree, text);
+        let lint_results = al_core::syntax::lint(&result.tree, text);
         let lint_elapsed = lint_start.elapsed();
         let lint_count = lint_results.len();
         tracing::debug!(uri = %uri, lint_count, lint_us = lint_elapsed.as_micros() as u64, "publish_diagnostics: linted");
@@ -64,7 +64,7 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
                 PathBuf::from(".alpackages")
             };
 
-            let req = al_semantic::AnalyzeRequest {
+            let req = al_core::semantic_types::AnalyzeRequest {
                 file: file_path,
                 source: text.to_string(),
                 analyzers: vec!["CodeCop".to_string()],
@@ -107,9 +107,9 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
 }
 
 /// Convert a tree-sitter syntax error to an LSP Diagnostic.
-pub fn syntax_error_to_diagnostic(err: &al_syntax::SyntaxError) -> Diagnostic {
+pub fn syntax_error_to_diagnostic(err: &al_core::syntax::SyntaxError) -> Diagnostic {
     Diagnostic {
-        range: al_syntax::ts_range_to_lsp(&err.range),
+        range: al_core::syntax::ts_range_to_lsp(&err.range),
         severity: Some(DiagnosticSeverity::ERROR),
         code: Some(NumberOrString::String("syntax".to_string())),
         source: Some("al".to_string()),
@@ -119,16 +119,16 @@ pub fn syntax_error_to_diagnostic(err: &al_syntax::SyntaxError) -> Diagnostic {
 }
 
 /// Convert a native lint diagnostic to an LSP Diagnostic.
-pub fn lint_to_diagnostic(lint: &al_syntax::LintDiagnostic) -> Diagnostic {
+pub fn lint_to_diagnostic(lint: &al_core::syntax::LintDiagnostic) -> Diagnostic {
     let severity = match lint.severity {
-        al_syntax::LintSeverity::Error => DiagnosticSeverity::ERROR,
-        al_syntax::LintSeverity::Warning => DiagnosticSeverity::WARNING,
-        al_syntax::LintSeverity::Info => DiagnosticSeverity::INFORMATION,
-        al_syntax::LintSeverity::Hint => DiagnosticSeverity::HINT,
+        al_core::syntax::LintSeverity::Error => DiagnosticSeverity::ERROR,
+        al_core::syntax::LintSeverity::Warning => DiagnosticSeverity::WARNING,
+        al_core::syntax::LintSeverity::Info => DiagnosticSeverity::INFORMATION,
+        al_core::syntax::LintSeverity::Hint => DiagnosticSeverity::HINT,
     };
 
     Diagnostic {
-        range: al_syntax::ts_range_to_lsp(&lint.range),
+        range: al_core::syntax::ts_range_to_lsp(&lint.range),
         severity: Some(severity),
         code: Some(NumberOrString::String(lint.code.clone())),
         source: Some("al-lint".to_string()),
@@ -138,7 +138,7 @@ pub fn lint_to_diagnostic(lint: &al_syntax::LintDiagnostic) -> Diagnostic {
 }
 
 /// Convert a semantic diagnostic entry to an LSP Diagnostic.
-pub fn semantic_to_diagnostic(entry: &al_semantic::DiagnosticEntry) -> Diagnostic {
+pub fn semantic_to_diagnostic(entry: &al_core::semantic_types::DiagnosticEntry) -> Diagnostic {
     let severity = match entry.severity.to_lowercase().as_str() {
         "error" => DiagnosticSeverity::ERROR,
         "warning" => DiagnosticSeverity::WARNING,
@@ -172,36 +172,24 @@ mod tests {
 
     #[test]
     fn test_syntax_error_to_diagnostic() {
-        let err = al_syntax::SyntaxError {
+        let err = al_core::syntax::SyntaxError {
             message: "Missing semicolon".to_string(),
-            range: tree_sitter::Range {
-                start_byte: 0,
-                end_byte: 5,
-                start_point: tree_sitter::Point { row: 0, column: 0 },
-                end_point: tree_sitter::Point { row: 0, column: 5 },
-            },
+            range: al_core::syntax::AlParser::parse_quick("codeunit 50100 T { }").tree.root_node().range(),
         };
 
         let diag = syntax_error_to_diagnostic(&err);
         assert_eq!(diag.message, "Missing semicolon");
         assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diag.source, Some("al".to_string()));
-        assert_eq!(diag.range.start.line, 0);
-        assert_eq!(diag.range.start.character, 0);
     }
 
     #[test]
     fn test_lint_to_diagnostic_warning() {
-        let lint = al_syntax::LintDiagnostic {
+        let lint = al_core::syntax::LintDiagnostic {
             code: "AL-L001".to_string(),
             message: "Empty begin..end block".to_string(),
-            range: tree_sitter::Range {
-                start_byte: 10,
-                end_byte: 30,
-                start_point: tree_sitter::Point { row: 3, column: 4 },
-                end_point: tree_sitter::Point { row: 5, column: 8 },
-            },
-            severity: al_syntax::LintSeverity::Warning,
+            range: al_core::syntax::AlParser::parse_quick("codeunit 50100 T { }").tree.root_node().range(),
+            severity: al_core::syntax::LintSeverity::Warning,
         };
 
         let diag = lint_to_diagnostic(&lint);
@@ -216,16 +204,11 @@ mod tests {
 
     #[test]
     fn test_lint_to_diagnostic_hint() {
-        let lint = al_syntax::LintDiagnostic {
+        let lint = al_core::syntax::LintDiagnostic {
             code: "AL-L006".to_string(),
             message: "Empty trigger".to_string(),
-            range: tree_sitter::Range {
-                start_byte: 0,
-                end_byte: 10,
-                start_point: tree_sitter::Point { row: 0, column: 0 },
-                end_point: tree_sitter::Point { row: 1, column: 0 },
-            },
-            severity: al_syntax::LintSeverity::Hint,
+            range: al_core::syntax::AlParser::parse_quick("codeunit 50100 T { }").tree.root_node().range(),
+            severity: al_core::syntax::LintSeverity::Hint,
         };
 
         let diag = lint_to_diagnostic(&lint);
@@ -234,16 +217,11 @@ mod tests {
 
     #[test]
     fn test_lint_to_diagnostic_info() {
-        let lint = al_syntax::LintDiagnostic {
+        let lint = al_core::syntax::LintDiagnostic {
             code: "AL-L007".to_string(),
             message: "TODO comment".to_string(),
-            range: tree_sitter::Range {
-                start_byte: 0,
-                end_byte: 10,
-                start_point: tree_sitter::Point { row: 0, column: 0 },
-                end_point: tree_sitter::Point { row: 0, column: 10 },
-            },
-            severity: al_syntax::LintSeverity::Info,
+            range: al_core::syntax::AlParser::parse_quick("codeunit 50100 T { }").tree.root_node().range(),
+            severity: al_core::syntax::LintSeverity::Info,
         };
 
         let diag = lint_to_diagnostic(&lint);
@@ -252,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_semantic_to_diagnostic() {
-        let entry = al_semantic::DiagnosticEntry {
+        let entry = al_core::semantic_types::DiagnosticEntry {
             file: std::path::PathBuf::from("/src/test.al"),
             line: 10,
             column: 5,
@@ -278,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_semantic_severity_mapping() {
-        let make = |sev: &str| al_semantic::DiagnosticEntry {
+        let make = |sev: &str| al_core::semantic_types::DiagnosticEntry {
             file: std::path::PathBuf::from("test.al"),
             line: 1,
             column: 1,

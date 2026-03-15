@@ -190,9 +190,9 @@ fn resolve_receiver_signature(
     let subtype = decl.type_subtype.as_deref()?;
 
     let obj_key = subtype.to_lowercase();
-    let file_path_entry = workspace.workspace_objects.get(&obj_key)?;
+    let file_path_entry = workspace.file_index.objects.get(&obj_key)?;
     let file_path = file_path_entry.value();
-    let file_text_entry = workspace.workspace_files.get(file_path)?;
+    let file_text_entry = workspace.file_index.files.get(file_path)?;
     let file_text = file_text_entry.value();
     let result = AlParser::parse_quick(file_text);
 

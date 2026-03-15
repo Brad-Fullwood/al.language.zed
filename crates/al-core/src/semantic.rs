@@ -65,13 +65,15 @@ pub async fn get_or_init_bridge(
 ///
 /// Increments the restart counter and re-initializes. Returns Err if
 /// the restart limit has been reached.
-pub async fn restart_bridge(workspace: &Workspace) -> Result<(), String> {
+pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::AlError> {
+    use crate::errors::AlError;
+
     let count = workspace.bridge_restart_count.fetch_add(1, Ordering::Relaxed) + 1;
     if count > MAX_RESTARTS {
-        return Err(format!(
-            "Bridge restart limit ({}) exceeded ({} attempts)",
-            MAX_RESTARTS, count
-        ));
+        return Err(AlError::BridgeRestartLimitExceeded {
+            attempts: count,
+            max: MAX_RESTARTS,
+        });
     }
 
     tracing::info!(attempt = count, "Restarting semantic bridge");
@@ -85,16 +87,12 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), String> {
         .read()
         .await
         .clone()
-        .ok_or("No toolchain available for bridge restart")?;
+        .ok_or(AlError::NoToolchain)?;
 
     let mut write_guard = workspace.semantic.write().await;
-    match SemanticBridge::new(&toolchain) {
-        Ok(bridge) => {
-            *write_guard = Some(bridge);
-            Ok(())
-        }
-        Err(e) => Err(format!("Bridge restart failed: {}", e)),
-    }
+    let bridge = SemanticBridge::new(&toolchain)?;
+    *write_guard = Some(bridge);
+    Ok(())
 }
 
 /// Shut down the bridge, releasing the .NET CLR.
@@ -124,6 +122,8 @@ mod tests {
 
     #[tokio::test]
     async fn restart_limit_enforced() {
+        use crate::errors::AlError;
+
         let ws = Workspace::new();
 
         // Exhaust restart limit
@@ -137,8 +137,8 @@ mod tests {
         let result = restart_bridge(&ws).await;
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().contains("exceeded"),
-            "Should mention limit exceeded"
+            matches!(result.unwrap_err(), AlError::BridgeRestartLimitExceeded { .. }),
+            "Should be BridgeRestartLimitExceeded"
         );
     }
 

@@ -206,9 +206,9 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     }
 
     // 5. Check workspace object name index
-    if let Some(file_path_entry) = workspace.workspace_objects.get(&clean_name.to_lowercase()) {
+    if let Some(file_path_entry) = workspace.file_index.objects.get(&clean_name.to_lowercase()) {
         let file_path = file_path_entry.value();
-        if let Some(file_text) = workspace.workspace_files.get(file_path) {
+        if let Some(file_text) = workspace.file_index.files.get(file_path) {
             let result = al_syntax::AlParser::parse_quick(file_text.value());
             if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text.value()) {
                 let content = format!(

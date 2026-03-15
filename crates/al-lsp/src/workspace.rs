@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use al_syntax::AlParser;
+use al_core::syntax::AlParser;
 use tower_lsp::lsp_types::*;
 use tracing::{debug, info, warn};
 
@@ -37,12 +37,15 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
         }
         Err(e) => {
             warn!(error = %e, "AL toolchain not found (continuing without)");
+            server.client
+                .show_message(MessageType::WARNING, format!("AL toolchain not found: {e}"))
+                .await;
         }
     }
 
     // 2. Find project and load packages
     let workspace_root = root_uri
-        .and_then(|u| u.to_file_path().ok())
+        .and_then(|u| u.to_file_path().ok()) // SILENT: non-file URIs legitimately have no path
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     match al_core::project::find_project(&workspace_root) {
@@ -96,13 +99,22 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
             *server.workspace.project.write().await = Some(project.clone());
 
             // 5. Scan workspace for .al files
-            scan_workspace_files(server, &project.root);
+            let count = server.workspace.file_index.scan(&project.root);
+            if count > 0 {
+                info!(count, "Scanned workspace .al files");
+            }
         }
         Err(e) => {
             warn!(error = %e, "No AL project found (continuing without packages)");
+            server.client
+                .show_message(MessageType::INFO, format!("No AL project found: {e}"))
+                .await;
 
             // Still try to scan for .al files in the workspace root
-            scan_workspace_files(server, &workspace_root);
+            let count = server.workspace.file_index.scan(&workspace_root);
+            if count > 0 {
+                info!(count, "Scanned workspace .al files");
+            }
         }
     }
 }
@@ -113,7 +125,7 @@ async fn check_source_availability(server: &AlServer, packages: &[PathBuf]) {
     let no_source: Vec<String> = packages
         .iter()
         .filter_map(|path| {
-            if al_symbols::virtual_file::app_has_source(path) {
+            if al_core::symbols::virtual_file::app_has_source(path) {
                 return None;
             }
             // Extract a readable name from the filename
@@ -244,7 +256,7 @@ async fn download_symbols_from_server(
     let dest = project.root.join(".alpackages");
     // Wire auth messages to LSP showMessage so the user sees device code prompts
     let lsp = lsp_client.clone();
-    let message_sink: al_symbols::bc_server::MessageSink =
+    let message_sink: al_core::symbols::bc_server::MessageSink =
         std::sync::Arc::new(move |msg| {
             let c = lsp.clone();
             let m = msg.to_string();
@@ -252,7 +264,7 @@ async fn download_symbols_from_server(
                 c.show_message(tower_lsp::lsp_types::MessageType::INFO, m).await;
             });
         });
-    let client = al_symbols::bc_server::BcServerClient::new(config.clone(), message_sink);
+    let client = al_core::symbols::bc_server::BcServerClient::new(config.clone(), message_sink);
     let results = client.download_all(deps, &dest).await;
 
     let mut downloaded = Vec::new();
@@ -292,10 +304,10 @@ async fn download_packages_nuget(
         "Downloading symbol packages from NuGet"
     );
 
-    // Convert al_core types to al_symbols::nuget types
-    let nuget_deps: Vec<al_symbols::nuget::AppDependency> = deps
+    // Convert al_core types to al_core::symbols::nuget types
+    let nuget_deps: Vec<al_core::symbols::nuget::AppDependency> = deps
         .iter()
-        .map(|d| al_symbols::nuget::AppDependency {
+        .map(|d| al_core::symbols::nuget::AppDependency {
             id: d.id.clone(),
             name: d.name.clone(),
             publisher: d.publisher.clone(),
@@ -303,14 +315,14 @@ async fn download_packages_nuget(
         })
         .collect();
 
-    let feeds: Vec<al_symbols::nuget::NuGetFeed> = al_core::project::nuget_feeds()
+    let feeds: Vec<al_core::symbols::nuget::NuGetFeed> = al_core::project::nuget_feeds()
         .iter()
-        .map(|f| al_symbols::nuget::NuGetFeed {
+        .map(|f| al_core::symbols::nuget::NuGetFeed {
             index_url: f.index_url.clone(),
         })
         .collect();
 
-    let client = al_symbols::nuget::NuGetClient::new(feeds);
+    let client = al_core::symbols::nuget::NuGetClient::new(feeds);
     let results = client.download_all(&nuget_deps, dest).await;
 
     let mut downloaded = Vec::new();
@@ -416,71 +428,6 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         .await;
 }
 
-/// Maximum number of .al files to scan. Prevents runaway memory usage
-/// if a workspace root accidentally includes a huge directory tree.
-const MAX_WORKSPACE_FILES: usize = 10_000;
-
-/// Scan a directory for .al files and add them to the workspace_files map.
-fn scan_workspace_files(server: &AlServer, root: &Path) {
-    let mut count = 0;
-    scan_dir_recursive(root, server, &mut count, 0);
-    if count > 0 {
-        if count >= MAX_WORKSPACE_FILES {
-            warn!(count, limit = MAX_WORKSPACE_FILES, "Workspace scan hit file limit — some files may be missing");
-        }
-        info!(count, "Scanned workspace .al files");
-    }
-}
-
-fn scan_dir_recursive(dir: &Path, server: &AlServer, count: &mut usize, depth: usize) {
-    if depth > 10 || *count >= MAX_WORKSPACE_FILES {
-        return;
-    }
-
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-
-        // Skip hidden directories and .alpackages
-        if path.is_dir() {
-            let dir_name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            if dir_name.starts_with('.')
-                || dir_name == "node_modules"
-                || dir_name == ".alpackages"
-            {
-                continue;
-            }
-
-            scan_dir_recursive(&path, server, count, depth + 1);
-        } else if path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("al"))
-        {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                // Index the object name for fast lookups
-                {
-                    let result = AlParser::parse_quick(&content);
-                    if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &content) {
-                        let obj_name = obj_info.name.to_lowercase();
-                        server.workspace.workspace_objects.insert(obj_name.clone(), path.clone());
-                        server.workspace.file_to_object.insert(path.clone(), obj_name);
-                    }
-                }
-                server.workspace.workspace_files.insert(path, content);
-                *count += 1;
-            }
-        }
-    }
-}
-
 /// Handle workspace/symbol request.
 pub(crate) fn handle_workspace_symbol(
     server: &AlServer,
@@ -498,20 +445,20 @@ pub(crate) fn handle_workspace_symbol(
     #[allow(deprecated)]
     for entry in &entries {
         let kind = match entry.kind {
-            al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension => {
+            al_core::symbols::ObjectKind::Table | al_core::symbols::ObjectKind::TableExtension => {
                 SymbolKind::STRUCT
             }
-            al_symbols::ObjectKind::Page | al_symbols::ObjectKind::PageExtension => {
+            al_core::symbols::ObjectKind::Page | al_core::symbols::ObjectKind::PageExtension => {
                 SymbolKind::CLASS
             }
-            al_symbols::ObjectKind::Codeunit => SymbolKind::MODULE,
-            al_symbols::ObjectKind::Report | al_symbols::ObjectKind::ReportExtension => {
+            al_core::symbols::ObjectKind::Codeunit => SymbolKind::MODULE,
+            al_core::symbols::ObjectKind::Report | al_core::symbols::ObjectKind::ReportExtension => {
                 SymbolKind::FILE
             }
-            al_symbols::ObjectKind::Enum | al_symbols::ObjectKind::EnumExtension => {
+            al_core::symbols::ObjectKind::Enum | al_core::symbols::ObjectKind::EnumExtension => {
                 SymbolKind::ENUM
             }
-            al_symbols::ObjectKind::Interface => SymbolKind::INTERFACE,
+            al_core::symbols::ObjectKind::Interface => SymbolKind::INTERFACE,
             _ => SymbolKind::OBJECT,
         };
 
@@ -530,7 +477,7 @@ pub(crate) fn handle_workspace_symbol(
 
     // Search workspace files using the object name index
     let query_lower = query.to_lowercase();
-    for ws_entry in server.workspace.workspace_objects.iter() {
+    for ws_entry in server.workspace.file_index.objects.iter() {
         let obj_name_lower = ws_entry.key();
         let file_path = ws_entry.value();
 
@@ -538,11 +485,11 @@ pub(crate) fn handle_workspace_symbol(
             continue;
         }
 
-        if let Some(file_text_entry) = server.workspace.workspace_files.get(file_path) {
+        if let Some(file_text_entry) = server.workspace.file_index.files.get(file_path) {
             let file_text = file_text_entry.value();
             let result = AlParser::parse_quick(file_text);
 
-            if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
+            if let Some(obj_info) = al_core::syntax::find_object_declaration(&result.tree, file_text) {
                 if let Ok(file_uri) = Url::from_file_path(file_path) {
                     #[allow(deprecated)]
                     results.push(SymbolInformation {
@@ -552,7 +499,7 @@ pub(crate) fn handle_workspace_symbol(
                         deprecated: None,
                         location: Location {
                             uri: file_uri,
-                            range: al_syntax::ts_range_to_lsp(&obj_info.range),
+                            range: al_core::syntax::ts_range_to_lsp(&obj_info.range),
                         },
                         container_name: Some(obj_info.kind),
                     });

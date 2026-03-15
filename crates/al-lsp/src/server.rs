@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use al_core::workspace::Workspace;
-use al_syntax::AlParser;
+use al_core::syntax::AlParser;
 use dashmap::DashMap;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
@@ -99,25 +99,20 @@ impl AlServer {
         self.workspace.documents.cache_tree(uri, version, result.tree.clone());
 
         if let Ok(path) = uri.to_file_path() {
-            self.workspace.workspace_files.insert(path.clone(), text.to_string());
-            if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, text) {
-                let obj_name = obj_info.name.to_lowercase();
-                self.workspace.workspace_objects.insert(obj_name.clone(), path.clone());
-                self.workspace.file_to_object.insert(path, obj_name);
-            }
+            self.workspace.file_index.add_file(path, text.to_string());
         }
     }
 
     /// Load builtins and error codes from disk cache (fast path, no bridge needed).
     pub(crate) async fn load_caches_from_disk(&self, version: &str) {
         if self.workspace.builtins.read().unwrap().is_empty() {
-            if let Some(cached) = al_semantic::cache::read_builtins(version) {
+            if let Some(cached) = al_core::semantic_types::cache::read_builtins(version) {
                 tracing::info!(count = cached.len(), "Loaded built-in types from disk cache");
                 *self.workspace.builtins.write().unwrap() = Arc::new(cached);
             }
         }
         if self.workspace.error_codes.read().unwrap().is_empty() {
-            if let Some(cached) = al_semantic::cache::read_error_codes(version) {
+            if let Some(cached) = al_core::semantic_types::cache::read_error_codes(version) {
                 tracing::info!(count = cached.len(), "Loaded error codes from disk cache");
                 let map = DashMap::new();
                 for ec in cached {
@@ -144,6 +139,9 @@ impl AlServer {
                     }
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load built-in types via bridge");
+                        self.client
+                            .show_message(MessageType::WARNING, format!("Failed to load AL built-in types: {error}"))
+                            .await;
                     }
                 }
             }
@@ -169,6 +167,9 @@ impl AlServer {
                     }
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load error codes via bridge");
+                        self.client
+                            .show_message(MessageType::WARNING, format!("Failed to load AL error codes: {error}"))
+                            .await;
                     }
                 }
             }
@@ -186,7 +187,7 @@ impl AlServer {
     /// Delegates to `al_core::semantic::get_or_init_bridge`.
     pub(crate) async fn get_or_init_bridge(
         &self,
-    ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<al_semantic::SemanticBridge>>> {
+    ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<al_core::semantic_types::SemanticBridge>>> {
         al_core::semantic::get_or_init_bridge(&self.workspace).await
     }
 
@@ -196,7 +197,7 @@ impl AlServer {
         uri: &Url,
         position: Position,
     ) -> Option<Vec<CompletionItem>> {
-        let items: Vec<al_semantic::CompletionItem> = bridge_call!(
+        let items: Vec<al_core::semantic_types::CompletionItem> = bridge_call!(
             self, uri, position, "bridge_completions",
             |bridge, path, pos| bridge.completions_at(&path, pos))?;
         if items.is_empty() {
@@ -286,7 +287,7 @@ impl LanguageServer for AlServer {
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
                             legend: SemanticTokensLegend {
-                                token_types: al_syntax::tokens::token_types::LEGEND
+                                token_types: al_core::syntax::tokens::token_types::LEGEND
                                     .iter()
                                     .map(|s| SemanticTokenType::new(s))
                                     .collect(),
@@ -386,11 +387,7 @@ impl LanguageServer for AlServer {
         self.workspace.documents.close(&uri);
 
         if let Ok(path) = uri.to_file_path() {
-            self.workspace.workspace_files.remove(&path);
-            // O(1) removal via reverse index instead of O(N) retain
-            if let Some((_, obj_name)) = self.workspace.file_to_object.remove(&path) {
-                self.workspace.workspace_objects.remove(&obj_name);
-            }
+            self.workspace.file_index.remove_file(&path);
         }
 
         self.client.publish_diagnostics(uri, vec![], None).await;
@@ -430,8 +427,8 @@ impl LanguageServer for AlServer {
         // try CodeAnalysis completions
         if result.is_none() {
             if let Some(text) = self.workspace.documents.get_text(uri) {
-                let ctx = al_syntax::context::detect_context(&text, position);
-                if matches!(ctx, al_syntax::context::CompletionContext::MemberAccess) {
+                let ctx = al_core::syntax::context::detect_context(&text, position);
+                if matches!(ctx, al_core::syntax::context::CompletionContext::MemberAccess) {
                     if let Some(items) = self.bridge_completions(uri, position).await {
                         result = Some(CompletionResponse::Array(items));
                     }
@@ -633,7 +630,7 @@ impl LanguageServer for AlServer {
                 Ok(None)
             }
             "al.clearSymbolCache" => {
-                let cache_dir = al_symbols::virtual_file::cache_dir();
+                let cache_dir = al_core::symbols::virtual_file::cache_dir();
                 match std::fs::remove_dir_all(&cache_dir) {
                     Ok(()) => {
                         tracing::info!(path = ?cache_dir, "Cleared symbol cache");
@@ -653,6 +650,7 @@ impl LanguageServer for AlServer {
             "al.formatFile" => {
                 // Formatting is now handled as a CodeAction with WorkspaceEdit directly in handlers.rs.
                 // This command is kept for backward compatibility or direct calls.
+                // SILENT: .ok() on from_value — invalid argument from client is not user-affecting
                 if let Some(uri) = params.arguments.first().and_then(|v| serde_json::from_value::<Url>(v.clone()).ok()) {
                     if let Some(edits) = formatting::handle_formatting(self, &uri, &FormattingOptions {
                         tab_size: 4,
@@ -661,6 +659,7 @@ impl LanguageServer for AlServer {
                     }) {
                         let mut changes = std::collections::HashMap::new();
                         changes.insert(uri.clone(), edits);
+                        // SILENT: apply_edit failure is logged by tower-lsp internally
                         self.client.apply_edit(WorkspaceEdit {
                             changes: Some(changes),
                             ..Default::default()
@@ -670,6 +669,7 @@ impl LanguageServer for AlServer {
                 Ok(None)
             }
             "al.lintFile" => {
+                // SILENT: .ok() on from_value — invalid argument from client is not user-affecting
                 if let Some(uri) = params.arguments.first().and_then(|v| serde_json::from_value::<Url>(v.clone()).ok()) {
                     if let Some(text) = self.workspace.documents.get_text(&uri) {
                         diagnostics::publish_diagnostics(self, &uri, &text).await;
@@ -681,8 +681,8 @@ impl LanguageServer for AlServer {
                 let has_bridge = self.workspace.semantic.read().await.is_some();
                 let has_toolchain = self.workspace.toolchain.read().await.is_some();
                 let indexed_symbols = self.workspace.symbols.len();
-                let workspace_files = self.workspace.workspace_files.len();
-                let workspace_objects = self.workspace.workspace_objects.len();
+                let workspace_files = self.workspace.file_index.len();
+                let workspace_objects = self.workspace.file_index.objects.len();
                 let builtins = self.workspace.builtins.read().unwrap().len();
 
                 Ok(Some(serde_json::json!({

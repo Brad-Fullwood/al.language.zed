@@ -144,7 +144,7 @@ pub fn doctor(workspace: &Workspace) -> DoctorReport {
         project: project_info,
         dotnet_version,
         indexed_symbols: workspace.symbols.len(),
-        workspace_files: workspace.workspace_files.len(),
+        workspace_files: workspace.file_index.len(),
     }
 }
 

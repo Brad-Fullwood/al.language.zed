@@ -396,7 +396,7 @@ pub(crate) fn resolve_expression_type(
         });
     }
 
-    if let Some(path) = workspace.workspace_objects.get(&expr.to_lowercase()) {
+    if let Some(path) = workspace.file_index.objects.get(&expr.to_lowercase()) {
         tracing::debug!(expr = %expr, path = %path.value().display(), "resolve_type: found in workspace_objects");
         return workspace_object_type(workspace, path.value());
     }
@@ -629,7 +629,7 @@ pub(crate) fn resolve_workspace_object_definition(
     name: &str,
 ) -> Option<(Url, Range)> {
     let path = resolve_object_path(workspace, None, name)?;
-    let file_text = workspace.workspace_files.get(&path)?;
+    let file_text = workspace.file_index.files.get(&path)?;
     let result = AlParser::parse_quick(file_text.value());
     let obj = al_syntax::find_object_declaration(&result.tree, file_text.value())?;
     let uri = Url::from_file_path(&path).ok()?; // non-absolute paths can't become file URIs
@@ -655,7 +655,7 @@ pub(crate) fn completion_items_for_receiver(
 
     if let Some(subtype) = receiver.type_subtype.as_deref() {
         if let Some(path) = resolve_object_path(workspace, None, subtype) {
-            if let Some(file_text) = workspace.workspace_files.get(&path) {
+            if let Some(file_text) = workspace.file_index.files.get(&path) {
                 let result = AlParser::parse_quick(file_text.value());
 
                 let resolver = al_syntax::TypeResolver::new(&result.tree, file_text.value());
@@ -795,8 +795,8 @@ pub(crate) fn enum_completion_items(
     let mut builtin_values = 0usize;
 
     // Check workspace enum objects
-    if let Some(path) = workspace.workspace_objects.get(&enum_name.to_lowercase()) {
-        if let Some(file_text) = workspace.workspace_files.get(path.value()) {
+    if let Some(path) = workspace.file_index.objects.get(&enum_name.to_lowercase()) {
+        if let Some(file_text) = workspace.file_index.files.get(path.value()) {
             let result = AlParser::parse_quick(file_text.value());
             for symbol in al_syntax::extract_document_symbols(&result.tree, file_text.value()) {
                 if !symbol.name.eq_ignore_ascii_case(enum_name) {
@@ -876,7 +876,7 @@ pub(crate) fn format_type_detail(type_name: &str, subtype: Option<&str>) -> Stri
 }
 
 fn workspace_object_type(workspace: &Workspace, path: &Path) -> Option<ResolvedType> {
-    let file_text = workspace.workspace_files.get(path)?;
+    let file_text = workspace.file_index.files.get(path)?;
     let result = AlParser::parse_quick(file_text.value());
     let obj = al_syntax::find_object_declaration(&result.tree, file_text.value())?;
     Some(ResolvedType {
@@ -902,12 +902,12 @@ fn resolve_object_path(
         }
     }
 
-    if let Some(path) = workspace.workspace_objects.get(&name.to_lowercase()) {
+    if let Some(path) = workspace.file_index.objects.get(&name.to_lowercase()) {
         tracing::debug!(name = %name, source = "workspace_index", path = %path.value().display(), "resolve_object_path: found in workspace index");
         return Some(path.value().clone());
     }
 
-    for entry in workspace.workspace_files.iter() {
+    for entry in workspace.file_index.files.iter() {
         if workspace_object_name(workspace, entry.key())
             .as_deref()
             .is_some_and(|object_name| object_name.eq_ignore_ascii_case(name))
@@ -922,7 +922,7 @@ fn resolve_object_path(
 }
 
 fn workspace_object_name(workspace: &Workspace, path: &Path) -> Option<String> {
-    let file_text = workspace.workspace_files.get(path)?;
+    let file_text = workspace.file_index.files.get(path)?;
     let result = AlParser::parse_quick(file_text.value());
     al_syntax::find_object_declaration(&result.tree, file_text.value()).map(|obj| obj.name)
 }
@@ -933,7 +933,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
         member = %member_name,
         "workspace_member: searching"
     );
-    let file_text = workspace.workspace_files.get(path)?;
+    let file_text = workspace.file_index.files.get(path)?;
     let content = file_text.value();
     let result = AlParser::parse_quick(content);
 

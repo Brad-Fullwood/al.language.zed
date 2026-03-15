@@ -82,11 +82,11 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     let current_path = uri.to_file_path().ok(); // non-file URIs have no path
 
-    if let Some(obj_path_entry) = workspace.workspace_objects.get(&clean_name.to_lowercase()) {
+    if let Some(obj_path_entry) = workspace.file_index.objects.get(&clean_name.to_lowercase()) {
         let file_path = obj_path_entry.value().clone();
         let is_current = current_path.as_ref().is_some_and(|cp| *cp == file_path);
         if !is_current {
-            if let Some(file_text_entry) = workspace.workspace_files.get(&file_path) {
+            if let Some(file_text_entry) = workspace.file_index.files.get(&file_path) {
                 let file_text = file_text_entry.value();
                 let result = AlParser::parse_quick(file_text);
                 if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
@@ -101,7 +101,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    for entry in workspace.workspace_files.iter() {
+    for entry in workspace.file_index.files.iter() {
         let file_path = entry.key();
         let file_text = entry.value();
         if current_path.as_ref() == Some(file_path) { continue; }

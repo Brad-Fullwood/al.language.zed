@@ -1,4 +1,9 @@
 //! Unified error hierarchy for the AL workspace.
+//!
+//! `AlError` wraps crate-level errors from al-protocol, al-semantic, and
+//! al-symbols so that al-core functions can use `Result<T, AlError>` with
+//! `?` conversion throughout. Query functions that return `Option<T>` for
+//! "nothing found" cases do NOT use AlError — Option is the correct type there.
 
 pub use al_protocol::errors::DiscoveryError;
 
@@ -7,25 +12,25 @@ use thiserror::Error;
 /// Unified error type for al-core operations.
 #[derive(Error, Debug)]
 pub enum AlError {
-    /// Project discovery errors (app.json not found, parse failure, etc.)
-    #[error("project error: {0}")]
-    Project(String),
-
-    /// Toolchain errors (ALTool not found, wrong version, etc.)
-    #[error("toolchain error: {0}")]
-    Toolchain(String),
-
-    /// Document errors (file not open, parse failure, etc.)
-    #[error("document error: {0}")]
-    Document(String),
-
-    /// Symbol resolution errors (symbol not found, ambiguous, etc.)
-    #[error("symbol error: {0}")]
-    Symbol(String),
+    /// Project/toolchain discovery errors.
+    #[error(transparent)]
+    Discovery(#[from] DiscoveryError),
 
     /// Semantic bridge errors (.NET CLR failure, bridge crash, etc.)
-    #[error("semantic error: {0}")]
-    Semantic(String),
+    #[error(transparent)]
+    Semantic(#[from] al_semantic::SemanticError),
+
+    /// Document not found in store.
+    #[error("document not open: {0}")]
+    DocumentNotOpen(String),
+
+    /// Bridge restart limit exceeded.
+    #[error("bridge restart limit exceeded ({attempts} attempts, max {max})")]
+    BridgeRestartLimitExceeded { attempts: u32, max: u32 },
+
+    /// No toolchain available for an operation that requires one.
+    #[error("no toolchain available")]
+    NoToolchain,
 
     /// IO errors (file read/write, socket, etc.)
     #[error("io error: {0}")]
@@ -34,4 +39,78 @@ pub enum AlError {
     /// JSON serialization/deserialization errors.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    #[test]
+    fn from_discovery_error() {
+        let discovery_err = DiscoveryError::NoProjectFound {
+            start: PathBuf::from("/tmp/test"),
+            searched: "/tmp, /".to_string(),
+        };
+        let al_err: AlError = discovery_err.into();
+        assert!(matches!(al_err, AlError::Discovery(_)));
+        let msg = al_err.to_string();
+        assert!(msg.contains("No AL project found"), "got: {msg}");
+    }
+
+    #[test]
+    fn from_semantic_error() {
+        let sem_err = al_semantic::SemanticError::Timeout(Duration::from_secs(5));
+        let al_err: AlError = sem_err.into();
+        assert!(matches!(al_err, AlError::Semantic(_)));
+        let msg = al_err.to_string();
+        assert!(msg.contains("timed out"), "got: {msg}");
+    }
+
+    #[test]
+    fn from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+        let al_err: AlError = io_err.into();
+        assert!(matches!(al_err, AlError::Io(_)));
+        assert!(al_err.to_string().contains("file missing"));
+    }
+
+    #[test]
+    fn document_not_open_display() {
+        let err = AlError::DocumentNotOpen("file:///test.al".to_string());
+        assert_eq!(err.to_string(), "document not open: file:///test.al");
+    }
+
+    #[test]
+    fn bridge_restart_limit_display() {
+        let err = AlError::BridgeRestartLimitExceeded { attempts: 4, max: 3 };
+        assert_eq!(
+            err.to_string(),
+            "bridge restart limit exceeded (4 attempts, max 3)"
+        );
+    }
+
+    #[test]
+    fn no_toolchain_display() {
+        let err = AlError::NoToolchain;
+        assert_eq!(err.to_string(), "no toolchain available");
+    }
+
+    #[test]
+    fn question_mark_conversion_compiles() {
+        // Verify `?` works for each From impl in a function returning AlError
+        fn _discovery() -> Result<(), AlError> {
+            Err(DiscoveryError::DotNetNotInstalled)?
+        }
+        fn _semantic() -> Result<(), AlError> {
+            Err(al_semantic::SemanticError::NotInitialized)?
+        }
+        fn _io() -> Result<(), AlError> {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "test"))?
+        }
+        assert!(_discovery().is_err());
+        assert!(_semantic().is_err());
+        assert!(_io().is_err());
+    }
 }

@@ -31,6 +31,23 @@ pub fn get_or_parse(documents: &DocumentStore, uri: &Url) -> Option<(String, tre
     Some((text, tree))
 }
 
+/// Count all nodes in a parse tree (for diagnostic/debug purposes).
+pub fn count_nodes(tree: &tree_sitter::Tree) -> usize {
+    let mut count = 0;
+    let mut cursor = tree.walk();
+    loop {
+        count += 1;
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return count;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

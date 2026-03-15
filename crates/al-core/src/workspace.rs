@@ -4,7 +4,6 @@
 //! semantic bridge, and configuration. It is the central coordination point
 //! for all queries routed through al-core.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use al_protocol::{AlProject, AlToolchain};
@@ -14,7 +13,9 @@ use dashmap::DashMap;
 use serde::Serialize;
 use tokio::sync::RwLock;
 
+use crate::config::AlConfig;
 use crate::documents::DocumentStore;
+use crate::file_index::FileIndex;
 
 /// Summary metadata for a loaded symbol package.
 #[derive(Debug, Clone, Serialize)]
@@ -40,12 +41,10 @@ pub struct Workspace {
     pub project: RwLock<Option<AlProject>>,
     /// .NET semantic bridge for CodeAnalysis features.
     pub semantic: RwLock<Option<al_semantic::SemanticBridge>>,
-    /// Raw text of all .al files in the workspace (not just open ones).
-    pub workspace_files: DashMap<PathBuf, String>,
-    /// Object name (lowercased) → file path index for fast lookups.
-    pub workspace_objects: DashMap<String, PathBuf>,
-    /// Reverse index: file path → object name (for O(1) cleanup in did_close).
-    pub file_to_object: DashMap<PathBuf, String>,
+    /// Index of all .al files in the workspace directory.
+    pub file_index: FileIndex,
+    /// Merged workspace configuration (settings from client + project defaults).
+    pub config: RwLock<AlConfig>,
     /// Builtins loaded once at init, read-only afterward.
     pub builtins: std::sync::RwLock<Arc<Vec<BuiltinType>>>,
     /// Compiler error codes — code → description mapping for diagnostic enrichment.
@@ -56,6 +55,8 @@ pub struct Workspace {
     pub outline_fallback_approved: std::sync::atomic::AtomicBool,
     /// Summary metadata for loaded symbol packages.
     pub package_info: std::sync::RwLock<Vec<PackageInfo>>,
+    /// Active AL debug session (None if not debugging).
+    pub debug_session: tokio::sync::Mutex<Option<al_dap_client::session::DebugSession>>,
 }
 
 impl Workspace {
@@ -67,14 +68,14 @@ impl Workspace {
             toolchain: RwLock::new(None),
             project: RwLock::new(None),
             semantic: RwLock::new(None),
-            workspace_files: DashMap::new(),
-            workspace_objects: DashMap::new(),
-            file_to_object: DashMap::new(),
+            file_index: FileIndex::new(),
+            config: RwLock::new(AlConfig::default()),
             builtins: std::sync::RwLock::new(Arc::new(Vec::new())),
             error_codes: std::sync::RwLock::new(Arc::new(DashMap::new())),
             bridge_restart_count: std::sync::atomic::AtomicU32::new(0),
             outline_fallback_approved: std::sync::atomic::AtomicBool::new(false),
             package_info: std::sync::RwLock::new(Vec::new()),
+            debug_session: tokio::sync::Mutex::new(None),
         }
     }
 }

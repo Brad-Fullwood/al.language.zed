@@ -39,7 +39,7 @@ pub fn references(
     }
 
     let current_path = uri.to_file_path().ok(); // non-file URIs have no path
-    for entry in workspace.workspace_files.iter() {
+    for entry in workspace.file_index.files.iter() {
         let file_path = entry.key();
         let file_text = entry.value();
         if current_path.as_ref() == Some(file_path) {

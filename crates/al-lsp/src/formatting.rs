@@ -12,12 +12,12 @@ pub(crate) fn handle_formatting(
 ) -> Option<Vec<TextEdit>> {
     let text = server.workspace.documents.get_text(uri)?;
 
-    let format_options = al_syntax::FormatOptions {
+    let format_options = al_core::syntax::FormatOptions {
         tab_size: options.tab_size as usize,
         insert_spaces: options.insert_spaces,
     };
 
-    let formatted = al_syntax::format_al(&text, &format_options);
+    let formatted = al_core::syntax::format_al(&text, &format_options);
 
     // If unchanged, return no edits
     if formatted == text {

@@ -9,9 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 al-core = { path = "../al-core" }
-al-syntax = { path = "../al-syntax" }
-al-symbols = { path = "../al-symbols" }
-al-semantic = { path = "../al-semantic" }
 al-protocol = { path = "../al-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,11 +19,15 @@ dashmap = { workspace = true }
 ropey = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tree-sitter = "0.25"
 dirs = "6"
 walkdir = "2"
 url = "2"
 al-diag = { path = "../al-diag", optional = true }
+al-dap-client = { path = "../al-dap-client" }
+
+[dev-dependencies]
+al-syntax = { path = "../al-syntax" }
+al-symbols = { path = "../al-symbols" }
 
 [features]
 default = ["diagnostics"]

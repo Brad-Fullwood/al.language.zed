@@ -74,6 +74,11 @@ impl DaemonClient {
         Err("Daemon did not start within 5 seconds".to_string())
     }
 
+    /// Override the read timeout (useful for long-running operations like debug start).
+    pub fn set_read_timeout(&mut self, timeout: std::time::Duration) {
+        let _ = self.reader.get_ref().set_read_timeout(Some(timeout));
+    }
+
     /// Send a JSON-RPC request and receive the response.
     /// Retries up to 3 times with 500ms backoff if the daemon reports
     /// "Workspace is initializing, try again".

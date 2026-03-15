@@ -215,6 +215,54 @@ enum Commands {
         #[arg(long)]
         rule: Option<String>,
     },
+    /// AL debug session commands
+    Debug {
+        #[command(subcommand)]
+        subcmd: DebugCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum DebugCommands {
+    /// Compile and start a debug session
+    Start {
+        /// Launch configuration name (uses first config if omitted)
+        #[arg(long)]
+        config: Option<String>,
+    },
+    /// Set a breakpoint in a file
+    Breakpoint {
+        /// Source file path
+        file: String,
+        /// Line number (1-based)
+        line: u32,
+        /// Optional conditional expression
+        #[arg(long)]
+        condition: Option<String>,
+    },
+    /// Show current debug state
+    State,
+    /// Evaluate an expression at the current frame
+    Eval {
+        /// Expression to evaluate
+        expr: String,
+    },
+    /// Continue execution until the next breakpoint
+    Continue,
+    /// Step execution
+    Step {
+        /// Step type: over, into, out (default: over)
+        #[arg(default_value = "over")]
+        step_type: String,
+    },
+    /// Show breakpoint hit history
+    History {
+        /// Filter by variable name
+        #[arg(long)]
+        var: Option<String>,
+    },
+    /// Stop the debug session
+    Stop,
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,6 +1247,215 @@ fn cmd_fix(file: Option<&str>, _all: bool, dry_run: bool, rule: Option<&str>, js
     }
 }
 
+fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
+    match subcmd {
+        DebugCommands::Start { config } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            // Compilation can take 2+ minutes — use 120s timeout
+            client.set_read_timeout(std::time::Duration::from_secs(120));
+            let params = serde_json::json!({
+                "cmd": "start",
+                "config": config,
+            });
+            match client.request("debug", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let session = result.get("session").and_then(|v| v.as_str()).unwrap_or("?");
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Debug session started: {session} (status: {status})");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+        DebugCommands::Breakpoint { file, line, condition } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let abs_file = file_to_uri(file)
+                .unwrap_or_else(|| file.clone());
+            let params = serde_json::json!({
+                "cmd": "breakpoint",
+                "file": abs_file,
+                "line": line,
+                "condition": condition,
+            });
+            match client.request("debug", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let bps = result.get("breakpoints").and_then(|v| v.as_array());
+                        if let Some(bps) = bps {
+                            for bp in bps {
+                                let bp_line = bp.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let verified = bp.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let status = if verified { "verified" } else { "unverified" };
+                                println!("Breakpoint at line {bp_line}: {status}");
+                            }
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+        DebugCommands::State => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = serde_json::json!({"cmd": "state"});
+            match client.request("debug", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let session_id = result.get("sessionId").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Session {session_id}: {status}");
+                        if let Some(loc) = result.get("location") {
+                            let file = loc.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                            let line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let proc = loc.get("procedure").and_then(|v| v.as_str()).unwrap_or("");
+                            println!("  at {file}:{line} ({proc})");
+                        }
+                        if let Some(vars) = result.get("variables").and_then(|v| v.as_array()) {
+                            println!("  Variables:");
+                            for var in vars {
+                                let name = var.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                let val = var.get("value").and_then(|v| v.as_str()).unwrap_or("?");
+                                let ty = var.get("typeName").and_then(|v| v.as_str()).unwrap_or("?");
+                                println!("    {name}: {ty} = {val}");
+                            }
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+        DebugCommands::Eval { expr } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = serde_json::json!({"cmd": "eval", "expr": expr});
+            match client.request("debug", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let val = result.get("result").and_then(|v| v.as_str()).unwrap_or("?");
+                        let ty = result.get("typeName").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("{val} ({ty})");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+        DebugCommands::Continue => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = serde_json::json!({"cmd": "continue"});
+            match client.request("debug", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Continued. Status: {status}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+        DebugCommands::Step { step_type } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = serde_json::json!({"cmd": "step", "stepType": step_type});
+            match client.request("debug", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Stepped. Status: {status}");
+                        if let Some(loc) = result.get("location") {
+                            let file = loc.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                            let line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                            println!("  at {file}:{line}");
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+        DebugCommands::History { var } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = serde_json::json!({"cmd": "history", "var": var});
+            match client.request("debug", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let hits = result.get("hits").and_then(|v| v.as_array());
+                        if let Some(hits) = hits {
+                            if hits.is_empty() {
+                                println!("No breakpoint hits recorded.");
+                            } else {
+                                for hit in hits {
+                                    let seq = hit.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let ts = hit.get("timestamp").and_then(|v| v.as_str()).unwrap_or("?");
+                                    println!("Hit #{seq} at {ts}");
+                                }
+                            }
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+        DebugCommands::Stop => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = serde_json::json!({"cmd": "stop"});
+            match client.request("debug", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Debug session {status}.");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Output formatting helpers
 // ---------------------------------------------------------------------------
@@ -1359,5 +1616,6 @@ fn main() -> ExitCode {
         Commands::Fix { file, all, dry_run, rule } => {
             cmd_fix(file.as_deref(), all, dry_run, rule.as_deref(), cli.json)
         }
+        Commands::Debug { subcmd } => cmd_debug(&subcmd, cli.json),
     }
 }

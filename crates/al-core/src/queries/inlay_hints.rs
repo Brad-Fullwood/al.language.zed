@@ -313,9 +313,9 @@ fn lookup_via_receiver(
     // Workspace objects by resolved subtype
     if let Some(subtype) = &decl.type_subtype {
         let obj_key = subtype.to_lowercase();
-        if let Some(file_path) = workspace.workspace_objects.get(&obj_key) {
+        if let Some(file_path) = workspace.file_index.objects.get(&obj_key) {
             let file_path = file_path.value().clone();
-            if let Some(file_text) = workspace.workspace_files.get(&file_path) {
+            if let Some(file_text) = workspace.file_index.files.get(&file_path) {
                 let content = file_text.value();
                 let result = AlParser::parse_quick(content);
                 let target_symbols = al_syntax::extract_document_symbols(&result.tree, content);
