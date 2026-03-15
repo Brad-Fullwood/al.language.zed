@@ -94,14 +94,6 @@ async fn main() {
         .with(stderr_layer.with_filter(env_filter))
         .with(file_layer.with_filter(file_filter));
 
-    // Structured JSON diagnostics layer (feature-gated)
-    #[cfg(feature = "diagnostics")]
-    let registry = {
-        let diag_filter = tracing_subscriber::EnvFilter::new("debug");
-        let diag_layer = al_diag::DiagLayer::new(log_dir.join("al-diag.db"));
-        registry.with(diag_layer.with_filter(diag_filter))
-    };
-
     registry.init();
 
     // Install panic handler that logs panics before aborting

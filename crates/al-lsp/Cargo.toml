@@ -22,13 +22,8 @@ tracing-subscriber = { workspace = true }
 dirs = "6"
 walkdir = "2"
 url = "2"
-al-diag = { path = "../al-diag", optional = true }
 al-dap-client = { path = "../al-dap-client" }
 
 [dev-dependencies]
 al-syntax = { path = "../al-syntax" }
 al-symbols = { path = "../al-symbols" }
-
-[features]
-default = ["diagnostics"]
-diagnostics = ["al-diag"]

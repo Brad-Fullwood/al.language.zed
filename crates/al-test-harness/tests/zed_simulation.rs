@@ -10,11 +10,10 @@ use al_test_harness::*;
 use std::path::PathBuf;
 
 fn test_project_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("AL_TEST_PROJECT_PATH") {
-        PathBuf::from(path)
-    } else {
-        PathBuf::from("/home/bradf/Dev/AL/Debar/App Integration")
-    }
+    PathBuf::from(
+        std::env::var("AL_TEST_PROJECT_PATH")
+            .expect("AL_TEST_PROJECT_PATH must be set to run fixture tests"),
+    )
 }
 
 fn test_project_exists() -> bool {
@@ -403,9 +402,9 @@ async fn test_fixture_exact_navigation_and_hover_regressions() {
         .definition("objects/Testing/IJLProcessStaging.Report.al", 28, 44)
         .await
         .expect("SchedulePost should resolve");
-    assert_eq!(
-        definition_uri(&schedule_post_def),
-        Some("file:///home/bradf/Dev/AL/Debar/App%20Integration/objects/Automation/IJLAPIHelper.Codeunit.al")
+    assert!(
+        definition_uri(&schedule_post_def).map(|u| u.contains("IJLAPIHelper.Codeunit.al")).unwrap_or(false),
+        "SchedulePost definition should point to IJLAPIHelper.Codeunit.al"
     );
     assert_eq!(definition_start_line(&schedule_post_def), Some(49));
 
@@ -433,9 +432,9 @@ async fn test_fixture_exact_navigation_and_hover_regressions() {
         .definition("objects/Testing/IJLProcessStaging.Report.al", 12, 30)
         .await
         .expect("Item Journal Staging should resolve to the table");
-    assert_eq!(
-        definition_uri(&table_def),
-        Some("file:///home/bradf/Dev/AL/Debar/App%20Integration/objects/API/ItemJournalStaging.Table.al")
+    assert!(
+        definition_uri(&table_def).map(|u| u.contains("ItemJournalStaging.Table.al")).unwrap_or(false),
+        "Item Journal Staging definition should point to ItemJournalStaging.Table.al"
     );
 
     let codeunit_content = std::fs::read_to_string(

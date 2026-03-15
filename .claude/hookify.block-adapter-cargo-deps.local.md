@@ -14,7 +14,7 @@ conditions:
 
 **BLOCKED: Thin adapter Cargo.toml dependency violation**
 
-Thin adapters (al-cli, al-explorer) may ONLY depend on `al-protocol` (shared types + discovery). They connect to al-lsp via JSON-RPC at runtime.
+Thin adapters (al-cli, al-explorer) may ONLY depend on `al-protocol` (shared JSON-RPC types). They connect to al-lsp via JSON-RPC at runtime.
 
 al-mcp has NO al-* compile-time dependencies. It shells out to the `al` CLI binary at runtime.
 

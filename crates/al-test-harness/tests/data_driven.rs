@@ -6,11 +6,10 @@ use al_test_harness::*;
 use std::path::PathBuf;
 
 fn test_project_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("AL_TEST_PROJECT_PATH") {
-        PathBuf::from(path)
-    } else {
-        PathBuf::from("/home/bradf/Dev/AL/Debar/App Integration")
-    }
+    PathBuf::from(
+        std::env::var("AL_TEST_PROJECT_PATH")
+            .expect("AL_TEST_PROJECT_PATH must be set to run fixture tests"),
+    )
 }
 
 fn test_project_exists() -> bool {

@@ -9,19 +9,17 @@ al-cli / al-explorer  ->  al-lsp daemon (Unix socket)  ->  al-core  ->  al-synta
 al-mcp                ->  al CLI binary (subprocess)                ->  al-symbols
 zed-al (WASM)         ->  al-lsp (stdio)                            ->  al-semantic
                                                          al-lsp    ->  al-dap-client
-                                                                   ->  al-diag (optional)
 ```
 
 | Crate | Role |
 |-------|------|
-| al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket). Imports al-core, al-protocol, al-dap-client, al-diag (optional) |
+| al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket) |
 | al-core | All state, queries, orchestration |
-| al-protocol | Shared types and discovery. JSON-RPC types + project/toolchain discovery logic |
-| al-syntax | Parser, type resolver, tree-sitter. Uses tower-lsp Position/Range types |
-| al-symbols | Symbol index for .app packages. Imports al-protocol for shared domain types |
-| al-semantic | In-process .NET CLR via `netcorehost`. Imports al-protocol for shared domain types |
-| al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host. Imports al-protocol |
-| al-diag | SQLite-backed structured tracing/logging layer (NOT diagnostic analysis) |
+| al-protocol | Shared JSON-RPC types. Types only, no logic |
+| al-syntax | Parser, type resolver, tree-sitter |
+| al-symbols | Symbol index for .app packages |
+| al-semantic | In-process .NET CLR via `netcorehost` |
+| al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host |
 | al-test-harness | LSP integration + data-driven tests (dev only) |
 | al-cli | Thin adapter: JSON-RPC client to al-lsp daemon. Imports al-protocol only |
 | al-explorer | TUI symbol browser: connects to al-lsp daemon via JSON-RPC. Imports al-protocol only |

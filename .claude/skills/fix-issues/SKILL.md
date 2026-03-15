@@ -65,10 +65,10 @@ After all agents complete:
 
 ## Decision-Making
 
-Agents should NOT punt to the user for architecture decisions. The codebase, CLAUDE.md, `.claude/rules/`, and `.claude/data/` contain enough context to resolve most issues:
+Agents should resolve issues using CLAUDE.md, `.claude/rules/`, and `.claude/data/` as context.
 
-- **Docs vs. code mismatch**: The code is the source of truth. Fix the docs to match reality.
-- **Architecture rule violations**: Read the rules, read the code, determine which is wrong. If the code works and the rule is outdated, fix the rule. If the rule is intentional and the code violates it, fix the code.
-- **Ambiguous intent**: Check git history (`git log`, `git blame`) for context on why things are the way they are.
+- **Architecture rules are the intended design.** If code violates the rules, fix the CODE, not the rules. Never accept a violation as "pragmatic" or "intentional" — the rules express the owner's architectural intent.
+- **Docs vs. code mismatch where no rule exists**: Check git history for context. Fix whichever is wrong.
+- **Large refactors**: If fixing a violation requires touching many crates, create a focused fix plan and execute it. Don't punt.
 
-Only escalate to the user as a **last resort** when the codebase is genuinely ambiguous AND the fix would be irreversible or high-risk.
+Only escalate to the user as a **last resort** when the fix would be genuinely ambiguous AND irreversible.

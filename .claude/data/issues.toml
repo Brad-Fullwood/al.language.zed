@@ -98,10 +98,8 @@ default-enabled). This means al-lsp bypasses al-core for DAP and diagnostics, vi
 al-core and the code is wrong, or (b) al-lsp legitimately needs direct access and the
 architecture docs are wrong. Decision required before rules can be trusted.
 
-Fixed: Docs updated to reflect reality. al-lsp MAY import al-core, al-protocol, al-dap-client,
-and al-diag (optional, feature-gated). The direct al-lsp->al-dap-client path is accepted as
-intentional architecture (al-lsp manages DAP sessions). CLAUDE.md architecture diagram and
-code-boundaries.md import rules table both updated.
+Fixed: al-diag removed entirely. al-lsp now imports al-core, al-protocol, al-dap-client.
+Docs updated to match.
 """
 
 [[issues]]
@@ -193,20 +191,16 @@ date = "2026-03-15"
 category = "constraint"
 severity = "bug"
 priority = "HIGH"
-status = "fixed"
+status = "open"
 triage = "STOP"
 description = """
-CLAUDE.md and code-boundaries.md describe al-protocol as "Shared JSON-RPC types. Types only,
-no logic." This is false. al-protocol contains `project.rs` (`find_project()`),
-`toolchain.rs` (`find_toolchain()`), and `launch.rs` — these are discovery and configuration
-logic functions, not type definitions. Its Cargo.toml also pulls `tracing` and `urlencoding`,
-atypical for a pure-types crate. Either: (a) move the logic functions to al-core and keep
-al-protocol as types-only, or (b) update the description to reflect that al-protocol also
-owns project/toolchain discovery.
+al-protocol contains `project.rs` (`find_project()`), `toolchain.rs` (`find_toolchain()`),
+and `launch.rs` — these are discovery and configuration logic functions, not type definitions.
+Its Cargo.toml also pulls `tracing` and `urlencoding`, atypical for a pure-types crate.
 
-Fixed: Docs updated. al-protocol is now described as "Shared types and discovery" containing
-both JSON-RPC types AND project/toolchain discovery logic. CLAUDE.md crate table and
-code-boundaries.md al-protocol contract section both updated to reflect reality.
+Fix direction: Move logic functions to al-core. al-protocol keeps ONLY JSON-RPC types
+(Request, Response, RpcError, method names, error codes). Move domain types (AlToolchain,
+AlProject, AppDependency, BcServerConfig) to the crates that own them.
 """
 
 [[issues]]
@@ -312,17 +306,11 @@ priority = "MEDIUM"
 status = "fixed"
 triage = "SCHEDULE"
 description = """
-The zed_simulation tests in al-test-harness use the AL test project fixture hardcoded to
-`/home/bradf/Dev/AL/AL test/App Integration`. Tests silently skip via `test_project_exists()`
-if the path is absent. The e2e.rs tests use `test_al_project/` which IS in the repo.
-testing.md says "Tests run against real AL test project fixture" without disclosing this is a
-local-only, machine-specific path. Any other contributor or CI environment would silently
-skip all 37 zed_simulation tests with no warning.
+The zed_simulation tests required a real AL project fixture but had the path hardcoded with
+no env var override. Tests silently skipped if absent. No documentation.
 
-Fixed: `test_project_dir()` now reads `AL_TEST_PROJECT_PATH` env var first, falling back
-to the hardcoded default. `test_project_exists()` now prints a clear warning with the
-missing path and instructions for setting the env var. `testing.md` updated to document
-the fixture requirement, the env var, and that e2e/data_driven tests are always run.
+Fixed: Path now requires `AL_TEST_PROJECT_PATH` env var (no hardcoded default). All local
+paths and customer names removed from source. `testing.md` documents the fixture requirement.
 """
 
 [[issues]]
@@ -351,21 +339,19 @@ batching is a CLI convenience. No code change needed; docs updated to acknowledg
 
 [[issues]]
 id = "ISSUE-021"
-title = "Analysis libs depend on al-protocol, bypassing one-code-path architecture"
+title = "Analysis libs depend on al-protocol, violating architecture"
 type = "architecture"
 reporter = "user"
 date = "2026-03-15"
 category = "constraint"
 severity = "bug"
 priority = "CRITICAL"
-status = "fixed"
+status = "open"
 triage = "STOP"
 description = """
-al-symbols, al-semantic, and al-dap-client all have compile-time dependencies on al-protocol
-to access domain types (AlToolchain, AppDependency, BcServerConfig, launch config). This
-violates the one-code-path architecture: analysis libs should be standalone and protocol-
-unaware. Domain types should either live in the analysis lib that owns them (e.g.,
-AppDependency in al-symbols) or be passed in by al-core as function parameters.
+al-symbols, al-semantic, and al-dap-client all have compile-time dependencies on al-protocol.
+Analysis libs MUST NOT depend on al-protocol. Domain types should live in the owning crate
+or be passed in by al-core as function parameters.
 
 Current violations:
 - al-symbols/src/bc_server.rs: imports al_protocol::{launch::BcServerConfig, AppDependency}
@@ -374,16 +360,8 @@ Current violations:
 - al-dap-client/src/session.rs: imports al_protocol::{launch, AlToolchain}
 - al-dap-client/src/editor_services.rs: imports al_protocol::AlToolchain
 
-Fix: Move domain types out of al-protocol into owning crates. al-protocol keeps only
-JSON-RPC Request/Response/RpcError types. Related to ISSUE-014 (al-protocol has logic).
-
-Hookify rules updated to block future al_protocol imports in all analysis libs.
-
-Fixed (docs): The existing al-protocol imports in analysis libs are accepted as a pragmatic
-architectural decision. al-protocol serves as a shared foundation crate containing both
-JSON-RPC types AND domain types (AlToolchain, AppDependency, BcServerConfig). code-boundaries.md
-updated to document this as the intended design. The hookify rules that block NEW al_protocol
-imports remain in place to prevent further coupling growth while existing usage is acknowledged.
+Fix direction: Move domain types out of al-protocol into owning crates. al-protocol keeps
+ONLY JSON-RPC Request/Response/RpcError types. Related to ISSUE-014.
 """
 
 # ─── DEFERRED ISSUES (adversarial-found bugs, blocked on another task) ───────

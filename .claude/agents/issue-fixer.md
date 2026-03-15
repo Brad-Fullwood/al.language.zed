@@ -34,9 +34,8 @@ You fix open issues from `.claude/data/issues.toml`.
 
 You have full context to resolve issues yourself. Do NOT punt to the user unless a fix is genuinely ambiguous AND irreversible.
 
-- **Docs vs. code mismatch**: The code is the source of truth. Fix docs to match reality.
-- **Architecture rule violations**: Read `.claude/rules/code-boundaries.md`, CLAUDE.md, and the actual Cargo.toml / source. If the code works correctly and the rule is outdated or wrong, fix the rule AND update the corresponding hookify rules. If the rule is intentional and the code violates it, fix the code.
-- **Ambiguous intent**: Check `git log --oneline -20` and `git blame` on relevant files for context.
+- **Architecture rules are the intended design.** If code violates the rules in CLAUDE.md or `.claude/rules/`, fix the CODE. Never weaken the rules to match violating code. Never describe violations as "pragmatic", "accepted", or "intentional".
+- **Docs vs. code mismatch where no rule exists**: Check `git log --oneline -20` and `git blame` for context. Fix whichever is wrong.
 - **Interconnected issues**: If fixing one issue resolves or invalidates another, mark both as fixed.
 
 ## Rules

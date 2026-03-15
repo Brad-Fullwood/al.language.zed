@@ -234,17 +234,6 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "errorCodes" => dispatch_error_codes(workspace, id),
         "builtinTypes" => dispatch_builtin_types(workspace, id),
         "setup" => dispatch_setup(workspace, id),
-        #[cfg(feature = "diagnostics")]
-        "diag" => dispatch_diag(id, &params),
-        #[cfg(not(feature = "diagnostics"))]
-        "diag" => Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::METHOD_NOT_FOUND,
-                message: "Diagnostic feature not enabled (build with --features diagnostics)".to_string(),
-            }),
-        },
         "clearCache" => dispatch_clear_cache(id),
         "downloadSymbols" => dispatch_download_symbols(workspace, id, &params),
         "debug" => dispatch_debug(workspace, id, &params).await,
@@ -1443,83 +1432,6 @@ fn dispatch_clear_cache(id: u64) -> Response {
     }
 }
 
-#[cfg(feature = "diagnostics")]
-fn dispatch_diag(id: u64, params: &serde_json::Value) -> Response {
-    let db_path = dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("al-lsp")
-        .join("logs")
-        .join("al-diag.db");
-
-    if !db_path.exists() {
-        return Response {
-            id,
-            result: Some(serde_json::json!({
-                "error": "No diagnostic database found",
-                "path": db_path.display().to_string(),
-            })),
-            error: None,
-        };
-    }
-
-    let conn = match al_diag::query::open(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: format!("Failed to open diag db: {e}"),
-                }),
-            };
-        }
-    };
-
-    let cmd = params
-        .get("cmd")
-        .and_then(|v| v.as_str())
-        .unwrap_or("summary");
-
-    let result = match cmd {
-        "sessions" => {
-            let sessions = al_diag::query::sessions(&conn);
-            serde_json::to_value(sessions).unwrap_or_default()
-        }
-        "events" => {
-            let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
-            let level = params.get("level").and_then(|v| v.as_str());
-            let target = params.get("target").and_then(|v| v.as_str());
-            let events = al_diag::query::recent_events(&conn, limit, level, target);
-            serde_json::to_value(events).unwrap_or_default()
-        }
-        "slow" => {
-            let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            let spans = al_diag::query::slow_spans(&conn, limit);
-            serde_json::to_value(spans).unwrap_or_default()
-        }
-        "failures" => {
-            let failures = al_diag::query::resolution_failures(&conn, None);
-            serde_json::to_value(failures).unwrap_or_default()
-        }
-        "search" => {
-            let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            let events = al_diag::query::search(&conn, query, limit);
-            serde_json::to_value(events).unwrap_or_default()
-        }
-        _ => {
-            let summary = al_diag::query::summarize(&conn);
-            serde_json::to_value(summary).unwrap_or_default()
-        }
-    };
-
-    Response {
-        id,
-        result: Some(result),
-        error: None,
-    }
-}
 
 fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("nuget");

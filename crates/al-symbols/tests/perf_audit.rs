@@ -27,10 +27,12 @@ fn collect_app_paths() -> Vec<PathBuf> {
         }
     }
 
-    // Secondary: Redco project packages (larger, real-world)
-    let redco = PathBuf::from("/home/bradf/Dev/AL/Redco/ext5_manufacturingmods/.alpackages");
-    if redco.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&redco) {
+    // Secondary: additional project packages (via AL_TEST_PACKAGES_PATH env var)
+    let secondary = std::env::var("AL_TEST_PACKAGES_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/nonexistent"));
+    if secondary.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&secondary) {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.extension().and_then(|e| e.to_str()) == Some("app") {
