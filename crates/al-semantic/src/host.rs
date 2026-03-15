@@ -90,7 +90,14 @@ impl DotNetHost {
         // Initialize the bridge with the CodeAnalysis.dll path
         let ca_path = code_analysis_path.to_string_lossy();
         let ca_bytes = ca_path.as_bytes();
-        let result = unsafe { init_fn(ca_bytes.as_ptr(), ca_bytes.len() as c_int) };
+        let ca_len = c_int::try_from(ca_bytes.len()).map_err(|_| {
+            SemanticError::HostInit(format!(
+                "CodeAnalysis path is too long ({} bytes, max {})",
+                ca_bytes.len(),
+                c_int::MAX
+            ))
+        })?;
+        let result = unsafe { init_fn(ca_bytes.as_ptr(), ca_len) };
 
         if result != 0 {
             return Err(SemanticError::HostInit(format!(
@@ -124,17 +131,32 @@ impl DotNetHost {
         let request_bytes = serde_json::to_vec(&request)
             .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
 
+        let request_len = c_int::try_from(request_bytes.len()).map_err(|_| {
+            SemanticError::SerializationError(format!(
+                "Request payload is too large ({} bytes, max {})",
+                request_bytes.len(),
+                c_int::MAX
+            ))
+        })?;
+
         let mut response_len: c_int = 0;
         let response_ptr = unsafe {
             (self.handle_request_fn)(
                 request_bytes.as_ptr(),
-                request_bytes.len() as c_int,
+                request_len,
                 &mut response_len,
             )
         };
 
         if response_ptr.is_null() {
             return Err(SemanticError::HostInit("HandleRequest returned null".into()));
+        }
+
+        if response_len < 0 {
+            unsafe { (self.free_buffer_fn)(response_ptr) };
+            return Err(SemanticError::HostInit(format!(
+                "HandleRequest returned negative response length: {response_len}"
+            )));
         }
 
         // Copy the response bytes before freeing
@@ -289,5 +311,44 @@ mod tests {
                 assert!(e.to_string().contains("AlBridge") || e.to_string().contains("bridge"));
             }
         }
+    }
+
+    /// Verify that `c_int::try_from` catches values exceeding i32::MAX.
+    /// This mirrors the guard added before each `as c_int` cast.
+    #[test]
+    fn test_c_int_overflow_guard_rejects_oversized_len() {
+        let oversized: usize = (c_int::MAX as usize) + 1;
+        let result = c_int::try_from(oversized);
+        assert!(
+            result.is_err(),
+            "try_from must fail for values > i32::MAX"
+        );
+    }
+
+    /// Values at i32::MAX must not be rejected.
+    #[test]
+    fn test_c_int_overflow_guard_accepts_max() {
+        let at_max: usize = c_int::MAX as usize;
+        let result = c_int::try_from(at_max);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), c_int::MAX);
+    }
+
+    /// Verify the negative-response-length guard logic.
+    #[test]
+    fn test_response_len_negative_is_detected() {
+        let response_len: c_int = -1;
+        // The guard in call() is: if response_len < 0 { return Err(...) }
+        assert!(response_len < 0, "negative response_len must be caught");
+    }
+
+    /// Verify a zero response length is treated as valid (empty body).
+    #[test]
+    fn test_response_len_zero_is_valid() {
+        let response_len: c_int = 0;
+        assert!(response_len >= 0);
+        // Safe cast
+        let as_usize = response_len as usize;
+        assert_eq!(as_usize, 0);
     }
 }

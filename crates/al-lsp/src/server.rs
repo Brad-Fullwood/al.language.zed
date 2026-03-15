@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use al_core::workspace::Workspace;
 use al_core::syntax::AlParser;
-use dashmap::DashMap;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -101,31 +100,33 @@ impl AlServer {
         if let Ok(path) = uri.to_file_path() {
             self.workspace.file_index.add_file(path, text.to_string());
         }
+
+        // Invalidate composed view cache — file change may affect extensions
+        self.workspace.symbols.invalidate_all_composed();
     }
 
     /// Load builtins and error codes from disk cache (fast path, no bridge needed).
     pub(crate) async fn load_caches_from_disk(&self, version: &str) {
-        if self.workspace.builtins.read().unwrap().is_empty() {
+        // SILENT: .unwrap_or_else recovers from RwLock poison by taking the inner value
+        if self.workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).is_empty() {
             if let Some(cached) = al_core::semantic_types::cache::read_builtins(version) {
                 tracing::info!(count = cached.len(), "Loaded built-in types from disk cache");
-                *self.workspace.builtins.write().unwrap() = Arc::new(cached);
+                al_core::semantic::set_builtins(&self.workspace, cached, version);
             }
         }
-        if self.workspace.error_codes.read().unwrap().is_empty() {
+        if self.workspace.error_codes.is_empty() {
             if let Some(cached) = al_core::semantic_types::cache::read_error_codes(version) {
                 tracing::info!(count = cached.len(), "Loaded error codes from disk cache");
-                let map = DashMap::new();
                 for ec in cached {
-                    map.insert(ec.code.clone(), ec.message.clone());
+                    self.workspace.error_codes.insert(ec.code.clone(), ec.message.clone());
                 }
-                *self.workspace.error_codes.write().unwrap() = Arc::new(map);
             }
         }
     }
 
     /// Ensure builtins are loaded. Tries disk cache first, then bridge.
     pub(crate) async fn ensure_builtins_loaded(&self) {
-        if !self.workspace.builtins.read().unwrap().is_empty() {
+        if !self.workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).is_empty() {
             return;
         }
 
@@ -135,7 +136,8 @@ impl AlServer {
                 match bridge.builtin_types().await {
                     Ok(types) => {
                         tracing::info!(count = types.len(), "Loaded built-in types via bridge");
-                        *self.workspace.builtins.write().unwrap() = Arc::new(types);
+                        let version = bridge.version().to_string();
+                        al_core::semantic::set_builtins(&self.workspace, types, &version);
                     }
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load built-in types via bridge");
@@ -150,7 +152,7 @@ impl AlServer {
 
     /// Ensure error codes are loaded. Tries disk cache first, then bridge.
     pub(crate) async fn ensure_error_codes_loaded(&self) {
-        if !self.workspace.error_codes.read().unwrap().is_empty() {
+        if !self.workspace.error_codes.is_empty() {
             return;
         }
 
@@ -159,11 +161,9 @@ impl AlServer {
                 match bridge.error_codes().await {
                     Ok(codes) => {
                         tracing::info!(count = codes.len(), "Loaded error codes via bridge");
-                        let map = DashMap::new();
                         for ec in codes {
-                            map.insert(ec.code.clone(), ec.message.clone());
+                            self.workspace.error_codes.insert(ec.code.clone(), ec.message.clone());
                         }
-                        *self.workspace.error_codes.write().unwrap() = Arc::new(map);
                     }
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load error codes via bridge");
@@ -178,8 +178,7 @@ impl AlServer {
 
     /// Look up an error code description for diagnostic enrichment.
     pub(crate) fn error_code_description(&self, code: &str) -> Option<String> {
-        let map = self.workspace.error_codes.read().unwrap();
-        map.get(code).map(|v| v.value().clone())
+        self.workspace.error_codes.get(code).map(|v| v.value().clone())
     }
 
     /// Get the semantic bridge, initializing it lazily if needed.
@@ -263,6 +262,19 @@ impl LanguageServer for AlServer {
 
         // Store root URI for use in initialized()
         *self.root_uri.write().await = root_uri;
+
+        // Parse initialization options into config
+        if let Some(init_opts) = params.initialization_options {
+            let al_settings = init_opts
+                .get("al")
+                .cloned()
+                .unwrap_or(init_opts);
+            let unknown = self.workspace.config.write().await.merge(&al_settings);
+            if !unknown.is_empty() {
+                tracing::warn!("Unknown settings in initializationOptions: {:?}", unknown);
+            }
+            tracing::info!("Parsed initialization options into config");
+        }
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
@@ -390,7 +402,24 @@ impl LanguageServer for AlServer {
             self.workspace.file_index.remove_file(&path);
         }
 
+        self.workspace.symbols.invalidate_all_composed();
         self.client.publish_diagnostics(uri, vec![], None).await;
+    }
+
+    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+        tracing::info!("did_change_configuration");
+        let settings = params.settings;
+        // Zed sends settings nested under "al" key, or as a flat object
+        let al_settings = settings
+            .get("al")
+            .cloned()
+            .unwrap_or(settings);
+        let unknown = self.workspace.config.write().await.merge(&al_settings);
+        if !unknown.is_empty() {
+            let msg = format!("Unknown AL settings: {}", unknown.join(", "));
+            self.client.show_message(MessageType::WARNING, &msg).await;
+        }
+        tracing::info!("Configuration updated");
     }
 
     // -- Hover --
@@ -683,7 +712,7 @@ impl LanguageServer for AlServer {
                 let indexed_symbols = self.workspace.symbols.len();
                 let workspace_files = self.workspace.file_index.len();
                 let workspace_objects = self.workspace.file_index.objects.len();
-                let builtins = self.workspace.builtins.read().unwrap().len();
+                let builtins = self.workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).len(); // SILENT: recover from RwLock poison
 
                 Ok(Some(serde_json::json!({
                     "version": env!("CARGO_PKG_VERSION"),

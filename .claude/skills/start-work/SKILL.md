@@ -23,7 +23,16 @@ Also check `deferred-issues.toml` — if any deferred bugs are now fixable (thei
 
 Read `docs/progress.md` and `docs/plan.md`.
 
-In progress.md, find the first unchecked task (`- [ ]`). Cross-reference with plan.md to get:
+**If invoked with a tag argument** (e.g., `/start-work 2nd Agent Okay` or `/start-work 3rd Agent Okay`):
+- In progress.md, find the section matching that tag (e.g., `### 2nd Agent Okay`)
+- Pick the first unchecked task (`- [ ]`) from that section only
+- These tasks are pre-vetted as parallelizable — safe to work on while other agents work the critical path
+
+**Otherwise (no argument):**
+- In progress.md, find the first unchecked task (`- [ ]`) from the main phase checklists
+- The main agent does NOT skip tagged tasks — those sections are just a convenience for parallel agents, not exclusive reservations. The main agent follows the normal critical path order.
+
+Cross-reference with plan.md to get:
 - Task ID and name
 - File ownership
 - Dependencies (verify they're complete)

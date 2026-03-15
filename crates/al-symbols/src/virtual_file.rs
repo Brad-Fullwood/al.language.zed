@@ -13,10 +13,13 @@ pub fn cache_dir() -> PathBuf {
 }
 
 /// Get or create a virtual AL file for a package symbol entry.
+///
+/// Tries to extract source from the .app ZIP archive first.
+/// If no source is available, renders a complete outline from symbol metadata
+/// with full procedure signatures, fields, keys, enum values, and attributes.
 pub fn get_or_create(
     entry: &SymbolEntry,
     app_path: Option<&Path>,
-    allow_outline_fallback: bool,
 ) -> std::io::Result<PathBuf> {
     let cache_root = cache_dir();
     let pkg_dir = cache_root.join(sanitize_filename(&entry.package));
@@ -27,17 +30,7 @@ pub fn get_or_create(
 
     if !file_path.exists() {
         let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
-
-        let source = match extracted {
-            Some(src) => src,
-            None if allow_outline_fallback => generate_al(entry),
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("no source in .app for {} \"{}\"", entry.kind, entry.name),
-                ));
-            }
-        };
+        let source = extracted.unwrap_or_else(|| render_outline(entry));
 
         fs::create_dir_all(&pkg_dir)?;
         fs::write(&file_path, &source)?;
@@ -125,17 +118,141 @@ fn sanitize_filename(s: &str) -> String {
         .collect()
 }
 
-fn generate_al(entry: &SymbolEntry) -> String {
-    let mut out = String::new();
-    let name_quoted = if entry.name.contains(' ') { format!("\"{}\"", entry.name) } else { entry.name.clone() };
-    let kind_lower = format!("{:?}", entry.kind).to_lowercase();
+/// Render a complete AL outline from a SymbolEntry.
+///
+/// Produces valid AL syntax with full procedure signatures (parameters + types + return type),
+/// field declarations (id + name + type), key declarations, enum values, event declarations
+/// with attributes, and global variables. This is the standard output for packages without
+/// embedded source — not a degraded mode.
+pub fn render_outline(entry: &SymbolEntry) -> String {
+    use crate::model::{FieldSymbol, MethodSymbol, ObjectKind};
 
-    out.push_str(&format!("{} {} {}\n{{\n", kind_lower, entry.id, name_quoted));
-    for m in &entry.methods {
-        let local = if m.is_local { "local " } else { "" };
-        out.push_str(&format!("    {}procedure {}(", local, m.name));
-        out.push_str(")\n    begin\n    end;\n\n");
+    fn format_name(name: &str) -> String {
+        let needs_quoting = name.contains(' ')
+            || name.contains('.')
+            || name.contains('/')
+            || name.contains('-')
+            || name.contains('&')
+            || name.contains('(')
+            || name.contains(')');
+        if needs_quoting {
+            format!("\"{}\"", name)
+        } else {
+            name.to_string()
+        }
     }
+
+    fn kind_keyword(kind: ObjectKind) -> &'static str {
+        match kind {
+            ObjectKind::Table => "table",
+            ObjectKind::TableExtension => "tableextension",
+            ObjectKind::Page => "page",
+            ObjectKind::PageExtension => "pageextension",
+            ObjectKind::Codeunit => "codeunit",
+            ObjectKind::Report => "report",
+            ObjectKind::ReportExtension => "reportextension",
+            ObjectKind::XmlPort => "xmlport",
+            ObjectKind::Query => "query",
+            ObjectKind::Enum => "enum",
+            ObjectKind::EnumExtension => "enumextension",
+            ObjectKind::Interface => "interface",
+            ObjectKind::PermissionSet => "permissionset",
+            ObjectKind::PermissionSetExtension => "permissionsetextension",
+            ObjectKind::Profile => "profile",
+            ObjectKind::PageCustomization => "pagecustomization",
+            ObjectKind::ControlAddIn => "controladdin",
+            ObjectKind::Entitlement => "entitlement",
+        }
+    }
+
+    fn render_field(out: &mut String, f: &FieldSymbol) {
+        let n = format_name(&f.name);
+        if f.type_name.is_empty() {
+            out.push_str(&format!("        field({}; {}) {{ }}\n", f.id, n));
+        } else {
+            out.push_str(&format!("        field({}; {}; {}) {{ }}\n", f.id, n, f.type_name));
+        }
+    }
+
+    fn render_method(out: &mut String, m: &MethodSymbol) {
+        // Attributes
+        for attr in &m.attributes {
+            out.push_str(&format!("    [{}", attr.name));
+            if !attr.arguments.is_empty() {
+                out.push_str(&format!("({})", attr.arguments.join(", ")));
+            }
+            out.push_str("]\n");
+        }
+
+        let params: Vec<String> = m.parameters.iter().map(|p| {
+            let var_prefix = if p.is_var { "var " } else { "" };
+            format!("{}{}: {}", var_prefix, p.name, p.type_name)
+        }).collect();
+
+        let local = if m.is_local { "    local " } else { "    " };
+        out.push_str(&format!("{}procedure {}({})", local, m.name, params.join("; ")));
+        if let Some(ref ret) = m.return_type {
+            out.push_str(&format!(": {}", ret));
+        }
+        out.push_str(";\n");
+    }
+
+    let mut out = String::new();
+    let name_str = format_name(&entry.name);
+    let kw = kind_keyword(entry.kind);
+
+    // Object header
+    if let Some(ref extends) = entry.extends {
+        let ext = format_name(extends);
+        out.push_str(&format!("{} {} {} extends {}\n", kw, entry.id, name_str, ext));
+    } else {
+        out.push_str(&format!("{} {} {}\n", kw, entry.id, name_str));
+    }
+    out.push_str("{\n");
+
+    // Fields
+    if !entry.fields.is_empty() {
+        out.push_str("    fields\n    {\n");
+        for f in &entry.fields {
+            render_field(&mut out, f);
+        }
+        out.push_str("    }\n\n");
+    }
+
+    // Keys
+    if !entry.keys.is_empty() {
+        out.push_str("    keys\n    {\n");
+        for k in &entry.keys {
+            let fields = k.field_names.join(", ");
+            out.push_str(&format!("        key({}; {})\n", k.name, fields));
+        }
+        out.push_str("    }\n\n");
+    }
+
+    // Enum values
+    if !entry.enum_values.is_empty() {
+        for v in &entry.enum_values {
+            let v_name = format_name(&v.name);
+            out.push_str(&format!("    value({}; {}) {{ }}\n", v.ordinal, v_name));
+        }
+        out.push('\n');
+    }
+
+    // Variables
+    if !entry.variables.is_empty() {
+        out.push_str("    var\n");
+        for v in &entry.variables {
+            let prot = if v.is_protected { "protected " } else { "" };
+            out.push_str(&format!("        {}{}: {};\n", prot, v.name, v.type_name));
+        }
+        out.push('\n');
+    }
+
+    // Methods
+    for m in &entry.methods {
+        render_method(&mut out, m);
+    }
+
     out.push_str("}\n");
     out
 }

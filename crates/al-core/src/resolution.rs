@@ -143,7 +143,8 @@ pub(crate) fn receiver_chain_before(
     position: Position,
 ) -> Option<(String, AccessKind)> {
     let line = text.lines().nth(position.line as usize)?;
-    let prefix = &line[..(position.character as usize).min(line.len())];
+    let byte_off = utf16_col_to_byte_offset(line, position.character as usize);
+    let prefix = &line[..byte_off];
     let trimmed = prefix.trim_end();
 
     let (kind, end) = if trimmed.ends_with("::") {
@@ -179,7 +180,8 @@ fn access_path_from_text(text: &str, position: Position) -> Option<AccessPath> {
         return None;
     }
 
-    let mut idx = (position.character as usize).min(bytes.len().saturating_sub(1));
+    let byte_col = utf16_col_to_byte_offset(line, position.character as usize);
+    let mut idx = byte_col.min(bytes.len().saturating_sub(1));
     if !is_access_char(bytes[idx]) {
         if idx > 0 && is_access_char(bytes[idx - 1]) {
             idx -= 1;
@@ -337,6 +339,20 @@ fn inside_quoted_identifier(line: &str, idx: usize) -> bool {
         }
     }
     quote_count % 2 == 1
+}
+
+/// Convert a UTF-16 column offset (as supplied by LSP) to the corresponding
+/// byte offset within `line`.  If `utf16_col` is past the end of the string,
+/// the byte length of `line` is returned (clamp-to-end semantics).
+pub(crate) fn utf16_col_to_byte_offset(line: &str, utf16_col: usize) -> usize {
+    let mut remaining = utf16_col;
+    for (byte_idx, ch) in line.char_indices() {
+        if remaining == 0 {
+            return byte_idx;
+        }
+        remaining = remaining.saturating_sub(ch.len_utf16());
+    }
+    line.len() // past end — clamp to end of line
 }
 
 fn is_access_char(ch: u8) -> bool {
@@ -521,37 +537,34 @@ pub(crate) fn resolve_member(
         }
     }
 
-    let builtins = workspace.builtins.read().unwrap().clone();
-    for builtin in builtins.iter() {
-        if builtin.name.eq_ignore_ascii_case(&receiver.type_name)
-            || receiver
-                .type_subtype
-                .as_deref()
-                .is_some_and(|s| builtin.name.eq_ignore_ascii_case(s))
-        {
-            for method in &builtin.methods {
-                if method.name.eq_ignore_ascii_case(target_name) {
-                    tracing::debug!(
-                        member = %target_name,
-                        result = "BuiltinMethod",
-                        builtin_type = %builtin.name,
-                        "resolve_member: found in builtins"
-                    );
-                    return Some(ResolvedMember {
-                        name: method.name.clone(),
-                        type_info: method.return_type.as_deref().map(parse_type_expr),
+    // Use semantic cache for O(1) builtin type lookup
+    let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let builtin = cache
+        .get_type(&receiver.type_name)
+        .or_else(|| receiver.type_subtype.as_deref().and_then(|s| cache.get_type(s)));
+    if let Some(builtin) = builtin {
+        for method in &builtin.methods {
+            if method.name.eq_ignore_ascii_case(target_name) {
+                tracing::debug!(
+                    member = %target_name,
+                    result = "BuiltinMethod",
+                    builtin_type = %builtin.name,
+                    "resolve_member: found in builtins"
+                );
+                return Some(ResolvedMember {
+                    name: method.name.clone(),
+                    type_info: method.return_type.as_deref().map(parse_type_expr),
 
-                        uri: None,
-                        kind: ResolvedMemberKind::BuiltinMethod {
-                            signature: format_builtin_signature(method),
-                            documentation: if method.documentation.is_empty() {
-                                None
-                            } else {
-                                Some(method.documentation.clone())
-                            },
+                    uri: None,
+                    kind: ResolvedMemberKind::BuiltinMethod {
+                        signature: format_builtin_signature(method),
+                        documentation: if method.documentation.is_empty() {
+                            None
+                        } else {
+                            Some(method.documentation.clone())
                         },
-                    });
-                }
+                    },
+                });
             }
         }
     }
@@ -572,31 +585,28 @@ pub(crate) fn resolve_builtin_overloads(
     target_name: &str,
 ) -> Vec<ResolvedMember> {
     let mut results = Vec::new();
-    let builtins = workspace.builtins.read().unwrap().clone();
-    for builtin in builtins.iter() {
-        if builtin.name.eq_ignore_ascii_case(&receiver.type_name)
-            || receiver
-                .type_subtype
-                .as_deref()
-                .is_some_and(|s| builtin.name.eq_ignore_ascii_case(s))
-        {
-            for method in &builtin.methods {
-                if method.name.eq_ignore_ascii_case(target_name) {
-                    results.push(ResolvedMember {
-                        name: method.name.clone(),
-                        type_info: method.return_type.as_deref().map(parse_type_expr),
+    // Use semantic cache for O(1) builtin type lookup
+    let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let builtin = cache
+        .get_type(&receiver.type_name)
+        .or_else(|| receiver.type_subtype.as_deref().and_then(|s| cache.get_type(s)));
+    if let Some(builtin) = builtin {
+        for method in &builtin.methods {
+            if method.name.eq_ignore_ascii_case(target_name) {
+                results.push(ResolvedMember {
+                    name: method.name.clone(),
+                    type_info: method.return_type.as_deref().map(parse_type_expr),
 
-                        uri: None,
-                        kind: ResolvedMemberKind::BuiltinMethod {
-                            signature: format_builtin_signature(method),
-                            documentation: if method.documentation.is_empty() {
-                                None
-                            } else {
-                                Some(strip_xml_tags(&method.documentation))
-                            },
+                    uri: None,
+                    kind: ResolvedMemberKind::BuiltinMethod {
+                        signature: format_builtin_signature(method),
+                        documentation: if method.documentation.is_empty() {
+                            None
+                        } else {
+                            Some(strip_xml_tags(&method.documentation))
                         },
-                    });
-                }
+                    },
+                });
             }
         }
     }
@@ -632,7 +642,7 @@ pub(crate) fn resolve_workspace_object_definition(
     let file_text = workspace.file_index.files.get(&path)?;
     let result = AlParser::parse_quick(file_text.value());
     let obj = al_syntax::find_object_declaration(&result.tree, file_text.value())?;
-    let uri = Url::from_file_path(&path).ok()?; // non-absolute paths can't become file URIs
+    let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
     Some((uri, al_syntax::ts_range_to_lsp(&obj.range)))
 }
 
@@ -733,33 +743,30 @@ pub(crate) fn completion_items_for_receiver(
         }
     }
 
-    let builtins = workspace.builtins.read().unwrap().clone();
-    for builtin in builtins.iter() {
-        if builtin.name.eq_ignore_ascii_case(&receiver.type_name)
-            || receiver
-                .type_subtype
-                .as_deref()
-                .is_some_and(|s| builtin.name.eq_ignore_ascii_case(s))
-        {
-            for method in &builtin.methods {
-                builtin_methods += 1;
-                items.push(tower_lsp::lsp_types::CompletionItem {
-                    label: method.name.clone(),
-                    kind: Some(tower_lsp::lsp_types::CompletionItemKind::METHOD),
-                    detail: Some(format_builtin_signature(method)),
-                    documentation: if method.documentation.is_empty() {
-                        None
-                    } else {
-                        Some(tower_lsp::lsp_types::Documentation::MarkupContent(
-                            tower_lsp::lsp_types::MarkupContent {
-                                kind: tower_lsp::lsp_types::MarkupKind::Markdown,
-                                value: method.documentation.clone(),
-                            },
-                        ))
-                    },
-                    ..Default::default()
-                });
-            }
+    // Use semantic cache for O(1) builtin type lookup
+    let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let builtin = cache
+        .get_type(&receiver.type_name)
+        .or_else(|| receiver.type_subtype.as_deref().and_then(|s| cache.get_type(s)));
+    if let Some(builtin) = builtin {
+        for method in &builtin.methods {
+            builtin_methods += 1;
+            items.push(tower_lsp::lsp_types::CompletionItem {
+                label: method.name.clone(),
+                kind: Some(tower_lsp::lsp_types::CompletionItemKind::METHOD),
+                detail: Some(format_builtin_signature(method)),
+                documentation: if method.documentation.is_empty() {
+                    None
+                } else {
+                    Some(tower_lsp::lsp_types::Documentation::MarkupContent(
+                        tower_lsp::lsp_types::MarkupContent {
+                            kind: tower_lsp::lsp_types::MarkupKind::Markdown,
+                            value: method.documentation.clone(),
+                        },
+                    ))
+                },
+                ..Default::default()
+            });
         }
     }
 
@@ -840,9 +847,9 @@ pub(crate) fn enum_completion_items(
 
     // Check builtin types for system enums (e.g., TextEncoding, WebServiceActionResultCode)
     if items.is_empty() {
-        let builtins = workspace.builtins.read().unwrap().clone();
-        for bt in builtins.iter() {
-            if bt.name.eq_ignore_ascii_case(enum_name) && !bt.enum_values.is_empty() {
+        let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+        if let Some(bt) = cache.get_type(enum_name) {
+            if !bt.enum_values.is_empty() {
                 for value in &bt.enum_values {
                     builtin_values += 1;
                     items.push(tower_lsp::lsp_types::CompletionItem {
@@ -852,7 +859,6 @@ pub(crate) fn enum_completion_items(
                         ..Default::default()
                     });
                 }
-                break;
             }
         }
     }
@@ -958,7 +964,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
                             .and_then(extract_return_type)
                             .map(parse_type_expr),
 
-                        uri: Url::from_file_path(path).ok(),
+                        uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                         kind: ResolvedMemberKind::Procedure {
                             range: Some(child.selection_range),
                             signature: child
@@ -990,7 +996,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
                             type_subtype: Some(symbol.name.clone()),
                         }),
 
-                        uri: Url::from_file_path(path).ok(),
+                        uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                         kind: ResolvedMemberKind::EnumValue {
                             range: Some(child.selection_range),
                         },
@@ -1021,7 +1027,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
                     type_name: var.type_name.clone(),
                     type_subtype: var.type_subtype.clone(),
                 }),
-                uri: Url::from_file_path(path).ok(),
+                uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                 kind: ResolvedMemberKind::Variable {
                     range: Some(al_syntax::ts_range_to_lsp(&var.range)),
                     scope: "global variable",
@@ -1034,7 +1040,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
         ResolvedMember {
             name: member_name.to_string(),
             type_info: Some(field_type),
-            uri: Url::from_file_path(path).ok(),
+            uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
             kind: ResolvedMemberKind::Field {
                 range: Some(field_range),
             },
@@ -1291,6 +1297,57 @@ mod tests {
         )
         .expect("receiver before trailing dot");
         assert_eq!(receiver, "this");
+        assert_eq!(kind, AccessKind::Member);
+    }
+
+    // --- UTF-16 offset helpers ---
+
+    #[test]
+    fn utf16_col_to_byte_offset_ascii_only() {
+        let line = "Hello.World";
+        // All ASCII: UTF-16 col == byte offset.
+        assert_eq!(utf16_col_to_byte_offset(line, 5), 5);
+        assert_eq!(utf16_col_to_byte_offset(line, 0), 0);
+        assert_eq!(utf16_col_to_byte_offset(line, 11), 11);
+    }
+
+    #[test]
+    fn utf16_col_to_byte_offset_multibyte() {
+        // "Ø" is U+00D8: 2 UTF-8 bytes, 1 UTF-16 code unit.
+        // "Ønske" → bytes: [0xC3, 0x98, 'n', 's', 'k', 'e']
+        //                  byte 0        2    3    4    5
+        // UTF-16 cols:        0           1    2    3    4    5
+        let line = "Ønske.Foo";
+        assert_eq!(utf16_col_to_byte_offset(line, 0), 0);  // start of 'Ø'
+        assert_eq!(utf16_col_to_byte_offset(line, 1), 2);  // 'n' (after 2-byte Ø)
+        assert_eq!(utf16_col_to_byte_offset(line, 5), 6);  // '.' at byte 6
+        assert_eq!(utf16_col_to_byte_offset(line, 6), 7);  // 'F' at byte 7
+    }
+
+    #[test]
+    fn utf16_col_to_byte_offset_past_end_clamps() {
+        let line = "abc";
+        assert_eq!(utf16_col_to_byte_offset(line, 100), 3);
+    }
+
+    #[test]
+    fn receiver_chain_before_non_ascii_identifier() {
+        // Line has a non-ASCII identifier before the dot.
+        // "Ønske." — 'Ø' is 2 UTF-8 bytes, 1 UTF-16 code unit.
+        // byte layout: Ø(2) n s k e . = bytes 0..7
+        // UTF-16:       0   1 2 3 4 5 = 6 code units for "Ønske."
+        // position.character = 6 (points just past the '.', i.e. end of "Ønske.")
+        let source = "Ønske.";
+        let utf16_len: usize = source.chars().map(|c| c.len_utf16()).sum();
+        let (receiver, kind) = receiver_chain_before(
+            source,
+            Position {
+                line: 0,
+                character: utf16_len as u32,
+            },
+        )
+        .expect("receiver before trailing dot with non-ASCII identifier");
+        assert_eq!(receiver, "Ønske");
         assert_eq!(kind, AccessKind::Member);
     }
 }

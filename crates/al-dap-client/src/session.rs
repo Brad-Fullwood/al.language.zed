@@ -8,7 +8,7 @@
 //! T404d: state(), eval()
 //! T405: history recording
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -32,7 +32,7 @@ pub struct DebugSession {
     client: DapClient,
     state: DebugState,
     breakpoints: HashMap<String, Vec<BreakpointInfo>>,
-    history: Vec<BreakpointHit>,
+    history: VecDeque<BreakpointHit>,
     hit_counter: u32,
     toolchain: AlToolchain,
     project_root: PathBuf,
@@ -111,7 +111,7 @@ impl DebugSession {
                 thread_id: None,
             },
             breakpoints: HashMap::new(),
-            history: Vec::new(),
+            history: VecDeque::new(),
             hit_counter: 0,
             toolchain: toolchain.clone(),
             project_root: project_root.to_path_buf(),
@@ -151,8 +151,8 @@ impl DebugSession {
         &mut self.breakpoints
     }
 
-    /// Get the history vec (for T405).
-    pub(crate) fn history_mut(&mut self) -> &mut Vec<BreakpointHit> {
+    /// Get the history deque (for T405).
+    pub(crate) fn history_mut(&mut self) -> &mut VecDeque<BreakpointHit> {
         &mut self.history
     }
 
@@ -424,9 +424,9 @@ impl DebugSession {
         };
 
         if self.history.len() >= MAX_HISTORY {
-            self.history.remove(0);
+            self.history.pop_front();
         }
-        self.history.push(hit);
+        self.history.push_back(hit);
     }
 
     /// Evaluate an expression at the current frame.
@@ -635,13 +635,44 @@ impl Drop for DebugSession {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Get current timestamp as ISO 8601 string (no chrono dependency).
+/// Get current timestamp as RFC 3339 string (no chrono dependency).
+///
+/// Returns a string like "2026-03-15T14:30:00Z".
 fn chrono_now() -> String {
     use std::time::SystemTime;
-    let now = SystemTime::now()
+    let secs = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}s", now.as_secs())
+        .unwrap_or_default()
+        .as_secs();
+
+    // Convert Unix timestamp to calendar date/time (UTC, no chrono).
+    let (year, month, day, hour, min, sec) = secs_to_datetime(secs);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
+}
+
+/// Decompose a Unix epoch (seconds) into (year, month, day, hour, min, sec) UTC.
+fn secs_to_datetime(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    let sec = (secs % 60) as u32;
+    let mins = secs / 60;
+    let min = (mins % 60) as u32;
+    let hours = mins / 60;
+    let hour = (hours % 24) as u32;
+    let days = (hours / 24) as u32; // days since 1970-01-01
+
+    // Gregorian calendar computation.
+    // Shift epoch to 1 Mar 0000 (makes leap-year arithmetic simpler).
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+
+    (year, month, day, hour, min, sec)
 }
 
 /// Resolve which launch config to use.
@@ -1157,10 +1188,26 @@ mod tests {
     }
 
     #[test]
-    fn chrono_now_returns_seconds() {
+    fn chrono_now_returns_rfc3339() {
         let ts = chrono_now();
-        assert!(ts.ends_with('s'), "timestamp should end with 's': {ts}");
-        let secs: u64 = ts.trim_end_matches('s').parse().unwrap();
-        assert!(secs > 1700000000, "timestamp should be recent: {secs}");
+        // Expect "YYYY-MM-DDTHH:MM:SSZ" format.
+        assert!(ts.ends_with('Z'), "timestamp should end with 'Z': {ts}");
+        assert_eq!(ts.len(), 20, "expected 20-char RFC 3339 timestamp, got: {ts}");
+        assert_eq!(&ts[4..5], "-", "expected '-' at position 4: {ts}");
+        assert_eq!(&ts[7..8], "-", "expected '-' at position 7: {ts}");
+        assert_eq!(&ts[10..11], "T", "expected 'T' at position 10: {ts}");
+        // Year must be >= 2026
+        let year: u32 = ts[..4].parse().expect("year should be numeric");
+        assert!(year >= 2026, "year should be recent, got: {year}");
+    }
+
+    #[test]
+    fn secs_to_datetime_known_values() {
+        // 2026-03-15T00:00:00Z = 1773532800 seconds since epoch
+        assert_eq!(secs_to_datetime(1_773_532_800), (2026, 3, 15, 0, 0, 0));
+        // Unix epoch itself
+        assert_eq!(secs_to_datetime(0), (1970, 1, 1, 0, 0, 0));
+        // 2000-01-01T00:00:00Z = 946684800
+        assert_eq!(secs_to_datetime(946_684_800), (2000, 1, 1, 0, 0, 0));
     }
 }

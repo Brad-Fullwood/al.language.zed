@@ -106,8 +106,8 @@ pub struct ProjectInfo {
 /// Uses `try_read()` on async locks — returns `None` for fields that are
 /// currently locked (e.g., during initialization).
 pub fn doctor(workspace: &Workspace) -> DoctorReport {
-    let tc = workspace.toolchain.try_read().ok();
-    let project = workspace.project.try_read().ok();
+    let tc = workspace.toolchain.try_read().ok(); // SILENT: avoid RwLock poison panic per CLAUDE.md
+    let project = workspace.project.try_read().ok(); // SILENT: avoid RwLock poison panic per CLAUDE.md
 
     let tc_ref = tc.as_ref().and_then(|guard| guard.as_ref());
 
@@ -130,9 +130,12 @@ pub fn doctor(workspace: &Workspace) -> DoctorReport {
         })
     });
 
+    // Note: This blocks the current thread for ~50ms to run `dotnet --version`.
+    // Acceptable for a diagnostic command called rarely (al doctor / al setup).
     let dotnet_version = std::process::Command::new("dotnet")
         .arg("--version")
         .output()
+        // SILENT: dotnet may not be installed; missing version is handled by returning None
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());

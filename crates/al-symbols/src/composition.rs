@@ -237,4 +237,118 @@ mod tests {
         assert!(composed.extensions.is_empty());
         assert_eq!(composed.all_fields.len(), 1);
     }
+
+    // -----------------------------------------------------------------------
+    // T702: Composition caching tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cached_composed_returns_same_arc() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_table(18, "Customer", vec![
+                FieldSymbol { id: 1, name: "No.".into(), type_name: "Code".into(), properties: vec![] },
+            ], Vec::new()),
+            make_table_ext(50100, "Ext1", "Customer", vec![
+                FieldSymbol { id: 50100, name: "Custom".into(), type_name: "Boolean".into(), properties: vec![] },
+            ], Vec::new()),
+        ]);
+
+        let a = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        let b = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        // Same Arc pointer — no recomputation
+        assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn invalidate_composed_clears_cache() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_table(18, "Customer", vec![
+                FieldSymbol { id: 1, name: "No.".into(), type_name: "Code".into(), properties: vec![] },
+            ], Vec::new()),
+        ]);
+
+        let a = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        index.invalidate_composed("Customer");
+        let b = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        // Different Arc — cache was invalidated, recomputed
+        assert!(!Arc::ptr_eq(&a, &b));
+        // But data is the same
+        assert_eq!(a.base.name, b.base.name);
+    }
+
+    #[test]
+    fn invalidate_all_composed_clears_everything() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_table(18, "Customer", Vec::new(), Vec::new()),
+            make_table(27, "Item", Vec::new(), Vec::new()),
+        ]);
+
+        let _a = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        let _b = index.get_composed_cached(ObjectKind::Table, "Item").unwrap();
+        assert!(!index.is_composed_cache_empty());
+
+        index.invalidate_all_composed();
+        assert!(index.is_composed_cache_empty());
+    }
+
+    #[test]
+    fn composed_many_extensions_under_5ms() {
+        let index = SymbolIndex::new();
+
+        // Base table with a few fields
+        let mut entries = vec![make_table(18, "Customer", vec![
+            FieldSymbol { id: 1, name: "No.".into(), type_name: "Code".into(), properties: vec![] },
+            FieldSymbol { id: 2, name: "Name".into(), type_name: "Text".into(), properties: vec![] },
+        ], vec![
+            MethodSymbol {
+                name: "GetBalance".into(),
+                parameters: Vec::new(),
+                return_type: Some("Decimal".into()),
+                attributes: Vec::new(),
+                is_local: false,
+            },
+        ])];
+
+        // 15 extensions, each adding a field and a method
+        for i in 0..15 {
+            entries.push(make_table_ext(
+                50100 + i,
+                &format!("Ext{i}"),
+                "Customer",
+                vec![FieldSymbol {
+                    id: 50100 + i,
+                    name: format!("Field{i}"),
+                    type_name: "Text".into(),
+                    properties: vec![],
+                }],
+                vec![MethodSymbol {
+                    name: format!("Method{i}"),
+                    parameters: Vec::new(),
+                    return_type: None,
+                    attributes: Vec::new(),
+                    is_local: false,
+                }],
+            ));
+        }
+        index.add_entries(&entries);
+
+        // First call (cold cache): should be fast
+        let start = std::time::Instant::now();
+        let composed = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        let cold_elapsed = start.elapsed();
+
+        assert_eq!(composed.all_fields.len(), 17); // 2 base + 15 ext
+        assert_eq!(composed.all_methods.len(), 16); // 1 base + 15 ext
+        assert_eq!(composed.extensions.len(), 15);
+        assert!(cold_elapsed.as_millis() < 5, "Cold compose took {}ms", cold_elapsed.as_millis());
+
+        // Second call (warm cache): should be near-instant
+        let start = std::time::Instant::now();
+        let _cached = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        let warm_elapsed = start.elapsed();
+        assert!(warm_elapsed.as_micros() < 100, "Warm compose took {}µs", warm_elapsed.as_micros());
+    }
 }

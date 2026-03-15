@@ -233,10 +233,7 @@ fn add_default_completions(
         });
     }
 
-    let builtins = match workspace.builtins.read() {
-        Ok(guard) => guard.clone(),
-        Err(_) => return,
-    };
+    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
     for bt in builtins.iter() {
         items.push(CompletionEntry {
             label: bt.name.clone(),
@@ -245,6 +242,7 @@ fn add_default_completions(
             documentation: None, insert_text: None, sort_text: None,
         });
     }
+    drop(builtins); // release read lock promptly
 }
 
 fn count_params(detail: &str) -> usize {

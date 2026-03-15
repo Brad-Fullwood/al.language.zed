@@ -78,9 +78,14 @@ pub fn ensure_seq(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
     // Only increment the counter if we have a `{` to patch into.
     if let Some(pos) = body.iter().position(|&b| b == b'{') {
         let seq = counter.fetch_add(1, Ordering::Relaxed);
+        // If the next non-whitespace byte after `{` is `}`, this is an empty
+        // object.  Appending `"seq":N,` would create `{"seq":N,}` which is
+        // invalid JSON (trailing comma).  Omit the comma in that case.
+        let next_content = body[pos + 1..].iter().find(|&&b| b != b' ' && b != b'\t' && b != b'\n' && b != b'\r');
+        let comma = if next_content == Some(&b'}') { "" } else { "," };
         let mut patched = Vec::with_capacity(body.len() + 20);
         patched.extend_from_slice(&body[..=pos]);
-        patched.extend_from_slice(format!("\"seq\":{seq},").as_bytes());
+        patched.extend_from_slice(format!("\"seq\":{seq}{comma}").as_bytes());
         patched.extend_from_slice(&body[pos + 1..]);
         patched
     } else {
@@ -178,14 +183,14 @@ mod tests {
 
     #[test]
     fn ensure_seq_handles_empty_object() {
-        // `{}` → `{"seq":1,}` which has a trailing comma.
-        // Real DAP messages are never empty objects, but verify the patched
-        // output at least contains the seq value.
+        // `{}` must produce `{"seq":1}` — no trailing comma.
         let body = b"{}";
         let counter = AtomicI64::new(1);
         let patched = ensure_seq(body, &counter);
-        let patched_str = std::str::from_utf8(&patched).unwrap();
-        assert!(patched_str.contains("\"seq\":1"));
+        // Must parse as valid JSON (no trailing comma).
+        let value: serde_json::Value = serde_json::from_slice(&patched)
+            .expect("patched empty object must be valid JSON");
+        assert_eq!(value["seq"], 1);
     }
 
     #[test]

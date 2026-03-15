@@ -7,6 +7,7 @@
 
 pub mod code_actions;
 pub mod completions;
+pub mod dead_code;
 pub mod definition;
 pub mod folding;
 pub mod hover;
@@ -15,6 +16,7 @@ pub mod references;
 pub mod rename;
 pub mod semantic_tokens;
 pub mod signature;
+pub mod source;
 pub mod symbols;
 
 use url::Url;

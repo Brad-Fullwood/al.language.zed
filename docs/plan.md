@@ -436,7 +436,7 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
 - **Fail Criteria**: Generated app.json has invalid format. Template produces non-compilable project.
 - **Estimated Complexity**: Low
 
-**T614: Permission Set Generation**
+**T614: Permission Set Generation** `[3rd Agent Okay]`
 - **Name**: Implement `al.generatePermissionSet` — auto-generate from extension objects
 - **Files**: `crates/al-core/src/permissions.rs` (new), `crates/al-cli/src/main.rs`
 - **Dependencies**: T203 (workspace index for object enumeration)
@@ -471,7 +471,7 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
 
 ### Recommended Task Sequence
 
-**T701: Symbol Index Performance Audit**
+**T701: Symbol Index Performance Audit** `[2nd Agent Okay]`
 - **Name**: Profile symbol index on large project (50+ .app packages)
 - **Files**: `crates/al-symbols/src/` (read-only analysis), `docs/proof_of_functionality.toml`
 - **Dependencies**: T203 (Workspace owns SymbolIndex)
@@ -487,7 +487,7 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
 - **Fail Criteria**: Composed view returns stale data after file edit. Memory usage grows unboundedly.
 - **Estimated Complexity**: High
 
-**T703: Semantic Bridge Caching**
+**T703: Semantic Bridge Caching** `[3rd Agent Okay]`
 - **Name**: Cache .NET bridge responses for builtins and type information
 - **Files**: `crates/al-core/src/semantic.rs`, `crates/al-semantic/src/lib.rs`
 - **Dependencies**: T403
@@ -520,7 +520,7 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
 - **Fail Criteria**: Stale cache served after package update. Cache file corrupted on crash.
 - **Estimated Complexity**: High
 
-**T802: Request Tracing with al-diag**
+**T802: Request Tracing with al-diag** `[3rd Agent Okay]`
 - **Name**: Integrate al-diag tracing layer into al-core and al-lsp
 - **Files**: `crates/al-diag/src/lib.rs`, `crates/al-core/src/lib.rs`, `crates/al-lsp/src/server.rs`
 - **Dependencies**: T302 (queries in al-core)
@@ -547,7 +547,7 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
 
 ### Recommended Task Sequence
 
-**T901: Insight Module Skeleton**
+**T901: Insight Module Skeleton** `[2nd Agent Okay]`
 - **Name**: Create insight module with graph data structures
 - **Files**: `crates/al-core/src/insight/mod.rs`, `crates/al-core/src/insight/graph.rs`, `crates/al-core/src/insight/index.rs`, `crates/al-core/src/insight/search.rs`
 - **Dependencies**: T302 (queries must be in al-core)
@@ -595,7 +595,7 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
 - **Fail Criteria**: Misses events with var parameters. Doesn't distinguish integration vs business event types. Field filter doesn't resolve table names from Record parameter types.
 - **Estimated Complexity**: Medium
 
-**T907: Source Extraction Command**
+**T907: Source Extraction Command** `[2nd Agent Okay]`
 - **Name**: Implement `al source` — targeted source code extraction via CLI/MCP
 - **Files**: `crates/al-core/src/queries/source.rs` (new), `crates/al-lsp/src/daemon.rs`
 - **Dependencies**: T302 (queries in al-core)
@@ -603,7 +603,7 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
 - **Fail Criteria**: Returns empty for a procedure that exists. Outline missing parameter types or return types that are in SymbolReference.json. Tree-sitter range off by even one line.
 - **Estimated Complexity**: Medium
 
-**T908: Remove generate_al Fallback**
+**T908: Remove generate_al Fallback** `[2nd Agent Okay]`
 - **Name**: Replace `generate_al()` in `al-symbols/src/virtual_file.rs` with proper `render_outline()` that uses all SymbolReference.json data
 - **Files**: `crates/al-symbols/src/virtual_file.rs`
 - **Dependencies**: T907 (source extraction must be working first)

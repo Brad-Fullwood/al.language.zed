@@ -261,7 +261,7 @@ fn lookup_parameter_names(
     if let Some(best) = select_best_overload(&candidates, arg_types) { return best; }
 
     // 4. Builtins
-    let builtins = workspace.builtins.read().unwrap().clone();
+    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
     let candidates: Vec<OverloadCandidate> = builtins.iter()
         .flat_map(|bt| bt.methods.iter())
         .filter(|m| m.name.eq_ignore_ascii_case(func_name))
@@ -269,6 +269,7 @@ fn lookup_parameter_names(
             names: m.parameters.iter().map(|p| p.name.clone()).collect(),
             types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
         }).collect();
+    drop(builtins); // release read lock before returning
     if let Some(best) = select_best_overload(&candidates, arg_types) { return best; }
 
     // 5. Embedded builtins
@@ -285,17 +286,22 @@ fn lookup_via_receiver(
     let resolver = al_syntax::TypeResolver::new(tree, text);
     let decl = resolver.resolve_type(receiver_name, position)?;
 
-    // Builtins filtered by receiver type
-    let builtins = workspace.builtins.read().unwrap().clone();
-    let candidates: Vec<OverloadCandidate> = builtins.iter()
-        .filter(|bt| bt.name.eq_ignore_ascii_case(&decl.type_name)
-            || decl.type_subtype.as_deref().is_some_and(|s| bt.name.eq_ignore_ascii_case(s)))
+    // Builtins filtered by receiver type — use semantic_cache for O(1) type lookup
+    let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let type_names: Vec<&str> = {
+        let mut names = vec![decl.type_name.as_str()];
+        if let Some(sub) = decl.type_subtype.as_deref() { names.push(sub); }
+        names
+    };
+    let candidates: Vec<OverloadCandidate> = type_names.iter()
+        .filter_map(|tn| cache.get_type(tn))
         .flat_map(|bt| bt.methods.iter())
         .filter(|m| m.name.eq_ignore_ascii_case(func_name))
         .map(|m| OverloadCandidate {
             names: m.parameters.iter().map(|p| p.name.clone()).collect(),
             types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
         }).collect();
+    drop(cache); // release read lock before continuing
     if let Some(best) = select_best_overload(&candidates, arg_types) { return Some(best); }
 
     // Package symbols by resolved subtype

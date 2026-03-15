@@ -139,7 +139,7 @@ pub(crate) fn handle_code_action(
         command: Some(Command {
             title: "AL: Lint File".to_string(),
             command: "al.lintFile".to_string(),
-            arguments: serde_json::to_value(uri).ok().map(|v| vec![v]),
+            arguments: serde_json::to_value(uri).ok().map(|v| vec![v]), // SILENT: serialization of valid structs should not fail
         }),
         ..Default::default()
     }));

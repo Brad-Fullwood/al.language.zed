@@ -163,24 +163,26 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
 
     // 4. Check built-in types
     {
-        let builtins = workspace.builtins.read().ok()?.clone();
-        for bt in builtins.iter() {
-            if bt.name.eq_ignore_ascii_case(clean_name) {
-                let methods_list: Vec<String> = bt
-                    .methods
-                    .iter()
-                    .take(10)
-                    .map(|m| format!("- `{}`", format_builtin_method(m)))
-                    .collect();
-                let methods_str = if methods_list.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n\n**Methods:**\n{}", methods_list.join("\n"))
-                };
-                let content = format!("```al\n{}\n```\n*(built-in type)*{}", bt.name, methods_str);
-                return Some(HoverResult { contents: content, range: Some(node_range) });
-            }
+        let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+        if let Some(bt) = cache.get_type(clean_name) {
+            let methods_list: Vec<String> = bt
+                .methods
+                .iter()
+                .take(10)
+                .map(|m| format!("- `{}`", format_builtin_method(m)))
+                .collect();
+            let methods_str = if methods_list.is_empty() {
+                String::new()
+            } else {
+                format!("\n\n**Methods:**\n{}", methods_list.join("\n"))
+            };
+            let content = format!("```al\n{}\n```\n*(built-in type)*{}", bt.name, methods_str);
+            return Some(HoverResult { contents: content, range: Some(node_range) });
+        }
 
+        // Search all types for a method with this name
+        let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).clone(); // SILENT: recover from poison
+        for bt in builtins.iter() {
             let overloads: Vec<_> = bt.methods.iter()
                 .filter(|m| m.name.eq_ignore_ascii_case(clean_name))
                 .collect();

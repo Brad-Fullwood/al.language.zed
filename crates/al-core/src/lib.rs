@@ -3,16 +3,20 @@
 //! All state, queries, and orchestration live here. Only `al-lsp` imports this crate.
 //! Analysis libraries (al-syntax, al-symbols, al-semantic) are standalone dependencies.
 
+pub mod build;
 pub mod config;
 pub mod documents;
 pub mod errors;
 pub mod file_index;
+pub mod insight;
 pub mod jsonrpc;
 pub mod launch;
 pub mod parsing;
+pub mod permissions;
 pub mod project;
 pub mod queries;
 pub(crate) mod resolution;
+pub mod scaffold;
 pub mod semantic;
 pub mod toolchain;
 pub mod workspace;

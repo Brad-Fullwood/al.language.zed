@@ -1,15 +1,73 @@
 # Deferred Issues
-# Known failures that are acceptable in the current phase.
+# Bugs that require a different task/WP to fix. Auto-resolved when blocking task completes.
 
 [[issue]]
-id = "T402-doctor-blocks-tokio-worker"
-task = "T402"
+id = "data-driven-hover-symbols-failures"
+task = "T614-followup"
+file = "crates/al-test-harness/tests/data_driven.rs"
 description = """
-doctor() in al-core/src/toolchain.rs spawns a `dotnet --version` subprocess
-synchronously inside dispatch_setup(), which is called from a tokio task in
-daemon.rs. This blocks a tokio worker thread for the duration of the subprocess.
-Should use tokio::task::spawn_blocking or tokio::process::Command.
+7 hover assertions failing (ItemJournalStaging table procedures/fields) and
+1 document symbols assertion failing in al-test-harness data-driven tests.
+These are pre-existing failures not introduced by T614 (permissions generation).
 """
-file = "crates/al-core/src/toolchain.rs:133"
-deferred_to = "T610"
-reason = "Requires making dispatch_setup async or using spawn_blocking wrapper — small but requires daemon.rs refactor."
+reason = "Integration test failures in hover/symbols resolution — separate from T614 permissions work."
+
+[[issue]]
+id = "semantic-bridge-init-no-show-message"
+task = "T611-or-T620"
+file = "crates/al-core/src/semantic.rs"
+description = """
+get_or_init_bridge() logs warn! on bridge init failure (line 58) but does not call
+show_message to notify the user. The bridge init failure is surfaced indirectly via
+ensure_builtins_loaded() which already calls show_message. However, if the bridge
+fails during a hover/completion query (where ensure_builtins_loaded is not called),
+the failure is only logged, not shown to the user.
+
+Adding show_message to get_or_init_bridge is complicated because it has no access
+to the LSP Client — it only receives a Workspace. Passing the client down would
+require architectural changes.
+"""
+reason = "Requires passing LSP Client into al-core or a notification channel — architectural change."
+
+[[issue]]
+id = "semantic-cache-subtype-stat-inflation"
+task = "T703-followup"
+file = "crates/al-core/src/resolution.rs"
+description = """
+The subtype fallback pattern used in 3 places in resolution.rs:
+    cache.get_type(&receiver.type_name)
+         .or_else(|| receiver.type_subtype.as_deref().and_then(|s| cache.get_type(s)))
+inflates the miss counter: when type_name misses but type_subtype hits (a successful
+resolution), get_type records 1 miss then 1 hit. The daemon status stats would show
+one miss per successful subtype-based resolution, making the hit rate appear lower
+than actual cache effectiveness. Also when both miss, 2 misses are recorded for one
+failed lookup.
+"""
+reason = "Stats-only accuracy issue. Fixing requires either a raw get (no stats) on the primary key or a dedicated two-key lookup API on SemanticCache. Defer until stats are used for more than dashboarding."
+
+[[issue]]
+id = "insight-nodekey-package-collision"
+task = "T902-or-T903"
+file = "crates/al-core/src/insight/graph.rs"
+description = """
+NodeKey::Object/Procedure/Event/Subscriber use (kind, name) without package.
+Two different packages that both define e.g. Codeunit 'Sales-Post' with the same
+method names will collide in the HashMap: ensure_node() returns the first one and
+the second object's methods get edges into the wrong node. This is a design issue:
+adding package to NodeKey would break subscriber resolution (subscribers reference
+by name only, not by package), so a multi-valued lookup structure is needed instead
+of the current 1:1 HashMap<NodeKey, NodeIndex>.
+"""
+reason = "Requires architectural change to InsightGraph lookup — need multi-valued node lookup and subscriber resolution strategy that accounts for ambiguous targets across packages."
+
+[[issue]]
+id = "dead-code-test-failures"
+task = "dead-code-followup"
+file = "crates/al-core/src/queries/dead_code.rs"
+description = """
+2 dead_code tests fail: unused_procedure_detected and unused_table_field_detected.
+The tests create workspace fixtures but dead_code() returns empty results.
+Likely issue: workspace_with_files() doesn't properly populate file_index.files
+or tree-sitter node kinds don't match (procedure_declaration vs method_declaration).
+"""
+reason = "Pre-existing dead_code module test failures — needs investigation of workspace fixture setup and tree-sitter grammar node kind alignment."

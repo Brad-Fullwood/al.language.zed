@@ -554,14 +554,315 @@ status = "SUCCESS"
 # Tasks: T601-T603
 # =============================================================================
 
+[[entries]]
+date = "2026-03-15"
+work_package = "WP6: WASM Entry & Settings Implementation"
+task_id = "T601: Settings Schema in al-core"
+
+[entries.adversarial_pass]
+context = "Unknown settings reported, non-object input handled, empty string clears optional"
+expected = "merge() returns unknown key names, non-object is no-op, empty string clears Option"
+actual_log = """
+test config::tests::merge_reports_unknown_keys ... ok
+test config::tests::merge_non_object_is_noop ... ok
+test config::tests::merge_empty_path_clears_option ... ok
+test config::tests::merge_empty_string_clears_optional_string ... ok
+test config::tests::merge_with_empty_object_changes_nothing ... ok
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "23 settings with MS parity, serde roundtrip, partial merge, nested inlay hints, all categories"
+expected = "All 19 config tests pass — 20+ settings, merge preserves untouched fields, JSON roundtrip works"
+actual_log = """
+running 19 tests
+test config::tests::default_config_matches_ms_defaults ... ok
+test config::tests::default_has_at_least_20_settings ... ok
+test config::tests::deserialize_from_partial_json ... ok
+test config::tests::log_level_serde ... ok
+test config::tests::merge_compiler_settings ... ok
+test config::tests::merge_dap_settings ... ok
+test config::tests::merge_empty_path_clears_option ... ok
+test config::tests::merge_empty_string_clears_optional_string ... ok
+test config::tests::merge_handles_nested_inlay_hints ... ok
+test config::tests::merge_new_semantic_settings ... ok
+test config::tests::merge_non_object_is_noop ... ok
+test config::tests::merge_reports_unknown_keys ... ok
+test config::tests::merge_scaffolding_settings ... ok
+test config::tests::merge_sets_path ... ok
+test config::tests::merge_symbol_settings ... ok
+test config::tests::merge_updates_present_fields_only ... ok
+test config::tests::merge_with_empty_object_changes_nothing ... ok
+test config::tests::nuget_feed_config_serde ... ok
+test config::tests::serde_roundtrip ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 128 filtered out; finished in 0.00s
+"""
+status = "SUCCESS"
+
 # =============================================================================
 # WP6.5: Build/Publish Pipeline & Error Handling
 # Tasks: T610-T616
 # =============================================================================
 
+[[entries]]
+date = "2026-03-15"
+work_package = "WP6.5: Build/Publish Pipeline & Error Handling"
+task_id = "T610: Error Handling Audit & Fix"
+
+[entries.adversarial_pass]
+context = "Verify no .ok() calls remain without SILENT justification across al-core, al-lsp, al-symbols, al-semantic"
+expected = "grep for .ok() without SILENT should return zero results in production code"
+actual_log = """
+$ grep -rn '.ok()' crates/al-core/src/ crates/al-lsp/src/ crates/al-symbols/src/ crates/al-semantic/src/ | grep -v SILENT | grep -v test | grep -v assert | wc -l
+0
+$ grep -rn 'SILENT:' crates/al-core/src/ crates/al-lsp/src/ crates/al-symbols/src/ | wc -l
+46
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "User-affecting errors (toolchain not found, project not found, bridge failure) now use showMessage in addition to warn!"
+expected = "Toolchain/project discovery failures and bridge load failures show messages to user via LSP showMessage"
+actual_log = """
+$ grep -n 'show_message.*toolchain\\|show_message.*project\\|show_message.*built-in\\|show_message.*error codes' crates/al-lsp/src/workspace.rs crates/al-lsp/src/server.rs
+workspace.rs:41: .show_message(MessageType::WARNING, format!("AL toolchain not found: {e}"))
+workspace.rs:108: .show_message(MessageType::INFO, format!("No AL project found: {e}"))
+server.rs:143: .show_message(MessageType::WARNING, format!("Failed to load AL built-in types: {error}"))
+server.rs:169: .show_message(MessageType::WARNING, format!("Failed to load AL error codes: {error}"))
+
+All tests pass: cargo test --workspace --exclude zed-al --exclude al-test-harness
+test result: ok. 178 passed; 0 failed; 1 ignored
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP6.5: Build/Publish Pipeline & Error Handling"
+task_id = "T614: Permission Set Generation"
+
+[entries.adversarial_pass]
+context = "Extension objects, enums, interfaces, profiles, and other non-permissioned types must be excluded from generated permission sets"
+expected = "permission_for_kind returns None for all extension/non-permissioned types; collect_permissions skips them"
+actual_log = """
+$ cargo test -p al-core permissions::tests::extension_objects_return_none permissions::tests::non_permissioned_objects_return_none permissions::tests::collect_permissions_from_workspace 2>&1 | grep -E 'test |^$'
+test permissions::tests::extension_objects_return_none ... ok
+test permissions::tests::non_permissioned_objects_return_none ... ok
+test permissions::tests::collect_permissions_from_workspace ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.00s
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "13 unit tests covering permission mapping, workspace collection, AL rendering, and XML rendering"
+expected = "All 13 tests pass — correct RIMD for tables, X for executables, valid AL and XML output"
+actual_log = """
+$ cargo test -p al-core permissions 2>&1 | tail -17
+running 13 tests
+test permissions::tests::extension_objects_return_none ... ok
+test permissions::tests::non_permissioned_objects_return_none ... ok
+test permissions::tests::permission_for_codeunit_is_execute ... ok
+test permissions::tests::permission_for_page_is_execute ... ok
+test permissions::tests::permission_for_query_is_execute ... ok
+test permissions::tests::permission_for_report_is_execute ... ok
+test permissions::tests::permission_for_table_is_rimd ... ok
+test permissions::tests::permission_for_xmlport_is_execute ... ok
+test permissions::tests::render_al_empty_entries ... ok
+test permissions::tests::render_al_generates_valid_permissionset ... ok
+test permissions::tests::render_xml_generates_valid_xml ... ok
+test permissions::tests::render_xml_empty_entries ... ok
+test permissions::tests::collect_permissions_from_workspace ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.00s
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP6.5: Build/Publish Pipeline & Error Handling"
+task_id = "T613: Project Scaffolding"
+
+[entries.adversarial_pass]
+context = "Scaffold into directory that already has app.json — should fail with clear error"
+expected = "create_project returns Err containing 'already contains'"
+actual_log = """
+$ cargo test -p al-core scaffold::tests::scaffold_refuses_existing_project -- --nocapture
+test scaffold::tests::scaffold_refuses_existing_project ... ok
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Full scaffold creates all expected files: app.json, .gitignore, .zed/debug.json, starter codeunit"
+expected = "All 7 tests pass: file creation, rejection of existing project, JSON format, gitignore content, starter naming, subdirectory creation, serialization"
+actual_log = """
+$ cargo test -p al-core scaffold -- --nocapture
+running 7 tests
+test scaffold::tests::gitignore_excludes_app_files ... ok
+test scaffold::tests::scaffold_result_serializes ... ok
+test scaffold::tests::scaffold_refuses_existing_project ... ok
+test scaffold::tests::starter_codeunit_includes_project_name ... ok
+test scaffold::tests::app_json_has_required_fields ... ok
+test scaffold::tests::scaffold_creates_all_files ... ok
+test scaffold::tests::scaffold_creates_subdirectories ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 118 filtered out; finished in 0.00s
+"""
+status = "SUCCESS"
+
 # =============================================================================
 # WP7: Symbol Indexing & Semantic Optimization
 # =============================================================================
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP7: Symbol Indexing & Semantic Optimization"
+task_id = "T701: Symbol Index Performance Audit"
+
+[entries.adversarial_pass]
+context = "Profile al-symbols against real .app packages (11 packages, 20,818 objects) to find performance bottlenecks"
+expected = "get_events() full-scan path should be measurably slow due to O(n*m) linear scan through all entries and methods"
+actual_log = """
+$ cargo test -p al-symbols --test perf_audit -- --nocapture
+
+CRITICAL BOTTLENECK: get_events() — 40-57ms per query
+  Location: events.rs:67 → index.search("", usize::MAX)
+  Root cause: Full linear scan of ALL 20,818 entries, then iterates 108,100 methods
+  and 58,332 attributes per query. O(n*m) where n=entries, m=avg methods.
+    get_events("Post"):     45.03ms  (9813 publishers, 27 subscribers)
+    get_events("Release"):  40.08ms  (452 publishers, 12 subscribers)
+    get_events(""):         57.37ms  (46,636 publishers, 220 subscribers)
+  Fix: Add dedicated by_event_attribute secondary index in SymbolIndex
+
+MAJOR BOTTLENECK: Index build — 3.07s for 11 packages (20,818 objects)
+  Location: app_reader.rs:53-87 (read_app_bytes) + index.rs:77-100 (load_packages)
+  Root cause: Sequential I/O + serde_json deserialization. Base Application alone: 1.44s
+    Base Application v26.0: 1.44s  (8,657 objects, 6.1 MB .app)
+    Base Application v26.5: 1.35s  (8,675 objects, 6.1 MB .app)
+    System Application:     82ms   (1,213 objects, 308 KB)
+    All others:             <80ms each
+  Fix: Parallelize load_packages() with rayon or tokio::spawn_blocking
+
+MINOR: search() substring queries — 1-6ms
+  Location: index.rs:203-229 (linear scan of DashMap 'all')
+  Root cause: O(n) scan with lowercase comparison. Acceptable for interactive use.
+    "Customer": 2.29ms, "Gen. Journal": 6.41ms (worst case, 48 results after full scan)
+
+MINOR: get_by_kind() cloning — 150-285µs
+  Location: index.rs:268-273 (clones entire Vec<Arc<SymbolEntry>>)
+  Root cause: Cloning Vec of 3,480-5,833 Arc entries. Consider returning iterator.
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Verify direct lookups (get_by_name, get_by_id, get_extensions_of) meet <1ms target for interactive use"
+expected = "Hash-backed lookups should be sub-10µs. Composition should be <1ms."
+actual_log = """
+$ cargo test -p al-symbols --test perf_audit -- --nocapture
+
+FAST OPERATIONS (all within interactive budget):
+  get_by_name():  0.9-12µs    (DashMap hash lookup — excellent)
+    "Customer": 12µs, "Item": 0.9µs, "Sales Header": 1.5µs
+  get_by_id():    0.8-5.7µs   (DashMap hash lookup — excellent)
+    Table 18: 5.7µs, Codeunit 80: 1.3µs, nonexistent: 0.8µs
+  get_extensions_of(): 0.4-0.7µs (DashMap hash lookup — excellent)
+  search("", limit=10): 5µs   (early exit on limit — excellent)
+  get_composed(): 6µs-508µs   (depends on extension count — acceptable)
+    Table "Customer":    348µs (164 fields, 129 methods)
+    Table "Sales Header": 508µs (183 fields, 550 methods)
+    Enum "Sales Document Type": 6µs
+
+MEMORY: ~52.5 MB estimated for 20,818 objects
+  108,100 methods, 245,483 parameters, 63,235 fields, 106,087 controls
+  18.9 MB in string data alone
+
+INDEX STRUCTURE:
+  4 DashMaps: by_name, by_kind_id, by_kind, all (+ by_extends, app_paths, source_path_cache)
+  Each entry stored as Arc<SymbolEntry>, indexed 4x = 83,272 Arc references
+
+BUILD CONSISTENCY (3 runs): 3.34s, 3.51s, 3.87s (±8% variance, I/O bound)
+
+All 21 al-symbols tests pass including perf_audit.
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP7: Symbol Indexing & Semantic Optimization"
+task_id = "T702: Symbol Composition Refactor"
+
+[entries.adversarial_pass]
+context = "Invalidating composed cache clears entries — subsequent calls return new Arc (not cached pointer)"
+expected = "After invalidate_composed(), get_composed_cached() returns a different Arc than the previously cached one"
+actual_log = """
+$ cargo test -p al-symbols composition::tests::invalidate -- --nocapture
+test composition::tests::invalidate_composed_clears_cache ... ok
+test composition::tests::invalidate_all_composed_clears_everything ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Composed view caching: same Arc on repeat calls, cache invalidation, <5ms for 15 extensions, <100µs warm cache"
+expected = "All 9 composition tests pass (5 existing + 4 new caching tests)"
+actual_log = """
+$ cargo test -p al-symbols composition::tests -- --nocapture
+test composition::tests::cached_composed_returns_same_arc ... ok
+test composition::tests::compose_enum_with_extension ... ok
+test composition::tests::compose_extension_kind_returns_none ... ok
+test composition::tests::compose_no_extensions ... ok
+test composition::tests::compose_nonexistent_returns_none ... ok
+test composition::tests::compose_table_with_extensions ... ok
+test composition::tests::composed_many_extensions_under_5ms ... ok
+test composition::tests::invalidate_all_composed_clears_everything ... ok
+test composition::tests::invalidate_composed_clears_cache ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP7: Symbol Indexing & Semantic Optimization"
+task_id = "T703: Semantic Bridge Caching"
+
+[entries.adversarial_pass]
+context = "Empty cache should report stale, version mismatch should be detected, misses tracked correctly"
+expected = "Empty cache is_stale() returns true for any version; version mismatch detected; miss counter increments on failed lookups"
+actual_log = """
+$ cargo test -p al-core semantic::tests::empty_cache_is_stale semantic::tests::cache_is_stale semantic::tests::cache_stats
+test semantic::tests::cache_is_stale_detects_version_mismatch ... ok
+test semantic::tests::cache_stats_track_hits_and_misses ... ok
+test semantic::tests::empty_cache_is_stale ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 122 filtered out
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "SemanticCache provides O(1) builtin type and method lookup, replacing O(n) linear scans in resolution.rs"
+expected = "10 cache tests pass: build indexes by name, case-insensitive get_type/get_method, correct data returned, stats tracked"
+actual_log = """
+$ cargo test -p al-core semantic::tests
+test semantic::tests::cache_build_indexes_by_name ... ok
+test semantic::tests::cache_get_method_case_insensitive ... ok
+test semantic::tests::cache_get_method_returns_correct_data ... ok
+test semantic::tests::cache_get_type_case_insensitive ... ok
+test semantic::tests::cache_get_type_returns_correct_data ... ok
+test semantic::tests::cache_is_stale_detects_version_mismatch ... ok
+test semantic::tests::cache_stats_track_hits_and_misses ... ok
+test semantic::tests::cache_type_without_methods ... ok
+test semantic::tests::empty_cache_is_stale ... ok
+test semantic::tests::get_or_init_blocked_after_restart_limit ... ok
+test semantic::tests::get_or_init_no_toolchain_returns_none ... ok
+test semantic::tests::restart_count_persists ... ok
+test semantic::tests::restart_limit_enforced ... ok
+test semantic::tests::shutdown_clears_bridge ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 111 filtered out
+"""
+status = "SUCCESS"
 
 # =============================================================================
 # WP8: Caching & Observability
@@ -570,6 +871,128 @@ status = "SUCCESS"
 # =============================================================================
 # WP9: Insight Graph & Agent Discovery Engine
 # =============================================================================
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP9: Insight Graph & Agent Discovery Engine"
+task_id = "T901: Insight Module Skeleton"
+
+[entries.adversarial_pass]
+context = "Graph must represent circular event chains without infinite loops or crashes"
+expected = "Circular chain A->B->C->A builds correctly. petgraph DiGraph handles cycles naturally."
+actual_log = """
+$ cargo test -p al-core insight::graph::tests::circular_event_chain_handled -- --nocapture 2>&1 | tail -5
+running 1 test
+test insight::graph::tests::circular_event_chain_handled ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored
+
+Graph: 9 nodes (3 objects + 3 events + 3 subscribers), cycle represented without error.
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "InsightGraph builds from SymbolIndex with correct node types and edge types"
+expected = "Object, Procedure, Event, Subscriber nodes. Extends, Calls, Publishes, SubscribesTo, Contains edges. 10 tests pass."
+actual_log = """
+$ cargo test -p al-core insight::graph 2>&1 | tail -15
+running 10 tests
+test insight::graph::tests::empty_graph ... ok
+test insight::graph::tests::build_from_empty_index ... ok
+test insight::graph::tests::idempotent_edge_insertion ... ok
+test insight::graph::tests::ensure_node_returns_existing ... ok
+test insight::graph::tests::circular_event_chain_handled ... ok
+test insight::graph::tests::procedure_nodes_and_contains_edges ... ok
+test insight::graph::tests::extends_edges ... ok
+test insight::graph::tests::event_nodes_and_publishes_edges ... ok
+test insight::graph::tests::subscriber_nodes_and_subscribes_to_edges ... ok
+test insight::graph::tests::object_nodes_created ... ok
+test result: ok. 10 passed; 0 failed; 0 ignored
+
+petgraph 0.7.1 added, no version conflicts. cargo clippy clean.
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP9: Insight Graph & Agent Discovery Engine"
+task_id = "T907: Source Extraction Command"
+
+[entries.adversarial_pass]
+context = "Outline rendering must include full parameter types, return types, and var modifiers — not stripped-down stubs"
+expected = "render_outline for Sales-Post includes 'var SalesHeader: Record \"Sales Header\"' and ': Boolean' return types"
+actual_log = """
+$ cargo test -p al-core queries::source::tests::render_outline_codeunit_with_events -- --nocapture 2>&1 | tail -5
+running 1 test
+test queries::source::tests::render_outline_codeunit_with_events ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored
+
+Outline verified: contains 'procedure PostSalesDocument(var SalesHeader: Record "Sales Header")',
+'local procedure ValidateHeader(var SalesHeader: Record "Sales Header"): Boolean',
+'[IntegrationEvent(false, false)]', and 'TotalAmount: Decimal'.
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Source extraction with 3 source levels, outline rendering, method signatures, and daemon dispatch"
+expected = "11 unit tests + daemon dispatch compiles. Outline includes fields, keys, enum values, variables, method attributes."
+actual_log = """
+$ cargo test -p al-core queries::source 2>&1 | tail -15
+running 11 tests
+test queries::source::tests::extract_signature_from_simple_procedure ... ok
+test queries::source::tests::extract_signature_with_return_type ... ok
+test queries::source::tests::format_object_name_quoting ... ok
+test queries::source::tests::render_method_signature_no_params_no_return ... ok
+test queries::source::tests::render_outline_extension ... ok
+test queries::source::tests::source_level_serialization ... ok
+test queries::source::tests::render_outline_table ... ok
+test queries::source::tests::render_outline_empty_object ... ok
+test queries::source::tests::render_method_signature_with_params ... ok
+test queries::source::tests::render_outline_enum ... ok
+test queries::source::tests::render_outline_codeunit_with_events ... ok
+test result: ok. 11 passed; 0 failed; 0 ignored
+
+cargo check -p al-lsp: compiles with dispatch_source wired.
+"""
+status = "SUCCESS"
+
+# =============================================================================
+# WP8: Caching & Observability
+# =============================================================================
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP8: Caching & Observability"
+task_id = "T802: Request Tracing with al-diag"
+
+[entries.adversarial_pass]
+context = "Log rotation must prune old sessions — unbounded growth is a fail criterion"
+expected = "prune_sessions(3) reduces 5+ sessions to at most 3, deleting associated events"
+actual_log = """
+$ cargo test -p al-diag writer::tests::prune_keeps_recent_sessions writer::tests::prune_noop_when_under_limit
+test writer::tests::prune_keeps_recent_sessions ... ok
+test writer::tests::prune_noop_when_under_limit ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "DiagStore writes events/spans to SQLite, auto-prunes on startup, daemon exposes diag query endpoint, CLI has al diag subcommands"
+expected = "6 writer tests pass, daemon dispatch_diag compiles with sessions/events/slow/failures/search/summary commands"
+actual_log = """
+$ cargo test -p al-diag
+test writer::tests::session_created_on_new ... ok
+test writer::tests::prune_noop_when_under_limit ... ok
+test writer::tests::db_size_is_nonzero ... ok
+test writer::tests::write_span_timing ... ok
+test writer::tests::write_and_read_event ... ok
+test writer::tests::prune_keeps_recent_sessions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo check -p al-lsp -p al-cli: compiles with dispatch_diag and cmd_diag wired.
+"""
+status = "SUCCESS"
 
 # =============================================================================
 # WP10: Explorer & TUI Transformation

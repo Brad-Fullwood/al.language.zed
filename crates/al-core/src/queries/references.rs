@@ -38,7 +38,7 @@ pub fn references(
         locations.push(Location { uri: uri.clone(), range });
     }
 
-    let current_path = uri.to_file_path().ok(); // non-file URIs have no path
+    let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path
     for entry in workspace.file_index.files.iter() {
         let file_path = entry.key();
         let file_text = entry.value();

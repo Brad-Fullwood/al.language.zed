@@ -17,16 +17,23 @@ use tracing_subscriber::Layer;
 use crate::writer::DiagStore;
 
 /// A tracing layer that writes structured events to a SQLite database.
+///
+/// If the database cannot be opened, the layer is constructed in no-op mode
+/// (all writes are silently discarded) rather than panicking the LSP server.
 pub struct DiagLayer {
-    store: Arc<DiagStore>,
+    store: Option<Arc<DiagStore>>,
 }
 
 impl DiagLayer {
     pub fn new(path: PathBuf) -> Self {
-        let store = DiagStore::new(path).expect("failed to open diag database");
-        Self {
-            store: Arc::new(store),
-        }
+        let store = match DiagStore::new(path) {
+            Ok(s) => Some(Arc::new(s)),
+            Err(e) => {
+                eprintln!("al-diag: failed to open diagnostic database: {e}");
+                None
+            }
+        };
+        Self { store }
     }
 }
 
@@ -116,6 +123,9 @@ where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
+        if self.store.is_none() {
+            return;
+        }
         let mut visitor = JsonVisitor::new();
         attrs.record(&mut visitor);
 
@@ -131,6 +141,7 @@ where
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: Context<'_, S>) {
+        let Some(store) = self.store.as_ref() else { return };
         let mut visitor = JsonVisitor::new();
         event.record(&mut visitor);
 
@@ -160,7 +171,7 @@ where
             serde_json::to_string(&serde_json::Value::Object(visitor.fields)).unwrap_or_default()
         };
 
-        self.store.write_event(
+        store.write_event(
             epoch_us(),
             meta.level().as_str(),
             meta.target(),
@@ -171,6 +182,7 @@ where
     }
 
     fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
+        let Some(store) = self.store.as_ref() else { return };
         if let Some(span) = ctx.span(&id) {
             if let Some(data) = span.extensions().get::<SpanData>() {
                 let duration_us = data.opened_at.elapsed().as_micros() as u64;
@@ -182,7 +194,7 @@ where
                         serde_json::to_string(&serde_json::Value::Object(data.fields.clone()))
                             .unwrap_or_default()
                     };
-                    self.store
+                    store
                         .write_span_timing(epoch_us(), data.name, duration_us, &fields_json);
                 }
             }

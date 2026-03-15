@@ -96,9 +96,9 @@ fn find_in_vscode_extensions() -> Option<PathBuf> {
             continue;
         }
 
-        let entries = std::fs::read_dir(ext_dir).ok()?;
+        let entries = std::fs::read_dir(ext_dir).ok()?; // SILENT: directory entries may be unreadable
         let mut al_dirs: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok())
+            .filter_map(|e| e.ok()) // SILENT: directory entries may be unreadable
             .filter(|e| {
                 e.file_name()
                     .to_string_lossy()
@@ -123,12 +123,12 @@ fn find_in_vscode_extensions() -> Option<PathBuf> {
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME")
-        .ok()
+        .ok() // SILENT: env var may not be set
         .map(PathBuf::from)
         .or({
             #[cfg(target_os = "windows")]
             {
-                std::env::var("USERPROFILE").ok().map(PathBuf::from)
+                std::env::var("USERPROFILE").ok().map(PathBuf::from) // SILENT: env var may not be set
             }
             #[cfg(not(target_os = "windows"))]
             {

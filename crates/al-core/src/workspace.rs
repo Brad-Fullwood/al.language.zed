@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use crate::config::AlConfig;
 use crate::documents::DocumentStore;
 use crate::file_index::FileIndex;
+use crate::semantic::SemanticCache;
 
 /// Summary metadata for a loaded symbol package.
 #[derive(Debug, Clone, Serialize)]
@@ -48,13 +49,13 @@ pub struct Workspace {
     /// Builtins loaded once at init, read-only afterward.
     pub builtins: std::sync::RwLock<Arc<Vec<BuiltinType>>>,
     /// Compiler error codes — code → description mapping for diagnostic enrichment.
-    pub error_codes: std::sync::RwLock<Arc<DashMap<String, String>>>,
+    pub error_codes: DashMap<String, String>,
     /// Number of times the semantic bridge has been restarted (capped at MAX_RESTARTS).
     pub bridge_restart_count: std::sync::atomic::AtomicU32,
-    /// Whether the user approved generating symbol outlines for packages without source.
-    pub outline_fallback_approved: std::sync::atomic::AtomicBool,
     /// Summary metadata for loaded symbol packages.
     pub package_info: std::sync::RwLock<Vec<PackageInfo>>,
+    /// In-memory cache of builtin types indexed by name for O(1) lookups.
+    pub semantic_cache: std::sync::RwLock<SemanticCache>,
     /// Active AL debug session (None if not debugging).
     pub debug_session: tokio::sync::Mutex<Option<al_dap_client::session::DebugSession>>,
 }
@@ -71,10 +72,10 @@ impl Workspace {
             file_index: FileIndex::new(),
             config: RwLock::new(AlConfig::default()),
             builtins: std::sync::RwLock::new(Arc::new(Vec::new())),
-            error_codes: std::sync::RwLock::new(Arc::new(DashMap::new())),
+            error_codes: DashMap::new(),
             bridge_restart_count: std::sync::atomic::AtomicU32::new(0),
-            outline_fallback_approved: std::sync::atomic::AtomicBool::new(false),
             package_info: std::sync::RwLock::new(Vec::new()),
+            semantic_cache: std::sync::RwLock::new(SemanticCache::new()),
             debug_session: tokio::sync::Mutex::new(None),
         }
     }

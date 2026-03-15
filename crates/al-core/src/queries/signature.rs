@@ -31,6 +31,43 @@ pub struct SignatureHelpResult {
     pub active_parameter: Option<u32>,
 }
 
+/// Parse `(Name: Type; var Other: Type): ReturnType` detail strings into `ParameterInfo` entries.
+fn parse_parameters_from_detail(detail: &str) -> Vec<ParameterInfo> {
+    let trimmed = detail.trim();
+    let start = match trimmed.find('(') { Some(i) => i + 1, None => return Vec::new() };
+    let mut depth = 1usize;
+    let mut end = start;
+    for (i, ch) in trimmed[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => { depth -= 1; if depth == 0 { end = start + i; break; } }
+            _ => {}
+        }
+    }
+    let params_str = &trimmed[start..end];
+    if params_str.trim().is_empty() { return Vec::new(); }
+    params_str.split(';').filter_map(|param| {
+        let param = param.trim();
+        if param.is_empty() { return None; }
+        let param_no_var = param.strip_prefix("var ").unwrap_or(param).trim();
+        if let Some(colon_pos) = param_no_var.find(':') {
+            let name = param_no_var[..colon_pos].trim().trim_matches('"');
+            if !name.is_empty() {
+                return Some(ParameterInfo {
+                    label: param.to_string(),
+                    documentation: None,
+                });
+            }
+        }
+        let name = param_no_var.trim().trim_matches('"');
+        if !name.is_empty() {
+            Some(ParameterInfo { label: param.to_string(), documentation: None })
+        } else {
+            None
+        }
+    }).collect()
+}
+
 /// Get signature help at a position (inside a function call).
 pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> Option<SignatureHelpResult> {
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
@@ -70,11 +107,12 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
                         || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT)
                 {
                     let detail = child.detail.as_deref().unwrap_or("()");
+                    let parameters = parse_parameters_from_detail(detail);
                     return Some(SignatureHelpResult {
                         signatures: vec![SignatureInfo {
                             label: format!("{}{}", child.name, detail),
                             documentation: None,
-                            parameters: vec![],
+                            parameters,
                             active_parameter: Some(active_param),
                         }],
                         active_signature: Some(0),
@@ -122,7 +160,7 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
     }
 
     // Built-in types — collect all overloads
-    let builtins = workspace.builtins.read().ok()?.clone();
+    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
     let mut signatures = Vec::new();
     for bt in builtins.iter() {
         for method in &bt.methods {
@@ -205,11 +243,12 @@ fn resolve_receiver_signature(
                         || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT)
                 {
                     let detail = child.detail.as_deref().unwrap_or("()");
+                    let parameters = parse_parameters_from_detail(detail);
                     return Some(SignatureHelpResult {
                         signatures: vec![SignatureInfo {
                             label: format!("{}{}", child.name, detail),
                             documentation: None,
-                            parameters: vec![],
+                            parameters,
                             active_parameter: Some(active_param),
                         }],
                         active_signature: Some(0),
@@ -252,4 +291,47 @@ fn resolve_receiver_signature(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that `parse_parameters_from_detail` correctly turns the detail string produced
+    /// by `extract_document_symbols` into individual `ParameterInfo` entries.  This is the
+    /// exact shape a workspace procedure has: the label comes back as the trimmed parameter
+    /// text (including any `var` prefix) so that LSP clients can highlight the active param.
+    #[test]
+    fn test_parse_parameters_from_detail_workspace_proc() {
+        // Typical workspace procedure detail string: "(var SalesHeader: Record; Preview: Boolean): Boolean"
+        let detail = "(var SalesHeader: Record; Preview: Boolean): Boolean";
+        let params = parse_parameters_from_detail(detail);
+
+        assert_eq!(params.len(), 2, "expected 2 parameters, got {}", params.len());
+        assert_eq!(params[0].label, "var SalesHeader: Record");
+        assert_eq!(params[1].label, "Preview: Boolean");
+    }
+
+    #[test]
+    fn test_parse_parameters_from_detail_no_params() {
+        let params = parse_parameters_from_detail("(): Boolean");
+        assert!(params.is_empty(), "expected empty params for no-arg proc, got {:?}",
+            params.iter().map(|p| &p.label).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_parse_parameters_from_detail_single_param() {
+        let params = parse_parameters_from_detail("(Value: Text[50])");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].label, "Value: Text[50]");
+    }
+
+    #[test]
+    fn test_parse_parameters_from_detail_quoted_name() {
+        // AL allows quoted identifiers in parameters
+        let params = parse_parameters_from_detail("(\"Sales Line\": Record; Qty: Decimal)");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].label, "\"Sales Line\": Record");
+        assert_eq!(params[1].label, "Qty: Decimal");
+    }
 }

@@ -215,6 +215,58 @@ enum Commands {
         #[arg(long)]
         rule: Option<String>,
     },
+    /// Generate permission set from workspace objects
+    Permissions {
+        /// Output format: "al" (default) or "xml"
+        #[arg(long, default_value = "al")]
+        format: String,
+        /// Permission set name
+        #[arg(long, default_value = "Generated Permissions")]
+        name: String,
+        /// Permission set ID (for AL format)
+        #[arg(long, default_value = "50100")]
+        id: i64,
+        /// Role ID (for XML format)
+        #[arg(long, default_value = "GENERATED")]
+        role_id: String,
+    },
+    /// Compile AL project into .app file
+    Package,
+    /// Create a new AL project
+    New {
+        /// Directory for the new project
+        dir: String,
+        /// Project name
+        #[arg(short, long, default_value = "MyApp")]
+        name: String,
+        /// Publisher name
+        #[arg(short, long, default_value = "Default Publisher")]
+        publisher: String,
+    },
+    /// Trace event propagation chain
+    Trace {
+        /// Event name to trace
+        event: String,
+        /// Maximum trace depth
+        #[arg(short, long, default_value = "10")]
+        depth: usize,
+    },
+    /// Find entry point procedures (no incoming calls)
+    Entrypoints,
+    /// Export insight graph
+    Graph {
+        /// Export format: "json" (default) or "dot"
+        #[arg(short, long, default_value = "json")]
+        format: String,
+    },
+    /// Show insight graph statistics
+    #[command(name = "insight-stats")]
+    InsightStats,
+    /// Query diagnostic trace database
+    Diag {
+        #[command(subcommand)]
+        subcmd: DiagCommands,
+    },
     /// AL debug session commands
     Debug {
         #[command(subcommand)]
@@ -263,6 +315,42 @@ enum DebugCommands {
     },
     /// Stop the debug session
     Stop,
+}
+
+#[derive(Subcommand)]
+enum DiagCommands {
+    /// List diagnostic sessions
+    Sessions,
+    /// Show recent events from current session
+    Events {
+        /// Max events to show
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+        /// Filter by level (e.g., "WARN", "ERROR")
+        #[arg(long)]
+        level: Option<String>,
+        /// Filter by target module (substring match)
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// Show slowest operations
+    Slow {
+        /// Max entries to show
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+    /// Show resolution failures
+    Failures,
+    /// Search events by text
+    Search {
+        /// Search query (matches message, fields, or target)
+        query: String,
+        /// Max results
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+    /// Show summary statistics
+    Summary,
 }
 
 // ---------------------------------------------------------------------------
@@ -1084,6 +1172,33 @@ fn cmd_rules(json: bool) -> ExitCode {
     }
 }
 
+fn cmd_permissions(format: &str, name: &str, id: i64, role_id: &str, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let params = serde_json::json!({
+        "format": format,
+        "name": name,
+        "id": id,
+        "roleId": role_id,
+    });
+    match client.request("permissions", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json_value(&result);
+            } else {
+                let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let count = result.get("objectCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                print!("{content}");
+                eprintln!("\n{count} objects included");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
 fn cmd_error_codes(json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -1239,6 +1354,204 @@ fn cmd_fix(file: Option<&str>, _all: bool, dry_run: bool, rule: Option<&str>, js
                     eprintln!("{diag_count} diagnostics, {fix_count} fixable (dry run)");
                 } else {
                     eprintln!("{diag_count} diagnostics, {fix_count} fixed");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+fn cmd_trace(event: &str, depth: usize, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    let params = serde_json::json!({ "event": event, "depth": depth });
+    match client.request("trace", Some(params)) {
+        Ok(result) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            } else if let Some(steps) = result.as_array() {
+                if steps.is_empty() {
+                    println!("No event chain found for '{event}'");
+                } else {
+                    for step in steps {
+                        let depth = step.get("depth").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let indent = "  ".repeat(depth as usize);
+                        let edge = step.get("edgeType").and_then(|v| v.as_str()).unwrap_or("?");
+                        let node_type = step.get("nodeType").and_then(|v| v.as_str()).unwrap_or("?");
+                        let name = step.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let object = step.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("{indent}[{edge}] {node_type}: {object}::{name}");
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+fn cmd_entrypoints(json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    match client.request("entrypoints", None) {
+        Ok(result) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            } else if let Some(entries) = result.as_array() {
+                println!("Entry points ({} found):", entries.len());
+                for e in entries {
+                    let obj = e.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
+                    let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("  {obj}::{name}");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+fn cmd_graph(format: &str, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    let params = serde_json::json!({ "format": format });
+    match client.request("graphExport", Some(params)) {
+        Ok(result) => {
+            if format == "dot" {
+                // DOT format: print the content directly
+                if let Some(content) = result.get("content").and_then(|v| v.as_str()) {
+                    println!("{content}");
+                }
+            } else if json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            } else {
+                // JSON summary for non-json mode
+                let node_count = result.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                let edge_count = result.get("edges").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                println!("Graph: {node_count} nodes, {edge_count} edges");
+                println!("Use --json for full graph data or --format dot for Graphviz");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+fn cmd_insight_stats(json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    match client.request("insightStats", None) {
+        Ok(result) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            } else {
+                let nodes = result.get("nodes").and_then(|v| v.as_u64()).unwrap_or(0);
+                let edges = result.get("edges").and_then(|v| v.as_u64()).unwrap_or(0);
+                println!("Insight graph: {nodes} nodes, {edges} edges");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+fn cmd_diag(subcmd: &DiagCommands, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let (cmd, params) = match subcmd {
+        DiagCommands::Sessions => ("sessions", serde_json::json!({})),
+        DiagCommands::Events { limit, level, target } => (
+            "events",
+            serde_json::json!({ "limit": limit, "level": level, "target": target }),
+        ),
+        DiagCommands::Slow { limit } => ("slow", serde_json::json!({ "limit": limit })),
+        DiagCommands::Failures => ("failures", serde_json::json!({})),
+        DiagCommands::Search { query, limit } => (
+            "search",
+            serde_json::json!({ "query": query, "limit": limit }),
+        ),
+        DiagCommands::Summary => ("summary", serde_json::json!({})),
+    };
+
+    let mut req_params = params;
+    req_params["cmd"] = serde_json::Value::String(cmd.to_string());
+
+    match client.request("diag", Some(req_params)) {
+        Ok(result) => {
+            if json {
+                print_json_value(&result);
+            } else {
+                match cmd {
+                    "sessions" => {
+                        let sessions = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                        println!("{:<6} {:<22} {:<8} EVENTS", "ID", "STARTED", "PID");
+                        println!("{}", "-".repeat(50));
+                        for s in sessions {
+                            println!(
+                                "{:<6} {:<22} {:<8} {}",
+                                s.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+                                s.get("started_at").and_then(|v| v.as_str()).unwrap_or("?"),
+                                s.get("pid").and_then(|v| v.as_i64()).unwrap_or(0),
+                                s.get("event_count").and_then(|v| v.as_i64()).unwrap_or(0),
+                            );
+                        }
+                    }
+                    "slow" => {
+                        let spans = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                        println!("{:<30} {:>12}", "OPERATION", "DURATION");
+                        println!("{}", "-".repeat(44));
+                        for s in spans {
+                            let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                            let dur = s.get("duration_us").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let dur_ms = dur as f64 / 1000.0;
+                            println!("{:<30} {:>10.1}ms", name, dur_ms);
+                        }
+                    }
+                    "summary" => {
+                        let total = result.get("total_events").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let failures = result.get("failure_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let avg_span = result.get("avg_span_duration_us").and_then(|v| v.as_i64()).unwrap_or(0);
+                        println!("Session: {}", result.get("session_id").and_then(|v| v.as_i64()).unwrap_or(0));
+                        println!("Events:  {total}");
+                        println!("Failures: {failures}");
+                        println!("Avg span: {:.1}ms", avg_span as f64 / 1000.0);
+                        if let Some(by_level) = result.get("by_level").and_then(|v| v.as_array()) {
+                            println!("\nBy level:");
+                            for item in by_level {
+                                if let Some(arr) = item.as_array() {
+                                    let level = arr.first().and_then(|v| v.as_str()).unwrap_or("?");
+                                    let count = arr.get(1).and_then(|v| v.as_i64()).unwrap_or(0);
+                                    println!("  {:<8} {}", level, count);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // events, failures, search — generic event list
+                        let events = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                        for e in events {
+                            let level = e.get("level").and_then(|v| v.as_str()).unwrap_or("?");
+                            let target = e.get("target").and_then(|v| v.as_str()).unwrap_or("?");
+                            let msg = e.get("msg").and_then(|v| v.as_str()).unwrap_or("");
+                            println!("[{level}] {target}: {msg}");
+                        }
+                        eprintln!("\n{} events", events.len());
+                    }
                 }
             }
             ExitCode::SUCCESS
@@ -1616,6 +1929,103 @@ fn main() -> ExitCode {
         Commands::Fix { file, all, dry_run, rule } => {
             cmd_fix(file.as_deref(), all, dry_run, rule.as_deref(), cli.json)
         }
+        Commands::Permissions { format, name, id, role_id } => {
+            cmd_permissions(&format, &name, id, &role_id, cli.json)
+        }
+        Commands::Package => cmd_package(cli.json),
+        Commands::New { dir, name, publisher } => cmd_new(&dir, &name, &publisher, cli.json),
+        Commands::Trace { event, depth } => cmd_trace(&event, depth, cli.json),
+        Commands::Entrypoints => cmd_entrypoints(cli.json),
+        Commands::Graph { format } => cmd_graph(&format, cli.json),
+        Commands::InsightStats => cmd_insight_stats(cli.json),
+        Commands::Diag { subcmd } => cmd_diag(&subcmd, cli.json),
         Commands::Debug { subcmd } => cmd_debug(&subcmd, cli.json),
+    }
+}
+
+fn cmd_new(dir: &str, name: &str, publisher: &str, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    let params = serde_json::json!({
+        "dir": dir,
+        "name": name,
+        "publisher": publisher,
+    });
+
+    match client.request("newProject", Some(params)) {
+        Ok(result) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            } else {
+                let project_dir = result.get("projectDir").and_then(|v| v.as_str()).unwrap_or(dir);
+                println!("Created AL project: {project_dir}");
+                if let Some(files) = result.get("filesCreated").and_then(|v| v.as_array()) {
+                    for f in files {
+                        if let Some(name) = f.as_str() {
+                            println!("  {name}");
+                        }
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            if json {
+                println!(r#"{{"error":"{}"}}"#, e);
+            } else {
+                eprintln!("Failed to create project: {e}");
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_package(json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    match client.request("package", None) {
+        Ok(result) => {
+            let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            } else {
+                if success {
+                    if let Some(app_path) = result.get("appPath").and_then(|v| v.as_str()) {
+                        println!("Compilation succeeded: {app_path}");
+                    } else {
+                        println!("Compilation succeeded");
+                    }
+                } else {
+                    eprintln!("Compilation failed");
+                }
+                // Print diagnostics
+                if let Some(diags) = result.get("diagnostics").and_then(|v| v.as_array()) {
+                    for d in diags {
+                        let severity = d.get("severity").and_then(|v| v.as_str()).unwrap_or("error");
+                        let file = d.get("file").and_then(|v| v.as_str()).unwrap_or("");
+                        let line = d.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let col = d.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let code = d.get("code").and_then(|v| v.as_str()).unwrap_or("");
+                        let msg = d.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                        eprintln!("{file}({line},{col}): {severity} {code}: {msg}");
+                    }
+                }
+            }
+            if success { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+        }
+        Err(e) => {
+            if json {
+                println!(r#"{{"error":"{}"}}"#, e);
+            } else {
+                eprintln!("Package failed: {e}");
+            }
+            ExitCode::FAILURE
+        }
     }
 }

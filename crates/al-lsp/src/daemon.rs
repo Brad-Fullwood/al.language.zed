@@ -14,7 +14,7 @@ use al_core::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Request, Response, RpcError};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 /// Global socket path for cleanup on exit.
 static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -38,21 +38,28 @@ impl Drop for SocketCleanup {
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// FNV-1a 64-bit hash — stable across Rust compiler versions.
+/// Must match the implementation in al-cli/src/client.rs.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x00000100000001b3;
+    let mut hash = OFFSET;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
 /// Compute the deterministic socket path for a project root.
 ///
 /// The path is canonicalized before hashing so that symlinks and relative paths
 /// resolve to the same socket as the client (which also canonicalizes).
 pub fn socket_path(project_root: &Path) -> PathBuf {
-    let hash = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let canonical = project_root
-            .canonicalize()
-            .unwrap_or_else(|_| project_root.to_path_buf());
-        let mut h = DefaultHasher::new();
-        canonical.hash(&mut h);
-        format!("{:016x}", h.finish())
-    };
+    let canonical = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let hash = format!("{:016x}", fnv1a64(canonical.as_os_str().as_encoded_bytes()));
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
         .unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(format!("{}/al-lsp/{}.sock", runtime_dir, hash))
@@ -82,10 +89,12 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     initialize_daemon_workspace(&workspace, &project_root).await;
 
     let last_activity = Arc::new(Mutex::new(Instant::now()));
+    let shutdown_signal = Arc::new(Notify::new());
 
     // Idle timeout checker
     let activity_clone = Arc::clone(&last_activity);
     let ws_clone = Arc::clone(&workspace);
+    let shutdown_idle = Arc::clone(&shutdown_signal);
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -102,34 +111,47 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                     continue;
                 }
                 tracing::info!(idle_secs = elapsed.as_secs(), "daemon: idle timeout, shutting down");
-                std::process::exit(0);
+                shutdown_idle.notify_one();
+                return;
             }
         }
     });
 
-    // Accept connections
+    // Accept connections — break when shutdown is signalled so Drop guards run.
     loop {
-        match listener.accept().await {
-            Ok((stream, _addr)) => {
-                let ws = Arc::clone(&workspace);
-                let activity = Arc::clone(&last_activity);
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, ws, activity).await {
-                        tracing::warn!(error = %e, "daemon: connection error");
+        tokio::select! {
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((stream, _addr)) => {
+                        let ws = Arc::clone(&workspace);
+                        let activity = Arc::clone(&last_activity);
+                        let shutdown_conn = Arc::clone(&shutdown_signal);
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_connection(stream, ws, activity, shutdown_conn).await {
+                                tracing::warn!(error = %e, "daemon: connection error");
+                            }
+                        });
                     }
-                });
+                    Err(e) => {
+                        tracing::error!(error = %e, "daemon: accept error");
+                    }
+                }
             }
-            Err(e) => {
-                tracing::error!(error = %e, "daemon: accept error");
+            _ = shutdown_signal.notified() => {
+                tracing::info!("daemon: shutdown signal received, exiting");
+                break;
             }
         }
     }
+
+    Ok(())
 }
 
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     workspace: Arc<Workspace>,
     last_activity: Arc<Mutex<Instant>>,
+    shutdown: Arc<Notify>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -144,7 +166,7 @@ async fn handle_connection(
         *last_activity.lock().await = Instant::now();
 
         let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => dispatch_request(&workspace, req),
+            Ok(req) => dispatch_request(&workspace, req, &shutdown).await,
             Err(e) => Response {
                 id: 0,
                 result: None,
@@ -164,7 +186,7 @@ async fn handle_connection(
     Ok(())
 }
 
-fn dispatch_request(workspace: &Workspace, req: Request) -> Response {
+async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify) -> Response {
     let id = req.id;
     let params = req.params.unwrap_or(serde_json::Value::Null);
 
@@ -195,29 +217,42 @@ fn dispatch_request(workspace: &Workspace, req: Request) -> Response {
         "fix" => dispatch_fix(workspace, id, &params),
         "rules" => dispatch_rules(id),
         "parse" => dispatch_parse(workspace, id, &params),
+        "source" => dispatch_source(workspace, id, &params),
+        // Insight engine
+        "trace" => dispatch_trace(workspace, id, &params),
+        "entrypoints" => dispatch_entrypoints(workspace, id),
+        "graphExport" => dispatch_graph_export(workspace, id, &params),
+        "insightStats" => dispatch_insight_stats(workspace, id),
         // Semantic / toolchain
+        "permissions" => dispatch_permissions(workspace, id, &params),
         "compile" => dispatch_compile(workspace, id),
+        "package" => dispatch_package(workspace, id),
+        "newProject" => dispatch_new_project(id, &params),
         "errorCodes" => dispatch_error_codes(workspace, id),
         "builtinTypes" => dispatch_builtin_types(workspace, id),
         "setup" => dispatch_setup(workspace, id),
+        "diag" => dispatch_diag(id, &params),
         "clearCache" => dispatch_clear_cache(id),
         "downloadSymbols" => dispatch_download_symbols(workspace, id, &params),
-        "debug" => {
-            let rt = tokio::runtime::Handle::current();
-            rt.block_on(async { dispatch_debug(workspace, id, &params).await })
-        }
+        "debug" => dispatch_debug(workspace, id, &params).await,
         "ping" => Response { id, result: Some(serde_json::json!("pong")), error: None },
         "shutdown" => {
             tracing::info!("daemon: shutdown requested");
-            std::process::exit(0);
+            shutdown.notify_one();
+            Response { id, result: Some(serde_json::json!("ok")), error: None }
         }
         "status" => {
+            let cache_stats = workspace.semantic_cache.read().ok().map(|c| {
+                let (hits, misses) = c.stats();
+                serde_json::json!({ "types": c.len(), "hits": hits, "misses": misses, "version": c.version() })
+            });
             let status = serde_json::json!({
                 "pid": std::process::id(),
                 "indexedSymbols": workspace.symbols.len(),
                 "workspaceFiles": workspace.file_index.len(),
                 "workspaceObjects": workspace.file_index.objects.len(),
-                "builtinTypes": workspace.builtins.read().ok().map(|g| g.len()).unwrap_or(0),
+                "builtinTypes": workspace.builtins.read().ok().map(|g| g.len()).unwrap_or(0), // SILENT: avoid RwLock poison panic per CLAUDE.md
+                "semanticCache": cache_stats,
             });
             Response { id, result: Some(status), error: None }
         }
@@ -238,7 +273,7 @@ fn dispatch_request(workspace: &Workspace, req: Request) -> Response {
 
 fn extract_uri(params: &serde_json::Value) -> Option<url::Url> {
     let uri_str = params.get("uri")?.as_str()?;
-    url::Url::parse(uri_str).ok() // URI parsing failure means bad input
+    url::Url::parse(uri_str).ok() // SILENT: bad client input is not user-affecting
 }
 
 fn extract_position(params: &serde_json::Value) -> Option<al_core::queries::Position> {
@@ -358,14 +393,14 @@ fn dispatch_rename(workspace: &Workspace, id: u64, params: &serde_json::Value) -
 fn dispatch_document_symbols(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let result = al_core::queries::symbols::document_symbols(workspace, &uri);
-    let value = result.and_then(|r| serde_json::to_value(r).ok());
+    let value = result.and_then(|r| serde_json::to_value(r).ok()); // SILENT: serialization of valid structs should not fail
     Response { id, result: value, error: None }
 }
 
 fn dispatch_folding_ranges(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let result = al_core::queries::folding::folding_ranges(workspace, &uri);
-    let value = result.and_then(|r| serde_json::to_value(r).ok());
+    let value = result.and_then(|r| serde_json::to_value(r).ok()); // SILENT: serialization of valid structs should not fail
     Response { id, result: value, error: None }
 }
 
@@ -396,7 +431,7 @@ fn dispatch_inlay_hints(workspace: &Workspace, id: u64, params: &serde_json::Val
     };
     let hints = al_core::queries::inlay_hints::inlay_hints(workspace, &uri, range);
     let value = hints
-        .and_then(|h| serde_json::to_value(&h).ok())
+        .and_then(|h| serde_json::to_value(&h).ok()) // SILENT: serialization of valid structs should not fail
         .unwrap_or(serde_json::json!([]));
     Response { id, result: Some(value), error: None }
 }
@@ -425,7 +460,7 @@ fn dispatch_search(workspace: &Workspace, id: u64, params: &serde_json::Value) -
     let results = workspace.symbols.search(query, limit);
     let value: Vec<serde_json::Value> = results
         .iter()
-        .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
+        .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
         .collect();
     Response { id, result: Some(serde_json::json!(value)), error: None }
 }
@@ -451,7 +486,7 @@ fn dispatch_object(workspace: &Workspace, id: u64, params: &serde_json::Value) -
     let matches: Vec<serde_json::Value> = candidates
         .iter()
         .filter(|e| e.kind == kind)
-        .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
+        .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
         .collect();
     if matches.is_empty() {
         Response {
@@ -487,7 +522,7 @@ fn dispatch_by_id(workspace: &Workspace, id: u64, params: &serde_json::Value) ->
     let results = workspace.symbols.get_by_id(kind, obj_id as i32);
     let value: Vec<serde_json::Value> = results
         .iter()
-        .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
+        .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
         .collect();
     if value.is_empty() {
         Response {
@@ -566,9 +601,9 @@ fn dispatch_composed(workspace: &Workspace, id: u64, params: &serde_json::Value)
             }),
         };
     };
-    match workspace.symbols.get_composed(kind, name) {
+    match workspace.symbols.get_composed_cached(kind, name) {
         Some(composed) => {
-            let value = serde_json::to_value(&composed).unwrap_or(serde_json::Value::Null);
+            let value = serde_json::to_value(composed.as_ref()).unwrap_or(serde_json::Value::Null);
             Response { id, result: Some(value), error: None }
         }
         None => Response {
@@ -676,8 +711,8 @@ fn ensure_document(workspace: &Workspace, uri: &url::Url) -> Option<()> {
         return Some(());
     }
     // Try to read from disk
-    let path = uri.to_file_path().ok()?;
-    let content = std::fs::read_to_string(&path).ok()?;
+    let path = uri.to_file_path().ok()?; // SILENT: non-file URIs legitimately have no path
+    let content = std::fs::read_to_string(&path).ok()?; // SILENT: file read failure handled by returning None
     workspace.documents.open(uri.clone(), content);
     Some(())
 }
@@ -692,10 +727,10 @@ fn file_uri_from_params(params: &serde_json::Value) -> Option<url::Url> {
         let abs_path = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            std::env::current_dir().ok()?.join(path)
+            std::env::current_dir().ok()?.join(path) // SILENT: current_dir failure handled by returning None
         };
         let canon = abs_path.canonicalize().unwrap_or(abs_path);
-        return url::Url::from_file_path(canon).ok();
+        return url::Url::from_file_path(canon).ok(); // SILENT: non-absolute paths can't become file URIs
     }
     None
 }
@@ -966,6 +1001,93 @@ fn dispatch_parse(workspace: &Workspace, id: u64, params: &serde_json::Value) ->
 
 
 // ---------------------------------------------------------------------------
+// Source extraction
+// ---------------------------------------------------------------------------
+
+fn dispatch_source(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let name = match params.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return invalid_params(id),
+    };
+
+    let kind_filter = params
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<al_core::symbols::ObjectKind>().ok());
+
+    let proc_filter = params.get("proc").and_then(|v| v.as_str());
+    let trigger_filter = params.get("trigger").and_then(|v| v.as_str());
+
+    match al_core::queries::source::source(workspace, name, kind_filter, proc_filter, trigger_filter) {
+        Some(result) => Response {
+            id,
+            result: Some(serde_json::to_value(&result).unwrap_or_default()),
+            error: None,
+        },
+        None => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Object '{}' not found", name),
+            }),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Permission set generation
+// ---------------------------------------------------------------------------
+
+fn dispatch_permissions(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let entries = al_core::permissions::collect_permissions(workspace);
+    let format = params
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("al");
+
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Generated Permissions");
+    let perm_id = params
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(50100);
+    let role_id = params
+        .get("roleId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("GENERATED");
+
+    match format {
+        "xml" => {
+            let output = al_core::permissions::render_xml(&entries, role_id, name);
+            Response {
+                id,
+                result: Some(serde_json::json!({
+                    "format": "xml",
+                    "content": output,
+                    "objectCount": entries.len(),
+                })),
+                error: None,
+            }
+        }
+        _ => {
+            let output = al_core::permissions::render_al(&entries, name, perm_id);
+            Response {
+                id,
+                result: Some(serde_json::json!({
+                    "format": "al",
+                    "content": output,
+                    "objectCount": entries.len(),
+                })),
+                error: None,
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Semantic / toolchain dispatchers
 // ---------------------------------------------------------------------------
 
@@ -1066,12 +1188,129 @@ fn dispatch_compile(workspace: &Workspace, id: u64) -> Response {
     }
 }
 
-fn dispatch_error_codes(workspace: &Workspace, id: u64) -> Response {
-    let codes = match workspace.error_codes.read() {
-        Ok(guard) => guard,
-        Err(_) => return Response { id, result: Some(serde_json::json!([])), error: None },
+fn dispatch_package(workspace: &Workspace, id: u64) -> Response {
+    let tc = match workspace.toolchain.try_read() {
+        // SILENT: avoid RwLock poison panic per CLAUDE.md
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "Workspace is initializing, try again".to_string(),
+                }),
+            };
+        }
     };
-    let value: Vec<serde_json::Value> = codes
+    let toolchain = match tc {
+        Some(tc) => tc,
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "No toolchain available. Run 'al setup' first.".to_string(),
+                }),
+            };
+        }
+    };
+    let project = match workspace.project.try_read() {
+        // SILENT: avoid RwLock poison panic per CLAUDE.md
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "Workspace is initializing, try again".to_string(),
+                }),
+            };
+        }
+    };
+    let project_root = match project.as_ref() {
+        Some(p) => p.root.clone(),
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "No project loaded".to_string(),
+                }),
+            };
+        }
+    };
+
+    match al_core::build::compile_project(&toolchain, &project_root, None) {
+        Ok(result) => Response {
+            id,
+            // SILENT: serialization of valid struct should not fail
+            result: Some(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
+            error: None,
+        },
+        Err(e) => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INTERNAL_ERROR,
+                message: e.to_string(),
+            }),
+        },
+    }
+}
+
+fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Response {
+    let dir = match params.get("dir").and_then(|v| v.as_str()) {
+        Some(d) => std::path::PathBuf::from(d),
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: "Missing 'dir' parameter".to_string(),
+                }),
+            };
+        }
+    };
+
+    let config = al_core::scaffold::ScaffoldConfig {
+        name: params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("MyApp")
+            .to_string(),
+        publisher: params
+            .get("publisher")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Default Publisher")
+            .to_string(),
+        ..al_core::scaffold::ScaffoldConfig::default()
+    };
+
+    match al_core::scaffold::create_project(&dir, &config) {
+        Ok(result) => Response {
+            id,
+            // SILENT: serialization of valid struct should not fail
+            result: Some(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
+            error: None,
+        },
+        Err(e) => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INTERNAL_ERROR,
+                message: e,
+            }),
+        },
+    }
+}
+
+fn dispatch_error_codes(workspace: &Workspace, id: u64) -> Response {
+    let value: Vec<serde_json::Value> = workspace.error_codes
         .iter()
         .map(|entry| {
             serde_json::json!({
@@ -1134,6 +1373,83 @@ fn dispatch_clear_cache(id: u64) -> Response {
             "deleted": existed,
             "path": cache_dir.display().to_string(),
         })),
+        error: None,
+    }
+}
+
+fn dispatch_diag(id: u64, params: &serde_json::Value) -> Response {
+    let db_path = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("al-lsp")
+        .join("logs")
+        .join("al-diag.db");
+
+    if !db_path.exists() {
+        return Response {
+            id,
+            result: Some(serde_json::json!({
+                "error": "No diagnostic database found",
+                "path": db_path.display().to_string(),
+            })),
+            error: None,
+        };
+    }
+
+    let conn = match al_diag::query::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("Failed to open diag db: {e}"),
+                }),
+            };
+        }
+    };
+
+    let cmd = params
+        .get("cmd")
+        .and_then(|v| v.as_str())
+        .unwrap_or("summary");
+
+    let result = match cmd {
+        "sessions" => {
+            let sessions = al_diag::query::sessions(&conn);
+            serde_json::to_value(sessions).unwrap_or_default()
+        }
+        "events" => {
+            let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let level = params.get("level").and_then(|v| v.as_str());
+            let target = params.get("target").and_then(|v| v.as_str());
+            let events = al_diag::query::recent_events(&conn, limit, level, target);
+            serde_json::to_value(events).unwrap_or_default()
+        }
+        "slow" => {
+            let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+            let spans = al_diag::query::slow_spans(&conn, limit);
+            serde_json::to_value(spans).unwrap_or_default()
+        }
+        "failures" => {
+            let failures = al_diag::query::resolution_failures(&conn, None);
+            serde_json::to_value(failures).unwrap_or_default()
+        }
+        "search" => {
+            let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+            let events = al_diag::query::search(&conn, query, limit);
+            serde_json::to_value(events).unwrap_or_default()
+        }
+        _ => {
+            let summary = al_diag::query::summarize(&conn);
+            serde_json::to_value(summary).unwrap_or_default()
+        }
+    };
+
+    Response {
+        id,
+        result: Some(result),
         error: None,
     }
 }
@@ -1261,6 +1577,73 @@ fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json
             "downloaded": success,
             "failed": failed,
             "results": result,
+        })),
+        error: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Insight engine dispatchers
+// ---------------------------------------------------------------------------
+
+fn dispatch_trace(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(event_name) = params.get("event").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let max_depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+    let mut graph = al_core::insight::graph::InsightGraph::new();
+    graph.build_from_index(&workspace.symbols);
+
+    let steps = al_core::insight::search::trace_event(&graph, event_name, max_depth);
+    // SILENT: serialization of valid Vec<TraceStep> should not fail
+    let value = serde_json::to_value(&steps).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
+    let mut graph = al_core::insight::graph::InsightGraph::new();
+    graph.build_from_index(&workspace.symbols);
+
+    let entry_points = al_core::insight::search::find_entry_points(&graph);
+    // SILENT: serialization of valid Vec<&InsightNode> should not fail
+    let value = serde_json::to_value(&entry_points).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+fn dispatch_graph_export(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("json");
+
+    let mut graph = al_core::insight::graph::InsightGraph::new();
+    graph.build_from_index(&workspace.symbols);
+
+    match format {
+        "dot" => {
+            let dot = al_core::insight::search::export_dot(&graph);
+            Response {
+                id,
+                result: Some(serde_json::json!({ "format": "dot", "content": dot })),
+                error: None,
+            }
+        }
+        _ => {
+            let json = al_core::insight::search::export_json(&graph);
+            // SILENT: serialization of valid GraphJson should not fail
+            let value = serde_json::to_value(&json).unwrap_or(serde_json::Value::Null);
+            Response { id, result: Some(value), error: None }
+        }
+    }
+}
+
+fn dispatch_insight_stats(workspace: &Workspace, id: u64) -> Response {
+    let mut graph = al_core::insight::graph::InsightGraph::new();
+    graph.build_from_index(&workspace.symbols);
+
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "nodes": graph.node_count(),
+            "edges": graph.edge_count(),
         })),
         error: None,
     }
@@ -1436,7 +1819,7 @@ async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Val
                 Some(session) => match session.state().await {
                     Ok(state) => Response {
                         id,
-                        result: serde_json::to_value(state).ok(),
+                        result: serde_json::to_value(state).ok(), // SILENT: serialization of valid structs should not fail
                         error: None,
                     },
                     Err(e) => Response {
@@ -1512,7 +1895,7 @@ async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Val
                 Some(session) => match session.continue_().await {
                     Ok(state) => Response {
                         id,
-                        result: serde_json::to_value(state).ok(),
+                        result: serde_json::to_value(state).ok(), // SILENT: serialization of valid structs should not fail
                         error: None,
                     },
                     Err(e) => Response {
@@ -1547,7 +1930,7 @@ async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Val
                 Some(session) => match session.step(&step_type).await {
                     Ok(state) => Response {
                         id,
-                        result: serde_json::to_value(state).ok(),
+                        result: serde_json::to_value(state).ok(), // SILENT: serialization of valid structs should not fail
                         error: None,
                     },
                     Err(e) => Response {
@@ -1582,7 +1965,7 @@ async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Val
                     let hits: Vec<serde_json::Value> = session
                         .history(var_filter.as_deref())
                         .iter()
-                        .filter_map(|h| serde_json::to_value(h).ok())
+                        .filter_map(|h| serde_json::to_value(h).ok()) // SILENT: serialization of valid structs should not fail
                         .collect();
                     Response {
                         id,
@@ -1667,7 +2050,7 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
                     object_count: p.objects.len(),
                 })
                 .collect();
-            *workspace.package_info.write().unwrap() = pkg_info;
+            *workspace.package_info.write().unwrap_or_else(|e| e.into_inner()) = pkg_info; // SILENT: recover from RwLock poison
 
             // Scan workspace .al files
             let file_count = workspace.file_index.scan(&project.root);
@@ -1703,5 +2086,34 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
         Err(e) => {
             tracing::info!(error = %e, "daemon: no toolchain (syntax-only mode)");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify FNV-1a produces a known-stable value so we catch any accidental
+    /// algorithm drift in future edits.
+    #[test]
+    fn fnv1a64_stable_known_value() {
+        // FNV-1a of b"hello" is a well-known constant: 0xa430d84680aabd0b
+        assert_eq!(fnv1a64(b"hello"), 0xa430d84680aabd0b);
+        // Empty input is the offset basis
+        assert_eq!(fnv1a64(b""), 0xcbf29ce484222325);
+    }
+
+    /// Verify socket_path produces the same result for the same canonical path.
+    #[test]
+    fn socket_path_is_deterministic() {
+        let p = std::path::Path::new("/tmp");
+        let path1 = socket_path(p);
+        let path2 = socket_path(p);
+        assert_eq!(path1, path2);
+        assert!(path1.to_str().unwrap().ends_with(".sock"));
+        let filename = path1.file_name().unwrap().to_str().unwrap();
+        let hash_part = filename.strip_suffix(".sock").unwrap();
+        assert_eq!(hash_part.len(), 16);
+        assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

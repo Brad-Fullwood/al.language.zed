@@ -147,18 +147,26 @@ impl DaemonClient {
     }
 }
 
+/// FNV-1a 64-bit hash — stable across Rust compiler versions.
+/// Must match the implementation in al-lsp/src/daemon.rs.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x00000100000001b3;
+    let mut hash = OFFSET;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
 /// Compute the deterministic socket path for a project root.
 /// Must match the algorithm in al-lsp/src/daemon.rs.
 pub fn socket_path(project_root: &Path) -> PathBuf {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
     let canonical = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
-    let mut h = DefaultHasher::new();
-    canonical.hash(&mut h);
-    let hash = format!("{:016x}", h.finish());
+    let hash = format!("{:016x}", fnv1a64(canonical.as_os_str().as_encoded_bytes()));
 
     let runtime_dir =
         std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
@@ -201,6 +209,34 @@ mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Verify FNV-1a produces a known-stable value so we catch any accidental
+    /// algorithm drift in future edits.
+    #[test]
+    fn fnv1a64_stable_known_value() {
+        // FNV-1a of b"hello" is a well-known constant: 0xa430d84680aabd0b
+        assert_eq!(fnv1a64(b"hello"), 0xa430d84680aabd0b);
+        // Empty input is the offset basis
+        assert_eq!(fnv1a64(b""), 0xcbf29ce484222325);
+    }
+
+    /// Verify socket_path produces the same result for the same canonical path
+    /// regardless of how it was obtained.  Simulates what daemon.rs computes.
+    #[test]
+    fn socket_path_is_deterministic() {
+        // Use /tmp which is guaranteed to exist and be canonical already.
+        let p = std::path::Path::new("/tmp");
+        let path1 = socket_path(p);
+        let path2 = socket_path(p);
+        assert_eq!(path1, path2);
+        // The filename must end with ".sock"
+        assert!(path1.to_str().unwrap().ends_with(".sock"));
+        // The hash segment must be exactly 16 hex characters
+        let filename = path1.file_name().unwrap().to_str().unwrap();
+        let hash_part = filename.strip_suffix(".sock").unwrap();
+        assert_eq!(hash_part.len(), 16);
+        assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
+    }
 
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 

@@ -68,37 +68,40 @@ pub fn sessions(conn: &Connection) -> Vec<Session> {
 }
 
 /// Get the last N events from the most recent session, optionally filtered.
-pub fn recent_events(conn: &Connection, limit: usize, level_filter: Option<&str>, target_filter: Option<&str>) -> Vec<Event> {
+pub fn recent_events(
+    conn: &Connection,
+    limit: usize,
+    level_filter: Option<&str>,
+    target_filter: Option<&str>,
+) -> Vec<Event> {
     let session_id: i64 = conn
         .query_row("SELECT MAX(id) FROM sessions", [], |r| r.get(0))
         .unwrap_or(0);
 
-    let mut sql = String::from(
-        "SELECT id, ts_us, level, target, spans, msg, fields FROM events WHERE session_id = ?1",
-    );
-    if let Some(level) = level_filter {
-        sql.push_str(&format!(" AND level = '{}'", level.replace('\'', "''")));
-    }
-    if let Some(target) = target_filter {
-        sql.push_str(&format!(
-            " AND target LIKE '%{}%'",
-            target.replace('\'', "''")
-        ));
-    }
-    sql.push_str(" ORDER BY id DESC LIMIT ?2");
+    // Use parameterized queries throughout to prevent SQL injection.
+    // Optional filters are handled with `(?3 IS NULL OR ...)` so the same
+    // prepared statement works whether a filter is supplied or not.
+    let sql = "SELECT id, ts_us, level, target, spans, msg, fields FROM events \
+               WHERE session_id = ?1 \
+               AND (?3 IS NULL OR level = ?3) \
+               AND (?4 IS NULL OR target LIKE '%' || ?4 || '%') \
+               ORDER BY id DESC LIMIT ?2";
 
-    let mut stmt = conn.prepare(&sql).unwrap();
-    stmt.query_map(params![session_id, limit as i64], |row| {
-        Ok(Event {
-            id: row.get(0)?,
-            ts_us: row.get(1)?,
-            level: row.get(2)?,
-            target: row.get(3)?,
-            spans: row.get(4)?,
-            msg: row.get(5)?,
-            fields: row.get(6)?,
-        })
-    })
+    let mut stmt = conn.prepare(sql).unwrap();
+    stmt.query_map(
+        params![session_id, limit as i64, level_filter, target_filter],
+        |row| {
+            Ok(Event {
+                id: row.get(0)?,
+                ts_us: row.get(1)?,
+                level: row.get(2)?,
+                target: row.get(3)?,
+                spans: row.get(4)?,
+                msg: row.get(5)?,
+                fields: row.get(6)?,
+            })
+        },
+    )
     .unwrap()
     .filter_map(|r| r.ok())
     .collect()
@@ -162,16 +165,27 @@ pub fn slow_spans(conn: &Connection, limit: usize) -> Vec<SpanTiming> {
 }
 
 /// Search events by message text (uses LIKE).
+///
+/// The query string is treated as a literal substring — LIKE wildcards (`%`, `_`)
+/// and the escape character (`\`) in the user input are escaped so they match
+/// literally rather than acting as SQL pattern characters.
 pub fn search(conn: &Connection, query: &str, limit: usize) -> Vec<Event> {
     let session_id: i64 = conn
         .query_row("SELECT MAX(id) FROM sessions", [], |r| r.get(0))
         .unwrap_or(0);
-    let pattern = format!("%{}%", query.replace('\'', "''"));
+    // Escape LIKE special characters so user input is treated as a literal
+    // substring. The escape character `\` must be escaped first to avoid
+    // double-escaping, then `%` and `_`.
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
 
     let mut stmt = conn
         .prepare(
             "SELECT id, ts_us, level, target, spans, msg, fields FROM events
-             WHERE session_id = ?1 AND (msg LIKE ?2 OR fields LIKE ?2 OR target LIKE ?2)
+             WHERE session_id = ?1 AND (msg LIKE ?2 ESCAPE '\\' OR fields LIKE ?2 ESCAPE '\\' OR target LIKE ?2 ESCAPE '\\')
              ORDER BY id DESC LIMIT ?3",
         )
         .unwrap();
@@ -285,5 +299,177 @@ pub fn summarize(conn: &Connection) -> Summary {
         by_target,
         failure_count,
         avg_span_duration_us,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Create an in-memory database with the schema and one session containing
+    /// a handful of test events.
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                pid INTEGER NOT NULL
+             );
+             CREATE TABLE events (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                ts_us INTEGER NOT NULL,
+                level TEXT NOT NULL,
+                target TEXT NOT NULL,
+                spans TEXT NOT NULL,
+                msg TEXT NOT NULL,
+                fields TEXT NOT NULL
+             );
+             CREATE TABLE span_timings (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                duration_us INTEGER NOT NULL,
+                fields TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO sessions (id, started_at, pid) VALUES (1, '2026-01-01T00:00:00Z', 42)",
+            [],
+        )
+        .unwrap();
+
+        for (level, target, msg) in &[
+            ("INFO", "al_core::hover", "hover resolved"),
+            ("WARN", "al_core::resolution", "symbol not found"),
+            ("ERROR", "al_core::hover", "parse failed"),
+            ("INFO", "al_core::workspace", "file opened"),
+            ("DEBUG", "al_core::resolution", "looking up identifier"),
+        ] {
+            conn.execute(
+                "INSERT INTO events (session_id, ts_us, level, target, spans, msg, fields)
+                 VALUES (1, 0, ?1, ?2, '', ?3, '{}')",
+                params![level, target, msg],
+            )
+            .unwrap();
+        }
+
+        conn
+    }
+
+    // ── recent_events ────────────────────────────────────────────────────────
+
+    #[test]
+    fn recent_events_no_filter_returns_all() {
+        let conn = setup();
+        let events = recent_events(&conn, 100, None, None);
+        assert_eq!(events.len(), 5);
+    }
+
+    #[test]
+    fn recent_events_level_filter() {
+        let conn = setup();
+        let events = recent_events(&conn, 100, Some("INFO"), None);
+        assert!(events.iter().all(|e| e.level == "INFO"));
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn recent_events_target_filter() {
+        let conn = setup();
+        let events = recent_events(&conn, 100, None, Some("hover"));
+        assert!(events.iter().all(|e| e.target.contains("hover")));
+        assert_eq!(events.len(), 2);
+    }
+
+    /// SQL injection attempt via level_filter: the injected payload would drop
+    /// the WHERE clause and return all rows regardless of level. With
+    /// parameterized queries the literal string is matched against `level` and
+    /// nothing is returned (no row has that exact level value).
+    #[test]
+    fn recent_events_level_filter_sql_injection_safe() {
+        let conn = setup();
+        // Classic tautology injection — previously this would have caused the
+        // WHERE clause to become `level = '' OR '1'='1'` and return all rows.
+        let injected = "' OR '1'='1";
+        let events = recent_events(&conn, 100, Some(injected), None);
+        assert_eq!(
+            events.len(),
+            0,
+            "SQL injection via level_filter must return 0 rows, got {}",
+            events.len()
+        );
+    }
+
+    /// SQL injection attempt via target_filter.
+    #[test]
+    fn recent_events_target_filter_sql_injection_safe() {
+        let conn = setup();
+        let injected = "x%' OR '1'='1";
+        let events = recent_events(&conn, 100, None, Some(injected));
+        // The literal string is the LIKE pattern — no row target contains it.
+        assert_eq!(
+            events.len(),
+            0,
+            "SQL injection via target_filter must return 0 rows, got {}",
+            events.len()
+        );
+    }
+
+    // ── search ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn search_finds_matching_events() {
+        let conn = setup();
+        let results = search(&conn, "hover", 100);
+        assert!(!results.is_empty());
+        assert!(results
+            .iter()
+            .all(|e| e.msg.contains("hover") || e.target.contains("hover")));
+    }
+
+    /// LIKE wildcard in search query must be treated literally, not as a
+    /// wildcard — `%` should NOT match every row.
+    #[test]
+    fn search_percent_is_literal() {
+        let conn = setup();
+        // A bare `%` would match every row if not escaped; with escaping it
+        // should match only rows that literally contain `%` — none in our fixture.
+        let results = search(&conn, "%", 100);
+        assert_eq!(
+            results.len(),
+            0,
+            "bare '%' must be treated as a literal character, not a wildcard"
+        );
+    }
+
+    /// Underscore in search query must be treated literally.
+    #[test]
+    fn search_underscore_is_literal() {
+        let conn = setup();
+        // "al_core" contains a literal `_`, so this should match rows whose
+        // msg/target/fields contain the exact substring "al_core".
+        let results = search(&conn, "al_core", 100);
+        // All 5 rows have targets starting with "al_core::" — they should all match.
+        assert_eq!(results.len(), 5, "literal underscore must match exactly");
+    }
+
+    /// SQL injection via the search query parameter.
+    #[test]
+    fn search_sql_injection_safe() {
+        let conn = setup();
+        // Attempt to break out of the LIKE value and inject SQL. Because the
+        // value is passed as a bound parameter, the quotes are never interpreted.
+        let injected = "' UNION SELECT 1,2,3,4,5,6,7 --";
+        let results = search(&conn, injected, 100);
+        assert_eq!(
+            results.len(),
+            0,
+            "SQL injection via search query must return 0 rows"
+        );
     }
 }

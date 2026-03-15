@@ -90,8 +90,8 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
                 );
             }
 
-            // Check for packages without source and prompt before generating outlines
-            check_source_availability(server, &project.packages).await;
+            // Log which packages lack embedded source (outlines rendered automatically)
+            log_source_availability(&project.packages);
 
             // Load runtime enum definitions (compiler built-ins not in any package)
             server.workspace.symbols.load_runtime_enums();
@@ -119,16 +119,15 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
     }
 }
 
-/// Check which loaded packages lack `.al` source files and prompt the user
-/// before generating symbol outlines as a fallback.
-async fn check_source_availability(server: &AlServer, packages: &[PathBuf]) {
+/// Log which loaded packages lack `.al` source files.
+/// Outlines are always generated from symbol metadata — no user prompt needed.
+fn log_source_availability(packages: &[PathBuf]) {
     let no_source: Vec<String> = packages
         .iter()
         .filter_map(|path| {
             if al_core::symbols::virtual_file::app_has_source(path) {
                 return None;
             }
-            // Extract a readable name from the filename
             let stem = path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -137,48 +136,11 @@ async fn check_source_availability(server: &AlServer, packages: &[PathBuf]) {
         })
         .collect();
 
-    if no_source.is_empty() {
-        // All packages have source — allow fallback unconditionally (shouldn't be needed)
-        server
-            .workspace.outline_fallback_approved
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        return;
-    }
-
-    let names = no_source.join(", ");
-    let message = format!(
-        "No source available for the following dependencies: {}. Generate outline from symbols?",
-        names
-    );
-
-    let actions = vec![
-        MessageActionItem {
-            title: "Yes".to_string(),
-            properties: Default::default(),
-        },
-        MessageActionItem {
-            title: "No".to_string(),
-            properties: Default::default(),
-        },
-    ];
-
-    match server
-        .client
-        .show_message_request(MessageType::INFO, message, Some(actions))
-        .await
-    {
-        Ok(Some(action)) if action.title == "Yes" => {
-            info!(
-                packages = ?no_source,
-                "User approved symbol outline generation for packages without source"
-            );
-            server
-                .workspace.outline_fallback_approved
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        _ => {
-            info!("User declined symbol outline generation");
-        }
+    if !no_source.is_empty() {
+        info!(
+            packages = ?no_source,
+            "Packages without embedded source — outlines will be rendered from symbol metadata"
+        );
     }
 }
 

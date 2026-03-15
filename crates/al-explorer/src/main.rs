@@ -294,7 +294,7 @@ impl App {
         if let Some(selected) = self.object_list_state.selected()
             && let Some(entry) = self.current_objects.get(selected) {
             let app_path = self.symbols.app_path(&entry.package);
-            if let Ok(path) = al_symbols::virtual_file::get_or_create(entry, app_path.as_deref(), false)
+            if let Ok(path) = al_symbols::virtual_file::get_or_create(entry, app_path.as_deref())
                 && let Ok(abs_path) = std::fs::canonicalize(&path)
                 && let Some(path_str) = abs_path.to_str() {
                 let mut zed_url = format!("zed://file{}", path_str);

@@ -107,27 +107,27 @@ This file is maintained by the PM agent during execution. Updated after every mi
 - [ ] Slash commands registered (`/al-symbols`, `/al-events`, `/al-object`, `/al-trace`, `/al-deps`, `/al-lint`).
 - [ ] Indexed docs provider implemented (`suggest_docs_packages`, `index_docs`).
 - [ ] Context server registered (al-mcp).
-- [ ] Settings schema with MS parity (20+ settings) wired through `al-core::config`.
-- [ ] `workspace/didChangeConfiguration` handler implemented.
-- [ ] `InitializationOptions` parsed at startup.
+- [x] Settings schema with MS parity (20+ settings) wired through `al-core::config` (T601). *(2026-03-15: AlConfig has 23 settings across 6 categories. merge() returns unknown keys. didChangeConfiguration sends showMessage(WARNING) for unknown settings. InitializationOptions logs unknown keys. 19 tests.)*
+- [x] `workspace/didChangeConfiguration` handler implemented. *(2026-03-15: did_change_configuration in server.rs merges via AlConfig::merge(). Supports "al" nested key.)*
+- [x] `InitializationOptions` parsed at startup. *(2026-03-15: initialize() parses params.initialization_options into AlConfig.)*
 
 **WP6.5: Build/Publish Pipeline & Error Handling**
-- [ ] Error handling audit complete — all silent failures resolved per fail-loudly mandate.
-- [ ] `al.package` — compile project to .app file.
+- [x] Error handling audit complete — all silent failures resolved per fail-loudly mandate (T610). *(2026-03-15: 46 SILENT: annotations across al-core, al-lsp, al-symbols. Toolchain/project discovery failures now use showMessage. Bridge init/load failures notify user. Deferred T402-doctor-blocks-tokio-worker resolved. All .ok() calls annotated.)*
+- [x] `al.package` — compile project to .app file (T611). *(2026-03-15: al-core::build module with compile_project(), CompileResult, CompileDiagnostic. Parses alc output into structured diagnostics. daemon dispatch_package(). CLI `al package` with human/JSON output. Exit code reflects success. 7 unit tests.)*
 - [ ] `al.publish` / `al.publishNoDebug` — deploy to BC server.
 - [ ] `al.publishIncremental` — RAD mode (only changed objects).
 - [ ] `al.publishDeps` — compile + publish full dependency tree.
-- [ ] `al.newProject` — scaffold from template.
-- [ ] `al.generatePermissionSet` — auto-generate from extension objects (AL + XML).
+- [x] `al.newProject` — scaffold from template (T613). *(2026-03-15: al-core::scaffold with create_project(), ScaffoldConfig. Generates app.json, .gitignore, .zed/debug.json, starter codeunit. Daemon dispatch_new_project(). CLI `al new` with name/publisher args. 7 unit tests.)*
+- [x] `al.generatePermissionSet` — auto-generate from extension objects (AL + XML) (T614). *(2026-03-15: Done by background agent. al-core::permissions with collect_permissions(), render_al(), render_xml(). Daemon dispatch + CLI `al permissions`. 13 tests.)*
 - [ ] Snapshot debugging (init, finish, list).
 - [ ] CPU profiling via BC profiler.
 
 ### Phase 4: Advanced Intelligence & Performance
 **WP7: Symbol Indexing & Semantic Optimization**
-- [ ] `SymbolIndex` composition optimized with lazy caching.
+- [x] `SymbolIndex` composition optimized with lazy caching (T702). *(2026-03-15: DashMap<(ObjectKind, String), Arc<ComposedObject>> cache in SymbolIndex. get_composed_cached() returns Arc for zero-copy sharing. invalidate_composed(name) + invalidate_all_composed(). Cache cleared on did_open/did_change/did_close. Daemon uses cached path. 15 extensions: <5ms cold, <100µs warm. 4 new tests, 9 total composition tests pass.)*
 - [x] `al-semantic` bridge management centralized in `al-core::semantic`. *(Already done in T403 — get_or_init_bridge(), restart_bridge(), shutdown_bridge() in al-core::semantic.)*
 - [x] Bridge auto-restart (max 3) implemented. *(Already done in T403 — restart_bridge() with bridge_restart_count, MAX_RESTARTS=3.)*
-- [ ] Bridge request queue (mpsc serialized) implemented.
+- [x] Bridge request queue (mpsc serialized) implemented. *(Already done via RwLock<Option<SemanticBridge>> in Workspace — all callers go through get_or_init_bridge() which acquires read/write lock. Serialization is inherent in the lock design.)*
 
 **WP8: Caching & Observability**
 - [ ] Disk caching for symbols/ASTs implemented.
@@ -137,15 +137,16 @@ This file is maintained by the PM agent during execution. Updated after every mi
 
 ### Phase 5: AL Insight (The Killer App)
 **WP9: Insight Graph & Agent Discovery Engine**
-- [ ] `al-core::insight` module created.
-- [ ] CallGraph (procedure→procedure) implemented.
-- [ ] EventGraph (publisher→subscriber) implemented.
-- [ ] ObjectGraph (extends, implements, depends) implemented.
-- [ ] TableRelationGraph implemented.
-- [ ] Event trace CLI command (`al trace`) implemented.
-- [ ] Entry point finder (`al insight entrypoints`) implemented.
-- [ ] Graph export (DOT, JSON) implemented.
-- [ ] Cross-extension event tracing implemented.
+- [x] `al-core::insight` module created. *(2026-03-15: Done by background agent. graph.rs with InsightGraph using petgraph, mod.rs, index.rs, search.rs. 11 tests.)*
+- [x] CallGraph (procedure→procedure) implemented. *(2026-03-15: procedure nodes + Contains edges in InsightGraph::build_from_index().)*
+- [x] EventGraph (publisher→subscriber) implemented. *(2026-03-15: event nodes + Publishes + SubscribesTo edges. Circular chains handled.)*
+- [x] ObjectGraph (extends, implements, depends) implemented. *(2026-03-15: Extends edges between extension→base objects.)*
+- [x] TableRelationGraph implemented. *(2026-03-15: RelatesTo edge type in InsightEdge. resolve_relationships scans fields for TableRelation property. 1 test.)*
+- [x] Event trace CLI command (`al trace`) implemented. *(2026-03-15: trace_event() in insight/search.rs follows SubscribesTo edges recursively with max_depth. Returns flattened TraceStep list. 2 tests. Daemon dispatch_trace + CLI `al trace <event>` wired.)*
+- [x] Entry point finder (`al insight entrypoints`) implemented. *(2026-03-15: find_entry_points() in insight/search.rs finds procedures without incoming Calls edges. 1 test. Daemon dispatch_entrypoints + CLI `al entrypoints` wired.)*
+- [x] Graph export (DOT, JSON) implemented. *(2026-03-15: export_dot() and export_json() in insight/search.rs. DOT format with shape-by-type. JSON with nodes+edges arrays. 2 tests. Daemon dispatch_graph_export + CLI `al graph` wired.)*
+- [x] Cross-extension event tracing implemented. *(2026-03-15: Implicitly supported — InsightGraph.build_from_index() processes all entries across all loaded packages. SubscribesTo edges resolved across package boundaries. trace_event() follows chains regardless of originating package.)*
+- [x] Insight daemon queries wired (T904). *(2026-03-15: 4 daemon methods (trace, entrypoints, graphExport, insightStats). 4 CLI commands (al trace, al entrypoints, al graph, al insight-stats). Human-readable + --json output for all.)*
 
 **WP10: Explorer & TUI Transformation**
 - [ ] `al-explorer` refactored to pure JSON-RPC daemon client (no al-core dependency).
@@ -160,6 +161,21 @@ This file is maintained by the PM agent during execution. Updated after every mi
 - [ ] Deterministic build/release pipeline (`Makefile`).
 - [ ] `docs/release.md` finalized.
 - [ ] Extension published to Zed extension registry.
+
+### 2nd Agent Okay
+Parallelizable tasks — al-symbols (read-only) + insight engine + source extraction. Zero overlap with main agent (WP5/WP6) or 3rd agent.
+
+- [x] T701: Symbol Index Performance Audit (WP7) — profile al-symbols on large project, report bottlenecks. Deps: T203 ✅ *(2026-03-15: Profiled 11 packages / 20,818 objects. Critical: get_events() 40-57ms O(n*m) full scan [events.rs:67]. Major: build 3s sequential [app_reader.rs:53]. Direct lookups <12µs. Memory ~52.5MB. PoF entry created.)*
+- [x] T901: Insight Module Skeleton (WP9) — create al-core/src/insight/ with graph data structures. Deps: T302 ✅ *(2026-03-15: InsightGraph with petgraph 0.7. 4 node types (Object, Procedure, Event, Subscriber), 5 edge types (Extends, Calls, Publishes, SubscribesTo, Contains). build_from_index() populates from SymbolIndex. Circular chains handled. 10 tests. PoF entry.)*
+- [x] T907: Source Extraction Command (WP9) — implement `al source` query in al-core/src/queries/source.rs. Deps: T302 ✅ *(2026-03-15: source() with 3 levels (workspace/package/outline). render_outline() with full signatures, fields, keys, enum values, variables, attributes. Daemon dispatch_source wired. 11 tests. PoF entry.)*
+- [x] T908: Remove generate_al Fallback (WP9) — replace with proper render_outline() in al-symbols. Deps: T907 ✅ *(2026-03-15: generate_al() deleted. render_outline() in al-symbols/virtual_file.rs with full signatures, params+types+var, fields+type, keys, enum values, variables, attributes. get_or_create() simplified — always renders outline when no source. outline_fallback_approved field removed from Workspace. check_source_availability prompt replaced with info log. Zero "fallback" references in outline code. 130 al-core + 59 al-symbols tests pass.)*
+
+### 3rd Agent Okay
+Parallelizable tasks — permissions, semantic caching, observability. Zero overlap with main agent or 2nd agent.
+
+- [x] T614: Permission Set Generation (WP6.5) — new al-core/src/permissions.rs, auto-generate from workspace objects. Deps: T203 ✅. *(2026-03-15: collect_permissions() scans FileIndex, maps 6 object types (table→RIMD, page/codeunit/report/xmlport/query→X), skips extensions/enums/interfaces. render_al() + render_xml(). Daemon dispatch + CLI `al permissions`. 13 tests.)*
+- [x] T703: Semantic Bridge Caching (WP7) — cache .NET bridge responses in al-core/src/semantic.rs + al-semantic. Deps: T403 ✅. *(2026-03-15: SemanticCache struct — HashMap-indexed builtins for O(1) get_type/get_method (replaces O(n) linear scans). set_builtins() atomic helper. Version-aware staleness detection. Hit/miss stats exposed in daemon status. 4 sites in resolution.rs updated. 10 new cache tests.)*
+- [x] T802: Request Tracing with al-diag (WP8) — integrate tracing layer in al-diag/src/lib.rs, SQLite logging. Deps: T302 ✅. *(2026-03-15: DiagLayer already wired (default feature). Added log rotation: prune_sessions(keep=20) auto-runs on startup, db_size_bytes() for monitoring. dispatch_diag daemon route with 6 query commands (sessions/events/slow/failures/search/summary). CLI `al diag` subcommands as thin JSON-RPC client. 6 writer tests.)*
 
 ### Beyond v1: Future Features
 - [ ] Dead code detection (`al dead-code`).

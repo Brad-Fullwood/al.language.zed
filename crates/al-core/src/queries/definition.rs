@@ -80,7 +80,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    let current_path = uri.to_file_path().ok(); // non-file URIs have no path
+    let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path
 
     if let Some(obj_path_entry) = workspace.file_index.objects.get(&clean_name.to_lowercase()) {
         let file_path = obj_path_entry.value().clone();
@@ -141,12 +141,9 @@ fn get_or_create_virtual_file(
     member_name: Option<&str>,
 ) -> Option<(Url, tower_lsp::lsp_types::Range)> {
     let app_path = workspace.symbols.app_path(&entry.package);
-    let allow_fallback = workspace
-        .outline_fallback_approved
-        .load(std::sync::atomic::Ordering::Relaxed);
-    match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref(), allow_fallback) {
+    match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
         Ok(path) => {
-            let uri = Url::from_file_path(&path).ok()?; // non-absolute virtual paths are invalid
+            let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
             let range = member_name
                 .and_then(|name| find_member_range_in_file(&path, name))
                 .unwrap_or_default();

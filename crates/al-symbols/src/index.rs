@@ -32,6 +32,8 @@ pub struct SymbolIndex {
     app_paths: DashMap<String, std::path::PathBuf>,
     /// Lazy-loaded mapping of (PackageName, ObjectKind, ID) -> ZIP internal path.
     source_path_cache: DashMap<(String, ObjectKind, i32), String>,
+    /// Cached composed views keyed by (ObjectKind, lowercase name).
+    composed_cache: DashMap<(ObjectKind, String), Arc<crate::model::ComposedObject>>,
     }
 
     impl Default for SymbolIndex {
@@ -52,6 +54,7 @@ pub struct SymbolIndex {
             next_id: std::sync::atomic::AtomicUsize::new(0),
             app_paths: DashMap::new(),
             source_path_cache: DashMap::new(),
+            composed_cache: DashMap::new(),
         }
     }
 
@@ -305,6 +308,43 @@ pub struct SymbolIndex {
         name: &str,
     ) -> Option<crate::model::ComposedObject> {
         crate::composition::get_composed(self, kind, name)
+    }
+
+    /// Get a composed view with caching. Returns Arc for zero-copy sharing.
+    ///
+    /// Cached results are returned on repeat calls. Use [`invalidate_composed`]
+    /// when workspace files change to clear stale entries.
+    pub fn get_composed_cached(
+        &self,
+        kind: crate::model::ObjectKind,
+        name: &str,
+    ) -> Option<Arc<crate::model::ComposedObject>> {
+        let key = (kind, name.to_lowercase());
+        if let Some(cached) = self.composed_cache.get(&key) {
+            return Some(Arc::clone(cached.value()));
+        }
+        let composed = crate::composition::get_composed(self, kind, name)?;
+        let arc = Arc::new(composed);
+        self.composed_cache.insert(key, Arc::clone(&arc));
+        Some(arc)
+    }
+
+    /// Invalidate cached composed views for a given object name.
+    ///
+    /// Call when a workspace file defining or extending this object changes.
+    pub fn invalidate_composed(&self, name: &str) {
+        let lower = name.to_lowercase();
+        self.composed_cache.retain(|k, _| k.1 != lower);
+    }
+
+    /// Invalidate all cached composed views.
+    pub fn invalidate_all_composed(&self) {
+        self.composed_cache.clear();
+    }
+
+    /// Check if the composed cache is empty (for testing).
+    pub fn is_composed_cache_empty(&self) -> bool {
+        self.composed_cache.is_empty()
     }
 
     /// Find event publishers and subscribers matching a name pattern.
