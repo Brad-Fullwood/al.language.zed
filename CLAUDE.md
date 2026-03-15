@@ -5,25 +5,29 @@ Custom Rust language server for AL (Microsoft Dynamics 365 Business Central) in 
 ## Architecture
 
 ```
-al-cli / al-explorer / al-mcp  ->  al-lsp daemon (Unix socket)  ->  al-core  ->  al-syntax
-zed-al (WASM)                   ->  al-lsp (stdio)               ->           ->  al-symbols
-                                                                              ->  al-semantic
-                                                                              ->  al-diag
-                                                                              ->  al-dap-client
+al-cli          ->  al-lsp daemon (Unix socket)       ->  al-core  ->  al-syntax
+al-mcp          ->  al CLI binary (subprocess)                     ->  al-symbols
+al-explorer     ->  al-symbols (direct, in-process)                ->  al-semantic
+zed-al (WASM)   ->  al-lsp (stdio)                                 ->  al-dap-client
+                                                        al-lsp     ->  al-diag (optional)
+                                                                   ->  al-dap-client
 ```
 
 | Crate | Role |
 |-------|------|
-| al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket) |
+| al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket). Imports al-core, al-protocol, al-dap-client, al-diag (optional) |
 | al-core | All state, queries, orchestration |
-| al-protocol | Shared JSON-RPC types. Types only, no logic |
-| al-syntax | Parser, type resolver, tree-sitter |
-| al-symbols | Symbol index for .app packages |
-| al-semantic | In-process .NET CLR via `netcorehost` |
-| al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host |
-| al-diag | Diagnostic tracing and logging (SQLite-backed) |
+| al-protocol | Shared types and discovery. JSON-RPC types + project/toolchain discovery logic |
+| al-syntax | Parser, type resolver, tree-sitter. Uses tower-lsp Position/Range types |
+| al-symbols | Symbol index for .app packages. Imports al-protocol for shared domain types |
+| al-semantic | In-process .NET CLR via `netcorehost`. Imports al-protocol for shared domain types |
+| al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host. Imports al-protocol |
+| al-diag | SQLite-backed structured tracing/logging layer (NOT diagnostic analysis) |
 | al-test-harness | LSP integration + data-driven tests (dev only) |
-| al-cli, al-explorer, al-mcp, zed-al | Thin adapters: pure JSON-RPC clients |
+| al-cli | Thin adapter: JSON-RPC client to al-lsp daemon. Imports al-protocol only |
+| al-explorer | TUI symbol browser: imports al-symbols directly, bypasses al-lsp |
+| al-mcp | MCP server: shells out to `al` CLI binary. No al-* compile-time dependencies |
+| zed-al | WASM extension: connects to al-lsp via stdio |
 
 Build commands: `.claude/rules/testing.md`. Dependency rules: `.claude/rules/code-boundaries.md`.
 

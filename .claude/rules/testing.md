@@ -17,6 +17,21 @@ zed-al requires wasm32-wasip1 target — always excluded from workspace commands
 - `initialize()` polls `workspace/symbol` until non-empty (30s timeout)
 - Tests run against real Debar project fixture
 
+## Fixture Requirement (zed_simulation tests)
+The 37 `test_debar_*` tests in `zed_simulation.rs` require a real AL project on disk.
+They **silently skip** if the fixture is absent — not a failure.
+
+Configure the fixture path via environment variable:
+```bash
+AL_TEST_PROJECT_PATH=/path/to/AL/project cargo test -p al-test-harness
+```
+
+Default path (machine-specific, only works on Brad's machine):
+`/home/bradf/Dev/AL/Debar/App Integration`
+
+The fixture must contain `app.json` at its root. The `e2e.rs` and `data_driven.rs` tests
+use `test_al_project/` which IS in the repo and always run.
+
 ## Test-First Development
 Use superpowers:test-driven-development. Write the failing test first, then implement until it passes.
 

@@ -10,11 +10,25 @@ use al_test_harness::*;
 use std::path::PathBuf;
 
 fn debar_project_dir() -> PathBuf {
-    PathBuf::from("/home/bradf/Dev/AL/Debar/App Integration")
+    if let Ok(path) = std::env::var("AL_TEST_PROJECT_PATH") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from("/home/bradf/Dev/AL/Debar/App Integration")
+    }
 }
 
 fn debar_project_exists() -> bool {
-    debar_project_dir().join("app.json").exists()
+    let dir = debar_project_dir();
+    if dir.join("app.json").exists() {
+        return true;
+    }
+    eprintln!(
+        "\n[zed_simulation] SKIPPING: AL test fixture not found at: {}\n\
+         Set AL_TEST_PROJECT_PATH to point to a valid AL project directory with app.json.\n\
+         Example: AL_TEST_PROJECT_PATH=/path/to/AL/project cargo test -p al-test-harness\n",
+        dir.display()
+    );
+    false
 }
 
 fn find_position(content: &str, needle: &str) -> Option<(u32, u32)> {
