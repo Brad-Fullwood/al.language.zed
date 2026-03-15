@@ -16,7 +16,13 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```no_run
+//! use std::path::PathBuf;
+//! use tracing_subscriber::layer::SubscriberExt;
+//! use tracing_subscriber::util::SubscriberInitExt;
+//!
+//! let log_dir = PathBuf::from("/tmp/al-lsp");
+//!
 //! // In al-lsp main.rs:
 //! let diag_layer = al_diag::DiagLayer::new(log_dir.join("al-diag.db"));
 //! tracing_subscriber::registry()

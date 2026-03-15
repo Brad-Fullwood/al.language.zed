@@ -9,19 +9,14 @@ conditions:
     pattern: crates/al-core/.*\.rs$
   - field: new_text
     operator: regex_match
-    pattern: use\s+al_(lsp|cli|explorer|mcp)
+    pattern: use\s+al_(?!(syntax|symbols|semantic|diag|dap_client|protocol)\b)
 ---
 
-**BLOCKED: al-core upward dependency violation**
+**BLOCKED: al-core dependency violation**
 
-You are importing a server or adapter crate from al-core.
+al-core may ONLY import these `al_*` crates:
+- `al_syntax`, `al_symbols`, `al_semantic`, `al_diag`, `al_dap_client`, `al_protocol`
 
-al-core must NOT import:
-- `al_lsp` (server — al-core is a library used BY al-lsp)
-- `al_cli` (thin adapter)
-- `al_explorer` (thin adapter)
-- `al_mcp` (thin adapter)
+It must NOT import server or adapter crates (al_lsp, al_cli, al_explorer, al_mcp) or any future `al_*` crate not listed above.
 
-al-core may import: `al_syntax`, `al_symbols`, `al_semantic`, `al_diag`.
-
-Dependencies flow downward: al-lsp → al-core → analysis libs.
+This is a whitelist rule — any new `al_*` crate is automatically blocked unless added here.

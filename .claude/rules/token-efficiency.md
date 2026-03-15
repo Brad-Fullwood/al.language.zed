@@ -5,7 +5,7 @@
 - For failures, show only the first 3 failing tests with 3 lines of context each.
 
 ## Agent Spawning
-- Use **sonnet** for all subagents. Opus is reserved for the main session only.
+- Default to **sonnet** for subagents. Use **opus** for agents that require judgment (adversarial, supervisor).
 - Do NOT spawn agents when a shell command suffices.
 - For parallel work: use `superpowers:dispatching-parallel-agents`.
 - For code review: use `superpowers:requesting-code-review`.

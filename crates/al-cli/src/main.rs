@@ -1504,7 +1504,7 @@ fn cmd_dead_code(json: bool) -> ExitCode {
                 if unused.is_empty() {
                     println!("No dead code found.");
                 } else {
-                    println!("{:<12} {:<30} {:<30} {}", "KIND", "NAME", "OBJECT", "REASON");
+                    println!("{:<12} {:<30} {:<30} REASON", "KIND", "NAME", "OBJECT");
                     println!("{}", "-".repeat(85));
                     for item in unused {
                         let kind = item.get("k").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1539,7 +1539,7 @@ fn cmd_impact(symbol: &str, json: bool) -> ExitCode {
                     println!("No consumers found for '{sym}'.");
                 } else {
                     println!("Impact analysis for '{sym}':\n");
-                    println!("{:<15} {:<30} {:<15} {}", "KIND", "NAME", "TYPE", "DETAIL");
+                    println!("{:<15} {:<30} {:<15} DETAIL", "KIND", "NAME", "TYPE");
                     println!("{}", "-".repeat(75));
                     for entry in impacted {
                         let kind = entry.get("k").and_then(|v| v.as_str()).unwrap_or("?");

@@ -1,0 +1,84 @@
+# Task Index — read this, not tasks.toml
+# One line per task. Find next: first line where completed = false and all deps completed.
+# Full task details: grep tasks.toml for the task ID.
+
+# WP0: Project Constitution & The Adversarial Harness [DONE]
+# WPX: Continuous Adversarial Evolution (Persistent) [DONE]
+# WP1: al-core Skeleton & Discovery Migration [DONE]
+# WP2: Workspace State & Document Management [DONE]
+# WP3: LSP & CLI Thin Adapters (Query Engine) [DONE]
+# WP4: DAP Integration, Toolchain Logic & Agentic Debugger [DONE]
+# WP5: Language Config & Asset Parity [2/6]
+# WP6: WASM Entry & Settings Implementation [1/3]
+# WP6_5: Build/Publish Pipeline & Error Handling [4/7]
+# WP7: Symbol Indexing & Semantic Optimization [3/4]
+# WP8: Caching & Observability [3/4]
+# WP9: Insight Graph & Agent Discovery Engine [4/8]
+# WP10: Explorer & TUI Transformation [0/3]
+# WP11: Integration & Release Engineering [0/5]
+
+[index]
+T001 = { wp = "WP0", name = "Harness Baseline Verification", done = true, deps = [] }
+T002 = { wp = "WP0", name = "Evidence Log Skeleton", done = true, deps = ["T001"] }
+T003 = { wp = "WP0", name = "Harness Daemon-Mode Extension", done = true, deps = ["T001"] }
+T101 = { wp = "WP1", name = "al-core Crate Skeleton", done = true, deps = [] }
+T102 = { wp = "WP1", name = "Project Discovery Migration", done = true, deps = ["T101"] }
+T103 = { wp = "WP1", name = "JSON-RPC Bridge Types Migration", done = true, deps = ["T101"] }
+T104 = { wp = "WP1", name = "Remove al-discovery Crate", done = true, deps = ["T102", "T103"] }
+T201 = { wp = "WP2", name = "DocumentStore Migration", done = true, deps = ["T101"] }
+T202 = { wp = "WP2", name = "Parse Cache in al-core", done = true, deps = ["T201"] }
+T203 = { wp = "WP2", name = "Workspace State Container", done = true, deps = ["T201", "T202", "T104"] }
+T301 = { wp = "WP3", name = "Query Module Skeleton in al-core", done = true, deps = ["T203"] }
+T302 = { wp = "WP3", name = "Query Logic Migration", done = true, deps = ["T301"] }
+T303 = { wp = "WP3", name = "Daemon Mode for al-lsp", done = true, deps = ["T203"] }
+T304 = { wp = "WP3", name = "al-cli as JSON-RPC Client", done = true, deps = ["T303"] }
+T305 = { wp = "WP3", name = "al-mcp as JSON-RPC Client", done = true, deps = ["T303"] }
+T401 = { wp = "WP4", name = "DAP Fold into al-lsp", done = true, deps = ["T302"] }
+T402 = { wp = "WP4", name = "Toolchain Management in al-core", done = true, deps = ["T104", "T203"] }
+T403 = { wp = "WP4", name = "EditorServices Lifecycle in al-core", done = true, deps = ["T401", "T402"] }
+T404a = { wp = "WP4", name = "al-dap-client crate — DAP protocol + DapClient", done = true, deps = ["T403"] }
+T404b = { wp = "WP4", name = "DebugSession lifecycle — start + stop", done = true, deps = ["T404a"] }
+T404c = { wp = "WP4", name = "Breakpoints + execution control", done = true, deps = ["T404b"] }
+T404d = { wp = "WP4", name = "State inspection + eval", done = true, deps = ["T404b"] }
+T404e = { wp = "WP4", name = "Wire-up — daemon + CLI + architecture updates", done = true, deps = ["T404a", "T404b", "T404c", "T404d"] }
+T405 = { wp = "WP4", name = "Debug History Recording", done = true, deps = ["T404c", "T404d"] }
+T500 = { wp = "WP5", name = "tree-sitter-al: CodeAnalysis.dll Extraction", done = false, deps = [] }
+T501 = { wp = "WP5", name = "Grammar Regeneration and Highlights", done = false, deps = ["T500"] }
+T502 = { wp = "WP5", name = "Snippets and Brackets", done = false, deps = ["T500", "T501"] }
+T503 = { wp = "WP5", name = "Runnables and Zed Tasks", done = false, deps = ["T501"] }
+T504 = { wp = "WP5", name = "Semantic Token Expansion to MS Parity", done = true, deps = ["T301", "T501"] }
+T505 = { wp = "WP5", name = "All Analyzers Support", done = true, deps = ["T601"] }
+T601 = { wp = "WP6", name = "Settings Schema in al-core", done = true, deps = ["T203"] }
+T602 = { wp = "WP6", name = "WASM Entry Cleanup", done = false, deps = ["T601", "T303"] }
+T603 = { wp = "WP6", name = "Settings Propagation via Daemon", done = false, deps = ["T601", "T303"] }
+T610 = { wp = "WP6_5", name = "Error Handling Audit & Fix", done = true, deps = ["T203"] }
+T611 = { wp = "WP6_5", name = "Package Command (Compile to .app)", done = true, deps = ["T402", "T601"] }
+T612 = { wp = "WP6_5", name = "Publish Commands (Standard + RAD)", done = false, deps = ["T611", "T601"] }
+T613 = { wp = "WP6_5", name = "Project Scaffolding", done = true, deps = ["T601"] }
+T614 = { wp = "WP6_5", name = "Permission Set Generation", done = true, deps = ["T203"] }
+T615 = { wp = "WP6_5", name = "Snapshot Debugging", done = false, deps = ["T612"] }
+T616 = { wp = "WP6_5", name = "CPU Profiling", done = false, deps = ["T612"] }
+T701 = { wp = "WP7", name = "Symbol Index Performance Audit", done = true, deps = ["T203"] }
+T702 = { wp = "WP7", name = "Symbol Composition Refactor", done = true, deps = ["T701"] }
+T703 = { wp = "WP7", name = "Semantic Bridge Caching", done = true, deps = ["T403"] }
+T704 = { wp = "WP7", name = "Incremental Workspace Scanning", done = false, deps = ["T203"] }
+T801 = { wp = "WP8", name = "Disk Cache for Symbol Packages", done = true, deps = ["T203"] }
+T802 = { wp = "WP8", name = "Request Tracing with al-diag", done = true, deps = ["T302"] }
+T803 = { wp = "WP8", name = "Latency Budget Verification", done = true, deps = ["T802"] }
+T804 = { wp = "WP8", name = "Rope-based Text Storage", done = false, deps = ["T201"] }
+T901 = { wp = "WP9", name = "Insight Module Skeleton", done = true, deps = ["T302"] }
+T902 = { wp = "WP9", name = "Event Chain Tracing", done = false, deps = ["T901"] }
+T903 = { wp = "WP9", name = "Call Graph Construction", done = false, deps = ["T901"] }
+T904 = { wp = "WP9", name = "Insight Daemon Queries", done = true, deps = ["T902", "T903", "T303"] }
+T905 = { wp = "WP9", name = "Table Impact Analysis", done = false, deps = ["T903", "T901"] }
+T906 = { wp = "WP9", name = "Event Interception Discovery", done = false, deps = ["T902", "T901"] }
+T907 = { wp = "WP9", name = "Source Extraction Command", done = true, deps = ["T302"] }
+T908 = { wp = "WP9", name = "Remove generate_al Fallback", done = true, deps = ["T907"] }
+T1001 = { wp = "WP10", name = "Explorer as Daemon Client", done = false, deps = ["T303", "T304"] }
+T1002 = { wp = "WP10", name = "Object Browser View", done = false, deps = ["T1001"] }
+T1003 = { wp = "WP10", name = "Event/Call Graph View", done = false, deps = ["T1002", "T904"] }
+T1101 = { wp = "WP11", name = "Comprehensive Integration Test Suite", done = false, deps = ["T302", "T303"] }
+T1102 = { wp = "WP11", name = "Zed Fidelity Test Suite", done = false, deps = ["T1101"] }
+T1103 = { wp = "WP11", name = "Build and Release Pipeline", done = false, deps = ["T602"] }
+T1104 = { wp = "WP11", name = "Documentation and Extension Packaging", done = false, deps = ["T1103"] }
+T1105 = { wp = "WP11", name = "Final Surgical Audit", done = false, deps = ["T1104"] }

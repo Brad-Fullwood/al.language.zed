@@ -1,0 +1,1218 @@
+# Task Plan — Zed AL Extension
+# Merged plan + progress. Single source of truth for all task data.
+# Source: docs/plan.md + docs/progress.md
+# Last synced: 2026-03-15
+
+# =============================================================================
+# CRITICAL PATH
+# =============================================================================
+#
+# Minimum task sequence to reach a working state where al-lsp serves both Zed
+# (stdio) and daemon clients (CLI/Explorer/MCP) via al-core:
+#
+# T001 (WP0 Harness bootstrap)
+#   |
+# T101 -> T102 -> T103 -> T104  (WP1: al-core skeleton + discovery migration)
+#   |                       |
+# T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
+#                   |       |
+#                   v       v
+#                T301 -> T302 -> T303 -> T304 -> T305  (WP3: query migration + daemon + thin adapters)
+#                                                   |
+#                                          T401 -> T402  (WP4: DAP fold + toolchain)
+#                                                   |
+#                                          T403 -> T404a -> T404b -> T404c  (WP4: al-dap-client + debug session)
+#                                                         |-> T404d  (WP4: state inspection, parallel with T404c)
+#                                                 T404c + T404d -> T404e -> T405  (WP4: wire-up + history)
+#                                                   |
+#                                 T501 -> T502 -> T504 -> T505  (WP5: assets + tokens + analyzers)
+#                                                   |
+#                                          T601 -> T602 -> T603  (WP6: WASM + settings)
+#                                                   |
+#                                 T610 -> T611 -> T612  (WP6.5: error handling + build/publish)
+#                                          |
+#                                 T613  T614  T615  T616  (WP6.5: scaffold, perms, snapshots, profiling)
+#
+# Minimum viable loop (Zed works end-to-end with new architecture):
+#   T001 through T305 = 17 tasks across WP0-WP3.
+# Full production path adds WP4-WP11 = ~40 total tasks.
+#
+# Critical Dependencies (cross-WP):
+# - T301 (query migration) requires T104 (al-core compiles with discovery) AND T203 (DocumentStore in al-core).
+# - T303 (daemon mode) is WP3 but unblocks ALL thin adapter work (T304, T305, T601, T1001).
+# - T501 (grammar sync) is independent of WP1-WP4; can run in parallel.
+# - WP7-WP10 are additive and can be parallelized after WP3.
+
+[meta]
+total_work_packages = 14  # WP0-WP11 (12) + WPX (persistent adversarial) + WP6_5 (build/publish pipeline)
+
+# =============================================================================
+# WORK PACKAGES
+# =============================================================================
+
+[[work_packages]]
+id = "WP0"
+name = "Project Constitution & The Adversarial Harness"
+phase = "Phase 0: The Adversarial Foundation"
+goal = "Establish the project's rules and build its 'Immune System'. Create CLAUDE.md, evaluate and define required Claude Skills or Agents, build an LSP simulator with high Zed-fidelity in al-test-harness, and implement the Centralized Evidence Log system in TOML."
+gating = "No other work packages may start until WP0 is verified."
+
+[[work_packages]]
+id = "WPX"
+name = "Continuous Adversarial Evolution (Persistent)"
+phase = "Phase 0: The Adversarial Foundation"
+goal = "A sub-agent is permanently deployed to break the code and interrogate the log. Identify where the harness lacks Zed-fidelity. Interrogate proof_of_functionality.toml for tasks with insufficient negative testing. Discovered gaps are reported to the PM as immediate blocking issues."
+
+[[work_packages]]
+id = "WP1"
+name = "al-core Skeleton & Discovery Migration"
+phase = "Phase 1: Foundation & Core Refactor"
+goal = "Establish the central 'brain' and project discovery logic. Create al-core, implement the Workspace state container, and migrate al-discovery (project/toolchain/launch) into al-core."
+zed_impact = "Provides the foundation for project loading and toolchain detection in Zed."
+agent_impact = "Accurate project discovery for CLI/MCP queries."
+
+[[work_packages]]
+id = "WP2"
+name = "Workspace State & Document Management"
+phase = "Phase 1: Foundation & Core Refactor"
+goal = "Centralize document handling and parse caching. Move DocumentStore from al-lsp to al-core. Implement rope-based text and incremental parse tree caching in the core."
+zed_impact = "Faster file opening and typing responsiveness."
+agent_impact = "Stable, cached state for multi-turn agent interactions."
+
+[[work_packages]]
+id = "WP3"
+name = "LSP & CLI Thin Adapters (Query Engine)"
+phase = "Phase 2: Binary Thinning & Language Parity"
+goal = "Move query logic to the core and thin out the binaries. Migrate hover, definition, completions, and references to al-core::queries. Refactor al-lsp (transport) and al-cli (agent discovery) to use these queries."
+zed_impact = "Reliable, standard LSP behavior."
+agent_impact = "Surgical, context-dense discovery calls."
+
+[[work_packages]]
+id = "WP4"
+name = "DAP Integration, Toolchain Logic & Agentic Debugger"
+phase = "Phase 2: Binary Thinning & Language Parity"
+goal = "Fold debugging and toolchain management into the core/LSP. Expose headless debug control for agentic debugging. Merge al-dap into al-lsp::dap. Refactor EditorServices management to use al-core::toolchain. Implement al debug CLI/MCP for headless DAP control with variable inspection, expression evaluation, and debug history recording."
+zed_impact = "Seamless 'Publish & Debug' from Zed."
+agent_impact = "Full agentic debugging — AI agents can start debug sessions, set conditional breakpoints, step through code, inspect variables, evaluate expressions, and review debug history. All via CLI/MCP with no UI required."
+
+[[work_packages]]
+id = "WP5"
+name = "Language Config & Asset Parity"
+phase = "Phase 3: Assets & Zed Integration"
+goal = "High-fidelity Zed integration and snippet parity. Sync grammar, import 23 snippet files, and implement highlights.scm, runnables.scm, and brackets.scm. Implement all Zed tasks (AL: Go, AL: Publish, etc.)."
+zed_impact = "Beautiful highlighting, snippets, and task-based workflows."
+agent_impact = "Parity in available commands and scaffold generation."
+
+[[work_packages]]
+id = "WP6"
+name = "WASM Entry & Settings Implementation"
+phase = "Phase 3: Assets & Zed Integration"
+goal = "Clean up the user-facing extension entry point. Refactor zed-al (WASM) to remove fallbacks. Implement full settings map in al-core::config."
+zed_impact = "Explicit, predictable settings behavior; no 'auto-download' surprises."
+
+[[work_packages]]
+id = "WP6_5"
+name = "Build/Publish Pipeline & Error Handling"
+phase = "Phase 3: Assets & Zed Integration"
+goal = "Implement the full build/publish lifecycle and eliminate silent failures. Package, publish (standard + RAD), project scaffolding, permission set generation, snapshot debugging. Audit and fix all silent error handling."
+zed_impact = "Full development lifecycle without leaving Zed — compile, publish, debug, profile."
+agent_impact = "Agentic build/deploy (compile, publish, verify via CLI/MCP)."
+
+[[work_packages]]
+id = "WP7"
+name = "Symbol Indexing & Semantic Optimization"
+phase = "Phase 4: Advanced Intelligence & Performance"
+goal = "Scale analysis to large AL projects. Refactor al-symbols for better composition. Optimize al-semantic bridge management (caching, process lifetime) within al-core."
+zed_impact = "Instant symbol navigation across massive projects."
+agent_impact = "100% accurate symbol resolution for cross-package dependencies."
+
+[[work_packages]]
+id = "WP8"
+name = "Caching & Observability"
+phase = "Phase 4: Advanced Intelligence & Performance"
+goal = "Meet performance targets and add system transparency. Implement disk caching for symbols/ASTs. Integrate al-diag for request tracing and latency monitoring."
+zed_impact = "Sub-10ms hover/completion; fast warm starts."
+
+[[work_packages]]
+id = "WP9"
+name = "Insight Graph & Agent Discovery Engine"
+phase = "Phase 5: AL Insight (The Killer App)"
+goal = "Build the publisher-subscriber and call-graph engine. Implement al-core::insight using petgraph. Ensure the CLI/MCP/TUI can perform complex traces (e.g., event chain) in a single call."
+zed_impact = "Visual call graphs and event traces in al-explorer."
+agent_impact = "Context-dense traces that replace manual file scanning."
+
+[[work_packages]]
+id = "WP10"
+name = "Explorer & TUI Transformation"
+phase = "Phase 5: AL Insight (The Killer App)"
+goal = "Provide a rich UI for workspace exploration. Refactor al-explorer into a modular TUI consuming al-core data."
+zed_impact = "High-density object/event designer accessible via Zed task."
+
+[[work_packages]]
+id = "WP11"
+name = "Integration & Release Engineering"
+phase = "Phase 6: Validation & Release"
+goal = "Finalize for production. Exhaustive integration testing via al-test-harness. Finalize deterministic build/release pipeline."
+
+# =============================================================================
+# TASKS
+# =============================================================================
+
+# --- WP0 ---
+
+[[tasks]]
+id = "T001"
+name = "Harness Baseline Verification"
+wp = "WP0"
+files = [
+  "crates/al-test-harness/src/lib.rs",
+  "crates/al-test-harness/tests/*.rs",
+]
+deps = []
+pass_criteria = "cargo test -p al-test-harness compiles. All existing tests either pass or are documented as known-broken with specific failure reasons."
+fail_criteria = "Harness cannot spawn al-lsp binary, or tests panic without clear error messages."
+complexity = "Low"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "459/461 tests pass, 2 known failures documented in data_driven.rs with specific failure reasons. PoF entry created."
+
+[[tasks]]
+id = "T002"
+name = "Evidence Log Skeleton"
+wp = "WP0"
+files = [
+  "docs/proof_of_functionality.toml",
+]
+deps = ["T001"]
+pass_criteria = "TOML file parses. Contains section headers for every WP. Template entry demonstrates adversarial/fidelity dual-pass format."
+fail_criteria = "File does not parse as valid TOML, or lacks the adversarial pass template."
+complexity = "Low"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "Restructured with WP0-WP11 section headers, template in header comments, dual-pass format verified. 3 entries, TOML parses."
+
+[[tasks]]
+id = "T003"
+name = "Harness Daemon-Mode Extension"
+wp = "WP0"
+files = [
+  "crates/al-test-harness/src/lib.rs",
+  "crates/al-test-harness/src/protocol.rs",
+]
+deps = ["T001"]
+pass_criteria = "LspClient trait is abstracted so tests can run against stdio OR socket transport. Existing stdio tests unchanged."
+fail_criteria = "Abstraction forces rewrite of existing tests, or introduces runtime overhead on stdio path."
+complexity = "Medium"
+note = "Full implementation deferred until daemon exists (T303); this task adds the trait/interface."
+completed = true
+completed_date = "2026-03-14"
+completed_note = "Transport abstracted — Lifecycle enum, boxed Writer, generic read_loop, from_transport() shared constructor, connect() stub for T303. Zero test regressions. 459/461 pass."
+
+# --- WP1 ---
+
+[[tasks]]
+id = "T101"
+name = "al-core Crate Skeleton"
+wp = "WP1"
+files = [
+  "crates/al-core/Cargo.toml",
+  "crates/al-core/src/lib.rs",
+  "crates/al-core/src/workspace.rs",
+  "crates/al-core/src/errors.rs",
+]
+deps = []
+pass_criteria = "cargo check -p al-core succeeds. Workspace struct exists (empty). al-core is added to workspace Cargo.toml. al-lsp has al-core as a dependency in its Cargo.toml."
+fail_criteria = "Circular dependency introduced. Any analysis library depends on al-core."
+complexity = "Low"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "lib.rs, workspace.rs (Workspace struct), errors.rs (AlError enum). al-lsp depends on al-core. No circular deps. Workspace struct later expanded in T102."
+
+[[tasks]]
+id = "T102"
+name = "Project Discovery Migration"
+wp = "WP1"
+files = [
+  "crates/al-core/src/project.rs",
+  "crates/al-core/src/toolchain.rs",
+  "crates/al-core/src/launch.rs",
+  "crates/al-discovery/src/lib.rs",
+  "crates/al-discovery/src/launch.rs",
+]
+deps = ["T101"]
+pass_criteria = "al-core::project::find_project() and al-core::toolchain::find_toolchain() work identically to existing al_discovery functions. All callers in al-lsp updated. al-discovery crate marked deprecated or emptied."
+fail_criteria = "Any behavior change in project discovery (different paths found, different error messages). Any test regression."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "38 tests across 3 modules. al-lsp callers updated with boundary conversion. al-discovery marked deprecated."
+
+[[tasks]]
+id = "T103"
+name = "JSON-RPC Bridge Types Migration"
+wp = "WP1"
+files = [
+  "crates/al-core/src/jsonrpc.rs",
+  "crates/al-discovery/src/jsonrpc.rs",
+]
+deps = ["T101"]
+pass_criteria = "al-core::jsonrpc exports Request, Response, RpcError, and error codes. al-semantic and al-dap import from al-core (or a re-export) instead of al-discovery. All 6 existing JSON-RPC tests pass."
+fail_criteria = "Import cycle. Tests broken by moved types."
+complexity = "Low"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "6 tests. al-semantic still imports from al-discovery due to circular dep constraint — switched when al-protocol was created in T104."
+
+[[tasks]]
+id = "T104"
+name = "Remove al-discovery Crate"
+wp = "WP1"
+files = [
+  "crates/al-discovery/",
+  "Cargo.toml",
+]
+deps = ["T102", "T103"]
+pass_criteria = "cargo check --workspace succeeds with no references to al-discovery. Workspace member list has 11 crates (al-core replaces al-discovery)."
+fail_criteria = "Any crate still imports al_discovery. Build fails."
+complexity = "Low"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "al-protocol created as leaf-level shared crate with types, discovery functions, and JSON-RPC. All 12 workspace crates updated. Zero references to al-discovery remain."
+
+# --- WP2 ---
+
+[[tasks]]
+id = "T201"
+name = "DocumentStore Migration"
+wp = "WP2"
+files = [
+  "crates/al-core/src/documents.rs",
+  "crates/al-lsp/src/document.rs",
+  "crates/al-lsp/src/server.rs",
+]
+deps = ["T101"]
+pass_criteria = "al-core::documents::DocumentStore compiles with identical API. al-lsp imports it from al-core. All existing document operations (open, close, get_text, apply_changes) work. Harness tests pass."
+fail_criteria = "Any change to DocumentStore's public API that breaks al-lsp. Text content differs after apply_changes."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "Transport-agnostic TextChange/TextRange types replace tower-lsp's TextDocumentContentChangeEvent. 8 unit tests. al-lsp converts at boundary. Old document.rs deleted."
+
+[[tasks]]
+id = "T202"
+name = "Parse Cache in al-core"
+wp = "WP2"
+files = [
+  "crates/al-core/src/parsing.rs",
+  "crates/al-lsp/src/parsing.rs",
+]
+deps = ["T201"]
+pass_criteria = "al-core::parsing::get_or_parse() returns (String, Tree) given a URI and the Workspace. al-lsp::parsing becomes a thin delegate. Parse trees are cached in DocumentStore (or alongside it). No double-parsing on repeated hover calls."
+fail_criteria = "Parse cache misses where it previously hit. Memory leak from unbounded tree cache."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "get_or_parse() takes &DocumentStore, returns (String, Tree). al-lsp::parsing becomes thin delegate. 3 tests. No double-parsing."
+
+[[tasks]]
+id = "T203"
+name = "Workspace State Container"
+wp = "WP2"
+files = [
+  "crates/al-core/src/workspace.rs",
+  "crates/al-core/src/lib.rs",
+]
+deps = ["T201", "T202", "T104"]
+pass_criteria = "Workspace owns: DocumentStore, SymbolIndex, AlProject (Option), AlToolchain (Option), SemanticBridge handle (Option). al-lsp::AlServer holds a single Workspace instead of separate fields. All harness tests pass."
+fail_criteria = "AlServer still owns DocumentStore or SymbolIndex directly. Any field duplication between Workspace and AlServer."
+complexity = "High"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "AlServer.workspace replaces 5 separate fields. All references updated via sed across al-lsp. All tests pass. Also includes FileIndex (scan/add/remove/find_by_object_name, 10 unit tests) and AlConfig (merge(), 23 settings, 8 unit tests) as part of WP2 completion."
+
+# --- WP3 ---
+
+[[tasks]]
+id = "T301"
+name = "Query Module Skeleton in al-core"
+wp = "WP3"
+files = [
+  "crates/al-core/src/queries/mod.rs",
+  "crates/al-core/src/queries/hover.rs",
+  "crates/al-core/src/queries/definition.rs",
+  "crates/al-core/src/queries/completions.rs",
+  "crates/al-core/src/queries/references.rs",
+  "crates/al-core/src/queries/signature.rs",
+  "crates/al-core/src/queries/rename.rs",
+  "crates/al-core/src/queries/semantic_tokens.rs",
+  "crates/al-core/src/queries/folding.rs",
+  "crates/al-core/src/queries/inlay_hints.rs",
+  "crates/al-core/src/queries/code_actions.rs",
+  "crates/al-core/src/queries/symbols.rs",
+]
+deps = ["T203"]
+pass_criteria = "Each query function takes &Workspace (not &AlServer) and returns transport-agnostic result types. Module compiles. Functions can initially delegate to existing al-lsp code via temporary internal imports."
+fail_criteria = "Query functions require tower-lsp types. Any LSP-specific type in al-core's public API."
+complexity = "High"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "11 query modules with transport-agnostic types. Position/Range/Location/TextEdit/WorkspaceEdit in mod.rs. Each function takes &Workspace, returns None/empty stubs. Zero tower-lsp dependency."
+
+[[tasks]]
+id = "T302"
+name = "Query Logic Migration"
+wp = "WP3"
+files = [
+  "crates/al-core/src/queries/*.rs",
+  "crates/al-core/src/resolution.rs",
+  "crates/al-lsp/src/hover.rs",
+  "crates/al-lsp/src/definition.rs",
+  "crates/al-lsp/src/completions.rs",
+  "crates/al-lsp/src/resolution.rs",
+  "crates/al-lsp/src/handlers.rs",
+]
+deps = ["T301"]
+pass_criteria = "All query logic lives in al-core. al-lsp handler functions are 5-15 lines each: extract params from LSP types, call al_core::queries::*, convert result to LSP response. resolution.rs (1295 lines) moves entirely to al-core. All harness tests pass unchanged."
+fail_criteria = "Any business logic remaining in al-lsp handlers (beyond type conversion). Harness test regression."
+complexity = "High"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "resolution.rs (1296 lines) moved to al-core. al-lsp handlers thinned to 5-15 lines each. al-lsp/src/resolution.rs and parsing.rs deleted. 459/461 tests pass unchanged. Also: al-syntax, al-symbols, al-semantic, tree-sitter removed from al-lsp production deps. Re-exports added in al-core lib.rs. Zero al_syntax::/al_symbols:: references in al-lsp/src/."
+
+[[tasks]]
+id = "T303"
+name = "Daemon Mode for al-lsp"
+wp = "WP3"
+files = [
+  "crates/al-lsp/src/main.rs",
+  "crates/al-lsp/src/daemon.rs",
+]
+deps = ["T203"]
+pass_criteria = """al-lsp daemon --project /path/to/project listens on a Unix socket at a deterministic path (e.g., /run/user/$UID/al-lsp/<project-hash>.sock). Accepts JSON-RPC requests, routes to al-core::queries, returns JSON-RPC responses. Auto-shutdown after 30 minutes of idle. Socket file cleaned up on shutdown."""
+fail_criteria = "Daemon crashes on second connection. Socket file leaks on crash. No idle timeout. Response format differs from what a JSON-RPC client expects."
+complexity = "High"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "Unix socket JSON-RPC server at $XDG_RUNTIME_DIR/al-lsp/<hash>.sock. 10 query dispatchers (hover, definition, references, completions, signatureHelp, rename, documentSymbols, foldingRanges, semanticTokens, ping/status/shutdown). Workspace init: project discovery, symbol loading, .al file scanning. 30-min idle timeout. Socket cleanup via Drop guard. Zero test regressions."
+
+[[tasks]]
+id = "T304"
+name = "al-cli as JSON-RPC Client"
+wp = "WP3"
+files = [
+  "crates/al-cli/src/main.rs",
+  "crates/al-cli/src/client.rs",
+  "crates/al-cli/src/commands/mod.rs",
+  "crates/al-cli/src/output.rs",
+  "crates/al-cli/src/project.rs",
+  "crates/al-cli/Cargo.toml",
+]
+deps = ["T303"]
+pass_criteria = "al-cli has ZERO compile-time dependency on al-core, al-syntax, al-symbols, al-semantic, or al-discovery. It connects to the daemon socket, sends JSON-RPC, formats output. Auto-starts daemon if not running. All 27 existing CLI commands produce identical output. cargo tree -p al-cli shows no path to al-core."
+fail_criteria = "Any import of al-core in al-cli. CLI command returns different output than before. Daemon not auto-started."
+complexity = "High"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "Complete rewrite as thin JSON-RPC client. DaemonClient module auto-starts al-lsp daemon. 26 daemon request methods. Zero compile-time dependency on al-core/al-syntax/al-symbols/al-semantic/al-diag. cargo tree -p al-cli clean. 34/34 integration tests pass."
+
+[[tasks]]
+id = "T305"
+name = "al-mcp as JSON-RPC Client"
+wp = "WP3"
+files = [
+  "crates/al-mcp/src/main.rs",
+  "crates/al-mcp/src/tools.rs",
+  "crates/al-mcp/Cargo.toml",
+]
+deps = ["T303"]
+pass_criteria = "al-mcp connects to al-lsp daemon via Unix socket. All MCP tools produce identical results to al-cli --json output. No compile-time dependency on al-core."
+fail_criteria = "Any MCP tool returns different data than the equivalent CLI command. Import of al-core in al-mcp."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "Already a subprocess-delegation server — shells out to al --json. Zero al-core dependency. 20 MCP tools. Output identical to al-cli --json by construction. al-explorer thin-adapter verification still blocked: al-explorer depends on al-symbols directly. Requires T1001 (WP10)."
+
+# --- WP4 ---
+
+[[tasks]]
+id = "T401"
+name = "DAP Fold into al-lsp"
+wp = "WP4"
+files = [
+  "crates/al-lsp/src/dap.rs",
+  "crates/al-dap/",
+  "Cargo.toml",
+]
+deps = ["T302"]
+pass_criteria = "al-lsp::dap contains all DAP proxy logic. al-dap crate removed from workspace. DAP launch/attach sequences work (tested via harness or manual Zed session). No functionality lost."
+fail_criteria = "DAP session fails to start. Compiler management (EditorServices.Host) broken. Build fails."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "lib.rs + editor_services.rs moved to al-lsp/src/dap/. al-dap crate deleted. main.rs updated. Zero test regressions."
+
+[[tasks]]
+id = "T402"
+name = "Toolchain Management in al-core"
+wp = "WP4"
+files = [
+  "crates/al-core/src/toolchain.rs",
+  "crates/al-lsp/src/workspace.rs",
+]
+deps = ["T104", "T203"]
+pass_criteria = "al-core::toolchain provides find_toolchain(), validate_toolchain(), setup_toolchain(), and doctor() functions. CLI setup and doctor commands work via daemon. Bridge initialization uses al-core toolchain info."
+fail_criteria = "Toolchain detection gives different results than before migration. Setup command fails."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "validate_toolchain(), doctor() in al-core::toolchain. DoctorReport struct with camelCase JSON. dispatch_setup thinned from 66 to 5 lines. 5 unit tests. Also fixed T304-client-no-retry: DaemonClient retries 3x with 500ms backoff on 'initializing' errors, 3 tests."
+
+[[tasks]]
+id = "T403"
+name = "EditorServices Lifecycle in al-core"
+wp = "WP4"
+files = [
+  "crates/al-core/src/semantic.rs",
+  "crates/al-lsp/src/dap.rs",
+]
+deps = ["T401", "T402"]
+pass_criteria = "al-core::semantic owns the SemanticBridge process lifecycle (start, restart on crash, shutdown). al-lsp::dap uses the bridge from Workspace. Single process instance shared between LSP semantic queries and DAP."
+fail_criteria = "Two bridge processes spawned simultaneously. Bridge crash not detected or recovered."
+complexity = "High"
+completed = true
+completed_date = "2026-03-14"
+completed_note = "get_or_init_bridge(), restart_bridge(max 3), shutdown_bridge() in al-core. server.rs delegates. dispatch_compile uses workspace bridge, not per-request bridge. bridge_restart_count in Workspace. 5 unit tests."
+
+[[tasks]]
+id = "T404a"
+name = "al-dap-client crate — DAP protocol + DapClient"
+wp = "WP4"
+files = [
+  "crates/al-dap-client/Cargo.toml",
+  "crates/al-dap-client/src/lib.rs",
+  "crates/al-dap-client/src/protocol.rs",
+  "crates/al-dap-client/src/framing.rs",
+  "crates/al-dap-client/src/client.rs",
+  "crates/al-dap-client/src/editor_services.rs",
+  "crates/al-dap-client/src/types.rs",
+]
+deps = ["T403"]
+pass_criteria = """DapClient::spawn() launches a subprocess, sends DAP requests, receives responses. Background event reader parses DAP frames and sends events through mpsc channel. ensure_seq() patches missing seq field. find_editor_services() discovers EditorServices.Host. All AL result types (DebugState, StackFrame, Variable, EvalResult, BreakpointHit) serialize with camelCase. cargo test -p al-dap-client passes. cargo tree -p al-dap-client shows no forbidden deps (no al-core, al-syntax, al-symbols, al-semantic)."""
+fail_criteria = "DapClient requires al-core types. Framing can't parse standard DAP frames. Event reader blocks the sending thread."
+complexity = "High"
+design_doc = "docs/superpowers/specs/2026-03-15-t404-agentic-debugger-design.md"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "6 source files. DapClient spawns subprocess, background event reader via mpsc, request/response matching by seq. DapError with 8 variants. ensure_seq patches missing seq field. AL result types: DebugState, StackFrame, Variable, BreakpointInfo, EvalResult. EditorServices discovery (moved from al-lsp::dap). cargo tree clean — no al-core/al-syntax/al-symbols deps. 22 unit tests."
+
+[[tasks]]
+id = "T404b"
+name = "DebugSession lifecycle — start + stop"
+wp = "WP4"
+files = [
+  "crates/al-dap-client/src/session.rs",
+]
+deps = ["T404a"]
+pass_criteria = "DebugSession::start() compiles project via dotnet alc, spawns EditorServices.Host, completes initialize -> configurationDone -> launch sequence. stop() sends disconnect and kills child process. Drop guard prevents orphan processes. Launch config resolved from .zed/debug.json or .vscode/launch.json. Compilation failure returns DapError::CompilationFailed with compiler output."
+fail_criteria = "EditorServices.Host process orphaned on stop or crash. Compilation error not surfaced. Initialize sequence fails silently."
+complexity = "High"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "session.rs with start() (resolve config -> compile -> spawn -> initialize -> configurationDone -> launch) and stop() (disconnect + kill). compile_project with 120s timeout. resolve_config supports named configs from .zed/debug.json or .vscode/launch.json. build_launch_args converts BcServerConfig to DAP launch args. Drop guard via DapClient. 13 unit tests."
+
+[[tasks]]
+id = "T404c"
+name = "Breakpoints + execution control"
+wp = "WP4"
+files = [
+  "crates/al-dap-client/src/session.rs",
+]
+deps = ["T404b"]
+pass_criteria = "set_breakpoints(file, [(line, condition)]) sends DAP setBreakpoints with correct source path, line numbers, and optional conditions. Returns verified breakpoint info. continue_() sends DAP continue and waits for next stopped event. step(\"over\"|\"into\"|\"out\") sends DAP next/stepIn/stepOut and waits for stopped. All return updated DebugState."
+fail_criteria = "Conditional breakpoints silently ignored. Step type not mapped correctly (\"over\" -> \"next\"). Execution control returns before stopped event."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "set_breakpoints() sends DAP setBreakpoints with source/line/condition, caches in breakpoints map. continue_() sends DAP continue + waits for stopped event. step() maps over->next, into->stepIn, out->stepOut + waits for stopped. Invalid step type returns DapProtocolError. SessionNotPaused guard on all. 3 tests."
+
+[[tasks]]
+id = "T404d"
+name = "State inspection + eval"
+wp = "WP4"
+files = [
+  "crates/al-dap-client/src/session.rs",
+  "crates/al-dap-client/src/types.rs",
+]
+deps = ["T404b"]
+pass_criteria = "state() returns threads, stack frames, and all in-scope variables. Variables with variablesReference > 0 (Records) are expanded 1 level to show field values. eval(expr) evaluates AL expressions at the current frame and returns typed result. State correctly reports Running vs Paused vs Stopped. Drains pending events before returning."
+fail_criteria = "Record fields not expanded. Variables from wrong scope. Eval fails on valid AL expressions like Record.\"Field Name\"."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "state() drains events, fetches stackTrace->scopes->variables. Records with variablesReference>0 expanded 1 level via fetch_flat_variables(). eval() sends DAP evaluate at current frame. Location updated from top stack frame. 3 tests."
+
+[[tasks]]
+id = "T404e"
+name = "Wire-up — daemon + CLI + architecture updates"
+wp = "WP4"
+files = [
+  "crates/al-core/src/workspace.rs",
+  "crates/al-lsp/src/daemon.rs",
+  "crates/al-lsp/Cargo.toml",
+  "crates/al-cli/src/main.rs",
+  ".claude/rules/code-boundaries.md",
+  "CLAUDE.md",
+  "docs/architecture.md",
+  "docs/crates-map.md",
+  "docs/agentic-schemas.md",
+]
+deps = ["T404a", "T404b", "T404c", "T404d"]
+pass_criteria = "al debug start through al debug stop work end-to-end via daemon JSON-RPC. JSON output matches docs/agentic-schemas.md debug schemas. Daemon does not auto-shutdown during active debug session. CLI uses 120s timeout for start, 30s for other debug commands. cargo tree -p al-dap-client clean. Architecture rules updated with al-dap-client row. MCP al/debug works via al-mcp's subprocess delegation."
+fail_criteria = "CLI timeout on debug start. Daemon shuts down during active session. JSON output doesn't match schemas. Architecture boundary violated."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "dispatch_debug() in daemon.rs handles 8 commands (start/breakpoint/state/eval/continue/step/history/stop). debug_session field in Workspace. Idle timeout skips shutdown during active debug. al-cli has Debug subcommands with 120s timeout for start. al-dap-client added to al-core and al-lsp deps. Architecture docs already up to date."
+
+[[tasks]]
+id = "T405"
+name = "Debug History Recording"
+wp = "WP4"
+files = [
+  "crates/al-dap-client/src/session.rs",
+]
+deps = ["T404c", "T404d"]
+pass_criteria = "Every breakpoint hit records: sequence number, timestamp, location (file + line + procedure), and all in-scope variable values. al debug history returns full recording. al debug history --var <name> filters to only hits where that variable's value changed from the previous hit. History persists for the session lifetime and is cleared on stop."
+fail_criteria = "History missing variable snapshots. --var filter returns hits where the variable didn't change. History grows unbounded (must cap at reasonable limit, e.g., 1000 hits)."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "record_hit() in state() captures seq, timestamp, location, variables at each pause. history(var_filter) filters to hits where named variable changed. MAX_HISTORY=1000 cap with oldest removal. History cleared on stop(). 5 tests."
+
+# --- WP5 ---
+
+[[tasks]]
+id = "T500"
+name = "tree-sitter-al: CodeAnalysis.dll Extraction"
+wp = "WP5"
+files = [
+  "tree-sitter-al/generator/tools/al-extract/",
+  "tree-sitter-al/generator/tools/al-gen/src/main.rs",
+  "tree-sitter-al/data/al-language-data.json",
+]
+deps = []
+note = "ALTool must be installed."
+pass_criteria = """New al-extract C# tool reflects on CodeAnalysis.dll and outputs data/al-language-data.json containing: all 159 keywords (classified by category via SyntaxFacts), 313 properties (with per-object-type validity), 127+ triggers (with per-object-type validity), 158 builtin types, token classification, preprocessor keywords. al-gen reads this JSON instead of TextMate grammar. All references to TextMate, alsyntax.tmlanguage, find_al_extension(), and VS Code/Cursor extension paths removed from al-gen. Generated grammar.js, parser.c, scanner.c, keywords.c, and all query files committed. Grammar passes all existing fixture tests AND real-world repo tests."""
+fail_criteria = "Any reference to TextMate, VS Code, or Cursor remains in tree-sitter-al. Generated grammar differs in parse behavior from current grammar on valid AL files (regression). Missing keywords that CodeAnalysis.dll exposes."
+complexity = "High"
+completed = false
+
+[[tasks]]
+id = "T501"
+name = "Grammar Regeneration and Highlights"
+wp = "WP5"
+files = [
+  "tree-sitter-al/grammar.js",
+  "tree-sitter-al/queries/highlights.scm",
+  "languages/al/highlights.scm",
+  "grammars/",
+]
+deps = ["T500"]
+pass_criteria = "tree-sitter-al submodule updated to CodeAnalysis.dll-based generation. highlights.scm covers all node types produced by the grammar. No 'unknown node' warnings in Zed. All 159 keywords classified. Property keywords validated per object context. Preprocessor directives parsed correctly."
+fail_criteria = "Zed shows unstyled AL keywords. Grammar parse errors on valid AL files. Missing keyword categories."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T502"
+name = "Snippets and Brackets"
+wp = "WP5"
+files = [
+  "tree-sitter-al/data/snippets/",
+  "snippets/*.json",
+  "languages/al/brackets.scm",
+]
+deps = ["T500", "T501"]
+pass_criteria = "Snippet templates generated from extracted property and trigger data for each object type. All AL object types covered (table, page, codeunit, report, query, xmlport, enum, interface, permissionset, profile, entitlement, controladdin). Bracket matching works for begin/end, if/then, case/of, repeat/until. Snippet expansion in Zed produces valid AL code. No dependency on MS VS Code extension snippet files."
+fail_criteria = "Snippet triggers conflict with each other. Bracket matching pairs begin with wrong end. Snippets hardcode properties instead of using extracted data."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T503"
+name = "Runnables and Zed Tasks"
+wp = "WP5"
+files = [
+  "languages/al/runnables.scm",
+  ".zed/tasks.json",
+]
+deps = ["T501"]
+pass_criteria = "'AL: Publish' task runs alc compilation. 'AL: Debug' task launches DAP session. Runnables detect test codeunits and individual test functions. Tasks appear in Zed's task picker."
+fail_criteria = "Tasks present but fail to execute. Runnables match non-test procedures."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T504"
+name = "Semantic Token Expansion to MS Parity"
+wp = "WP5"
+files = [
+  "crates/al-syntax/src/tokens.rs",
+  "languages/al/semantic_token_rules.json",
+  "crates/al-core/src/queries/semantic_tokens.rs",
+]
+deps = ["T301", "T501"]
+pass_criteria = """All 15 missing token types added: builtinFunction, globalVariable, localVariable, tableField, pageControl, pageAction, triggerName, preprocessorKeyword, excludedCode, tableKey, tableFieldGroup, reportLabel, eventCreation, eventSubscription, returnParameter. Classifier logic in classify_node() updated to emit these types. semantic_token_rules.json maps all custom types to Zed theme scopes. All types render with distinct colors in at least 3 Zed themes. No token type maps to default/plain text."""
+fail_criteria = "More than 2 token types visually indistinguishable. Missing type falls back to generic variable or keyword. Existing token classifications regress."
+complexity = "High"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "15 new token types added. classify_node updated for triggers->TRIGGER_NAME, events->EVENT_CREATION, fields->TABLE_FIELD, keys->TABLE_KEY, local/global var distinction, preprocessor->PREPROCESSOR_KEYWORD, inactive_code->EXCLUDED_CODE. semantic_token_rules.json maps all to Zed theme scopes."
+
+[[tasks]]
+id = "T505"
+name = "All Analyzers Support"
+wp = "WP5"
+files = [
+  "crates/al-semantic/bridge/Bridge.cs",
+  "crates/al-semantic/src/lib.rs",
+  "crates/al-core/src/config.rs",
+]
+deps = ["T601"]
+pass_criteria = "AnalyzeRequest accepts analyzer list. Bridge loads and runs all 4 analyzer DLLs. Each analyzer can be individually enabled/disabled via al.codeAnalyzers setting. Diagnostics from each analyzer are tagged with their source. al lint --analyzers CodeCop,AppSourceCop works. Default: CodeCop only (matching MS default)."
+fail_criteria = "Analyzer DLL not found produces silent empty results instead of error. Analyzer-specific diagnostics not distinguishable from each other."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "compile_project_with_analyzers() filters by name. CLI al lint --analyzers. AlConfig.code_analyzers configured. Default CodeCop."
+
+# --- WP6 ---
+
+[[tasks]]
+id = "T601"
+name = "Settings Schema in al-core"
+wp = "WP6"
+files = [
+  "crates/al-core/src/config.rs",
+]
+deps = ["T203"]
+pass_criteria = """al-core::config::AlConfig struct covers all settings from docs/architecture.md Configuration table (20+ settings). Includes: enableCodeAnalysis, backgroundCodeAnalysis, codeAnalyzers (list of analyzer names), enableCodeActions, enableExternalRulesets, ruleSetPath, packageCachePath, nugetFeeds, editorServicesPath, editorServicesLogLevel, compilationOptions, incrementalBuild, rootNamespace, symbolsCountryRegion, useOnlyCustomFeeds, inlay hint toggles, semanticFolding.enabled. Serializable to/from JSON. Default values match MS extension defaults. workspace/didChangeConfiguration handler parses incoming settings into AlConfig. InitializationOptions parsed at startup. Invalid settings reported to user via showMessage(Error)."""
+fail_criteria = "Setting has effect in one mode (LSP) but not another (CLI). Undocumented default. Invalid setting silently ignored."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "AlConfig has 23 settings across 6 categories. merge() returns unknown keys. didChangeConfiguration sends showMessage(WARNING) for unknown settings. InitializationOptions logs unknown keys. 19 tests."
+
+[[tasks]]
+id = "T602"
+name = "WASM Entry Cleanup"
+wp = "WP6"
+files = [
+  "src/lib.rs",
+  "extension.toml",
+]
+deps = ["T601", "T303"]
+pass_criteria = "zed-al extension entry spawns al-lsp with explicit binary path from settings. No auto-download of anything without user action. Settings changes in Zed propagate to running al-lsp instance. Extension installs cleanly in Zed."
+fail_criteria = "Extension silently downloads packages on first open. Settings change requires Zed restart."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T603"
+name = "Settings Propagation via Daemon"
+wp = "WP6"
+files = [
+  "crates/al-lsp/src/daemon.rs",
+  "crates/al-core/src/config.rs",
+]
+deps = ["T601", "T303"]
+pass_criteria = "CLI can send workspace/didChangeConfiguration to running daemon. Settings change (e.g., enable a lint rule) takes effect immediately without restart. Daemon persists settings to disk for cold start."
+fail_criteria = "Settings change requires daemon restart. Settings lost on daemon auto-shutdown."
+complexity = "Medium"
+completed = false
+
+# --- WP6.5 ---
+
+[[tasks]]
+id = "T610"
+name = "Error Handling Audit & Fix"
+wp = "WP6_5"
+files = [
+  "crates/al-lsp/src/*.rs",
+  "crates/al-symbols/src/*.rs",
+  "crates/al-semantic/src/*.rs",
+  "crates/al-discovery/src/*.rs",
+]
+deps = ["T203"]
+pass_criteria = """Every .ok()? that discards a meaningful error replaced with proper error propagation + user notification via showMessage. Bridge init failure notifies user with install instructions. Package download failures shown via showMessage(Error). Toolchain discovery failures explain what was searched and where. Bridge timeouts notify user on repeat occurrence. No warn!() or debug!() used as sole error reporting for user-affecting issues. Each intentional silent handling has // SILENT: <reason> comment. List of all 13 critical patterns from audit (see architecture.md Error Handling Mandate) resolved."""
+fail_criteria = "Any .ok()? without a // SILENT: justification comment. User-affecting error reported only to log, not to user. Bridge unavailable with no user-visible indication."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "46 SILENT: annotations across al-core, al-lsp, al-symbols. Toolchain/project discovery failures now use showMessage. Bridge init/load failures notify user. Deferred T402-doctor-blocks-tokio-worker resolved. All .ok() calls annotated."
+
+[[tasks]]
+id = "T611"
+name = "Package Command (Compile to .app)"
+wp = "WP6_5"
+files = [
+  "crates/al-core/src/build.rs",
+  "crates/al-lsp/src/server.rs",
+  "crates/al-cli/src/main.rs",
+]
+deps = ["T402", "T601"]
+pass_criteria = "al package CLI command compiles project via alc and produces .app file. al.package LSP execute command works. Compilation errors returned as LSP diagnostics. al package --deps compiles full dependency tree. Exit code reflects success/failure."
+fail_criteria = "Compilation error not surfaced to user. .app produced despite errors."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "al-core::build module with compile_project(), CompileResult, CompileDiagnostic. Parses alc output into structured diagnostics. daemon dispatch_package(). CLI al package with human/JSON output. Exit code reflects success. 7 unit tests."
+
+[[tasks]]
+id = "T612"
+name = "Publish Commands (Standard + RAD)"
+wp = "WP6_5"
+files = [
+  "crates/al-core/src/publish.rs",
+  "crates/al-core/src/bc_client.rs",
+  "crates/al-lsp/src/server.rs",
+  "crates/al-cli/src/main.rs",
+]
+deps = ["T611", "T601"]
+pass_criteria = "al publish compiles + deploys .app to BC server from debug.json/launch.json config. al publish --no-debug deploys without attaching debugger. al publish --incremental uses RAD API to deploy only changed objects. al publish --deps publishes full dependency tree. Server authentication works (OAuth, Windows, NavUserPassword). All variants available as LSP execute commands and Zed tasks."
+fail_criteria = "Publish succeeds but returns no confirmation. Auth failure gives generic error instead of specific auth guidance. RAD publish sends full app instead of delta."
+complexity = "High"
+completed = false
+
+[[tasks]]
+id = "T613"
+name = "Project Scaffolding"
+wp = "WP6_5"
+files = [
+  "crates/al-core/src/scaffold.rs",
+  "crates/al-cli/src/main.rs",
+]
+deps = ["T601"]
+pass_criteria = "al new creates a new AL project with: app.json (prompted or defaulted), .gitignore, launch.json/debug.json, src/ directory. Templates for common project types (app, test, library). al.newProject LSP command triggers via Zed."
+fail_criteria = "Generated app.json has invalid format. Template produces non-compilable project."
+complexity = "Low"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "al-core::scaffold with create_project(), ScaffoldConfig. Generates app.json, .gitignore, .zed/debug.json, starter codeunit. Daemon dispatch_new_project(). CLI al new with name/publisher args. 7 unit tests."
+
+[[tasks]]
+id = "T614"
+name = "Permission Set Generation"
+wp = "WP6_5"
+files = [
+  "crates/al-core/src/permissions.rs",
+  "crates/al-cli/src/main.rs",
+]
+deps = ["T203"]
+pass_criteria = "al permissions --al generates AL PermissionSet object covering all tables, pages, reports, codeunits in workspace. al permissions --xml generates XML format. Permissions derived from actual object types (RIMD for tables, X for codeunits, etc.). Both LSP command and CLI available."
+fail_criteria = "Missing an object from the workspace. Wrong permission type for object kind."
+complexity = "Medium"
+parallel_agent = "3rd Agent Okay"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "collect_permissions() scans FileIndex, maps 6 object types (table->RIMD, page/codeunit/report/xmlport/query->X), skips extensions/enums/interfaces. render_al() + render_xml(). Daemon dispatch + CLI al permissions. 13 tests."
+
+[[tasks]]
+id = "T615"
+name = "Snapshot Debugging"
+wp = "WP6_5"
+files = [
+  "crates/al-core/src/snapshots.rs",
+  "crates/al-cli/src/main.rs",
+]
+deps = ["T612"]
+pass_criteria = "al snapshot init starts snapshot debugging on BC server. al snapshot finish downloads snapshot data. al snapshot list shows active snapshots. Snapshot data stored locally for later inspection."
+fail_criteria = "Snapshot init succeeds but no indication to user. Snapshot data download fails silently."
+complexity = "High"
+completed = false
+
+[[tasks]]
+id = "T616"
+name = "CPU Profiling"
+wp = "WP6_5"
+files = [
+  "crates/al-core/src/profiler.rs",
+  "crates/al-cli/src/main.rs",
+]
+deps = ["T612"]
+pass_criteria = "al profile collects runtime profiling data from BC server. Profile file generated in standard format. Hotspot data available for inlay hints integration. al profile --clear removes cached profile data."
+fail_criteria = "Profile data not correlated to source locations. Large profile files with no summary."
+complexity = "High"
+completed = false
+
+# --- WP7 ---
+
+[[tasks]]
+id = "T701"
+name = "Symbol Index Performance Audit"
+wp = "WP7"
+files = [
+  "crates/al-symbols/src/",
+  "docs/proof_of_functionality.toml",
+]
+deps = ["T203"]
+pass_criteria = "Profiling report exists showing: index build time, memory usage, query latency per operation (search, by-id, events, composed). Bottlenecks identified with specific file:line references."
+fail_criteria = "No measurable data collected. 'It seems fast enough' without numbers."
+complexity = "Medium"
+parallel_agent = "2nd Agent Okay"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "Profiled 11 packages / 20,818 objects. Critical: get_events() 40-57ms O(n*m) full scan [events.rs:67]. Major: build 3s sequential [app_reader.rs:53]. Direct lookups <12µs. Memory ~52.5MB. PoF entry created."
+
+[[tasks]]
+id = "T702"
+name = "Symbol Composition Refactor"
+wp = "WP7"
+files = [
+  "crates/al-symbols/src/model.rs",
+  "crates/al-symbols/src/composition.rs",
+]
+deps = ["T701"]
+pass_criteria = "composed() query for a heavily-extended table (10+ extensions) completes in <5ms. Memory allocation reduced by caching composed views. Cache invalidated correctly when a workspace file changes."
+fail_criteria = "Composed view returns stale data after file edit. Memory usage grows unboundedly."
+complexity = "High"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "DashMap<(ObjectKind, String), Arc<ComposedObject>> cache in SymbolIndex. get_composed_cached() returns Arc for zero-copy sharing. invalidate_composed(name) + invalidate_all_composed(). Cache cleared on did_open/did_change/did_close. Daemon uses cached path. 15 extensions: <5ms cold, <100µs warm. 4 new tests, 9 total composition tests pass."
+
+[[tasks]]
+id = "T703"
+name = "Semantic Bridge Caching"
+wp = "WP7"
+files = [
+  "crates/al-core/src/semantic.rs",
+  "crates/al-semantic/src/lib.rs",
+]
+deps = ["T403"]
+pass_criteria = "Builtin type queries cached in-memory (e.g., Record methods, Text methods). Cache hit rate >90% for typical editing session. Bridge process not queried for previously-seen types. Cache expires on toolchain version change."
+fail_criteria = "Cache serves stale data after toolchain update. Memory grows without bound from cached entries."
+complexity = "Medium"
+parallel_agent = "3rd Agent Okay"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "SemanticCache struct — HashMap-indexed builtins for O(1) get_type/get_method (replaces O(n) linear scans). set_builtins() atomic helper. Version-aware staleness detection. Hit/miss stats exposed in daemon status. 4 sites in resolution.rs updated. 10 new cache tests."
+
+[[tasks]]
+id = "T704"
+name = "Incremental Workspace Scanning"
+wp = "WP7"
+files = [
+  "crates/al-core/src/workspace.rs",
+  "crates/al-core/src/symbols.rs",
+]
+deps = ["T203"]
+pass_criteria = "When a workspace .al file changes on disk, only that file is re-parsed and re-indexed (not the entire workspace). Symbol index updates in <50ms for a single file change. New files detected, deleted files removed."
+fail_criteria = "Full re-index triggered on any file change. Deleted file's symbols persist in index."
+complexity = "High"
+completed = false
+
+# --- WP8 ---
+
+[[tasks]]
+id = "T801"
+name = "Disk Cache for Symbol Packages"
+wp = "WP8"
+files = [
+  "crates/al-core/src/symbols.rs",
+  "crates/al-symbols/src/cache.rs",
+]
+deps = ["T203"]
+pass_criteria = "On first open, parsed symbol data written to ~/.cache/al-lsp/index/. On subsequent opens, index loaded from disk in <500ms (vs. >5s for parsing all .app files). Cache invalidated when .app file modification time changes."
+fail_criteria = "Stale cache served after package update. Cache file corrupted on crash."
+complexity = "High"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "SymbolCache in al-symbols/src/cache.rs. JSON-serialized SymbolEntry data with mtime+size header for invalidation. load_packages_cached() in SymbolIndex — cache hit skips .app ZIP parsing. Wired into al-lsp workspace init + daemon init + NuGet download reload. Cache at ~/.cache/al-lsp/index/. 8 unit tests."
+
+[[tasks]]
+id = "T802"
+name = "Request Tracing with al-diag"
+wp = "WP8"
+files = [
+  "crates/al-diag/src/lib.rs",
+  "crates/al-core/src/lib.rs",
+  "crates/al-lsp/src/server.rs",
+]
+deps = ["T302"]
+pass_criteria = "Every LSP/daemon request logged with: method, duration_ms, result_size, cache_hit. Logs written to SQLite via al-diag. al-cli diag command queries the trace database. Tracing overhead <1ms per request."
+fail_criteria = "Tracing adds >5ms latency. SQLite write blocks request response. Log rotation missing (unbounded growth)."
+complexity = "Medium"
+parallel_agent = "3rd Agent Okay"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "DiagLayer wired as default feature. SQLite at ~/.local/share/al-lsp/logs/al-diag.db. Every LSP handler logs method, elapsed_us, result count/found. Daemon dispatch_diag with 6 commands. CLI al diag. 15 tests. Auto-prune on startup."
+
+[[tasks]]
+id = "T803"
+name = "Latency Budget Verification"
+wp = "WP8"
+files = [
+  "docs/proof_of_functionality.toml",
+  "crates/al-test-harness/tests/performance.rs",
+]
+deps = ["T802"]
+pass_criteria = "Measured on the Debar test project: hover <10ms, completions <20ms, definition <10ms, document symbols <5ms, semantic tokens <15ms. Results recorded in evidence log."
+fail_criteria = "Any interactive query exceeds 2x its target. No measurement methodology documented."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "All 5 queries measured on Debar project — hover 2.24ms (<10ms), completions 0.41ms (<20ms), definition 1.91ms (<20ms), document_symbols 1.94ms (<5ms), semantic_tokens 5.56ms (<15ms). PoF entry in evidence log."
+
+[[tasks]]
+id = "T804"
+name = "Rope-based Text Storage"
+wp = "WP8"
+files = [
+  "crates/al-core/src/documents.rs",
+]
+deps = ["T201"]
+pass_criteria = "DocumentStore uses rope-based text representation for efficient incremental edits on large files."
+fail_criteria = "Memory usage increases. Edit latency regresses on large files."
+complexity = "Medium"
+note = "Optional optimization — listed in plan as future work."
+completed = false
+
+# --- WP9 ---
+
+[[tasks]]
+id = "T901"
+name = "Insight Module Skeleton"
+wp = "WP9"
+files = [
+  "crates/al-core/src/insight/mod.rs",
+  "crates/al-core/src/insight/graph.rs",
+  "crates/al-core/src/insight/index.rs",
+  "crates/al-core/src/insight/search.rs",
+]
+deps = ["T302"]
+pass_criteria = "petgraph added to al-core dependencies. InsightGraph struct defined with node types (Object, Procedure, Event, Subscriber) and edge types (Calls, Publishes, SubscribesTo, Extends). Graph builds from SymbolIndex without errors."
+fail_criteria = "Graph data structure cannot represent circular event chains. petgraph version conflict with other deps."
+complexity = "Medium"
+parallel_agent = "2nd Agent Okay"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "InsightGraph with petgraph 0.7. 4 node types (Object, Procedure, Event, Subscriber), 5 edge types (Extends, Calls, Publishes, SubscribesTo, Contains). build_from_index() populates from SymbolIndex. Circular chains handled. 10 tests. PoF entry."
+
+[[tasks]]
+id = "T902"
+name = "Event Chain Tracing"
+wp = "WP9"
+files = [
+  "crates/al-core/src/insight/search.rs",
+]
+deps = ["T901"]
+pass_criteria = "Given an event publisher name, returns the full chain: publisher -> all subscribers -> procedures they call -> events those publish -> recursive. Cycle detection prevents infinite loops. Single query returns complete chain in <100 tokens (JSON). Tested against Debar project with known event chains."
+fail_criteria = "Misses a subscriber in the chain. Infinite loop on circular subscription. Output exceeds 500 tokens for a simple 3-hop chain."
+complexity = "High"
+completed = false
+
+[[tasks]]
+id = "T903"
+name = "Call Graph Construction"
+wp = "WP9"
+files = [
+  "crates/al-core/src/insight/index.rs",
+]
+deps = ["T901"]
+pass_criteria = "Call graph includes: direct procedure calls, event subscriptions as edges, trigger invocations. 'Who calls this procedure?' returns accurate results. Graph built incrementally (file change updates only affected nodes)."
+fail_criteria = "Cross-package calls not represented. Graph rebuild from scratch on every file change."
+complexity = "High"
+completed = false
+
+[[tasks]]
+id = "T904"
+name = "Insight Daemon Queries"
+wp = "WP9"
+files = [
+  "crates/al-lsp/src/daemon.rs",
+  "crates/al-core/src/queries/insight.rs",
+]
+deps = ["T902", "T903", "T303"]
+pass_criteria = """al tables "Sales-Post" --json returns tables with CRUD operations. al callgraph "Sales-Post" --proc PostDocument --depth 3 --json returns transitive call chain with table touches. al intercept "Sales-Post" --field "Sales Header" --json returns events with var parameters. al subscribers "Sales-Post" --json returns all subscribers grouped by event. MCP equivalents produce identical results. All schemas match docs/agentic-schemas.md. All scenarios in docs/agent-scenarios.md pass."""
+fail_criteria = "CLI query returns empty when daemon has the data. Different result from CLI vs MCP for same query. Missing table operations. Callgraph stops at object boundary instead of following cross-codeunit calls."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "4 daemon methods (trace, entrypoints, graphExport, insightStats). 4 CLI commands (al trace, al entrypoints, al graph, al insight-stats). Human-readable + --json output for all."
+
+[[tasks]]
+id = "T905"
+name = "Table Impact Analysis"
+wp = "WP9"
+files = [
+  "crates/al-core/src/insight/search.rs",
+]
+deps = ["T903", "T901"]
+pass_criteria = "Given a codeunit/procedure, returns all tables with CRUD operations (get, find, findset, findfirst, findlast, insert, modify, delete, modifyall, deleteall, setrange, setfilter, calcsums, calcfields). Operations detected by resolving Record variable types and matching method calls. Cross-procedure tracing follows call graph edges. Schema matches docs/agentic-schemas.md /al-tables."
+fail_criteria = "Misses a table that is accessed through a local variable in a called sub-procedure. Reports operations that don't actually occur. Cannot distinguish read vs write operations."
+complexity = "High"
+completed = false
+
+[[tasks]]
+id = "T906"
+name = "Event Interception Discovery"
+wp = "WP9"
+files = [
+  "crates/al-core/src/insight/search.rs",
+]
+deps = ["T902", "T901"]
+pass_criteria = "Returns integration and business events with their parameter lists. Events with var parameters are flagged as modifiable. --field filter narrows to events whose parameters include that table type. --proc filter narrows to events published within that procedure. Schema matches docs/agentic-schemas.md /al-intercept."
+fail_criteria = "Misses events with var parameters. Doesn't distinguish integration vs business event types. Field filter doesn't resolve table names from Record parameter types."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T907"
+name = "Source Extraction Command"
+wp = "WP9"
+files = [
+  "crates/al-core/src/queries/source.rs",
+  "crates/al-lsp/src/daemon.rs",
+]
+deps = ["T302"]
+pass_criteria = "Workspace objects: tree-sitter range extraction returns exact procedure/trigger source with line range. Package objects with source in .app: extracts source from ZIP. Package objects without source: renders complete outline from SymbolReference.json with full procedure signatures (params + return types), field definitions (id + name + type), keys, enum values, event declarations. src field accurately indicates workspace, package, or outline. Schema matches docs/agentic-schemas.md /al-source."
+fail_criteria = "Returns empty for a procedure that exists. Outline missing parameter types or return types that are in SymbolReference.json. Tree-sitter range off by even one line."
+complexity = "Medium"
+parallel_agent = "2nd Agent Okay"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "source() with 3 levels (workspace/package/outline). render_outline() with full signatures, fields, keys, enum values, variables, attributes. Daemon dispatch_source wired. 11 tests. PoF entry."
+
+[[tasks]]
+id = "T908"
+name = "Remove generate_al Fallback"
+wp = "WP9"
+files = [
+  "crates/al-symbols/src/virtual_file.rs",
+]
+deps = ["T907"]
+pass_criteria = "generate_al() deleted. render_outline() produces AL code with: full procedure signatures (all parameters with types, var/out modifiers, return type), field declarations (id, name, type), key declarations, enum values with ordinals, event declarations, global variables. allow_outline_fallback flag removed — outline rendering is the standard output for packages without source, not a degraded mode. No concept of 'fallback' anywhere in the codebase."
+fail_criteria = "Any procedure rendered without its parameter types. Any field rendered without its type. The word 'fallback' appears in code comments or variable names related to outline rendering."
+complexity = "Low"
+parallel_agent = "2nd Agent Okay"
+completed = true
+completed_date = "2026-03-15"
+completed_note = "generate_al() deleted. render_outline() in al-symbols/virtual_file.rs with full signatures, params+types+var, fields+type, keys, enum values, variables, attributes. get_or_create() simplified — always renders outline when no source. outline_fallback_approved field removed from Workspace. check_source_availability prompt replaced with info log. Zero 'fallback' references in outline code. 130 al-core + 59 al-symbols tests pass."
+
+# --- WP10 ---
+
+[[tasks]]
+id = "T1001"
+name = "Explorer as Daemon Client"
+wp = "WP10"
+files = [
+  "crates/al-explorer/src/main.rs",
+  "crates/al-explorer/src/client.rs",
+  "crates/al-explorer/src/app.rs",
+  "crates/al-explorer/Cargo.toml",
+]
+deps = ["T303", "T304"]
+pass_criteria = "al-explorer has ZERO compile-time dependency on al-core. Connects to daemon socket. Object list, symbol search, and event views all populated from daemon queries. cargo tree -p al-explorer shows no path to al-core."
+fail_criteria = "Any import of al-core in al-explorer. TUI renders but shows no data."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T1002"
+name = "Object Browser View"
+wp = "WP10"
+files = [
+  "crates/al-explorer/src/ui.rs",
+  "crates/al-explorer/src/actions.rs",
+]
+deps = ["T1001"]
+pass_criteria = "Left pane shows objects grouped by type (Table, Page, Codeunit, etc.) with counts. Fuzzy filter narrows list in real-time. Right pane shows object details (fields/methods/properties). Arrow keys and enter navigate. q quits cleanly."
+fail_criteria = "UI freezes during initial load. Filter does not update instantly (<100ms)."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T1003"
+name = "Event/Call Graph View"
+wp = "WP10"
+files = [
+  "crates/al-explorer/src/ui.rs",
+  "crates/al-explorer/src/app.rs",
+]
+deps = ["T1002", "T904"]
+pass_criteria = "Tab switches to 'Events' view. Selecting an event publisher shows subscriber chain as a tree. 'Calls' view shows call graph for selected procedure. Graph navigation with expand/collapse."
+fail_criteria = "Graph view crashes on circular references. Tree rendering garbled for deep chains (>5 levels)."
+complexity = "High"
+completed = false
+
+# --- WP11 ---
+
+[[tasks]]
+id = "T1101"
+name = "Comprehensive Integration Test Suite"
+wp = "WP11"
+files = [
+  "crates/al-test-harness/tests/integration_full.rs",
+]
+deps = ["T302", "T303"]
+pass_criteria = "Every al-core query has at least one harness test via both stdio (LSP) and socket (daemon) transports. Test count >60. All pass on CI. Adversarial tests included (malformed requests, concurrent requests, large files)."
+fail_criteria = "Any query type untested. Tests pass only on developer machine."
+complexity = "High"
+completed = false
+
+[[tasks]]
+id = "T1102"
+name = "Zed Fidelity Test Suite"
+wp = "WP11"
+files = [
+  "crates/al-test-harness/tests/zed_fidelity.rs",
+  "docs/proof_of_functionality.toml",
+]
+deps = ["T1101"]
+pass_criteria = "Checklist of 20+ Zed operations (open file, hover, go-to-def, completions, rename, format, diagnostics, etc.) each verified in a real Zed window against the Debar project. Results recorded in evidence log with pass/fail and screenshots where relevant."
+fail_criteria = "Harness claims pass but Zed shows different behavior. Any Priority-0 regression unfixed."
+complexity = "High"
+completed = false
+
+[[tasks]]
+id = "T1103"
+name = "Build and Release Pipeline"
+wp = "WP11"
+files = [
+  "Makefile",
+  ".github/workflows/release.yml",
+  "extension.toml",
+]
+deps = ["T602"]
+pass_criteria = "Single command builds: al-lsp (native), zed-al (WASM), al-cli, al-explorer, al-mcp. Versioning derived from git tags. WASM artifact size <5MB. Release artifacts include checksums. CI runs full test suite before release."
+fail_criteria = "Build requires manual steps not captured in automation. WASM build fails on CI but passes locally."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T1104"
+name = "Documentation and Extension Packaging"
+wp = "WP11"
+files = [
+  "extension.toml",
+  "languages/al/config.toml",
+]
+deps = ["T1103"]
+pass_criteria = "Extension installs from Zed extension marketplace (or local .vsix equivalent). All metadata (name, description, version, language support, grammar, LSP config) correct. First-run experience documented: install extension, open AL project, features work."
+fail_criteria = "Extension fails to load in Zed. Language not recognized after install."
+complexity = "Low"
+completed = false
+
+[[tasks]]
+id = "T1105"
+name = "Final Surgical Audit"
+wp = "WP11"
+files = [
+  "docs/progress.md",
+  "docs/proof_of_functionality.toml",
+]
+deps = ["T1104"]
+pass_criteria = "No dead code (unused modules, unreachable functions). No logic leakage (business logic in thin adapters). Evidence log complete for all WPs with dual-pass entries. cargo clippy --workspace clean. cargo tree confirms dependency direction: only al-lsp -> al-core, no reverse."
+fail_criteria = "Any #[allow(dead_code)] without documented justification. Logic found in al-cli/al-explorer/al-mcp that should be in al-core."
+complexity = "Medium"
+completed = false

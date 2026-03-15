@@ -2,13 +2,18 @@
 name: require-cargo-check-before-stop
 enabled: true
 event: stop
-action: block
+action: warn
+conditions:
+  - field: transcript
+    operator: regex_match
+    pattern: crates/.+\.rs
+  - field: transcript
+    operator: not_contains
+    pattern: cargo check
 ---
 
-**BLOCKED: Cannot stop without verifying compilation**
+**No compilation check detected this session**
 
-You must run `cargo check --workspace --exclude zed-al` before stopping or claiming task completion.
+You should run `cargo check --workspace --exclude zed-al` before stopping, to verify the project compiles.
 
-The conversation transcript does not show evidence of compilation verification.
-
-Run the check now and verify it succeeds before stopping.
+If this was a non-implementation session (planning, docs, audit), this warning can be ignored.

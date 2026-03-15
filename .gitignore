@@ -16,3 +16,5 @@ crates/al-dap/dotnet/AlDap/obj/
 
 # Supervisor state (machine-local runtime file)
 /tmp/al-*
+
+.mcp.json

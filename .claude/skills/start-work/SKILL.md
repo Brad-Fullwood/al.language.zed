@@ -1,6 +1,6 @@
 ---
 name: start-work
-description: Begin a work session — verify compilation, find next task from plan, start implementation with TDD
+description: Begin a work session — health check, fix actionable issues, find next task, implement with TDD
 user_invocable: true
 ---
 
@@ -10,64 +10,61 @@ You are beginning a work session on the Zed AL Extension project.
 
 ## Step 1: Health Check
 
-Run compilation check:
+Invoke `/check-health` which spawns the health-checker subagent (sonnet, read-only). React to results:
+- Compilation fails → fix before proceeding
+- STOP issues → report to user, ask whether to proceed
+- Broken hookify → spawn infra-fixer
+- Boundary violations → log via `/report-issue`
+
+## Step 2: Fix Actionable Issues
+
+Invoke `/fix-issues` which spawns the issue-fixer subagent (opus). It will:
+- Check `.claude/data/issues.toml` for actionable issues
+- Fix what it can, report what needs design decisions
+- If nothing actionable, reports that and moves on
+
+## Step 3: Find Next Task
+
+Read `.claude/data/task-index.toml` (84 lines, NOT the full tasks.toml). Find the first task where `done = false` and all `deps` are `done = true`.
+
+Then get full details for that specific task:
 ```bash
-cargo check --workspace --exclude zed-al 2>&1 | tail -20
+python3 -c "
+import tomllib
+with open('.claude/data/tasks.toml','rb') as f: d=tomllib.load(f)
+t = next(t for t in d['tasks'] if t['id']=='TASK_ID')
+for k,v in t.items(): print(f'{k}: {v}')
+"
 ```
+Replace TASK_ID with the actual ID.
 
-If it fails, fix compilation errors before proceeding.
+Read `.claude/data/features.toml` to verify the task is in scope (status = "supported" or "planned").
 
-Also check `deferred-issues.toml` — if any deferred bugs are now fixable (their blocking task is complete), fix them first.
+**If all tasks in the current WP are done — review before moving on:**
 
-## Step 2: Find Next Task
+Invoke `/review-milestone` for the completed WP. If it fails, fix failures before starting next WP.
 
-Read `docs/progress.md` and `docs/plan.md`.
+## Step 4: Announce
 
-**If invoked with a tag argument** (e.g., `/start-work 2nd Agent Okay` or `/start-work 3rd Agent Okay`):
-- In progress.md, find the section matching that tag (e.g., `### 2nd Agent Okay`)
-- Pick the first unchecked task (`- [ ]`) from that section only
-- These tasks are pre-vetted as parallelizable — safe to work on while other agents work the critical path
+Tell the user: task ID + name, what it involves, which files.
 
-**Otherwise (no argument):**
-- In progress.md, find the first unchecked task (`- [ ]`) from the main phase checklists
-- The main agent does NOT skip tagged tasks — those sections are just a convenience for parallel agents, not exclusive reservations. The main agent follows the normal critical path order.
+## Step 5: Implement
 
-Cross-reference with plan.md to get:
-- Task ID and name
-- File ownership
-- Dependencies (verify they're complete)
-- Pass/fail criteria
-
-If all tasks in the current WP are done, move to the next WP.
-
-## Step 3: Announce
-
-Tell the user:
-- Which task you're starting (ID + name)
-- What it involves
-- Which files you'll touch
-
-## Step 4: Implement
-
-Use `superpowers:test-driven-development` to implement the task:
+Use `superpowers:test-driven-development`:
 1. Write a failing test that validates the pass criteria
 2. Implement until the test passes
-3. Run `cargo test --workspace --exclude zed-al 2>&1 | tail -30` to verify
-4. Run `cargo clippy --workspace --exclude zed-al 2>&1 | tail -20` for lint
+3. `cargo test --workspace --exclude zed-al 2>&1 | tail -30`
+4. `cargo clippy --workspace --exclude zed-al 2>&1 | tail -20`
 
-## Step 5: Complete Task
+## Step 6: Complete Task
 
-When implementation passes all tests:
+Invoke `/complete-task <task_id> <wp_name>`. It handles tests, proof, task-index update, and spawning `/find-bugs` in background.
 
-1. Create a PoF entry — invoke `/pof` with the task ID and WP name
-2. Update `docs/progress.md` — mark the task as `[x]`
-3. Spawn adversarial agent in background — invoke `/adversarial`
-4. **Continue to next task** — do not stop, immediately find and start the next task
+After completion, **loop back to Step 3**. Do not stop.
 
-## Handling Adversarial Results
+## Handling Bug-Finder Results
 
-When the adversarial agent completes (background notification):
-1. Read its report
-2. If it **fixed bugs**: commit with "Adversarial fix: [description]"
-3. If it **deferred bugs**: they go to `deferred-issues.toml` — picked up when their blocking task completes
-4. If **tests broke**: stop current work, fix the regression, then resume
+When `/find-bugs` agent completes (background notification):
+1. If it **fixed bugs**: commit with "Adversarial fix: [description]"
+2. If it **deferred bugs**: logged to issues.toml
+3. If **tests broke**: stop current work, fix regression, resume

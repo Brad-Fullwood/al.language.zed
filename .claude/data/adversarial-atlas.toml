@@ -1,0 +1,149 @@
+# Adversarial Atlas — stress tests and fidelity gaps
+# The adversarial agent reads this to know what to test.
+
+[[stress_tests]]
+id = "ST-01"
+name = "Large Symbol Files"
+description = "Parse a .app file with 50MB+ SymbolReference.json (e.g., full Base Application ~25k objects). Use real Microsoft_Base Application.app from BC26."
+expected = "Index builds in <30s, memory stays under 500MB, no OOM. Memory exhaustion during parse, slow symbol index build, and OOM in WASM must not occur."
+target_crate = "al-symbols"
+
+[[stress_tests]]
+id = "ST-02"
+name = "Deep Event Recursion"
+description = "Event publisher triggers subscriber which publishes another event, 10+ levels deep. Use synthetic fixture with cyclic event chain."
+expected = "Cycle detection terminates, graph truncates at configurable depth (default 20). Stack overflow in graph traversal and infinite loops in cyclic event chains must not occur."
+target_crate = "al-core"
+
+[[stress_tests]]
+id = "ST-03"
+name = "Concurrent LSP Requests"
+description = "50+ simultaneous textDocument/* requests during active editing. Use tokio::spawn flood of parallel requests via test harness."
+expected = "No panics, no deadlocks (5s timeout), correct responses for all requests. Race conditions in DocumentStore, deadlocks in DashMap, and stale parse trees must not occur."
+target_crate = "al-lsp"
+
+[[stress_tests]]
+id = "ST-04"
+name = "Malformed .app Files"
+description = "Corrupted NAVX header, truncated ZIP, invalid JSON in SymbolReference. Use synthetic corrupt .app files (each corruption type)."
+expected = "AlError::PackageCorrupt returned, other packages still load, no panic. Panics on unwrap, infinite loops in ZIP parsing, and serde deserialization crashes must not occur."
+target_crate = "al-symbols"
+
+[[stress_tests]]
+id = "ST-05"
+name = "Unicode Edge Cases"
+description = "AL identifiers with Unicode (e.g., Norwegian ø, German ü, emoji in comments), BOM in .al files. Use fixture .al files with multi-byte characters at known positions."
+expected = "Correct positions in hover/definition/references, no off-by-one errors. Byte offset vs char offset mismatches, tree-sitter position errors, and URI encoding issues must not occur."
+target_crate = "al-syntax"
+
+[[stress_tests]]
+id = "ST-06"
+name = ".NET Bridge Crash Recovery"
+description = "In-process CLR bridge (via netcorehost) throws unhandled exception, corrupts state, or hangs mid-request. The bridge is NOT a subprocess — it is in-process CLR hosting. Inject malformed response from bridge, trigger exception via invalid analyzer path, verify graceful degradation to syntax-only mode."
+expected = "Bridge enters Failed state, BridgeCrashed error returned to pending requests, al-lsp continues serving syntax-only features without the bridge, bridge can be re-initialized (max 3 attempts). CLR exceptions, bridge state corruption, deadlocks in function pointer calls, and malformed JSON from AlBridge.dll must not crash al-lsp."
+target_crate = "al-semantic"
+
+[[stress_tests]]
+id = "ST-07"
+name = "Multi-Root Workspace"
+description = "Zed project with 3 AL projects (different app.json, overlapping object IDs). Use fixture with 3 app.json roots."
+expected = "Each project resolves symbols independently, no cross-contamination. Symbol collision between projects, wrong project context for queries, and stale cross-project references must not occur."
+target_crate = "al-core"
+
+[[stress_tests]]
+id = "ST-08"
+name = "Incremental Parse Corruption"
+description = "Rapid file edits (debounce bypass), undo/redo sequences, editing mid-parse. Use automated edit sequence, then compare incremental vs fresh parse."
+expected = "Parse tree always valid after edit, results match fresh parse. Invalid tree-sitter trees, wrong incremental edit ranges, and stale ASTs for queries must not occur."
+target_crate = "al-syntax"
+
+[[stress_tests]]
+id = "ST-09"
+name = "Empty/Minimal Project"
+description = "Project with only app.json (no .al files, no .alpackages). Use minimal fixture."
+expected = "LSP initializes, returns empty results for all queries, no panics. Index out of bounds, division by zero in metrics, and NPE-equivalent panics must not occur."
+target_crate = "al-core"
+
+[[stress_tests]]
+id = "ST-10"
+name = "Symbol Index Hot Reload"
+description = "User downloads new symbols while LSP is running, .app files change on disk. Swap .alpackages mid-session via test harness."
+expected = "Atomic swap of index, queries block briefly during swap, no mixed results. Partial index state, queries returning mix of old/new data, and crashes during reload must not occur."
+target_crate = "al-symbols"
+
+[[stress_tests]]
+id = "ST-11"
+name = "Maximum File Size"
+description = "Single .al file with 50,000+ lines (generated codeunit with massive case statements). Use generated large .al file fixture."
+expected = "Parse completes in <5s, semantic tokens in <2s, hover in <100ms. Tree-sitter parse timeout, slow semantic tokens, and memory pressure must not occur."
+target_crate = "al-syntax"
+
+[[stress_tests]]
+id = "ST-12"
+name = "Tree-sitter Grammar Edge Cases"
+description = "Action triggers (trigger OnAction() inside page action blocks), preprocessor directives (#if, #region), multiline string literals @'...'. Known gap: braced_block doesn't include trigger_declaration for action triggers. Use fixture with each edge case, compare against expected symbols."
+expected = "Workaround (text-based backwards scanning) correctly extracts action trigger vars. Missing trigger vars in type resolution, incorrect folding, and wrong semantic tokens must not occur."
+target_crate = "al-syntax"
+
+[[stress_tests]]
+id = "ST-13"
+name = "NuGet Feed Failures"
+description = "Network timeout, 401 unauthorized, 404 package not found, rate limiting, DNS failure. Use mock HTTP server with each failure mode."
+expected = "Each failure mode returns specific AlError variant, timeout of 30s, max 2 retries with backoff. Hangs on download, unhelpful error messages, and retry storms must not occur."
+target_crate = "al-symbols"
+
+[[stress_tests]]
+id = "ST-14"
+name = "WASM Memory Limits"
+description = "zed-al WASM binary processing large initialization_options or workspace_configuration. Use Zed simulation with large settings payload."
+expected = "Extension initializes with <10MB WASM memory, large payloads handled via streaming. WASM linear memory exhaustion and slow serialization must not occur."
+target_crate = "zed-al"
+
+[[stress_tests]]
+id = "ST-15"
+name = "Workspace with 1000+ AL Files"
+description = "Large enterprise project with 1000+ .al files. Use generated workspace fixture."
+expected = "Initial index in <5s, workspace/symbol response in <30ms, incremental updates in <100ms. Slow initial scan, high memory for file index, and slow workspace/symbol must not occur."
+target_crate = "al-core"
+
+[[fidelity_gaps]]
+id = "FG-01"
+name = "LSP Initialization Sequence"
+description = "Zed sends requests before the initialized response is received."
+impact = "Requests sent during initialization may be incorrectly handled instead of being queued or rejected, causing undefined LSP behavior."
+
+[[fidelity_gaps]]
+id = "FG-02"
+name = "URI Encoding"
+description = "Zed encodes URIs differently than tower-lsp expects (spaces, special chars). Known issue: percent-encoding of spaces required for URI matching."
+impact = "File paths containing spaces, unicode, or special characters fail to match, breaking hover/definition/references for affected files."
+
+[[fidelity_gaps]]
+id = "FG-03"
+name = "Semantic Token Encoding"
+description = "Zed expects specific delta encoding for semantic tokens."
+impact = "Incorrect delta encoding causes wrong or missing syntax highlighting in Zed."
+
+[[fidelity_gaps]]
+id = "FG-04"
+name = "Diagnostic Lifecycle"
+description = "Diagnostics not cleared when a file is closed or errors are fixed."
+impact = "Stale diagnostics persist in Zed after errors are resolved or files are closed, confusing the user."
+
+[[fidelity_gaps]]
+id = "FG-05"
+name = "Completion Item Resolve"
+description = "Zed may or may not send completionItem/resolve after showing the completion list."
+impact = "Completion items missing detail/documentation if the resolve path is untested, or crashes if resolve is unexpected."
+
+[[fidelity_gaps]]
+id = "FG-06"
+name = "WASM Extension Loading"
+description = "zed-al WASM binary fails to load in Zed due to missing WASI imports."
+impact = "Extension silently fails to initialize, leaving the user with no AL language support in Zed."
+
+[[fidelity_gaps]]
+id = "FG-07"
+name = "DAP Adapter Discovery"
+description = "get_dap_binary returns wrong path or unsupported adapter type."
+impact = "Debugging fails to start or uses wrong adapter configuration, breaking all AL debug sessions."

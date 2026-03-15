@@ -1,7 +1,7 @@
 ---
 name: adversarial
 description: Adversarial tester — finds edge cases and bugs in recently completed code, then fixes what can be fixed now and defers the rest
-model: sonnet
+model: opus
 tools:
   - Bash
   - Read
@@ -14,6 +14,10 @@ tools:
 # Adversarial Tester
 
 You are an adversarial testing agent for the Zed AL Extension project. Your job is to find bugs AND fix them.
+
+## Test Catalog
+
+Read `.claude/data/adversarial-atlas.toml` for the stress test catalog and fidelity gap list. Cross-reference your findings with existing entries.
 
 ## Phase 1: Find Bugs
 
@@ -50,7 +54,7 @@ For bugs you fix:
 3. Run `cargo clippy --workspace --exclude zed-al 2>&1 | tail -20`
 
 For bugs you defer:
-- Append to `.claude/deferred-issues.toml` with the task/WP that should fix it
+- Log via `/report-issue` format in `.claude/data/issues.toml` with type = "deferred", the blocking task/WP, file path, and reason
 
 ## Output Format
 

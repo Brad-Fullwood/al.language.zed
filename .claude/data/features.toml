@@ -1,0 +1,507 @@
+# Feature Scope — what's in scope, what's not
+# Agents check this when deciding whether to implement something.
+
+# MS Command Parity
+[[commands]]
+ms_command = "al.go"
+title = "Go!"
+status = "supported"
+zed_equivalent = "Zed task: AL: Go (scaffold)"
+notes = "Implements project scaffolding"
+
+[[commands]]
+ms_command = "al.newproject"
+title = "New Project"
+status = "supported"
+zed_equivalent = "Zed task: AL: New Project"
+notes = "Alias of AL: Go"
+
+[[commands]]
+ms_command = "al.package"
+title = "Package"
+status = "supported"
+zed_equivalent = "al cli: compile"
+notes = "Compile current project"
+
+[[commands]]
+ms_command = "al.fullPackage"
+title = "Package full dependency tree for active project"
+status = "supported"
+zed_equivalent = "al cli: compile --deps"
+notes = "Compile full dependency tree"
+
+[[commands]]
+ms_command = "al.publish"
+title = "Publish with debugging"
+status = "supported"
+zed_equivalent = "Zed task: AL: Publish (Debug)"
+notes = "Deploy with debugging"
+
+[[commands]]
+ms_command = "al.publishNoDebug"
+title = "Publish without debugging"
+status = "supported"
+zed_equivalent = "Zed task: AL: Publish"
+notes = "Deploy without debugging"
+
+[[commands]]
+ms_command = "al.incrementalPublish"
+title = "Rapid Application Publish with debugging"
+status = "supported"
+zed_equivalent = "Zed task: AL: RAD Publish (Debug)"
+notes = "Rapid app dev publish"
+
+[[commands]]
+ms_command = "al.incrementalPublishNoDebug"
+title = "Rapid Application Publish without debugging"
+status = "supported"
+zed_equivalent = "Zed task: AL: RAD Publish"
+notes = "Rapid app dev publish no debug"
+
+[[commands]]
+ms_command = "al.onlyDebug"
+title = "Debug without publishing"
+status = "supported"
+zed_equivalent = "Zed task: AL: Debug"
+notes = "Debug without publishing"
+
+[[commands]]
+ms_command = "al.initalizeSnapshotDebugging"
+title = "Initialize snapshot debugging"
+status = "planned"
+zed_equivalent = "Zed task: AL: Init Snapshot Debug"
+notes = "Snapshot debugging init"
+
+[[commands]]
+ms_command = "al.finishSnapshotDebugging"
+title = "Finish snapshot debugging on the server"
+status = "planned"
+zed_equivalent = "Zed task: AL: Finish Snapshot Debug"
+notes = "Snapshot debugging finalize"
+
+[[commands]]
+ms_command = "al.snapshots"
+title = "Show all snapshots"
+status = "planned"
+zed_equivalent = "al cli: snapshots"
+notes = "List snapshots"
+
+[[commands]]
+ms_command = "al.generateCpuProfileFile"
+title = "Generate profile file"
+status = "planned"
+zed_equivalent = "al cli: profiler --cpu"
+notes = "Generate profiler output"
+
+[[commands]]
+ms_command = "al.clearCredentialsCache"
+title = "Clear credentials cache"
+status = "not_supported"
+zed_equivalent = ""
+notes = "Credentials cache not managed by Zed"
+
+[[commands]]
+ms_command = "al.generateManifest"
+title = "Generate manifest"
+status = "supported"
+zed_equivalent = "al cli: generate-manifest"
+notes = "Generate app.json or manifest"
+
+[[commands]]
+ms_command = "al.downloadSymbols"
+title = "Download symbols"
+status = "supported"
+zed_equivalent = "Zed task: AL: Download Symbols"
+notes = "Uses al core symbols fetch"
+
+[[commands]]
+ms_command = "al.downloadSymbolsFromGlobalSources"
+title = "Download symbols from global sources"
+status = "supported"
+zed_equivalent = "Zed task: AL: Download Symbols (Global)"
+notes = "Uses NuGet feeds only"
+
+[[commands]]
+ms_command = "al.downloadSource"
+title = "Download source code"
+status = "supported"
+zed_equivalent = "al cli: download-source"
+notes = "Download source from server"
+
+[[commands]]
+ms_command = "al.generatePermissionSetForExtensionObjects"
+title = "Generate permission set as AL object containing current extension objects"
+status = "supported"
+zed_equivalent = "al cli: permissionset --al"
+notes = "Generate permission set object"
+
+[[commands]]
+ms_command = "al.generatePermissionSetForExtensionObjectsAsXml"
+title = "Generate permission set as XML file containing current extension objects"
+status = "supported"
+zed_equivalent = "al cli: permissionset --xml"
+notes = "Generate permission set XML"
+
+[[commands]]
+ms_command = "al.openPageDesigner"
+title = "Publish and open in the designer"
+status = "not_supported"
+zed_equivalent = ""
+notes = "Page Designer UI not supported"
+
+[[commands]]
+ms_command = "al.openExternally"
+title = "Open Externally"
+status = "not_supported"
+zed_equivalent = ""
+notes = "Not applicable in Zed"
+
+[[commands]]
+ms_command = "al.openEventRecorder"
+title = "Open Events Recorder"
+status = "supported"
+zed_equivalent = "Zed task: AL: Open Event Recorder"
+notes = "Opens Event Recorder from launch config"
+
+[[commands]]
+ms_command = "al.insertEvent"
+title = "Find Event"
+status = "supported"
+zed_equivalent = "Insight: Find Event"
+notes = "Uses Insight event search"
+
+[[commands]]
+ms_command = "al.publishExistingExtension"
+title = "Publish extension without building"
+status = "supported"
+zed_equivalent = "Zed task: AL: Publish Existing"
+notes = "Publish existing app without build"
+
+[[commands]]
+ms_command = "al.explorer"
+title = "Explorer"
+status = "supported"
+zed_equivalent = "Zed task: AL: Open Explorer"
+notes = "Opens al-explorer"
+
+[[commands]]
+ms_command = "al.home"
+title = "Home"
+status = "not_supported"
+zed_equivalent = ""
+notes = "No AL Home UI in Zed"
+
+[[commands]]
+ms_command = "al.clearProfileCodeLenses"
+title = "Clear Profile Code Lenses"
+status = "planned"
+zed_equivalent = "al cli: profiler --clear"
+notes = "Clear profile lenses"
+
+[[commands]]
+ms_command = "al.fullDependencyPublish"
+title = "Publish full dependency tree for active project"
+status = "supported"
+zed_equivalent = "Zed task: AL: Publish Full Dependency Tree"
+notes = "Publish all dependencies"
+
+[[commands]]
+ms_command = "al.explorer_refresh"
+title = "Refresh active AL Explorer tab"
+status = "supported"
+zed_equivalent = "Explorer action: Refresh"
+notes = "Refresh Explorer view"
+
+[[commands]]
+ms_command = "al.explorer_reset_layout"
+title = "Reset settings for AL Explorer"
+status = "supported"
+zed_equivalent = "Explorer action: Reset Layout"
+notes = "Reset Explorer layout"
+
+[[commands]]
+ms_command = "al.tests.refreshAll"
+title = "Refresh all tests"
+status = "planned"
+zed_equivalent = "al cli: tests --refresh"
+notes = "Refresh test discovery"
+
+# Community Features (from AZ AL Dev Tools, NAB AL Tools, AL Test Runner, ALCops)
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "Symbol browser (list/tree)"
+status = "supported"
+zed_equivalent = "al-explorer + al cli search"
+notes = "Our Rust index is faster"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "AL object wizards (table→page/report)"
+status = "planned"
+zed_equivalent = "al cli: generate"
+notes = "Generate objects from table definitions"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "Code cleanup/sorting (fields, procedures, variables, properties)"
+status = "planned"
+zed_equivalent = "al cli: sort / code action"
+notes = "Configurable sort actions"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "Application area management"
+status = "planned"
+zed_equivalent = "Code action: Add/Remove ApplicationArea"
+notes = "Batch support via CLI"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "Tooltip generation from dependencies"
+status = "planned"
+zed_equivalent = "Code action: Generate Tooltip"
+notes = "Reuse tooltips from base app symbols"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "FlowField read-only enforcement"
+status = "planned"
+zed_equivalent = "Lint rule"
+notes = "Auto-fix via code action"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "Documentation comments (XML)"
+status = "planned"
+zed_equivalent = "Code action: Generate XML Doc"
+notes = "Extract param names from procedure signature"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "Duplicate code detection"
+status = "planned"
+zed_equivalent = "al cli: duplicates"
+notes = "Cross-file duplicate finder"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "Warning directives panel"
+status = "planned"
+zed_equivalent = "al cli: pragmas"
+notes = "List all pragma suppressions in project"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "Action images browser"
+status = "planned"
+zed_equivalent = "al cli: images / Explorer tab"
+notes = "Discover available UI graphics"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = "Multiple build configurations"
+status = "planned"
+zed_equivalent = "al cli: config --profile"
+notes = "Status bar switching in al-explorer"
+
+[[community_features]]
+source = "AZ AL Dev Tools"
+name = ".app symbol file viewer"
+status = "supported"
+zed_equivalent = "al cli: object / al-explorer"
+notes = "Already have full .app parsing"
+
+[[community_features]]
+source = "NAB AL Tools"
+name = "XLF translation refresh"
+status = "planned"
+zed_equivalent = "al cli: xlf refresh"
+notes = "Iterate g.xlf, update language files"
+
+[[community_features]]
+source = "NAB AL Tools"
+name = "Translation matching from base app"
+status = "planned"
+zed_equivalent = "al cli: xlf suggest"
+notes = "Match against symbol tooltips/captions"
+
+[[community_features]]
+source = "NAB AL Tools"
+name = "Find untranslated texts"
+status = "planned"
+zed_equivalent = "al cli: xlf untranslated"
+notes = "List all missing translations"
+
+[[community_features]]
+source = "NAB AL Tools"
+name = "Permission set generation"
+status = "supported"
+zed_equivalent = "al cli: permissionset"
+notes = "Already implemented"
+
+[[community_features]]
+source = "NAB AL Tools"
+name = "Object renumbering"
+status = "planned"
+zed_equivalent = "al cli: renumber --range"
+notes = "Renumber within ID ranges"
+
+[[community_features]]
+source = "NAB AL Tools"
+name = "Markdown documentation generation"
+status = "planned"
+zed_equivalent = "al cli: docs"
+notes = "Generate from XML comments"
+
+[[community_features]]
+source = "AL Test Runner"
+name = "Test discovery from [Test] attribute"
+status = "planned"
+zed_equivalent = "runnables.scm + al cli: tests"
+notes = "Static discovery, no BC instance needed"
+
+[[community_features]]
+source = "AL Test Runner"
+name = "Test-to-code coverage mapping"
+status = "planned"
+zed_equivalent = "al cli: test-coverage"
+notes = "Which tests call which procedures"
+
+[[community_features]]
+source = "AL Test Runner"
+name = "Run test from gutter"
+status = "planned"
+zed_equivalent = "runnables.scm + Zed task"
+notes = "Requires BC Docker container"
+
+[[community_features]]
+source = "AL Test Runner"
+name = "Code Lens for test coverage"
+status = "planned"
+zed_equivalent = "Inlay hints"
+notes = "Show coverage info inline"
+
+[[community_features]]
+source = "ALCops / LinterCop"
+name = "94+ lint rules"
+status = "partial"
+zed_equivalent = "al-syntax lint rules + al-semantic bridge"
+notes = "Implement highest-value rules natively"
+
+[[community_features]]
+source = "ALCops / LinterCop"
+name = "Cyclomatic/cognitive complexity"
+status = "planned"
+zed_equivalent = "al cli: metrics"
+notes = "Project-wide complexity dashboard"
+
+[[community_features]]
+source = "ALCops / LinterCop"
+name = "Unused procedure detection"
+status = "planned"
+zed_equivalent = "al cli: dead-code"
+notes = "Cross-file dead code analysis"
+
+[[community_features]]
+source = "ALCops / LinterCop"
+name = "Fix suggestions with auto-apply"
+status = "planned"
+zed_equivalent = "Code actions + al cli: fix"
+notes = "Already have fix infrastructure"
+
+[[community_features]]
+source = "ALCops / LinterCop"
+name = "MCP server for AI integration"
+status = "supported"
+zed_equivalent = "al-mcp / context server"
+notes = "Our CLI+MCP is more comprehensive"
+
+# Beyond-Parity Unique Features
+
+[[unique_features]]
+id = 1
+name = "Insight Tooling"
+description = "Event graph, call trace, table relations, entry point finder."
+cli = "al tables, al callgraph, al intercept, al subscribers"
+
+[[unique_features]]
+id = 2
+name = "Dead Code Detection"
+description = "Cross-file analysis: unused procedures, unreachable triggers, unused table fields (never referenced in any page/report), unused event subscribers (publisher removed), unused permission sets. Implementation: Reverse-reference graph from symbol index. Find nodes with zero inbound edges."
+cli = "al dead-code [--json]"
+
+[[unique_features]]
+id = 3
+name = "Dependency Impact Analysis"
+description = "If I change this procedure signature, which extensions break? Query symbol index across all .app packages to show downstream consumers. Implementation: Dependency graph from app.json + symbol references. Trace consumers across dependency tree."
+cli = "al impact <symbol> [--json]"
+
+[[unique_features]]
+id = 4
+name = "AI-Assisted Event Wiring"
+description = "Given a business scenario (e.g., 'validate customer credit limit on sales order'), suggest the correct event publisher, subscriber pattern, and integration event chain. Implementation: Index all event publishers from base app symbols. Map business concepts to event chains via keyword matching + object context."
+cli = "al suggest-event <description> [--json]"
+notes = "Slash command: /al-events with natural language argument"
+
+[[unique_features]]
+id = 5
+name = "Automated Permission Set Generation from Usage Analysis"
+description = "Analyze all table/page/report/codeunit accesses in an extension and auto-generate the minimal permission set. Update when code changes. Implementation: Walk AST for record operations (Insert, Modify, Delete, FindSet, Get) and RunObject references. Generate RIMD permissions."
+cli = "al permissionset --analyze [--json]"
+notes = "Already have basic permissionset command"
+
+[[unique_features]]
+id = 6
+name = "Code Complexity Metrics Dashboard"
+description = "Project-wide complexity: hotspot detection, procedure-level rankings, per-file summaries. Implementation: AST-based cyclomatic/cognitive complexity computation in al-syntax."
+cli = "al metrics [file] [--json]"
+
+[[unique_features]]
+id = 7
+name = "Offline Test Discovery & Scaffolding"
+description = "Static analysis of test codeunits without requiring a BC instance. Discover [Test] procedures, map test-to-code coverage, generate test scaffolds for untested procedures. Implementation: Parse [Test] attributes, build call graphs from syntax, identify untested public procedures."
+cli = "al tests [--scaffold] [--coverage-map] [--json]"
+
+[[unique_features]]
+id = 8
+name = "Smart Rename with Translation Awareness"
+description = "Rename a field and automatically update: caption, tooltip, XLIFF translation keys, all code references. Implementation: Combine rename provider with XLIFF file parsing and caption/tooltip property detection."
+cli = ""
+notes = "LSP: Enhanced textDocument/rename that includes XLIFF changes in the workspace edit"
+
+[[unique_features]]
+id = 9
+name = "Architectural Linting"
+description = "Enforce project-specific patterns like 'no direct table access from pages' or 'all external calls through facade codeunit.' Rules defined in a .alarch.json config file. Implementation: Custom rule engine in al-core checking cross-object access patterns."
+cli = "al lint --arch [--json]"
+
+[[unique_features]]
+id = 10
+name = "Cross-Extension Event Trace Visualization"
+description = "Given a starting point (e.g., 'Post Sales Order'), trace the complete event chain across ALL installed extensions, showing execution sequence. Implementation: Combine event publisher/subscriber symbol index with call graph analysis across packages."
+cli = "al trace --cross-extension <entry-point> [--json]"
+
+[[unique_features]]
+id = 11
+name = "Zed AI Integration"
+description = "Leverage Zed's extension API for deep AI integration: slash commands (/al-symbols, /al-events, /al-trace, /al-deps, /al-lint) inject structured context; indexed docs feed BC symbol documentation to Zed's AI via index_docs provider; register al-mcp as MCP context server in Zed's Agent Panel."
+cli = ""
+notes = "Slash commands: /al-symbols, /al-events, /al-trace, /al-deps, /al-lint. Schemas defined in .claude/data/agentic-schemas.md"
+
+# Grammar Updates Required
+
+[[grammar_updates]]
+feature = "continue keyword"
+impact = "New statement type inside loop bodies"
+priority = "high"
+
+[[grammar_updates]]
+feature = "@'...' multiline strings"
+impact = "New string literal prefix syntax"
+priority = "high"
+
+[[grammar_updates]]
+feature = "List of [Interface IFoo]"
+impact = "Interface type params in generic collections"
+priority = "medium"

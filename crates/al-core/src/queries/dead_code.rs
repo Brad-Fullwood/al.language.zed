@@ -495,7 +495,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "dead code detection not fully implemented yet — Beyond v1 feature"]
     fn unused_procedure_detected() {
         // Codeunit with a procedure that is never called from anywhere
         let ws = workspace_with_files(vec![
@@ -545,7 +544,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "dead code detection not fully implemented yet — Beyond v1 feature"]
     fn unused_table_field_detected() {
         // Table with a field that no page/report/codeunit references
         let ws = workspace_with_files(vec![

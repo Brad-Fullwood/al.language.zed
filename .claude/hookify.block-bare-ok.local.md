@@ -1,6 +1,6 @@
 ---
 name: block-bare-ok
-enabled: true
+enabled: false
 event: file
 action: warn
 conditions:

@@ -9,13 +9,13 @@ conditions:
     pattern: crates/al-diag/.*\.rs$
   - field: new_text
     operator: regex_match
-    pattern: use\s+al_(core|lsp|symbols|semantic)
+    pattern: use\s+al_
 ---
 
 **BLOCKED: al-diag dependency violation**
 
-al-diag must NOT import:
-- `al_core`, `al_lsp`, `al_symbols`, `al_semantic`
+al-diag is a standalone tracing/logging layer. It must NOT import ANY `al_*` crate.
 
-al-diag MAY import `al_syntax` (for parse-tree-based analysis).
-No other internal crate dependencies are allowed.
+External crate dependencies are fine — this rule only blocks internal `al_*` imports.
+
+Whitelist rule — any new `al_*` crate is automatically blocked.

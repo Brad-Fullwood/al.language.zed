@@ -9,12 +9,13 @@ conditions:
     pattern: crates/al-symbols/.*\.rs$
   - field: new_text
     operator: regex_match
-    pattern: use\s+al_(core|lsp|syntax|semantic|diag)
+    pattern: use\s+al_
 ---
 
 **BLOCKED: al-symbols dependency violation**
 
-al-symbols is a standalone analysis library. It must NOT import:
-- `al_core`, `al_lsp`, `al_syntax`, `al_semantic`, `al_diag`
+al-symbols is a standalone analysis library. It must NOT import ANY `al_*` crate.
 
-al-symbols handles .app package symbol indexing independently.
+External crate dependencies are fine — this rule only blocks internal `al_*` imports.
+
+Whitelist rule — any new `al_*` crate is automatically blocked. Current al-protocol usage (ISSUE-021) is a known violation being refactored out.

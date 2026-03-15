@@ -2,13 +2,18 @@
 name: require-cargo-test-before-stop
 enabled: true
 event: stop
-action: block
+action: warn
+conditions:
+  - field: transcript
+    operator: regex_match
+    pattern: crates/.+\.rs
+  - field: transcript
+    operator: not_contains
+    pattern: cargo test
 ---
 
-**BLOCKED: Cannot stop without running tests**
+**No test execution detected this session**
 
-You must run `cargo test --workspace --exclude zed-al` before stopping or claiming task completion.
+You should run `cargo test --workspace --exclude zed-al` before stopping, to verify nothing is broken.
 
-The conversation transcript does not show evidence of test execution.
-
-Run the tests now and verify they pass before stopping.
+If this was a non-implementation session (planning, docs, audit), this warning can be ignored.

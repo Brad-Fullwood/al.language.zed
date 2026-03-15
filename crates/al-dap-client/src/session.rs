@@ -28,6 +28,7 @@ const MAX_HISTORY: usize = 1000;
 ///
 /// Owns the DAP client subprocess and manages the full lifecycle from
 /// compilation through debugging to teardown.
+#[allow(dead_code)]
 pub struct DebugSession {
     client: DapClient,
     state: DebugState,
@@ -39,6 +40,7 @@ pub struct DebugSession {
     launch_config: BcServerConfig,
 }
 
+#[allow(dead_code)]
 impl DebugSession {
     /// Compile the AL project, spawn EditorServices.Host, and complete
     /// the DAP handshake (initialize → configurationDone → launch).

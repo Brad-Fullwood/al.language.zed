@@ -1,0 +1,588 @@
+# issues.toml — Consolidated issues log
+#
+# Sources:
+#   docs/issues.md         — infrastructure issues (ISSUE-NNN) reported by agents/supervisor/audits
+#   .claude/deferred-issues.toml — adversarial-found bugs deferred until a blocking task completes
+#
+# Open issues come first, then fixed issues.
+# "deferred" type entries are adversarial-found bugs that need a blocking task to resolve.
+
+# ─── OPEN ISSUES ─────────────────────────────────────────────────────────────
+
+[[issues]]
+id = "ISSUE-003"
+title = "al-cli is not a thin adapter — has compile-time deps on al-syntax, al-symbols, al-semantic"
+type = "architecture"
+reporter = "supervisor"
+date = "2026-03-14"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "PARALLEL"
+description = """
+Architecture rule requires thin adapters (al-cli, al-explorer, al-mcp) to have zero compile-time
+dependency on al-core, al-syntax, al-symbols, or al-semantic. al-cli/Cargo.toml has `al-syntax`,
+`al-symbols`, `al-semantic`, and `al-discovery` as direct dependencies. al-explorer has
+`al-symbols`. These violate the architecture mandate. al-cli should talk to al-lsp via
+JSON-RPC only.
+"""
+
+[[issues]]
+id = "ISSUE-006"
+title = "test_document_symbols_data_driven — 'OnPreDataItem' trigger missing for Report"
+type = "infra"
+reporter = "supervisor"
+date = "2026-03-14"
+category = "plan"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "PARALLEL"
+description = """
+test_document_symbols_data_driven fails: IJLProcessStaging.Report.al — 'OnPreDataItem' not found
+in document symbols. 75/76 pass. Likely tree-sitter grammar doesn't surface the OnPreDataItem
+trigger in Report dataitems as a top-level symbol.
+"""
+
+[[issues]]
+id = "ISSUE-007"
+title = "test_hover_data_driven — 7 hover failures on ItemJournalStaging.Table.al"
+type = "infra"
+reporter = "supervisor"
+date = "2026-03-14"
+category = "plan"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "PARALLEL"
+description = """
+test_hover_data_driven fails: 7/97 hover assertions fail. All in objects/API/ItemJournalStaging.Table.al.
+Failures: hover returns null for SetJournalData, GetJournalData, SetErrorMessage, GetErrorMessage
+procedures (cross-file resolution missing?), and null for OutStream/InStream/Text types.
+Cross-file procedure hover and built-in type hover appear broken for this file.
+"""
+
+[[issues]]
+id = "ISSUE-009"
+title = "code-boundaries.md and CLAUDE.md misrepresent al-lsp dependencies — BLOCKER"
+type = "architecture"
+reporter = "claude-md-improver audit"
+date = "2026-03-15"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "open"
+triage = "STOP"
+description = """
+Both CLAUDE.md and code-boundaries.md state al-lsp MAY import only `al-core, al-protocol`. In
+reality al-lsp directly imports `al-dap-client` (unconditional) and `al-diag` (optional,
+default-enabled). This means al-lsp bypasses al-core for DAP and diagnostics, violating the
+"al-core orchestrates everything" principle. Either: (a) these deps should be routed through
+al-core and the code is wrong, or (b) al-lsp legitimately needs direct access and the
+architecture docs are wrong. Decision required before rules can be trusted.
+"""
+
+[[issues]]
+id = "ISSUE-010"
+title = "al-core / al-diag relationship misrepresented across all docs — BLOCKER"
+type = "architecture"
+reporter = "claude-md-improver audit"
+date = "2026-03-15"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "open"
+triage = "STOP"
+description = """
+CLAUDE.md says al-core depends on al-diag. code-boundaries.md says al-core MAY import al-diag.
+Neither is true — al-core has no al-diag dependency at all. Additionally, code-boundaries.md
+says al-diag MAY import al-syntax — also false, al-diag depends on rusqlite and has zero al-*
+dependencies. The entire documented relationship between al-core, al-diag, and al-syntax is
+fictional. al-diag appears to be a standalone crate imported only by al-lsp (optionally).
+The architecture needs to decide: should diagnostics route through al-core, or is the current
+direct al-lsp→al-diag path intentional?
+"""
+
+[[issues]]
+id = "ISSUE-011"
+title = "al-mcp doesn't follow stated adapter pattern — BLOCKER"
+type = "architecture"
+reporter = "claude-md-improver audit"
+date = "2026-03-15"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "open"
+triage = "STOP"
+description = """
+CLAUDE.md, thin-adapters.md, and code-boundaries.md all state al-mcp uses al-protocol and
+connects to al-lsp via JSON-RPC. None of this is true. al-mcp has zero al-* crate dependencies
+— it shells out to the `al` CLI binary at runtime. This means: (1) al-mcp depends on al-cli
+being compiled and in PATH, not on al-lsp daemon, (2) it uses no shared types from al-protocol,
+(3) the thin-adapters.md description ("connect to al-lsp daemon") is wrong for this crate.
+The pattern may be architecturally valid (CLI composition) but all three docs describe a
+different pattern than what exists.
+"""
+
+[[issues]]
+id = "ISSUE-013"
+title = "al-syntax depends on tower-lsp — analysis lib coupled to LSP framework — BLOCKER"
+type = "architecture"
+reporter = "architecture audit"
+date = "2026-03-15"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "open"
+triage = "STOP"
+description = """
+al-syntax (an analysis library that should be standalone) has a compile-time dependency on
+`tower-lsp`, an LSP server framework. Usage is pervasive: `tower_lsp::lsp_types::{Position,
+Range, DocumentSymbol, SymbolKind, FoldingRange, FoldingRangeKind}` across symbols.rs,
+navigation.rs, folding.rs, context.rs, type_resolver.rs, lib.rs. Critically, `navigation.rs`
+has `pub use tower_lsp::lsp_types::Position` — a re-export that makes the coupling viral to
+every consumer of al-syntax. This means al-syntax cannot be used, tested, or depended upon
+outside an LSP context without dragging the entire tower-lsp stack. Either: (a) define native
+Position/Range types in al-syntax or al-protocol and convert at the al-lsp boundary, or (b)
+accept the coupling and update the rules.
+"""
+
+[[issues]]
+id = "ISSUE-014"
+title = "al-protocol contains logic, violating 'types only, no logic' contract"
+type = "architecture"
+reporter = "architecture audit"
+date = "2026-03-15"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "STOP"
+description = """
+CLAUDE.md and code-boundaries.md describe al-protocol as "Shared JSON-RPC types. Types only,
+no logic." This is false. al-protocol contains `project.rs` (`find_project()`),
+`toolchain.rs` (`find_toolchain()`), and `launch.rs` — these are discovery and configuration
+logic functions, not type definitions. Its Cargo.toml also pulls `tracing` and `urlencoding`,
+atypical for a pure-types crate. Either: (a) move the logic functions to al-core and keep
+al-protocol as types-only, or (b) update the description to reflect that al-protocol also
+owns project/toolchain discovery.
+"""
+
+[[issues]]
+id = "ISSUE-015"
+title = "al-diag is misdescribed — it's a tracing layer, not diagnostic analysis"
+type = "architecture"
+reporter = "architecture audit"
+date = "2026-03-15"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "STOP"
+description = """
+Every doc describes al-diag as "Diagnostic analysis" depending on al-syntax. In reality,
+al-diag is a SQLite-backed structured tracing/logging layer (`lib.rs`: "captures every LSP
+request, resolution chain step, type inference decision"). Its dependencies are `tracing`,
+`tracing-subscriber`, `serde`, `serde_json`, `rusqlite` — zero al-* crates. It has no AL
+analysis capability whatsoever. The name "al-diag" is misleading (implies diagnostics/linting).
+The crate table, architecture diagram, and code-boundaries.md all describe a crate that doesn't
+exist. Related to ISSUE-010.
+"""
+
+[[issues]]
+id = "ISSUE-016"
+title = "zed-fidelity.md claims grammars/al/ symlink — no such directory exists"
+type = "infra"
+reporter = "architecture audit"
+date = "2026-03-15"
+category = "rule"
+severity = "drift"
+priority = "LOW"
+status = "open"
+triage = "SCHEDULE"
+description = """
+zed-fidelity.md states "`grammars/al/` is a symlink to `tree-sitter-al/` submodule". There is
+no `grammars/` directory in the repository. Language configuration files are in `languages/al/`,
+which is a regular directory (not a symlink) containing .scm files. The `tree-sitter-al/`
+submodule exists at the root but `languages/al/` does not point to it.
+"""
+
+[[issues]]
+id = "ISSUE-017"
+title = "'One code path' principle violated by al-explorer"
+type = "architecture"
+reporter = "architecture audit"
+date = "2026-03-15"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "STOP"
+description = """
+architecture.md rule states "A query via CLI, Zed, MCP, or Explorer hits the same al-lsp ->
+al-core code path. There is ONE implementation of each query." This is false for al-explorer.
+al-explorer imports al-symbols directly, constructs its own `SymbolIndex`, calls
+`load_packages()`, runs searches, and generates virtual files — all in-process, completely
+bypassing al-lsp and al-core. al-cli and al-mcp (via `al` binary) do route through al-lsp.
+al-explorer is a second, independent implementation of symbol browsing. Related to ISSUE-003.
+"""
+
+[[issues]]
+id = "ISSUE-018"
+title = "al-diag feature gate incomplete in al-lsp daemon.rs"
+type = "infra"
+reporter = "architecture audit"
+date = "2026-03-15"
+category = "rule"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "SCHEDULE"
+description = """
+al-diag is declared `optional = true` in al-lsp's Cargo.toml, gated by the `diagnostics`
+feature (default-on). `main.rs:101` correctly uses `#[cfg(feature = "diagnostics")]` for
+`DiagLayer::new()`. However, `daemon.rs:1436-1511` (`dispatch_diag()`) calls
+`al_diag::query::{open, sessions, recent_events, slow_spans, resolution_failures, search,
+summarize}` without any feature gate. Building al-lsp with `--no-default-features` would
+produce compile errors at all 7 call sites.
+"""
+
+[[issues]]
+id = "ISSUE-019"
+title = "Test harness Debar fixture is machine-specific, undisclosed"
+type = "infra"
+reporter = "architecture audit"
+date = "2026-03-15"
+category = "plan"
+severity = "drift"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+The zed_simulation tests in al-test-harness use the Debar project fixture hardcoded to
+`/home/bradf/Dev/AL/Debar/App Integration`. Tests silently skip via `debar_project_exists()`
+if the path is absent. The e2e.rs tests use `test_al_project/` which IS in the repo.
+testing.md says "Tests run against real Debar project fixture" without disclosing this is a
+local-only, machine-specific path. Any other contributor or CI environment would silently
+skip all 37 zed_simulation tests with no warning.
+"""
+
+[[issues]]
+id = "ISSUE-020"
+title = "al-cli bypasses daemon for cache clearing and file walking"
+type = "architecture"
+reporter = "architecture audit"
+date = "2026-03-15"
+category = "constraint"
+severity = "drift"
+priority = "LOW"
+status = "open"
+triage = "SCHEDULE"
+description = """
+Two soft violations in al-cli: (1) `cmd_clear_cache` (main.rs:434-455) directly calls
+`std::fs::remove_dir_all` on `~/.cache/al-lsp/packages/` without contacting the daemon —
+encodes the daemon's internal cache layout. (2) `cmd_format_all` (main.rs:985-1021) walks the
+filesystem itself to find `.al` files and sends one format request per file, rather than
+sending `{"all": true}` and letting the daemon walk the project. Neither is a hard boundary
+violation but both bypass the "one code path" principle.
+"""
+
+[[issues]]
+id = "ISSUE-021"
+title = "Analysis libs depend on al-protocol, bypassing one-code-path architecture"
+type = "architecture"
+reporter = "user"
+date = "2026-03-15"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "open"
+triage = "STOP"
+description = """
+al-symbols, al-semantic, and al-dap-client all have compile-time dependencies on al-protocol
+to access domain types (AlToolchain, AppDependency, BcServerConfig, launch config). This
+violates the one-code-path architecture: analysis libs should be standalone and protocol-
+unaware. Domain types should either live in the analysis lib that owns them (e.g.,
+AppDependency in al-symbols) or be passed in by al-core as function parameters.
+
+Current violations:
+- al-symbols/src/bc_server.rs: imports al_protocol::{launch::BcServerConfig, AppDependency}
+- al-semantic/src/protocol.rs: imports al_protocol::jsonrpc (entire RPC layer)
+- al-semantic/src/lib.rs: imports al_protocol::AlToolchain
+- al-dap-client/src/session.rs: imports al_protocol::{launch, AlToolchain}
+- al-dap-client/src/editor_services.rs: imports al_protocol::AlToolchain
+
+Fix: Move domain types out of al-protocol into owning crates. al-protocol keeps only
+JSON-RPC Request/Response/RpcError types. Related to ISSUE-014 (al-protocol has logic).
+
+Hookify rules updated to block future al_protocol imports in all analysis libs.
+"""
+
+# ─── DEFERRED ISSUES (adversarial-found bugs, blocked on another task) ───────
+
+[[issues]]
+id = "deferred-data-driven-hover-symbols-failures"
+title = "7 hover + 1 document symbols assertion failures in data-driven tests"
+type = "deferred"
+reporter = "adversarial"
+date = ""
+category = "plan"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+blocking_task = "T614-followup"
+file = "crates/al-test-harness/tests/data_driven.rs"
+reason = "Integration test failures in hover/symbols resolution — separate from T614 permissions work."
+description = """
+7 hover assertions failing (ItemJournalStaging table procedures/fields) and
+1 document symbols assertion failing in al-test-harness data-driven tests.
+These are pre-existing failures not introduced by T614 (permissions generation).
+"""
+
+[[issues]]
+id = "deferred-semantic-bridge-init-no-show-message"
+title = "get_or_init_bridge() logs warn on failure but doesn't notify the user via show_message"
+type = "deferred"
+reporter = "adversarial"
+date = ""
+category = "agent"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+blocking_task = "T611-or-T620"
+file = "crates/al-core/src/semantic.rs"
+reason = "Requires passing LSP Client into al-core or a notification channel — architectural change."
+description = """
+get_or_init_bridge() logs warn! on bridge init failure (line 58) but does not call
+show_message to notify the user. The bridge init failure is surfaced indirectly via
+ensure_builtins_loaded() which already calls show_message. However, if the bridge
+fails during a hover/completion query (where ensure_builtins_loaded is not called),
+the failure is only logged, not shown to the user.
+
+Adding show_message to get_or_init_bridge is complicated because it has no access
+to the LSP Client — it only receives a Workspace. Passing the client down would
+require architectural changes.
+"""
+
+[[issues]]
+id = "deferred-semantic-cache-subtype-stat-inflation"
+title = "Subtype fallback pattern inflates cache miss counter in resolution.rs"
+type = "deferred"
+reporter = "adversarial"
+date = ""
+category = "rule"
+severity = "bug"
+priority = "LOW"
+status = "open"
+blocking_task = "T703-followup"
+file = "crates/al-core/src/resolution.rs"
+reason = "Stats-only accuracy issue. Fixing requires either a raw get (no stats) on the primary key or a dedicated two-key lookup API on SemanticCache. Defer until stats are used for more than dashboarding."
+description = """
+The subtype fallback pattern used in 3 places in resolution.rs:
+    cache.get_type(&receiver.type_name)
+         .or_else(|| receiver.type_subtype.as_deref().and_then(|s| cache.get_type(s)))
+inflates the miss counter: when type_name misses but type_subtype hits (a successful
+resolution), get_type records 1 miss then 1 hit. The daemon status stats would show
+one miss per successful subtype-based resolution, making the hit rate appear lower
+than actual cache effectiveness. Also when both miss, 2 misses are recorded for one
+failed lookup.
+"""
+
+[[issues]]
+id = "deferred-insight-nodekey-package-collision"
+title = "NodeKey collisions when two packages define objects with the same name"
+type = "deferred"
+reporter = "adversarial"
+date = ""
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+blocking_task = "T902-or-T903"
+file = "crates/al-core/src/insight/graph.rs"
+reason = "Requires architectural change to InsightGraph lookup — need multi-valued node lookup and subscriber resolution strategy that accounts for ambiguous targets across packages."
+description = """
+NodeKey::Object/Procedure/Event/Subscriber use (kind, name) without package.
+Two different packages that both define e.g. Codeunit 'Sales-Post' with the same
+method names will collide in the HashMap: ensure_node() returns the first one and
+the second object's methods get edges into the wrong node. This is a design issue:
+adding package to NodeKey would break subscriber resolution (subscribers reference
+by name only, not by package), so a multi-valued lookup structure is needed instead
+of the current 1:1 HashMap<NodeKey, NodeIndex>.
+"""
+
+[[issues]]
+id = "deferred-dead-code-tableextension-fields-not-checked"
+title = "find_unused_fields() misses fields defined in tableextension objects"
+type = "deferred"
+reporter = "adversarial"
+date = ""
+category = "plan"
+severity = "bug"
+priority = "LOW"
+status = "open"
+blocking_task = "dead-code-followup"
+file = "crates/al-core/src/queries/dead_code.rs"
+reason = "Missing feature — tableextension field analysis uses the same grammar patterns but the object kind check needs to include 'tableextension'. Defer until dead-code detection is generally enabled."
+description = """
+find_unused_fields() only runs for objects where obj_kind_lower == "table".
+tableextension objects also define new fields (inside a fields { } block), but
+those added fields are never checked for deadness. A developer adding a field
+to a table extension that's never referenced from a page/codeunit won't be warned.
+"""
+
+[[issues]]
+id = "deferred-dead-code-find-variable-references-name-collision"
+title = "find_variable_references() causes false negatives for procedures/fields with common names"
+type = "deferred"
+reporter = "adversarial"
+date = ""
+category = "plan"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+blocking_task = "dead-code-followup"
+file = "crates/al-core/src/queries/dead_code.rs"
+reason = "Requires a smarter reference-counting approach: either scope-aware AST analysis or tracking qualified references (Object.ProcedureName). Architectural change needed in al-syntax or a new dedicated pass in dead_code.rs."
+description = """
+find_variable_references() matches identifier/quoted_identifier/name nodes case-insensitively.
+For procedure detection, a procedure named 'Name' could match ANY 'Name' token in the file
+(including parameter names, record field access like Rec.Name, etc.). This causes false
+negatives: procedures with short common names like 'Init', 'Name', 'Code', 'Post' would
+never be flagged as unused because they match ubiquitous identifiers elsewhere.
+
+Similarly for table field detection: a field named 'Status' would appear in many other
+AL files as a local variable or different field reference, so it would never appear unused.
+
+The root cause is that find_variable_references is designed for local variable references
+within a procedure scope, not for cross-file symbol reference counting.
+"""
+
+[[issues]]
+id = "deferred-symbol-cache-concurrent-process-rename-race"
+title = "Concurrent daemon processes can clobber the same .tmp cache file"
+type = "deferred"
+reporter = "adversarial"
+date = ""
+category = "constraint"
+severity = "bug"
+priority = "LOW"
+status = "open"
+blocking_task = "T801-followup"
+file = "crates/al-symbols/src/cache.rs"
+reason = "Benign on Linux due to atomic rename and identical content. Fixing the Windows case and tmp cleanup requires either a per-process unique tmp filename (e.g. using PID or random suffix) or a file lock. Defer until Windows support is needed."
+description = """
+The atomic write (write to .tmp then rename) prevents partial writes within one process,
+but does not handle the case of two daemon processes starting simultaneously with the same
+project path. Both will get a cache miss for the same .app file, both will parse it, and
+both will write to the same .tmp path and rename to the same .cache path. On Linux,
+rename(2) is atomic so the last rename wins cleanly. However, both processes independently
+wrote a .tmp file to the same path — the second fs::write to .tmp silently clobbers the
+first process's .tmp, and then the second rename is a no-op if the first already completed.
+In practice this is benign on Linux (both processes write identical data), but on Windows
+rename is not atomic and could corrupt the cache file. Also, the .tmp file from a crashed
+process is never cleaned up.
+"""
+
+# ─── FIXED ISSUES ────────────────────────────────────────────────────────────
+
+[[issues]]
+id = "ISSUE-001"
+title = "disable-model-invocation blocks Skill tool invocation"
+type = "infra"
+reporter = "main"
+date = "2026-03-14"
+category = "skill"
+severity = "bug"
+priority = "HIGH"
+status = "fixed"
+description = """
+`disable-model-invocation: true` on skills blocks Skill tool invocation, not just
+auto-triggering. Removed from /start-work, /pof, /audit. These skills need to be callable
+by agents and the Skill tool, not just by user typing the slash command. Fix applied
+immediately — flag removed from all three skills.
+"""
+
+[[issues]]
+id = "ISSUE-002"
+title = "Supervisor blocks on pre-existing issues, preventing WP1 start"
+type = "infra"
+reporter = "main"
+date = "2026-03-14"
+category = "agent"
+severity = "improvement"
+priority = "MEDIUM"
+status = "fixed"
+description = """
+Supervisor was treating all issues as blocking. Redesigned: supervisor now triages each
+finding as STOP (must fix now), PARALLEL (fix in background), or SCHEDULE (log for later).
+The /supervise skill dispatches fixers based on triage — STOP items block, PARALLEL items
+spawn background agents, SCHEDULE items go to docs/issues.md. Pre-existing test failures
+get triaged as PARALLEL (fix in background) not STOP, so they don't block task work.
+"""
+
+[[issues]]
+id = "ISSUE-004"
+title = "al-symbols clippy errors (collapsible_if, unnecessary_get_then_check, manual_div_ceil)"
+type = "infra"
+reporter = "supervisor"
+date = "2026-03-14"
+category = "rule"
+severity = "bug"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+description = """
+`cargo clippy --workspace --exclude zed-al -- -D warnings` fails with 3 errors in al-symbols:
+(1) collapsible_if in index.rs:240, (2) unnecessary_get_then_check in oauth.rs:227,
+(3) manual_div_ceil in oauth.rs:493. These block clippy clean build.
+"""
+
+[[issues]]
+id = "ISSUE-005"
+title = "al-lsp unused import and unused variable warnings"
+type = "infra"
+reporter = "supervisor"
+date = "2026-03-14"
+category = "rule"
+severity = "improvement"
+priority = "LOW"
+status = "fixed"
+triage = "SCHEDULE"
+description = """
+`cargo check` emits 2 warnings in al-lsp: unused import `crate::diagnostics` in
+handlers.rs:14, and unused variable `looks_like_object_name_early` in definition.rs:33.
+Not blocking but noisy.
+"""
+
+[[issues]]
+id = "ISSUE-008"
+title = "Test validation of /report skill"
+type = "infra"
+reporter = "main"
+date = "2026-03-14"
+category = "idea"
+severity = "improvement"
+priority = "LOW"
+status = "fixed"
+description = "TEST VALIDATION: Validated /report skill works. Entry created and removed during workflow validation."
+
+[[issues]]
+id = "ISSUE-012"
+title = "Hookify stop rules were permanently non-functional"
+type = "infra"
+reporter = "architecture audit"
+date = "2026-03-15"
+category = "hook"
+severity = "bug"
+priority = "CRITICAL"
+status = "fixed"
+triage = "STOP"
+description = """
+`require-cargo-test-before-stop` and `require-cargo-check-before-stop` had no `conditions:`
+field in their frontmatter. The hookify rule engine (`rule_engine.py:117`) returns `False`
+for rules with empty conditions. Fixed: added `conditions:` with `field: transcript,
+operator: not_contains` checks. Also added a third stop rule (`require-proof-before-stop`)
+that blocks stopping without PoF evidence.
+"""

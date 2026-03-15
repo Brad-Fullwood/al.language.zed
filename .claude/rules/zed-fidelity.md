@@ -22,5 +22,5 @@ These are standard Zed extension paths — DO NOT move them.
 - Document sync is `TextDocumentSyncKind::Full` (Zed sends full text on every change)
 
 ## tree-sitter-al
-- `grammars/al/` is a symlink to `tree-sitter-al/` submodule
+- `tree-sitter-al/` submodule at repo root contains the AL grammar
 - Grammar changes go through the submodule, not direct edits

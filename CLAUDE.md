@@ -12,29 +12,20 @@ zed-al (WASM)                   ->  al-lsp (stdio)               ->           ->
                                                                               ->  al-dap-client
 ```
 
-| Crate | Role | Dependencies |
-|-------|------|-------------|
-| al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket) | al-core, al-protocol |
-| al-core | All state, queries, orchestration | al-syntax, al-symbols, al-semantic, al-diag, al-dap-client |
-| al-protocol | Shared JSON-RPC types. Types only, no logic | serde, std |
-| al-syntax | Parser, type resolver, tree-sitter | tree-sitter, std |
-| al-symbols | Symbol index for .app packages | serde, std |
-| al-semantic | In-process .NET CLR via `netcorehost` | netcorehost, std |
-| al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host | al-protocol, tokio |
-| al-diag | Diagnostic analysis | al-syntax |
-| al-cli, al-explorer, al-mcp, zed-al | Thin adapters: pure JSON-RPC clients | al-protocol only |
+| Crate | Role |
+|-------|------|
+| al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket) |
+| al-core | All state, queries, orchestration |
+| al-protocol | Shared JSON-RPC types. Types only, no logic |
+| al-syntax | Parser, type resolver, tree-sitter |
+| al-symbols | Symbol index for .app packages |
+| al-semantic | In-process .NET CLR via `netcorehost` |
+| al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host |
+| al-diag | Diagnostic tracing and logging (SQLite-backed) |
+| al-test-harness | LSP integration + data-driven tests (dev only) |
+| al-cli, al-explorer, al-mcp, zed-al | Thin adapters: pure JSON-RPC clients |
 
-## Build & Test
-
-```bash
-cargo test --workspace --exclude zed-al        # all tests
-cargo clippy --workspace --exclude zed-al      # lint
-cargo check --workspace --exclude zed-al       # quick compile check
-cargo test -p al-core                          # core unit tests only
-cargo test -p al-test-harness --test data_driven  # LSP integration tests
-```
-
-zed-al requires `wasm32-wasip1` target — always excluded from workspace commands.
+Build commands: `.claude/rules/testing.md`. Dependency rules: `.claude/rules/code-boundaries.md`.
 
 ## Key Gotchas
 
@@ -48,50 +39,52 @@ zed-al requires `wasm32-wasip1` target — always excluded from workspace comman
 
 ## Development Workflow
 
-**Zero custom executable code.** Plugins enforce methodology. Agent does the work. Hookify blocks bad patterns.
+`/start-work` to begin a session. It handles everything: health check, task selection, implementation, completion, and looping to the next task.
 
-`/start-work` to begin a session.
+### What you can tell the agent
 
-### Task lifecycle
-1. `/start-work` — compile check, check deferred-issues, find next task from `docs/plan.md`
-2. Implement with `superpowers:test-driven-development`
-3. `/pof <task_id> <wp_name>` — run tests fresh, write PoF entry with real output
-4. Update `docs/progress.md` — mark task `[x]`
-5. `/adversarial` — spawn agent that finds bugs, fixes what it can, defers the rest
-6. Continue to next task (never stop between tasks)
+| You want to... | Say |
+|---|---|
+| Start implementing tasks | `/start-work` |
+| Check if the project is healthy | `/check-health` |
+| See what's done and what's next | `/show-progress` |
+| Log a bug or issue | `/report-issue <description>` |
+| Work on fixing open issues | `/fix-issues` or `/fix-issues ISSUE-013` |
+| Stress-test specific code | `/find-bugs` |
 
-### Adversarial auto-fix loop
-The adversarial agent (background) finds bugs in completed work. It fixes bugs directly when possible. Bugs that need a different WP are appended to `.claude/deferred-issues.toml`. `/start-work` checks deferred issues at session start — when a blocking task completes, deferred bugs become active work.
+### How the workflow runs (automatic)
+
+1. `/start-work` — health check (STOP issues, compilation, boundaries, deferred bugs), find next task
+2. Agent implements with TDD
+3. `/complete-task` — tests, proof, progress update, bug finder (called automatically)
+4. At WP boundaries, `/review-milestone` runs automatically before starting the next WP
+5. Loop back to step 1
 
 ### New features
-`superpowers:brainstorming` → `superpowers:writing-plans` → `superpowers:subagent-driven-development` or `/feature-dev`.
+`superpowers:brainstorming` → `superpowers:writing-plans` → `superpowers:subagent-driven-development`.
 
 ## Enforcement
 
-- **Architecture**: 8 hookify boundary rules block wrong-direction imports on every edit
-- **Completion**: 2 hookify Stop rules require `cargo test` and `cargo check` before stopping
-- **Methodology**: superpowers enforces TDD, verification-before-completion, and Iron Law
-- **Code quality**: hookify warns on bare `Ok(())`
-- **Deferred bugs**: `.claude/deferred-issues.toml` tracks bugs that can't be fixed yet — auto-resolved when their blocking task completes
+- **Architecture**: 8 hookify boundary rules block wrong-direction imports on every edit (including al-protocol in analysis libs)
+- **Completion**: 3 hookify stop rules warn if stopping without `cargo test`, `cargo check`, or proof evidence
+- **Workflow**: hookify warns on direct tasks.toml completion edits
+- **Methodology**: superpowers enforces TDD, verification-before-completion
+- **Code quality**: hookify bare `Ok(())` rule (currently disabled — too many false positives)
+- **Session start**: `/start-work` checks STOP issues, compilation, deferred bugs, and boundary violations
+- **WP gate**: `/start-work` auto-reviews completed WPs before starting the next
+- **Deferred bugs**: `.claude/data/issues.toml` tracks bugs — auto-resolved when blocking task completes
 
-## Skills
+## Data Files
 
-| Skill | Purpose |
-|-------|---------|
-| `/start-work` | Begin session: health check → find task → implement → complete |
-| `/adversarial` | Find bugs, fix what's fixable, defer the rest |
-| `/pof` | Create Proof of Functionality entry with real test output |
-| `/ci` | Infrastructure health check (hookify, compilation, tests, config) |
-| `/fix-infra` | Spawn infra-fixer for broken .claude/ files |
-| `/report` | Progress report with metrics |
-| `/audit` | Deep WP-level audit via supervisor agent |
+All agent data in `.claude/data/` (TOML):
 
-Also: `/feature-dev`, `/code-review`, `/hookify`, `/commit`, and the full superpowers suite.
-
-## Docs
-
-- `docs/plan.md` — 44 tasks across WP0-WP11 with IDs, deps, pass/fail criteria
-- `docs/architecture.md` — full architecture, .NET bridge, error taxonomy
-- `docs/crates-map.md` — crate responsibilities and target module layout
-- `docs/agentic-schemas.md` — CLI/MCP JSON output schemas
-- `docs/proof_of_functionality.toml` — centralized evidence log (adversarial + fidelity passes)
+| File | Contents | Discovered via |
+|---|---|---|
+| `tasks.toml` | Tasks, WPs, completion status | `/start-work`, `/complete-task`, `/show-progress` |
+| `issues.toml` | Issues + deferred bugs | `/fix-issues`, `/report-issue`, `/start-work`, adversarial agent |
+| `proof.toml` | Proof of functionality evidence | `/complete-task`, `/review-milestone` |
+| `schemas.toml` | CLI/MCP JSON output schemas | `agentic-output` rule (when implementing CLI commands) |
+| `features.toml` | Feature scope, command mappings | `code-boundaries` rule (when checking scope) |
+| `settings.toml` | MS VS Code → Zed settings mapping | `agentic-output` rule (when implementing settings) |
+| `adversarial-atlas.toml` | Stress tests + fidelity gaps | adversarial agent (test catalog) |
+| `task-index.toml` | Task lookup index | `/start-work` (auto-generated) |

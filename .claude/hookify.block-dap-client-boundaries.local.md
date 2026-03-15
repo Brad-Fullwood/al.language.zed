@@ -1,20 +1,20 @@
 ---
-name: block-semantic-boundaries
+name: block-dap-client-boundaries
 enabled: true
 event: file
 action: block
 conditions:
   - field: file_path
     operator: regex_match
-    pattern: crates/al-semantic/.*\.rs$
+    pattern: crates/al-dap-client/.*\.rs$
   - field: new_text
     operator: regex_match
     pattern: use\s+al_
 ---
 
-**BLOCKED: al-semantic dependency violation**
+**BLOCKED: al-dap-client dependency violation**
 
-al-semantic is a standalone analysis library. It must NOT import ANY `al_*` crate.
+al-dap-client is a standalone analysis library. It must NOT import ANY `al_*` crate.
 
 External crate dependencies are fine — this rule only blocks internal `al_*` imports.
 

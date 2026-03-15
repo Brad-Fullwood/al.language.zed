@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry};
+use al_symbols::{MethodSymbol, SymbolEntry};
 use serde::Serialize;
 
 use crate::workspace::Workspace;

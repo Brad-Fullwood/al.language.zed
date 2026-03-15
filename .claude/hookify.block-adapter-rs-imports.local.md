@@ -9,20 +9,13 @@ conditions:
     pattern: crates/al-(cli|explorer|mcp)/.*\.rs$
   - field: new_text
     operator: regex_match
-    pattern: use\s+al_(core|syntax|symbols|semantic|diag)
+    pattern: use\s+al_(?!protocol\b)
 ---
 
 **BLOCKED: Thin adapter Rust import violation**
 
-You are importing an internal crate in a thin adapter's source code.
-
-Thin adapters (al-cli, al-explorer, al-mcp) must NOT import:
-- `al_core`
-- `al_syntax`
-- `al_symbols`
-- `al_semantic`
-- `al_diag`
-
-They may only import `al_protocol` for shared JSON-RPC types.
+Thin adapters (al-cli, al-explorer, al-mcp) may ONLY import `al_protocol` (shared JSON-RPC types).
 
 All business logic lives in al-core, accessed via JSON-RPC through the al-lsp daemon.
+
+This is a whitelist rule — any new `al_*` crate is automatically blocked.
