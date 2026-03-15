@@ -1,6 +1,6 @@
 # Zed AL Extension — Master Plan
 
-44 tasks across WP0–WP11. Each task has an ID, file ownership, dependencies, and pass/fail criteria.
+48 tasks across WP0–WP11. Each task has an ID, file ownership, dependencies, and pass/fail criteria.
 
 To begin work, run `/start-work`.
 
@@ -22,7 +22,9 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
                                                   |
                                          T401 -> T402  (WP4: DAP fold + toolchain)
                                                   |
-                                         T403 -> T404 -> T405  (WP4: agentic debugger)
+                                         T403 -> T404a -> T404b -> T404c  (WP4: al-dap-client + debug session)
+                                                        |-> T404d  (WP4: state inspection, parallel with T404c)
+                                                T404c + T404d -> T404e -> T405  (WP4: wire-up + history)
                                                   |
                                 T501 -> T502 -> T504 -> T505  (WP5: assets + tokens + analyzers)
                                                   |
@@ -253,18 +255,51 @@ T201 -> T202 -> T203      |   (WP2: DocumentStore + parse cache in al-core)
 - **Fail Criteria**: Two bridge processes spawned simultaneously. Bridge crash not detected or recovered.
 - **Estimated Complexity**: High
 
-**T404: Agentic Debugger — Headless DAP Control via Daemon**
-- **Name**: Expose DAP session control through daemon JSON-RPC so CLI/MCP can drive debugging headlessly
-- **Files**: `crates/al-core/src/debug.rs` (new), `crates/al-lsp/src/daemon.rs`, `crates/al-cli/src/main.rs`
-- **Dependencies**: T401 (DAP in al-lsp), T403 (EditorServices lifecycle), T303 (daemon mode)
-- **Pass Criteria**: `al debug start` compiles project and launches debug session via EditorServices.Host. `al debug breakpoint` sets/clears breakpoints with optional conditions. `al debug state` returns current location, call stack, and all in-scope variables with values (Record types expand to show field values). `al debug eval` evaluates expressions at current frame. `al debug step [over|into|out]` controls execution. `al debug continue` resumes to next breakpoint. `al debug stop` cleanly terminates session. MCP `al/debug` produces identical results. All schemas match `docs/agentic-schemas.md`. Scenarios 9-11 from `docs/agent-scenarios.md` pass.
-- **Fail Criteria**: Debug session requires UI interaction. Variables not readable when paused. Conditional breakpoints ignored. Session not cleaned up on stop (orphaned EditorServices.Host process).
+**T404a: al-dap-client crate — DAP protocol + DapClient**
+- **Name**: Create al-dap-client crate with DAP types, framing, DapClient, and EditorServices discovery
+- **Files**: `crates/al-dap-client/Cargo.toml` (new), `crates/al-dap-client/src/lib.rs`, `crates/al-dap-client/src/protocol.rs`, `crates/al-dap-client/src/framing.rs`, `crates/al-dap-client/src/client.rs`, `crates/al-dap-client/src/editor_services.rs`, `crates/al-dap-client/src/types.rs`
+- **Dependencies**: T403
+- **Pass Criteria**: `DapClient::spawn()` launches a subprocess, sends DAP requests, receives responses. Background event reader parses DAP frames and sends events through mpsc channel. `ensure_seq()` patches missing seq field. `find_editor_services()` discovers EditorServices.Host. All AL result types (DebugState, StackFrame, Variable, EvalResult, BreakpointHit) serialize with camelCase. `cargo test -p al-dap-client` passes. `cargo tree -p al-dap-client` shows no forbidden deps (no al-core, al-syntax, al-symbols, al-semantic).
+- **Fail Criteria**: DapClient requires al-core types. Framing can't parse standard DAP frames. Event reader blocks the sending thread.
 - **Estimated Complexity**: High
+- **Design**: `docs/superpowers/specs/2026-03-15-t404-agentic-debugger-design.md`
+
+**T404b: DebugSession lifecycle — start + stop**
+- **Name**: Implement DebugSession with full start (compile + DAP handshake) and stop (disconnect + kill)
+- **Files**: `crates/al-dap-client/src/session.rs`
+- **Dependencies**: T404a
+- **Pass Criteria**: `DebugSession::start()` compiles project via `dotnet alc`, spawns EditorServices.Host, completes initialize → configurationDone → launch sequence. `stop()` sends disconnect and kills child process. Drop guard prevents orphan processes. Launch config resolved from `.zed/debug.json` or `.vscode/launch.json`. Compilation failure returns `DapError::CompilationFailed` with compiler output.
+- **Fail Criteria**: EditorServices.Host process orphaned on stop or crash. Compilation error not surfaced. Initialize sequence fails silently.
+- **Estimated Complexity**: High
+
+**T404c: Breakpoints + execution control**
+- **Name**: Implement set_breakpoints, continue, step in DebugSession
+- **Files**: `crates/al-dap-client/src/session.rs`
+- **Dependencies**: T404b
+- **Pass Criteria**: `set_breakpoints(file, [(line, condition)])` sends DAP `setBreakpoints` with correct source path, line numbers, and optional conditions. Returns verified breakpoint info. `continue_()` sends DAP `continue` and waits for next `stopped` event. `step("over"|"into"|"out")` sends DAP `next`/`stepIn`/`stepOut` and waits for `stopped`. All return updated DebugState.
+- **Fail Criteria**: Conditional breakpoints silently ignored. Step type not mapped correctly (`"over"` → `"next"`). Execution control returns before `stopped` event.
+- **Estimated Complexity**: Medium
+
+**T404d: State inspection + eval**
+- **Name**: Implement state() with variable expansion and eval() in DebugSession
+- **Files**: `crates/al-dap-client/src/session.rs`, `crates/al-dap-client/src/types.rs`
+- **Dependencies**: T404b
+- **Pass Criteria**: `state()` returns threads, stack frames, and all in-scope variables. Variables with `variablesReference > 0` (Records) are expanded 1 level to show field values. `eval(expr)` evaluates AL expressions at the current frame and returns typed result. State correctly reports Running vs Paused vs Stopped. Drains pending events before returning.
+- **Fail Criteria**: Record fields not expanded. Variables from wrong scope. Eval fails on valid AL expressions like `Record."Field Name"`.
+- **Estimated Complexity**: Medium
+
+**T404e: Wire-up — daemon + CLI + architecture updates**
+- **Name**: Connect al-dap-client to daemon dispatcher and CLI, update architecture rules
+- **Files**: `crates/al-core/src/workspace.rs`, `crates/al-lsp/src/daemon.rs`, `crates/al-lsp/Cargo.toml`, `crates/al-cli/src/main.rs`, `.claude/rules/code-boundaries.md`, `CLAUDE.md`, `docs/architecture.md`, `docs/crates-map.md`, `docs/agentic-schemas.md`
+- **Dependencies**: T404a, T404b, T404c, T404d
+- **Pass Criteria**: `al debug start` through `al debug stop` work end-to-end via daemon JSON-RPC. JSON output matches `docs/agentic-schemas.md` debug schemas. Daemon does not auto-shutdown during active debug session. CLI uses 120s timeout for `start`, 30s for other debug commands. `cargo tree -p al-dap-client` clean. Architecture rules updated with `al-dap-client` row. MCP `al/debug` works via al-mcp's subprocess delegation.
+- **Fail Criteria**: CLI timeout on `debug start`. Daemon shuts down during active session. JSON output doesn't match schemas. Architecture boundary violated.
+- **Estimated Complexity**: Medium
 
 **T405: Debug History Recording**
 - **Name**: Record variable snapshots at each breakpoint hit for post-mortem analysis
-- **Files**: `crates/al-core/src/debug.rs`
-- **Dependencies**: T404
+- **Files**: `crates/al-dap-client/src/session.rs`
+- **Dependencies**: T404c, T404d
 - **Pass Criteria**: Every breakpoint hit records: sequence number, timestamp, location (file + line + procedure), and all in-scope variable values. `al debug history` returns full recording. `al debug history --var <name>` filters to only hits where that variable's value changed from the previous hit. History persists for the session lifetime and is cleared on `stop`.
 - **Fail Criteria**: History missing variable snapshots. `--var` filter returns hits where the variable didn't change. History grows unbounded (must cap at reasonable limit, e.g., 1000 hits).
 - **Estimated Complexity**: Medium

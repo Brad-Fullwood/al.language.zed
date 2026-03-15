@@ -9,17 +9,18 @@ al-cli / al-explorer / al-mcp  ->  al-lsp daemon (Unix socket)  ->  al-core  -> 
 zed-al (WASM)                   ->  al-lsp (stdio)               ->           ->  al-symbols
                                                                               ->  al-semantic
                                                                               ->  al-diag
+                                                                              ->  al-dap-client
 ```
 
 | Crate | Role | Dependencies |
 |-------|------|-------------|
-| al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket) | al-core, al-dap, al-protocol |
-| al-core | All state, queries, orchestration | al-syntax, al-symbols, al-semantic, al-diag |
+| al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket) | al-core, al-protocol |
+| al-core | All state, queries, orchestration | al-syntax, al-symbols, al-semantic, al-diag, al-dap-client |
 | al-protocol | Shared JSON-RPC types. Types only, no logic | serde, std |
 | al-syntax | Parser, type resolver, tree-sitter | tree-sitter, std |
 | al-symbols | Symbol index for .app packages | serde, std |
 | al-semantic | In-process .NET CLR via `netcorehost` | netcorehost, std |
-| al-dap | DAP proxy for EditorServices.Host | al-core |
+| al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host | al-protocol, tokio |
 | al-diag | Diagnostic analysis | al-syntax |
 | al-cli, al-explorer, al-mcp, zed-al | Thin adapters: pure JSON-RPC clients | al-protocol only |
 

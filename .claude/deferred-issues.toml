@@ -1,15 +1,15 @@
 # Deferred Issues
 # Known failures that are acceptable in the current phase.
-# These tasks depend on daemon mode (T303) which is not yet implemented.
 
-[T304]
-title = "al-cli as JSON-RPC Client"
-reason = "Requires T303 (daemon mode). al-cli currently calls al-core directly. Will be rewritten to connect to al-lsp daemon via JSON-RPC."
-acceptable_failures = ["al-cli imports al-core directly", "no daemon client code exists yet"]
-blocked_by = "T303"
-
-[T305]
-title = "al-mcp as JSON-RPC Client"
-reason = "Requires T303 (daemon mode). al-mcp currently calls al-core directly. Will be rewritten to connect to al-lsp daemon via JSON-RPC."
-acceptable_failures = ["al-mcp imports al-core directly", "no daemon client code exists yet"]
-blocked_by = "T303"
+[[issue]]
+id = "T402-doctor-blocks-tokio-worker"
+task = "T402"
+description = """
+doctor() in al-core/src/toolchain.rs spawns a `dotnet --version` subprocess
+synchronously inside dispatch_setup(), which is called from a tokio task in
+daemon.rs. This blocks a tokio worker thread for the duration of the subprocess.
+Should use tokio::task::spawn_blocking or tokio::process::Command.
+"""
+file = "crates/al-core/src/toolchain.rs:133"
+deferred_to = "T610"
+reason = "Requires making dispatch_setup async or using spawn_blocking wrapper — small but requires daemon.rs refactor."

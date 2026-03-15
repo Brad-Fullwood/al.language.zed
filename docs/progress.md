@@ -70,20 +70,24 @@ This file is maintained by the PM agent during execution. Updated after every mi
 - [x] `al-core::queries::inlay_hints` implemented. *(2026-03-14: T302)*
 - [x] `al-core::queries::document_symbols` implemented. *(2026-03-14: T302. resolution.rs (1296 lines) moved to al-core. al-lsp handlers thinned to 5-15 lines each. al-lsp/src/resolution.rs and parsing.rs deleted. 459/461 tests pass unchanged.)*
 - [ ] `al-lsp` thinned to transport-only (no `use al_syntax::` or `use al_symbols::`).
-- [ ] `al-cli` refactored to pure JSON-RPC daemon client (no al-core dependency).
-- [ ] Thin-adapter verification passes (`cargo tree` check).
+- [x] `al-cli` refactored to pure JSON-RPC daemon client (T304). *(2026-03-14: Complete rewrite as thin JSON-RPC client. DaemonClient module auto-starts al-lsp daemon. 26 daemon request methods. Zero compile-time dependency on al-core/al-syntax/al-symbols/al-semantic/al-diag. `cargo tree -p al-cli` clean. 34/34 integration tests pass.)*
+- [x] `al-mcp` verified as thin adapter (T305). *(2026-03-14: Already a subprocess-delegation server — shells out to `al --json`. Zero al-core dependency. 20 MCP tools. Output identical to al-cli --json by construction.)*
+- [ ] Thin-adapter verification passes (`cargo tree` check for al-explorer).
 
 **T303: Daemon Mode**
 - [x] `al-lsp daemon --project <path>` implemented. *(2026-03-14: Unix socket JSON-RPC server at `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock`. 10 query dispatchers (hover, definition, references, completions, signatureHelp, rename, documentSymbols, foldingRanges, semanticTokens, ping/status/shutdown). Workspace init: project discovery, symbol loading, .al file scanning. 30-min idle timeout. Socket cleanup via Drop guard. Zero test regressions.)*
 
 **WP4: DAP Integration, Toolchain Logic & Agentic Debugger**
-- [ ] `al-dap` merged into `al-lsp::dap`.
-- [ ] DAP proxy wired through `al-core::toolchain`.
-- [ ] EditorServices.Host lifecycle managed by `al-core`.
+- [x] `al-dap` merged into `al-lsp::dap` (T401). *(2026-03-14: lib.rs + editor_services.rs moved to al-lsp/src/dap/. al-dap crate deleted. main.rs updated. Zero test regressions.)*
+- [x] Toolchain management in al-core (T402). *(2026-03-14: validate_toolchain(), doctor() in al-core::toolchain. DoctorReport struct with camelCase JSON. dispatch_setup thinned from 66 to 5 lines. 5 unit tests. Deferred issue T304-client-no-retry also fixed: DaemonClient retries 3x with 500ms backoff on "initializing" errors, 3 tests.)*
+- [x] EditorServices lifecycle managed by `al-core::semantic` (T403). *(2026-03-14: get_or_init_bridge(), restart_bridge(max 3), shutdown_bridge() in al-core. server.rs delegates. dispatch_compile uses workspace bridge, not per-request bridge. bridge_restart_count in Workspace. 5 unit tests.)*
+- [ ] `al-dap-client` crate created — DAP protocol, framing, DapClient, EditorServices discovery, AL result types (T404a).
+- [ ] `DebugSession` lifecycle — start (compile + DAP handshake) and stop (disconnect + kill + Drop guard) (T404b).
+- [ ] Breakpoints + execution control — set_breakpoints, continue, step (T404c).
+- [ ] State inspection + eval — threads, stack, variables with Record expansion, eval (T404d).
+- [ ] Wire-up — daemon dispatch_debug, CLI `al debug` subcommands, idle timeout protection, architecture rule updates (T404e).
+- [ ] Debug history recording — variable snapshots at breakpoint hits, `--var` filter (T405).
 - [ ] DAP locators implemented for one-click test debugging.
-- [ ] Headless DAP control via daemon (`al debug start/breakpoint/state/eval/step/continue/stop`).
-- [ ] Debug history recording (variable snapshots at breakpoint hits, `--var` filter).
-- [ ] MCP `al/debug` tool with identical capabilities.
 
 ### Phase 3: Assets & Zed Integration
 **WP5: Language Config & Asset Parity**

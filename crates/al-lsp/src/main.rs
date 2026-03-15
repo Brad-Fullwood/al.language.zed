@@ -129,7 +129,7 @@ async fn main() {
     if args.iter().any(|a| a == "--dap") {
         // DAP mode
         let toolchain = al_core::toolchain::find_toolchain().expect("ALTool not found");
-        let _ = al_dap::run_dap_server(&toolchain).await;
+        let _ = al_lsp::dap::run_dap_server(&toolchain).await;
     } else if args.iter().any(|a| a == "daemon") {
         // Daemon mode — JSON-RPC over Unix socket
         let project_arg = args.iter()

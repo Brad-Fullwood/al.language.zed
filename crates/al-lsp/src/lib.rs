@@ -1,6 +1,7 @@
 //! AL Language Server — LSP implementation.
 
 pub mod daemon;
+pub mod dap;
 pub mod server;
 pub mod handlers;
 pub mod hover;

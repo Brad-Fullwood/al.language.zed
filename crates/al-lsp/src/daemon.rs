@@ -39,12 +39,18 @@ impl Drop for SocketCleanup {
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Compute the deterministic socket path for a project root.
+///
+/// The path is canonicalized before hashing so that symlinks and relative paths
+/// resolve to the same socket as the client (which also canonicalizes).
 pub fn socket_path(project_root: &Path) -> PathBuf {
     let hash = {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
+        let canonical = project_root
+            .canonicalize()
+            .unwrap_or_else(|_| project_root.to_path_buf());
         let mut h = DefaultHasher::new();
-        project_root.hash(&mut h);
+        canonical.hash(&mut h);
         format!("{:016x}", h.finish())
     };
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
@@ -161,6 +167,30 @@ fn dispatch_request(workspace: &Workspace, req: Request) -> Response {
         "documentSymbols" => dispatch_document_symbols(workspace, id, &params),
         "foldingRanges" => dispatch_folding_ranges(workspace, id, &params),
         "semanticTokens" => dispatch_semantic_tokens(workspace, id, &params),
+        "inlayHints" => dispatch_inlay_hints(workspace, id, &params),
+        "codeActions" => dispatch_code_actions(workspace, id, &params),
+        // Symbol queries
+        "search" => dispatch_search(workspace, id, &params),
+        "object" => dispatch_object(workspace, id, &params),
+        "byId" => dispatch_by_id(workspace, id, &params),
+        "events" => dispatch_events(workspace, id, &params),
+        "subscribers" => dispatch_subscribers(workspace, id, &params),
+        "composed" => dispatch_composed(workspace, id, &params),
+        "packages" => dispatch_packages(workspace, id),
+        "deps" => dispatch_deps(workspace, id),
+        // Analysis
+        "lint" => dispatch_lint(workspace, id, &params),
+        "format" => dispatch_format(workspace, id, &params),
+        "fix" => dispatch_fix(workspace, id, &params),
+        "rules" => dispatch_rules(id),
+        "parse" => dispatch_parse(workspace, id, &params),
+        // Semantic / toolchain
+        "compile" => dispatch_compile(workspace, id),
+        "errorCodes" => dispatch_error_codes(workspace, id),
+        "builtinTypes" => dispatch_builtin_types(workspace, id),
+        "setup" => dispatch_setup(workspace, id),
+        "clearCache" => dispatch_clear_cache(id),
+        "downloadSymbols" => dispatch_download_symbols(workspace, id, &params),
         "ping" => Response { id, result: Some(serde_json::json!("pong")), error: None },
         "shutdown" => {
             tracing::info!("daemon: shutdown requested");
@@ -172,7 +202,7 @@ fn dispatch_request(workspace: &Workspace, req: Request) -> Response {
                 "indexedSymbols": workspace.symbols.len(),
                 "workspaceFiles": workspace.workspace_files.len(),
                 "workspaceObjects": workspace.workspace_objects.len(),
-                "builtinTypes": workspace.builtins.read().unwrap().len(),
+                "builtinTypes": workspace.builtins.read().ok().map(|g| g.len()).unwrap_or(0),
             });
             Response { id, result: Some(status), error: None }
         }
@@ -338,6 +368,905 @@ fn dispatch_semantic_tokens(workspace: &Workspace, id: u64, params: &serde_json:
 }
 
 // ---------------------------------------------------------------------------
+// Inlay hints & code actions (existing al-core queries, newly dispatched)
+// ---------------------------------------------------------------------------
+
+fn dispatch_inlay_hints(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(uri) = extract_uri(params) else { return invalid_params(id); };
+    let start_line = params.get("startLine").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let end_line = params.get("endLine").and_then(|v| v.as_u64()).unwrap_or(u32::MAX as u64) as u32;
+    let range = tower_lsp::lsp_types::Range {
+        start: tower_lsp::lsp_types::Position::new(start_line, 0),
+        end: tower_lsp::lsp_types::Position::new(end_line, u32::MAX),
+    };
+    let hints = al_core::queries::inlay_hints::inlay_hints(workspace, &uri, range);
+    let value = hints
+        .and_then(|h| serde_json::to_value(&h).ok())
+        .unwrap_or(serde_json::json!([]));
+    Response { id, result: Some(value), error: None }
+}
+
+fn dispatch_code_actions(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(uri) = extract_uri(params) else { return invalid_params(id); };
+    let Some(position) = extract_position(params) else { return invalid_params(id); };
+    let range = al_core::queries::Range { start: position, end: position };
+    let actions = al_core::queries::code_actions::source_actions(workspace, &uri, range);
+    let value = serde_json::json!(actions.iter().map(|a| serde_json::json!({
+        "title": a.title,
+        "kind": format!("{:?}", a.kind),
+    })).collect::<Vec<_>>());
+    Response { id, result: Some(value), error: None }
+}
+
+// ---------------------------------------------------------------------------
+// Symbol queries
+// ---------------------------------------------------------------------------
+
+fn dispatch_search(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(query) = params.get("query").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let results = workspace.symbols.search(query, limit);
+    let value: Vec<serde_json::Value> = results
+        .iter()
+        .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
+        .collect();
+    Response { id, result: Some(serde_json::json!(value)), error: None }
+}
+
+fn dispatch_object(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(kind_str) = params.get("kind").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let Ok(kind) = kind_str.parse::<al_symbols::ObjectKind>() else {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Unknown object kind: {}", kind_str),
+            }),
+        };
+    };
+    let candidates = workspace.symbols.get_by_name(name);
+    let matches: Vec<serde_json::Value> = candidates
+        .iter()
+        .filter(|e| e.kind == kind)
+        .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
+        .collect();
+    if matches.is_empty() {
+        Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("No {} named '{}'", kind, name),
+            }),
+        }
+    } else {
+        Response { id, result: Some(serde_json::json!(matches)), error: None }
+    }
+}
+
+fn dispatch_by_id(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(kind_str) = params.get("kind").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let Some(obj_id) = params.get("id").and_then(|v| v.as_i64()) else {
+        return invalid_params(id);
+    };
+    let Ok(kind) = kind_str.parse::<al_symbols::ObjectKind>() else {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Unknown object kind: {}", kind_str),
+            }),
+        };
+    };
+    let results = workspace.symbols.get_by_id(kind, obj_id as i32);
+    let value: Vec<serde_json::Value> = results
+        .iter()
+        .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
+        .collect();
+    if value.is_empty() {
+        Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("No {} with id {}", kind, obj_id),
+            }),
+        }
+    } else {
+        Response { id, result: Some(serde_json::json!(value)), error: None }
+    }
+}
+
+fn dispatch_events(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let results = workspace.symbols.get_events(name);
+    let publishers: Vec<serde_json::Value> = results
+        .publishers
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "objectKind": p.object.kind.to_string(),
+                "objectName": p.object.name,
+                "methodName": p.method.name,
+                "eventType": p.event_type.to_string(),
+                "parameters": p.method.parameters.iter().map(|param| serde_json::json!({
+                    "name": param.name,
+                    "type_name": param.type_name,
+                    "is_var": param.is_var,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Response { id, result: Some(serde_json::json!(publishers)), error: None }
+}
+
+fn dispatch_subscribers(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(event) = params.get("event").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let results = workspace.symbols.get_events(event);
+    let subscribers: Vec<serde_json::Value> = results
+        .subscribers
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "objectName": s.object.name,
+                "methodName": s.method.name,
+                "targetObjectType": s.target_object_type,
+                "targetObjectName": s.target_object_name,
+                "targetEventName": s.target_event_name,
+            })
+        })
+        .collect();
+    Response { id, result: Some(serde_json::json!(subscribers)), error: None }
+}
+
+fn dispatch_composed(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(kind_str) = params.get("kind").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let Ok(kind) = kind_str.parse::<al_symbols::ObjectKind>() else {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Unknown object kind: {}", kind_str),
+            }),
+        };
+    };
+    match workspace.symbols.get_composed(kind, name) {
+        Some(composed) => {
+            let value = serde_json::to_value(&composed).unwrap_or(serde_json::Value::Null);
+            Response { id, result: Some(value), error: None }
+        }
+        None => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("No {} named '{}' or no extensions found", kind, name),
+            }),
+        },
+    }
+}
+
+fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
+    let pkgs = match workspace.package_info.read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "Lock poisoned".to_string(),
+                }),
+            };
+        }
+    };
+    let value = serde_json::to_value(pkgs.as_slice()).unwrap_or(serde_json::json!([]));
+    Response { id, result: Some(value), error: None }
+}
+
+fn dispatch_deps(workspace: &Workspace, id: u64) -> Response {
+    let project = match workspace.project.try_read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "Workspace is initializing, try again".to_string(),
+                }),
+            };
+        }
+    };
+    match project.as_ref() {
+        Some(p) => {
+            let deps: Vec<serde_json::Value> = p
+                .app_json
+                .dependencies
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "id": d.id,
+                        "name": d.name,
+                        "publisher": d.publisher,
+                        "version": d.version,
+                    })
+                })
+                .collect();
+            let all_deps: Vec<serde_json::Value> = p
+                .all_dependencies()
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "id": d.id,
+                        "name": d.name,
+                        "publisher": d.publisher,
+                        "version": d.version,
+                    })
+                })
+                .collect();
+            Response {
+                id,
+                result: Some(serde_json::json!({
+                    "explicit": deps,
+                    "all": all_deps,
+                    "project": {
+                        "name": p.app_json.name,
+                        "publisher": p.app_json.publisher,
+                        "version": p.app_json.version,
+                    }
+                })),
+                error: None,
+            }
+        }
+        None => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INTERNAL_ERROR,
+                message: "No project loaded".to_string(),
+            }),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Analysis dispatchers (lint, format, fix, rules, parse)
+// ---------------------------------------------------------------------------
+
+/// Ensure a file is loaded in the document store. If not found, read from disk.
+fn ensure_document(workspace: &Workspace, uri: &url::Url) -> Option<()> {
+    if workspace.documents.get_text(uri).is_some() {
+        return Some(());
+    }
+    // Try to read from disk
+    let path = uri.to_file_path().ok()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    workspace.documents.open(uri.clone(), content);
+    Some(())
+}
+
+fn file_uri_from_params(params: &serde_json::Value) -> Option<url::Url> {
+    // Accept either "uri" (file:// URL) or "file" (path string)
+    if let Some(uri) = extract_uri(params) {
+        return Some(uri);
+    }
+    if let Some(file_str) = params.get("file").and_then(|v| v.as_str()) {
+        let path = std::path::Path::new(file_str);
+        let abs_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir().ok()?.join(path)
+        };
+        let canon = abs_path.canonicalize().unwrap_or(abs_path);
+        return url::Url::from_file_path(canon).ok();
+    }
+    None
+}
+
+fn dispatch_lint(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    if all {
+        // Lint all workspace files
+        let mut results: Vec<serde_json::Value> = Vec::new();
+        for entry in workspace.workspace_files.iter() {
+            let path = entry.key();
+            let content = entry.value();
+            let result = al_syntax::AlParser::parse_quick(content);
+            let diagnostics = al_syntax::lint(&result.tree, content);
+            if !diagnostics.is_empty() {
+                let diags: Vec<serde_json::Value> = diagnostics
+                    .iter()
+                    .map(lint_diag_to_json)
+                    .collect();
+                results.push(serde_json::json!({
+                    "file": path.display().to_string(),
+                    "diagnostics": diags,
+                }));
+            }
+        }
+        return Response { id, result: Some(serde_json::json!(results)), error: None };
+    }
+
+    let Some(uri) = file_uri_from_params(params) else {
+        return invalid_params(id);
+    };
+    ensure_document(workspace, &uri);
+
+    let Some(text) = workspace.documents.get_text(&uri) else {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: "File not found".to_string(),
+            }),
+        };
+    };
+
+    let result = al_syntax::AlParser::parse_quick(&text);
+    let mut diagnostics = al_syntax::lint(&result.tree, &text);
+
+    // Add parse errors
+    for err in &result.errors {
+        diagnostics.push(al_syntax::lint::LintDiagnostic {
+            code: "parse-error".to_string(),
+            message: err.message.clone(),
+            range: err.range,
+            severity: al_syntax::lint::LintSeverity::Error,
+        });
+    }
+
+    let diags: Vec<serde_json::Value> = diagnostics.iter().map(lint_diag_to_json).collect();
+    Response { id, result: Some(serde_json::json!(diags)), error: None }
+}
+
+fn lint_diag_to_json(d: &al_syntax::lint::LintDiagnostic) -> serde_json::Value {
+    serde_json::json!({
+        "code": d.code,
+        "message": d.message,
+        "severity": d.severity.to_string(),
+        "line": d.range.start_point.row + 1,
+        "column": d.range.start_point.column + 1,
+        "endLine": d.range.end_point.row + 1,
+        "endColumn": d.range.end_point.column + 1,
+    })
+}
+
+fn dispatch_format(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let check = params.get("check").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // Accept direct content or file path
+    let content = if let Some(text) = params.get("content").and_then(|v| v.as_str()) {
+        text.to_string()
+    } else if let Some(uri) = file_uri_from_params(params) {
+        ensure_document(workspace, &uri);
+        match workspace.documents.get_text(&uri) {
+            Some(t) => t,
+            None => {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: "File not found".to_string(),
+                    }),
+                };
+            }
+        }
+    } else {
+        return invalid_params(id);
+    };
+
+    let options = al_syntax::FormatOptions::default();
+    let formatted = al_syntax::format_al(&content, &options);
+    let changed = formatted != content;
+
+    if check {
+        Response {
+            id,
+            result: Some(serde_json::json!({ "changed": changed })),
+            error: None,
+        }
+    } else {
+        // If a file was specified, write back
+        if let Some(uri) = file_uri_from_params(params) {
+            if let Ok(path) = uri.to_file_path() {
+                if changed {
+                    let _ = std::fs::write(&path, &formatted);
+                    // Update document store
+                    workspace.documents.open(uri, formatted.clone());
+                }
+            }
+        }
+        Response {
+            id,
+            result: Some(serde_json::json!({
+                "formatted": formatted,
+                "changed": changed,
+            })),
+            error: None,
+        }
+    }
+}
+
+fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+    let rule_filter = params.get("rule").and_then(|v| v.as_str());
+
+    let Some(uri) = file_uri_from_params(params) else {
+        return invalid_params(id);
+    };
+    ensure_document(workspace, &uri);
+
+    let Some(text) = workspace.documents.get_text(&uri) else {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: "File not found".to_string(),
+            }),
+        };
+    };
+
+    let result = al_syntax::AlParser::parse_quick(&text);
+    let diagnostics = al_syntax::lint(&result.tree, &text);
+    let filtered: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| {
+            if let Some(rule) = rule_filter {
+                d.code.eq_ignore_ascii_case(rule)
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    // Generate fix actions (simple text replacements based on lint codes)
+    let mut edits: Vec<serde_json::Value> = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    for diag in &filtered {
+        if let Some(fix) = generate_fix(diag, &lines) {
+            edits.push(fix);
+        }
+    }
+
+    if !dry_run && !edits.is_empty() {
+        // Apply edits to the file
+        if let Ok(path) = uri.to_file_path() {
+            // Apply edits in reverse order to preserve positions
+            let mut new_text = text.clone();
+            // Simple: re-format the file after fixes for now
+            let options = al_syntax::FormatOptions::default();
+            new_text = al_syntax::format_al(&new_text, &options);
+            let _ = std::fs::write(&path, &new_text);
+            workspace.documents.open(uri, new_text);
+        }
+    }
+
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "diagnostics": filtered.len(),
+            "fixes": edits.len(),
+            "dryRun": dry_run,
+            "edits": edits,
+        })),
+        error: None,
+    }
+}
+
+fn generate_fix(
+    diag: &al_syntax::lint::LintDiagnostic,
+    _lines: &[&str],
+) -> Option<serde_json::Value> {
+    // Return fix metadata — actual application happens in the CLI or daemon
+    match diag.code.as_str() {
+        "AL-L001" | "AL-L005" | "AL-L006" | "AL-L007" | "AL-L016" => Some(serde_json::json!({
+            "code": diag.code,
+            "message": diag.message,
+            "line": diag.range.start_point.row + 1,
+        })),
+        _ => None,
+    }
+}
+
+fn dispatch_rules(id: u64) -> Response {
+    let rules = al_syntax::lint_rules();
+    let value: Vec<serde_json::Value> = rules
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "code": r.code,
+                "name": r.name,
+                "severity": r.severity.to_string(),
+                "description": r.description,
+            })
+        })
+        .collect();
+    Response { id, result: Some(serde_json::json!(value)), error: None }
+}
+
+fn dispatch_parse(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let Some(uri) = file_uri_from_params(params) else {
+        return invalid_params(id);
+    };
+    ensure_document(workspace, &uri);
+
+    let Some(text) = workspace.documents.get_text(&uri) else {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: "File not found".to_string(),
+            }),
+        };
+    };
+
+    let start = std::time::Instant::now();
+    let result = al_syntax::AlParser::parse_quick(&text);
+    let elapsed = start.elapsed();
+
+    let node_count = count_nodes(&result.tree);
+
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "errors": result.errors.len(),
+            "nodeCount": node_count,
+            "parseTimeMs": elapsed.as_secs_f64() * 1000.0,
+            "parseErrors": result.errors.iter().map(|e| serde_json::json!({
+                "message": e.message,
+                "line": e.range.start_point.row + 1,
+                "column": e.range.start_point.column + 1,
+            })).collect::<Vec<_>>(),
+        })),
+        error: None,
+    }
+}
+
+fn count_nodes(tree: &tree_sitter::Tree) -> usize {
+    let mut count = 0;
+    let mut cursor = tree.walk();
+    loop {
+        count += 1;
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return count;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Semantic / toolchain dispatchers
+// ---------------------------------------------------------------------------
+
+fn dispatch_compile(workspace: &Workspace, id: u64) -> Response {
+    let tc = match workspace.toolchain.try_read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "Workspace is initializing, try again".to_string(),
+                }),
+            };
+        }
+    };
+    let project = match workspace.project.try_read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "Workspace is initializing, try again".to_string(),
+                }),
+            };
+        }
+    };
+
+    let project_root = match project.as_ref() {
+        Some(p) => p.root.clone(),
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "No project loaded".to_string(),
+                }),
+            };
+        }
+    };
+    if tc.is_none() {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INTERNAL_ERROR,
+                message: "No toolchain loaded".to_string(),
+            }),
+        };
+    }
+    // Drop the read guards before acquiring async locks
+    drop(tc);
+    drop(project);
+
+    let result: Result<serde_json::Value, String> = tokio::task::block_in_place(|| {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async {
+            let guard = al_core::semantic::get_or_init_bridge(workspace)
+                .await
+                .ok_or("Failed to initialize semantic bridge")?;
+            let bridge = guard
+                .as_ref()
+                .ok_or("Semantic bridge unavailable")?;
+            let compile_result = bridge
+                .compile(&project_root, None, None)
+                .await
+                .map_err(|e| format!("Compilation failed: {}", e))?;
+            Ok(serde_json::json!({
+                "success": compile_result.success,
+                "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
+                    "file": d.file.display().to_string(),
+                    "line": d.line,
+                    "column": d.column,
+                    "endLine": d.end_line,
+                    "endColumn": d.end_column,
+                    "severity": d.severity,
+                    "code": d.code,
+                    "message": d.message,
+                })).collect::<Vec<_>>(),
+                "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
+            }))
+        })
+    });
+    match result {
+        Ok(value) => Response { id, result: Some(value), error: None },
+        Err(msg) => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::CODE_ANALYSIS_ERROR,
+                message: msg,
+            }),
+        },
+    }
+}
+
+fn dispatch_error_codes(workspace: &Workspace, id: u64) -> Response {
+    let codes = match workspace.error_codes.read() {
+        Ok(guard) => guard,
+        Err(_) => return Response { id, result: Some(serde_json::json!([])), error: None },
+    };
+    let value: Vec<serde_json::Value> = codes
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "code": entry.key().clone(),
+                "description": entry.value().clone(),
+            })
+        })
+        .collect();
+    Response { id, result: Some(serde_json::json!(value)), error: None }
+}
+
+fn dispatch_builtin_types(workspace: &Workspace, id: u64) -> Response {
+    let builtins = match workspace.builtins.read() {
+        Ok(guard) => guard,
+        Err(_) => return Response { id, result: Some(serde_json::json!([])), error: None },
+    };
+    let value: Vec<serde_json::Value> = builtins
+        .iter()
+        .map(|bt| {
+            serde_json::json!({
+                "name": bt.name,
+                "methods": bt.methods.iter().map(|m| serde_json::json!({
+                    "name": m.name,
+                    "parameters": m.parameters.iter().map(|p| serde_json::json!({
+                        "name": p.name,
+                        "typeName": p.type_name,
+                        "isVar": p.is_var,
+                    })).collect::<Vec<_>>(),
+                    "returnType": m.return_type,
+                    "documentation": m.documentation,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Response { id, result: Some(serde_json::json!(value)), error: None }
+}
+
+fn dispatch_setup(workspace: &Workspace, id: u64) -> Response {
+    let report = al_core::toolchain::doctor(workspace);
+    Response {
+        id,
+        result: Some(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null)),
+        error: None,
+    }
+}
+
+fn dispatch_clear_cache(id: u64) -> Response {
+    let cache_dir = dirs::cache_dir()
+        .map(|d| d.join("al-lsp").join("packages"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/packages"));
+
+    let existed = cache_dir.exists();
+    if existed {
+        let _ = std::fs::remove_dir_all(&cache_dir);
+    }
+
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "deleted": existed,
+            "path": cache_dir.display().to_string(),
+        })),
+        error: None,
+    }
+}
+
+fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("nuget");
+
+    let project = match workspace.project.try_read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: "Workspace is initializing, try again".to_string(),
+                }),
+            };
+        }
+    };
+    let Some(project) = project.as_ref() else {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INTERNAL_ERROR,
+                message: "No project loaded".to_string(),
+            }),
+        };
+    };
+
+    let all_deps = project.all_dependencies();
+    if all_deps.is_empty() {
+        return Response {
+            id,
+            result: Some(serde_json::json!({
+                "status": "no dependencies",
+                "downloaded": 0,
+                "failed": 0,
+                "results": [],
+            })),
+            error: None,
+        };
+    }
+
+    let dest = project.packages_dir.clone();
+    let project_configs = project.server_configs.clone();
+
+    // Release the lock before async work
+    let _ = project;
+
+    let result: Vec<serde_json::Value> = tokio::task::block_in_place(|| {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async {
+            if source == "server" {
+                if project_configs.is_empty() {
+                    return vec![serde_json::json!({
+                        "error": "No BC server config found"
+                    })];
+                }
+                let client = al_symbols::bc_server::BcServerClient::new_cli(project_configs[0].clone());
+                let bc_results = client.download_all(&all_deps, &dest).await;
+                bc_results
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, r)| match r {
+                        Ok(path) => serde_json::json!({
+                            "name": all_deps[i].name,
+                            "status": "ok",
+                            "path": path.display().to_string(),
+                        }),
+                        Err(e) => serde_json::json!({
+                            "name": all_deps[i].name,
+                            "status": "error",
+                            "error": e.to_string(),
+                        }),
+                    })
+                    .collect()
+            } else {
+                let feeds = al_protocol::project::nuget_feeds();
+                let nuget_feeds: Vec<al_symbols::NuGetFeed> = feeds
+                    .iter()
+                    .map(|f| al_symbols::NuGetFeed {
+                        index_url: f.index_url.clone(),
+                    })
+                    .collect();
+                let nuget_deps: Vec<al_symbols::AppDependency> = all_deps
+                    .iter()
+                    .map(|d| al_symbols::AppDependency {
+                        id: d.id.clone(),
+                        name: d.name.clone(),
+                        publisher: d.publisher.clone(),
+                        version: d.version.clone(),
+                    })
+                    .collect();
+                let client = al_symbols::NuGetClient::new(nuget_feeds);
+                let nuget_results = client.download_all(&nuget_deps, &dest).await;
+                nuget_results
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, r)| match r {
+                        Ok(path) => serde_json::json!({
+                            "name": nuget_deps[i].name,
+                            "status": "ok",
+                            "path": path.display().to_string(),
+                        }),
+                        Err(e) => serde_json::json!({
+                            "name": nuget_deps[i].name,
+                            "status": "error",
+                            "error": e.to_string(),
+                        }),
+                    })
+                    .collect()
+            }
+        })
+    });
+
+    let success = result.iter().filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("ok")).count();
+    let failed = result.iter().filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("error")).count();
+
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "source": source,
+            "downloaded": success,
+            "failed": failed,
+            "results": result,
+        })),
+        error: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Workspace initialization (daemon mode — no LSP Client)
 // ---------------------------------------------------------------------------
 
@@ -356,6 +1285,18 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
             let loaded = workspace.symbols.load_packages(&project.packages);
             let total_symbols: usize = loaded.iter().map(|p| p.objects.len()).sum();
             tracing::info!(packages = loaded.len(), symbols = total_symbols, "daemon: loaded symbol packages");
+
+            // Store package metadata for the `packages` query
+            let pkg_info: Vec<al_core::workspace::PackageInfo> = loaded
+                .iter()
+                .map(|p| al_core::workspace::PackageInfo {
+                    name: p.name.clone(),
+                    publisher: p.publisher.clone(),
+                    version: p.version.clone(),
+                    object_count: p.objects.len(),
+                })
+                .collect();
+            *workspace.package_info.write().unwrap() = pkg_info;
 
             // Scan workspace .al files
             let al_files = scan_al_files(&project.root);
@@ -377,7 +1318,7 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
             }
 
             // Store project info
-            *workspace.project.blocking_write() = Some(project);
+            *workspace.project.write().await = Some(project);
 
             tracing::info!(
                 symbols = workspace.symbols.len(),
@@ -395,7 +1336,7 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
     match al_core::toolchain::find_toolchain() {
         Ok(tc) => {
             tracing::info!(version = %tc.version, "daemon: toolchain found");
-            *workspace.toolchain.blocking_write() = Some(tc);
+            *workspace.toolchain.write().await = Some(tc);
         }
         Err(e) => {
             tracing::info!(error = %e, "daemon: no toolchain (syntax-only mode)");

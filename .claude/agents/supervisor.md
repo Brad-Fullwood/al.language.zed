@@ -1,7 +1,7 @@
 ---
 name: supervisor
 description: WP auditor — verifies all tasks have evidence, tests pass, architecture holds, and code quality meets standards
-model: sonnet
+model: opus
 tools:
   - Bash
   - Read

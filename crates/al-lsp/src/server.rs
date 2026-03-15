@@ -183,38 +183,11 @@ impl AlServer {
 
     /// Get the semantic bridge, initializing it lazily if needed.
     ///
-    /// Returns None if no toolchain is available or bridge init fails.
+    /// Delegates to `al_core::semantic::get_or_init_bridge`.
     pub(crate) async fn get_or_init_bridge(
         &self,
     ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<al_semantic::SemanticBridge>>> {
-        // Fast path: bridge already initialized
-        {
-            let guard = self.workspace.semantic.read().await;
-            if guard.is_some() {
-                return Some(guard);
-            }
-        }
-
-        // Slow path: initialize the bridge
-        let toolchain = self.workspace.toolchain.read().await.clone()?;
-        let mut write_guard = self.workspace.semantic.write().await;
-
-        // Double-check after acquiring write lock (another task may have init'd)
-        if write_guard.is_some() {
-            return Some(write_guard.downgrade());
-        }
-
-        match al_semantic::SemanticBridge::new(&toolchain) {
-            Ok(bridge) => {
-                tracing::info!("Semantic bridge initialized (lazy)");
-                *write_guard = Some(bridge);
-                Some(write_guard.downgrade())
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to initialize semantic bridge");
-                None
-            }
-        }
+        al_core::semantic::get_or_init_bridge(&self.workspace).await
     }
 
     /// Bridge fallback for completions — calls CodeAnalysis completions_at.
@@ -366,8 +339,7 @@ impl LanguageServer for AlServer {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        // Drop the semantic bridge (CLR shuts down with it)
-        let _ = self.workspace.semantic.write().await.take();
+        al_core::semantic::shutdown_bridge(&self.workspace).await;
         Ok(())
     }
 

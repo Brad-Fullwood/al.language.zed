@@ -11,6 +11,8 @@
 //! ```text
 //! Zed ──DAP/stdio──► al-lsp --dap ──stdio──► EditorServices.Host /startDebugging
 //! ```
+//!
+//! Merged from the standalone `al-dap` crate (T401).
 
 mod editor_services;
 
@@ -145,7 +147,6 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
 // Message patching
 // ---------------------------------------------------------------------------
 
-/// Patch outgoing messages (Zed → EditorServices.Host).
 async fn patch_outgoing(
     body: &[u8],
     toolchain: &AlToolchain,
@@ -161,7 +162,6 @@ async fn patch_outgoing(
     let command = msg.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
     if command == "launch" {
-        // Send compilation start message
         let _ = send_output_event(output_writer, seq_counter, "Compiling AL project...\r\n").await;
 
         match compile_project(toolchain, project_root).await {
@@ -180,7 +180,6 @@ async fn patch_outgoing(
                     &format!("Compilation failed: {msg}\r\n"),
                 )
                 .await;
-                // Continue — EditorServices will also report the error
             }
             Err(e) => {
                 warn!("AL compilation failed: {e}");
@@ -199,7 +198,6 @@ async fn patch_outgoing(
     serde_json::to_vec(&msg).unwrap_or_else(|_| body.to_vec())
 }
 
-/// Send a DAP `output` event to the client (Zed's debug console).
 async fn send_output_event(
     writer: &mut io::Stdout,
     seq_counter: &AtomicI64,
@@ -220,7 +218,6 @@ async fn send_output_event(
     write_dap_frame(writer, &body).await
 }
 
-/// Transform launch.json string enums to the types EditorServices.Host expects.
 fn patch_launch_args(args: &mut serde_json::Map<String, serde_json::Value>) {
     if let Some(val) = args.get("breakOnError").cloned() {
         if let Some(s) = val.as_str() {
@@ -246,7 +243,6 @@ fn patch_launch_args(args: &mut serde_json::Map<String, serde_json::Value>) {
 // AL compilation
 // ---------------------------------------------------------------------------
 
-/// Compile the AL project using `alc`. Returns compiler output on success.
 async fn compile_project(toolchain: &AlToolchain, project_root: &str) -> Result<String, DapError> {
     let project_path = Path::new(project_root);
     if !project_path.join("app.json").is_file() {
@@ -283,7 +279,6 @@ async fn compile_project(toolchain: &AlToolchain, project_root: &str) -> Result<
         cmd.arg(format!("/analyzer:{}", analyzer_paths.join(",")));
     }
 
-    // Capture output instead of inheriting
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
 

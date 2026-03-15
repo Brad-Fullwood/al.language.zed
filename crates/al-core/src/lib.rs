@@ -11,5 +11,6 @@ pub mod parsing;
 pub mod project;
 pub mod queries;
 pub(crate) mod resolution;
+pub mod semantic;
 pub mod toolchain;
 pub mod workspace;

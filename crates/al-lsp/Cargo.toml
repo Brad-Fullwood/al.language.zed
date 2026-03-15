@@ -13,7 +13,6 @@ al-syntax = { path = "../al-syntax" }
 al-symbols = { path = "../al-symbols" }
 al-semantic = { path = "../al-semantic" }
 al-protocol = { path = "../al-protocol" }
-al-dap = { path = "../al-dap" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

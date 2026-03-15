@@ -11,9 +11,19 @@ use al_protocol::{AlProject, AlToolchain};
 use al_semantic::BuiltinType;
 use al_symbols::SymbolIndex;
 use dashmap::DashMap;
+use serde::Serialize;
 use tokio::sync::RwLock;
 
 use crate::documents::DocumentStore;
+
+/// Summary metadata for a loaded symbol package.
+#[derive(Debug, Clone, Serialize)]
+pub struct PackageInfo {
+    pub name: String,
+    pub publisher: String,
+    pub version: String,
+    pub object_count: usize,
+}
 
 /// Central state container for an AL project.
 ///
@@ -40,8 +50,12 @@ pub struct Workspace {
     pub builtins: std::sync::RwLock<Arc<Vec<BuiltinType>>>,
     /// Compiler error codes — code → description mapping for diagnostic enrichment.
     pub error_codes: std::sync::RwLock<Arc<DashMap<String, String>>>,
+    /// Number of times the semantic bridge has been restarted (capped at MAX_RESTARTS).
+    pub bridge_restart_count: std::sync::atomic::AtomicU32,
     /// Whether the user approved generating symbol outlines for packages without source.
     pub outline_fallback_approved: std::sync::atomic::AtomicBool,
+    /// Summary metadata for loaded symbol packages.
+    pub package_info: std::sync::RwLock<Vec<PackageInfo>>,
 }
 
 impl Workspace {
@@ -58,7 +72,9 @@ impl Workspace {
             file_to_object: DashMap::new(),
             builtins: std::sync::RwLock::new(Arc::new(Vec::new())),
             error_codes: std::sync::RwLock::new(Arc::new(DashMap::new())),
+            bridge_restart_count: std::sync::atomic::AtomicU32::new(0),
             outline_fallback_approved: std::sync::atomic::AtomicBool::new(false),
+            package_info: std::sync::RwLock::new(Vec::new()),
         }
     }
 }

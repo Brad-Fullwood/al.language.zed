@@ -368,10 +368,181 @@ Types defined: Position, Range, Location, TextEdit, WorkspaceEdit (mod.rs)
 """
 status = "SUCCESS"
 
+[[entries]]
+date = "2026-03-14"
+work_package = "WP3: LSP & CLI Thin Adapters (Query Engine)"
+task_id = "T304: al-cli as JSON-RPC Client"
+
+[entries.adversarial_pass]
+context = "Verify al-cli has ZERO compile-time dependency on al-core, al-syntax, al-symbols, al-semantic, or al-diag."
+expected = "cargo tree -p al-cli shows no path to any forbidden crate."
+actual_log = """
+$ cargo tree -p al-cli | grep -E 'al-core|al-syntax|al-symbols|al-semantic|al-diag'
+(no output — zero matches)
+
+$ cargo tree -p al-cli | head -5
+al-cli v0.1.0 (/home/bradf/Dev/Software/Zed/Zed AL Extension/crates/al-cli)
+├── al-protocol v0.1.0 (...)
+│   ├── serde v1.0.228
+│   │   ├── serde_core v1.0.228
+│   │   └── serde_derive v1.0.228 (proc-macro)
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "al-cli rewritten as thin JSON-RPC daemon client. 34 integration tests pass. All commands work via daemon."
+expected = "All 34 integration tests pass. CLI connects to daemon, sends JSON-RPC, formats output."
+actual_log = """
+$ cargo test -p al-cli --test integration
+running 34 tests
+test cli_fix_clean_file_no_fixes ... ok
+test cli_fix_dry_run_json_has_structure ... ok
+test cli_fix_dry_run_shows_available_fixes ... ok
+test cli_fix_runs_without_error ... ok
+test cli_fix_with_rule_filter ... ok
+test cli_folding_json_outputs_array ... ok
+test cli_folding_missing_file_exits_cleanly ... ok
+test cli_folding_produces_ranges ... ok
+test cli_format_check_on_fixtures ... ok
+test cli_format_check_on_formatted_file ... ok
+test cli_format_check_on_unformatted_file_exits_nonzero ... ok
+test cli_format_from_stdin ... ok
+test cli_hints_json_valid ... ok
+test cli_hints_missing_file_exits_cleanly ... ok
+test cli_hints_on_file_succeeds ... ok
+test cli_lint_detects_issues ... ok
+test cli_lint_json_outputs_array ... ok
+test cli_lint_on_clean_file ... ok
+test cli_lint_on_deep_nesting ... ok
+test cli_lint_on_error_cases_finds_issues ... ok
+test cli_no_args_shows_help ... ok
+test cli_parse_clean_file_succeeds ... ok
+test cli_parse_error_file_reports_errors ... ok
+test cli_parse_json_has_structure ... ok
+test cli_parse_missing_file_fails ... ok
+test cli_rules_json_outputs_array ... ok
+test cli_rules_lists_lint_rules ... ok
+test cli_symbols_json_on_codeunit ... ok
+test cli_symbols_on_enum ... ok
+test cli_symbols_on_table ... ok
+test cli_tokens_json_outputs_array ... ok
+test cli_tokens_outputs_json ... ok
+test cli_version_json_outputs_valid_json ... ok
+test cli_version_outputs_version_info ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+"""
+status = "SUCCESS"
+
 # =============================================================================
 # WP4: DAP Integration, Toolchain Logic & Agentic Debugger
 # Tasks: T401-T405
 # =============================================================================
+
+[[entries]]
+date = "2026-03-14"
+work_package = "WP3: Deferred Issue Fix"
+task_id = "T304-client-no-retry: DaemonClient retry on initializing errors"
+
+[entries.adversarial_pass]
+context = "DaemonClient.request() retries exhausted — daemon returns 'initializing' more times than INIT_RETRY_MAX (3). Also verifies non-initializing errors are NOT retried."
+expected = "After 3 retries, request returns error containing 'initializing'. Non-initializing errors fail immediately without retry."
+actual_log = """
+cargo test -p al-cli -- client::tests
+running 3 tests
+test client::tests::request_non_initializing_error_not_retried ... ok
+test client::tests::request_retries_on_initializing_error ... ok
+test client::tests::request_fails_after_max_retries ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.50s
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "DaemonClient.request() retries up to 3 times with 500ms backoff when daemon returns 'Workspace is initializing, try again'. Mock Unix socket daemon simulates the scenario."
+expected = "Request succeeds after 2 initializing errors + 1 success. Retry uses send_request/read_response helpers."
+actual_log = """
+cargo test -p al-cli -- client::tests
+running 3 tests
+test client::tests::request_non_initializing_error_not_retried ... ok
+test client::tests::request_retries_on_initializing_error ... ok
+test client::tests::request_fails_after_max_retries ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.50s
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-14"
+work_package = "WP4: DAP Integration, Toolchain Logic & Agentic Debugger"
+task_id = "T402: Toolchain Management in al-core"
+
+[entries.adversarial_pass]
+context = "validate_toolchain() with nonexistent paths and missing components. doctor() on empty workspace."
+expected = "Validation reports missing alc and CodeAnalysis.dll. Doctor reports no toolchain, no project, 0 symbols."
+actual_log = """
+cargo test -p al-core toolchain::tests
+running 5 tests
+test toolchain::tests::validate_toolchain_nonexistent_dir ... ok
+test toolchain::tests::validate_toolchain_all_present ... ok
+test toolchain::tests::validate_toolchain_missing_alc ... ok
+test toolchain::tests::doctor_empty_workspace ... ok
+test toolchain::tests::doctor_report_serializes_to_json ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.10s
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "al-core::toolchain provides find_toolchain(), validate_toolchain(), doctor(). dispatch_setup() thinned to 5-line delegate."
+expected = "DoctorReport serializes to camelCase JSON matching CLI field expectations (altoolInstalled, dotnetVersion, indexedSymbols, workspaceFiles, toolchain, project)."
+actual_log = """
+cargo test -p al-core toolchain::tests
+running 5 tests
+test toolchain::tests::validate_toolchain_nonexistent_dir ... ok
+test toolchain::tests::validate_toolchain_all_present ... ok
+test toolchain::tests::validate_toolchain_missing_alc ... ok
+test toolchain::tests::doctor_empty_workspace ... ok
+test toolchain::tests::doctor_report_serializes_to_json ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.10s
+
+dispatch_setup thinned: 66 lines -> 5 lines (delegates to al_core::toolchain::doctor())
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-14"
+work_package = "WP4: DAP Integration, Toolchain Logic & Agentic Debugger"
+task_id = "T403: EditorServices Lifecycle in al-core"
+
+[entries.adversarial_pass]
+context = "Bridge restart limit enforced. After MAX_RESTARTS (3) attempts, further init/restart attempts are rejected."
+expected = "get_or_init_bridge returns None after restart limit. restart_bridge returns error with 'exceeded'."
+actual_log = """
+cargo test -p al-core semantic::tests
+running 5 tests
+test semantic::tests::get_or_init_blocked_after_restart_limit ... ok
+test semantic::tests::get_or_init_no_toolchain_returns_none ... ok
+test semantic::tests::restart_count_persists ... ok
+test semantic::tests::restart_limit_enforced ... ok
+test semantic::tests::shutdown_clears_bridge ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "al-core::semantic module owns bridge lifecycle. get_or_init_bridge(), restart_bridge(), shutdown_bridge(). server.rs thinned to 3-line delegates. dispatch_compile uses workspace bridge (no per-request bridge creation)."
+expected = "All tests pass. Single bridge instance shared. Lazy init with double-checked locking."
+actual_log = """
+cargo test --workspace --exclude zed-al --exclude al-test-harness | grep 'test result'
+All 346 tests pass, 0 failures.
+al-core: 35 passed (5 semantic + 5 toolchain + 25 others)
+al-cli: 37 passed (3 client retry + 34 integration)
+al-lsp: 222 passed
+"""
+status = "SUCCESS"
 
 # =============================================================================
 # WP5: Language Config & Asset Parity

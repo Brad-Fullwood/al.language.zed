@@ -8,22 +8,9 @@ name = "al"
 path = "src/main.rs"
 
 [dependencies]
-al-syntax = { path = "../al-syntax" }
-al-symbols = { path = "../al-symbols" }
-al-semantic = { path = "../al-semantic" }
 al-protocol = { path = "../al-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-tokio = { workspace = true }
 clap = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tower-lsp = { workspace = true }
-tree-sitter = "0.25"
 dirs = "6"
-al-diag = { path = "../al-diag", optional = true }
-
-[features]
-default = ["diagnostics"]
-diagnostics = ["al-diag"]
+url = "2"

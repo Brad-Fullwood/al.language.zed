@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use al_protocol::AlToolchain;
 use tracing::info;
 
-use crate::DapError;
+use super::DapError;
 
 #[cfg(target_os = "linux")]
 const HOST_BINARY: &str = "Microsoft.Dynamics.Nav.EditorServices.Host";
@@ -38,7 +38,6 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
             info!("Found EditorServices.Host via $AL_EDITOR_SERVICES_PATH: {}", p.display());
             return Ok(p);
         }
-        // Maybe it's a directory containing the binary
         let in_dir = p.join(HOST_BINARY);
         if in_dir.is_file() {
             info!("Found EditorServices.Host via $AL_EDITOR_SERVICES_PATH: {}", in_dir.display());
@@ -46,7 +45,7 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
         }
     }
 
-    // Strategy 2: next to alc.dll (user might have placed it alongside ALTool)
+    // Strategy 2: next to alc.dll
     let alongside_alc = toolchain.dotnet_root.join(HOST_BINARY);
     if alongside_alc.is_file() {
         info!("Found EditorServices.Host next to ALTool: {}", alongside_alc.display());
@@ -82,11 +81,9 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
     )))
 }
 
-/// Search VS Code and Cursor extension directories for the AL extension.
 fn find_in_vscode_extensions() -> Option<PathBuf> {
     let home = home_dir()?;
 
-    // All known extension directories
     let extension_dirs = [
         home.join(".vscode/extensions"),
         home.join(".vscode-insiders/extensions"),
@@ -99,7 +96,6 @@ fn find_in_vscode_extensions() -> Option<PathBuf> {
             continue;
         }
 
-        // Look for ms-dynamics-smb.al-* directories
         let entries = std::fs::read_dir(ext_dir).ok()?;
         let mut al_dirs: Vec<PathBuf> = entries
             .filter_map(|e| e.ok())
@@ -111,7 +107,6 @@ fn find_in_vscode_extensions() -> Option<PathBuf> {
             .map(|e| e.path())
             .collect();
 
-        // Sort descending to prefer newest version
         al_dirs.sort();
         al_dirs.reverse();
 
