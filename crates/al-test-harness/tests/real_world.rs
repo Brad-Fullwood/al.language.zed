@@ -1,4 +1,4 @@
-//! Real-world tests — use actual production AL code from the Debar project.
+//! Real-world tests — use actual production AL code from the AL test project.
 //!
 //! These tests exercise the LSP against real AL patterns that users write,
 //! not simplified test fixtures.
@@ -17,7 +17,7 @@ fn test_project_dir() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Real-world AL code from the Debar project
+// Real-world AL code from the AL test project
 // ---------------------------------------------------------------------------
 
 const TABLE_AL: &str = r#"table 50200 "Item Journal Staging"

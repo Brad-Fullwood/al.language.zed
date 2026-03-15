@@ -265,20 +265,15 @@ date = "2026-03-15"
 category = "constraint"
 severity = "bug"
 priority = "HIGH"
-status = "fixed"
+status = "open"
 triage = "STOP"
 description = """
-architecture.md rule states "A query via CLI, Zed, MCP, or Explorer hits the same al-lsp ->
-al-core code path. There is ONE implementation of each query." This is false for al-explorer.
 al-explorer imports al-symbols directly, constructs its own `SymbolIndex`, calls
 `load_packages()`, runs searches, and generates virtual files — all in-process, completely
-bypassing al-lsp and al-core. al-cli and al-mcp (via `al` binary) do route through al-lsp.
-al-explorer is a second, independent implementation of symbol browsing. Related to ISSUE-003.
+bypassing al-lsp and al-core. al-explorer must route through al-lsp like all other adapters.
 
-Fixed: Docs updated. The "One code path" claim removed from code-boundaries.md. al-explorer's
-direct al-symbols usage is documented as intentional (standalone TUI that doesn't require a
-running daemon). CLAUDE.md architecture diagram updated to show al-explorer -> al-symbols.
-block-adapter-cargo-deps hookify rule updated to exempt al-explorer.
+Fix direction: Remove al-symbols dependency from al-explorer. Connect to al-lsp daemon via
+JSON-RPC (like al-cli does). Use al-protocol for shared types only.
 """
 
 [[issues]]
@@ -307,7 +302,7 @@ Verified: compiles clean with default features AND with --no-default-features.
 
 [[issues]]
 id = "ISSUE-019"
-title = "Test harness Debar fixture is machine-specific, undisclosed"
+title = "Test harness AL test fixture is machine-specific, undisclosed"
 type = "infra"
 reporter = "architecture audit"
 date = "2026-03-15"
@@ -317,15 +312,15 @@ priority = "MEDIUM"
 status = "fixed"
 triage = "SCHEDULE"
 description = """
-The zed_simulation tests in al-test-harness use the Debar project fixture hardcoded to
-`/home/bradf/Dev/AL/Debar/App Integration`. Tests silently skip via `debar_project_exists()`
+The zed_simulation tests in al-test-harness use the AL test project fixture hardcoded to
+`/home/bradf/Dev/AL/AL test/App Integration`. Tests silently skip via `test_project_exists()`
 if the path is absent. The e2e.rs tests use `test_al_project/` which IS in the repo.
-testing.md says "Tests run against real Debar project fixture" without disclosing this is a
+testing.md says "Tests run against real AL test project fixture" without disclosing this is a
 local-only, machine-specific path. Any other contributor or CI environment would silently
 skip all 37 zed_simulation tests with no warning.
 
-Fixed: `debar_project_dir()` now reads `AL_TEST_PROJECT_PATH` env var first, falling back
-to the hardcoded default. `debar_project_exists()` now prints a clear warning with the
+Fixed: `test_project_dir()` now reads `AL_TEST_PROJECT_PATH` env var first, falling back
+to the hardcoded default. `test_project_exists()` now prints a clear warning with the
 missing path and instructions for setting the env var. `testing.md` updated to document
 the fixture requirement, the env var, and that e2e/data_driven tests are always run.
 """

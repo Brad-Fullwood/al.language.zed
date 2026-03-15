@@ -1050,7 +1050,7 @@ definition median: 1.91ms
 status = "FAILED_AS_EXPECTED"
 
 [entries.fidelity_pass]
-context = "All 5 interactive query types measured on real Debar project (5 iterations each, median reported)"
+context = "All 5 interactive query types measured on real AL test project (5 iterations each, median reported)"
 expected = "hover <10ms, completions <20ms, definition <20ms, document_symbols <5ms, semantic_tokens <15ms"
 actual_log = """
 $ cargo test -p al-test-harness --test performance -- --nocapture --test-threads=1

@@ -956,12 +956,12 @@ files = [
   "crates/al-test-harness/tests/performance.rs",
 ]
 deps = ["T802"]
-pass_criteria = "Measured on the Debar test project: hover <10ms, completions <20ms, definition <10ms, document symbols <5ms, semantic tokens <15ms. Results recorded in evidence log."
+pass_criteria = "Measured on the AL test test project: hover <10ms, completions <20ms, definition <10ms, document symbols <5ms, semantic tokens <15ms. Results recorded in evidence log."
 fail_criteria = "Any interactive query exceeds 2x its target. No measurement methodology documented."
 complexity = "Medium"
 completed = true
 completed_date = "2026-03-15"
-completed_note = "All 5 queries measured on Debar project — hover 2.24ms (<10ms), completions 0.41ms (<20ms), definition 1.91ms (<20ms), document_symbols 1.94ms (<5ms), semantic_tokens 5.56ms (<15ms). PoF entry in evidence log."
+completed_note = "All 5 queries measured on AL test project — hover 2.24ms (<10ms), completions 0.41ms (<20ms), definition 1.91ms (<20ms), document_symbols 1.94ms (<5ms), semantic_tokens 5.56ms (<15ms). PoF entry in evidence log."
 
 [[tasks]]
 id = "T804"
@@ -1006,7 +1006,7 @@ files = [
   "crates/al-core/src/insight/search.rs",
 ]
 deps = ["T901"]
-pass_criteria = "Given an event publisher name, returns the full chain: publisher -> all subscribers -> procedures they call -> events those publish -> recursive. Cycle detection prevents infinite loops. Single query returns complete chain in <100 tokens (JSON). Tested against Debar project with known event chains."
+pass_criteria = "Given an event publisher name, returns the full chain: publisher -> all subscribers -> procedures they call -> events those publish -> recursive. Cycle detection prevents infinite loops. Single query returns complete chain in <100 tokens (JSON). Tested against AL test project with known event chains."
 fail_criteria = "Misses a subscriber in the chain. Infinite loop on circular subscription. Output exceeds 500 tokens for a simple 3-hop chain."
 complexity = "High"
 completed = false
@@ -1169,7 +1169,7 @@ files = [
   "docs/proof_of_functionality.toml",
 ]
 deps = ["T1101"]
-pass_criteria = "Checklist of 20+ Zed operations (open file, hover, go-to-def, completions, rename, format, diagnostics, etc.) each verified in a real Zed window against the Debar project. Results recorded in evidence log with pass/fail and screenshots where relevant."
+pass_criteria = "Checklist of 20+ Zed operations (open file, hover, go-to-def, completions, rename, format, diagnostics, etc.) each verified in a real Zed window against the AL test project. Results recorded in evidence log with pass/fail and screenshots where relevant."
 fail_criteria = "Harness claims pass but Zed shows different behavior. Any Priority-0 regression unfixed."
 complexity = "High"
 completed = false

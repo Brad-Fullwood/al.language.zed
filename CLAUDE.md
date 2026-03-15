@@ -5,12 +5,11 @@ Custom Rust language server for AL (Microsoft Dynamics 365 Business Central) in 
 ## Architecture
 
 ```
-al-cli          ->  al-lsp daemon (Unix socket)       ->  al-core  ->  al-syntax
-al-mcp          ->  al CLI binary (subprocess)                     ->  al-symbols
-al-explorer     ->  al-symbols (direct, in-process)                ->  al-semantic
-zed-al (WASM)   ->  al-lsp (stdio)                                 ->  al-dap-client
-                                                        al-lsp     ->  al-diag (optional)
-                                                                   ->  al-dap-client
+al-cli / al-explorer  ->  al-lsp daemon (Unix socket)  ->  al-core  ->  al-syntax
+al-mcp                ->  al CLI binary (subprocess)                ->  al-symbols
+zed-al (WASM)         ->  al-lsp (stdio)                            ->  al-semantic
+                                                         al-lsp    ->  al-dap-client
+                                                                   ->  al-diag (optional)
 ```
 
 | Crate | Role |
@@ -25,7 +24,7 @@ zed-al (WASM)   ->  al-lsp (stdio)                                 ->  al-dap-cl
 | al-diag | SQLite-backed structured tracing/logging layer (NOT diagnostic analysis) |
 | al-test-harness | LSP integration + data-driven tests (dev only) |
 | al-cli | Thin adapter: JSON-RPC client to al-lsp daemon. Imports al-protocol only |
-| al-explorer | TUI symbol browser: imports al-symbols directly, bypasses al-lsp |
+| al-explorer | TUI symbol browser: connects to al-lsp daemon via JSON-RPC. Imports al-protocol only |
 | al-mcp | MCP server: shells out to `al` CLI binary. No al-* compile-time dependencies |
 | zed-al | WASM extension: connects to al-lsp via stdio |
 

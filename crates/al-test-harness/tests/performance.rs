@@ -1,5 +1,5 @@
 //! Performance tests — measure latency of key LSP queries against the real
-//! Debar project to verify they meet latency budgets.
+//! AL test project to verify they meet latency budgets.
 //!
 //! Targets (T803):
 //! - hover: <10ms
@@ -12,12 +12,25 @@ use al_test_harness::*;
 use std::path::PathBuf;
 use std::time::Instant;
 
-fn debar_project_dir() -> PathBuf {
-    PathBuf::from("/home/bradf/Dev/AL/Debar/App Integration")
+fn test_project_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("AL_TEST_PROJECT_PATH") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from("/home/bradf/Dev/AL/Debar/App Integration")
+    }
 }
 
-fn debar_project_exists() -> bool {
-    debar_project_dir().join("app.json").exists()
+fn test_project_exists() -> bool {
+    let dir = test_project_dir();
+    if dir.join("app.json").exists() {
+        return true;
+    }
+    eprintln!(
+        "\n[performance] SKIPPING: AL test fixture not found at: {}\n\
+         Set AL_TEST_PROJECT_PATH to point to a valid AL project directory with app.json.\n",
+        dir.display()
+    );
+    false
 }
 
 /// Open a representative set of files for warm-up.
@@ -27,7 +40,7 @@ async fn open_test_files(client: &mut LspClient) {
         "objects/Codeunit/IJLEventSubscribers.Codeunit.al",
         "objects/Page/IJLItemJournalStagingLine.Page.al",
     ];
-    let project = debar_project_dir();
+    let project = test_project_dir();
     for f in &files {
         let path = project.join(f);
         if path.exists() {
@@ -47,11 +60,11 @@ const ITERATIONS: usize = 5;
 
 #[tokio::test]
 async fn test_hover_latency() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
-    let mut client = LspClient::spawn(&debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
     // Warm up
@@ -73,11 +86,11 @@ async fn test_hover_latency() {
 
 #[tokio::test]
 async fn test_completion_latency() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
-    let mut client = LspClient::spawn(&debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
     // Warm up
@@ -99,11 +112,11 @@ async fn test_completion_latency() {
 
 #[tokio::test]
 async fn test_definition_latency() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
-    let mut client = LspClient::spawn(&debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
     // Warm up — use a position that triggers package symbol lookup to warm caches
@@ -129,11 +142,11 @@ async fn test_definition_latency() {
 
 #[tokio::test]
 async fn test_document_symbols_latency() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
-    let mut client = LspClient::spawn(&debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
     // Warm up
@@ -155,11 +168,11 @@ async fn test_document_symbols_latency() {
 
 #[tokio::test]
 async fn test_semantic_tokens_latency() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
-    let mut client = LspClient::spawn(&debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(&test_project_dir()).await.unwrap();
     open_test_files(&mut client).await;
 
     // Warm up

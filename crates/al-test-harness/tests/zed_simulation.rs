@@ -1,4 +1,4 @@
-//! Zed simulation tests — test against the real Debar project directory.
+//! Zed simulation tests — test against the real AL test project directory.
 //!
 //! These tests simulate exactly what happens when Zed opens an AL project:
 //! 1. Server starts with workspace root pointing to the project
@@ -9,7 +9,7 @@
 use al_test_harness::*;
 use std::path::PathBuf;
 
-fn debar_project_dir() -> PathBuf {
+fn test_project_dir() -> PathBuf {
     if let Ok(path) = std::env::var("AL_TEST_PROJECT_PATH") {
         PathBuf::from(path)
     } else {
@@ -17,8 +17,8 @@ fn debar_project_dir() -> PathBuf {
     }
 }
 
-fn debar_project_exists() -> bool {
-    let dir = debar_project_dir();
+fn test_project_exists() -> bool {
+    let dir = test_project_dir();
     if dir.join("app.json").exists() {
         return true;
     }
@@ -80,8 +80,8 @@ fn hover_markdown(result: &serde_json::Value) -> Option<&str> {
         .and_then(|value| value.as_str())
 }
 
-/// Open common Debar project files into a client.
-async fn open_debar_files(client: &mut LspClient) {
+/// Open common AL test project files into a client.
+async fn open_test_files(client: &mut LspClient) {
     let files = [
         "objects/API/ItemJournalStaging.Table.al",
         "objects/API/ItemJournalAPI.Page.al",
@@ -93,7 +93,7 @@ async fn open_debar_files(client: &mut LspClient) {
         "objects/System/JsonTools.Codeunit.al",
     ];
     for file in &files {
-        let path = debar_project_dir().join(file);
+        let path = test_project_dir().join(file);
         if path.exists() {
             let content = std::fs::read_to_string(&path).unwrap();
             client.open_file(file, &content).await;
@@ -106,25 +106,25 @@ async fn open_debar_files(client: &mut LspClient) {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_debar_project_initializes() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_project_initializes() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let client = LspClient::spawn(test_project_dir()).await.unwrap();
     // Server should initialize without error, find app.json, scan .al files
     client.shutdown().await;
 }
 
 #[tokio::test]
-async fn test_debar_workspace_symbols_after_init() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_workspace_symbols_after_init() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     // Give extra time for workspace scanning + possible NuGet downloads on first run
     tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
@@ -139,7 +139,7 @@ async fn test_debar_workspace_symbols_after_init() {
     let all_symbols = client.workspace_symbol("").await;
     assert!(
         all_symbols.len() >= 5,
-        "Should find at least 5 workspace objects from Debar project. Got: {}",
+        "Should find at least 5 workspace objects from AL test project. Got: {}",
         all_symbols.len()
     );
 
@@ -147,17 +147,17 @@ async fn test_debar_workspace_symbols_after_init() {
 }
 
 // ---------------------------------------------------------------------------
-// Open real files from the Debar project
+// Open real files from the AL test project
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_debar_open_real_files() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_open_real_files() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     // Read and open real files
     let files = [
@@ -170,7 +170,7 @@ async fn test_debar_open_real_files() {
     ];
 
     for file in &files {
-        let path = debar_project_dir().join(file);
+        let path = test_project_dir().join(file);
         if path.exists() {
             let content = std::fs::read_to_string(&path).unwrap();
             client.open_file(file, &content).await;
@@ -179,7 +179,7 @@ async fn test_debar_open_real_files() {
 
     // Verify each file gets document symbols
     for file in &files {
-        let path = debar_project_dir().join(file);
+        let path = test_project_dir().join(file);
         if path.exists() {
             let symbols = client.document_symbols(file).await;
             let names = symbol_names(&symbols);
@@ -195,13 +195,13 @@ async fn test_debar_open_real_files() {
 }
 
 #[tokio::test]
-async fn test_debar_semantic_tokens_real_files() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_semantic_tokens_real_files() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let files = [
         "objects/API/ItemJournalStaging.Table.al",
@@ -210,7 +210,7 @@ async fn test_debar_semantic_tokens_real_files() {
     ];
 
     for file in &files {
-        let path = debar_project_dir().join(file);
+        let path = test_project_dir().join(file);
         if path.exists() {
             let content = std::fs::read_to_string(&path).unwrap();
             client.open_file(file, &content).await;
@@ -235,15 +235,15 @@ async fn test_debar_semantic_tokens_real_files() {
 }
 
 #[tokio::test]
-async fn test_debar_hover_on_procedures() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_hover_on_procedures() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    let path = debar_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
+    let path = test_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
     if !path.exists() {
         eprintln!("Skipping: IJLAPIHelper.Codeunit.al not found");
         return;
@@ -271,15 +271,15 @@ async fn test_debar_hover_on_procedures() {
 }
 
 #[tokio::test]
-async fn test_debar_completions_in_procedure() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_completions_in_procedure() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    let path = debar_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
+    let path = test_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
     if !path.exists() {
         return;
     }
@@ -303,15 +303,15 @@ async fn test_debar_completions_in_procedure() {
 }
 
 #[tokio::test]
-async fn test_debar_diagnostics_on_real_files() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_diagnostics_on_real_files() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    let path = debar_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
+    let path = test_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
     if !path.exists() {
         return;
     }
@@ -330,17 +330,17 @@ async fn test_debar_diagnostics_on_real_files() {
 }
 
 #[tokio::test]
-async fn test_debar_cross_file_goto_definition() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_cross_file_goto_definition() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     // Open both codeunit and table
-    let codeunit_path = debar_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
-    let table_path = debar_project_dir().join("objects/API/ItemJournalStaging.Table.al");
+    let codeunit_path = test_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
+    let table_path = test_project_dir().join("objects/API/ItemJournalStaging.Table.al");
 
     if !codeunit_path.exists() || !table_path.exists() {
         return;
@@ -372,13 +372,13 @@ async fn test_debar_cross_file_goto_definition() {
 }
 
 #[tokio::test]
-async fn test_debar_exact_navigation_and_hover_regressions() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_exact_navigation_and_hover_regressions() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let files = [
         "objects/Testing/IJLProcessStaging.Report.al",
@@ -388,7 +388,7 @@ async fn test_debar_exact_navigation_and_hover_regressions() {
     ];
 
     for file in files {
-        let path = debar_project_dir().join(file);
+        let path = test_project_dir().join(file);
         let content = std::fs::read_to_string(&path).unwrap();
         client.open_file(file, &content).await;
     }
@@ -439,7 +439,7 @@ async fn test_debar_exact_navigation_and_hover_regressions() {
     );
 
     let codeunit_content = std::fs::read_to_string(
-        debar_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al"),
+        test_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al"),
     )
     .unwrap();
     let (field_count_line, field_count_col) =
@@ -459,27 +459,27 @@ async fn test_debar_exact_navigation_and_hover_regressions() {
 }
 
 #[tokio::test]
-async fn test_debar_exact_completion_regressions() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_exact_completion_regressions() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    let page_path = debar_project_dir().join("objects/API/ItemJournalAPI.Page.al");
+    let page_path = test_project_dir().join("objects/API/ItemJournalAPI.Page.al");
     let page_content = std::fs::read_to_string(&page_path).unwrap();
     client
         .open_file("objects/API/ItemJournalAPI.Page.al", &page_content)
         .await;
 
-    let codeunit_path = debar_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
+    let codeunit_path = test_project_dir().join("objects/Automation/IJLAPIHelper.Codeunit.al");
     let codeunit_content = std::fs::read_to_string(&codeunit_path).unwrap();
     client
         .open_file("objects/Automation/IJLAPIHelper.Codeunit.al", &codeunit_content)
         .await;
 
-    let report_path = debar_project_dir().join("objects/Testing/IJLProcessStaging.Report.al");
+    let report_path = test_project_dir().join("objects/Testing/IJLProcessStaging.Report.al");
     let report_content = std::fs::read_to_string(&report_path).unwrap();
     client
         .open_file("objects/Testing/IJLProcessStaging.Report.al", &report_content)
@@ -540,13 +540,13 @@ async fn test_debar_exact_completion_regressions() {
 }
 
 #[tokio::test]
-async fn test_debar_formatting_all_files() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_formatting_all_files() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     // Format each file and verify no crashes
     let files = [
@@ -558,7 +558,7 @@ async fn test_debar_formatting_all_files() {
     ];
 
     for file in &files {
-        let path = debar_project_dir().join(file);
+        let path = test_project_dir().join(file);
         if path.exists() {
             let content = std::fs::read_to_string(&path).unwrap();
             client.open_file(file, &content).await;
@@ -571,13 +571,13 @@ async fn test_debar_formatting_all_files() {
 }
 
 #[tokio::test]
-async fn test_debar_folding_all_files() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_folding_all_files() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let files = [
         ("objects/API/ItemJournalStaging.Table.al", 5),
@@ -586,7 +586,7 @@ async fn test_debar_folding_all_files() {
     ];
 
     for (file, min_folds) in &files {
-        let path = debar_project_dir().join(file);
+        let path = test_project_dir().join(file);
         if path.exists() {
             let content = std::fs::read_to_string(&path).unwrap();
             client.open_file(file, &content).await;
@@ -606,13 +606,13 @@ async fn test_debar_folding_all_files() {
 }
 
 #[tokio::test]
-async fn test_debar_member_navigation_hover_and_completion_regressions() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_member_navigation_hover_and_completion_regressions() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
     let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
@@ -620,11 +620,11 @@ async fn test_debar_member_navigation_hover_and_completion_regressions() {
     let table_rel = "objects/API/ItemJournalStaging.Table.al";
     let enum_rel = "objects/Automation/IJLStatus.Enum.al";
 
-    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
-    let codeunit = std::fs::read_to_string(debar_project_dir().join(codeunit_rel)).unwrap();
-    let page = std::fs::read_to_string(debar_project_dir().join(page_rel)).unwrap();
-    let table = std::fs::read_to_string(debar_project_dir().join(table_rel)).unwrap();
-    let enum_file = std::fs::read_to_string(debar_project_dir().join(enum_rel)).unwrap();
+    let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
+    let codeunit = std::fs::read_to_string(test_project_dir().join(codeunit_rel)).unwrap();
+    let page = std::fs::read_to_string(test_project_dir().join(page_rel)).unwrap();
+    let table = std::fs::read_to_string(test_project_dir().join(table_rel)).unwrap();
+    let enum_file = std::fs::read_to_string(test_project_dir().join(enum_rel)).unwrap();
 
     client.open_file(report_rel, &report).await;
     client.open_file(codeunit_rel, &codeunit).await;
@@ -782,17 +782,17 @@ async fn test_debar_member_navigation_hover_and_completion_regressions() {
 
 /// Test that dataitem variables (report dataset) are resolved for hover/completion.
 #[tokio::test]
-async fn test_debar_dataitem_variable_resolution() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_dataitem_variable_resolution() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
-    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+    let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
     // StagingRec is a dataitem variable, not a regular var
     // Line 22: this.APIHelper.Precheck(StagingRec);
@@ -841,17 +841,17 @@ async fn test_debar_dataitem_variable_resolution() {
 
 /// Test cross-file go-to-definition: Staging.GetJournalData() should resolve to the table procedure.
 #[tokio::test]
-async fn test_debar_cross_file_procedure_definition() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_cross_file_procedure_definition() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
-    let codeunit = std::fs::read_to_string(debar_project_dir().join(codeunit_rel)).unwrap();
+    let codeunit = std::fs::read_to_string(test_project_dir().join(codeunit_rel)).unwrap();
 
     // Line: JournalData := Staging.GetJournalData();
     let (get_line, _) =
@@ -879,17 +879,17 @@ async fn test_debar_cross_file_procedure_definition() {
 /// Test multi-level member chain: this.IJLPostTask.Run() in report.
 /// IJLPostTask is a Codeunit "IJL Post Task" var — Run() is the codeunit's trigger.
 #[tokio::test]
-async fn test_debar_multilevel_member_chain() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_multilevel_member_chain() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
-    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+    let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
     // Line 69: this.IJLPostTask.Run();
     let (run_line, _) =
@@ -943,17 +943,17 @@ async fn test_debar_multilevel_member_chain() {
 
 /// Test Codeunit::"IJL Post Task" scope access syntax.
 #[tokio::test]
-async fn test_debar_codeunit_scope_access() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_codeunit_scope_access() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
-    let codeunit = std::fs::read_to_string(debar_project_dir().join(codeunit_rel)).unwrap();
+    let codeunit = std::fs::read_to_string(test_project_dir().join(codeunit_rel)).unwrap();
 
     // Line 58: TaskScheduler.CreateTask(Codeunit::"IJL Post Task", ...)
     let (scope_line, _) =
@@ -996,17 +996,17 @@ async fn test_debar_codeunit_scope_access() {
 
 /// Test Rec.SystemId hover — SystemId is a built-in system field on all records.
 #[tokio::test]
-async fn test_debar_builtin_system_field_hover() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_builtin_system_field_hover() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let page_rel = "objects/API/ItemJournalAPI.Page.al";
-    let page = std::fs::read_to_string(debar_project_dir().join(page_rel)).unwrap();
+    let page = std::fs::read_to_string(test_project_dir().join(page_rel)).unwrap();
 
     // field(id; Rec.SystemId)
     let (sysid_line, _) =
@@ -1031,16 +1031,16 @@ async fn test_debar_builtin_system_field_hover() {
 
 /// Test GetLastErrorText() hover — built-in global function.
 #[tokio::test]
-async fn test_debar_builtin_global_function_hover() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_builtin_global_function_hover() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
-    let post_task_path = debar_project_dir().join(post_task_rel);
+    let post_task_path = test_project_dir().join(post_task_rel);
     let post_task = std::fs::read_to_string(&post_task_path).unwrap();
     client.open_file(post_task_rel, &post_task).await;
 
@@ -1070,17 +1070,17 @@ async fn test_debar_builtin_global_function_hover() {
 
 /// Test TaskScheduler.CreateTask() hover — built-in type method.
 #[tokio::test]
-async fn test_debar_builtin_type_method_hover() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_builtin_type_method_hover() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
-    let codeunit = std::fs::read_to_string(debar_project_dir().join(codeunit_rel)).unwrap();
+    let codeunit = std::fs::read_to_string(test_project_dir().join(codeunit_rel)).unwrap();
 
     // TaskScheduler.CreateTask(...) — TaskScheduler is a built-in type
     let (ts_line, _) =
@@ -1122,16 +1122,16 @@ async fn test_debar_builtin_type_method_hover() {
 
 /// Test semantic tokens for the report file — ensures highlighting works.
 #[tokio::test]
-async fn test_debar_report_semantic_tokens() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_report_semantic_tokens() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
-    let report_path = debar_project_dir().join(report_rel);
+    let report_path = test_project_dir().join(report_rel);
     let report = std::fs::read_to_string(&report_path).unwrap();
     client.open_file(report_rel, &report).await;
 
@@ -1165,17 +1165,17 @@ async fn test_debar_report_semantic_tokens() {
 
 /// Test built-in type method hover (Record.FindSet, JsonObject.ReadFrom).
 #[tokio::test]
-async fn test_debar_builtin_method_hover() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_builtin_method_hover() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let codeunit_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
-    let codeunit = std::fs::read_to_string(debar_project_dir().join(codeunit_rel)).unwrap();
+    let codeunit = std::fs::read_to_string(test_project_dir().join(codeunit_rel)).unwrap();
 
     // Staging.FindSet(false)  — Record.FindSet is a built-in method
     let (findset_line, _) =
@@ -1221,17 +1221,17 @@ async fn test_debar_builtin_method_hover() {
 /// Regression: go-to-definition on a workspace table field should navigate to the field declaration.
 /// Bug: ResolvedMemberKind::Field fell through to `_ => {}` in definition.rs.
 #[tokio::test]
-async fn test_debar_field_definition_navigates() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_field_definition_navigates() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
-    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+    let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
     // StagingRec.Status — Status is a field on the table
     let (status_line, _) =
@@ -1259,17 +1259,17 @@ async fn test_debar_field_definition_navigates() {
 /// Regression: go-to-definition on enum values should navigate to the enum declaration.
 /// Bug: ResolvedMemberKind::EnumValue fell through to `_ => {}` in definition.rs.
 #[tokio::test]
-async fn test_debar_enum_value_definition_navigates() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_enum_value_definition_navigates() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
-    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+    let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
     // Status::Posting — Posting is an enum value
     let (posting_line, _) =
@@ -1299,17 +1299,17 @@ async fn test_debar_enum_value_definition_navigates() {
 
 /// Signature help for a local procedure call via `this.InsertJournalLine(...)`.
 #[tokio::test]
-async fn test_debar_signature_help_local_procedure() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_signature_help_local_procedure() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
-    let post_task = std::fs::read_to_string(debar_project_dir().join(post_task_rel)).unwrap();
+    let post_task = std::fs::read_to_string(test_project_dir().join(post_task_rel)).unwrap();
 
     // Line 37: this.InsertJournalLine(StagingRec, ItemJnlLine) — local procedure with 2 params
     let (line, _) = find_position(&post_task, "this.InsertJournalLine(StagingRec, ItemJnlLine)")
@@ -1341,17 +1341,17 @@ async fn test_debar_signature_help_local_procedure() {
 
 /// Signature help for a built-in Record method: StagingRec.SetRange(Status, ...).
 #[tokio::test]
-async fn test_debar_signature_help_builtin_method() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_signature_help_builtin_method() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
-    let post_task = std::fs::read_to_string(debar_project_dir().join(post_task_rel)).unwrap();
+    let post_task = std::fs::read_to_string(test_project_dir().join(post_task_rel)).unwrap();
 
     // Line 29: StagingRec.SetRange(Status, StagingRec.Status::Posting)
     let (line, _) = find_position(&post_task, "StagingRec.SetRange(Status,")
@@ -1372,18 +1372,18 @@ async fn test_debar_signature_help_builtin_method() {
 /// Signature help for a cross-file workspace procedure: ProcessReport.SetAction(...).
 /// BUG FINDER: Signature help only searches local procs, packages, and builtins — not workspace objects.
 #[tokio::test]
-async fn test_debar_signature_help_cross_file_workspace_procedure() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_signature_help_cross_file_workspace_procedure() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
-    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    let staging_list = std::fs::read_to_string(test_project_dir().join(staging_list_rel)).unwrap();
     client.open_file(staging_list_rel, &staging_list).await;
-    open_debar_files(&mut client).await;
+    open_test_files(&mut client).await;
 
     // Line 73: ProcessReport.SetAction(this.ActionType::Precheck)
     let (line, _) = find_position(&staging_list, "ProcessReport.SetAction(this.ActionType::Precheck)")
@@ -1408,14 +1408,14 @@ async fn test_debar_signature_help_cross_file_workspace_procedure() {
 
 /// Inlay hints should show parameter names at call sites for local procedures.
 #[tokio::test]
-async fn test_debar_inlay_hints_local_procedure_calls() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_inlay_hints_local_procedure_calls() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
 
@@ -1446,21 +1446,21 @@ async fn test_debar_inlay_hints_local_procedure_calls() {
 
 /// Find all references to GetJournalData across workspace files.
 #[tokio::test]
-async fn test_debar_references_cross_file() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_references_cross_file() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
-    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    let staging_list = std::fs::read_to_string(test_project_dir().join(staging_list_rel)).unwrap();
     client.open_file(staging_list_rel, &staging_list).await;
 
     let api_helper_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
-    let api_helper = std::fs::read_to_string(debar_project_dir().join(api_helper_rel)).unwrap();
+    let api_helper = std::fs::read_to_string(test_project_dir().join(api_helper_rel)).unwrap();
 
     // GetJournalData at api helper line 73
     let (line, _) = find_position(&api_helper, "Staging.GetJournalData()")
@@ -1490,17 +1490,17 @@ async fn test_debar_references_cross_file() {
 
 /// Go-to-definition on `"IJL Status"` in a table field type.
 #[tokio::test]
-async fn test_debar_type_reference_definition() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_type_reference_definition() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let table_rel = "objects/API/ItemJournalStaging.Table.al";
-    let table = std::fs::read_to_string(debar_project_dir().join(table_rel)).unwrap();
+    let table = std::fs::read_to_string(test_project_dir().join(table_rel)).unwrap();
 
     // Line 29: field(4; Status; Enum "IJL Status")
     let (line, _) = find_position(&table, "Enum \"IJL Status\"")
@@ -1528,17 +1528,17 @@ async fn test_debar_type_reference_definition() {
 
 /// Go-to-definition on `"IJL API Helper"` codeunit type reference.
 #[tokio::test]
-async fn test_debar_codeunit_type_reference_definition() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_codeunit_type_reference_definition() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
-    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+    let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
     // Line 73: APIHelper: Codeunit "IJL API Helper";
     let (line, _) = find_position(&report, "Codeunit \"IJL API Helper\"")
@@ -1570,17 +1570,17 @@ async fn test_debar_codeunit_type_reference_definition() {
 
 /// Completions for `this.` in page trigger should show page variables.
 #[tokio::test]
-async fn test_debar_this_completions_in_page() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_this_completions_in_page() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
-    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    let staging_list = std::fs::read_to_string(test_project_dir().join(staging_list_rel)).unwrap();
     client.open_file(staging_list_rel, &staging_list).await;
 
     // Line 154: this.ErrorMessageText := CopyStr(FullErrorMessage, 1, 250);
@@ -1608,17 +1608,17 @@ async fn test_debar_this_completions_in_page() {
 
 /// Completions for `Rec.Status::` in page trigger should show enum values.
 #[tokio::test]
-async fn test_debar_enum_completions_through_field_chain() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_enum_completions_through_field_chain() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
-    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    let staging_list = std::fs::read_to_string(test_project_dir().join(staging_list_rel)).unwrap();
     client.open_file(staging_list_rel, &staging_list).await;
 
     // Line 159: Rec.Status::Pending:
@@ -1650,17 +1650,17 @@ async fn test_debar_enum_completions_through_field_chain() {
 
 /// Hover on `SetAction` at the call site in the staging list page.
 #[tokio::test]
-async fn test_debar_hover_cross_file_workspace_procedure() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_hover_cross_file_workspace_procedure() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let staging_list_rel = "objects/Testing/IJLStagingList.Page.al";
-    let staging_list = std::fs::read_to_string(debar_project_dir().join(staging_list_rel)).unwrap();
+    let staging_list = std::fs::read_to_string(test_project_dir().join(staging_list_rel)).unwrap();
     client.open_file(staging_list_rel, &staging_list).await;
 
     // Line 73: ProcessReport.SetAction(this.ActionType::Precheck)
@@ -1687,17 +1687,17 @@ async fn test_debar_hover_cross_file_workspace_procedure() {
 
 /// Hover on `GetJournalData` at call site — should show workspace procedure signature.
 #[tokio::test]
-async fn test_debar_hover_workspace_procedure_with_return_type() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_hover_workspace_procedure_with_return_type() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let api_helper_rel = "objects/Automation/IJLAPIHelper.Codeunit.al";
-    let api_helper = std::fs::read_to_string(debar_project_dir().join(api_helper_rel)).unwrap();
+    let api_helper = std::fs::read_to_string(test_project_dir().join(api_helper_rel)).unwrap();
 
     // Line 73: JournalData := Staging.GetJournalData();
     let (line, _) = find_position(&api_helper, "Staging.GetJournalData()")
@@ -1727,17 +1727,17 @@ async fn test_debar_hover_workspace_procedure_with_return_type() {
 
 /// Rename a local variable in the post task codeunit.
 #[tokio::test]
-async fn test_debar_rename_local_variable() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_rename_local_variable() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
-    let post_task = std::fs::read_to_string(debar_project_dir().join(post_task_rel)).unwrap();
+    let post_task = std::fs::read_to_string(test_project_dir().join(post_task_rel)).unwrap();
 
     // Line 26: ItemJnlLine: Record "Item Journal Line" (local var in ProcessPostingQueue)
     let (line, _) = find_position(&post_task, "ItemJnlLine: Record \"Item Journal Line\"")
@@ -1780,14 +1780,14 @@ async fn test_debar_rename_local_variable() {
 
 /// Verify code actions don't crash on real files with all lint rules active.
 #[tokio::test]
-async fn test_debar_code_actions_no_crash() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_code_actions_no_crash() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let post_task_rel = "objects/Automation/IJLPostTask.Codeunit.al";
     let actions = client.code_actions(post_task_rel, 0, 262).await;
@@ -1807,17 +1807,17 @@ async fn test_debar_code_actions_no_crash() {
 
 /// 2-level chain hover: this.APIHelper.Precheck → should show procedure sig.
 #[tokio::test]
-async fn test_debar_audit_two_level_member_chain_hover() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_audit_two_level_member_chain_hover() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
-    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+    let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
     // Line 22: this.APIHelper.Precheck(StagingRec)
     let (line, _) =
@@ -1843,17 +1843,17 @@ async fn test_debar_audit_two_level_member_chain_hover() {
 
 /// Hover on quoted field access: Rec."Journal Data" in table procedure.
 #[tokio::test]
-async fn test_debar_audit_quoted_field_hover() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_audit_quoted_field_hover() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let table_rel = "objects/API/ItemJournalStaging.Table.al";
-    let table = std::fs::read_to_string(debar_project_dir().join(table_rel)).unwrap();
+    let table = std::fs::read_to_string(test_project_dir().join(table_rel)).unwrap();
 
     // Line 137: if not Rec."Journal Data".HasValue() then
     let (line, _) =
@@ -1879,17 +1879,17 @@ async fn test_debar_audit_quoted_field_hover() {
 
 /// Hover on StagingRec.Status (field access on dataitem Record variable).
 #[tokio::test]
-async fn test_debar_audit_dataitem_field_hover() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+async fn test_fixture_audit_dataitem_field_hover() {
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_test_files(&mut client).await;
 
     let report_rel = "objects/Testing/IJLProcessStaging.Report.al";
-    let report = std::fs::read_to_string(debar_project_dir().join(report_rel)).unwrap();
+    let report = std::fs::read_to_string(test_project_dir().join(report_rel)).unwrap();
 
     // Line 27: ModifyAll(Status, StagingRec.Status::Posting, true)
     let (line, _) =

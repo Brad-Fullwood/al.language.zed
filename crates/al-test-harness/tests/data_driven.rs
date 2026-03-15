@@ -1,16 +1,29 @@
 //! Data-driven tests — hundreds of specific input→output assertions against the
-//! real Debar project.  Each test starts ONE server, opens ALL files, then runs
+//! real AL test project.  Each test starts ONE server, opens ALL files, then runs
 //! a batch of checks so the total wall-clock time stays manageable.
 
 use al_test_harness::*;
 use std::path::PathBuf;
 
-fn debar_project_dir() -> PathBuf {
-    PathBuf::from("/home/bradf/Dev/AL/Debar/App Integration")
+fn test_project_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("AL_TEST_PROJECT_PATH") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from("/home/bradf/Dev/AL/Debar/App Integration")
+    }
 }
 
-fn debar_project_exists() -> bool {
-    debar_project_dir().join("app.json").exists()
+fn test_project_exists() -> bool {
+    let dir = test_project_dir();
+    if dir.join("app.json").exists() {
+        return true;
+    }
+    eprintln!(
+        "\n[data_driven] SKIPPING: AL test fixture not found at: {}\n\
+         Set AL_TEST_PROJECT_PATH to point to a valid AL project directory with app.json.\n",
+        dir.display()
+    );
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -85,8 +98,8 @@ fn symbol_names_recursive(symbols: &[serde_json::Value]) -> Vec<String> {
     names
 }
 
-/// Open ALL Debar project files into the client.
-async fn open_all_debar_files(client: &mut LspClient) {
+/// Open ALL AL test project files into the client.
+async fn open_all_test_files(client: &mut LspClient) {
     let files = [
         "objects/API/ItemJournalStaging.Table.al",
         "objects/API/ItemJournalAPI.Page.al",
@@ -102,7 +115,7 @@ async fn open_all_debar_files(client: &mut LspClient) {
         "objects/System/IJLAPI.PermissionSet.al",
     ];
     for file in &files {
-        let path = debar_project_dir().join(file);
+        let path = test_project_dir().join(file);
         if path.exists() {
             let content = std::fs::read_to_string(&path).unwrap();
             client.open_file(file, &content).await;
@@ -262,13 +275,13 @@ const HOVER_CASES: &[(&str, u32, u32, &str)] = &[
 
 #[tokio::test]
 async fn test_hover_data_driven() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_all_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_all_test_files(&mut client).await;
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -387,13 +400,13 @@ const DEFINITION_CASES: &[(&str, u32, u32, &str, Option<u32>)] = &[
 
 #[tokio::test]
 async fn test_definition_data_driven() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_all_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_all_test_files(&mut client).await;
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -499,13 +512,13 @@ const COMPLETION_CASES: &[(&str, u32, u32, &[&str], &[&str])] = &[
 
 #[tokio::test]
 async fn test_completions_data_driven() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_all_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_all_test_files(&mut client).await;
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -622,13 +635,13 @@ const SYMBOL_CASES: &[(&str, &[&str])] = &[
 
 #[tokio::test]
 async fn test_document_symbols_data_driven() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_all_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_all_test_files(&mut client).await;
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -706,13 +719,13 @@ const SIGNATURE_CASES: &[(&str, u32, u32, &str)] = &[
 
 #[tokio::test]
 async fn test_signature_help_data_driven() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_all_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_all_test_files(&mut client).await;
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -771,13 +784,13 @@ const FOLDING_CASES: &[(&str, usize)] = &[
 
 #[tokio::test]
 async fn test_folding_data_driven() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_all_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_all_test_files(&mut client).await;
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -825,13 +838,13 @@ const TOKEN_CASES: &[(&str, usize)] = &[
 
 #[tokio::test]
 async fn test_semantic_tokens_data_driven() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_all_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_all_test_files(&mut client).await;
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -883,13 +896,13 @@ const REFERENCE_CASES: &[(&str, u32, u32, &str, usize)] = &[
 
 #[tokio::test]
 async fn test_references_data_driven() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_all_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_all_test_files(&mut client).await;
 
     let mut passed = 0u32;
     let mut failed = 0u32;
@@ -929,13 +942,13 @@ const ZERO_DIAG_FILES: &[&str] = &[
 
 #[tokio::test]
 async fn test_diagnostics_data_driven() {
-    if !debar_project_exists() {
-        eprintln!("Skipping: Debar project not found");
+    if !test_project_exists() {
+        eprintln!("Skipping: AL test project not found");
         return;
     }
 
-    let mut client = LspClient::spawn(debar_project_dir()).await.unwrap();
-    open_all_debar_files(&mut client).await;
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    open_all_test_files(&mut client).await;
 
     // Drain any diagnostics published during open
     let _ = client.drain_diagnostics();

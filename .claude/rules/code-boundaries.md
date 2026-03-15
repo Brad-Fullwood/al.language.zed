@@ -13,7 +13,7 @@
 zed-al (WASM)   ->  al-lsp (stdio)
 al-cli          ->  al-lsp daemon (runtime JSON-RPC)
 al-mcp          ->  al CLI binary (subprocess, no compile-time al-* deps)
-al-explorer     ->  al-symbols (direct, in-process — bypasses al-lsp)
+al-explorer     ->  al-lsp daemon (runtime JSON-RPC)
 al-lsp          ->  al-core, al-protocol, al-dap-client, al-diag (optional)
 al-core         ->  al-syntax, al-symbols, al-semantic, al-dap-client, al-protocol
 al-symbols      ->  al-protocol (domain types — ISSUE-021)
@@ -26,9 +26,9 @@ al-protocol     ->  serde, tracing, urlencoding (zero al-* dependencies)
 
 Circular dependencies are forbidden.
 
-Note: al-cli routes through al-lsp for most queries. al-explorer directly uses al-symbols,
-creating a second implementation of symbol browsing (intentional: TUI does not need a running
-daemon). al-mcp is a thin MCP wrapper around the `al` CLI binary with no shared types.
+Circular dependencies are forbidden. All adapters route through al-lsp (except al-mcp which
+uses the CLI binary). al-mcp is a thin MCP wrapper around the `al` CLI binary with no
+compile-time al-* dependencies.
 
 ## Import Rules by Crate
 
@@ -43,7 +43,7 @@ daemon). al-mcp is a thin MCP wrapper around the `al` CLI binary with no shared 
 | al-diag | rusqlite, tracing | al-core, al-lsp, al-protocol, al-symbols, al-semantic, al-syntax |
 | al-protocol | serde, tracing, urlencoding, std | al-core, al-lsp, al-syntax, al-symbols, al-semantic, al-diag, al-dap-client |
 | al-cli | al-protocol | al-core, al-syntax, al-symbols, al-semantic |
-| al-explorer | al-protocol, al-symbols | al-core, al-syntax, al-semantic, al-lsp |
+| al-explorer | al-protocol | al-core, al-syntax, al-symbols, al-semantic |
 | al-mcp | (none — shells out to `al` binary) | al-core, al-protocol, al-syntax, al-symbols, al-semantic |
 | zed-al | zed_extension_api | al-core, al-syntax, al-symbols, al-semantic, al-protocol |
 
@@ -56,9 +56,9 @@ done directly in-process (ISSUE-020: soft boundary violation, known and accepted
 **al-mcp**: MCP server that wraps the `al` CLI binary. Runs `al <command> --json` as subprocesses.
 Zero compile-time al-* dependencies. Changes to CLI output automatically propagate to MCP.
 
-**al-explorer**: TUI symbol browser. Imports al-symbols directly and constructs its own
-SymbolIndex. Does NOT connect to al-lsp daemon — intentional for standalone TUI use. This
-creates a second implementation of symbol browsing (ISSUE-017: documented violation).
+**al-explorer**: TUI symbol browser. Connects to al-lsp daemon via JSON-RPC at runtime.
+Imports al-protocol only. Currently violates this by importing al-symbols directly
+(ISSUE-017: must be refactored to route through al-lsp).
 
 **zed-al**: WASM extension on wasm32-wasip1 target. Zed spawns al-lsp as a child process and
 communicates via stdio. No Unix sockets, filesystem, or native dependencies.
