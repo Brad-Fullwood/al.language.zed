@@ -237,7 +237,7 @@ date = "2026-03-15"
 category = "rule"
 severity = "bug"
 priority = "HIGH"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
 description = """
 al-diag is declared `optional = true` in al-lsp's Cargo.toml, gated by the `diagnostics`
@@ -246,6 +246,10 @@ feature (default-on). `main.rs:101` correctly uses `#[cfg(feature = "diagnostics
 `al_diag::query::{open, sessions, recent_events, slow_spans, resolution_failures, search,
 summarize}` without any feature gate. Building al-lsp with `--no-default-features` would
 produce compile errors at all 7 call sites.
+
+Fixed: Added `#[cfg(feature = "diagnostics")]` to `dispatch_diag()` function and its call
+site. The `#[cfg(not(feature = "diagnostics"))]` arm returns a METHOD_NOT_FOUND error.
+Verified: compiles clean with default features AND with --no-default-features.
 """
 
 [[issues]]

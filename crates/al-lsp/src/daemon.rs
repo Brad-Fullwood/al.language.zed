@@ -234,7 +234,17 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "errorCodes" => dispatch_error_codes(workspace, id),
         "builtinTypes" => dispatch_builtin_types(workspace, id),
         "setup" => dispatch_setup(workspace, id),
+        #[cfg(feature = "diagnostics")]
         "diag" => dispatch_diag(id, &params),
+        #[cfg(not(feature = "diagnostics"))]
+        "diag" => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::METHOD_NOT_FOUND,
+                message: "Diagnostic feature not enabled (build with --features diagnostics)".to_string(),
+            }),
+        },
         "clearCache" => dispatch_clear_cache(id),
         "downloadSymbols" => dispatch_download_symbols(workspace, id, &params),
         "debug" => dispatch_debug(workspace, id, &params).await,
@@ -1433,6 +1443,7 @@ fn dispatch_clear_cache(id: u64) -> Response {
     }
 }
 
+#[cfg(feature = "diagnostics")]
 fn dispatch_diag(id: u64, params: &serde_json::Value) -> Response {
     let db_path = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
