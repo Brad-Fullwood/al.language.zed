@@ -19,6 +19,12 @@ use crate::documents::DocumentStore;
 use crate::file_index::FileIndex;
 use crate::semantic::SemanticCache;
 
+/// Callback for surfacing bridge/toolchain notifications to the user.
+///
+/// In the LSP path this calls `client.show_message`; in the daemon path it logs.
+/// Takes only `&str` — no tower-lsp types in al-core.
+pub type NotifySink = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Summary metadata for a loaded symbol package.
 #[derive(Debug, Clone, Serialize)]
 pub struct PackageInfo {
@@ -59,6 +65,11 @@ pub struct Workspace {
     pub semantic_cache: std::sync::RwLock<SemanticCache>,
     /// Active AL debug session (None if not debugging).
     pub debug_session: tokio::sync::Mutex<Option<al_dap_client::session::DebugSession>>,
+    /// Optional callback for user-visible notifications (bridge failures, etc.).
+    ///
+    /// Set by al-lsp after workspace construction. In the LSP path the closure
+    /// calls `client.show_message`; in the daemon path it logs. Not set in tests.
+    pub notify_sink: std::sync::OnceLock<NotifySink>,
 }
 
 impl Workspace {
@@ -78,6 +89,7 @@ impl Workspace {
             package_info: std::sync::RwLock::new(Vec::new()),
             semantic_cache: std::sync::RwLock::new(SemanticCache::new()),
             debug_session: tokio::sync::Mutex::new(None),
+            notify_sink: std::sync::OnceLock::new(),
         }
     }
 }

@@ -42,26 +42,28 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
     let mut visited = std::collections::HashSet::new();
 
     // Find all Event nodes matching the name
-    for (key, &idx) in &graph.index {
+    for (key, indices) in &graph.index {
         if let NodeKey::Event(_, _, ref name) = key {
             if name == &event_lower {
-                let node = &graph.graph[idx];
-                let (obj_name, event_label) = match node {
-                    InsightNode::Event {
-                        object_name, name, ..
-                    } => (object_name.clone(), name.clone()),
-                    _ => continue,
-                };
+                for &idx in indices {
+                    let node = &graph.graph[idx];
+                    let (obj_name, event_label) = match node {
+                        InsightNode::Event {
+                            object_name, name, ..
+                        } => (object_name.clone(), name.clone()),
+                        _ => continue,
+                    };
 
-                steps.push(TraceStep {
-                    depth: 0,
-                    edge_type: "origin".to_string(),
-                    node_type: "event".to_string(),
-                    name: event_label,
-                    object: obj_name,
-                });
+                    steps.push(TraceStep {
+                        depth: 0,
+                        edge_type: "origin".to_string(),
+                        node_type: "event".to_string(),
+                        name: event_label,
+                        object: obj_name,
+                    });
 
-                trace_from_node(graph, idx, 1, max_depth, &mut visited, &mut steps);
+                    trace_from_node(graph, idx, 1, max_depth, &mut visited, &mut steps);
+                }
             }
         }
     }
@@ -105,19 +107,21 @@ fn trace_from_node(
 
             // Find events published by the same object
             let sub_obj_lower = object_name.to_lowercase();
-            for (key, &evt_idx) in &graph.index {
+            for (key, indices) in &graph.index {
                 if let NodeKey::Event(_, ref obj, _) = key {
                     if *obj == sub_obj_lower {
-                        let evt_node = &graph.graph[evt_idx];
-                        if let InsightNode::Event { name: ename, .. } = evt_node {
-                            steps.push(TraceStep {
-                                depth: depth + 1,
-                                edge_type: "publishes".to_string(),
-                                node_type: "event".to_string(),
-                                name: ename.clone(),
-                                object: object_name.clone(),
-                            });
-                            trace_from_node(graph, evt_idx, depth + 2, max_depth, visited, steps);
+                        for &evt_idx in indices {
+                            let evt_node = &graph.graph[evt_idx];
+                            if let InsightNode::Event { name: ename, .. } = evt_node {
+                                steps.push(TraceStep {
+                                    depth: depth + 1,
+                                    edge_type: "publishes".to_string(),
+                                    node_type: "event".to_string(),
+                                    name: ename.clone(),
+                                    object: object_name.clone(),
+                                });
+                                trace_from_node(graph, evt_idx, depth + 2, max_depth, visited, steps);
+                            }
                         }
                     }
                 }
@@ -197,14 +201,16 @@ pub fn trace_event_chain(
 
     // Find all event nodes matching the name.
     let mut roots: Vec<(NodeId, String)> = Vec::new();
-    for (key, &idx) in &insight.index {
+    for (key, indices) in &insight.index {
         if let NodeKey::Event(_, _, ref name) = key {
             if name == &event_lower {
-                let publisher_obj = match &insight.graph[idx] {
-                    InsightNode::Event { object_name, .. } => object_name.clone(),
-                    _ => String::new(),
-                };
-                roots.push((NodeId::from(idx), publisher_obj));
+                for &idx in indices {
+                    let publisher_obj = match &insight.graph[idx] {
+                        InsightNode::Event { object_name, .. } => object_name.clone(),
+                        _ => String::new(),
+                    };
+                    roots.push((NodeId::from(idx), publisher_obj));
+                }
             }
         }
     }

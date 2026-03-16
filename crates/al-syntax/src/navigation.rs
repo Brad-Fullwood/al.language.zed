@@ -243,6 +243,131 @@ fn find_refs_recursive(
     }
 }
 
+/// Count call-site references to a procedure name within the tree.
+///
+/// Unlike `find_variable_references`, this function is context-aware. It only
+/// counts identifier nodes that appear in actual call positions:
+///
+/// - Bare call: `ProcName()` — identifier is the sole child of `primary_expression`
+///   whose sibling in `postfix_expression` is a `call_suffix`.
+/// - Member call: `Obj.ProcName()` — identifier is the `member` field of a
+///   `member_call_suffix` node.
+/// - Scope call: `Enum::Value` — identifier is the `member` field of a
+///   `scope_call_suffix` node.
+///
+/// Specifically excluded:
+/// - `Rec.Name` (field access via `member_suffix`, not `member_call_suffix`)
+/// - The `name` node inside `procedure_declaration` (the declaration itself)
+/// - Variable declarations, parameter lists, type references, etc.
+pub fn find_call_references(tree: &Tree, text: &str, name: &str) -> usize {
+    let root = tree.root_node();
+    let source = text.as_bytes();
+    let mut count = 0usize;
+    count_call_refs_recursive(root, source, name, &mut count);
+    count
+}
+
+fn count_call_refs_recursive(
+    node: Node,
+    source: &[u8],
+    target_name: &str,
+    count: &mut usize,
+) {
+    // Check if this node is an identifier matching the target name
+    if matches!(node.kind(), "identifier" | "quoted_identifier") {
+        if let Ok(text) = node.utf8_text(source) {
+            let text_clean = text.trim_matches('"');
+            if text_clean.eq_ignore_ascii_case(target_name) {
+                if is_call_reference(node, source) {
+                    *count += 1;
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        count_call_refs_recursive(child, source, target_name, count);
+    }
+}
+
+/// Determine whether an identifier node is a call-site reference.
+///
+/// Walks the ancestor chain to classify the context.
+fn is_call_reference(node: Node, _source: &[u8]) -> bool {
+    // node: identifier (or quoted_identifier)
+    // parent chain: identifier -> name -> ...
+    //
+    // Case 1: bare call DoSomething()
+    //   identifier -> name -> primary_expression -> postfix_expression (has call_suffix sibling)
+    //
+    // Case 2: member call cu.DoSomething()
+    //   identifier -> name -> member_call_suffix (field="member")
+    //
+    // Case 3: scope call Codeunit::DoSomething()
+    //   identifier -> name -> scope_call_suffix (field="member")
+    //
+    // NOT a call: field access Rec.Name
+    //   identifier -> name -> member_suffix (field="member")
+    //
+    // NOT a call: procedure declaration
+    //   identifier -> name -> procedure_declaration (field="name")
+
+    let Some(name_node) = node.parent() else {
+        return false;
+    };
+    // The immediate parent should be a `name` node (or could be directly in member_call_suffix)
+    let parent = if name_node.kind() == "name" {
+        let Some(p) = name_node.parent() else { return false; };
+        p
+    } else {
+        name_node
+    };
+
+    match parent.kind() {
+        // Bare call: primary_expression
+        "primary_expression" => {
+            // The primary_expression must be a child of postfix_expression,
+            // and that postfix_expression must also have a call_suffix child.
+            let Some(postfix) = parent.parent() else { return false; };
+            if postfix.kind() != "postfix_expression" {
+                return false;
+            }
+            let mut cursor = postfix.walk();
+            let has_call_suffix = postfix.children(&mut cursor).any(|c| c.kind() == "call_suffix");
+            has_call_suffix
+        }
+        // Member call: cu.ProcName()
+        "member_call_suffix" => {
+            // Verify this name is the "member" field (not some other child)
+            let field = get_field_name_of_child(parent, name_node);
+            field.as_deref() == Some("member")
+        }
+        // Scope call: Codeunit::ProcName()
+        "scope_call_suffix" => {
+            let field = get_field_name_of_child(parent, name_node);
+            field.as_deref() == Some("member")
+        }
+        // Declaration: procedure ProcName() — not a call
+        "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => false,
+        // Everything else: not a recognized call context
+        _ => false,
+    }
+}
+
+/// Return the field name that `child` has within `parent`, if any.
+fn get_field_name_of_child(parent: Node, child: Node) -> Option<String> {
+    let child_id = child.id();
+    for i in 0..parent.child_count() {
+        if let Some(c) = parent.child(i) {
+            if c.id() == child_id {
+                return parent.field_name_for_child(i as u32).map(|s| s.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Extract parameters from a procedure/trigger declaration node.
 fn extract_parameters(node: Node, source: &[u8]) -> Vec<ParameterInfo> {
     let mut params = Vec::new();
@@ -509,5 +634,135 @@ mod tests {
             is_var: true,
         };
         assert_eq!(format!("{}", var_param), "var Output: Integer");
+    }
+
+    // ── find_call_references tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_find_call_references_bare_call() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    begin
+        DoSomething();
+    end;
+
+    procedure DoSomething()
+    begin
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let count = find_call_references(&result.tree, src, "DoSomething");
+        // One call site; the declaration must NOT be counted
+        assert_eq!(count, 1, "Expected 1 call reference, got {}", count);
+    }
+
+    #[test]
+    fn test_find_call_references_member_call() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    var
+        cu: Codeunit "Other";
+    begin
+        cu.DoSomething();
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let count = find_call_references(&result.tree, src, "DoSomething");
+        assert_eq!(count, 1, "Expected 1 member call reference, got {}", count);
+    }
+
+    #[test]
+    fn test_find_call_references_field_access_not_counted() {
+        // Rec.Name is a field access (member_suffix), not a call (member_call_suffix).
+        // A procedure named "Name" with only field accesses should report 0 call refs.
+        let src = r#"codeunit 50100 Test
+{
+    procedure Name()
+    begin
+    end;
+
+    procedure Caller()
+    begin
+        x := Rec.Name;
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let count = find_call_references(&result.tree, src, "Name");
+        assert_eq!(count, 0, "Field access Rec.Name must not count as call reference; got {}", count);
+    }
+
+    #[test]
+    fn test_find_call_references_declaration_not_counted() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Init()
+    begin
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let count = find_call_references(&result.tree, src, "Init");
+        assert_eq!(count, 0, "Procedure declaration must not be counted as a call; got {}", count);
+    }
+
+    #[test]
+    fn test_find_call_references_common_name_no_false_negatives() {
+        // A procedure named "Name" with multiple Rec.Name field accesses must remain
+        // detectable as unreferenced — field accesses must not suppress dead code detection.
+        let src = r#"codeunit 50100 Test
+{
+    procedure Name()
+    begin
+    end;
+
+    procedure Caller()
+    begin
+        x := Rec.Name;
+        y := Rec2.Name;
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let count = find_call_references(&result.tree, src, "Name");
+        assert_eq!(count, 0, "Field accesses must not prevent dead code detection; got {}", count);
+    }
+
+    #[test]
+    fn test_find_call_references_scope_call() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    begin
+        Codeunit::Run();
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let count = find_call_references(&result.tree, src, "Run");
+        assert_eq!(count, 1, "Expected 1 scope call reference, got {}", count);
+    }
+
+    #[test]
+    fn test_find_call_references_case_insensitive() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    begin
+        DOSOMETHING();
+    end;
+
+    procedure DoSomething()
+    begin
+    end;
+}"#;
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let count = find_call_references(&result.tree, src, "dosomething");
+        assert_eq!(count, 1, "Case-insensitive call reference expected; got {}", count);
     }
 }

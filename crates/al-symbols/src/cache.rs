@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use tracing::debug;
 
@@ -116,6 +116,34 @@ impl SymbolCache {
         Some(pkg)
     }
 
+    /// Delete orphaned `.tmp.*` files left by processes that crashed mid-write.
+    ///
+    /// Files matching `*.tmp.*` that are older than 60 seconds are removed.
+    /// Errors are silently ignored — cleanup is best-effort.
+    fn cleanup_stale_tmp(&self) {
+        let entries = match fs::read_dir(&self.cache_dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let cutoff = Duration::from_secs(60);
+        let now = SystemTime::now();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            // Match files like "foo.cache.tmp.12345"
+            if !name.contains(".tmp.") {
+                continue;
+            }
+            if let Ok(meta) = fs::metadata(&path) {
+                if let Ok(age) = now.duration_since(meta.modified().unwrap_or(now)) {
+                    if age > cutoff {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+    }
+
     /// Save a parsed package to the disk cache.
     pub fn save(&self, app_path: &Path, pkg: &SymbolPackage) -> Result<(), std::io::Error> {
         let cache_path = self.cache_path_for(app_path);
@@ -147,6 +175,7 @@ impl SymbolCache {
         data.extend_from_slice(&objects_json);
 
         fs::create_dir_all(&self.cache_dir)?;
+        self.cleanup_stale_tmp();
 
         // Write to a temp file in the same directory, then atomically rename.
         // This prevents concurrent readers from seeing a partial write and

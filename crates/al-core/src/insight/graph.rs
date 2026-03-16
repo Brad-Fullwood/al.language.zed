@@ -100,8 +100,14 @@ pub enum NodeKey {
 pub struct InsightGraph {
     /// The underlying petgraph.
     pub graph: DiGraph<InsightNode, InsightEdge>,
-    /// Lookup table: NodeKey -> NodeIndex for O(1) node retrieval.
-    pub index: HashMap<NodeKey, NodeIndex>,
+    /// Lookup table: NodeKey -> Vec<NodeIndex>.
+    ///
+    /// Multiple packages can define objects with the same (kind, name), so each
+    /// key maps to a list of node indices rather than a single one.  This avoids
+    /// cross-package collisions in `ensure_node` while still letting
+    /// `get_node` return the first (and usually only) match for callers that
+    /// only care about name resolution.
+    pub index: HashMap<NodeKey, Vec<NodeIndex>>,
 }
 
 impl InsightGraph {
@@ -114,18 +120,33 @@ impl InsightGraph {
     }
 
     /// Get or insert a node, returning its index.
+    ///
+    /// If one or more nodes already exist for this key, returns the first one
+    /// (same-key deduplication within a single package).  When a new node is
+    /// inserted it is appended to the Vec, so objects from different packages
+    /// that share the same (kind, name) each get their own graph node.
     pub fn ensure_node(&mut self, key: NodeKey, node: InsightNode) -> NodeIndex {
-        if let Some(&idx) = self.index.get(&key) {
-            return idx;
+        if let Some(indices) = self.index.get(&key) {
+            if let Some(&first) = indices.first() {
+                return first;
+            }
         }
         let idx = self.graph.add_node(node);
-        self.index.insert(key, idx);
+        self.index.entry(key).or_default().push(idx);
         idx
     }
 
-    /// Look up a node by key.
+    /// Look up the first node for a key (preserves existing call-site semantics).
     pub fn get_node(&self, key: &NodeKey) -> Option<NodeIndex> {
-        self.index.get(key).copied()
+        self.index.get(key)?.first().copied()
+    }
+
+    /// Look up all nodes for a key.
+    ///
+    /// Useful when subscriber resolution should connect to every matching event
+    /// regardless of which package defines it.
+    pub fn get_nodes(&self, key: &NodeKey) -> &[NodeIndex] {
+        self.index.get(key).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// Add an edge between two nodes (idempotent — won't duplicate the same edge type).
@@ -302,15 +323,24 @@ impl InsightGraph {
                     ]
                 };
 
+                // sub_idx is resolved once outside the kinds loop.
+                let sub_idx = self.get_node(&sub_key);
                 for kind in &kinds_to_try {
                     let event_key =
                         NodeKey::Event(*kind, target_obj_lower.clone(), target_event_lower.clone());
-                    if let (Some(sub_idx), Some(event_idx)) =
-                        (self.get_node(&sub_key), self.get_node(&event_key))
-                    {
-                        self.add_edge(sub_idx, event_idx, InsightEdge::SubscribesTo);
-                        break;
+                    // Connect subscriber to ALL matching event nodes (across packages).
+                    let event_indices: Vec<NodeIndex> =
+                        self.get_nodes(&event_key).to_vec();
+                    if event_indices.is_empty() {
+                        continue;
                     }
+                    for event_idx in event_indices {
+                        if let Some(sub) = sub_idx {
+                            self.add_edge(sub, event_idx, InsightEdge::SubscribesTo);
+                        }
+                    }
+                    // Stop trying fallback kinds once we found a matching kind.
+                    break;
                 }
             }
         }

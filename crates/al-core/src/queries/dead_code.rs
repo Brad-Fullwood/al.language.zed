@@ -142,24 +142,23 @@ fn find_unused_procedures(
             continue;
         }
 
-        // Check if this procedure name appears anywhere (cross-file or same-file calls).
+        // Check if this procedure is called anywhere (cross-file or same-file).
         //
-        // In the declaring file, the procedure name appears at least twice in the tree
-        // (the `name` node and its `identifier` child inside the declaration). A same-file
-        // reference beyond the declaration means refs > 2.  In other files any match counts.
+        // Use find_call_references() which is context-aware: it only counts identifier
+        // nodes that appear in actual call positions (bare calls, member calls, scope
+        // calls). This avoids false negatives where a procedure named "Name" or "Status"
+        // would match ubiquitous field access tokens like `Rec.Name` or `Rec.Status`.
         let referenced_in_other_file = all_files.iter().any(|(other_path, other_text, other_tree)| {
             if *other_path == file_path {
                 return false;
             }
-            let refs = al_syntax::find_variable_references(other_tree, other_text, proc_name);
-            !refs.is_empty()
+            al_syntax::find_call_references(other_tree, other_text, proc_name) > 0
         });
 
         let referenced_in_same_file = {
-            let refs = al_syntax::find_variable_references(file_tree, file_text, proc_name);
-            // The declaration itself produces 2 matching nodes (name + identifier child).
-            // Any additional match means the procedure is called within the file.
-            refs.len() > 2
+            // find_call_references counts call sites only (excludes the declaration itself),
+            // so any non-zero count means the procedure is actually called within this file.
+            al_syntax::find_call_references(file_tree, file_text, proc_name) > 0
         };
 
         let referenced = referenced_in_other_file || referenced_in_same_file;
@@ -678,6 +677,48 @@ mod tests {
         assert!(
             !unused.iter().any(|u| u.name == "OnAfterPost"),
             "Event publishers should not be flagged as dead code"
+        );
+    }
+
+    #[test]
+    fn procedure_named_name_not_masked_by_field_access() {
+        // Regression test for the name-collision bug:
+        // A procedure called "Name" must be flagged as unused even when another file
+        // has `Rec.Name` field accesses — field accesses must NOT count as call references.
+        let ws = workspace_with_files(vec![
+            (
+                "/src/MyCodeunit.al",
+                r#"codeunit 50200 "My Codeunit"
+{
+    local procedure Name()
+    begin
+    end;
+}"#,
+            ),
+            (
+                "/src/Caller.al",
+                r#"page 50200 "My Page"
+{
+    SourceTable = "My Table";
+    layout
+    {
+        area(Content)
+        {
+            field(NameField; Rec.Name) { }
+            field(NameField2; Rec2.Name) { }
+        }
+    }
+}"#,
+            ),
+        ]);
+
+        let unused = dead_code(&ws);
+
+        // The procedure "Name" is never CALLED — field accesses must not suppress detection
+        assert!(
+            unused.iter().any(|u| u.name == "Name" && u.kind == UnusedKind::Procedure),
+            "Procedure 'Name' must be flagged as unused despite Rec.Name field accesses. Got: {:?}",
+            unused
         );
     }
 }
