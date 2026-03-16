@@ -21,8 +21,8 @@ impl Platform {
     /// Get the binary filename for this platform
     pub fn binary_name(&self) -> &'static str {
         match self {
-            Platform::Windows => "al-lsp-proxy.exe",
-            _ => "al-lsp-proxy",
+            Platform::Windows => "al-lsp.exe",
+            _ => "al-lsp",
         }
     }
 

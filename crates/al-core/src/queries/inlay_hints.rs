@@ -3,7 +3,6 @@
 //! Provides parameter name hints for function calls. Resolves overloads
 //! using type-aware scoring when multiple signatures exist.
 
-use al_syntax::AlParser;
 use tower_lsp::lsp_types::{self, DocumentSymbol, InlayHint, InlayHintKind, InlayHintLabel, Position, Range, SymbolKind};
 use url::Url;
 
@@ -226,11 +225,11 @@ fn lookup_parameter_names(
                     && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
                 {
                     if let Some(detail) = &child.detail {
-                        let params = parse_parameters_from_detail(detail);
+                        let params = parse_detail_params(detail);
                         if !params.is_empty() {
                             candidates.push(OverloadCandidate {
-                                names: params.iter().map(|(n, _)| n.clone()).collect(),
-                                types: params.iter().map(|(_, t)| t.clone()).collect(),
+                                names: params.iter().map(|(_, n, _)| n.clone()).collect(),
+                                types: params.iter().map(|(_, _, t)| t.clone()).collect(),
                             });
                         }
                     }
@@ -321,10 +320,9 @@ fn lookup_via_receiver(
         let obj_key = subtype.to_lowercase();
         if let Some(file_path) = workspace.file_index.objects.get(&obj_key) {
             let file_path = file_path.value().clone();
-            if let Some(file_text) = workspace.file_index.files.get(&file_path) {
-                let content = file_text.value();
-                let result = AlParser::parse_quick(content);
-                let target_symbols = al_syntax::extract_document_symbols(&result.tree, content);
+            // Use cached parse tree — avoids re-parsing on every inlay-hint request.
+            if let Some((content, file_tree)) = workspace.file_index.get_cached_parse(&file_path) {
+                let target_symbols = al_syntax::extract_document_symbols(&file_tree, &content);
                 let mut candidates: Vec<OverloadCandidate> = Vec::new();
                 for sym in &target_symbols {
                     if let Some(children) = &sym.children {
@@ -333,11 +331,11 @@ fn lookup_via_receiver(
                                 && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
                             {
                                 if let Some(detail) = &child.detail {
-                                    let params = parse_parameters_from_detail(detail);
+                                    let params = parse_detail_params(detail);
                                     if !params.is_empty() {
                                         candidates.push(OverloadCandidate {
-                                            names: params.iter().map(|(n, _)| n.clone()).collect(),
-                                            types: params.iter().map(|(_, t)| t.clone()).collect(),
+                                            names: params.iter().map(|(_, n, _)| n.clone()).collect(),
+                                            types: params.iter().map(|(_, _, t)| t.clone()).collect(),
                                         });
                                     }
                                 }
@@ -377,29 +375,7 @@ fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
     Some(names.iter().map(|s| s.to_string()).collect())
 }
 
-fn parse_parameters_from_detail(detail: &str) -> Vec<(String, String)> {
-    let trimmed = detail.trim();
-    let start = match trimmed.find('(') { Some(i) => i + 1, None => return Vec::new() };
-    let mut depth = 1;
-    let mut end = start;
-    for (i, ch) in trimmed[start..].char_indices() {
-        match ch { '(' => depth += 1, ')' => { depth -= 1; if depth == 0 { end = start + i; break; } } _ => {} }
-    }
-    let params_str = &trimmed[start..end];
-    if params_str.trim().is_empty() { return Vec::new(); }
-    params_str.split(';').filter_map(|param| {
-        let param = param.trim();
-        if param.is_empty() { return None; }
-        let param = param.strip_prefix("var ").unwrap_or(param).trim();
-        if let Some(colon_pos) = param.find(':') {
-            let name = param[..colon_pos].trim().trim_matches('"');
-            let type_name = param[colon_pos + 1..].trim();
-            if !name.is_empty() { return Some((name.to_string(), type_name.to_string())); }
-        }
-        let name = param.trim().trim_matches('"');
-        if !name.is_empty() { Some((name.to_string(), String::new())) } else { None }
-    }).collect()
-}
+use super::parse_detail_params;
 
 fn add_parameter_hints(
     arg_list: tree_sitter::Node<'_>,

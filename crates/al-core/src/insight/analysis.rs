@@ -174,9 +174,10 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
             continue;
         }
 
-        let key = (entry.kind.to_string(), entry.name.clone());
+        let kind_str = entry.kind.to_string();
+        let key = (kind_str.clone(), entry.name.clone());
         let obj_entry = by_object.entry(key).or_insert_with(|| ObjectImpact {
-            object_kind: entry.kind.to_string(),
+            object_kind: kind_str,
             object_name: entry.name.clone(),
             package: entry.package.clone(),
             impacts: Vec::new(),
@@ -187,9 +188,8 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
     // Sort objects by name for stable output.
     let mut objects: Vec<ObjectImpact> = by_object.into_values().collect();
     objects.sort_by(|a, b| {
-        a.object_name
-            .to_lowercase()
-            .cmp(&b.object_name.to_lowercase())
+        a.object_name.as_bytes().iter().map(u8::to_ascii_lowercase)
+            .cmp(b.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
     });
 
     let total_impacts = objects.iter().map(|o| o.impacts.len()).sum();

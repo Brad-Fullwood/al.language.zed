@@ -7,7 +7,7 @@
 //! Settings follow MS AL extension naming conventions where applicable
 //! (e.g., `enableCodeAnalysis`, `backgroundCodeAnalysis`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -215,7 +215,7 @@ impl AlConfig {
     /// Writes atomically via a temp file + rename to prevent partial-write
     /// corruption if the process is killed mid-write. Creates parent
     /// directories as needed.
-    pub fn persist(&self, path: &PathBuf) -> std::io::Result<()> {
+    pub fn persist(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -231,7 +231,7 @@ impl AlConfig {
     /// Load config from a persisted JSON file.
     ///
     /// Returns `None` if the file does not exist or cannot be parsed.
-    pub fn load(path: &PathBuf) -> Option<Self> {
+    pub fn load(path: &Path) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
         serde_json::from_str(&data).ok()
     }

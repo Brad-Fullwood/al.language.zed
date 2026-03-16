@@ -34,33 +34,6 @@ fn test_project_exists() -> bool {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn hover_md(result: &serde_json::Value) -> Option<&str> {
-    result
-        .get("contents")
-        .and_then(|c| c.get("value"))
-        .and_then(|v| v.as_str())
-}
-
-fn completion_labels(items: &[serde_json::Value]) -> Vec<&str> {
-    items
-        .iter()
-        .filter_map(|i| i.get("label").and_then(|l| l.as_str()))
-        .collect()
-}
-
-fn definition_file(result: &serde_json::Value) -> Option<&str> {
-    result
-        .get("uri")
-        .and_then(|u| u.as_str())
-        .or_else(|| {
-            result
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|l| l.get("uri"))
-                .and_then(|u| u.as_str())
-        })
-}
-
 fn definition_line(result: &serde_json::Value) -> Option<u32> {
     if let Some(line) = result
         .get("range")
@@ -293,7 +266,7 @@ async fn test_hover_data_driven() {
 
     for (i, &(file, line, col, expected_substr)) in HOVER_CASES.iter().enumerate() {
         let result = client.hover(file, line, col).await;
-        let md = result.as_ref().and_then(|r| hover_md(r));
+        let md = result.as_ref().and_then(|r| hover_content(r));
 
         match md {
             Some(text) if text.contains(expected_substr) => {
@@ -421,7 +394,7 @@ async fn test_definition_data_driven() {
 
         let ok = match &result {
             Some(r) => {
-                let uri = definition_file(r);
+                let uri = definition_uri(r);
                 let def_line = definition_line(r);
                 let file_ok = uri.map_or(false, |u| u.contains(expected_file));
                 let line_ok = match (expected_line, def_line) {
@@ -437,7 +410,7 @@ async fn test_definition_data_driven() {
         if ok {
             passed += 1;
         } else {
-            let uri = result.as_ref().and_then(|r| definition_file(r)).unwrap_or("null");
+            let uri = result.as_ref().and_then(|r| definition_uri(r)).unwrap_or("null");
             let line_got = result.as_ref().and_then(|r| definition_line(r));
             eprintln!(
                 "DEF FAIL [{}/{}] {}:{}:{} — expected file='{}' line={:?}, got uri='{}' line={:?}",

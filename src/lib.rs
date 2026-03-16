@@ -13,8 +13,7 @@ struct AlExtension;
 /// - Objects are merged recursively (override keys replace base keys)
 /// - All other types: override replaces base entirely
 ///
-/// NOTE: An identical copy exists in al-lsp-proxy/src/config.rs.
-/// These are separate Cargo packages (WASM vs native) that can't share code
+/// NOTE: These are separate Cargo packages (WASM vs native) that can't share code
 /// without a shared crate, which would add complexity for a 16-line utility.
 fn merge_json(base: &Value, overrides: &Value) -> Value {
     match (base, overrides) {
@@ -88,7 +87,7 @@ impl zed::Extension for AlExtension {
 
         // Proxy binary was not found at the installed extension path.
         // If the user configured an explicit binary path, try to use it directly —
-        // it may point to a standalone al-lsp-proxy binary.
+        // it may point to a standalone al-lsp binary.
         if let Some(explicit_path) = user_configured_path {
             return Ok(zed::Command {
                 command: explicit_path,
@@ -117,7 +116,7 @@ impl zed::Extension for AlExtension {
               \"lsp\": {{\n\
                 \"al-language-server\": {{\n\
                   \"binary\": {{\n\
-                    \"path\": \"/path/to/al-lsp-proxy\"\n\
+                    \"path\": \"/path/to/al-lsp\"\n\
                   }}\n\
                 }}\n\
               }}\n\

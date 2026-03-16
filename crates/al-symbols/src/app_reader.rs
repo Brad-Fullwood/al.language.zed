@@ -19,12 +19,18 @@ const ZIP_MAGIC: &[u8; 4] = &[0x50, 0x4B, 0x03, 0x04];
 /// Minimum header size before scanning for ZIP.
 const MIN_HEADER_SIZE: usize = 4;
 
+/// Maximum .app file size accepted (200 MB). Files larger than this are rejected
+/// before reading to prevent excessive memory use or decompression bombs.
+const MAX_APP_FILE_SIZE: u64 = 200 * 1024 * 1024;
+
 #[derive(Debug, Error)]
 pub enum AppReaderError {
     #[error("Not a valid .app file: missing NAVX magic")]
     NotNavx,
     #[error("File too small ({0} bytes)")]
     TooSmall(usize),
+    #[error(".app file too large ({0} bytes, limit is 200 MB)")]
+    TooLarge(u64),
     #[error("ZIP signature not found after NAVX header")]
     NoZipSignature,
     #[error("ZIP error: {0}")]
@@ -88,6 +94,10 @@ pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
 
 /// Read and parse a `.app` file from a file path.
 pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderError> {
+    let file_size = std::fs::metadata(path)?.len();
+    if file_size > MAX_APP_FILE_SIZE {
+        return Err(AppReaderError::TooLarge(file_size));
+    }
     let data = std::fs::read(path)?;
     read_app_bytes(&data)
 }

@@ -78,7 +78,8 @@ pub fn lint_rules() -> &'static [LintRuleInfo] {
         LintRuleInfo { code: "AL-L009", name: "ExcessiveParams", severity: LintSeverity::Warning, description: "Procedure has too many parameters" },
         LintRuleInfo { code: "AL-L010", name: "MissingCaseElse", severity: LintSeverity::Warning, description: "Case statement is missing an else branch" },
         LintRuleInfo { code: "AL-L011", name: "RedundantBeginEnd", severity: LintSeverity::Hint, description: "Redundant begin..end around single statement" },
-        LintRuleInfo { code: "AL-L012", name: "AssignmentInCondition", severity: LintSeverity::Warning, description: "Suspicious assignment in if condition" },
+        // AL-L012 (AssignmentInCondition) is intentionally omitted: check_suspicious_equals is
+        // a no-op stub. TODO: implement detection of `:=` vs `=` confusion in if conditions.
         LintRuleInfo { code: "AL-L013", name: "EmptyRepeat", severity: LintSeverity::Warning, description: "Empty repeat..until loop" },
         LintRuleInfo { code: "AL-L014", name: "UnreachableCode", severity: LintSeverity::Warning, description: "Unreachable code after exit/error" },
         LintRuleInfo { code: "AL-L015", name: "GlobalVarNaming", severity: LintSeverity::Info, description: "Global variable has a non-descriptive name" },
@@ -1141,13 +1142,20 @@ mod tests {
     }
 
     #[test]
-    fn test_lint_rules_returns_18_rules() {
+    fn test_lint_rules_returns_17_rules() {
         let rules = lint_rules();
-        assert_eq!(rules.len(), 18, "Should have exactly 18 lint rules");
-        // Verify codes are sequential
-        for (i, rule) in rules.iter().enumerate() {
-            let expected_code = format!("AL-L{:03}", i + 1);
-            assert_eq!(rule.code, expected_code, "Rule {} should have code {}", i, expected_code);
+        // AL-L012 is excluded (stub — no-op implementation).
+        assert_eq!(rules.len(), 17, "Should have exactly 17 lint rules (AL-L012 excluded as stub)");
+        // AL-L012 must not appear in the registry
+        assert!(
+            !rules.iter().any(|r| r.code == "AL-L012"),
+            "AL-L012 (stub) should not be in the registry"
+        );
+        // All codes must be non-empty and unique
+        let mut seen = std::collections::HashSet::new();
+        for rule in rules {
+            assert!(!rule.code.is_empty(), "Rule code must be non-empty");
+            assert!(seen.insert(rule.code), "Duplicate rule code: {}", rule.code);
         }
     }
 

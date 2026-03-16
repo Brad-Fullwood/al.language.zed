@@ -15,31 +15,50 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     tracing::debug!(uri = %uri, text_len = text.len(), "publish_diagnostics: entry");
     let mut diagnostics = Vec::new();
 
-    // Phase 1: Instant syntax + lint
+    // Phase 1: Instant syntax + lint.
+    // Reuse the parse tree already cached by update_workspace_index to avoid a
+    // redundant parse on every did_open / did_change (ISSUE-056 fix).
     {
         let parse_start = std::time::Instant::now();
-        let result = AlParser::parse_quick(text);
-        let parse_elapsed = parse_start.elapsed();
-        let error_count = result.errors.len();
-        tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: parsed");
 
-        // Cache the tree for subsequent handler calls at this version
-        let version = server.workspace.documents.get_version(uri).unwrap_or(0);
-        server.workspace.documents.cache_tree(uri, version, result.tree.clone());
+        // get_or_parse returns the cached tree when the version matches, so when called
+        // immediately after update_workspace_index this is a zero-cost cache hit.
+        let tree = match al_core::parsing::get_or_parse(&server.workspace.documents, uri) {
+            Some((_cached_text, t)) => t,
+            None => {
+                // Document not in store yet — parse directly and cache.
+                // This path should not occur in normal LSP flows (did_open stores before calling us)
+                // but is kept as a safe fallback.
+                tracing::warn!(uri = %uri, "publish_diagnostics: document not in store, parsing directly");
+                let result = AlParser::parse_quick(text);
+                let version = server.workspace.documents.get_version(uri).unwrap_or(0);
+                server.workspace.documents.cache_tree(uri, version, result.tree.clone());
+                result.tree
+            }
+        };
+
+        let parse_elapsed = parse_start.elapsed();
+
+        // Extract errors from the (possibly cached) tree without re-parsing.
+        let errors = AlParser::errors_from_tree(&tree);
+        let error_count = errors.len();
+        tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: diagnostics from tree");
+
+        let source_bytes = text.as_bytes();
 
         // Syntax errors from tree-sitter
-        for err in &result.errors {
-            diagnostics.push(syntax_error_to_diagnostic(err));
+        for err in &errors {
+            diagnostics.push(syntax_error_to_diagnostic(err, source_bytes));
         }
 
         // Native lint rules
         let lint_start = std::time::Instant::now();
-        let lint_results = al_core::syntax::lint(&result.tree, text);
+        let lint_results = al_core::syntax::lint(&tree, text);
         let lint_elapsed = lint_start.elapsed();
         let lint_count = lint_results.len();
         tracing::debug!(uri = %uri, lint_count, lint_us = lint_elapsed.as_micros() as u64, "publish_diagnostics: linted");
         for lint in lint_results {
-            diagnostics.push(lint_to_diagnostic(&lint));
+            diagnostics.push(lint_to_diagnostic(&lint, source_bytes));
         }
     }
 
@@ -107,9 +126,12 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
 }
 
 /// Convert a tree-sitter syntax error to an LSP Diagnostic.
-pub fn syntax_error_to_diagnostic(err: &al_core::syntax::SyntaxError) -> Diagnostic {
+///
+/// `source` is the full file content as bytes, needed to convert tree-sitter byte-offset
+/// columns to LSP UTF-16 code unit columns.
+pub fn syntax_error_to_diagnostic(err: &al_core::syntax::SyntaxError, source: &[u8]) -> Diagnostic {
     Diagnostic {
-        range: al_core::syntax::ts_range_to_lsp(&err.range),
+        range: al_core::syntax::ts_range_to_lsp(&err.range, source),
         severity: Some(DiagnosticSeverity::ERROR),
         code: Some(NumberOrString::String("syntax".to_string())),
         source: Some("al".to_string()),
@@ -119,7 +141,10 @@ pub fn syntax_error_to_diagnostic(err: &al_core::syntax::SyntaxError) -> Diagnos
 }
 
 /// Convert a native lint diagnostic to an LSP Diagnostic.
-pub fn lint_to_diagnostic(lint: &al_core::syntax::LintDiagnostic) -> Diagnostic {
+///
+/// `source` is the full file content as bytes, needed to convert tree-sitter byte-offset
+/// columns to LSP UTF-16 code unit columns.
+pub fn lint_to_diagnostic(lint: &al_core::syntax::LintDiagnostic, source: &[u8]) -> Diagnostic {
     let severity = match lint.severity {
         al_core::syntax::LintSeverity::Error => DiagnosticSeverity::ERROR,
         al_core::syntax::LintSeverity::Warning => DiagnosticSeverity::WARNING,
@@ -128,7 +153,7 @@ pub fn lint_to_diagnostic(lint: &al_core::syntax::LintDiagnostic) -> Diagnostic 
     };
 
     Diagnostic {
-        range: al_core::syntax::ts_range_to_lsp(&lint.range),
+        range: al_core::syntax::ts_range_to_lsp(&lint.range, source),
         severity: Some(severity),
         code: Some(NumberOrString::String(lint.code.clone())),
         source: Some("al-lint".to_string()),
@@ -172,12 +197,13 @@ mod tests {
 
     #[test]
     fn test_syntax_error_to_diagnostic() {
+        let src = "codeunit 50100 T { }";
         let err = al_core::syntax::SyntaxError {
             message: "Missing semicolon".to_string(),
-            range: al_core::syntax::AlParser::parse_quick("codeunit 50100 T { }").tree.root_node().range(),
+            range: al_core::syntax::AlParser::parse_quick(src).tree.root_node().range(),
         };
 
-        let diag = syntax_error_to_diagnostic(&err);
+        let diag = syntax_error_to_diagnostic(&err, src.as_bytes());
         assert_eq!(diag.message, "Missing semicolon");
         assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diag.source, Some("al".to_string()));
@@ -185,14 +211,15 @@ mod tests {
 
     #[test]
     fn test_lint_to_diagnostic_warning() {
+        let src = "codeunit 50100 T { }";
         let lint = al_core::syntax::LintDiagnostic {
             code: "AL-L001".to_string(),
             message: "Empty begin..end block".to_string(),
-            range: al_core::syntax::AlParser::parse_quick("codeunit 50100 T { }").tree.root_node().range(),
+            range: al_core::syntax::AlParser::parse_quick(src).tree.root_node().range(),
             severity: al_core::syntax::LintSeverity::Warning,
         };
 
-        let diag = lint_to_diagnostic(&lint);
+        let diag = lint_to_diagnostic(&lint, src.as_bytes());
         assert_eq!(diag.message, "Empty begin..end block");
         assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
         assert_eq!(
@@ -204,27 +231,29 @@ mod tests {
 
     #[test]
     fn test_lint_to_diagnostic_hint() {
+        let src = "codeunit 50100 T { }";
         let lint = al_core::syntax::LintDiagnostic {
             code: "AL-L006".to_string(),
             message: "Empty trigger".to_string(),
-            range: al_core::syntax::AlParser::parse_quick("codeunit 50100 T { }").tree.root_node().range(),
+            range: al_core::syntax::AlParser::parse_quick(src).tree.root_node().range(),
             severity: al_core::syntax::LintSeverity::Hint,
         };
 
-        let diag = lint_to_diagnostic(&lint);
+        let diag = lint_to_diagnostic(&lint, src.as_bytes());
         assert_eq!(diag.severity, Some(DiagnosticSeverity::HINT));
     }
 
     #[test]
     fn test_lint_to_diagnostic_info() {
+        let src = "codeunit 50100 T { }";
         let lint = al_core::syntax::LintDiagnostic {
             code: "AL-L007".to_string(),
             message: "TODO comment".to_string(),
-            range: al_core::syntax::AlParser::parse_quick("codeunit 50100 T { }").tree.root_node().range(),
+            range: al_core::syntax::AlParser::parse_quick(src).tree.root_node().range(),
             severity: al_core::syntax::LintSeverity::Info,
         };
 
-        let diag = lint_to_diagnostic(&lint);
+        let diag = lint_to_diagnostic(&lint, src.as_bytes());
         assert_eq!(diag.severity, Some(DiagnosticSeverity::INFORMATION));
     }
 

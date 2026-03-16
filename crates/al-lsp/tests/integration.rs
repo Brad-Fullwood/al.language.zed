@@ -358,10 +358,11 @@ fn syntax_error_to_lsp_diagnostic_conversion() {
     );
 
     // Convert to LSP diagnostics using the al-lsp conversion function
+    let src_bytes = bad_code.as_bytes();
     let diagnostics: Vec<Diagnostic> = result
         .errors
         .iter()
-        .map(al_lsp::diagnostics::syntax_error_to_diagnostic)
+        .map(|e| al_lsp::diagnostics::syntax_error_to_diagnostic(e, src_bytes))
         .collect();
 
     assert!(!diagnostics.is_empty());
@@ -394,9 +395,10 @@ fn lint_diagnostics_convert_to_lsp() {
     );
 
     // Convert to LSP diagnostics
+    let src_bytes = code.as_bytes();
     let diagnostics: Vec<Diagnostic> = lints
         .iter()
-        .map(al_lsp::diagnostics::lint_to_diagnostic)
+        .map(|l| al_lsp::diagnostics::lint_to_diagnostic(l, src_bytes))
         .collect();
 
     let todo_diag = diagnostics

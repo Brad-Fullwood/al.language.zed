@@ -1,5 +1,6 @@
 //! AlServer state and LSP lifecycle.
 
+use std::sync::Arc;
 use al_core::workspace::Workspace;
 use al_core::syntax::AlParser;
 use tokio::sync::{RwLock, Mutex};
@@ -18,6 +19,10 @@ use crate::workspace;
 /// Timeout for interactive bridge calls (hover, completions).
 /// Shorter than the default 30s bridge timeout to keep UX snappy.
 const BRIDGE_INTERACTIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Debounce delay for diagnostics: wait this long after the last keystroke before running.
+/// ISSUE-025 fix: prevents bridge calls (up to 5s) from blocking hover/completion.
+const DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Call a bridge method with timeout, converting errors to `None`.
 ///
@@ -72,17 +77,26 @@ fn completion_kind_from_str(s: &str) -> CompletionItemKind {
 /// The AL language server.
 pub struct AlServer {
     pub(crate) client: Client,
-    pub(crate) workspace: Workspace,
+    pub(crate) workspace: Arc<Workspace>,
     /// Root URI from initialize params, used in initialized().
     pub(crate) root_uri: RwLock<Option<Url>>,
+    /// Handle to the currently-pending debounced diagnostics task.
+    /// Replaced (and thus cancelled) on every new keystroke.
+    /// ISSUE-025 fix: diagnostics run async, not inline in did_change.
+    pub(crate) diag_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Handle to the background workspace initialisation task.
+    /// ISSUE-026 fix: workspace init runs async so initialized() returns promptly.
+    pub(crate) init_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl AlServer {
     pub(crate) fn new(client: Client) -> Self {
         Self {
             client,
-            workspace: Workspace::new(),
+            workspace: Arc::new(Workspace::new()),
             root_uri: RwLock::new(None),
+            diag_task: Mutex::new(None),
+            init_task: Mutex::new(None),
         }
     }
 
@@ -101,25 +115,6 @@ impl AlServer {
 
         // Invalidate composed view cache — file change may affect extensions
         self.workspace.symbols.invalidate_all_composed();
-    }
-
-    /// Load builtins and error codes from disk cache (fast path, no bridge needed).
-    pub(crate) async fn load_caches_from_disk(&self, version: &str) {
-        // SILENT: .unwrap_or_else recovers from RwLock poison by taking the inner value
-        if self.workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).is_empty() {
-            if let Some(cached) = al_core::semantic_types::cache::read_builtins(version) {
-                tracing::info!(count = cached.len(), "Loaded built-in types from disk cache");
-                al_core::semantic::set_builtins(&self.workspace, cached, version);
-            }
-        }
-        if self.workspace.error_codes.is_empty() {
-            if let Some(cached) = al_core::semantic_types::cache::read_error_codes(version) {
-                tracing::info!(count = cached.len(), "Loaded error codes from disk cache");
-                for ec in cached {
-                    self.workspace.error_codes.insert(ec.code.clone(), ec.message.clone());
-                }
-            }
-        }
     }
 
     /// Ensure builtins are loaded. Tries disk cache first, then bridge.
@@ -240,6 +235,59 @@ impl AlServer {
             range: None,
         })
     }
+
+    /// Schedule debounced diagnostics for `uri` with the given document text.
+    ///
+    /// ISSUE-025 fix: Cancels the previous pending task (if any) so that only
+    /// the most recent keystroke triggers a diagnostics run. The actual diagnostics
+    /// publish runs after `DIAGNOSTICS_DEBOUNCE` of silence. This prevents bridge
+    /// calls (up to BRIDGE_INTERACTIVE_TIMEOUT = 5s) from blocking hover/completion.
+    async fn schedule_diagnostics(&self, uri: Url, text: String) {
+        // Cancel previous pending task
+        if let Some(old) = self.diag_task.lock().await.take() {
+            old.abort();
+        }
+
+        let client = self.client.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(DIAGNOSTICS_DEBOUNCE).await;
+            // Emit syntax-only diagnostics from the debounced task.
+            // Bridge diagnostics (semantic) are emitted on did_open and lintFile command.
+            let parse_result = al_core::syntax::AlParser::parse_quick(&text);
+            let mut lsp_diags: Vec<Diagnostic> = Vec::new();
+            let source = text.as_bytes();
+            for err in &parse_result.errors {
+                lsp_diags.push(Diagnostic {
+                    range: al_core::syntax::ts_range_to_lsp(&err.range, source),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    code: Some(NumberOrString::String("parse-error".to_string())),
+                    message: err.message.clone(),
+                    source: Some("al-lsp".to_string()),
+                    ..Default::default()
+                });
+            }
+            let lint_result = al_core::syntax::lint(&parse_result.tree, &text);
+            for lint in &lint_result {
+                let severity = match lint.severity {
+                    al_core::syntax::LintSeverity::Error => DiagnosticSeverity::ERROR,
+                    al_core::syntax::LintSeverity::Warning => DiagnosticSeverity::WARNING,
+                    al_core::syntax::LintSeverity::Info => DiagnosticSeverity::INFORMATION,
+                    al_core::syntax::LintSeverity::Hint => DiagnosticSeverity::HINT,
+                };
+                lsp_diags.push(Diagnostic {
+                    range: al_core::syntax::ts_range_to_lsp(&lint.range, source),
+                    severity: Some(severity),
+                    code: Some(NumberOrString::String(lint.code.clone())),
+                    message: lint.message.clone(),
+                    source: Some("al-lsp".to_string()),
+                    ..Default::default()
+                });
+            }
+            client.publish_diagnostics(uri, lsp_diags, None).await;
+        });
+
+        *self.diag_task.lock().await = Some(handle);
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -345,11 +393,28 @@ impl LanguageServer for AlServer {
 
         // Use the root URI stored during initialize()
         let root_uri = self.root_uri.read().await.clone();
-        tracing::info!(root_uri = ?root_uri, "initialized: starting workspace init");
-        workspace::initialize_workspace(self, root_uri.as_ref()).await;
+        tracing::info!(root_uri = ?root_uri, "initialized: spawning workspace init in background");
+
+        // ISSUE-026 fix: spawn workspace initialization into a background task so this
+        // notification handler returns promptly. Clients must not be kept waiting by
+        // NuGet downloads, package loading, or bridge initialization.
+        let ws = Arc::clone(&self.workspace);
+        let client = self.client.clone();
+        let handle = tokio::spawn(async move {
+            workspace::initialize_workspace(ws, client, root_uri).await;
+        });
+        *self.init_task.lock().await = Some(handle);
     }
 
     async fn shutdown(&self) -> Result<()> {
+        // Abort any pending diagnostics task
+        if let Some(task) = self.diag_task.lock().await.take() {
+            task.abort();
+        }
+        // Abort background workspace init if still running
+        if let Some(task) = self.init_task.lock().await.take() {
+            task.abort();
+        }
         al_core::semantic::shutdown_bridge(&self.workspace).await;
         Ok(())
     }
@@ -387,7 +452,10 @@ impl LanguageServer for AlServer {
 
         if let Some(text) = self.workspace.documents.get_text(&uri) {
             self.update_workspace_index(&uri, &text);
-            diagnostics::publish_diagnostics(self, &uri, &text).await;
+            // ISSUE-025 fix: diagnostics are debounced and run async.
+            // Each keystroke cancels the previous pending task to avoid bridge calls
+            // (up to BRIDGE_INTERACTIVE_TIMEOUT = 5s) blocking hover/completion.
+            self.schedule_diagnostics(uri, text).await;
         }
     }
 
@@ -727,10 +795,10 @@ impl LanguageServer for AlServer {
                 let root_uri = self.root_uri.read().await.clone();
                 if let Some(uri) = &root_uri {
                     tracing::info!(root = %uri, "Reindexing workspace");
-                    self.client
-                        .log_message(MessageType::INFO, "Reindexing workspace...")
-                        .await;
-                    workspace::initialize_workspace(self, Some(uri)).await;
+                    let ws = Arc::clone(&self.workspace);
+                    let client = self.client.clone();
+                    let uri_cloned = uri.clone();
+                    workspace::initialize_workspace(ws, client, Some(uri_cloned)).await;
                     self.client
                         .show_message(MessageType::INFO, "Workspace reindex complete")
                         .await;

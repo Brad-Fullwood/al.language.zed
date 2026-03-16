@@ -1,6 +1,5 @@
 //! Signature help query.
 
-use al_syntax::AlParser;
 use url::Url;
 
 use super::Position;
@@ -31,41 +30,18 @@ pub struct SignatureHelpResult {
     pub active_parameter: Option<u32>,
 }
 
-/// Parse `(Name: Type; var Other: Type): ReturnType` detail strings into `ParameterInfo` entries.
+/// Convert a detail string into `ParameterInfo` entries.
+///
+/// Uses `parse_detail_params` for paren-depth-aware splitting; `raw_label` from the triple
+/// is used as the LSP label so that the `var` modifier is preserved for clients.
 fn parse_parameters_from_detail(detail: &str) -> Vec<ParameterInfo> {
-    let trimmed = detail.trim();
-    let start = match trimmed.find('(') { Some(i) => i + 1, None => return Vec::new() };
-    let mut depth = 1usize;
-    let mut end = start;
-    for (i, ch) in trimmed[start..].char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => { depth -= 1; if depth == 0 { end = start + i; break; } }
-            _ => {}
-        }
-    }
-    let params_str = &trimmed[start..end];
-    if params_str.trim().is_empty() { return Vec::new(); }
-    params_str.split(';').filter_map(|param| {
-        let param = param.trim();
-        if param.is_empty() { return None; }
-        let param_no_var = param.strip_prefix("var ").unwrap_or(param).trim();
-        if let Some(colon_pos) = param_no_var.find(':') {
-            let name = param_no_var[..colon_pos].trim().trim_matches('"');
-            if !name.is_empty() {
-                return Some(ParameterInfo {
-                    label: param.to_string(),
-                    documentation: None,
-                });
-            }
-        }
-        let name = param_no_var.trim().trim_matches('"');
-        if !name.is_empty() {
-            Some(ParameterInfo { label: param.to_string(), documentation: None })
-        } else {
-            None
-        }
-    }).collect()
+    super::parse_detail_params(detail)
+        .into_iter()
+        .map(|(raw_label, _, _)| ParameterInfo {
+            label: raw_label,
+            documentation: None,
+        })
+        .collect()
 }
 
 /// Get signature help at a position (inside a function call).
@@ -228,13 +204,11 @@ fn resolve_receiver_signature(
     let subtype = decl.type_subtype.as_deref()?;
 
     let obj_key = subtype.to_lowercase();
-    let file_path_entry = workspace.file_index.objects.get(&obj_key)?;
-    let file_path = file_path_entry.value();
-    let file_text_entry = workspace.file_index.files.get(file_path)?;
-    let file_text = file_text_entry.value();
-    let result = AlParser::parse_quick(file_text);
+    let file_path = workspace.file_index.objects.get(&obj_key)?.value().clone();
+    // Use cached parse tree — avoids re-parsing on every signature-help request.
+    let (file_text, file_tree) = workspace.file_index.get_cached_parse(&file_path)?;
 
-    let doc_symbols = al_syntax::extract_document_symbols(&result.tree, file_text);
+    let doc_symbols = al_syntax::extract_document_symbols(&file_tree, &file_text);
     for sym in &doc_symbols {
         if let Some(children) = &sym.children {
             for child in children {

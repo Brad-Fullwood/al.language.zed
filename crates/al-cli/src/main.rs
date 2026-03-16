@@ -2262,14 +2262,7 @@ fn cmd_new(dir: &str, name: &str, publisher: &str, json: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            if json {
-                println!(r#"{{"error":"{}"}}"#, e);
-            } else {
-                eprintln!("Failed to create project: {e}");
-            }
-            ExitCode::FAILURE
-        }
+        Err(e) => report_error(&e, json),
     }
 }
 
@@ -2309,14 +2302,7 @@ fn cmd_package(json: bool) -> ExitCode {
             }
             if success { ExitCode::SUCCESS } else { ExitCode::FAILURE }
         }
-        Err(e) => {
-            if json {
-                println!(r#"{{"error":"{}"}}"#, e);
-            } else {
-                eprintln!("Package failed: {e}");
-            }
-            ExitCode::FAILURE
-        }
+        Err(e) => report_error(&e, json),
     }
 }
 

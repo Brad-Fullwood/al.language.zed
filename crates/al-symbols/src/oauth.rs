@@ -638,6 +638,11 @@ fn load_cached_token(path: &PathBuf) -> Option<CachedToken> {
 }
 
 fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -649,8 +654,30 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
     };
     match serde_json::to_string_pretty(&cached) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(path, json) {
-                warn!(error = %e, "Failed to cache OAuth token");
+            // Open/create the file with owner-only read+write (0o600) to protect
+            // the OAuth token. Using OpenOptions instead of fs::write() so we can
+            // set the mode atomically on creation (Unix only).
+            #[cfg(unix)]
+            let open_result = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path);
+            #[cfg(not(unix))]
+            let open_result = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path);
+
+            match open_result {
+                Ok(mut file) => {
+                    if let Err(e) = file.write_all(json.as_bytes()) {
+                        warn!(error = %e, "Failed to write OAuth token cache");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to open OAuth token cache file for writing"),
             }
         }
         Err(e) => warn!(error = %e, "Failed to serialize OAuth token"),

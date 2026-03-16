@@ -14,7 +14,7 @@ use std::str::FromStr;
 // ---------------------------------------------------------------------------
 
 /// The kind of an AL object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ObjectKind {
     Table,
     TableExtension,

@@ -104,6 +104,29 @@ impl SemanticCache {
         }
     }
 
+    /// Find all builtin types that have a method with the given name (case-insensitive).
+    ///
+    /// Returns a vec of `(type_name, method)` pairs — one entry per matching overload
+    /// across all types. Used for hover when the receiver type is unknown (e.g., hovering
+    /// a bare method name), replacing an O(n*m) linear scan of `workspace.builtins`.
+    pub fn find_methods_by_name(&self, method_name: &str) -> Vec<(&str, &BuiltinMethod)> {
+        let lower = method_name.to_lowercase();
+        let mut results = Vec::new();
+        for bt in self.types.values() {
+            for method in &bt.methods {
+                if method.name.to_lowercase() == lower {
+                    results.push((bt.name.as_str(), method));
+                }
+            }
+        }
+        if results.is_empty() {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        }
+        results
+    }
+
     /// The toolchain version this cache was built for.
     pub fn version(&self) -> &str {
         &self.version

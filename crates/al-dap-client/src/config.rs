@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tracing::{debug, warn};
 
+use crate::json_util::strip_json_comments;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -271,82 +273,3 @@ fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> AuthMethod 
     }
 }
 
-// ---------------------------------------------------------------------------
-// JSON comment stripping (same logic as al-protocol::launch)
-// ---------------------------------------------------------------------------
-
-fn strip_json_comments(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut in_string = false;
-    let mut escape_next = false;
-    let mut chars = input.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if escape_next {
-            result.push(c);
-            escape_next = false;
-            continue;
-        }
-        if c == '\\' && in_string {
-            result.push(c);
-            escape_next = true;
-            continue;
-        }
-        if c == '"' {
-            in_string = !in_string;
-            result.push(c);
-            continue;
-        }
-        if !in_string && c == '/' && chars.peek() == Some(&'/') {
-            for cc in chars.by_ref() {
-                if cc == '\n' {
-                    result.push('\n');
-                    break;
-                }
-            }
-            continue;
-        }
-        result.push(c);
-    }
-
-    strip_trailing_commas(&result)
-}
-
-fn strip_trailing_commas(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut in_string = false;
-    let mut escape_next = false;
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-
-    for i in 0..len {
-        let c = bytes[i] as char;
-        if escape_next {
-            result.push(c);
-            escape_next = false;
-            continue;
-        }
-        if c == '\\' && in_string {
-            result.push(c);
-            escape_next = true;
-            continue;
-        }
-        if c == '"' {
-            in_string = !in_string;
-            result.push(c);
-            continue;
-        }
-        if !in_string && c == ',' {
-            let mut j = i + 1;
-            while j < len && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') {
-                j += 1;
-            }
-            if j < len && (bytes[j] == b']' || bytes[j] == b'}') {
-                continue;
-            }
-        }
-        result.push(c);
-    }
-
-    result
-}

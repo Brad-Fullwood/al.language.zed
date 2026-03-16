@@ -63,8 +63,8 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
 
     let mut files = Vec::new();
 
-    // app.json
-    let app_json = generate_app_json(config);
+    // app.json — propagate serialization error rather than silently writing empty file
+    let app_json = generate_app_json(config)?;
     std::fs::write(dir.join("app.json"), &app_json)
         .map_err(|e| format!("Failed to write app.json: {e}"))?;
     files.push("app.json".to_string());
@@ -75,8 +75,8 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
         .map_err(|e| format!("Failed to write .gitignore: {e}"))?;
     files.push(".gitignore".to_string());
 
-    // .zed/debug.json
-    let debug_json = generate_debug_json();
+    // .zed/debug.json — propagate serialization error rather than silently writing empty file
+    let debug_json = generate_debug_json()?;
     std::fs::write(dir.join(".zed/debug.json"), &debug_json)
         .map_err(|e| format!("Failed to write .zed/debug.json: {e}"))?;
     files.push(".zed/debug.json".to_string());
@@ -94,7 +94,7 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
     })
 }
 
-fn generate_app_json(config: &ScaffoldConfig) -> String {
+fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
     serde_json::to_string_pretty(&serde_json::json!({
         "id": config.id,
         "name": config.name,
@@ -121,7 +121,7 @@ fn generate_app_json(config: &ScaffoldConfig) -> String {
         "target": config.target,
         "features": ["NoImplicitWith"]
     }))
-    .unwrap_or_default()
+    .map_err(|e| format!("Failed to serialize app.json: {e}"))
 }
 
 fn generate_gitignore() -> String {
@@ -144,7 +144,7 @@ Thumbs.db
     .to_string()
 }
 
-fn generate_debug_json() -> String {
+fn generate_debug_json() -> Result<String, String> {
     serde_json::to_string_pretty(&serde_json::json!([
         {
             "label": "Local BC",
@@ -157,7 +157,7 @@ fn generate_debug_json() -> String {
             "startupObjectId": 22
         }
     ]))
-    .unwrap_or_default()
+    .map_err(|e| format!("Failed to serialize debug.json: {e}"))
 }
 
 fn generate_starter_codeunit(config: &ScaffoldConfig) -> String {
@@ -209,7 +209,7 @@ mod tests {
             publisher: "Test Publisher".to_string(),
             ..Default::default()
         };
-        let json = generate_app_json(&config);
+        let json = generate_app_json(&config).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed["name"], "Test App");
@@ -256,5 +256,18 @@ mod tests {
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"projectDir\""));
         assert!(json.contains("\"filesCreated\""));
+    }
+
+    #[test]
+    fn generate_app_json_returns_valid_json() {
+        let config = ScaffoldConfig::default();
+        let json = generate_app_json(&config).expect("serialization should not fail");
+        let _: serde_json::Value = serde_json::from_str(&json).expect("should be valid JSON");
+    }
+
+    #[test]
+    fn generate_debug_json_returns_valid_json() {
+        let json = generate_debug_json().expect("serialization should not fail");
+        let _: serde_json::Value = serde_json::from_str(&json).expect("should be valid JSON");
     }
 }

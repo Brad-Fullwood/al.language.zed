@@ -188,20 +188,18 @@ impl NuGetClient {
         Err(last_err.unwrap_or(NuGetError::NoBaseAddress))
     }
 
-    /// Download all dependencies, trying each feed in order for each package.
+    /// Download all dependencies concurrently, trying each feed in order for each package.
     ///
-    /// Returns one result per dependency.
+    /// All downloads are launched in parallel using `futures::future::join_all`.
+    /// Returns one result per dependency in the same order as the input slice.
     pub async fn download_all(
         &self,
         deps: &[AppDependency],
         dest: &Path,
     ) -> Vec<Result<PathBuf, NuGetError>> {
         let refs = resolve_dependencies(deps);
-        let mut results = Vec::new();
-        for pkg_ref in &refs {
-            results.push(self.download(pkg_ref, dest).await);
-        }
-        results
+        let futures: Vec<_> = refs.iter().map(|pkg_ref| self.download(pkg_ref, dest)).collect();
+        futures::future::join_all(futures).await
     }
 }
 

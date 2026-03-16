@@ -72,8 +72,8 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
         .spawn()
         .map_err(|e| DapError::SpawnFailed(format!("{e}")))?;
 
-    let child_stdin = child.stdin.take().expect("child stdin");
-    let child_stdout = child.stdout.take().expect("child stdout");
+    let child_stdin = child.stdin.take().ok_or_else(|| DapError::SpawnFailed("child stdin not available".to_string()))?;
+    let child_stdout = child.stdout.take().ok_or_else(|| DapError::SpawnFailed("child stdout not available".to_string()))?;
 
     let seq_counter = AtomicI64::new(1);
     let toolchain = toolchain.clone();

@@ -24,6 +24,72 @@ pub mod symbols;
 use url::Url;
 
 // ---------------------------------------------------------------------------
+// Shared parameter-parsing helper
+// ---------------------------------------------------------------------------
+
+/// Parse a procedure detail string such as `"(var SalesHeader: Record; Preview: Boolean): Boolean"`
+/// into a list of `(raw_label, name, type_string)` triples using paren-depth-aware splitting.
+///
+/// - `raw_label` is the trimmed parameter text as it appears in the detail string (e.g.
+///   `"var SalesHeader: Record"`).  Callers that show the parameter in UI (e.g. signature help)
+///   should use this field so that the `var` modifier is preserved.
+/// - `name` is the identifier with the `var` prefix and surrounding quotes stripped.
+/// - `type_string` is the text after `:`, trimmed.  Empty string when there is no `:`.
+/// - Returns an empty `Vec` when the detail string has no opening parenthesis or empty params.
+///
+/// All callers that need only names, only types, or full parameter labels should derive their
+/// needed shapes from this single function rather than re-implementing the parsing logic.
+pub fn parse_detail_params(detail: &str) -> Vec<(String, String, String)> {
+    let trimmed = detail.trim();
+    let start = match trimmed.find('(') {
+        Some(i) => i + 1,
+        None => return Vec::new(),
+    };
+    let mut depth = 1usize;
+    let mut end = start;
+    for (i, ch) in trimmed[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let params_str = &trimmed[start..end];
+    if params_str.trim().is_empty() {
+        return Vec::new();
+    }
+    params_str
+        .split(';')
+        .filter_map(|param| {
+            let raw = param.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let param_no_var = raw.strip_prefix("var ").unwrap_or(raw).trim();
+            if let Some(colon_pos) = param_no_var.find(':') {
+                let name = param_no_var[..colon_pos].trim().trim_matches('"');
+                let type_name = param_no_var[colon_pos + 1..].trim();
+                if !name.is_empty() {
+                    return Some((raw.to_string(), name.to_string(), type_name.to_string()));
+                }
+            }
+            let name = param_no_var.trim().trim_matches('"');
+            if !name.is_empty() {
+                Some((raw.to_string(), name.to_string(), String::new()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Transport-agnostic position/range types
 // ---------------------------------------------------------------------------
 

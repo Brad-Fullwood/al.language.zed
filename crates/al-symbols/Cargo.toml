@@ -14,12 +14,13 @@ quick-xml = { workspace = true }
 reqwest = { workspace = true, optional = true }
 sha2 = { version = "0.10", optional = true }
 tokio = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 tracing = { workspace = true }
 memmap2 = { workspace = true }
 
 [features]
 default = ["nuget"]
-nuget = ["reqwest", "sha2", "tokio"]
+nuget = ["reqwest", "sha2", "tokio", "futures"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

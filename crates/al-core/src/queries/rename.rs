@@ -1,6 +1,5 @@
 //! Rename symbol query.
 
-use al_syntax::AlParser;
 use url::Url;
 
 use super::{Position, Range, TextEdit, WorkspaceEdit};
@@ -25,7 +24,7 @@ pub fn prepare_rename(
     if !matches!(node.kind(), "identifier" | "quoted_identifier" | "name" | "name_or_keyword") {
         return None;
     }
-    Some((al_syntax::ts_range_to_lsp(&node.range()).into(), clean_name.to_string()))
+    Some((al_syntax::ts_range_to_lsp(&node.range(), text.as_bytes()).into(), clean_name.to_string()))
 }
 
 /// Rename the symbol at the given position to `new_name`.
@@ -47,6 +46,7 @@ pub fn rename(
 
     let mut changes: Vec<(Url, Vec<TextEdit>)> = Vec::new();
 
+    let source_bytes = text.as_bytes();
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let edits: Vec<TextEdit> = refs
@@ -55,7 +55,7 @@ pub fn rename(
                 let matched_text = text.get(r.start_byte..r.end_byte)?;
                 let replacement = make_rename_text(node.kind(), matched_text, new_name);
                 Some(TextEdit {
-                    range: al_syntax::ts_range_to_lsp(r).into(),
+                    range: al_syntax::ts_range_to_lsp(r, source_bytes).into(),
                     new_text: replacement,
                 })
             })
@@ -65,25 +65,28 @@ pub fn rename(
 
     let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path
     for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key();
-        let file_text = entry.value();
-        if current_path.as_ref() == Some(file_path) {
+        let file_path = entry.key().clone();
+        if current_path.as_ref() == Some(&file_path) {
             continue;
         }
-        let file_uri = match Url::from_file_path(file_path) {
+        let file_uri = match Url::from_file_path(&file_path) {
             Ok(u) => u,
             Err(_) => continue,
         };
-        let result = AlParser::parse_quick(file_text);
-        let refs = al_syntax::find_variable_references(&result.tree, file_text, clean_name);
+        // Use cached parse tree — avoids re-parsing every workspace file on each rename.
+        let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
+            continue;
+        };
+        let refs = al_syntax::find_variable_references(&file_tree, &file_text, clean_name);
         if !refs.is_empty() {
+            let file_source_bytes = file_text.as_bytes();
             let edits: Vec<TextEdit> = refs
                 .iter()
                 .filter_map(|r| {
                     let matched_text = file_text.get(r.start_byte..r.end_byte)?;
                     let replacement = make_rename_text("", matched_text, new_name);
                     Some(TextEdit {
-                        range: al_syntax::ts_range_to_lsp(r).into(),
+                        range: al_syntax::ts_range_to_lsp(r, file_source_bytes).into(),
                         new_text: replacement,
                     })
                 })

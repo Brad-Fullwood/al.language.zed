@@ -5,9 +5,11 @@
 //! Auto-downloads missing BC symbol packages via BC server (launch.json) or NuGet.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use al_core::syntax::AlParser;
+use al_core::workspace::Workspace;
 use tower_lsp::lsp_types::*;
+use tower_lsp::Client;
 use tracing::{debug, info, warn};
 
 use crate::server::AlServer;
@@ -23,21 +25,25 @@ pub(crate) enum DownloadSource {
 
 /// Initialize the workspace: discover toolchain, load packages, scan files.
 ///
-/// Called during LSP `initialized` notification. Failures are logged but
-/// do not prevent the server from operating (graceful degradation).
-pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Url>) {
+/// Called from the background task spawned by the `initialized` notification handler
+/// (ISSUE-026 fix). Failures are logged but do not prevent the server from operating
+/// (graceful degradation).
+pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Client, root_uri: Option<Url>) {
+    // Signal that workspace initialization has begun
+    client.log_message(MessageType::INFO, "AL workspace: initializing...").await;
+
     // 1. Discover toolchain
     match al_core::toolchain::find_toolchain() {
         Ok(tc) => {
             info!(version = %tc.version, "Found AL toolchain");
-            *server.workspace.toolchain.write().await = Some(tc.clone());
+            *workspace.toolchain.write().await = Some(tc.clone());
 
             // Load builtins + error codes from disk cache (no bridge needed, <1ms)
-            server.load_caches_from_disk(&tc.version).await;
+            load_caches_from_disk(&workspace, &tc.version).await;
         }
         Err(e) => {
             warn!(error = %e, "AL toolchain not found (continuing without)");
-            server.client
+            client
                 .show_message(MessageType::WARNING, format!("AL toolchain not found: {e}"))
                 .await;
         }
@@ -45,6 +51,7 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
 
     // 2. Find project and load packages
     let workspace_root = root_uri
+        .as_ref()
         .and_then(|u| u.to_file_path().ok()) // SILENT: non-file URIs legitimately have no path
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
@@ -63,11 +70,11 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
                 if !deps.is_empty() {
                     let has_server = !project.server_configs.is_empty();
                     if let Some(source) =
-                        prompt_download_symbols(&server.client, deps.len(), has_server).await
+                        prompt_download_symbols(&client, deps.len(), has_server).await
                     {
                         let downloaded = match source {
                             DownloadSource::Server => {
-                                download_symbols_from_server(&project, &deps, &server.client).await
+                                download_symbols_from_server(&project, &deps, &client).await
                             }
                             DownloadSource::NuGet => {
                                 download_packages_nuget(&deps, &project.packages_dir).await
@@ -83,10 +90,10 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
             // Load .alpackages / cached packages (disk cache for fast warm starts)
             if !project.packages.is_empty() {
                 let cache = al_core::symbols::cache::SymbolCache::default_location();
-                let loaded = server.workspace.symbols.load_packages_cached(&project.packages, &cache);
+                let loaded = workspace.symbols.load_packages_cached(&project.packages, &cache);
                 info!(
                     loaded = loaded.len(),
-                    total_symbols = server.workspace.symbols.len(),
+                    total_symbols = workspace.symbols.len(),
                     "Loaded symbol packages"
                 );
             }
@@ -95,26 +102,49 @@ pub(crate) async fn initialize_workspace(server: &AlServer, root_uri: Option<&Ur
             log_source_availability(&project.packages);
 
             // Load runtime enum definitions (compiler built-ins not in any package)
-            server.workspace.symbols.load_runtime_enums();
+            workspace.symbols.load_runtime_enums();
 
-            *server.workspace.project.write().await = Some(project.clone());
+            *workspace.project.write().await = Some(project.clone());
 
             // 5. Scan workspace for .al files
-            let count = server.workspace.file_index.scan(&project.root);
+            let count = workspace.file_index.scan(&project.root);
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
             }
         }
         Err(e) => {
             warn!(error = %e, "No AL project found (continuing without packages)");
-            server.client
+            client
                 .show_message(MessageType::INFO, format!("No AL project found: {e}"))
                 .await;
 
             // Still try to scan for .al files in the workspace root
-            let count = server.workspace.file_index.scan(&workspace_root);
+            let count = workspace.file_index.scan(&workspace_root);
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
+            }
+        }
+    }
+
+    client.log_message(MessageType::INFO, "AL workspace: ready").await;
+}
+
+/// Load builtins and error codes from disk cache (fast path, no bridge needed).
+///
+/// Extracted from `AlServer::load_caches_from_disk` to be callable from the background init task.
+async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
+    // SILENT: .unwrap_or_else recovers from RwLock poison by taking the inner value
+    if workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).is_empty() {
+        if let Some(cached) = al_core::semantic_types::cache::read_builtins(version) {
+            info!(count = cached.len(), "Loaded built-in types from disk cache");
+            al_core::semantic::set_builtins(workspace, cached, version);
+        }
+    }
+    if workspace.error_codes.is_empty() {
+        if let Some(cached) = al_core::semantic_types::cache::read_error_codes(version) {
+            info!(count = cached.len(), "Loaded error codes from disk cache");
+            for ec in cached {
+                workspace.error_codes.insert(ec.code.clone(), ec.message.clone());
             }
         }
     }
@@ -232,7 +262,8 @@ async fn download_symbols_from_server(
         al_core::launch::AuthMethod::UserPassword => al_core::symbols::bc_server::AuthMethod::UserPassword,
         al_core::launch::AuthMethod::AAD => al_core::symbols::bc_server::AuthMethod::AAD,
     };
-    let client = al_core::symbols::bc_server::BcServerClient::new(auth, config.tenant.clone(), message_sink);
+    let insecure_tls = config.accept_invalid_certs;
+    let client = al_core::symbols::bc_server::BcServerClient::new(auth, config.tenant.clone(), message_sink, insecure_tls);
     let url_deps: Vec<(String, al_core::symbols::AppDependency)> = deps
         .iter()
         .filter_map(|dep| {
@@ -454,33 +485,33 @@ pub(crate) fn handle_workspace_symbol(
         });
     }
 
-    // Search workspace files using the object name index
+    // Search workspace files using the object name index.
+    // Read object metadata from the cache built at scan/open time — avoids re-parsing
+    // every workspace file on every workspace/symbol request (ISSUE-057 fix).
     let query_lower = query.to_lowercase();
     for ws_entry in server.workspace.file_index.objects.iter() {
         let obj_name_lower = ws_entry.key();
-        let file_path = ws_entry.value();
+        let file_path = ws_entry.value().clone();
 
         if !query.is_empty() && !obj_name_lower.contains(&query_lower) {
             continue;
         }
 
-        if let Some(file_text_entry) = server.workspace.file_index.files.get(file_path) {
-            let file_text = file_text_entry.value();
-            let result = AlParser::parse_quick(file_text);
-
-            if let Some(obj_info) = al_core::syntax::find_object_declaration(&result.tree, file_text) {
-                if let Ok(file_uri) = Url::from_file_path(file_path) {
+        if let Some(cached) = server.workspace.file_index.object_info.get(&file_path) {
+            let obj_info = cached.value();
+            if let Some(file_text_entry) = server.workspace.file_index.files.get(&file_path) {
+                if let Ok(file_uri) = Url::from_file_path(&file_path) {
                     #[allow(deprecated)]
                     results.push(SymbolInformation {
-                        name: obj_info.name,
+                        name: obj_info.name.clone(),
                         kind: SymbolKind::OBJECT,
                         tags: None,
                         deprecated: None,
                         location: Location {
                             uri: file_uri,
-                            range: al_core::syntax::ts_range_to_lsp(&obj_info.range),
+                            range: al_core::syntax::ts_range_to_lsp(&obj_info.range, file_text_entry.value().as_bytes()),
                         },
-                        container_name: Some(obj_info.kind),
+                        container_name: Some(obj_info.kind.clone()),
                     });
                 }
             }

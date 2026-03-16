@@ -57,12 +57,30 @@ impl ScanDelta {
     }
 }
 
+/// Cached metadata extracted from parsing an AL file's object declaration.
+///
+/// Stored alongside file content so callers can read object kind/name/range
+/// without re-parsing the file on every request.
+#[derive(Debug, Clone)]
+pub struct CachedObjectInfo {
+    /// Object kind string (e.g. "table", "page", "codeunit").
+    pub kind: String,
+    /// Object numeric ID, if present.
+    pub id: Option<i64>,
+    /// Object name with original casing.
+    pub name: String,
+    /// Byte range of the object declaration in the file.
+    pub range: tree_sitter::Range,
+}
+
 /// Index of all .al files in a workspace directory.
 ///
 /// Provides three synchronized maps:
 /// - `files`: path → file content (full text)
 /// - `objects`: lowercase object name → file path
 /// - `path_to_object`: file path → lowercase object name (reverse index)
+/// - `object_info`: file path → cached object declaration metadata
+/// - `file_trees`: file path → cached parse tree
 ///
 /// Incremental scanning is supported via `incremental_scan`: only files whose
 /// mtime or size changed since the last scan are re-read and re-indexed.
@@ -75,6 +93,10 @@ pub struct FileIndex {
     pub path_to_object: DashMap<PathBuf, String>,
     /// File path → (mtime, size) snapshot taken at last index time.
     pub file_metadata: DashMap<PathBuf, FileMetadata>,
+    /// File path → cached object declaration metadata (avoids re-parsing for workspace/symbol).
+    pub object_info: DashMap<PathBuf, CachedObjectInfo>,
+    /// File path → cached parse tree (avoids re-parsing for cross-file queries).
+    pub file_trees: DashMap<PathBuf, tree_sitter::Tree>,
 }
 
 impl FileIndex {
@@ -85,7 +107,19 @@ impl FileIndex {
             objects: DashMap::new(),
             path_to_object: DashMap::new(),
             file_metadata: DashMap::new(),
+            object_info: DashMap::new(),
+            file_trees: DashMap::new(),
         }
+    }
+
+    /// Get the cached parse tree and text for a workspace file (not an open document).
+    ///
+    /// Returns `(text, tree)` from the cache. Background files are always cached
+    /// at index time via `add_file_with_meta`, so a miss means the file was never indexed.
+    pub fn get_cached_parse(&self, path: &Path) -> Option<(String, tree_sitter::Tree)> {
+        let text = self.files.get(path)?.value().clone();
+        let tree = self.file_trees.get(path)?.value().clone();
+        Some((text, tree))
     }
 
     /// Scan a directory tree for .al files and index their contents.
@@ -175,12 +209,23 @@ impl FileIndex {
         if let Some((_, old_obj_name)) = self.path_to_object.remove(&path) {
             self.objects.remove(&old_obj_name);
         }
-        // Extract object name and update object index
+        // Parse once; cache the tree for cross-file queries and extract object metadata.
         let result = al_syntax::AlParser::parse_quick(&content);
+        // Cache the tree unconditionally — all files benefit from it.
+        self.file_trees.insert(path.clone(), result.tree.clone());
         if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &content) {
             let obj_name = obj_info.name.to_lowercase();
             self.objects.insert(obj_name.clone(), path.clone());
             self.path_to_object.insert(path.clone(), obj_name);
+            self.object_info.insert(path.clone(), CachedObjectInfo {
+                kind: obj_info.kind,
+                id: obj_info.id,
+                name: obj_info.name,
+                range: obj_info.range,
+            });
+        } else {
+            // No object declaration — remove any stale cached metadata.
+            self.object_info.remove(&path);
         }
         self.files.insert(path, content);
     }
@@ -189,6 +234,8 @@ impl FileIndex {
     pub fn remove_file(&self, path: &Path) {
         self.files.remove(path);
         self.file_metadata.remove(path);
+        self.file_trees.remove(path);
+        self.object_info.remove(path);
         if let Some((_, obj_name)) = self.path_to_object.remove(path) {
             self.objects.remove(&obj_name);
         }

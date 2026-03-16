@@ -61,13 +61,20 @@ pub struct BcServerClient {
 }
 
 impl BcServerClient {
-    /// Create a new client with explicit auth method and message sink for auth prompts.
-    pub fn new(auth: AuthMethod, tenant: Option<String>, message_sink: MessageSink) -> Self {
+    /// Create a new client with explicit auth method, TLS setting, and message sink.
+    ///
+    /// `insecure_tls` disables TLS certificate validation. Only set to `true` for
+    /// on-prem BC servers using self-signed certificates. Defaults to `false` for
+    /// cloud connections.
+    pub fn new(auth: AuthMethod, tenant: Option<String>, message_sink: MessageSink, insecure_tls: bool) -> Self {
         let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true) // On-prem often uses self-signed certs
+            .danger_accept_invalid_certs(insecure_tls)
             .timeout(std::time::Duration::from_secs(300)) // 5 min for large packages
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to build TLS-configured HTTP client; falling back to default (may not support HTTPS)");
+                reqwest::Client::default()
+            });
 
         Self {
             client,
@@ -79,8 +86,8 @@ impl BcServerClient {
     }
 
     /// Create a new client that prints auth messages to stderr (for CLI use).
-    pub fn new_cli(auth: AuthMethod, tenant: Option<String>) -> Self {
-        Self::new(auth, tenant, Arc::new(|msg| eprintln!("{msg}")))
+    pub fn new_cli(auth: AuthMethod, tenant: Option<String>, insecure_tls: bool) -> Self {
+        Self::new(auth, tenant, Arc::new(|msg| eprintln!("{msg}")), insecure_tls)
     }
 
     /// Download a single dependency from the BC Dev API.
@@ -142,20 +149,22 @@ impl BcServerClient {
         }
     }
 
-    /// Download all dependencies, given pre-computed URLs for each.
+    /// Download all dependencies concurrently, given pre-computed URLs for each.
     ///
     /// `url_deps` is a slice of `(url, dep)` pairs. The caller (al-core) is
     /// responsible for pairing each dependency with its corresponding download URL.
+    /// All downloads are launched in parallel using `futures::future::join_all`.
+    /// Returns one result per entry in the same order as the input slice.
     pub async fn download_all(
         &self,
         url_deps: &[(String, AppDependency)],
         dest: &Path,
     ) -> Vec<Result<PathBuf, BcServerError>> {
-        let mut results = Vec::new();
-        for (url, dep) in url_deps {
-            results.push(self.download_one(url, dep, dest).await);
-        }
-        results
+        let futures: Vec<_> = url_deps
+            .iter()
+            .map(|(url, dep)| self.download_one(url, dep, dest))
+            .collect();
+        futures::future::join_all(futures).await
     }
 
     /// Add authentication headers to the request based on the auth method.

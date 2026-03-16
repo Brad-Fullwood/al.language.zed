@@ -129,12 +129,12 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         Some(object_kind_display(kind_str).to_string())
     };
 
-    let range = ts_range_to_lsp(&node.range());
+    let range = ts_range_to_lsp(&node.range(), source);
 
     // Selection range is the name node or kind node
     let selection_range = name_node_range
-        .map(|r| ts_range_to_lsp(&r))
-        .unwrap_or(ts_range_to_lsp(&kind_node.range()));
+        .map(|r| ts_range_to_lsp(&r, source))
+        .unwrap_or(ts_range_to_lsp(&kind_node.range(), source));
 
     // Extract children from the object body
     let mut children = Vec::new();
@@ -171,7 +171,7 @@ fn extract_namespace_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
         .and_then(|n| n.utf8_text(source).ok())
         .unwrap_or("using");
 
-    let range = ts_range_to_lsp(&node.range());
+    let range = ts_range_to_lsp(&node.range(), source);
 
     Some(DocumentSymbol {
         name,
@@ -264,10 +264,10 @@ fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
         Some(params.to_string())
     };
 
-    let range = ts_range_to_lsp(&node.range());
+    let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = node
         .child_by_field_name("name")
-        .map(|n| ts_range_to_lsp(&n.range()))
+        .map(|n| ts_range_to_lsp(&n.range(), source))
         .unwrap_or(range);
 
     Some(DocumentSymbol {
@@ -291,10 +291,10 @@ fn extract_trigger_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         .trim_matches('"')
         .to_string();
 
-    let range = ts_range_to_lsp(&node.range());
+    let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = node
         .child_by_field_name("name")
-        .map(|n| ts_range_to_lsp(&n.range()))
+        .map(|n| ts_range_to_lsp(&n.range(), source))
         .unwrap_or(range);
 
     Some(DocumentSymbol {
@@ -318,10 +318,10 @@ fn extract_event_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         .trim_matches('"')
         .to_string();
 
-    let range = ts_range_to_lsp(&node.range());
+    let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = node
         .child_by_field_name("name")
-        .map(|n| ts_range_to_lsp(&n.range()))
+        .map(|n| ts_range_to_lsp(&n.range(), source))
         .unwrap_or(range);
 
     Some(DocumentSymbol {
@@ -357,10 +357,10 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         _ => SymbolKind::NAMESPACE,
     };
 
-    let range = ts_range_to_lsp(&node.range());
+    let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = node
         .child_by_field_name("keyword")
-        .map(|n| ts_range_to_lsp(&n.range()))
+        .map(|n| ts_range_to_lsp(&n.range(), source))
         .unwrap_or(range);
 
     // Extract children from section body
@@ -492,17 +492,16 @@ fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut 
                             if let Ok(name_text) = name_node.utf8_text(source) {
                                 let name = name_text.trim_matches('"').to_string();
                                 if !name.is_empty() {
-                                    let range = tower_lsp::lsp_types::Range {
-                                        start: tower_lsp::lsp_types::Position {
-                                            line: trigger_kw_range.start_point.row as u32,
-                                            character: trigger_kw_range.start_point.column as u32,
+                                    let range = crate::ts_range_to_lsp(
+                                        &tree_sitter::Range {
+                                            start_byte: trigger_kw_range.start_byte,
+                                            end_byte: name_node.range().end_byte,
+                                            start_point: trigger_kw_range.start_point,
+                                            end_point: name_node.range().end_point,
                                         },
-                                        end: tower_lsp::lsp_types::Position {
-                                            line: name_node.range().end_point.row as u32,
-                                            character: name_node.range().end_point.column as u32,
-                                        },
-                                    };
-                                    let selection_range = crate::ts_range_to_lsp(&name_node.range());
+                                        source,
+                                    );
+                                    let selection_range = crate::ts_range_to_lsp(&name_node.range(), source);
                                     symbols.push(DocumentSymbol {
                                         name,
                                         detail: Some("trigger".to_string()),
@@ -559,20 +558,19 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
 
     // Compute range from keyword start to body end (or paren end if no body)
     let end_node = body_node.or(paren_node).unwrap_or(kw_node);
-    let range = tower_lsp::lsp_types::Range {
-        start: tower_lsp::lsp_types::Position {
-            line: kw_node.start_position().row as u32,
-            character: kw_node.start_position().column as u32,
+    let range = crate::ts_range_to_lsp(
+        &tree_sitter::Range {
+            start_byte: kw_node.start_byte(),
+            end_byte: end_node.end_byte(),
+            start_point: kw_node.start_position(),
+            end_point: end_node.end_position(),
         },
-        end: tower_lsp::lsp_types::Position {
-            line: end_node.end_position().row as u32,
-            character: end_node.end_position().column as u32,
-        },
-    };
+        source,
+    );
 
     let selection_range = paren_node
-        .map(|p| ts_range_to_lsp(&p.range()))
-        .unwrap_or(ts_range_to_lsp(&kw_node.range()));
+        .map(|p| ts_range_to_lsp(&p.range(), source))
+        .unwrap_or(ts_range_to_lsp(&kw_node.range(), source));
 
     // Extract children from the body braced_block.
     // Also scan for trigger declarations that the grammar parses as raw tokens
@@ -628,10 +626,10 @@ fn extract_enum_value_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol
         .and_then(|n| n.utf8_text(source).ok())
         .unwrap_or("");
 
-    let range = ts_range_to_lsp(&node.range());
+    let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = node
         .child_by_field_name("name")
-        .map(|n| ts_range_to_lsp(&n.range()))
+        .map(|n| ts_range_to_lsp(&n.range(), source))
         .unwrap_or(range);
 
     Some(DocumentSymbol {
@@ -660,10 +658,10 @@ fn extract_key_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         .and_then(|n| n.utf8_text(source).ok())
         .unwrap_or("");
 
-    let range = ts_range_to_lsp(&node.range());
+    let range = ts_range_to_lsp(&node.range(), source);
     let selection_range = node
         .child_by_field_name("name")
-        .map(|n| ts_range_to_lsp(&n.range()))
+        .map(|n| ts_range_to_lsp(&n.range(), source))
         .unwrap_or(range);
 
     Some(DocumentSymbol {
@@ -694,7 +692,7 @@ fn collect_var_symbols_recursive(node: Node, source: &[u8], symbols: &mut Vec<Do
     match node.kind() {
         "regular_variable_declaration" => {
             let detail = extract_node_text(node.child_by_field_name("type"), source);
-            let range = ts_range_to_lsp(&node.range());
+            let range = ts_range_to_lsp(&node.range(), source);
             for (name, selection_range) in extract_regular_variable_names(node, source) {
                 symbols.push(DocumentSymbol {
                     name,
@@ -723,8 +721,8 @@ fn collect_var_symbols_recursive(node: Node, source: &[u8], symbols: &mut Vec<Do
                 kind: SymbolKind::VARIABLE,
                 tags: None,
                 deprecated: None,
-                range: ts_range_to_lsp(&node.range()),
-                selection_range: ts_range_to_lsp(&name_node.range()),
+                range: ts_range_to_lsp(&node.range(), source),
+                selection_range: ts_range_to_lsp(&name_node.range(), source),
                 children: None,
             });
             return;
@@ -751,7 +749,7 @@ fn extract_regular_variable_names(
     if names.is_empty() {
         if let Some(name_node) = node.child_by_field_name("name") {
             if let Some(name) = clean_node_text(name_node, source) {
-                names.push((name, ts_range_to_lsp(&name_node.range())));
+                names.push((name, ts_range_to_lsp(&name_node.range(), source)));
             }
         }
     }
@@ -771,7 +769,7 @@ fn collect_variable_name_nodes(
 
     if node.child_count() == 0 && is_variable_name_node(node.kind()) {
         if let Some(name) = clean_node_text(node, source) {
-            names.push((name, ts_range_to_lsp(&node.range())));
+            names.push((name, ts_range_to_lsp(&node.range(), source)));
         }
         return;
     }
@@ -853,7 +851,7 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
             kind: SymbolKind::VARIABLE,
             tags: None,
             deprecated: None,
-            range: ts_range_to_lsp(&node.range()),
+            range: ts_range_to_lsp(&node.range(), source),
             selection_range: tower_lsp::lsp_types::Range {
                 start: tower_lsp::lsp_types::Position {
                     line: line_no,

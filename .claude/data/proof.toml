@@ -276,31 +276,6 @@ Crate count: 12 (al-protocol replaces al-discovery)
 """
 status = "SUCCESS"
 
-[[entries]]
-date = "2026-03-12"
-work_package = "WP1: al-core Skeleton & Discovery Migration"
-task_id = "T104: Hover Logic"
-
-[entries.adversarial_pass]
-context = "Hovering over a non-existent symbol 'NonExistentTable'."
-expected = "SymbolIndex returns None, Hover handler returns Empty response."
-actual_log = """
-[DEBUG] al_lsp::hover: resolving symbol 'NonExistentTable'
-[ERROR] al_symbols::index: symbol 'NonExistentTable' not found in workspace or packages.
-[TRACE] al_lsp::handlers: hover result: None (Correct)
-"""
-status = "FAILED_AS_EXPECTED"
-
-[entries.fidelity_pass]
-context = "Hovering over 'Customer' table in HelloWorld.al."
-expected = "Returns Markdown with Table 18 'Customer' + documentation."
-actual_log = """
-[DEBUG] al_lsp::hover: resolving symbol 'Customer'
-[INFO]  al_symbols::index: found Table 18 "Customer" in Microsoft_Base Application.app
-[TRACE] al_lsp::handlers: hover result: Some(Markdown("Table 18 Customer...")) (Correct)
-"""
-status = "SUCCESS"
-
 # =============================================================================
 # WP2: Workspace State & Document Management
 # Tasks: T201 (DocumentStore), T202 (Incremental Parsing), T203 (FileIndex)
@@ -1198,10 +1173,10 @@ task_id = "T501: Grammar Regeneration and Highlights"
 [entries.adversarial_pass]
 context = "Preprocessor directives and inactive code must be highlighted"
 expected = "directive and inactive_code captures present in highlights.scm"
-actual_log = """
+actual_log = '''
 grep -c 'directive\|inactive_code' languages/al/highlights.scm
 2
-"""
+'''
 status = "FAILED_AS_EXPECTED"
 
 [entries.fidelity_pass]

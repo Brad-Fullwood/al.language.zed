@@ -63,6 +63,14 @@ impl AlParser {
         ParseResult { tree, errors }
     }
 
+    /// Extract syntax errors from an already-parsed tree.
+    ///
+    /// Used to obtain errors from a cached tree without re-parsing the source.
+    /// The `text` parameter is accepted for API consistency but is currently unused.
+    pub fn errors_from_tree(tree: &Tree) -> Vec<SyntaxError> {
+        collect_errors(tree, "")
+    }
+
     /// Parse using a thread-local parser, avoiding repeated `Parser::new()` + `set_language()`.
     ///
     /// Preferred over `AlParser::new()` + `parse()` in hot paths where the parser

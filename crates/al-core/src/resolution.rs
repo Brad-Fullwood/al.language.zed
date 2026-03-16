@@ -640,10 +640,11 @@ pub(crate) fn resolve_workspace_object_definition(
 ) -> Option<(Url, Range)> {
     let path = resolve_object_path(workspace, None, name)?;
     let file_text = workspace.file_index.files.get(&path)?;
-    let result = AlParser::parse_quick(file_text.value());
-    let obj = al_syntax::find_object_declaration(&result.tree, file_text.value())?;
+    let file_source = file_text.value();
+    let result = AlParser::parse_quick(file_source);
+    let obj = al_syntax::find_object_declaration(&result.tree, file_source)?;
     let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
-    Some((uri, al_syntax::ts_range_to_lsp(&obj.range)))
+    Some((uri, al_syntax::ts_range_to_lsp(&obj.range, file_source.as_bytes())))
 }
 
 pub(crate) fn completion_items_for_receiver(
@@ -1029,7 +1030,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
                 }),
                 uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                 kind: ResolvedMemberKind::Variable {
-                    range: Some(al_syntax::ts_range_to_lsp(&var.range)),
+                    range: Some(al_syntax::ts_range_to_lsp(&var.range, content.as_bytes())),
                     scope: "global variable",
                 },
             });

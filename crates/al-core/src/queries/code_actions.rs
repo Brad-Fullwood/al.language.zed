@@ -274,16 +274,8 @@ fn source_action_add_region(uri: &Url, text: &str, range: tower_lsp::lsp_types::
 }
 
 fn parse_parameter_names_from_detail(detail: &str) -> Vec<String> {
-    let start = match detail.find('(') { Some(i) => i + 1, None => return vec![] };
-    let end = match detail.rfind(')') { Some(i) => i, None => return vec![] };
-    if start >= end { return vec![]; }
-    let inner = &detail[start..end];
-    inner.split(';')
-        .filter_map(|param| {
-            let trimmed = param.trim();
-            let name_part = trimmed.strip_prefix("var ").unwrap_or(trimmed);
-            name_part.split(':').next().map(|n| n.trim().to_string())
-        })
-        .filter(|n| !n.is_empty())
+    super::parse_detail_params(detail)
+        .into_iter()
+        .map(|(_, name, _)| name)
         .collect()
 }

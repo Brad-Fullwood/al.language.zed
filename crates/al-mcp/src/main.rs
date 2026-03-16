@@ -416,11 +416,13 @@ impl AlMcpServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for AlMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "AL development tools for Microsoft Dynamics 365 Business Central. \
-                 Provides symbol search, code analysis, linting, formatting, compilation, \
-                 and navigation for AL source files and .app packages.",
-        )
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("al-mcp", env!("CARGO_PKG_VERSION")))
+            .with_instructions(
+                "AL development tools for Microsoft Dynamics 365 Business Central. \
+                     Provides symbol search, code analysis, linting, formatting, compilation, \
+                     and navigation for AL source files and .app packages.",
+            )
     }
 }
 

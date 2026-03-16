@@ -271,6 +271,7 @@ mod tests {
             output_dir: std::env::temp_dir().join("al-snapshots-test"),
             username: Some("admin".to_string()),
             password: Some("password".to_string()),
+            accept_invalid_certs: false,
         }
     }
 

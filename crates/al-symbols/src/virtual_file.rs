@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::model::SymbolEntry;
 use crate::source_index;
@@ -278,37 +279,42 @@ fn enforce_readonly(path: &Path) {
 }
 
 fn ensure_readonly_settings(cache_root: &Path) {
-    let settings_dir = cache_root.join(".zed");
-    let settings_path = settings_dir.join("settings.json");
-    let _ = fs::create_dir_all(&settings_dir);
+    static ONCE: OnceLock<()> = OnceLock::new();
+    ONCE.get_or_init(|| {
+        let settings_dir = cache_root.join(".zed");
+        let settings_path = settings_dir.join("settings.json");
+        let _ = fs::create_dir_all(&settings_dir);
 
-    let mut settings: serde_json::Value = if let Ok(text) = fs::read_to_string(&settings_path) {
-        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
+        let mut settings: serde_json::Value =
+            if let Ok(text) = fs::read_to_string(&settings_path) {
+                serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
 
-    let list = settings
-        .get_mut("read_only_files")
-        .and_then(|v| v.as_array_mut());
+        let list = settings
+            .get_mut("read_only_files")
+            .and_then(|v| v.as_array_mut());
 
-    let pattern = "symbols/**/*.al";
-    match list {
-        Some(arr) => {
-            let exists = arr.iter().any(|v| v.as_str() == Some(pattern));
-            if !exists {
-                arr.push(serde_json::Value::String(pattern.to_string()));
+        let pattern = "symbols/**/*.al";
+        match list {
+            Some(arr) => {
+                let exists = arr.iter().any(|v| v.as_str() == Some(pattern));
+                if !exists {
+                    arr.push(serde_json::Value::String(pattern.to_string()));
+                }
+            }
+            None => {
+                settings["read_only_files"] = serde_json::Value::Array(vec![
+                    serde_json::Value::String(pattern.to_string()),
+                ]);
             }
         }
-        None => {
-            settings["read_only_files"] =
-                serde_json::Value::Array(vec![serde_json::Value::String(pattern.to_string())]);
-        }
-    }
 
-    if let Ok(text) = serde_json::to_string_pretty(&settings) {
-        let _ = fs::write(&settings_path, text);
-    }
+        if let Ok(text) = serde_json::to_string_pretty(&settings) {
+            let _ = fs::write(&settings_path, text);
+        }
+    });
 }
 
 fn find_member_range_in_text(

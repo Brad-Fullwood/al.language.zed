@@ -30,7 +30,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     }
 
     tracing::debug!(name = %clean_name, node_kind = %node.kind(), line = lsp_pos.line, character = lsp_pos.character, "hover: looking up symbol");
-    let node_range: Range = al_syntax::ts_range_to_lsp(&node.range()).into();
+    let node_range: Range = al_syntax::ts_range_to_lsp(&node.range(), source).into();
 
     // Access path resolution (e.g., Rec.Name, Enum::Value)
     if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos) {
@@ -180,13 +180,19 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             return Some(HoverResult { contents: content, range: Some(node_range) });
         }
 
-        // Search all types for a method with this name
-        let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).clone(); // SILENT: recover from poison
-        for bt in builtins.iter() {
-            let overloads: Vec<_> = bt.methods.iter()
-                .filter(|m| m.name.eq_ignore_ascii_case(clean_name))
-                .collect();
-            if !overloads.is_empty() {
+        // Search all types for a method with this name via SemanticCache (O(n) over types,
+        // replacing the previous O(n*m) double-loop over workspace.builtins).
+        // Note: this is still O(n) over all types — a future improvement would add a
+        // reverse index from method name to type in SemanticCache for O(1) lookup.
+        let method_hits = cache.find_methods_by_name(clean_name);
+        if !method_hits.is_empty() {
+            // Group by type name so we can emit a single hover per type with all overloads
+            let mut by_type: std::collections::HashMap<&str, Vec<&al_semantic::BuiltinMethod>> = std::collections::HashMap::new();
+            for (type_name, method) in &method_hits {
+                by_type.entry(type_name).or_default().push(method);
+            }
+            // Pick the first type (stable iteration order not guaranteed, but sufficient for hover)
+            if let Some((&type_name, overloads)) = by_type.iter().next() {
                 let mut content = String::new();
                 for (i, method) in overloads.iter().enumerate() {
                     if i > 0 { content.push_str("\n\n---\n\n"); }
@@ -198,9 +204,9 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                     }
                 }
                 if overloads.len() > 1 {
-                    content.push_str(&format!("\n\n*({} overloads on {})*", overloads.len(), bt.name));
+                    content.push_str(&format!("\n\n*({} overloads on {})*", overloads.len(), type_name));
                 } else {
-                    content.push_str(&format!("\n\n*({}.{})*", bt.name, clean_name));
+                    content.push_str(&format!("\n\n*({}.{})*", type_name, clean_name));
                 }
                 return Some(HoverResult { contents: content, range: Some(node_range) });
             }

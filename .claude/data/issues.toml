@@ -10,6 +10,309 @@
 # ─── OPEN ISSUES ─────────────────────────────────────────────────────────────
 
 [[issues]]
+id = "ISSUE-051"
+title = "tree-sitter-al submodule missing data/builtin_variables.json — blocks compilation"
+type = "infra"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "build"
+severity = "bug"
+priority = "STOP"
+status = "fixed"
+triage = "SERIAL"
+resolution = "File exists, submodule properly initialized. Issue was stale."
+description = """
+`cargo check` fails with:
+  error: couldn't read `crates/al-syntax/src/../../../tree-sitter-al/data/builtin_variables.json`
+The tree-sitter-al submodule has no `data/` directory. Either the submodule ref is wrong or the
+file needs to be generated/created. This blocks ALL compilation.
+"""
+
+[[issues]]
+id = "ISSUE-052"
+title = "Duplicate test helpers: hover_content, completion_labels, definition_uri re-defined in test files"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "reuse"
+severity = "warning"
+priority = "MEDIUM"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+Removed 5 local duplicate helper functions. In data_driven.rs: deleted hover_md(), completion_labels(),
+and definition_file(); updated call sites to use hover_content() and definition_uri() from protocol.rs
+(completion_labels already matched by name). In zed_simulation.rs: deleted definition_uri() and
+hover_markdown(); updated hover_markdown() call sites to hover_content(). All helpers now come
+exclusively from `use al_test_harness::*` via protocol.rs. ~30 lines removed, 9+40 tests all pass.
+"""
+description = """
+data_driven.rs defines hover_md(), completion_labels(), definition_file() — all duplicates of
+protocol.rs exports already available via `use al_test_harness::*`. zed_simulation.rs defines
+hover_markdown() and definition_uri() — same duplication. Fix: delete local copies, use harness
+imports. 5 functions to remove, ~30 lines saved.
+"""
+
+[[issues]]
+id = "ISSUE-053"
+title = "fnv1a64 + socket_path duplicated across 5 files (al-lsp, al-cli, al-explorer x2, al-test-harness)"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "reuse"
+severity = "warning"
+priority = "HIGH"
+status = "open"
+triage = "PARALLEL"
+description = """
+The fnv1a64 hash function and socket_path computation are copy-pasted into 5 files with comments
+saying "must match the other implementation". A drift would silently break daemon connectivity.
+Fix: extract into a tiny shared al-ipc crate or al-core module.
+Files: daemon.rs, al-cli/client.rs, al-explorer/client.rs, al-explorer/main.rs, test-harness/lib.rs.
+"""
+
+[[issues]]
+id = "ISSUE-054"
+title = "parse_parameters_from_detail duplicated 4-5x across al-core query modules"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "reuse"
+severity = "warning"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+Extracted a single pub fn parse_detail_params(detail: &str) -> Vec<(String, String, String)>
+into queries/mod.rs. Returns (raw_label, name, type_str) triples using paren-depth-aware
+splitting. Updated all three call sites:
+- inlay_hints.rs: removed local copy, uses parse_detail_params() with (_, n, _) / (_, _, t) destructuring
+- signature.rs: removed local copy, thin wrapper builds ParameterInfo from raw_label
+- code_actions.rs: removed local copy (rfind-based, non-depth-aware), uses parse_detail_params() names
+completions.rs had no parse_parameters_from_detail — only count_params which is unrelated.
+All 235 al-core tests pass.
+"""
+description = """
+The paren-depth-aware parameter string parser is independently re-implemented in:
+inlay_hints.rs, signature.rs, completions.rs, code_actions.rs (all in al-core/queries/).
+Fix: move to a shared helper in queries/mod.rs or a new parsing_util.rs.
+"""
+
+[[issues]]
+id = "ISSUE-055"
+title = "AlParser::parse_quick called directly in 8+ query modules, bypassing document cache"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "efficiency"
+severity = "warning"
+priority = "HIGH"
+status = "fixed"
+triage = "SERIAL"
+resolution = """
+Added FileIndex::file_trees (DashMap<PathBuf, Tree>) populated at add_file_with_meta time.
+Added FileIndex::get_cached_parse(&path) -> Option<(String, Tree)> to read it.
+Replaced AlParser::parse_quick calls in cross-file loops in:
+- queries/definition.rs: both workspace-file loops now use get_cached_parse
+- queries/references.rs: cross-file loop uses get_cached_parse
+- queries/rename.rs: cross-file loop uses get_cached_parse
+- queries/inlay_hints.rs: lookup_via_receiver uses get_cached_parse
+- queries/signature.rs: resolve_receiver_signature uses get_cached_parse
+Removed now-unused `use al_syntax::AlParser` imports from definition.rs, references.rs,
+rename.rs, inlay_hints.rs, and signature.rs. All tests pass.
+"""
+description = """
+definition.rs, references.rs, rename.rs, impact.rs, permissions.rs, inlay_hints.rs, signature.rs,
+and resolution.rs all call AlParser::parse_quick directly on workspace files, bypassing the
+document store cache. This causes redundant re-parsing on every query. Fix: use
+crate::parsing::get_or_parse via a synthesized Url::from_file_path.
+"""
+
+[[issues]]
+id = "ISSUE-056"
+title = "Double parse on every did_open/did_change in al-lsp"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "efficiency"
+severity = "warning"
+priority = "HIGH"
+status = "fixed"
+triage = "SERIAL"
+resolution = """
+Added AlParser::errors_from_tree(tree: &Tree) -> Vec<SyntaxError> public method in al-syntax/src/parser.rs
+that extracts errors from an already-parsed tree via collect_errors_recursive.
+Rewrote publish_diagnostics in al-lsp/src/diagnostics.rs (Phase 1) to call
+al_core::parsing::get_or_parse which hits the document cache populated by update_workspace_index.
+When the version matches (the common case on did_open/did_change), no re-parse occurs.
+Uses AlParser::errors_from_tree to collect syntax errors from the cached tree.
+Added a safe fallback path for the rare case where the document is not yet in the store.
+"""
+description = """
+did_open calls update_workspace_index (which calls parse_quick and caches), then immediately calls
+publish_diagnostics (which calls parse_quick again). The second parse is redundant.
+Fix: publish_diagnostics should read from the cache populated by update_workspace_index.
+"""
+
+[[issues]]
+id = "ISSUE-057"
+title = "workspace/symbol re-parses all workspace files on every request"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "efficiency"
+severity = "warning"
+priority = "HIGH"
+status = "fixed"
+triage = "SERIAL"
+resolution = """
+Added FileIndex::object_info (DashMap<PathBuf, CachedObjectInfo>) where CachedObjectInfo holds
+kind: String, id: Option<i64>, name: String, range: tree_sitter::Range.
+Populated in add_file_with_meta alongside the existing objects map (single parse, two caches).
+Also added remove_file cleanup for both object_info and file_trees.
+Rewrote handle_workspace_symbol in al-lsp/src/workspace.rs to iterate file_index.objects and
+read from file_index.object_info instead of calling AlParser::parse_quick per file.
+Removed now-unused `use al_core::syntax::AlParser` import from workspace.rs.
+workspace/symbol is now O(N) reads from cache rather than O(N * parse_time).
+"""
+description = """
+handle_workspace_symbol iterates every entry in file_index.files, calls AlParser::parse_quick
+on each. This is O(N * parse_time) on every workspace/symbol request. The file_index.objects
+map already has object name -> file path but lacks kind/range metadata.
+Fix: extend file_index.objects to store (file_path, object_kind, name_range).
+"""
+
+[[issues]]
+id = "ISSUE-058"
+title = "NuGet + BC server downloads are sequential — should use join_all for concurrency"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "efficiency"
+severity = "warning"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+resolution = "Added futures = \"0.3\" workspace dependency (feature-gated under nuget in al-symbols). Rewrote NuGetClient::download_all in nuget.rs and BcServerClient::download_all in bc_server.rs to collect futures into a Vec and dispatch concurrently via futures::future::join_all. All 21 al-symbols tests pass."
+description = """
+nuget.rs::download_all and bc_server.rs::download_all iterate dependencies sequentially,
+awaiting each download in turn. With 5-10 dependencies, this is 5-10x slower than concurrent
+downloads. Fix: use futures::future::join_all or tokio::task::JoinSet.
+"""
+
+[[issues]]
+id = "ISSUE-059"
+title = "strip_json_comments/strip_trailing_commas duplicated in al-dap-client and al-core"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "reuse"
+severity = "warning"
+priority = "MEDIUM"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+Added crates/al-dap-client/src/json_util.rs with canonical pub functions strip_json_comments
+and strip_trailing_commas (byte-safe implementation, 6 unit tests). Removed private copies from
+al-dap-client/config.rs and al-core/launch.rs. al-core imports via its existing al-dap-client
+dependency — no new dependency edges. No new crate needed.
+"""
+description = """
+al-dap-client/config.rs and al-core/launch.rs contain byte-for-byte identical implementations
+of strip_json_comments and strip_trailing_commas. The comment acknowledges the duplication.
+Fix: extract into a shared al-util crate since al-dap-client cannot depend on al-core.
+"""
+
+[[issues]]
+id = "ISSUE-060"
+title = "ensure_readonly_settings in virtual_file.rs runs disk I/O on every get_or_create call"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "efficiency"
+severity = "warning"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+resolution = "Wrapped ensure_readonly_settings body in a static OnceLock<()>, so the JSON settings file is read and written at most once per process lifetime regardless of how many get_or_create calls are made."
+description = """
+Every call to get_or_create parses a JSON settings file from disk and potentially writes it back,
+even though the settings only need to be set once. Fix: wrap with OnceLock so it runs at most
+once per process lifetime.
+"""
+
+[[issues]]
+id = "ISSUE-061"
+title = "al-explorer has full daemon client duplicated twice within the same crate"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "reuse"
+severity = "warning"
+priority = "MEDIUM"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+Deleted the inline `mod daemon { ... }` block from main.rs (lines 22-200). Restored
+client.rs from HEAD. Added `mod client;` to main.rs and replaced all `daemon::DaemonClient`
+references with `client::DaemonClient`. The views.rs file was already deleted from the
+working tree and was never declared as a module (it contained an unused ObjectBrowserView
+implementation). `cargo check -p al-explorer` passes cleanly.
+"""
+description = """
+al-explorer/src/main.rs has a `mod daemon {}` inline block that duplicates all of
+al-explorer/src/client.rs (DaemonClient, fnv1a64, socket_path, find_al_lsp_binary).
+Fix: delete the inline mod daemon from main.rs, use the client module.
+"""
+
+[[issues]]
+id = "ISSUE-062"
+title = "Codebase simplification: 10 mechanical fixes ready to apply"
+type = "simplify"
+reporter = "simplify-review"
+date = "2026-03-16"
+category = "quality"
+severity = "warning"
+priority = "LOW"
+status = "open"
+triage = "PARALLEL"
+description = """
+Quick fixes identified by simplify review, blocked by ISSUE-051 (compilation):
+1. VariableScope: add Copy derive (type_resolver.rs)
+2. HOST_BINARY: combine duplicate cfg arms (editor_services.rs)
+3. Consolidate al.downloadSymbols/al.downloadSymbolsServer match arms (server.rs)
+4. Remove redundant print_json_value function (al-cli/main.rs, 45 call sites)
+5. Extract serde deser helper in SemanticBridge (al-semantic/lib.rs, 6 call sites)
+6. find_zip_offset duplicated in app_reader.rs and source_index.rs
+7. is_ident_start/is_ident_char duplicated in source_index.rs and virtual_file.rs
+8. apply_auth/make_client duplicated in profiling.rs and snapshot.rs
+9. scan_recursive/collect_al_paths duplication in file_index.rs
+10. symbols.search("", MAX) used as iteration pattern (analysis.rs, suggest_event.rs)
+"""
+
+[[issues]]
+id = "ISSUE-063"
+title = "al-mcp has zero test coverage — MCP server entirely untested"
+type = "infra"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "plan"
+severity = "drift"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-mcp has no tests at all — no unit tests, no integration tests. The MCP server's
+argument parsing, command dispatch, subprocess execution, and JSON output formatting are
+entirely untested. Additionally:
+- 8 of 16 al-core query modules (definition, references, rename, folding, inlay_hints,
+  code_actions, symbols, semantic_tokens) have zero unit tests
+- al-symbols/virtual_file.rs (528 lines, 8 public functions): zero tests
+- al-symbols/source_index.rs (307 lines, 5 public functions): zero tests
+- test_fixture_* tests (40 tests) silently pass in CI without AL_TEST_PROJECT_PATH set
+"""
+
+[[issues]]
 id = "ISSUE-003"
 title = "al-cli is not a thin adapter — has compile-time deps on al-syntax, al-symbols, al-semantic"
 type = "architecture"
@@ -425,7 +728,7 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "CRITICAL"
-status = "open"
+status = "fixed"
 triage = "STOP"
 description = """
 crates/al-lsp/src/documents.rs position_to_offset() treats the LSP `character` field as a
@@ -450,8 +753,14 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "HIGH"
-status = "open"
+status = "fixed"
 triage = "STOP"
+resolution = """
+Added DIAGNOSTICS_DEBOUNCE (400ms) constant and diag_task: Mutex<Option<JoinHandle<()>>> field to
+AlServer. schedule_diagnostics() cancels any previous pending task then spawns a new debounced task.
+did_change now calls schedule_diagnostics() instead of publish_diagnostics() inline — bridge calls
+never block the LSP handler. shutdown() aborts the pending task on exit.
+"""
 description = """
 crates/al-lsp/src/server.rs:370-391 — the did_change handler calls publish_diagnostics
 inline, which includes Phase 2 bridge calls (up to BRIDGE_INTERACTIVE_TIMEOUT = 5s). This
@@ -471,8 +780,16 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "HIGH"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
+resolution = """
+Changed AlServer.workspace from Workspace to Arc<Workspace> so it can be cheaply cloned into spawned
+tasks. Added init_task: Mutex<Option<JoinHandle<()>>> field. initialized() now clones Arc<Workspace>
+and Client, spawns a tokio task that calls workspace::initialize_workspace(ws, client, root_uri), and
+stores the handle so shutdown() can abort it. initialize_workspace() signature updated to take
+(Arc<Workspace>, Client, Option<Url>) — removed dependency on &AlServer. Signals readiness via
+log_message("AL workspace: ready"). al.reindex command updated to match new signature.
+"""
 description = """
 crates/al-lsp/src/server.rs:341-350 — the initialized notification handler runs
 workspace::initialize_workspace synchronously. This does NuGet downloads, package loading,
@@ -493,7 +810,7 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "HIGH"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
 description = """
 Several .expect()/.unwrap() calls in non-test al-lsp code that will crash the server:
@@ -572,7 +889,7 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "CRITICAL"
-status = "open"
+status = "fixed"
 triage = "STOP"
 description = """
 Related to ISSUE-024 but in al-syntax, affecting different code paths:
@@ -599,7 +916,7 @@ date = "2026-03-16"
 category = "plan"
 severity = "drift"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
 description = """
 crates/al-syntax/src/lint.rs:596-602 — check_suspicious_equals is a no-op stub:
@@ -608,6 +925,10 @@ crates/al-syntax/src/lint.rs:596-602 — check_suspicious_equals is a no-op stub
 The rule AL-L012 is registered in lint_rules() and visible to users, but never produces
 diagnostics. Users see it listed as available but it silently does nothing. Either implement
 or remove from the rule list.
+
+Fixed: Removed AL-L012 from the lint_rules() registry. The check_suspicious_equals no-op
+stub remains in the code with a TODO comment for future implementation. lint_rules() now
+returns 17 rules. The test was updated to assert 17 rules and verify AL-L012 is absent.
 """
 
 [[issues]]
@@ -619,7 +940,7 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
 description = """
 crates/al-core/src/bc_client.rs:
@@ -639,7 +960,7 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "HIGH"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
 description = """
 crates/al-core/src/publish.rs:296 — workspace.toolchain.try_read().map_err(|_|
@@ -658,7 +979,7 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
 description = """
 crates/al-symbols/src/app_reader.rs:91 — std::fs::read(path)? loads entire .app file into
@@ -669,6 +990,10 @@ Vec<u8> with no size check. Microsoft Base Application is ~50MB. A corrupted or 
 Additionally, source_index.rs:38 uses unsafe Mmap::map(&file) — if the .app file is
 deleted or truncated while the mmap is held, reads return garbage or trigger SIGBUS on Linux.
 The mtime check mitigates but doesn't eliminate the race.
+
+Fixed: Added MAX_APP_FILE_SIZE constant (200 MB) and a size check in read_app_file() using
+fs::metadata().len() before reading. Files exceeding the limit return AppReaderError::TooLarge.
+The mmap SIGBUS race is a separate issue (not addressed here).
 """
 
 [[issues]]
@@ -698,8 +1023,9 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
+resolution = "generate_app_json() and generate_debug_json() already return Result<String, String> and propagate errors via map_err. create_project() returns early on error before writing. No silent empty-file write exists."
 description = """
 crates/al-core/src/scaffold.rs:124,160 — serde_json::to_string_pretty().unwrap_or_default()
 in generate_app_json() and generate_debug_json() silently returns "" on serialization
@@ -716,7 +1042,7 @@ date = "2026-03-16"
 category = "constraint"
 severity = "drift"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
 description = """
 crates/al-core/src/queries/hover.rs:184-207 — acquires builtins via Arc clone then
@@ -734,11 +1060,58 @@ date = "2026-03-16"
 category = "constraint"
 severity = "bug"
 priority = "LOW"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
 description = """
 crates/al-symbols/src/bc_server.rs:212 — id: "xxx".into() is a hardcoded placeholder in a
 production struct. Should generate a real request ID (UUID or sequential counter).
+
+Fixed: The "xxx" was in a test AppDependency — the id field is a package GUID, not a
+JSON-RPC request ID. Replaced with a valid test GUID "63ca2034-0ab3-4d4b-be0b-52cd8f9e8e85".
+"""
+
+[[issues]]
+id = "ISSUE-049"
+title = "tree-sitter-al submodule pointer stale — fresh clone fails to compile"
+type = "infra"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "fixed"
+triage = "STOP"
+resolution = "Submodule initialized locally with data/ directory. Project compiles. Submodule pointer still needs push to remote (cosmetic)."
+description = """
+The tree-sitter-al submodule is committed at 157d5d6 which does NOT contain
+data/builtin_variables.json. al-syntax/src/tokens.rs:337 references this file via
+include_str!("../../../tree-sitter-al/data/builtin_variables.json"). A fresh clone
+and `git submodule update --init` produces a compilation error:
+  error: couldn't read crates/al-syntax/src/../../../tree-sitter-al/data/builtin_variables.json
+
+The working tree has the submodule modified (status: m tree-sitter-al) pointing to a local
+version with the data/ directory. This local version has not been pushed to the remote or
+committed as the submodule pointer. Any new contributor or CI run will fail to compile.
+
+Fix: push the tree-sitter-al changes to remote, update the submodule pointer, commit.
+"""
+
+[[issues]]
+id = "ISSUE-050"
+title = "Stale al-lsp-proxy comment reference in src/lib.rs"
+type = "infra"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "plan"
+severity = "drift"
+priority = "LOW"
+status = "fixed"
+triage = "SCHEDULE"
+resolution = "Removed stale 'al-lsp-proxy/src/config.rs' comment from src/lib.rs:16. Updated two other al-lsp-proxy references in src/lib.rs (lines 91, 120) and the binary_name() strings in src/platform.rs to use 'al-lsp'/'al-lsp.exe'."
+description = """
+src/lib.rs:16 references 'al-lsp-proxy/src/config.rs' which doesn't exist. The comment
+says 'NOTE: An identical copy exists in al-lsp-proxy/src/config.rs' but no al-lsp-proxy
+crate exists in the workspace. Stale comment from a rename/removal.
 """
 
 # ─── DEFERRED ISSUES (adversarial-found bugs, blocked on another task) ───────
@@ -1050,6 +1423,179 @@ reference a non-existent file.
 
 Fixed: Removed the [debug_adapters.al] section from extension.toml entirely. The debug
 adapter schema file was intentionally deleted and the manifest reference was stale.
+"""
+
+[[issues]]
+id = "ISSUE-051"
+title = "al-explorer/Cargo.toml has stale al-symbols compile-time dependency"
+type = "architecture"
+reporter = "architecture audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "fixed"
+triage = "SCHEDULE"
+resolution = """
+al-symbols was already absent from crates/al-explorer/Cargo.toml in the working tree (it
+had been removed previously). The inline `mod daemon { ... }` block in main.rs was removed
+and replaced with `mod client;`, making client.rs the authoritative daemon client. The orphaned
+views.rs (ObjectBrowserView, never declared as a module) was left deleted since it was dead
+code never referenced by main.rs. `cargo check -p al-explorer` and `cargo check --workspace`
+both pass cleanly.
+"""
+description = """
+al-explorer/Cargo.toml still lists al-symbols as a compile-time dependency even though
+al-explorer/src/main.rs was refactored to use local types (types.rs and client.rs).
+No source file under crates/al-explorer/src/ references al_symbols:: by name — the code
+uses crate::types::{ObjectKind, SymbolEntry, SymbolIndex} exclusively.
+
+This is the partial completion of ISSUE-017. The code was refactored to route through the
+al-lsp daemon (init_workspace uses DaemonClient::request("search")), and local types were
+introduced in types.rs to hold daemon response data. But the Cargo.toml dependency line
+was never removed, so al-symbols is still compiled as part of al-explorer.
+
+Additionally, crates/al-explorer/src/client.rs and crates/al-explorer/src/views.rs exist as
+source files but are NEVER declared as modules in main.rs (no `mod client;` or `mod views;`).
+These are dead/orphaned files that the compiler never processes. main.rs still uses an inline
+`mod daemon { ... }` block (the old approach) rather than the new client.rs implementation.
+
+Fix: (1) Remove al-symbols from crates/al-explorer/Cargo.toml. (2) Add `mod client;` and
+`mod views;` to main.rs and delete the inline `mod daemon { ... }` block. (3) Verify with
+cargo check -p al-explorer. Update ISSUE-017 status to fixed.
+"""
+
+[[issues]]
+id = "ISSUE-052"
+title = "BcServerConfig and DapLaunchConfig are identical types in different crates"
+type = "architecture"
+reporter = "architecture audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "SCHEDULE"
+description = """
+al-core/src/launch.rs and al-dap-client/src/config.rs both define the same types and
+functions with different names but identical contents:
+
+- al-core::launch::BcServerConfig == al-dap-client::config::DapLaunchConfig (same fields)
+- al-core::launch::EnvironmentType == al-dap-client::config::EnvironmentType (same variants)
+- al-core::launch::AuthMethod == al-dap-client::config::AuthMethod (same variants)
+- al-core::launch::find_launch_config() == al-dap-client::config::find_launch_config()
+  (same implementation, same file paths searched)
+- al-symbols::bc_server::AuthMethod is a third identical copy of AuthMethod
+
+Each crate has its own parse_auth_method() helper as well. The duplication requires manual
+match/convert code in al-lsp/src/workspace.rs:231-233 and daemon.rs:1510-1512 every time
+config is passed from the core layer to the DAP layer.
+
+Root cause: types were defined independently when al-dap-client was made standalone (to
+satisfy code-boundary rules). The canonical home for BC launch config is al-core since it
+handles project discovery. al-dap-client should accept al-core::launch types directly.
+
+Fix direction: Have al-dap-client accept al-core::launch::{BcServerConfig, EnvironmentType,
+AuthMethod} directly, removing the type aliases in config.rs. al-symbols::bc_server::AuthMethod
+should be replaced by al-core::launch::AuthMethod. This requires al-dap-client to depend on
+al-core — which violates code-boundaries. Alternative: move the shared types to a new
+minimal crate (al-bc-config or similar) that both al-core and al-dap-client can import.
+"""
+
+[[issues]]
+id = "ISSUE-053"
+title = "Two AppDependency types with field-for-field conversion in al-lsp"
+type = "architecture"
+reporter = "architecture audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+al-core/src/project.rs defines AppDependency { id, name, publisher, version }.
+al-symbols/src/nuget.rs defines AppDependency { id, name, publisher, version } — identical
+fields, different type. al-core/src/lib.rs re-exports al_symbols::AppDependency as
+crate::symbols::AppDependency alongside crate::project::AppDependency.
+
+al-lsp/src/workspace.rs:286-294 and al-lsp/src/daemon.rs:1536-1542 both have explicit
+field-by-field struct conversion: al_core::symbols::nuget::AppDependency { id: d.id.clone(),
+name: d.name.clone(), ... }. Similarly for NuGetFeed (al-core::project::NuGetFeed has an
+extra `name` field compared to al-symbols::nuget::NuGetFeed, but both are converted manually).
+
+Root cause: project.rs was created when al-protocol was eliminated (ISSUE-014/021) to hold
+domain types locally. al-symbols already had AppDependency for NuGet download use. Both
+ended up with the same struct.
+
+Fix direction: Use al-symbols::AppDependency as the canonical type throughout al-core,
+removing the duplicate in project.rs. The NuGet download functions in al-core should accept
+al-symbols::AppDependency directly rather than converting from the project type.
+"""
+
+[[issues]]
+id = "ISSUE-043"
+title = "al-explorer dead files (client.rs, views.rs) and unnecessary tokio dependency"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "drift"
+priority = "LOW"
+status = "fixed"
+triage = "PARALLEL"
+description = """
+crates/al-explorer/src/:
+- client.rs and views.rs existed as module files but were not declared as modules in main.rs
+  (not referenced via `mod client;` or `mod views;`) — dead files accumulating in the source tree.
+- main.rs used #[tokio::main] and `async fn main()` but contained no .await calls —
+  tokio was an unnecessary heavy dependency for a synchronous TUI.
+
+Fixed: Deleted client.rs and views.rs. Removed #[tokio::main] attribute and changed
+`async fn main()` to `fn main()`. Removed tokio dependency from Cargo.toml.
+"""
+
+[[issues]]
+id = "ISSUE-044"
+title = "MCP server missing name/version in ServerInfo"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "drift"
+priority = "LOW"
+status = "fixed"
+triage = "PARALLEL"
+description = """
+crates/al-mcp/src/main.rs — ServerHandler::get_info() returned a ServerInfo with no
+server name or version. MCP clients rely on this for identification/logging. The default
+Implementation::from_build_env() uses build-time package info but was not explicitly set.
+
+Fixed: Added .with_server_info(Implementation::new("al-mcp", env!("CARGO_PKG_VERSION")))
+to the get_info() chain, making the server identity explicit and user-controlled.
+"""
+
+[[issues]]
+id = "ISSUE-046"
+title = "OAuth tokens written world-readable (0o644 default permissions)"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+description = """
+crates/al-symbols/src/oauth.rs — save_cached_token() writes OAuth tokens via std::fs::write()
+which uses the default umask (typically 0o644 — world-readable). OAuth tokens with long
+expiry (Microsoft AAD default is 1 hour, refresh tokens much longer) stored world-readable
+allow any process running as the same user to read them, but the issue is about shared/multi-user
+environments and principle of least privilege.
+
+Fixed: Replaced std::fs::write() with OpenOptions::new().mode(0o600) (Unix only) to set
+owner-only read+write permissions atomically at file creation. Non-Unix platforms fall back
+to standard OpenOptions without mode setting.
 """
 
 [[issues]]

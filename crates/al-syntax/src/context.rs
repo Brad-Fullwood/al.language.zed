@@ -31,11 +31,9 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
             None => return CompletionContext::Default,
         };
 
-        let prefix = if col <= line.len() {
-            &line[..col]
-        } else {
-            line
-        };
+        // `col` is a UTF-16 code unit offset from LSP; convert to byte offset before slicing.
+        let byte_col = crate::utf16_col_to_byte_offset(line, col);
+        let prefix = &line[..byte_col];
 
         let trimmed = prefix.trim_end();
 

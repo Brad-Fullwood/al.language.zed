@@ -63,26 +63,6 @@ fn definition_start_line(result: &serde_json::Value) -> Option<u32> {
         .map(|line| line as u32)
 }
 
-fn definition_uri(result: &serde_json::Value) -> Option<&str> {
-    result
-        .get("uri")
-        .and_then(|uri| uri.as_str())
-        .or_else(|| {
-            result
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|loc| loc.get("uri"))
-                .and_then(|uri| uri.as_str())
-        })
-}
-
-fn hover_markdown(result: &serde_json::Value) -> Option<&str> {
-    result
-        .get("contents")
-        .and_then(|contents| contents.get("value"))
-        .and_then(|value| value.as_str())
-}
-
 /// Open common AL test project files into a client.
 async fn open_test_files(client: &mut LspClient) {
     let files = [
@@ -416,7 +396,7 @@ async fn test_fixture_exact_navigation_and_hover_regressions() {
         .hover("objects/Testing/IJLProcessStaging.Report.al", 28, 44)
         .await
         .expect("SchedulePost should have hover");
-    let schedule_hover_text = hover_markdown(&schedule_post_hover).unwrap_or("");
+    let schedule_hover_text = hover_content(&schedule_post_hover).unwrap_or("");
     assert!(schedule_hover_text.contains("SchedulePost"));
     assert!(schedule_hover_text.contains("Schedules the post"));
 
@@ -455,7 +435,7 @@ async fn test_fixture_exact_navigation_and_hover_regressions() {
         )
         .await
         .expect("FieldCount should have builtin hover");
-    let field_count_text = hover_markdown(&field_count_hover).unwrap_or("");
+    let field_count_text = hover_content(&field_count_hover).unwrap_or("");
     assert!(field_count_text.contains("FieldCount"));
 
     client.shutdown().await;

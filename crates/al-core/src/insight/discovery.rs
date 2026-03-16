@@ -187,9 +187,12 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
         // Sort subscribers by object_name then method_name for stability.
         subs.sort_by(|a, b| {
             a.object_name
-                .to_lowercase()
-                .cmp(&b.object_name.to_lowercase())
-                .then_with(|| a.method_name.to_lowercase().cmp(&b.method_name.to_lowercase()))
+                .as_bytes().iter().map(u8::to_ascii_lowercase)
+                .cmp(b.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
+                .then_with(|| {
+                    a.method_name.as_bytes().iter().map(u8::to_ascii_lowercase)
+                        .cmp(b.method_name.as_bytes().iter().map(u8::to_ascii_lowercase))
+                })
         });
 
         let sub_count = subs.len();
@@ -217,18 +220,22 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
     // Sort events by (publisher object_name, event_name).
     events.sort_by(|a, b| {
         a.publisher
-            .object_name
-            .to_lowercase()
-            .cmp(&b.publisher.object_name.to_lowercase())
-            .then_with(|| a.event_name.to_lowercase().cmp(&b.event_name.to_lowercase()))
+            .object_name.as_bytes().iter().map(u8::to_ascii_lowercase)
+            .cmp(b.publisher.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
+            .then_with(|| {
+                a.event_name.as_bytes().iter().map(u8::to_ascii_lowercase)
+                    .cmp(b.event_name.as_bytes().iter().map(u8::to_ascii_lowercase))
+            })
     });
 
     // Sort orphans by (object_name, method_name).
     orphans.sort_by(|a, b| {
-        a.object_name
-            .to_lowercase()
-            .cmp(&b.object_name.to_lowercase())
-            .then_with(|| a.method_name.to_lowercase().cmp(&b.method_name.to_lowercase()))
+        a.object_name.as_bytes().iter().map(u8::to_ascii_lowercase)
+            .cmp(b.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
+            .then_with(|| {
+                a.method_name.as_bytes().iter().map(u8::to_ascii_lowercase)
+                    .cmp(b.method_name.as_bytes().iter().map(u8::to_ascii_lowercase))
+            })
     });
 
     let total_events = events.len();

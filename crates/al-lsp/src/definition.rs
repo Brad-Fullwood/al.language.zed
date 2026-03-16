@@ -13,7 +13,8 @@ pub(crate) fn handle_definition(
     let core_pos = al_core::queries::Position { line: position.line, character: position.character };
     let locations = al_core::queries::definition::definition(&server.workspace, uri, core_pos)?;
     if locations.len() == 1 {
-        let loc = locations.into_iter().next().unwrap();
+        // Safety: len == 1 guarantees next() returns Some.
+        let loc = locations.into_iter().next()?;
         Some(GotoDefinitionResponse::Scalar(loc.into()))
     } else {
         Some(GotoDefinitionResponse::Array(locations.into_iter().map(Into::into).collect()))

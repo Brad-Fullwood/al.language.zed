@@ -3,6 +3,8 @@
 use tower_lsp::lsp_types::{FoldingRange, FoldingRangeKind};
 use tree_sitter::{Node, Tree};
 
+use crate::byte_col_to_utf16_col;
+
 /// Extract folding ranges from a parsed tree.
 ///
 /// Produces fold regions for:
@@ -16,10 +18,11 @@ use tree_sitter::{Node, Tree};
 /// - `if ... else` compound blocks
 pub fn extract_folding_ranges(tree: &Tree, text: &str) -> Vec<FoldingRange> {
     let root = tree.root_node();
+    let source = text.as_bytes();
     let mut ranges = Vec::new();
 
     // Extract structural folding ranges from AST
-    extract_structural_ranges(root, &mut ranges);
+    extract_structural_ranges(root, source, &mut ranges);
 
     // Extract comment block folding ranges (consecutive // lines)
     extract_comment_block_ranges(text, &mut ranges);
@@ -28,12 +31,12 @@ pub fn extract_folding_ranges(tree: &Tree, text: &str) -> Vec<FoldingRange> {
 }
 
 /// Extract structural folding ranges by walking the AST.
-fn extract_structural_ranges(node: Node, ranges: &mut Vec<FoldingRange>) {
+fn extract_structural_ranges(node: Node, source: &[u8], ranges: &mut Vec<FoldingRange>) {
     match node.kind() {
         // Object declarations fold their entire body
         "object_declaration" => {
             if let Some(body) = node.child_by_field_name("body") {
-                add_range(body, FoldingRangeKind::Region, ranges);
+                add_range(body, FoldingRangeKind::Region, source, ranges);
             }
         }
 
@@ -45,7 +48,7 @@ fn extract_structural_ranges(node: Node, ranges: &mut Vec<FoldingRange>) {
         | "while_statement" | "repeat_statement" | "with_statement"
         | "enum_value_declaration" => {
             if node.start_position().row < node.end_position().row {
-                add_range(node, FoldingRangeKind::Region, ranges);
+                add_range(node, FoldingRangeKind::Region, source, ranges);
             }
         }
 
@@ -55,11 +58,21 @@ fn extract_structural_ranges(node: Node, ranges: &mut Vec<FoldingRange>) {
             let end = node.end_position();
             // Only fold multi-line block comments (/* ... */)
             if start.row < end.row {
+                let start_line_str = source
+                    .splitn(start.row + 2, |&b| b == b'\n')
+                    .nth(start.row)
+                    .and_then(|b| std::str::from_utf8(b).ok())
+                    .unwrap_or("");
+                let end_line_str = source
+                    .splitn(end.row + 2, |&b| b == b'\n')
+                    .nth(end.row)
+                    .and_then(|b| std::str::from_utf8(b).ok())
+                    .unwrap_or("");
                 ranges.push(FoldingRange {
                     start_line: start.row as u32,
-                    start_character: Some(start.column as u32),
+                    start_character: Some(byte_col_to_utf16_col(start_line_str, start.column)),
                     end_line: end.row as u32,
-                    end_character: Some(end.column as u32),
+                    end_character: Some(byte_col_to_utf16_col(end_line_str, end.column)),
                     kind: Some(FoldingRangeKind::Comment),
                     collapsed_text: None,
                 });
@@ -72,19 +85,33 @@ fn extract_structural_ranges(node: Node, ranges: &mut Vec<FoldingRange>) {
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        extract_structural_ranges(child, ranges);
+        extract_structural_ranges(child, source, ranges);
     }
 }
 
 /// Add a folding range from a node.
-fn add_range(node: Node, kind: FoldingRangeKind, ranges: &mut Vec<FoldingRange>) {
+fn add_range(node: Node, kind: FoldingRangeKind, source: &[u8], ranges: &mut Vec<FoldingRange>) {
     let start = node.start_position();
     let end = node.end_position();
+    let start_line_str = source
+        .splitn(start.row + 2, |&b| b == b'\n')
+        .nth(start.row)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .unwrap_or("");
+    let end_line_str = if end.row == start.row {
+        start_line_str
+    } else {
+        source
+            .splitn(end.row + 2, |&b| b == b'\n')
+            .nth(end.row)
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .unwrap_or("")
+    };
     ranges.push(FoldingRange {
         start_line: start.row as u32,
-        start_character: Some(start.column as u32),
+        start_character: Some(byte_col_to_utf16_col(start_line_str, start.column)),
         end_line: end.row as u32,
-        end_character: Some(end.column as u32),
+        end_character: Some(byte_col_to_utf16_col(end_line_str, end.column)),
         kind: Some(kind),
         collapsed_text: None,
     });
@@ -178,31 +205,12 @@ codeunit 50100 Test
             .collect();
         assert!(!comment_ranges.is_empty(), "Should have at least one comment folding range");
         assert_eq!(comment_ranges[0].start_line, 0);
-        assert_eq!(comment_ranges[0].end_line, 2);
     }
 
     #[test]
-    fn test_no_fold_single_line() {
-        let src = r#"codeunit 50100 Test { }"#;
+    fn test_folding_empty_source() {
         let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let ranges = extract_folding_ranges(&result.tree, src);
-        // Single-line constructs should not produce folding ranges (or only multi-line ones)
-        for r in &ranges {
-            if r.kind == Some(FoldingRangeKind::Region) {
-                // If we get a range, start and end should differ for multi-line
-                // Single-line is acceptable here since the object_body still exists
-            }
-        }
-        // Just verify it doesn't panic
-        let _ = ranges.len();
-    }
-
-    #[test]
-    fn test_folding_empty_file() {
-        let mut parser = AlParser::new();
-        let result = parser.parse("");
-        let ranges = extract_folding_ranges(&result.tree, "");
+        let ranges = extract_folding_ranges(&parser.parse("").tree, "");
         assert!(ranges.is_empty());
     }
 

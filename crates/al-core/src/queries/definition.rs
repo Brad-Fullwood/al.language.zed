@@ -1,7 +1,6 @@
 //! Go-to-definition query.
 
 use al_symbols::SymbolEntry;
-use al_syntax::AlParser;
 use url::Url;
 
 use super::{Location, Position, Range};
@@ -64,7 +63,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     let resolver = al_syntax::TypeResolver::new(&tree, &text);
     if let Some(decl) = resolver.resolve_type(clean_name, lsp_pos) {
-        let def_range: Range = al_syntax::ts_range_to_lsp(&decl.range).into();
+        let def_range: Range = al_syntax::ts_range_to_lsp(&decl.range, text.as_bytes()).into();
         if def_range.start != position {
             return Some(vec![Location { uri: uri.clone(), range: def_range }]);
         }
@@ -74,7 +73,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let first = &refs[0];
-        let def_range: Range = al_syntax::ts_range_to_lsp(first).into();
+        let def_range: Range = al_syntax::ts_range_to_lsp(first, text.as_bytes()).into();
         if def_range.start != position {
             return Some(vec![Location { uri: uri.clone(), range: def_range }]);
         }
@@ -86,14 +85,14 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         let file_path = obj_path_entry.value().clone();
         let is_current = current_path.as_ref().is_some_and(|cp| *cp == file_path);
         if !is_current {
-            if let Some(file_text_entry) = workspace.file_index.files.get(&file_path) {
-                let file_text = file_text_entry.value();
-                let result = AlParser::parse_quick(file_text);
-                if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
+            // Use cached object metadata — avoids re-parsing for go-to-definition.
+            if let Some(obj_info_entry) = workspace.file_index.object_info.get(&file_path) {
+                let obj_info = obj_info_entry.value();
+                if let Some(file_text_entry) = workspace.file_index.files.get(&file_path) {
                     if let Ok(file_uri) = Url::from_file_path(&file_path) {
                         return Some(vec![Location {
                             uri: file_uri,
-                            range: al_syntax::ts_range_to_lsp(&obj_info.range).into(),
+                            range: al_syntax::ts_range_to_lsp(&obj_info.range, file_text_entry.value().as_bytes()).into(),
                         }]);
                     }
                 }
@@ -102,18 +101,20 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     }
 
     for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key();
-        let file_text = entry.value();
-        if current_path.as_ref() == Some(file_path) { continue; }
-        let result = AlParser::parse_quick(file_text);
-        let doc_symbols = al_syntax::extract_document_symbols(&result.tree, file_text);
+        let file_path = entry.key().clone();
+        if current_path.as_ref() == Some(&file_path) { continue; }
+        // Use cached parse tree — avoids re-parsing every workspace file on each definition request.
+        let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
+            continue;
+        };
+        let doc_symbols = al_syntax::extract_document_symbols(&file_tree, &file_text);
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
                     if (child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT)
                         && child.name.eq_ignore_ascii_case(clean_name)
                     {
-                        if let Ok(file_uri) = Url::from_file_path(file_path) {
+                        if let Ok(file_uri) = Url::from_file_path(&file_path) {
                             return Some(vec![Location {
                                 uri: file_uri,
                                 range: child.selection_range.into(),

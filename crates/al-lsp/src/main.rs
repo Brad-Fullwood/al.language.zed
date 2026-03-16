@@ -48,8 +48,20 @@ fn spawn_signal_handlers() {
     tokio::spawn(async {
         use tokio::signal::unix::{SignalKind, signal};
 
-        let mut sigterm = signal(SignalKind::terminate()).expect("register SIGTERM");
-        let mut sigint = signal(SignalKind::interrupt()).expect("register SIGINT");
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to register SIGTERM handler");
+                return;
+            }
+        };
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to register SIGINT handler");
+                return;
+            }
+        };
 
         tokio::select! {
             _ = sigterm.recv() => {
@@ -69,11 +81,19 @@ async fn main() {
 
     // File logging layer — INFO level by default to avoid logging sensitive data
     let log_path = log_dir.join("al-lsp.log");
-    let log_file = fs::OpenOptions::new()
+    let log_file = match fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
-        .expect("failed to open log file");
+    {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("al-lsp: failed to open log file {}: {e}", log_path.display());
+            // Fall back to /dev/null or continue without file logging by using stderr
+            // We cannot proceed with structured logging — exit so Zed can restart us.
+            std::process::exit(1);
+        }
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -126,7 +146,13 @@ async fn main() {
 
     if args.iter().any(|a| a == "--dap") {
         // DAP mode
-        let toolchain = al_core::toolchain::find_toolchain().expect("ALTool not found");
+        let toolchain = match al_core::toolchain::find_toolchain() {
+            Ok(tc) => tc,
+            Err(e) => {
+                tracing::error!(error = %e, "DAP mode requires ALTool — toolchain not found");
+                std::process::exit(1);
+            }
+        };
         let _ = al_lsp::dap::run_dap_server(&toolchain).await;
     } else if args.iter().any(|a| a == "daemon") {
         // Daemon mode — JSON-RPC over Unix socket
