@@ -111,6 +111,8 @@ pub enum PublishError {
     ConfigNotFound { name: String },
     #[error("Toolchain not available (ALTool not installed)")]
     NoToolchain,
+    #[error("Toolchain lock is busy — another operation is in progress, please try again")]
+    ToolchainBusy,
     #[error("No project loaded")]
     NoProject,
     #[error("Compilation failed with {count} error(s)")]
@@ -289,10 +291,11 @@ async fn run_compile(
     workspace: &Workspace,
     project_root: &Path,
 ) -> Result<CompileResult, PublishError> {
-    let tc = workspace
-        .toolchain
-        .try_read()
-        .map_err(|_| PublishError::NoToolchain)?;
+    // Use blocking .read().await rather than try_read() — try_read() maps both
+    // lock contention (WouldBlock) and a nonexistent toolchain to the same
+    // NoToolchain error, making it impossible to diagnose a "server is busy"
+    // situation vs. "no toolchain configured".
+    let tc = workspace.toolchain.read().await;
     let toolchain: AlToolchain = tc.clone().ok_or(PublishError::NoToolchain)?;
     drop(tc);
 

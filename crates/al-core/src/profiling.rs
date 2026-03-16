@@ -79,10 +79,10 @@ pub enum ProfilingError {
     RelativeOutputDir { path: String },
 }
 
-/// Build a [`reqwest::Client`] for BC (accepts self-signed certs).
-fn make_client() -> Result<reqwest::Client, ProfilingError> {
+/// Build a [`reqwest::Client`] configured from the profiling config.
+fn make_client(config: &ProfilingConfig) -> Result<reqwest::Client, ProfilingError> {
     Ok(reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(config.accept_invalid_certs)
         .timeout(std::time::Duration::from_secs(300))
         .build()?)
 }
@@ -103,7 +103,7 @@ fn apply_auth(
 ///
 /// Returns the profiling session ID assigned by the server.
 pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, ProfilingError> {
-    let client = make_client()?;
+    let client = make_client(config)?;
 
     let url = format!(
         "{}/dev/profiler/start?company={}",
@@ -149,7 +149,7 @@ pub async fn stop_profiling(
     config: &ProfilingConfig,
     session_id: &str,
 ) -> Result<PathBuf, ProfilingError> {
-    let client = make_client()?;
+    let client = make_client(config)?;
 
     let url = format!(
         "{}/dev/profiler/stop?company={}",

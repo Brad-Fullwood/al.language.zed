@@ -1602,6 +1602,7 @@ fn dispatch_trace(workspace: &Workspace, id: u64, params: &serde_json::Value) ->
         return invalid_params(id);
     };
     let max_depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+    let max_depth = max_depth.min(50);
 
     let mut graph = al_core::insight::graph::InsightGraph::new();
     graph.build_from_index(&workspace.symbols);
@@ -2312,6 +2313,7 @@ async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> Response {
                 .get("topN")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(20) as usize;
+            let top_n = top_n.min(1000);
 
             match al_core::profiling::analyze_profile_file(&profile_path, top_n).await {
                 Ok(result) => {
