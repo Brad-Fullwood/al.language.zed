@@ -1,0 +1,522 @@
+//! Table impact analysis for the AL insight engine.
+//!
+//! Given a table name, finds all objects in the workspace that interact with
+//! it via: Record variable declarations, Record-typed parameters, TableRelation
+//! properties, and Extends relationships.
+//!
+//! Used by `al impact <TableName>` queries.
+
+use std::collections::HashMap;
+
+use serde::Serialize;
+
+use al_symbols::{ObjectKind, SymbolIndex};
+
+// ---------------------------------------------------------------------------
+// Public result types
+// ---------------------------------------------------------------------------
+
+/// How an object interacts with a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TableOperationKind {
+    /// Object declares a Record variable of this table type.
+    /// This enables Read (Get, FindSet, FindFirst, FindLast, CalcFields) and
+    /// Write (Insert, Modify, Delete) operations.
+    RecordVariable,
+    /// A procedure parameter is typed as a Record of this table.
+    RecordParameter,
+    /// This object has a field with a TableRelation property pointing to the table.
+    Relation,
+    /// This object is a TableExtension that extends the target table.
+    Extends,
+}
+
+impl std::fmt::Display for TableOperationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TableOperationKind::RecordVariable => write!(f, "record_variable"),
+            TableOperationKind::RecordParameter => write!(f, "record_parameter"),
+            TableOperationKind::Relation => write!(f, "relation"),
+            TableOperationKind::Extends => write!(f, "extends"),
+        }
+    }
+}
+
+/// A single impact site: where an object touches the target table.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableImpact {
+    /// The kind of interaction.
+    pub operation: TableOperationKind,
+    /// Optional: the name of the variable, parameter, or field that references the table.
+    pub location_hint: Option<String>,
+}
+
+/// All impacts for one AL object.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectImpact {
+    pub object_kind: String,
+    pub object_name: String,
+    pub package: String,
+    pub impacts: Vec<TableImpact>,
+}
+
+/// Full result of a table impact query.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableImpactResult {
+    /// The table name that was queried (normalized to original casing from index).
+    pub table_name: String,
+    /// All objects that reference this table, grouped by object.
+    pub objects: Vec<ObjectImpact>,
+    /// Total number of impact sites across all objects.
+    pub total_impacts: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Analysis function
+// ---------------------------------------------------------------------------
+
+/// Analyse all objects in the symbol index that interact with the named table.
+///
+/// Detects:
+/// - `Extends`: TableExtension objects whose `extends` field matches the table name.
+/// - `Relation`: Fields on any table/table-extension with a `TableRelation` property
+///   pointing to the target table.
+/// - `RecordVariable`: Global variables whose type is `Record "<TableName>"`.
+/// - `RecordParameter`: Procedure parameters typed as `Record "<TableName>"`.
+///
+/// Results are grouped by object and sorted by object name for stable output.
+pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResult {
+    let table_lower = table_name.to_lowercase();
+
+    // Resolve canonical name from the index (use the first exact Table match).
+    let canonical_name = symbols
+        .get_by_name(table_name)
+        .into_iter()
+        .find(|e| e.kind == ObjectKind::Table)
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| table_name.to_string());
+
+    let all_entries = symbols.search("", usize::MAX);
+
+    // Accumulate impacts per object (keyed by (kind, name) to merge duplicates).
+    let mut by_object: HashMap<(String, String), ObjectImpact> = HashMap::new();
+
+    for entry in &all_entries {
+        let mut impacts: Vec<TableImpact> = Vec::new();
+
+        // 1. Extends: TableExtension pointing at this table.
+        if entry.kind == ObjectKind::TableExtension {
+            if let Some(ref ext_target) = entry.extends {
+                if ext_target.to_lowercase() == table_lower {
+                    impacts.push(TableImpact {
+                        operation: TableOperationKind::Extends,
+                        location_hint: Some(format!("extends {}", ext_target)),
+                    });
+                }
+            }
+        }
+
+        // 2. Relation: fields with TableRelation property.
+        if matches!(entry.kind, ObjectKind::Table | ObjectKind::TableExtension) {
+            for field in &entry.fields {
+                for prop in &field.properties {
+                    if prop.name.eq_ignore_ascii_case("TableRelation") {
+                        let related = prop.value.trim_matches('"').trim_matches('\'');
+                        // TableRelation can be "Table Name" or "Table Name"."Field"
+                        // Extract just the table part (before any dot or WHERE).
+                        let table_part = related
+                            .split_once('.')
+                            .map(|(t, _)| t.trim())
+                            .unwrap_or(related)
+                            .trim_matches('"')
+                            .trim_matches('\'');
+                        if table_part.to_lowercase() == table_lower {
+                            impacts.push(TableImpact {
+                                operation: TableOperationKind::Relation,
+                                location_hint: Some(format!("field {}", field.name)),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. RecordVariable: global variables whose type is `Record "<TableName>"`.
+        for var in &entry.variables {
+            if is_record_of(&var.type_name, &table_lower) {
+                impacts.push(TableImpact {
+                    operation: TableOperationKind::RecordVariable,
+                    location_hint: Some(format!("var {}", var.name)),
+                });
+            }
+        }
+
+        // 4. RecordParameter: procedure parameters typed as Record of the target table.
+        for method in &entry.methods {
+            for param in &method.parameters {
+                if is_record_of(&param.type_name, &table_lower) {
+                    impacts.push(TableImpact {
+                        operation: TableOperationKind::RecordParameter,
+                        location_hint: Some(format!(
+                            "{}.{}({})",
+                            entry.name, method.name, param.name
+                        )),
+                    });
+                }
+            }
+        }
+
+        if impacts.is_empty() {
+            continue;
+        }
+
+        let key = (entry.kind.to_string(), entry.name.clone());
+        let obj_entry = by_object.entry(key).or_insert_with(|| ObjectImpact {
+            object_kind: entry.kind.to_string(),
+            object_name: entry.name.clone(),
+            package: entry.package.clone(),
+            impacts: Vec::new(),
+        });
+        obj_entry.impacts.extend(impacts);
+    }
+
+    // Sort objects by name for stable output.
+    let mut objects: Vec<ObjectImpact> = by_object.into_values().collect();
+    objects.sort_by(|a, b| {
+        a.object_name
+            .to_lowercase()
+            .cmp(&b.object_name.to_lowercase())
+    });
+
+    let total_impacts = objects.iter().map(|o| o.impacts.len()).sum();
+
+    TableImpactResult {
+        table_name: canonical_name,
+        objects,
+        total_impacts,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Returns true if `type_name` is a Record reference to `table_lower`.
+///
+/// AL type strings from SymbolReference.json look like:
+/// - `Record "Customer"`
+/// - `Record Customer`
+/// - `Record "Sales Header"`
+fn is_record_of(type_name: &str, table_lower: &str) -> bool {
+    // Guard: an empty table name cannot be a valid match.
+    if table_lower.is_empty() {
+        return false;
+    }
+    let t = type_name.trim();
+    // Must start with "Record" (case-insensitive)
+    let rest = match t.split_once(' ') {
+        Some((prefix, rest)) if prefix.eq_ignore_ascii_case("Record") => rest.trim(),
+        _ => return false,
+    };
+    // Strip surrounding quotes
+    let name = rest
+        .trim_matches('"')
+        .trim_matches('\'');
+    // Guard: an empty name after stripping cannot match anything.
+    if name.is_empty() {
+        return false;
+    }
+    name.to_lowercase() == table_lower
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use al_symbols::{
+        AttributeSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue,
+        SymbolEntry, SymbolIndex, VariableSymbol,
+    };
+
+    fn base_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
+        SymbolEntry {
+            kind,
+            id,
+            name: name.to_string(),
+            extends: None,
+            package: "TestPkg".to_string(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        }
+    }
+
+    // --- is_record_of ---
+
+    #[test]
+    fn is_record_of_quoted() {
+        assert!(is_record_of("Record \"Customer\"", "customer"));
+        assert!(!is_record_of("Record \"Customer\"", "vendor"));
+    }
+
+    #[test]
+    fn is_record_of_unquoted() {
+        assert!(is_record_of("Record Customer", "customer"));
+    }
+
+    #[test]
+    fn is_record_of_multi_word() {
+        assert!(is_record_of("Record \"Sales Header\"", "sales header"));
+        assert!(!is_record_of("Record \"Sales Header\"", "customer"));
+    }
+
+    #[test]
+    fn is_record_of_not_record() {
+        assert!(!is_record_of("Codeunit \"Sales-Post\"", "sales-post"));
+        assert!(!is_record_of("Integer", "integer"));
+        assert!(!is_record_of("", ""));
+    }
+
+    #[test]
+    fn is_record_of_empty_table_name_never_matches() {
+        // A query with an empty table name must never return true, even if the
+        // type string is "Record " (Record followed by a space, no actual name).
+        assert!(!is_record_of("Record ", ""));
+        assert!(!is_record_of("Record \"\"", ""));
+        assert!(!is_record_of("Record Customer", ""));
+    }
+
+    // --- table_impact: extends ---
+
+    #[test]
+    fn detects_table_extension() {
+        let index = SymbolIndex::new();
+
+        let customer = base_entry(ObjectKind::Table, 18, "Customer");
+        let mut cust_ext = base_entry(ObjectKind::TableExtension, 50100, "Cust Ext");
+        cust_ext.extends = Some("Customer".to_string());
+
+        index.add_entries(&[customer, cust_ext]);
+
+        let result = table_impact(&index, "Customer");
+        assert_eq!(result.table_name, "Customer");
+
+        let ext_obj = result
+            .objects
+            .iter()
+            .find(|o| o.object_name == "Cust Ext")
+            .expect("Cust Ext should appear in results");
+        assert!(ext_obj
+            .impacts
+            .iter()
+            .any(|i| i.operation == TableOperationKind::Extends));
+    }
+
+    // --- table_impact: relation ---
+
+    #[test]
+    fn detects_table_relation() {
+        let index = SymbolIndex::new();
+
+        let customer = base_entry(ObjectKind::Table, 18, "Customer");
+
+        let mut sales_header = base_entry(ObjectKind::Table, 36, "Sales Header");
+        sales_header.fields = vec![FieldSymbol {
+            id: 2,
+            name: "Sell-to Customer No.".to_string(),
+            type_name: "Code".to_string(),
+            properties: vec![PropertyValue {
+                name: "TableRelation".to_string(),
+                value: "Customer".to_string(),
+            }],
+        }];
+
+        index.add_entries(&[customer, sales_header]);
+
+        let result = table_impact(&index, "Customer");
+
+        let sh = result
+            .objects
+            .iter()
+            .find(|o| o.object_name == "Sales Header")
+            .expect("Sales Header should appear");
+        assert!(sh
+            .impacts
+            .iter()
+            .any(|i| i.operation == TableOperationKind::Relation));
+        assert!(sh.impacts.iter().any(|i| i
+            .location_hint
+            .as_deref()
+            .unwrap_or("")
+            .contains("Sell-to Customer No.")));
+    }
+
+    // --- table_impact: record variable ---
+
+    #[test]
+    fn detects_record_variable() {
+        let index = SymbolIndex::new();
+
+        let customer = base_entry(ObjectKind::Table, 18, "Customer");
+
+        let mut posting_cu = base_entry(ObjectKind::Codeunit, 80, "Sales-Post");
+        posting_cu.variables = vec![VariableSymbol {
+            name: "Cust".to_string(),
+            type_name: "Record \"Customer\"".to_string(),
+            is_protected: false,
+        }];
+
+        index.add_entries(&[customer, posting_cu]);
+
+        let result = table_impact(&index, "Customer");
+
+        let cu_impact = result
+            .objects
+            .iter()
+            .find(|o| o.object_name == "Sales-Post")
+            .expect("Sales-Post should appear");
+        assert!(cu_impact
+            .impacts
+            .iter()
+            .any(|i| i.operation == TableOperationKind::RecordVariable));
+        assert!(cu_impact
+            .impacts
+            .iter()
+            .any(|i| i.location_hint.as_deref().unwrap_or("").contains("Cust")));
+    }
+
+    // --- table_impact: record parameter ---
+
+    #[test]
+    fn detects_record_parameter() {
+        let index = SymbolIndex::new();
+
+        let customer = base_entry(ObjectKind::Table, 18, "Customer");
+
+        let mut utility_cu = base_entry(ObjectKind::Codeunit, 50100, "Cust Util");
+        utility_cu.methods = vec![MethodSymbol {
+            name: "ProcessCustomer".to_string(),
+            parameters: vec![ParameterSymbol {
+                name: "Cust".to_string(),
+                type_name: "Record \"Customer\"".to_string(),
+                is_var: true,
+            }],
+            return_type: None,
+            attributes: vec![],
+            is_local: false,
+        }];
+
+        index.add_entries(&[customer, utility_cu]);
+
+        let result = table_impact(&index, "Customer");
+
+        let cu_impact = result
+            .objects
+            .iter()
+            .find(|o| o.object_name == "Cust Util")
+            .expect("Cust Util should appear");
+        assert!(cu_impact
+            .impacts
+            .iter()
+            .any(|i| i.operation == TableOperationKind::RecordParameter));
+    }
+
+    // --- table_impact: no hits ---
+
+    #[test]
+    fn no_impact_when_unrelated() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[base_entry(ObjectKind::Table, 18, "Customer")]);
+
+        let result = table_impact(&index, "Customer");
+        // Customer itself has no variables/parameters pointing to itself
+        assert!(result.objects.is_empty());
+        assert_eq!(result.total_impacts, 0);
+    }
+
+    // --- table_impact: canonical name ---
+
+    #[test]
+    fn canonical_name_from_index() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[base_entry(ObjectKind::Table, 18, "Customer")]);
+
+        // Query with wrong casing — result should use canonical name from index.
+        let result = table_impact(&index, "CUSTOMER");
+        assert_eq!(result.table_name, "Customer");
+    }
+
+    // --- table_impact: total_impacts ---
+
+    #[test]
+    fn total_impacts_counts_all_sites() {
+        let index = SymbolIndex::new();
+
+        let customer = base_entry(ObjectKind::Table, 18, "Customer");
+
+        let mut cu = base_entry(ObjectKind::Codeunit, 50100, "Multi");
+        cu.variables = vec![
+            VariableSymbol {
+                name: "C1".to_string(),
+                type_name: "Record \"Customer\"".to_string(),
+                is_protected: false,
+            },
+            VariableSymbol {
+                name: "C2".to_string(),
+                type_name: "Record \"Customer\"".to_string(),
+                is_protected: false,
+            },
+        ];
+
+        let mut cust_ext = base_entry(ObjectKind::TableExtension, 50101, "CE");
+        cust_ext.extends = Some("Customer".to_string());
+
+        index.add_entries(&[customer, cu, cust_ext]);
+
+        let result = table_impact(&index, "Customer");
+        // 2 record vars from Multi + 1 extends from CE
+        assert_eq!(result.total_impacts, 3);
+    }
+
+    // --- table_impact: subscriber attribute not confused ---
+
+    #[test]
+    fn method_attributes_not_treated_as_record_refs() {
+        let index = SymbolIndex::new();
+
+        let customer = base_entry(ObjectKind::Table, 18, "Customer");
+
+        // A codeunit with an EventSubscriber — shouldn't show up as record reference
+        let mut cu = base_entry(ObjectKind::Codeunit, 50100, "MySub");
+        cu.methods = vec![MethodSymbol {
+            name: "HandlePost".to_string(),
+            parameters: vec![],
+            return_type: None,
+            attributes: vec![AttributeSymbol {
+                name: "EventSubscriber".to_string(),
+                arguments: vec![
+                    "ObjectType::Codeunit".to_string(),
+                    "Codeunit::\"Sales-Post\"".to_string(),
+                    "'OnAfterPost'".to_string(),
+                ],
+            }],
+            is_local: false,
+        }];
+
+        index.add_entries(&[customer, cu]);
+
+        let result = table_impact(&index, "Customer");
+        assert!(result.objects.is_empty());
+    }
+}

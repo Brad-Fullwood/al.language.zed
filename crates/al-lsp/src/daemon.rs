@@ -237,6 +237,8 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "clearCache" => dispatch_clear_cache(id),
         "downloadSymbols" => dispatch_download_symbols(workspace, id, &params),
         "debug" => dispatch_debug(workspace, id, &params).await,
+        "snapshot" => dispatch_snapshot(id, &params).await,
+        "profiling" => dispatch_profiling(id, &params).await,
         "ping" => Response { id, result: Some(serde_json::json!("pong")), error: None },
         "shutdown" => {
             tracing::info!("daemon: shutdown requested");
@@ -1509,15 +1511,15 @@ fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json
                 let bc_results = client.download_all(&url_deps, &dest).await;
                 bc_results
                     .into_iter()
-                    .enumerate()
-                    .map(|(i, r)| match r {
+                    .zip(url_deps.iter())
+                    .map(|(r, (_url, sym_dep))| match r {
                         Ok(path) => serde_json::json!({
-                            "name": all_deps[i].name,
+                            "name": sym_dep.name,
                             "status": "ok",
                             "path": path.display().to_string(),
                         }),
                         Err(e) => serde_json::json!({
-                            "name": all_deps[i].name,
+                            "name": sym_dep.name,
                             "status": "error",
                             "error": e.to_string(),
                         }),
@@ -2010,6 +2012,328 @@ async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Val
             error: Some(RpcError {
                 code: error_codes::INVALID_PARAMS,
                 message: format!("Unknown debug command: {other}"),
+            }),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot dispatcher
+// ---------------------------------------------------------------------------
+
+async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Response {
+    let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
+        Some(c) => c,
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: "Missing 'cmd' parameter (expected: start, list, download)".to_string(),
+                }),
+            };
+        }
+    };
+
+    let server_url = params
+        .get("serverUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://localhost:7049/BC")
+        .to_string();
+    let company = params
+        .get("company")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let output_dir = params
+        .get("outputDir")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::data_local_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join("al-lsp")
+                .join("snapshots")
+        });
+    let username = params
+        .get("username")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let password = params
+        .get("password")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let config = al_core::snapshot::SnapshotConfig {
+        server_url,
+        company,
+        output_dir,
+        username,
+        password,
+    };
+
+    match cmd {
+        "start" => {
+            let description = params.get("description").and_then(|v| v.as_str());
+            match al_core::snapshot::start_snapshot(&config, description).await {
+                Ok(snapshot_id) => Response {
+                    id,
+                    result: Some(serde_json::json!({
+                        "cmd": "start",
+                        "snapshotId": snapshot_id,
+                        "status": "started",
+                    })),
+                    error: None,
+                },
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("snapshot start failed: {e}"),
+                    }),
+                },
+            }
+        }
+
+        "list" => {
+            match al_core::snapshot::list_snapshots(&config).await {
+                Ok(snapshots) => {
+                    let items: Vec<serde_json::Value> = snapshots
+                        .iter()
+                        .filter_map(|s| serde_json::to_value(s).ok()) // SILENT: serialization of valid structs should not fail
+                        .collect();
+                    Response {
+                        id,
+                        result: Some(serde_json::json!({
+                            "cmd": "list",
+                            "snapshots": items,
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("snapshot list failed: {e}"),
+                    }),
+                },
+            }
+        }
+
+        "download" => {
+            let snapshot_id = match params.get("snapshotId").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => {
+                    return Response {
+                        id,
+                        result: None,
+                        error: Some(RpcError {
+                            code: error_codes::INVALID_PARAMS,
+                            message: "Missing 'snapshotId' parameter".to_string(),
+                        }),
+                    };
+                }
+            };
+
+            match al_core::snapshot::download_snapshot(&config, &snapshot_id).await {
+                Ok(path) => Response {
+                    id,
+                    result: Some(serde_json::json!({
+                        "cmd": "download",
+                        "snapshotId": snapshot_id,
+                        "path": path.display().to_string(),
+                        "status": "downloaded",
+                    })),
+                    error: None,
+                },
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("snapshot download failed: {e}"),
+                    }),
+                },
+            }
+        }
+
+        other => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Unknown snapshot command: {other}"),
+            }),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Profiling dispatcher
+// ---------------------------------------------------------------------------
+
+async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> Response {
+    let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
+        Some(c) => c,
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: "Missing 'cmd' parameter (expected: start, stop, analyze)".to_string(),
+                }),
+            };
+        }
+    };
+
+    let server_url = params
+        .get("serverUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://localhost:7049/BC")
+        .to_string();
+    let company = params
+        .get("company")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let output_dir = params
+        .get("outputDir")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::data_local_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join("al-lsp")
+                .join("profiles")
+        });
+    let username = params
+        .get("username")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let password = params
+        .get("password")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let config = al_core::profiling::ProfilingConfig {
+        server_url,
+        company,
+        output_dir,
+        username,
+        password,
+    };
+
+    match cmd {
+        "start" => {
+            match al_core::profiling::start_profiling(&config).await {
+                Ok(session_id) => Response {
+                    id,
+                    result: Some(serde_json::json!({
+                        "cmd": "start",
+                        "sessionId": session_id,
+                        "status": "profiling",
+                    })),
+                    error: None,
+                },
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("profiling start failed: {e}"),
+                    }),
+                },
+            }
+        }
+
+        "stop" => {
+            let session_id = params
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("profiling-session")
+                .to_string();
+
+            match al_core::profiling::stop_profiling(&config, &session_id).await {
+                Ok(path) => Response {
+                    id,
+                    result: Some(serde_json::json!({
+                        "cmd": "stop",
+                        "sessionId": session_id,
+                        "path": path.display().to_string(),
+                        "status": "stopped",
+                    })),
+                    error: None,
+                },
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("profiling stop failed: {e}"),
+                    }),
+                },
+            }
+        }
+
+        "analyze" => {
+            let profile_path = match params.get("path").and_then(|v| v.as_str()) {
+                Some(p) => std::path::PathBuf::from(p),
+                None => {
+                    return Response {
+                        id,
+                        result: None,
+                        error: Some(RpcError {
+                            code: error_codes::INVALID_PARAMS,
+                            message: "Missing 'path' parameter for analyze command".to_string(),
+                        }),
+                    };
+                }
+            };
+            let top_n = params
+                .get("topN")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(20) as usize;
+
+            match al_core::profiling::analyze_profile_file(&profile_path, top_n).await {
+                Ok(result) => {
+                    let hotspots: Vec<serde_json::Value> = result
+                        .hotspots
+                        .iter()
+                        .filter_map(|h| serde_json::to_value(h).ok()) // SILENT: serialization of valid structs should not fail
+                        .collect();
+                    Response {
+                        id,
+                        result: Some(serde_json::json!({
+                            "cmd": "analyze",
+                            "durationMs": result.duration_ms,
+                            "hotspots": hotspots,
+                            "profilePath": result.profile_path.as_ref().map(|p| p.display().to_string()),
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("profiling analyze failed: {e}"),
+                    }),
+                },
+            }
+        }
+
+        other => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Unknown profiling command: {other}"),
             }),
         },
     }

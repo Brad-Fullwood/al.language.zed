@@ -234,16 +234,25 @@ fn search_dir_recursive(root: &Path) -> Option<AlToolchain> {
 }
 
 fn search_system_path() -> Option<AlToolchain> {
-    let output = std::process::Command::new("which")
+    // Use `where` on Windows, `which` on Unix — both are non-fatal if missing.
+    #[cfg(target_os = "windows")]
+    let which_cmd = "where";
+    #[cfg(not(target_os = "windows"))]
+    let which_cmd = "which";
+
+    let output = std::process::Command::new(which_cmd)
         .arg("alc")
         .output()
-        .ok()?; // ok(): `which` missing is non-fatal
+        .ok()?; // ok(): command missing is non-fatal
 
     if !output.status.success() {
         return None;
     }
 
-    let alc_path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    // Take only the first line — `where` (Windows) can return multiple matches.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let first_line = stdout.lines().next().unwrap_or("").trim();
+    let alc_path = PathBuf::from(first_line);
     if !alc_path.is_file() {
         return None;
     }

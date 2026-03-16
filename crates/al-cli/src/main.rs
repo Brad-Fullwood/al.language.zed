@@ -290,6 +290,16 @@ enum Commands {
         #[command(subcommand)]
         subcmd: DebugCommands,
     },
+    /// BC snapshot debugging commands
+    Snapshot {
+        #[command(subcommand)]
+        subcmd: SnapshotCommands,
+    },
+    /// BC CPU profiling commands
+    Profile {
+        #[command(subcommand)]
+        subcmd: ProfileCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -371,6 +381,117 @@ enum DiagCommands {
     Summary,
 }
 
+#[derive(Subcommand)]
+enum SnapshotCommands {
+    /// Initiate a snapshot debugging session on the BC server
+    Start {
+        /// BC server URL (e.g. http://localhost:7049/BC)
+        #[arg(long, default_value = "http://localhost:7049/BC")]
+        server: String,
+        /// Company name
+        #[arg(long, default_value = "")]
+        company: String,
+        /// Optional description for the snapshot
+        #[arg(long)]
+        description: Option<String>,
+        /// Username for BC Basic auth
+        #[arg(long)]
+        username: Option<String>,
+        /// Password for BC Basic auth
+        #[arg(long)]
+        password: Option<String>,
+        /// Directory to store downloaded snapshots
+        #[arg(long)]
+        output_dir: Option<String>,
+    },
+    /// List snapshots available on the BC server
+    List {
+        /// BC server URL
+        #[arg(long, default_value = "http://localhost:7049/BC")]
+        server: String,
+        /// Company name
+        #[arg(long, default_value = "")]
+        company: String,
+        /// Username for BC Basic auth
+        #[arg(long)]
+        username: Option<String>,
+        /// Password for BC Basic auth
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Download a snapshot by ID as a .alvsc file
+    Download {
+        /// Snapshot ID to download
+        snapshot_id: String,
+        /// BC server URL
+        #[arg(long, default_value = "http://localhost:7049/BC")]
+        server: String,
+        /// Company name
+        #[arg(long, default_value = "")]
+        company: String,
+        /// Username for BC Basic auth
+        #[arg(long)]
+        username: Option<String>,
+        /// Password for BC Basic auth
+        #[arg(long)]
+        password: Option<String>,
+        /// Directory to store the downloaded file
+        #[arg(long)]
+        output_dir: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommands {
+    /// Begin CPU profiling on the connected BC server
+    Start {
+        /// BC server URL
+        #[arg(long, default_value = "http://localhost:7049/BC")]
+        server: String,
+        /// Company name
+        #[arg(long, default_value = "")]
+        company: String,
+        /// Username for BC Basic auth
+        #[arg(long)]
+        username: Option<String>,
+        /// Password for BC Basic auth
+        #[arg(long)]
+        password: Option<String>,
+        /// Directory to store profile files
+        #[arg(long)]
+        output_dir: Option<String>,
+    },
+    /// Stop profiling and download the results
+    Stop {
+        /// Session ID returned by `profile start`
+        #[arg(long)]
+        session_id: Option<String>,
+        /// BC server URL
+        #[arg(long, default_value = "http://localhost:7049/BC")]
+        server: String,
+        /// Company name
+        #[arg(long, default_value = "")]
+        company: String,
+        /// Username for BC Basic auth
+        #[arg(long)]
+        username: Option<String>,
+        /// Password for BC Basic auth
+        #[arg(long)]
+        password: Option<String>,
+        /// Directory to store profile files
+        #[arg(long)]
+        output_dir: Option<String>,
+    },
+    /// Parse a .alcpuprofile file and show hotspots
+    Analyze {
+        /// Path to the .alcpuprofile file
+        path: String,
+        /// Number of top hotspots to display
+        #[arg(short, long, default_value = "20")]
+        top: usize,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -381,6 +502,32 @@ fn print_json<T: Serialize>(value: &T) {
 
 fn print_json_value(value: &serde_json::Value) {
     println!("{}", serde_json::to_string_pretty(value).unwrap());
+}
+
+/// Build JSON params for a BC server command with common connection fields.
+fn bc_server_params(
+    cmd: &str,
+    server: &str,
+    company: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+    output_dir: Option<&str>,
+) -> serde_json::Value {
+    let mut p = serde_json::json!({
+        "cmd": cmd,
+        "serverUrl": server,
+        "company": company,
+    });
+    if let Some(u) = username {
+        p["username"] = serde_json::json!(u);
+    }
+    if let Some(pw) = password {
+        p["password"] = serde_json::json!(pw);
+    }
+    if let Some(d) = output_dir {
+        p["outputDir"] = serde_json::json!(d);
+    }
+    p
 }
 
 /// Get the project root directory.
@@ -2069,6 +2216,8 @@ fn main() -> ExitCode {
         Commands::SuggestEvent { description } => cmd_suggest_event(&description, cli.json),
         Commands::Diag { subcmd } => cmd_diag(&subcmd, cli.json),
         Commands::Debug { subcmd } => cmd_debug(&subcmd, cli.json),
+        Commands::Snapshot { subcmd } => cmd_snapshot(&subcmd, cli.json),
+        Commands::Profile { subcmd } => cmd_profile(&subcmd, cli.json),
     }
 }
 
@@ -2155,6 +2304,244 @@ fn cmd_package(json: bool) -> ExitCode {
                 eprintln!("Package failed: {e}");
             }
             ExitCode::FAILURE
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot commands
+// ---------------------------------------------------------------------------
+
+fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
+    match subcmd {
+        SnapshotCommands::Start {
+            server,
+            company,
+            description,
+            username,
+            password,
+            output_dir,
+        } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let mut params = bc_server_params(
+                "start", server, company,
+                username.as_deref(), password.as_deref(), output_dir.as_deref(),
+            );
+            if let Some(d) = description {
+                params["description"] = serde_json::json!(d);
+            }
+            match client.request("snapshot", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let snapshot_id = result.get("snapshotId").and_then(|v| v.as_str()).unwrap_or("?");
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Snapshot started: {snapshot_id} (status: {status})");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+
+        SnapshotCommands::List {
+            server,
+            company,
+            username,
+            password,
+        } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = bc_server_params(
+                "list", server, company,
+                username.as_deref(), password.as_deref(), None,
+            );
+            match client.request("snapshot", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let snapshots = result.get("snapshots").and_then(|v| v.as_array());
+                        if let Some(snaps) = snapshots {
+                            if snaps.is_empty() {
+                                eprintln!("No snapshots available on server.");
+                            } else {
+                                println!("{:<30} {:<25} {:>10}", "ID", "CREATED", "SIZE");
+                                println!("{}", "-".repeat(70));
+                                for s in snaps {
+                                    let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let created = s.get("createdAt").and_then(|v| v.as_str()).unwrap_or("-");
+                                    let size = s.get("sizeBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    println!("{:<30} {:<25} {:>10}", id, created, size);
+                                }
+                                eprintln!("\n{} snapshot(s)", snaps.len());
+                            }
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+
+        SnapshotCommands::Download {
+            snapshot_id,
+            server,
+            company,
+            username,
+            password,
+            output_dir,
+        } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let mut params = bc_server_params(
+                "download", server, company,
+                username.as_deref(), password.as_deref(), output_dir.as_deref(),
+            );
+            params["snapshotId"] = serde_json::json!(snapshot_id);
+            match client.request("snapshot", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Snapshot {snapshot_id} {status}: {path}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Profile commands
+// ---------------------------------------------------------------------------
+
+fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
+    match subcmd {
+        ProfileCommands::Start {
+            server,
+            company,
+            username,
+            password,
+            output_dir,
+        } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = bc_server_params(
+                "start", server, company,
+                username.as_deref(), password.as_deref(), output_dir.as_deref(),
+            );
+            match client.request("profiling", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let session_id = result.get("sessionId").and_then(|v| v.as_str()).unwrap_or("?");
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Profiling started: session={session_id} ({status})");
+                        eprintln!("Run `al profile stop --session-id {session_id}` when done.");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+
+        ProfileCommands::Stop {
+            session_id,
+            server,
+            company,
+            username,
+            password,
+            output_dir,
+        } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let mut params = bc_server_params(
+                "stop", server, company,
+                username.as_deref(), password.as_deref(), output_dir.as_deref(),
+            );
+            if let Some(sid) = session_id {
+                params["sessionId"] = serde_json::json!(sid);
+            }
+            match client.request("profiling", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Profiling {status}. Profile saved: {path}");
+                        eprintln!("Analyze with: al profile analyze {path}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+
+        ProfileCommands::Analyze { path, top } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = serde_json::json!({
+                "cmd": "analyze",
+                "path": path,
+                "topN": top,
+            });
+            match client.request("profiling", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json_value(&result);
+                    } else {
+                        let duration = result.get("durationMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        println!("Profile duration: {duration:.1}ms");
+                        println!();
+                        let hotspots = result.get("hotspots").and_then(|v| v.as_array());
+                        if let Some(spots) = hotspots {
+                            if spots.is_empty() {
+                                eprintln!("No hotspots found in profile.");
+                            } else {
+                                println!("{:>8}  {:>8}  {:>8}  PROCEDURE", "SELF(ms)", "TOTAL(ms)", "HITS");
+                                println!("{}", "-".repeat(80));
+                                for h in spots {
+                                    let proc = h.get("procedure").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let self_ms = h.get("selfTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                    let total_ms = h.get("totalTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                    let hits = h.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let obj = h.get("object").and_then(|v| v.as_str());
+                                    let label = if let Some(o) = obj {
+                                        format!("{proc} ({o})")
+                                    } else {
+                                        proc.to_string()
+                                    };
+                                    println!("{self_ms:>8.1}  {total_ms:>8.1}  {hits:>8}  {label}");
+                                }
+                                eprintln!("\n{} hotspot(s) shown", spots.len());
+                            }
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
         }
     }
 }

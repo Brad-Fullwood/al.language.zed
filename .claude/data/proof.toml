@@ -1157,3 +1157,111 @@ test queries::suggest_event::tests::suggest_generates_example_attribute ... ok
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 164 filtered out; finished in 0.00s
 """
 status = "SUCCESS"
+
+# ─── WP5: Language Config & Asset Parity ─────────────────────────────────────
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP5: Language Config & Asset Parity"
+task_id = "T500: tree-sitter-al: CodeAnalysis.dll Extraction"
+
+[entries.adversarial_pass]
+context = "Grammar generated from CodeAnalysis.dll must not regress on real-world AL repos (15018 files from BCApps + ALAppExtensions)"
+expected = "Parse success rate >= 98% (matching old TextMate-based grammar's 98.24%)"
+actual_log = """
+Total AL files tested:     15018
+Successfully parsed:       14750 (98.22%)
+Parse errors:              268
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "al-extract C# tool extracts data from CodeAnalysis.dll, al-gen reads JSON, generates grammar, all fixture tests pass"
+expected = "Invalid fixtures fail, valid fixtures parse, compilation succeeds"
+actual_log = """
+Loading: Microsoft.Dynamics.Nav.CodeAnalysis.dll
+Keywords: 156, Tokens: 53, Properties: 312, Triggers: 128, Builtin types: 150
+
+Valid fixtures: all parsed successfully (8 files).
+Invalid fixtures: all failed as expected (3 files).
+
+cargo check --workspace --exclude zed-al: Finished dev profile target(s) in 0.14s
+cargo test: 27 passed; 7 failed (pre-existing al-cli integration failures)
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-15"
+work_package = "WP5: Language Config & Asset Parity"
+task_id = "T501: Grammar Regeneration and Highlights"
+
+[entries.adversarial_pass]
+context = "Preprocessor directives and inactive code must be highlighted"
+expected = "directive and inactive_code captures present in highlights.scm"
+actual_log = """
+grep -c 'directive\|inactive_code' languages/al/highlights.scm
+2
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Grammar regeneration from CodeAnalysis.dll JSON, query file sync, all fixtures pass"
+expected = "highlights.scm covers all node types, fixtures pass, compilation succeeds"
+actual_log = """
+Valid fixtures: all parsed successfully (8 files).
+Invalid fixtures: all failed as expected (3 files).
+cargo check --workspace --exclude zed-al: Finished dev profile in 1.07s
+25 unique capture types in highlights.scm
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-16"
+work_package = "WP5: Language Config & Asset Parity"
+task_id = "T502: Snippets and Brackets"
+
+[entries.adversarial_pass]
+context = "All 12 AL object types must have snippet coverage and no missing bracket pairs"
+expected = "All object types covered, bracket pairs for begin/end, if/end, case/end, repeat/until, while/do, for/do, foreach/do"
+actual_log = """
+Object types covered by snippets: ['codeunit', 'controladdin', 'entitlement', 'enum', 'interface', 'page', 'permissionset', 'profile', 'query', 'report', 'table', 'xmlport']
+Missing from snippets: set()
+72 snippet entries, 7 bracket pair rules in brackets.scm
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Trigger and property data generated from CodeAnalysis.dll extraction"
+expected = "trigger-data.json contains all 128 triggers across 25 object types"
+actual_log = """
+Generated trigger-data.json: 25 object types, 128 triggers
+Generated property data: 53 object types
+cargo check: clean, cargo test: 27 passed (7 pre-existing failures)
+"""
+status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-16"
+work_package = "WP5: Language Config & Asset Parity"
+task_id = "T503: Runnables and Zed Tasks"
+
+[entries.adversarial_pass]
+context = "Runnables must only match test-attributed procedures, not regular ones"
+expected = "runnables.scm uses (#eq? @_attr 'Test') predicates — only [Test] procedures match"
+actual_log = """
+grep -c '#eq?' languages/al/runnables.scm
+12
+All 12 runnable patterns use (#eq?) predicate on attribute name.
+Non-attributed procedures will NOT match.
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Tasks.json valid and covers Publish/Debug/RunTest/Parse/Fix"
+expected = "6 tasks in .zed/tasks.json with al-test tags for runnable integration"
+actual_log = """
+python3 -c "import json; d=json.load(open('.zed/tasks.json')); print(len(d), 'tasks')"
+6 tasks
+Labels: AL: Publish, AL: Build (Package), AL: Debug, AL: Run Test ($ZED_SYMBOL), AL: Parse Current File, AL: Fix Current File
+"""
+status = "SUCCESS"

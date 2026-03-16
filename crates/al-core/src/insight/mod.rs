@@ -7,6 +7,8 @@
 //!
 //! Used by `al trace`, `al callgraph`, `al subscribers`, and `al intercept` queries.
 
+pub mod analysis;
+pub mod discovery;
 pub mod graph;
 pub mod index;
 pub mod search;

@@ -216,4 +216,45 @@ mod tests {
         let store = DocumentStore::default();
         assert!(!store.contains(&test_uri("any")));
     }
+
+    /// Verifies that sequential incremental edits produce correct results and that
+    /// the rope's O(log n) line_to_char is used for all offset conversions.
+    #[test]
+    fn test_incremental_multiline_edits() {
+        let store = DocumentStore::new();
+        let uri = test_uri("multi");
+        // Three-line document
+        store.open(uri.clone(), "line one\nline two\nline three\n".to_string());
+
+        // Patch 1: replace "one" on line 0 with "1"
+        store.apply_changes(&uri, &[TextChange {
+            range: Some(TextRange { start_line: 0, start_character: 5, end_line: 0, end_character: 8 }),
+            text: "1".to_string(),
+        }]);
+        assert_eq!(store.get_text(&uri), Some("line 1\nline two\nline three\n".to_string()));
+
+        // Patch 2: replace "two" on line 1 with "2"
+        store.apply_changes(&uri, &[TextChange {
+            range: Some(TextRange { start_line: 1, start_character: 5, end_line: 1, end_character: 8 }),
+            text: "2".to_string(),
+        }]);
+        assert_eq!(store.get_text(&uri), Some("line 1\nline 2\nline three\n".to_string()));
+
+        // Patch 3: delete across line boundary — remove "\nline 2" from end of line 0
+        store.apply_changes(&uri, &[TextChange {
+            range: Some(TextRange { start_line: 0, start_character: 6, end_line: 1, end_character: 6 }),
+            text: "".to_string(),
+        }]);
+        assert_eq!(store.get_text(&uri), Some("line 1\nline three\n".to_string()));
+
+        // Patch 4: insert text in the middle of a line
+        store.apply_changes(&uri, &[TextChange {
+            range: Some(TextRange { start_line: 0, start_character: 0, end_line: 0, end_character: 0 }),
+            text: "// ".to_string(),
+        }]);
+        assert_eq!(store.get_text(&uri), Some("// line 1\nline three\n".to_string()));
+
+        // Versions must have incremented once per apply_changes call
+        assert_eq!(store.get_version(&uri), Some(4));
+    }
 }

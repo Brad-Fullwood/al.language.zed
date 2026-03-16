@@ -259,7 +259,7 @@ date = "2026-03-15"
 category = "constraint"
 severity = "bug"
 priority = "HIGH"
-status = "open"
+status = "fixed"
 triage = "STOP"
 description = """
 al-explorer imports al-symbols directly, constructs its own `SymbolIndex`, calls
@@ -268,6 +268,8 @@ bypassing al-lsp and al-core. al-explorer must route through al-lsp like all oth
 
 Fix direction: Remove al-symbols dependency from al-explorer. Connect to al-lsp daemon via
 JSON-RPC (like al-cli does). Use al-protocol for shared types only.
+
+Fixed: T1001 completed — al-explorer now connects to al-lsp daemon via JSON-RPC.
 """
 
 [[issues]]
@@ -362,6 +364,385 @@ Current violations:
 
 Fix direction: Move domain types out of al-protocol into owning crates. al-protocol keeps
 ONLY JSON-RPC Request/Response/RpcError types. Related to ISSUE-014.
+"""
+
+[[issues]]
+id = "ISSUE-022"
+title = "42% of completed tasks have no proof-of-functionality evidence"
+type = "infra"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "plan"
+severity = "drift"
+priority = "HIGH"
+status = "open"
+triage = "SCHEDULE"
+description = """
+36 of 85 tasks (42%) are marked completed in tasks.toml but have no corresponding entry
+in proof.toml. Entire work packages lack any evidence:
+- WP4 (DAP/debugging): T401, T404a-e, T405 — zero proof entries
+- WP10 (explorer): T1001-T1003 — zero proof entries
+- WP11 (testing/release): T1101-T1105 — zero proof entries
+- WP9 (insight): T902-T906, T908 — zero proof entries
+
+Additionally, proof.toml has structural issues:
+- Duplicate WP8 section header (lines ~867 and ~997)
+- Stale T104 "Hover Logic" entry that doesn't match current T104 "Remove al-discovery Crate"
+- WP5 entries appear outside their section comment block
+
+All 85 tasks claim completion but nearly half have no verification trail.
+"""
+
+[[issues]]
+id = "ISSUE-023"
+title = "8 deferred bugs reference phantom blocking tasks that don't exist"
+type = "infra"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "plan"
+severity = "drift"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+7 of the 8 deferred bugs in issues.toml have blocking_task values that reference task IDs
+not present in tasks.toml or task-index.toml:
+- T614-followup (blocks deferred-data-driven-hover-symbols-failures)
+- T611-or-T620 (blocks deferred-semantic-bridge-init-no-show-message)
+- T703-followup (blocks deferred-semantic-cache-subtype-stat-inflation)
+- T902-or-T903 (blocks deferred-insight-nodekey-package-collision)
+- dead-code-followup (blocks 2 deferred issues)
+- T801-followup (blocks deferred-symbol-cache-concurrent-process-rename-race)
+- T-cleanup-workspace (blocks deferred-al-cli-integration-stale-binary)
+
+These bugs have no resolution path — their blocking tasks were never created.
+Either create the blocking tasks or re-evaluate whether these bugs should be
+fixed directly without a task dependency.
+"""
+
+[[issues]]
+id = "ISSUE-024"
+title = "UTF-16 position bug — character offset treated as char index in documents.rs"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "open"
+triage = "STOP"
+description = """
+crates/al-lsp/src/documents.rs position_to_offset() treats the LSP `character` field as a
+Unicode scalar (char) offset: `Some(line_start + character as usize)`. The LSP spec defines
+character as UTF-16 code units. For any file containing non-BMP characters (emoji, CJK
+supplementary), positions will be wrong — edits will corrupt document text, hover/completion
+will resolve the wrong location.
+
+Additionally, the server advertises TextDocumentSyncKind::INCREMENTAL (server.rs:279) but
+zed-fidelity.md states Zed uses Full sync. The INCREMENTAL capability combined with the
+UTF-16 bug means any non-Zed client sending real incremental edits will get document corruption.
+The sync kind should be changed to FULL to match actual behavior, or the UTF-16 handling must
+be fixed properly.
+"""
+
+[[issues]]
+id = "ISSUE-025"
+title = "did_change runs bridge diagnostics synchronously per keystroke — blocks LSP"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "STOP"
+description = """
+crates/al-lsp/src/server.rs:370-391 — the did_change handler calls publish_diagnostics
+inline, which includes Phase 2 bridge calls (up to BRIDGE_INTERACTIVE_TIMEOUT = 5s). This
+runs for every keystroke. During a slow bridge call, the LSP server is unresponsive to
+hover, completion, and other requests.
+
+Fix: spawn publish_diagnostics into a separate task with debouncing, cancel the previous
+pending diagnostic task on each new keystroke.
+"""
+
+[[issues]]
+id = "ISSUE-026"
+title = "initialized handler does heavy I/O synchronously — blocks LSP startup"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-lsp/src/server.rs:341-350 — the initialized notification handler runs
+workspace::initialize_workspace synchronously. This does NuGet downloads, package loading,
+and bridge initialization. Per LSP spec, notification handlers should respond promptly.
+A slow initialized handler can cause clients to time out waiting for the server to become
+responsive.
+
+Fix: spawn workspace initialization into a background task, signal readiness via
+a progress notification.
+"""
+
+[[issues]]
+id = "ISSUE-027"
+title = "Multiple expect()/unwrap() panics in al-lsp production paths"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "SCHEDULE"
+description = """
+Several .expect()/.unwrap() calls in non-test al-lsp code that will crash the server:
+- main.rs:75 — .expect("failed to open log file") on unwritable log dir
+- main.rs:123 — .expect("ALTool not found") in DAP mode (should return error to Zed)
+- dap/mod.rs:75-76 — .expect("child stdin/stdout") on child pipe take
+- definition.rs:16 — .unwrap() on iterator after len check (fragile)
+- main.rs:51-52 — .expect() in signal handler registration
+
+Each of these crashes the entire LSP server process instead of returning a graceful error.
+"""
+
+[[issues]]
+id = "ISSUE-028"
+title = "generate_fix is a stub — returns metadata but no actual TextEdit content"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "plan"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-lsp/src/daemon.rs:936-948 — generate_fix() takes a _lines parameter it never
+uses and returns only {code, message, line} — no newText. dispatch_fix (lines 910-921)
+ignores computed edits and re-formats the entire file instead. The fix/code-action feature
+is effectively a stub that always just reformats.
+"""
+
+[[issues]]
+id = "ISSUE-029"
+title = "Daemon has no connection limit or accept-error backoff"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-lsp/src/daemon.rs:
+- Lines 135-137: accept errors are logged but the loop continues without backoff.
+  A persistent error (EMFILE) will spin at full CPU.
+- No connection limit: unlimited concurrent connections can be spawned. A buggy client
+  repeatedly opening connections could exhaust memory or file descriptors.
+- Lines 1206-1233: block_in_place panics on single-thread runtime.
+- Lines 1705-1713: spawn_blocking + Runtime::new() creates nested runtimes per debug launch.
+"""
+
+[[issues]]
+id = "ISSUE-030"
+title = "workspace/symbol emits hardcoded file:///unknown URL for package symbols"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-lsp/src/workspace.rs:443-455 — handle_workspace_symbol emits a hardcoded
+file:///unknown URL for every package symbol that lacks a workspace file path. LSP clients
+(including Zed) will try to navigate to this non-existent path and show an error.
+Should either omit the location or point to a virtual file showing the symbol definition.
+"""
+
+[[issues]]
+id = "ISSUE-031"
+title = "UTF-16/byte offset confusion across al-syntax (ts_range_to_lsp, context.rs prefix slice)"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "open"
+triage = "STOP"
+description = """
+Related to ISSUE-024 but in al-syntax, affecting different code paths:
+
+1. al-syntax/src/lib.rs:27-38 — ts_range_to_lsp converts tree-sitter column (byte offset
+   within line) directly to LSP character (should be UTF-16 code units). Every LSP range
+   returned by al-syntax (hover, diagnostics, folding, symbols) has incorrect character
+   positions for non-ASCII content.
+
+2. al-syntax/src/context.rs:34 — `&line[..col]` slices a &str with `position.character as
+   usize` which is a UTF-16 code unit index. This PANICS on non-ASCII content because the
+   byte index may not be a char boundary. Affects completion context extraction.
+
+Root cause: no centralized UTF-16 ↔ byte offset conversion utility shared across crates.
+al-core/src/resolution.rs has a correct utf16_col_to_byte_offset() but it's not reused.
+"""
+
+[[issues]]
+id = "ISSUE-032"
+title = "Lint rule AL-L012 (AssignmentInCondition) is a complete stub"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "plan"
+severity = "drift"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-syntax/src/lint.rs:596-602 — check_suspicious_equals is a no-op stub:
+  fn check_suspicious_equals(node, source, diagnostics) { let _ = (node, source, diagnostics); }
+
+The rule AL-L012 is registered in lint_rules() and visible to users, but never produces
+diagnostics. Users see it listed as available but it silently does nothing. Either implement
+or remove from the rule list.
+"""
+
+[[issues]]
+id = "ISSUE-033"
+title = "bc_client.rs silently swallows TLS init and JSON parse failures"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-core/src/bc_client.rs:
+- Line 100: Client::builder().build().unwrap_or_default() — if TLS init fails, falls back
+  to a default client that can't make HTTPS requests. Errors surface later as opaque
+  connection failures.
+- Line 280: response.json().await.unwrap_or(Value::Null) — malformed JSON from BC server
+  silently returns Null with no log. Debugging BC API issues becomes impossible.
+"""
+
+[[issues]]
+id = "ISSUE-034"
+title = "publish.rs try_read() maps lock contention to wrong error (NoToolchain)"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-core/src/publish.rs:296 — workspace.toolchain.try_read().map_err(|_|
+PublishError::NoToolchain) maps BOTH TryLockError::WouldBlock (transient contention)
+AND TryLockError::Poisoned (thread panic) to NoToolchain. A user publishing while another
+operation holds the lock gets "no toolchain configured" — confusing and wrong. Should use
+.read().await for async RwLock or distinguish error variants.
+"""
+
+[[issues]]
+id = "ISSUE-035"
+title = ".app file loading has no size limit — OOM risk on large/corrupted packages"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-symbols/src/app_reader.rs:91 — std::fs::read(path)? loads entire .app file into
+Vec<u8> with no size check. Microsoft Base Application is ~50MB. A corrupted or crafted
+2GB .app would cause OOM. Also, the NuGet extraction path has no size limit on embedded
+.app files.
+
+Additionally, source_index.rs:38 uses unsafe Mmap::map(&file) — if the .app file is
+deleted or truncated while the mmap is held, reads return garbage or trigger SIGBUS on Linux.
+The mtime check mitigates but doesn't eliminate the race.
+"""
+
+[[issues]]
+id = "ISSUE-036"
+title = "Symbol model option-type name collision across objects"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-symbols/src/model.rs:609-645 — synthetic enum logic for option-typed fields uses
+HashMap<String, Vec<String>> keyed on field/parameter name. Two unrelated fields in different
+objects with the same name and OptionMembers will collide — the one with more members silently
+wins. This produces incorrect enum values in the symbol index.
+"""
+
+[[issues]]
+id = "ISSUE-037"
+title = "scaffold.rs silently creates empty app.json on serialization failure"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-core/src/scaffold.rs:124,160 — serde_json::to_string_pretty().unwrap_or_default()
+in generate_app_json() and generate_debug_json() silently returns "" on serialization
+failure. An empty app.json written to disk produces an invalid AL project with no error
+message to the user.
+"""
+
+[[issues]]
+id = "ISSUE-038"
+title = "hover.rs bypasses SemanticCache — O(n*m) linear scan per hover on builtins"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "drift"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-core/src/queries/hover.rs:184-207 — acquires builtins via Arc clone then
+iterates all types and all methods linearly per hover request. The SemanticCache was built
+to index builtins for O(1) lookup but this code path bypasses it entirely. For large
+builtin sets this is O(n * m) on every hover over a builtin method.
+"""
+
+[[issues]]
+id = "ISSUE-039"
+title = "bc_server.rs uses placeholder request ID 'xxx'"
+type = "architecture"
+reporter = "prod-readiness audit"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "LOW"
+status = "open"
+triage = "SCHEDULE"
+description = """
+crates/al-symbols/src/bc_server.rs:212 — id: "xxx".into() is a hardcoded placeholder in a
+production struct. Should generate a real request ID (UUID or sequential counter).
 """
 
 # ─── DEFERRED ISSUES (adversarial-found bugs, blocked on another task) ───────
@@ -528,6 +909,28 @@ first process's .tmp, and then the second rename is a no-op if the first already
 In practice this is benign on Linux (both processes write identical data), but on Windows
 rename is not atomic and could corrupt the cache file. Also, the .tmp file from a crashed
 process is never cleaned up.
+"""
+
+[[issues]]
+id = "deferred-al-cli-integration-stale-binary"
+title = "7 al-cli integration tests fail under `cargo test --workspace` due to stale binary from old workspace"
+type = "deferred"
+reporter = "adversarial"
+date = "2026-03-16"
+category = "infra"
+severity = "bug"
+priority = "LOW"
+status = "open"
+blocking_task = "T-cleanup-workspace"
+file = "crates/al-cli/tests/integration.rs"
+reason = "The target/debug/deps/integration-8ff669ef91ff3e77 binary is a stale artifact built from /home/bradf/Dev/Software/Zed/Zed AL Extension/ (old workspace path). It runs the al-cli integration tests with CARGO_BIN_EXE_al pointing to the wrong binary. Running `cargo test -p al-cli` directly passes all 34 tests. Fix: clean the shared target directory or use workspace-relative target dirs."
+description = """
+`cargo test --workspace --exclude zed-al` picks up a stale `integration-8ff669ef91ff3e77`
+binary built from the old workspace path `/home/bradf/Dev/Software/Zed/Zed AL Extension/`.
+This binary runs al-cli integration tests with an invalid CARGO_BIN_EXE_al path,
+causing 7 tests to fail (cli_parse_*, cli_fix_*). The tests pass when run via
+`cargo test -p al-cli`. The stale binary will be evicted when the shared target
+directory is cleaned or the hash changes after source edits to al-cli.
 """
 
 # ─── FIXED ISSUES ────────────────────────────────────────────────────────────

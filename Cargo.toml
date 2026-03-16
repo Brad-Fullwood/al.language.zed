@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["crates/.zed"]
+exclude = ["crates/.zed", "tree-sitter-al/generator"]
 resolver = "2"
 
 # The root package is the Zed WASM extension

@@ -194,6 +194,48 @@ impl Default for InlayHintConfig {
 }
 
 impl AlConfig {
+    /// Default path for persisted settings: `~/.config/al-lsp/settings.json`.
+    ///
+    /// Returns `None` if the home directory cannot be determined.
+    pub fn default_settings_path() -> Option<PathBuf> {
+        // Honour XDG_CONFIG_HOME if set, otherwise fall back to ~/.config.
+        let config_dir = std::env::var("XDG_CONFIG_HOME")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".config"))
+            })?;
+        Some(config_dir.join("al-lsp").join("settings.json"))
+    }
+
+    /// Persist the current config to disk as JSON.
+    ///
+    /// Writes atomically via a temp file + rename to prevent partial-write
+    /// corruption if the process is killed mid-write. Creates parent
+    /// directories as needed.
+    pub fn persist(&self, path: &PathBuf) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)
+            .map_err(std::io::Error::other)?;
+        // Write to a sibling temp file, then rename atomically.
+        let tmp_path = path.with_extension("tmp");
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, path)?;
+        Ok(())
+    }
+
+    /// Load config from a persisted JSON file.
+    ///
+    /// Returns `None` if the file does not exist or cannot be parsed.
+    pub fn load(path: &PathBuf) -> Option<Self> {
+        let data = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&data).ok()
+    }
+
     /// Merge new settings into this config. Only fields present in
     /// the incoming JSON are updated; absent fields keep their current value.
     ///
@@ -616,5 +658,51 @@ mod tests {
         let unknown = config.merge(&serde_json::json!("not an object"));
         assert!(unknown.is_empty());
         assert!(config.enable_code_analysis); // unchanged
+    }
+
+    #[test]
+    fn persist_and_load_roundtrip() {
+        let mut config = AlConfig::default();
+        config.enable_code_analysis = false;
+        config.root_namespace = Some("Test.Namespace".to_string());
+        config.incremental_build = true;
+
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("al-lsp").join("settings.json");
+
+        config.persist(&path).expect("persist should succeed");
+        assert!(path.exists(), "settings file should exist after persist");
+
+        let loaded = AlConfig::load(&path).expect("load should succeed");
+        assert!(!loaded.enable_code_analysis);
+        assert_eq!(loaded.root_namespace, Some("Test.Namespace".to_string()));
+        assert!(loaded.incremental_build);
+    }
+
+    #[test]
+    fn load_returns_none_for_missing_file() {
+        let path = PathBuf::from("/tmp/al-lsp-test-nonexistent-xyz/settings.json");
+        let result = AlConfig::load(&path);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_returns_none_for_invalid_json() {
+        let path = std::env::temp_dir().join("al-lsp-test-bad.json");
+        std::fs::write(&path, b"not valid json").unwrap();
+        let result = AlConfig::load(&path);
+        assert!(result.is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn default_settings_path_is_some() {
+        // Should return Some as long as HOME or XDG_CONFIG_HOME is set
+        // (always true in test environments)
+        let path = AlConfig::default_settings_path();
+        assert!(path.is_some());
+        let p = path.unwrap();
+        assert!(p.to_str().unwrap().contains("al-lsp"));
+        assert!(p.to_str().unwrap().ends_with("settings.json"));
     }
 }

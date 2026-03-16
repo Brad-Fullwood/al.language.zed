@@ -1,77 +1,41 @@
-use std::fs;
-use zed_extension_api::{self as zed, lsp::CompletionKind, lsp::SymbolKind, settings::LspSettings, CodeLabel, CodeLabelSpan, Result};
+mod dap;
+mod discovery;
+mod platform;
+mod settings;
 
-struct AlExtension {
-    cached_binary_path: Option<String>,
-}
+use std::collections::HashMap;
+use zed_extension_api::{self as zed, settings::LspSettings, Result};
+use serde_json::{json, Value};
 
-const BINARY_NAME: &str = "al-lsp";
+struct AlExtension;
 
-impl AlExtension {
-    /// Find the al-lsp binary.
-    ///
-    /// Search order:
-    /// 1. Cached path from a previous successful lookup
-    /// 2. User-configured path in Zed settings
-    /// 3. System PATH via `worktree.which()`
-    /// 4. Previously downloaded binary in the extension work directory
-    /// 5. Download from GitHub releases
-    fn find_binary(&mut self, worktree: &zed::Worktree) -> Result<String> {
-        if let Some(ref path) = self.cached_binary_path {
-            return Ok(path.clone());
-        }
-
-        // Check PATH
-        if let Some(path) = worktree.which(BINARY_NAME) {
-            self.cached_binary_path = Some(path.clone());
-            return Ok(path);
-        }
-
-        // Check extension work directory for previously downloaded binary
-        let (platform, arch) = zed::current_platform();
-        let binary_name = match platform {
-            zed::Os::Windows => "al-lsp.exe",
-            _ => BINARY_NAME,
-        };
-        let version = env!("CARGO_PKG_VERSION");
-        let install_dir = format!("al-lsp-{version}");
-        let binary_path = format!("{install_dir}/{binary_name}");
-
-        if fs::metadata(&binary_path).is_ok() {
-            self.cached_binary_path = Some(binary_path.clone());
-            return Ok(binary_path);
-        }
-
-        // Download from GitHub releases
-        let triple = format!("{}-{}", arch_str(arch), os_str(platform));
-        let download_url = format!(
-            "https://github.com/Brad-Fullwood/zed-al/releases/download/v{version}/al-lsp-{triple}.tar.gz"
-        );
-
-        match zed::download_file(&download_url, &install_dir, zed::DownloadedFileType::GzipTar) {
-            Ok(()) => {
-                zed::make_file_executable(&binary_path)?;
-                remove_outdated_versions(&install_dir);
-                self.cached_binary_path = Some(binary_path.clone());
-                Ok(binary_path)
+/// Deep-merge `overrides` into `base`, returning the merged result.
+/// - Objects are merged recursively (override keys replace base keys)
+/// - All other types: override replaces base entirely
+///
+/// NOTE: An identical copy exists in al-lsp-proxy/src/config.rs.
+/// These are separate Cargo packages (WASM vs native) that can't share code
+/// without a shared crate, which would add complexity for a 16-line utility.
+fn merge_json(base: &Value, overrides: &Value) -> Value {
+    match (base, overrides) {
+        (Value::Object(base_map), Value::Object(override_map)) => {
+            let mut merged = base_map.clone();
+            for (key, override_val) in override_map {
+                let merged_val = match merged.get(key) {
+                    Some(base_val) => merge_json(base_val, override_val),
+                    None => override_val.clone(),
+                };
+                merged.insert(key.clone(), merged_val);
             }
-            Err(download_err) => Err(format!(
-                "Could not find `{BINARY_NAME}` on PATH and failed to download from \
-                 {download_url}: {download_err}\n\n\
-                 Install manually:\n  \
-                 cargo install --git https://github.com/Brad-Fullwood/zed-al {BINARY_NAME}\n\n\
-                 Or set the path in Zed settings:\n  \
-                 {{\"lsp\": {{\"{BINARY_NAME}\": {{\"binary\": {{\"path\": \"/path/to/{BINARY_NAME}\"}}}}}}}}"
-            )),
+            Value::Object(merged)
         }
+        (_, override_val) => override_val.clone(),
     }
 }
 
 impl zed::Extension for AlExtension {
     fn new() -> Self {
-        Self {
-            cached_binary_path: None,
-        }
+        Self
     }
 
     fn language_server_command(
@@ -79,277 +43,174 @@ impl zed::Extension for AlExtension {
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
+        let env_vec = worktree.shell_env();
+        let env_map: HashMap<String, String> = env_vec.into_iter().collect();
+
         let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
 
-        let binary_path = if let Some(path) =
-            settings.binary.as_ref().and_then(|b| b.path.as_ref())
-        {
-            path.to_string()
-        } else {
-            zed::set_language_server_installation_status(
-                language_server_id,
-                &zed::LanguageServerInstallationStatus::CheckingForUpdate,
-            );
-            let binary = self.find_binary(worktree)?;
-            zed::set_language_server_installation_status(
-                language_server_id,
-                &zed::LanguageServerInstallationStatus::None,
-            );
-            binary
-        };
-
-        let args: Vec<String> = settings
+        // User-configured binary arguments (e.g. ["--stdio"]).
+        let user_args: Vec<String> = settings
             .binary
             .as_ref()
             .and_then(|b| b.arguments.as_ref())
-            .cloned()
-            .unwrap_or_default();
+            .map(|args| args.iter().cloned().collect())
+            .unwrap_or_else(|| vec!["--stdio".to_string()]);
 
-        Ok(zed::Command {
-            command: binary_path,
-            args,
-            env: worktree.shell_env(),
-        })
+        // Explicit binary path from settings takes unconditional priority.
+        // This is the recommended configuration path — no auto-download or
+        // discovery is attempted if a path is provided.
+        let user_configured_path = settings
+            .binary
+            .as_ref()
+            .and_then(|b| b.path.as_ref())
+            .map(|p| p.to_string());
+
+        // Determine the AL EditorServices.Host path (passed as first arg to the proxy).
+        // Priority: user setting > PATH discovery > "auto" (proxy's own discovery).
+        let al_server_path = user_configured_path
+            .clone()
+            .or_else(|| worktree.which("Microsoft.Dynamics.Nav.EditorServices.Host"))
+            .unwrap_or_else(|| "auto".to_string());
+
+        // Find the bundled proxy binary (existence-checked).
+        // If the user supplied an explicit binary path we skip proxy discovery entirely
+        // and treat the configured path as the proxy itself.
+        if let Some(proxy_path) = discovery::find_proxy_path(&env_map) {
+            let mut proxy_args = vec![al_server_path];
+            proxy_args.extend(user_args);
+
+            return Ok(zed::Command {
+                command: proxy_path,
+                args: proxy_args,
+                env: vec![("AL_LSP_DEBUG".to_string(), "1".to_string())],
+            });
+        }
+
+        // Proxy binary was not found at the installed extension path.
+        // If the user configured an explicit binary path, try to use it directly —
+        // it may point to a standalone al-lsp-proxy binary.
+        if let Some(explicit_path) = user_configured_path {
+            return Ok(zed::Command {
+                command: explicit_path,
+                args: user_args,
+                env: vec![("AL_LSP_DEBUG".to_string(), "1".to_string())],
+            });
+        }
+
+        // Neither bundled proxy nor user-configured path is available.
+        let platform = platform::detect_platform(&env_map);
+        let expected_path = if let Some(home) = env_map.get("HOME") {
+            let base = platform.extensions_base(home);
+            format!("{}/al.language.zed/bin/{}/{}", base, platform.bin_dir(), platform.binary_name())
+        } else {
+            "<HOME not set>".to_string()
+        };
+
+        Err(format!(
+            "AL Language Server proxy not found.\n\
+            \n\
+            The proxy binary was not found at the expected extension path:\n\
+            {expected_path}\n\
+            \n\
+            To fix: set the binary path explicitly in Zed settings:\n\
+            {{\n\
+              \"lsp\": {{\n\
+                \"al-language-server\": {{\n\
+                  \"binary\": {{\n\
+                    \"path\": \"/path/to/al-lsp-proxy\"\n\
+                  }}\n\
+                }}\n\
+              }}\n\
+            }}\n\
+            \n\
+            Debug info: shell_env entries={}, HOME={:?}, platform={:?}",
+            env_map.len(),
+            env_map.get("HOME"),
+            platform,
+        ))
     }
 
     fn language_server_initialization_options(
         &mut self,
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
-    ) -> Result<Option<zed::serde_json::Value>> {
-        let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
-        Ok(settings.initialization_options)
+    ) -> Result<Option<serde_json::Value>> {
+        let workspace_path = worktree.root_path();
+
+        // User overrides only — proxy provides defaults from package.json
+        let mut user_config = json!({});
+        let mut user_init_options: Option<&Value> = None;
+
+        let lsp_settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree).ok();
+        if let Some(ref s) = lsp_settings {
+            if let Some(user_settings) = &s.settings {
+                user_config = settings::apply_al_settings_to_config(&user_config, user_settings);
+            }
+            user_init_options = s.initialization_options.as_ref();
+        }
+
+        let mut init_options = json!({
+            "workspacePath": workspace_path,
+            "alResourceConfigurationSettings": user_config,
+            "setActiveWorkspace": true,
+            "dependencyParentWorkspacePath": null,
+            "expectedProjectReferenceDefinitions": [],
+            "activeWorkspaceClosure": {}
+        });
+
+        // Allow full initializationOptions override
+        if let Some(user_init_opts) = user_init_options {
+            init_options = merge_json(&init_options, user_init_opts);
+        }
+
+        Ok(Some(init_options))
     }
 
     fn language_server_workspace_configuration(
         &mut self,
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
-    ) -> Result<Option<zed::serde_json::Value>> {
-        let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
-        Ok(settings.settings)
-    }
+    ) -> Result<Option<serde_json::Value>> {
+        let workspace_path = worktree.root_path();
 
-    // ── Completion & Symbol Labels ────────────────────────────────
+        // User overrides only — proxy provides defaults from package.json
+        let mut al_config = json!({
+            "workspaceRootPath": workspace_path
+        });
 
-    fn label_for_completion(
-        &self,
-        _language_server_id: &zed::LanguageServerId,
-        completion: zed::lsp::Completion,
-    ) -> Option<CodeLabel> {
-        let kind = completion.kind?;
-        let label = &completion.label;
-        let detail = completion.detail.as_deref();
-
-        let (highlight, show_detail) = match kind {
-            CompletionKind::Function | CompletionKind::Method | CompletionKind::Event => {
-                ("function", true)
-            }
-            CompletionKind::Variable => ("variable", true),
-            CompletionKind::Keyword => ("keyword", false),
-            CompletionKind::Struct
-            | CompletionKind::Class
-            | CompletionKind::Module
-            | CompletionKind::Enum
-            | CompletionKind::Interface
-            | CompletionKind::Reference => ("type", true),
-            CompletionKind::Field | CompletionKind::Property => ("property", true),
-            CompletionKind::EnumMember | CompletionKind::Constant => ("constant", false),
-            CompletionKind::Snippet => ("keyword", false),
-            _ => return None,
-        };
-
-        let mut spans = vec![CodeLabelSpan::literal(
-            label.clone(),
-            Some(highlight.to_string()),
-        )];
-
-        if show_detail {
-            if let Some(d) = detail {
-                if !d.is_empty() {
-                    spans.push(CodeLabelSpan::literal(
-                        format!("  {d}"),
-                        Some("comment".to_string()),
-                    ));
-                }
+        if let Ok(lsp_settings) = LspSettings::for_worktree(language_server_id.as_ref(), worktree) {
+            if let Some(user_settings) = &lsp_settings.settings {
+                al_config = settings::apply_al_settings_to_config(&al_config, user_settings);
             }
         }
 
-        Some(CodeLabel {
-            filter_range: (0..label.len()).into(),
-            spans,
-            code: String::new(),
-        })
+        Ok(Some(json!({ "al": al_config })))
     }
-
-    fn label_for_symbol(
-        &self,
-        _language_server_id: &zed::LanguageServerId,
-        symbol: zed::lsp::Symbol,
-    ) -> Option<CodeLabel> {
-        let name = &symbol.name;
-
-        let kind_keyword = match symbol.kind {
-            SymbolKind::Struct => "table",
-            SymbolKind::Class => "page",
-            SymbolKind::Module => "codeunit",
-            SymbolKind::Enum => "enum",
-            SymbolKind::Interface => "interface",
-            SymbolKind::File => "report",
-            SymbolKind::Function | SymbolKind::Method => "procedure",
-            SymbolKind::Object => "xmlport",
-            _ => return None,
-        };
-
-        Some(CodeLabel {
-            filter_range: (0..(kind_keyword.len() + 1 + name.len())).into(),
-            spans: vec![
-                CodeLabelSpan::literal(kind_keyword, Some("keyword".to_string())),
-                CodeLabelSpan::literal(format!(" {name}"), Some("type".to_string())),
-            ],
-            code: String::new(),
-        })
-    }
-
-    // ── Debug Adapter Protocol ───────────────────────────────────
 
     fn get_dap_binary(
         &mut self,
         _adapter_name: String,
         config: zed::DebugTaskDefinition,
-        _user_provided_debug_adapter_path: Option<String>,
+        user_provided_debug_adapter_path: Option<String>,
         worktree: &zed::Worktree,
-    ) -> std::result::Result<zed::DebugAdapterBinary, String> {
-        let binary_path = self.find_binary(worktree)?;
-
-        let config_value: zed::serde_json::Value =
-            zed::serde_json::from_str(&config.config).unwrap_or_default();
-
-        let request_type = config_value
-            .get("request")
-            .and_then(|v| v.as_str())
-            .unwrap_or("launch");
-
-        let request = match request_type {
-            "attach" => zed::StartDebuggingRequestArgumentsRequest::Attach,
-            _ => zed::StartDebuggingRequestArgumentsRequest::Launch,
-        };
-
-        Ok(zed::DebugAdapterBinary {
-            command: Some(binary_path),
-            arguments: vec!["--dap".to_string()],
-            envs: vec![],
-            cwd: Some(worktree.root_path()),
-            connection: None,
-            request_args: zed::StartDebuggingRequestArguments {
-                configuration: config.config,
-                request,
-            },
-        })
+    ) -> Result<zed::DebugAdapterBinary> {
+        dap::get_dap_binary(config, user_provided_debug_adapter_path, worktree)
     }
 
     fn dap_request_kind(
         &mut self,
         _adapter_name: String,
-        config: zed::serde_json::Value,
-    ) -> std::result::Result<zed::StartDebuggingRequestArgumentsRequest, String> {
-        let request = config
-            .get("request")
-            .and_then(|v| v.as_str())
-            .unwrap_or("launch");
-
-        match request {
-            "attach" => Ok(zed::StartDebuggingRequestArgumentsRequest::Attach),
-            _ => Ok(zed::StartDebuggingRequestArgumentsRequest::Launch),
-        }
+        config: serde_json::Value,
+    ) -> Result<zed::StartDebuggingRequestArgumentsRequest> {
+        dap::dap_request_kind(config)
     }
 
     fn dap_config_to_scenario(
         &mut self,
         config: zed::DebugConfig,
-    ) -> std::result::Result<zed::DebugScenario, String> {
-        let mut cfg = zed::serde_json::Map::new();
-
-        match &config.request {
-            zed::DebugRequest::Launch(launch) => {
-                cfg.insert(
-                    "request".to_string(),
-                    zed::serde_json::Value::String("launch".to_string()),
-                );
-                if !launch.program.is_empty() {
-                    cfg.insert(
-                        "server".to_string(),
-                        zed::serde_json::Value::String(launch.program.clone()),
-                    );
-                }
-                let args = &launch.args;
-                if let Some(instance) = args.first() {
-                    cfg.insert(
-                        "serverInstance".to_string(),
-                        zed::serde_json::Value::String(instance.clone()),
-                    );
-                }
-                if let Some(tenant) = args.get(1) {
-                    cfg.insert(
-                        "tenant".to_string(),
-                        zed::serde_json::Value::String(tenant.clone()),
-                    );
-                }
-            }
-            zed::DebugRequest::Attach(_) => {
-                cfg.insert(
-                    "request".to_string(),
-                    zed::serde_json::Value::String("attach".to_string()),
-                );
-                cfg.insert(
-                    "breakOnNext".to_string(),
-                    zed::serde_json::Value::String("WebClient".to_string()),
-                );
-            }
-        }
-
-        let config_json = zed::serde_json::to_string(&cfg)
-            .map_err(|e| format!("Failed to serialize config: {}", e))?;
-
-        Ok(zed::DebugScenario {
-            label: config.label.clone(),
-            adapter: "al".to_string(),
-            build: None,
-            config: config_json,
-            tcp_connection: None,
-        })
+    ) -> Result<zed::DebugScenario> {
+        dap::dap_config_to_scenario(config)
     }
 }
 
 zed::register_extension!(AlExtension);
-
-fn os_str(os: zed::Os) -> &'static str {
-    match os {
-        zed::Os::Mac => "apple-darwin",
-        zed::Os::Linux => "unknown-linux-gnu",
-        zed::Os::Windows => "pc-windows-msvc",
-    }
-}
-
-fn arch_str(arch: zed::Architecture) -> &'static str {
-    match arch {
-        zed::Architecture::Aarch64 => "aarch64",
-        zed::Architecture::X8664 => "x86_64",
-        zed::Architecture::X86 => "x86",
-    }
-}
-
-/// Remove old al-lsp version directories after a successful download.
-fn remove_outdated_versions(current_dir: &str) {
-    let Ok(entries) = fs::read_dir(".") else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Some(name) = entry.file_name().to_str().map(String::from) else {
-            continue;
-        };
-        if name.starts_with("al-lsp-") && name != current_dir {
-            let _ = fs::remove_dir_all(entry.path());
-        }
-    }
-}

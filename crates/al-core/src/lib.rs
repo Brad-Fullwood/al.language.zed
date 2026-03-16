@@ -13,11 +13,13 @@ pub mod jsonrpc;
 pub mod launch;
 pub mod parsing;
 pub mod permissions;
+pub mod profiling;
 pub mod project;
 pub mod queries;
 pub(crate) mod resolution;
 pub mod scaffold;
 pub mod semantic;
+pub mod snapshot;
 pub mod toolchain;
 pub mod workspace;
 
