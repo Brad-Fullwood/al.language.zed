@@ -113,9 +113,10 @@ fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest
     let manifest_name = find_file_in_archive(archive, "NavxManifest.xml")
         .ok_or(AppReaderError::NoManifest)?;
 
-    let mut file = archive.by_name(&manifest_name)?;
+    let file = archive.by_name(&manifest_name)?;
     let mut xml_bytes = Vec::new();
-    file.read_to_end(&mut xml_bytes)?;
+    // 1 MB limit guards against decompression bombs in the manifest.
+    file.take(1_048_576).read_to_end(&mut xml_bytes)?;
 
     Ok(manifest::parse_manifest(&xml_bytes)?)
 }
@@ -128,9 +129,10 @@ fn read_symbol_reference(
     let sr_name = find_file_in_archive(archive, "SymbolReference.json")
         .ok_or(AppReaderError::NoSymbolReference)?;
 
-    let mut file = archive.by_name(&sr_name)?;
+    let file = archive.by_name(&sr_name)?;
     let mut json_bytes = Vec::new();
-    file.read_to_end(&mut json_bytes)?;
+    // 512 MB limit guards against decompression bombs in the symbol reference.
+    file.take(536_870_912).read_to_end(&mut json_bytes)?;
 
     let sr = parse_symbol_reference_json(&json_bytes)?;
     Ok(sr.into_entries(package_name))

@@ -21,12 +21,16 @@ pub struct ProfilingConfig {
     pub server_url: String,
     /// BC company name (URL-encoded on use).
     pub company: String,
-    /// Output directory for downloaded `.alcpuprofile` files.
+    /// Output directory for downloaded `.alcpuprofile` files. Must be an absolute path.
     pub output_dir: PathBuf,
     /// Optional username for Basic auth.
     pub username: Option<String>,
-    /// Optional password for Basic auth.
+    /// Optional password for Basic auth. Never serialized to prevent credential leaks.
+    #[serde(default, skip_serializing)]
     pub password: Option<String>,
+    /// Accept invalid/self-signed TLS certificates. Defaults to `false`.
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
 }
 
 /// A profiling hotspot — an AL procedure with high CPU time.
@@ -71,6 +75,8 @@ pub enum ProfilingError {
     ParseError(String),
     #[error("No profiling session active")]
     NoActiveSession,
+    #[error("output_dir must be an absolute path, got: {path}")]
+    RelativeOutputDir { path: String },
 }
 
 /// Build a [`reqwest::Client`] for BC (accepts self-signed certs).

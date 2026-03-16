@@ -20,12 +20,16 @@ pub struct SnapshotConfig {
     pub server_url: String,
     /// BC company name (URL-encoded on use).
     pub company: String,
-    /// Output directory for downloaded .alvsc files.
+    /// Output directory for downloaded .alvsc files. Must be an absolute path.
     pub output_dir: PathBuf,
     /// Optional username for Basic auth (Windows auth used when absent).
     pub username: Option<String>,
-    /// Optional password for Basic auth.
+    /// Optional password for Basic auth. Never serialized to prevent credential leaks.
+    #[serde(default, skip_serializing)]
     pub password: Option<String>,
+    /// Accept invalid/self-signed TLS certificates. Defaults to `false`.
+    #[serde(default)]
+    pub accept_invalid_certs: bool,
 }
 
 /// Metadata about a snapshot available on the BC server.
@@ -54,13 +58,16 @@ pub enum SnapshotError {
     MissingId,
     #[error("No snapshots available on server")]
     NoSnapshots,
+    #[error("output_dir must be an absolute path, got: {path}")]
+    RelativeOutputDir { path: String },
 }
 
-/// Build a [`reqwest::Client`] that accepts self-signed certificates (BC on-prem).
-fn make_client(_config: &SnapshotConfig) -> Result<reqwest::Client, SnapshotError> {
-    // Authentication is applied per-request via `apply_auth()`.
+/// Build a [`reqwest::Client`] configured from the snapshot config.
+///
+/// Authentication is applied per-request via `apply_auth()`.
+fn make_client(config: &SnapshotConfig) -> Result<reqwest::Client, SnapshotError> {
     let builder = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(config.accept_invalid_certs)
         .timeout(std::time::Duration::from_secs(120));
 
     Ok(builder.build()?)
@@ -219,6 +226,13 @@ pub async fn download_snapshot(
         return Err(SnapshotError::ServerError {
             status: status.as_u16(),
             message,
+        });
+    }
+
+    // Validate that output_dir is an absolute path before writing.
+    if !config.output_dir.is_absolute() {
+        return Err(SnapshotError::RelativeOutputDir {
+            path: config.output_dir.display().to_string(),
         });
     }
 

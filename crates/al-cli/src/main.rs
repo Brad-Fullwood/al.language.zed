@@ -957,7 +957,10 @@ fn cmd_deps(json: bool) -> ExitCode {
     }
 }
 
-fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
+fn cmd_compile(project_dir: Option<&str>, alc: Option<&str>, json: bool) -> ExitCode {
+    if alc.is_some() {
+        eprintln!("Warning: --alc is not yet implemented; the daemon auto-detects the compiler path");
+    }
     let mut client = match connect(project_dir) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -999,7 +1002,10 @@ fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
     }
 }
 
-fn cmd_lint(file: Option<&str>, all: bool, _semantic: bool, analyzers: Option<&str>, json: bool) -> ExitCode {
+fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, analyzers: Option<&str>, json: bool) -> ExitCode {
+    if semantic {
+        eprintln!("Warning: --semantic is not yet implemented and has no effect");
+    }
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -1495,7 +1501,10 @@ fn cmd_hints(file: &str, start_line: Option<u32>, end_line: Option<u32>, json: b
     }
 }
 
-fn cmd_fix(file: Option<&str>, _all: bool, dry_run: bool, rule: Option<&str>, json: bool) -> ExitCode {
+fn cmd_fix(file: Option<&str>, all: bool, dry_run: bool, rule: Option<&str>, json: bool) -> ExitCode {
+    if all {
+        eprintln!("Warning: --all is not yet implemented and has no effect");
+    }
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -2172,15 +2181,17 @@ fn main() -> ExitCode {
         Commands::Composed { kind, name } => cmd_composed(&kind, &name, cli.json),
         Commands::Packages => cmd_packages(cli.json),
         Commands::Deps => cmd_deps(cli.json),
-        Commands::Compile { project, alc: _ } => cmd_compile(project.as_deref(), cli.json),
+        Commands::Compile { project, alc } => cmd_compile(project.as_deref(), alc.as_deref(), cli.json),
         Commands::Lint { file, all, semantic, analyzers } => cmd_lint(file.as_deref(), all, semantic, analyzers.as_deref(), cli.json),
         Commands::Format { file, check, stdin, all } => cmd_format(file.as_deref(), check, stdin, all, cli.json),
         Commands::Symbols { file } => cmd_symbols(&file, cli.json),
         Commands::Hover { file, line, col } => cmd_hover(&file, line, col, cli.json),
-        Commands::Definition { file, line, col, workspace: _ } => {
+        Commands::Definition { file, line, col, workspace } => {
+            if workspace { eprintln!("Warning: --workspace is not yet implemented and has no effect"); }
             cmd_position_query("definition", &file, line, col, cli.json)
         }
-        Commands::References { file, line, col, workspace: _ } => {
+        Commands::References { file, line, col, workspace } => {
+            if workspace { eprintln!("Warning: --workspace is not yet implemented and has no effect"); }
             cmd_position_query("references", &file, line, col, cli.json)
         }
         Commands::Signature { file, line, col } => {
@@ -2189,7 +2200,8 @@ fn main() -> ExitCode {
         Commands::Completions { file, line, col } => {
             cmd_position_query("completions", &file, line, col, cli.json)
         }
-        Commands::Rename { file, line, col, new_name, dry_run, workspace: _ } => {
+        Commands::Rename { file, line, col, new_name, dry_run, workspace } => {
+            if workspace { eprintln!("Warning: --workspace is not yet implemented and has no effect"); }
             cmd_rename(&file, line, col, &new_name, dry_run, cli.json)
         }
         Commands::Rules => cmd_rules(cli.json),

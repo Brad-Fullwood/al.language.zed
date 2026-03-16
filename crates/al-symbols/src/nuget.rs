@@ -319,6 +319,16 @@ async fn get_package_base_address(
         url.push('/');
     }
 
+    // Validate that the base URL uses HTTPS. Non-HTTPS feeds are accepted for
+    // dev/local feeds but are a MITM risk in production — the caller should
+    // ensure the feed index_url is trusted before reaching this point.
+    if !url.starts_with("https://") {
+        warn!(
+            url = %url,
+            "PackageBaseAddress does not use HTTPS — package downloads may be intercepted"
+        );
+    }
+
     Ok(url)
 }
 
@@ -332,20 +342,35 @@ fn extract_app_from_nupkg(
     let mut archive = zip::ZipArchive::new(cursor)?;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
+        let file = archive.by_index(i)?;
         let name = file.name().to_string();
 
         if name.to_lowercase().ends_with(".app") {
-            // Determine output filename
-            let filename = name
-                .rsplit('/')
+            // Extract the bare filename, stripping both Unix and Windows path
+            // separators to prevent ZIP-slip attacks.
+            let raw_filename = name
+                .rsplit(['/', '\\'])
                 .next()
                 .unwrap_or(&name);
-            let out_path = dest.join(filename);
+
+            // Reject filenames that are empty, traverse directories, or contain
+            // embedded separators that survived splitting.
+            if raw_filename.is_empty()
+                || raw_filename.contains("..")
+                || raw_filename.contains('/')
+                || raw_filename.contains('\\')
+            {
+                warn!(entry = %name, "Skipping unsafe ZIP entry (potential ZIP-slip)");
+                continue;
+            }
+            let out_path = dest.join(raw_filename);
 
             std::fs::create_dir_all(dest)?;
             let mut out_file = std::fs::File::create(&out_path)?;
-            std::io::copy(&mut file, &mut out_file)?;
+            // Limit extraction to 512 MB to guard against decompression bombs.
+            // Use Read::take explicitly to avoid ambiguity with Iterator::take.
+            let mut limited = std::io::Read::take(file, 536_870_912);
+            std::io::copy(&mut limited, &mut out_file)?;
 
             return Ok(out_path);
         }

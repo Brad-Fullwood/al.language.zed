@@ -97,10 +97,13 @@ impl BcClient {
     /// Build a BC client from the given server config.
     pub fn new(config: &BcServerConfig) -> Self {
         let client = Client::builder()
-            .danger_accept_invalid_certs(true) // on-prem often uses self-signed certs
+            .danger_accept_invalid_certs(config.accept_invalid_certs)
             .timeout(Duration::from_secs(300))  // 5 min for large uploads
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to build TLS-configured HTTP client; falling back to default (may not support HTTPS)");
+                Client::default()
+            });
 
         let base_url = build_base_url(config);
 
@@ -359,6 +362,7 @@ mod tests {
             environment_name: None,
             tenant: None,
             authentication: AuthMethod::UserPassword,
+            accept_invalid_certs: false,
         }
     }
 
@@ -372,6 +376,7 @@ mod tests {
             environment_name: Some("MySandbox".to_string()),
             tenant: Some("mycompany.onmicrosoft.com".to_string()),
             authentication: AuthMethod::AAD,
+            accept_invalid_certs: false,
         }
     }
 

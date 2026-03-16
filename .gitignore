@@ -1,5 +1,4 @@
 /target
-/Cargo.lock
 *.wasm
 /grammars/
 .alpackages/
@@ -18,3 +17,8 @@ crates/al-dap/dotnet/AlDap/obj/
 /tmp/al-*
 
 .mcp.json
+
+# Environment / secrets
+.env
+.env.*
+*.env

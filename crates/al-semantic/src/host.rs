@@ -30,7 +30,10 @@ pub struct DotNetHost {
     free_buffer_fn: FreeBufferFn,
 }
 
-// The function pointers are thread-safe since the CLR manages its own synchronization.
+// SAFETY: DotNetHost wraps CLR function pointers that are safe to call from any thread.
+// However, callers MUST serialize access to `call()` — concurrent calls are unsound
+// because the response buffer is shared. The SemanticBridge in al-core wraps this
+// in a tokio::sync::Mutex to enforce single-caller access.
 unsafe impl Send for DotNetHost {}
 unsafe impl Sync for DotNetHost {}
 

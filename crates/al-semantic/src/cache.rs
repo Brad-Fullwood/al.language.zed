@@ -20,6 +20,7 @@ fn cache_dir() -> PathBuf {
 
 /// Read a cached JSON file, returning None on miss or corruption.
 fn read_cache<T: DeserializeOwned>(version: &str, name: &str) -> Option<T> {
+    let version = version.replace(|c: char| !c.is_ascii_alphanumeric() && c != '.', "_");
     let path = cache_dir().join(format!("{name}-{version}.json"));
     match std::fs::read_to_string(&path) {
         Ok(json) => match serde_json::from_str(&json) {
@@ -39,6 +40,7 @@ fn read_cache<T: DeserializeOwned>(version: &str, name: &str) -> Option<T> {
 
 /// Write a JSON-serializable value to disk cache.
 fn write_cache<T: Serialize + ?Sized>(version: &str, name: &str, data: &T, count: usize) {
+    let version = version.replace(|c: char| !c.is_ascii_alphanumeric() && c != '.', "_");
     let dir = cache_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         warn!(error = %e, "Failed to create cache directory");

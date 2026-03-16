@@ -124,8 +124,12 @@ fn position_to_offset(rope: &Rope, line: u32, character: u32) -> Option<usize> {
     if line >= rope.len_lines() {
         return None;
     }
-    let line_start = rope.line_to_char(line);
-    Some(line_start + character as usize)
+    // LSP positions are UTF-16 code units; ropey chars are Unicode scalar values.
+    // Convert via byte offset to avoid wrong offsets for non-BMP characters.
+    let line_byte_start = rope.line_to_byte(line);
+    let line_string = rope.line(line).to_string();
+    let byte_col = crate::resolution::utf16_col_to_byte_offset(&line_string, character as usize);
+    Some(rope.byte_to_char(line_byte_start + byte_col))
 }
 
 #[cfg(test)]

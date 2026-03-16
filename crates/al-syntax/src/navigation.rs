@@ -152,7 +152,10 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     let mut name = String::new();
 
     for i in 0..child.child_count() {
-        let c = child.child(i).unwrap();
+        let c = match child.child(i) {
+            Some(c) => c,
+            None => continue,
+        };
         match c.kind() {
             "integer" => {
                 if let Ok(n) = c.utf8_text(source).unwrap_or("0").parse::<i64>() {

@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn test_app_filename() {
         let dep = AppDependency {
-            id: "xxx".into(),
+            id: "63ca2034-0ab3-4d4b-be0b-52cd8f9e8e85".into(),
             name: "System Application".into(),
             publisher: "Microsoft".into(),
             version: "26.5.0.0".into(),

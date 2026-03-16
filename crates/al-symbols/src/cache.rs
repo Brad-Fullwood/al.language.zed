@@ -151,7 +151,7 @@ impl SymbolCache {
         // Write to a temp file in the same directory, then atomically rename.
         // This prevents concurrent readers from seeing a partial write and
         // prevents corruption if the process is killed mid-write.
-        let tmp_path = cache_path.with_extension("tmp");
+        let tmp_path = cache_path.with_extension(format!("tmp.{}", std::process::id()));
         fs::write(&tmp_path, &data)?;
         fs::rename(&tmp_path, &cache_path)?;
 

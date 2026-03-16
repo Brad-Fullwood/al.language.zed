@@ -135,6 +135,8 @@ struct ZedDebugConfigJson {
     tenant: Option<String>,
     #[serde(default)]
     authentication: Option<String>,
+    #[serde(default)]
+    accept_invalid_certs: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +170,8 @@ struct VsCodeLaunchConfigJson {
     tenant: Option<String>,
     #[serde(default)]
     authentication: Option<String>,
+    #[serde(default)]
+    accept_invalid_certs: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +251,7 @@ fn convert_zed_config(raw: ZedDebugConfigJson) -> Option<BcServerConfig> {
         name: raw.label, environment_type: env_type, server: raw.server,
         server_instance: raw.server_instance, port: raw.port,
         environment_name: raw.environment_name, tenant: raw.tenant, authentication: auth,
+        accept_invalid_certs: raw.accept_invalid_certs,
     })
 }
 
@@ -257,6 +262,7 @@ fn convert_vscode_config(raw: VsCodeLaunchConfigJson) -> Option<BcServerConfig> 
         name: raw.name, environment_type: env_type, server: raw.server,
         server_instance: raw.server_instance, port: raw.port,
         environment_name: raw.environment_name, tenant: raw.tenant, authentication: auth,
+        accept_invalid_certs: raw.accept_invalid_certs,
     })
 }
 

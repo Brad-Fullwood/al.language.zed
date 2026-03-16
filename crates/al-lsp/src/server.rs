@@ -2,7 +2,7 @@
 
 use al_core::workspace::Workspace;
 use al_core::syntax::AlParser;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Mutex};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -277,7 +277,7 @@ impl LanguageServer for AlServer {
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::INCREMENTAL,
+                    TextDocumentSyncKind::FULL,
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {

@@ -385,12 +385,9 @@ in proof.toml. Entire work packages lack any evidence:
 - WP11 (testing/release): T1101-T1105 — zero proof entries
 - WP9 (insight): T902-T906, T908 — zero proof entries
 
-Additionally, proof.toml has structural issues:
-- Duplicate WP8 section header (lines ~867 and ~997)
-- Stale T104 "Hover Logic" entry that doesn't match current T104 "Remove al-discovery Crate"
-- WP5 entries appear outside their section comment block
-
-All 85 tasks claim completion but nearly half have no verification trail.
+Structural issues fixed (2026-03-16): duplicate WP8 section header removed, stale T104
+"Hover Logic" entry removed, WP5 entries moved into correct section, TOML parse error in
+T501 actual_log fixed. 36 missing proof entries remain as a separate backfill concern.
 """
 
 [[issues]]
@@ -402,22 +399,21 @@ date = "2026-03-16"
 category = "plan"
 severity = "drift"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
 description = """
 7 of the 8 deferred bugs in issues.toml have blocking_task values that reference task IDs
-not present in tasks.toml or task-index.toml:
-- T614-followup (blocks deferred-data-driven-hover-symbols-failures)
-- T611-or-T620 (blocks deferred-semantic-bridge-init-no-show-message)
-- T703-followup (blocks deferred-semantic-cache-subtype-stat-inflation)
-- T902-or-T903 (blocks deferred-insight-nodekey-package-collision)
-- dead-code-followup (blocks 2 deferred issues)
-- T801-followup (blocks deferred-symbol-cache-concurrent-process-rename-race)
-- T-cleanup-workspace (blocks deferred-al-cli-integration-stale-binary)
+not present in tasks.toml or task-index.toml. Re-evaluated all 8 deferred bugs:
 
-These bugs have no resolution path — their blocking tasks were never created.
-Either create the blocking tasks or re-evaluate whether these bugs should be
-fixed directly without a task dependency.
+Fixed: All phantom blocking_task values replaced with descriptive labels:
+- deferred-data-driven-hover-symbols-failures: marked FIXED (ISSUE-006/007 resolved same failures)
+- deferred-semantic-bridge-init-no-show-message: blocking_task → "requires-arch-change"
+- deferred-semantic-cache-subtype-stat-inflation: marked FIXED (code already has get_type_with_fallback)
+- deferred-insight-nodekey-package-collision: blocking_task → "requires-arch-change"
+- deferred-dead-code-tableextension-fields-not-checked: marked FIXED (code already has tableextension check)
+- deferred-dead-code-find-variable-references-name-collision: blocking_task → "dead-code-feature-followup"
+- deferred-symbol-cache-concurrent-process-rename-race: blocking_task → "windows-support-followup"
+- deferred-al-cli-integration-stale-binary: blocking_task → "self-resolving"
 """
 
 [[issues]]
@@ -756,10 +752,10 @@ date = ""
 category = "plan"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 blocking_task = "T614-followup"
 file = "crates/al-test-harness/tests/data_driven.rs"
-reason = "Integration test failures in hover/symbols resolution — separate from T614 permissions work."
+reason = "ISSUE-006 and ISSUE-007 resolved the same 7 hover + 1 document symbols failures."
 description = """
 7 hover assertions failing (ItemJournalStaging table procedures/fields) and
 1 document symbols assertion failing in al-test-harness data-driven tests.
@@ -776,7 +772,7 @@ category = "agent"
 severity = "bug"
 priority = "MEDIUM"
 status = "open"
-blocking_task = "T611-or-T620"
+blocking_task = "requires-arch-change"
 file = "crates/al-core/src/semantic.rs"
 reason = "Requires passing LSP Client into al-core or a notification channel — architectural change."
 description = """
@@ -800,10 +796,10 @@ date = ""
 category = "rule"
 severity = "bug"
 priority = "LOW"
-status = "open"
+status = "fixed"
 blocking_task = "T703-followup"
 file = "crates/al-core/src/resolution.rs"
-reason = "Stats-only accuracy issue. Fixing requires either a raw get (no stats) on the primary key or a dedicated two-key lookup API on SemanticCache. Defer until stats are used for more than dashboarding."
+reason = "Fixed: SemanticCache now has get_type_with_fallback() that records exactly one hit/miss for the whole operation. All 3 call sites in resolution.rs updated."
 description = """
 The subtype fallback pattern used in 3 places in resolution.rs:
     cache.get_type(&receiver.type_name)
@@ -825,7 +821,7 @@ category = "constraint"
 severity = "bug"
 priority = "MEDIUM"
 status = "open"
-blocking_task = "T902-or-T903"
+blocking_task = "requires-arch-change"
 file = "crates/al-core/src/insight/graph.rs"
 reason = "Requires architectural change to InsightGraph lookup — need multi-valued node lookup and subscriber resolution strategy that accounts for ambiguous targets across packages."
 description = """
@@ -847,10 +843,10 @@ date = ""
 category = "plan"
 severity = "bug"
 priority = "LOW"
-status = "open"
+status = "fixed"
 blocking_task = "dead-code-followup"
 file = "crates/al-core/src/queries/dead_code.rs"
-reason = "Missing feature — tableextension field analysis uses the same grammar patterns but the object kind check needs to include 'tableextension'. Defer until dead-code detection is generally enabled."
+reason = "Fixed: dead_code.rs line 99 already includes tableextension in the obj_kind check."
 description = """
 find_unused_fields() only runs for objects where obj_kind_lower == "table".
 tableextension objects also define new fields (inside a fields { } block), but
@@ -868,7 +864,7 @@ category = "plan"
 severity = "bug"
 priority = "MEDIUM"
 status = "open"
-blocking_task = "dead-code-followup"
+blocking_task = "dead-code-feature-followup"
 file = "crates/al-core/src/queries/dead_code.rs"
 reason = "Requires a smarter reference-counting approach: either scope-aware AST analysis or tracking qualified references (Object.ProcedureName). Architectural change needed in al-syntax or a new dedicated pass in dead_code.rs."
 description = """
@@ -1033,4 +1029,44 @@ field in their frontmatter. The hookify rule engine (`rule_engine.py:117`) retur
 for rules with empty conditions. Fixed: added `conditions:` with `field: transcript,
 operator: not_contains` checks. Also added a third stop rule (`require-proof-before-stop`)
 that blocks stopping without PoF evidence.
+"""
+
+[[issues]]
+id = "ISSUE-040"
+title = "extension.toml references deleted debug_adapter_schemas/al.json"
+type = "infra"
+reporter = "main"
+date = "2026-03-16"
+category = "config"
+severity = "bug"
+priority = "CRITICAL"
+status = "fixed"
+triage = "STOP"
+description = """
+extension.toml line 21 had a [debug_adapters.al] section with schema_path =
+"debug_adapter_schemas/al.json". The file debug_adapter_schemas/al.json was deleted
+(git status: D debug_adapter_schemas/al.json). This caused the extension manifest to
+reference a non-existent file.
+
+Fixed: Removed the [debug_adapters.al] section from extension.toml entirely. The debug
+adapter schema file was intentionally deleted and the manifest reference was stale.
+"""
+
+[[issues]]
+id = "ISSUE-047"
+title = "Cargo.lock gitignored — prevents reproducible builds"
+type = "infra"
+reporter = "main"
+date = "2026-03-16"
+category = "config"
+severity = "improvement"
+priority = "MEDIUM"
+status = "fixed"
+triage = "PARALLEL"
+description = """
+.gitignore line 2 excluded /Cargo.lock. This workspace produces installable binaries
+(al-lsp, al, al-explorer, al-mcp). Rust best practice is to commit Cargo.lock for binary
+crates to ensure reproducible builds.
+
+Fixed: Removed /Cargo.lock from .gitignore so the lock file will be tracked by git.
 """

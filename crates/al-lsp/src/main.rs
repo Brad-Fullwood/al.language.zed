@@ -67,12 +67,18 @@ fn spawn_signal_handlers() {
 async fn main() {
     let log_dir = log_dir();
 
-    // File logging layer — always DEBUG level for diagnostics
+    // File logging layer — INFO level by default to avoid logging sensitive data
+    let log_path = log_dir.join("al-lsp.log");
     let log_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_dir.join("al-lsp.log"))
+        .open(&log_path)
         .expect("failed to open log file");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600));
+    }
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::sync::Mutex::new(log_file))
@@ -88,7 +94,7 @@ async fn main() {
     let env_filter = tracing_subscriber::EnvFilter::from_default_env()
         .add_directive(tracing::Level::INFO.into());
 
-    let file_filter = tracing_subscriber::EnvFilter::new("debug");
+    let file_filter = tracing_subscriber::EnvFilter::new("info");
 
     let registry = tracing_subscriber::registry()
         .with(stderr_layer.with_filter(env_filter))

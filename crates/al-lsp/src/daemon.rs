@@ -37,6 +37,7 @@ impl Drop for SocketCleanup {
 }
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 
 /// FNV-1a 64-bit hash — stable across Rust compiler versions.
 /// Must match the implementation in al-cli/src/client.rs.
@@ -72,12 +73,25 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     // Ensure parent directory exists
     if let Some(parent) = sock_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
+        // If using the /tmp fallback (not XDG_RUNTIME_DIR), lock down dir permissions.
+        if std::env::var("XDG_RUNTIME_DIR").is_err() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
     }
 
     // Remove stale socket file if it exists
     let _ = tokio::fs::remove_file(&sock_path).await;
 
     let listener = UnixListener::bind(&sock_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o600))?;
+    }
     tracing::info!(path = %sock_path.display(), project = %project_root.display(), "daemon: listening");
 
     // Register global path for cleanup on exit/signals
