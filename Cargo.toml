@@ -33,3 +33,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 memmap2 = "0.9"
 petgraph = "0.7"
+futures = "0.3"

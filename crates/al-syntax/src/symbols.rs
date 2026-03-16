@@ -338,11 +338,19 @@ fn extract_event_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
 
 #[allow(deprecated)]
 fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    let keyword = node
-        .child_by_field_name("keyword")
-        .and_then(|n| n.utf8_text(source).ok())
+    let keyword_node = node.child_by_field_name("keyword")?;
+    let keyword = keyword_node
+        .utf8_text(source)
+        .ok()
         .unwrap_or("section")
         .to_string();
+
+    // The grammar parses enum `value(N; "Name") { }` as an object_section with
+    // keyword="value". Detect this and emit an ENUM_MEMBER symbol instead of a
+    // generic section symbol.
+    if keyword.eq_ignore_ascii_case("value") {
+        return extract_enum_value_from_section(node, source);
+    }
 
     let sym_kind = match keyword.to_lowercase().as_str() {
         "fields" => SymbolKind::STRUCT,
@@ -358,10 +366,7 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     };
 
     let range = ts_range_to_lsp(&node.range(), source);
-    let selection_range = node
-        .child_by_field_name("keyword")
-        .map(|n| ts_range_to_lsp(&n.range(), source))
-        .unwrap_or(range);
+    let selection_range = ts_range_to_lsp(&keyword_node.range(), source);
 
     // Extract children from section body
     let mut children = Vec::new();
@@ -382,6 +387,77 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         } else {
             Some(children)
         },
+    })
+}
+
+/// Extract an enum value symbol from an `object_section` node whose keyword is "value".
+///
+/// The grammar parses `value(N; "Name") { ... }` as:
+///   object_section
+///     keyword("value")
+///     parenthesized_block("(N; "Name")")
+///     braced_block("{ ... }")
+///
+/// The name is the last identifier/quoted_identifier in the parenthesized block.
+/// The ordinal is the integer before the semicolon.
+#[allow(deprecated)]
+fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
+    let range = ts_range_to_lsp(&node.range(), source);
+
+    // Walk the node's children to find the parenthesized_block
+    let mut paren_node = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parenthesized_block" {
+            paren_node = Some(child);
+            break;
+        }
+    }
+
+    let paren = paren_node?;
+
+    // Walk paren children: expect integer, semicolon, then name
+    let mut ordinal = String::new();
+    let mut name = String::new();
+    let mut name_node_range = paren.range();
+    let mut paren_cursor = paren.walk();
+    for child in paren.children(&mut paren_cursor) {
+        match child.kind() {
+            "integer" if ordinal.is_empty() => {
+                ordinal = child.utf8_text(source).unwrap_or("").to_string();
+            }
+            "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
+                if let Ok(text) = child.utf8_text(source) {
+                    let trimmed = text.trim_matches('"').trim().to_string();
+                    if !trimmed.is_empty() {
+                        name = trimmed;
+                        name_node_range = child.range();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if name.is_empty() {
+        return None;
+    }
+
+    let detail = if ordinal.is_empty() {
+        Some("value".to_string())
+    } else {
+        Some(format!("value({})", ordinal))
+    };
+
+    Some(DocumentSymbol {
+        name,
+        detail,
+        kind: SymbolKind::ENUM_MEMBER,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range: ts_range_to_lsp(&name_node_range, source),
+        children: None,
     })
 }
 
@@ -435,7 +511,14 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
                 }
             }
             "key_declaration" => {
-                if let Some(sym) = extract_key_symbol(child, source) {
+                // key_declaration covers both table keys (keyword="key") and
+                // report/query dataitems (keyword="dataitem"). Dataitems need
+                // their body braced_block scanned for raw trigger tokens.
+                if is_dataitem_key_declaration(child, source) {
+                    if let Some(sym) = extract_dataitem_symbol(child, source) {
+                        symbols.push(sym);
+                    }
+                } else if let Some(sym) = extract_key_symbol(child, source) {
                     symbols.push(sym);
                 }
             }
@@ -677,6 +760,107 @@ fn extract_key_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         range,
         selection_range,
         children: None,
+    })
+}
+
+/// Return true if this `key_declaration` node represents a report/query dataitem
+/// (i.e. its first keyword child has text "dataitem") rather than a table key.
+fn is_dataitem_key_declaration(node: Node, source: &[u8]) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if matches!(child.kind(), "keyword" | "metadata_keyword" | "control_keyword") {
+            return child
+                .utf8_text(source)
+                .map(|t| t.eq_ignore_ascii_case("dataitem"))
+                .unwrap_or(false);
+        }
+    }
+    false
+}
+
+/// Extract a report/query dataitem symbol from a `key_declaration` node whose keyword is
+/// "dataitem".
+///
+/// The grammar reuses `key_declaration` for dataitems:
+///   key_declaration
+///     keyword("dataitem")
+///     name_or_keyword("StagingRec")
+///     semicolon
+///     name_or_keyword("\"Item Journal Staging\"")
+///     braced_block { ... }
+///
+/// Unlike table keys, the body braced_block may contain raw trigger tokens
+/// (`control_keyword("trigger") identifier("OnPreDataItem") ...`) that are not
+/// parsed as `trigger_declaration` nodes.
+#[allow(deprecated)]
+fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
+    // The dataitem name is the first name_or_keyword / identifier / quoted_identifier
+    // child (before the semicolon).
+    let mut name = "(unnamed)".to_string();
+    let mut name_node_range = node.range();
+    let mut seen_semicolon = false;
+    {
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            match child.kind() {
+                "keyword" | "metadata_keyword" | "control_keyword" => {
+                    // skip the "dataitem" keyword itself
+                }
+                "semicolon" => {
+                    seen_semicolon = true;
+                }
+                "(" | ")" => {}
+                _ if !seen_semicolon => {
+                    // First non-keyword token before the semicolon is the name.
+                    // Use index-based child access to avoid iterator borrow issues.
+                    let raw = child.utf8_text(source).unwrap_or("");
+                    let mut resolved = raw.to_string();
+                    for ci in 0..child.child_count() {
+                        if let Some(inner) = child.child(ci) {
+                            if matches!(inner.kind(), "identifier" | "quoted_identifier" | "name") {
+                                if let Ok(t) = inner.utf8_text(source) {
+                                    resolved = t.to_string();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let trimmed = resolved.trim_matches('"').trim().to_string();
+                    if !trimmed.is_empty() {
+                        name = trimmed;
+                        name_node_range = child.range();
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let range = ts_range_to_lsp(&node.range(), source);
+    let selection_range = ts_range_to_lsp(&name_node_range, source);
+
+    // Scan the body braced_block for raw trigger tokens
+    let mut children: Vec<DocumentSymbol> = Vec::new();
+    {
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            if child.kind() == "braced_block" {
+                extract_triggers_from_braced_block(child, source, &mut children);
+                break;
+            }
+        }
+    }
+
+    Some(DocumentSymbol {
+        name,
+        detail: Some("dataitem".to_string()),
+        kind: SymbolKind::STRUCT,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children: if children.is_empty() { None } else { Some(children) },
     })
 }
 

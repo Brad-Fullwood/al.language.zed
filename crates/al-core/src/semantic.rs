@@ -231,6 +231,9 @@ pub async fn get_or_init_bridge(
         }
         Err(e) => {
             tracing::warn!(error = %e, "Failed to initialize semantic bridge");
+            if let Some(sink) = workspace.notify_sink.get() {
+                sink(&format!("AL semantic bridge failed to initialize: {e}"));
+            }
             None
         }
     }

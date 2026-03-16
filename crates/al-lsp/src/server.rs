@@ -91,9 +91,22 @@ pub struct AlServer {
 
 impl AlServer {
     pub(crate) fn new(client: Client) -> Self {
+        let workspace = Arc::new(Workspace::new());
+
+        // Register a notify sink so al-core can surface bridge failures to the user.
+        // The closure spawns a task to fire-and-forget the async show_message call.
+        let sink_client = client.clone();
+        let _ = workspace.notify_sink.set(std::sync::Arc::new(move |msg: &str| {
+            let c = sink_client.clone();
+            let m = msg.to_owned();
+            tokio::spawn(async move {
+                c.show_message(tower_lsp::lsp_types::MessageType::WARNING, m).await;
+            });
+        }));
+
         Self {
             client,
-            workspace: Arc::new(Workspace::new()),
+            workspace,
             root_uri: RwLock::new(None),
             diag_task: Mutex::new(None),
             init_task: Mutex::new(None),

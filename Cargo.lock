@@ -142,6 +142,7 @@ version = "0.1.0"
 dependencies = [
  "dashmap 6.1.0",
  "dirs",
+ "futures",
  "memmap2",
  "quick-xml",
  "reqwest",

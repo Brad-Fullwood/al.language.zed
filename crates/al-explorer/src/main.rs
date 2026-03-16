@@ -19,185 +19,7 @@ use std::{
     sync::Arc,
 };
 
-// ---------------------------------------------------------------------------
-// Daemon client (inline — mirrors al-cli/src/client.rs, no al-* dep)
-// ---------------------------------------------------------------------------
-
-mod daemon {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-    use std::path::{Path, PathBuf};
-    use std::time::Duration;
-
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct Request {
-        pub id: u64,
-        pub method: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
-        pub params: Option<serde_json::Value>,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct Response {
-        pub id: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
-        pub result: Option<serde_json::Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
-        pub error: Option<RpcError>,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct RpcError {
-        pub code: i32,
-        pub message: String,
-    }
-
-    pub struct DaemonClient {
-        reader: BufReader<UnixStream>,
-        writer: UnixStream,
-        next_id: u64,
-    }
-
-    impl DaemonClient {
-        pub fn connect(project_root: &Path) -> Result<Self, String> {
-            let sock_path = socket_path(project_root);
-            if let Ok(stream) = UnixStream::connect(&sock_path) {
-                return Self::from_stream(stream);
-            }
-            Self::start_daemon(project_root)?;
-            Self::wait_for_daemon(&sock_path)?;
-            let stream = UnixStream::connect(&sock_path)
-                .map_err(|e| format!("Failed to connect after starting daemon: {e}"))?;
-            Self::from_stream(stream)
-        }
-
-        fn from_stream(stream: UnixStream) -> Result<Self, String> {
-            stream
-                .set_read_timeout(Some(Duration::from_secs(30)))
-                .map_err(|e| format!("Failed to set timeout: {e}"))?;
-            let writer = stream
-                .try_clone()
-                .map_err(|e| format!("Failed to clone stream: {e}"))?;
-            Ok(Self {
-                reader: BufReader::new(stream),
-                writer,
-                next_id: 1,
-            })
-        }
-
-        fn start_daemon(project_root: &Path) -> Result<(), String> {
-            let al_lsp = find_al_lsp_binary()?;
-            let _child = std::process::Command::new(&al_lsp)
-                .arg("daemon")
-                .arg("--project")
-                .arg(project_root)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .map_err(|e| format!("Failed to start al-lsp daemon: {e}"))?;
-            Ok(())
-        }
-
-        fn wait_for_daemon(sock_path: &Path) -> Result<(), String> {
-            for _ in 0..50 {
-                std::thread::sleep(Duration::from_millis(100));
-                if UnixStream::connect(sock_path).is_ok() {
-                    return Ok(());
-                }
-            }
-            Err("Daemon did not start within 5 seconds".to_string())
-        }
-
-        pub fn request(
-            &mut self,
-            method: &str,
-            params: Option<serde_json::Value>,
-        ) -> Result<serde_json::Value, String> {
-            self.send_request(method, &params)?;
-            const MAX_RETRIES: u32 = 3;
-            for retry in 0..=MAX_RETRIES {
-                let response = self.read_response()?;
-                if let Some(ref err) = response.error {
-                    if err.message.contains("initializing") && retry < MAX_RETRIES {
-                        std::thread::sleep(Duration::from_millis(500));
-                        self.send_request(method, &params)?;
-                        continue;
-                    }
-                    return Err(format!("{} (code {})", err.message, err.code));
-                }
-                return Ok(response.result.unwrap_or(serde_json::Value::Null));
-            }
-            Err("Workspace is initializing, try again".to_string())
-        }
-
-        fn send_request(&mut self, method: &str, params: &Option<serde_json::Value>) -> Result<(), String> {
-            let id = self.next_id;
-            self.next_id += 1;
-            let req = Request { id, method: method.to_string(), params: params.clone() };
-            let mut json = serde_json::to_string(&req)
-                .map_err(|e| format!("Failed to serialize request: {e}"))?;
-            json.push('\n');
-            self.writer.write_all(json.as_bytes())
-                .map_err(|e| format!("Failed to send request: {e}"))?;
-            self.writer.flush()
-                .map_err(|e| format!("Failed to flush: {e}"))?;
-            Ok(())
-        }
-
-        fn read_response(&mut self) -> Result<Response, String> {
-            let mut line = String::new();
-            let bytes = self.reader.read_line(&mut line)
-                .map_err(|e| format!("Failed to read response: {e}"))?;
-            if bytes == 0 {
-                return Err("Connection closed by daemon (EOF)".to_string());
-            }
-            serde_json::from_str(line.trim())
-                .map_err(|e| format!("Failed to parse response: {e}"))
-        }
-    }
-
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        const OFFSET: u64 = 0xcbf29ce484222325;
-        const PRIME: u64 = 0x00000100000001b3;
-        let mut hash = OFFSET;
-        for &b in bytes {
-            hash ^= b as u64;
-            hash = hash.wrapping_mul(PRIME);
-        }
-        hash
-    }
-
-    pub fn socket_path(project_root: &Path) -> PathBuf {
-        let canonical = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
-        let hash = format!("{:016x}", fnv1a64(canonical.as_os_str().as_encoded_bytes()));
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(format!("{runtime_dir}/al-lsp/{hash}.sock"))
-    }
-
-    fn find_al_lsp_binary() -> Result<PathBuf, String> {
-        if let Ok(exe) = std::env::current_exe()
-            && let Some(dir) = exe.parent() {
-                let candidate = dir.join("al-lsp");
-                if candidate.exists() {
-                    return Ok(candidate);
-                }
-            }
-        if let Ok(output) = std::process::Command::new("which").arg("al-lsp").output()
-            && output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return Ok(PathBuf::from(path));
-                }
-            }
-        Err("Cannot find al-lsp binary. Install it or add it to PATH.".to_string())
-    }
-}
+mod client;
 
 // ---------------------------------------------------------------------------
 // View mode
@@ -274,7 +96,7 @@ struct EventChainView {
     /// Status/error message shown below the list.
     status: String,
     /// Daemon client (None if not connected).
-    client: Option<daemon::DaemonClient>,
+    client: Option<client::DaemonClient>,
     project_root: std::path::PathBuf,
 }
 
@@ -293,7 +115,7 @@ impl EventChainView {
 
     fn ensure_client(&mut self) {
         if self.client.is_none() {
-            match daemon::DaemonClient::connect(&self.project_root) {
+            match client::DaemonClient::connect(&self.project_root) {
                 Ok(c) => self.client = Some(c),
                 Err(e) => self.status = format!("Cannot connect to daemon: {e}"),
             }
@@ -383,7 +205,7 @@ struct CallGraphView {
     rows: Vec<CallRow>,
     list_state: ListState,
     status: String,
-    client: Option<daemon::DaemonClient>,
+    client: Option<client::DaemonClient>,
     project_root: std::path::PathBuf,
 }
 
@@ -402,7 +224,7 @@ impl CallGraphView {
 
     fn ensure_client(&mut self) {
         if self.client.is_none() {
-            match daemon::DaemonClient::connect(&self.project_root) {
+            match client::DaemonClient::connect(&self.project_root) {
                 Ok(c) => self.client = Some(c),
                 Err(e) => self.status = format!("Cannot connect to daemon: {e}"),
             }
@@ -541,7 +363,7 @@ impl App {
 
     fn init_workspace(&mut self) -> Result<(), Box<dyn Error>> {
         let root = std::env::current_dir()?;
-        let mut client = daemon::DaemonClient::connect(&root)
+        let mut client = client::DaemonClient::connect(&root)
             .map_err(|e| format!("Cannot connect to al-lsp daemon: {e}"))?;
 
         // Load all symbols from the daemon's search endpoint (empty query = all)
@@ -728,7 +550,7 @@ impl App {
             && let Some(entry) = self.current_objects.get(selected) {
             // Ask the daemon for the virtual file path for this object.
             let root = std::env::current_dir().unwrap_or_default();
-            if let Ok(mut client) = daemon::DaemonClient::connect(&root) {
+            if let Ok(mut client) = client::DaemonClient::connect(&root) {
                 let vf_result = client.request("virtualFile", Some(serde_json::json!({
                     "kind": format!("{:?}", entry.kind),
                     "id": entry.id,

@@ -100,66 +100,69 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
         HashMap::new();
 
     // Collect all Event nodes.
-    for (key, &idx) in &graph.index {
+    for (key, indices) in &graph.index {
         if matches!(key, NodeKey::Event(..)) {
-            event_subscribers.entry(idx).or_default();
+            for &idx in indices {
+                event_subscribers.entry(idx).or_default();
+            }
         }
     }
 
     // Collect all Subscriber nodes and check whether they are connected.
     let mut orphans: Vec<OrphanSubscriber> = Vec::new();
 
-    for (key, &sub_idx) in &graph.index {
+    for (key, indices) in &graph.index {
         if !matches!(key, NodeKey::Subscriber(..)) {
             continue;
         }
+        for &sub_idx in indices {
+            let sub_node = &graph.graph[sub_idx];
+            let (obj_kind, obj_name, method_name, target_object, target_event) = match sub_node {
+                InsightNode::Subscriber {
+                    object_kind,
+                    object_name,
+                    name,
+                    target_object,
+                    target_event,
+                } => (
+                    object_kind.to_string(),
+                    object_name.clone(),
+                    name.clone(),
+                    target_object.clone(),
+                    target_event.clone(),
+                ),
+                _ => continue,
+            };
 
-        let sub_node = &graph.graph[sub_idx];
-        let (obj_kind, obj_name, method_name, target_object, target_event) = match sub_node {
-            InsightNode::Subscriber {
-                object_kind,
-                object_name,
-                name,
-                target_object,
-                target_event,
-            } => (
-                object_kind.to_string(),
-                object_name.clone(),
-                name.clone(),
-                target_object.clone(),
-                target_event.clone(),
-            ),
-            _ => continue,
-        };
+            // Find outgoing SubscribesTo edges from this subscriber.
+            let subscribed_events: Vec<_> = graph
+                .graph
+                .edges_directed(sub_idx, Direction::Outgoing)
+                .filter(|e| *e.weight() == InsightEdge::SubscribesTo)
+                .map(|e| e.target())
+                .collect();
 
-        // Find outgoing SubscribesTo edges from this subscriber.
-        let subscribed_events: Vec<_> = graph
-            .graph
-            .edges_directed(sub_idx, Direction::Outgoing)
-            .filter(|e| *e.weight() == InsightEdge::SubscribesTo)
-            .map(|e| e.target())
-            .collect();
-
-        if subscribed_events.is_empty() {
-            // Orphan: no matching event found in the graph.
-            orphans.push(OrphanSubscriber {
-                object_kind: obj_kind,
-                object_name: obj_name,
-                method_name,
-                target_object,
-                target_event,
-            });
-        } else {
-            // Register this subscriber against each event it subscribes to.
-            for event_idx in subscribed_events {
-                event_subscribers
-                    .entry(event_idx)
-                    .or_default()
-                    .push(SubscriberInfo {
-                        object_kind: obj_kind.clone(),
-                        object_name: obj_name.clone(),
-                        method_name: method_name.clone(),
-                    });
+            if subscribed_events.is_empty() {
+                // Orphan: no matching event found in the graph.
+                orphans.push(OrphanSubscriber {
+                    object_kind: obj_kind,
+                    object_name: obj_name,
+                    method_name,
+                    target_object,
+                    target_event,
+                });
+            } else {
+                // Register this subscriber against each event it subscribes to.
+                for event_idx in subscribed_events {
+                    event_subscribers
+                        .entry(event_idx)
+                        .or_default()
+                        .push(SubscriberInfo {
+                            object_kind: obj_kind.clone(),
+                            object_name: obj_name.clone(),
+                            method_name: method_name.clone(),
+                        });
+                }
             }
         }
     }

@@ -100,6 +100,12 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
 
     // Initialize workspace
     let workspace = Arc::new(Workspace::new());
+
+    // Register a logging notify sink — daemon has no LSP client, so warnings go to logs.
+    let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
+        tracing::warn!("daemon: {msg}");
+    }));
+
     initialize_daemon_workspace(&workspace, &project_root).await;
 
     let last_activity = Arc::new(Mutex::new(Instant::now()));
@@ -171,6 +177,10 @@ async fn handle_connection(
     let mut lines = BufReader::new(reader).lines();
 
     while let Some(line) = lines.next_line().await? {
+        if line.len() > MAX_MESSAGE_SIZE {
+            tracing::warn!(len = line.len(), "daemon: message exceeds size limit, dropping connection");
+            break;
+        }
         let line = line.trim().to_string();
         if line.is_empty() {
             continue;
@@ -475,6 +485,7 @@ fn dispatch_search(workspace: &Workspace, id: u64, params: &serde_json::Value) -
         return invalid_params(id);
     };
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let limit = limit.min(1000);
     let results = workspace.symbols.search(query, limit);
     let value: Vec<serde_json::Value> = results
         .iter()
@@ -1511,7 +1522,11 @@ fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json
                     al_core::launch::AuthMethod::UserPassword => al_core::symbols::bc_server::AuthMethod::UserPassword,
                     al_core::launch::AuthMethod::AAD => al_core::symbols::bc_server::AuthMethod::AAD,
                 };
-                let client = al_core::symbols::bc_server::BcServerClient::new_cli(auth, cfg.tenant.clone());
+                let client = al_core::symbols::bc_server::BcServerClient::new(
+                    auth, cfg.tenant.clone(),
+                    std::sync::Arc::new(|msg| eprintln!("{msg}")),
+                    cfg.accept_invalid_certs,
+                );
                 let url_deps: Vec<(String, al_core::symbols::AppDependency)> = all_deps
                     .iter()
                     .filter_map(|dep| {
@@ -2080,12 +2095,17 @@ async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Response {
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let accept_invalid_certs = params
+        .get("acceptInvalidCerts")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let config = al_core::snapshot::SnapshotConfig {
         server_url,
         company,
         output_dir,
         username,
         password,
+        accept_invalid_certs,
     };
 
     match cmd {
@@ -2235,12 +2255,17 @@ async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> Response {
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let accept_invalid_certs = params
+        .get("acceptInvalidCerts")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let config = al_core::profiling::ProfilingConfig {
         server_url,
         company,
         output_dir,
         username,
         password,
+        accept_invalid_certs,
     };
 
     match cmd {

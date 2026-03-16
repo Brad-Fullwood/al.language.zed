@@ -1144,10 +1144,20 @@ date = ""
 category = "agent"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 blocking_task = "requires-arch-change"
 file = "crates/al-core/src/semantic.rs"
 reason = "Requires passing LSP Client into al-core or a notification channel — architectural change."
+resolution = """
+Added NotifySink (Arc<dyn Fn(&str) + Send + Sync>) to Workspace, mirroring the
+MessageSink pattern from al-symbols/src/bc_server.rs. No tower-lsp types in al-core.
+
+Changes:
+- crates/al-core/src/workspace.rs: added NotifySink type alias and notify_sink: OnceLock<NotifySink> field
+- crates/al-core/src/semantic.rs: get_or_init_bridge() calls notify_sink.get() on bridge init failure
+- crates/al-lsp/src/server.rs: AlServer::new() registers a sink that spawns a tokio task calling client.show_message(WARNING, ...)
+- crates/al-lsp/src/daemon.rs: run_daemon() registers a logging sink (tracing::warn!) — no LSP client in daemon path
+"""
 description = """
 get_or_init_bridge() logs warn! on bridge init failure (line 58) but does not call
 show_message to notify the user. The bridge init failure is surfaced indirectly via
@@ -1193,10 +1203,24 @@ date = ""
 category = "constraint"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 blocking_task = "requires-arch-change"
 file = "crates/al-core/src/insight/graph.rs"
 reason = "Requires architectural change to InsightGraph lookup — need multi-valued node lookup and subscriber resolution strategy that accounts for ambiguous targets across packages."
+resolution = """
+Changed InsightGraph.index from HashMap<NodeKey, NodeIndex> to HashMap<NodeKey, Vec<NodeIndex>>.
+Updated ensure_node() to append new nodes when the key already exists (cross-package isolation).
+Added get_nodes() returning &[NodeIndex] for multi-match lookups.
+Updated resolve_relationships() subscriber loop to use get_nodes() and connect to ALL matching
+event nodes across packages, breaking after the first kind that has matches.
+Updated all three index iteration loops in search.rs (trace_event, trace_from_node,
+trace_event_chain) to iterate Vec<NodeIndex> per key.
+Updated two loops in discovery.rs (discover_events) similarly.
+Also fixed two pre-existing al-syntax compilation errors blocking workspace build:
+E0597 in navigation.rs (cursor lifetime) and missing extract_dataitem_symbol /
+is_dataitem_key_declaration in symbols.rs.
+All 235 al-core tests and full workspace tests pass.
+"""
 description = """
 NodeKey::Object/Procedure/Event/Subscriber use (kind, name) without package.
 Two different packages that both define e.g. Codeunit 'Sales-Post' with the same
@@ -1236,10 +1260,26 @@ date = ""
 category = "plan"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 blocking_task = "dead-code-feature-followup"
 file = "crates/al-core/src/queries/dead_code.rs"
 reason = "Requires a smarter reference-counting approach: either scope-aware AST analysis or tracking qualified references (Object.ProcedureName). Architectural change needed in al-syntax or a new dedicated pass in dead_code.rs."
+resolution = """
+Added pub fn find_call_references(tree, text, name) -> usize to al-syntax/src/navigation.rs.
+The function walks the tree and counts only identifier nodes that appear in actual call
+contexts (bare calls via call_suffix sibling, member calls via member_call_suffix field,
+scope calls via scope_call_suffix field). Field accesses (Rec.Name via member_suffix) are
+explicitly excluded. The procedure declaration itself is also excluded.
+
+Updated find_unused_procedures() in dead_code.rs to use find_call_references() instead of
+find_variable_references(). This eliminates false negatives for procedures with common names
+like 'Name', 'Init', 'Code', 'Post' that also appear as record field access tokens.
+
+Added 7 unit tests in navigation.rs and 1 regression test in dead_code.rs confirming that
+Rec.Name field accesses no longer suppress detection of an unused procedure named 'Name'.
+Also fixed two pre-existing compile errors in symbols.rs (duplicate extract_dataitem_symbol
+and missing is_dataitem_key_declaration) uncovered while getting the crate to compile.
+"""
 description = """
 find_variable_references() matches identifier/quoted_identifier/name nodes case-insensitively.
 For procedure detection, a procedure named 'Name' could match ANY 'Name' token in the file
@@ -1263,10 +1303,11 @@ date = ""
 category = "constraint"
 severity = "bug"
 priority = "LOW"
-status = "open"
+status = "fixed"
 blocking_task = "T801-followup"
 file = "crates/al-symbols/src/cache.rs"
 reason = "Benign on Linux due to atomic rename and identical content. Fixing the Windows case and tmp cleanup requires either a per-process unique tmp filename (e.g. using PID or random suffix) or a file lock. Defer until Windows support is needed."
+resolution = "Added cleanup_stale_tmp() to SymbolCache in cache.rs. The method reads the cache directory, finds files matching *.tmp.* that are older than 60 seconds, and removes them. It is called at the top of save() after create_dir_all(). Errors are silently ignored (best-effort cleanup). The per-PID .tmp suffix was already in place; this fix handles the orphan cleanup case."
 description = """
 The atomic write (write to .tmp then rename) prevents partial writes within one process,
 but does not handle the case of two daemon processes starting simultaneously with the same
@@ -1300,6 +1341,56 @@ This binary runs al-cli integration tests with an invalid CARGO_BIN_EXE_al path,
 causing 7 tests to fail (cli_parse_*, cli_fix_*). The tests pass when run via
 `cargo test -p al-cli`. The stale binary will be evicted when the shared target
 directory is cleaned or the hash changes after source edits to al-cli.
+"""
+
+[[issues]]
+id = "ISSUE-064"
+title = "Two al-syntax unit tests fail: test_extract_symbols_enum and test_extract_symbols_report_dataitem_trigger"
+type = "architecture"
+reporter = "user"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+Root causes (found by inspecting the tree-sitter AST):
+
+1. Enum values: The grammar parses `value(0; "First") { }` as `object_section` with
+   keyword="value", not as `enum_value_declaration`. `extract_section_symbol()` had no case
+   for "value" and fell through to SymbolKind::NAMESPACE. Fixed by detecting keyword=="value"
+   in `extract_section_symbol()` and delegating to a new `extract_enum_value_from_section()`
+   helper that reads the name from the parenthesized block and returns SymbolKind::ENUM_MEMBER.
+
+2. Report dataitem triggers: The grammar parses `dataitem(StagingRec; ...)` as a
+   `key_declaration` node (not a page-control metadata_keyword). Inside that node's
+   braced_block, `trigger OnPreDataItem()` is raw tokens (control_keyword + identifier),
+   not a `trigger_declaration`. The existing `extract_triggers_from_braced_block()` helper
+   already scanned for that pattern but was only called from `try_extract_page_control()`.
+   Fixed by:
+   - Adding `is_dataitem_key_declaration()` to detect key_declaration nodes with keyword="dataitem"
+   - Adding `extract_dataitem_symbol()` that extracts the alias name and scans the body
+     braced_block for raw trigger tokens via `extract_triggers_from_braced_block()`
+   - Routing `key_declaration` nodes in `extract_section_body_children()` through
+     `extract_dataitem_symbol()` when the keyword is "dataitem"
+
+All 118 unit tests and 36 integration tests in al-syntax pass. Full workspace test suite passes.
+"""
+description = """
+Two unit tests in crates/al-syntax/src/symbols.rs fail:
+
+1. test_extract_symbols_enum: asserts SymbolKind::EnumMember but gets SymbolKind::Namespace.
+   The extract_document_symbols() function classifies enum value children incorrectly.
+
+2. test_extract_symbols_report_dataitem_trigger: expects OnPreDataItem trigger to appear in
+   document symbols but it's missing from the output. Got: ["IJL Process Staging", "dataset",
+   "StagingRec", "OnPostReport", "SetAction"]. The report dataitem trigger extraction logic
+   is not finding trigger_declaration nodes inside dataitem blocks.
+
+Both failures are pre-existing (present before any issue-fixer changes). Likely caused by
+recent changes to extract_document_symbols() that altered how enum members and report
+dataitem triggers are classified/discovered.
 """
 
 # ─── FIXED ISSUES ────────────────────────────────────────────────────────────
