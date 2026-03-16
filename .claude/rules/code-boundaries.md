@@ -5,7 +5,8 @@
 2. **Server** (al-lsp): Sole binary. LSP (stdio) + daemon (Unix socket). Routes to al-core.
 3. **Core** (al-core): All state, queries, orchestration. Only al-lsp imports it.
 4. **Analysis libs** (al-syntax, al-symbols, al-semantic, al-dap-client): Specialized, standalone. No upward dependencies. No protocol awareness.
-5. **Protocol** (al-protocol): JSON-RPC types ONLY. No domain types, no logic. Shared by al-lsp, al-core, and thin adapters.
+5. **Daemon client** (al-daemon-client): Shared IPC for thin adapters. Socket path, JSON-RPC types, DaemonClient. No domain types.
+6. **Protocol** (al-protocol): JSON-RPC types ONLY. No domain types, no logic. Shared by al-lsp, al-core, and thin adapters.
 
 ## Dependency Direction
 
@@ -33,6 +34,7 @@ Analysis libs MUST NOT depend on al-protocol. Domain types (AlToolchain, AppDepe
 | al-semantic | netcorehost, tokio | al-core, al-lsp, al-syntax, al-symbols |
 | al-dap-client | tokio, serde | al-core, al-lsp, al-syntax, al-symbols, al-semantic |
 | al-mcp | (none — shells out to `al` binary) | al-core, al-syntax, al-symbols, al-semantic |
+| al-daemon-client | serde, serde_json | al-core, al-syntax, al-symbols, al-semantic, al-lsp |
 | zed-al | zed_extension_api | al-core, al-syntax, al-symbols, al-semantic |
 
 ## Adapter Patterns

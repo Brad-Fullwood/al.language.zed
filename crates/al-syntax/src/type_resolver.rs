@@ -25,7 +25,7 @@ pub struct VariableDecl {
 }
 
 /// The scope in which a variable was declared.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VariableScope {
     /// Local variable in a procedure/trigger var section.
     Local,
@@ -268,7 +268,7 @@ impl<'a> TypeResolver<'a> {
         let mut cursor = section.walk();
         for child in section.children(&mut cursor) {
             if child.kind() == "variable_declaration" {
-                if let Some(decl) = self.parse_regular_var_decl_from_container(child, scope.clone())
+                if let Some(decl) = self.parse_regular_var_decl_from_container(child, scope)
                 {
                     result.push(decl);
                 }

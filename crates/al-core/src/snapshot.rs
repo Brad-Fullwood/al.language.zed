@@ -63,26 +63,12 @@ pub enum SnapshotError {
 }
 
 /// Build a [`reqwest::Client`] configured from the snapshot config.
-///
-/// Authentication is applied per-request via `apply_auth()`.
 fn make_client(config: &SnapshotConfig) -> Result<reqwest::Client, SnapshotError> {
     let builder = reqwest::Client::builder()
         .danger_accept_invalid_certs(config.accept_invalid_certs)
         .timeout(std::time::Duration::from_secs(120));
 
     Ok(builder.build()?)
-}
-
-/// Apply authentication headers to a [`reqwest::RequestBuilder`].
-fn apply_auth(
-    req: reqwest::RequestBuilder,
-    config: &SnapshotConfig,
-) -> reqwest::RequestBuilder {
-    if let (Some(user), Some(pass)) = (&config.username, &config.password) {
-        req.basic_auth(user, Some(pass))
-    } else {
-        req
-    }
 }
 
 /// Initiate a snapshot debugging session on the BC server.
@@ -106,7 +92,7 @@ pub async fn start_snapshot(
 
     debug!(url = %url, "snapshot: starting snapshot session");
 
-    let req = apply_auth(client.post(&url).json(&body), config);
+    let req = crate::http_auth::apply_basic_auth(client.post(&url).json(&body), &config.username, &config.password);
     let resp = req.send().await?;
     let status = resp.status();
 
@@ -143,7 +129,7 @@ pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>
 
     debug!(url = %url, "snapshot: listing snapshots");
 
-    let req = apply_auth(client.get(&url), config);
+    let req = crate::http_auth::apply_basic_auth(client.get(&url), &config.username, &config.password);
     let resp = req.send().await?;
     let status = resp.status();
 
@@ -217,7 +203,7 @@ pub async fn download_snapshot(
 
     debug!(url = %url, id = snapshot_id, "snapshot: downloading");
 
-    let req = apply_auth(client.get(&url), config);
+    let req = crate::http_auth::apply_basic_auth(client.get(&url), &config.username, &config.password);
     let resp = req.send().await?;
     let status = resp.status();
 

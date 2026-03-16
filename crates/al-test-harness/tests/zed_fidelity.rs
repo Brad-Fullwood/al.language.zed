@@ -19,13 +19,7 @@ use al_test_harness::*;
 use std::path::PathBuf;
 
 fn test_project_dir() -> PathBuf {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("test_al_project")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
 }
 
 // ---------------------------------------------------------------------------

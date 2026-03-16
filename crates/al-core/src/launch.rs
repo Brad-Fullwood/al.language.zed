@@ -11,6 +11,16 @@ use tracing::{debug, warn};
 
 use crate::project::AppDependency;
 
+/// BC environment type.
+///
+/// Re-exported from al-dap-client to avoid duplication.
+pub use al_dap_client::config::EnvironmentType;
+
+/// Authentication method for BC connections.
+///
+/// Re-exported from al-dap-client to avoid duplication.
+pub use al_dap_client::config::AuthMethod;
+
 /// A parsed debug configuration file.
 #[derive(Debug, Clone)]
 pub struct DebugConfigFile {
@@ -40,21 +50,7 @@ pub struct BcServerConfig {
     pub accept_invalid_certs: bool,
 }
 
-/// BC environment type.
-#[derive(Debug, Clone, PartialEq)]
-pub enum EnvironmentType {
-    OnPrem,
-    Sandbox,
-    Production,
-}
-
-/// Authentication method for BC connections.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AuthMethod {
-    Windows,
-    UserPassword,
-    AAD,
-}
+// EnvironmentType and AuthMethod are re-exported from al-dap-client::config (see above).
 
 impl BcServerConfig {
     /// Construct the `/dev/packages` URL for downloading a single dependency.

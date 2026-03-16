@@ -264,14 +264,11 @@ async fn download_symbols_from_server(
     };
     let insecure_tls = config.accept_invalid_certs;
     let client = al_core::symbols::bc_server::BcServerClient::new(auth, config.tenant.clone(), message_sink, insecure_tls);
+    // al_core::project::AppDependency is re-exported from al-symbols — clone directly.
     let url_deps: Vec<(String, al_core::symbols::AppDependency)> = deps
         .iter()
         .filter_map(|dep| {
-            let sym_dep = al_core::symbols::AppDependency {
-                id: dep.id.clone(), name: dep.name.clone(),
-                publisher: dep.publisher.clone(), version: dep.version.clone(),
-            };
-            config.dev_packages_url(dep).map(|url| (url, sym_dep))
+            config.dev_packages_url(dep).map(|url| (url, dep.clone()))
         })
         .collect();
     let results = client.download_all(&url_deps, &dest).await;
@@ -313,17 +310,7 @@ async fn download_packages_nuget(
         "Downloading symbol packages from NuGet"
     );
 
-    // Convert al_core types to al_core::symbols::nuget types
-    let nuget_deps: Vec<al_core::symbols::nuget::AppDependency> = deps
-        .iter()
-        .map(|d| al_core::symbols::nuget::AppDependency {
-            id: d.id.clone(),
-            name: d.name.clone(),
-            publisher: d.publisher.clone(),
-            version: d.version.clone(),
-        })
-        .collect();
-
+    // al_core::project::AppDependency is re-exported from al-symbols — pass directly.
     let feeds: Vec<al_core::symbols::nuget::NuGetFeed> = al_core::project::nuget_feeds()
         .iter()
         .map(|f| al_core::symbols::nuget::NuGetFeed {
@@ -332,7 +319,7 @@ async fn download_packages_nuget(
         .collect();
 
     let client = al_core::symbols::nuget::NuGetClient::new(feeds);
-    let results = client.download_all(&nuget_deps, dest).await;
+    let results = client.download_all(deps, dest).await;
 
     let mut downloaded = Vec::new();
     for (i, result) in results.into_iter().enumerate() {
@@ -445,45 +432,10 @@ pub(crate) fn handle_workspace_symbol(
 ) -> Option<Vec<SymbolInformation>> {
     let mut results = Vec::new();
 
-    // Search symbol index
-    let entries = if query.is_empty() {
-        server.workspace.symbols.search("", 50)
-    } else {
-        server.workspace.symbols.search(query, 50)
-    };
-
-    #[allow(deprecated)]
-    for entry in &entries {
-        let kind = match entry.kind {
-            al_core::symbols::ObjectKind::Table | al_core::symbols::ObjectKind::TableExtension => {
-                SymbolKind::STRUCT
-            }
-            al_core::symbols::ObjectKind::Page | al_core::symbols::ObjectKind::PageExtension => {
-                SymbolKind::CLASS
-            }
-            al_core::symbols::ObjectKind::Codeunit => SymbolKind::MODULE,
-            al_core::symbols::ObjectKind::Report | al_core::symbols::ObjectKind::ReportExtension => {
-                SymbolKind::FILE
-            }
-            al_core::symbols::ObjectKind::Enum | al_core::symbols::ObjectKind::EnumExtension => {
-                SymbolKind::ENUM
-            }
-            al_core::symbols::ObjectKind::Interface => SymbolKind::INTERFACE,
-            _ => SymbolKind::OBJECT,
-        };
-
-        results.push(SymbolInformation {
-            name: entry.name.clone(),
-            kind,
-            tags: None,
-            deprecated: None,
-            location: Location {
-                uri: Url::parse("file:///unknown").unwrap(),
-                range: Range::default(),
-            },
-            container_name: Some(format!("{} ({} {})", entry.package, entry.kind, entry.id)),
-        });
-    }
+    // Package symbols (from .app NuGet packages) are intentionally excluded from
+    // workspace/symbol. Like VS Code, this feature returns only the user's project
+    // files. Package symbols are accessible via completion, hover, and go-to-definition
+    // which query the symbol index directly.
 
     // Search workspace files using the object name index.
     // Read object metadata from the cache built at scan/open time — avoids re-parsing

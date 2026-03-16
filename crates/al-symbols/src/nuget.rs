@@ -56,7 +56,10 @@ impl Default for NuGetFeed {
 }
 
 /// A dependency from app.json.
-#[derive(Debug, Clone)]
+///
+/// Fields use camelCase for JSON serialization to match the app.json format.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppDependency {
     pub id: String,
     pub name: String,

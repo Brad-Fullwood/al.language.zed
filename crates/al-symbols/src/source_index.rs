@@ -16,7 +16,6 @@ use zip::ZipArchive;
 
 use crate::model::{ObjectKind, SymbolEntry};
 
-const ZIP_MAGIC: &[u8; 4] = &[0x50, 0x4B, 0x03, 0x04];
 const MAX_HEADER_BYTES: usize = 256 * 1024;
 
 /// Cached source index per `.app` file.
@@ -36,7 +35,7 @@ impl AppSourceIndex {
         let file = File::open(app_path)?;
         let modified = file.metadata()?.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let mmap = unsafe { Mmap::map(&file)? };
-        let zip_offset = find_zip_offset(&mmap).ok_or_else(|| {
+        let zip_offset = crate::app_reader::find_zip_offset(&mmap).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "ZIP signature not found in .app")
         })?;
 
@@ -116,19 +115,6 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     let built = Arc::new(AppSourceIndex::from_app_path(app_path)?);
     cache.insert(app_path.to_path_buf(), built.clone());
     Ok(built)
-}
-
-fn find_zip_offset(data: &[u8]) -> Option<usize> {
-    // Scan for ZIP local file header after NAVX header.
-    if data.len() > 44 && &data[40..44] == ZIP_MAGIC {
-        return Some(40);
-    }
-    for i in 4..data.len().saturating_sub(3) {
-        if &data[i..i + 4] == ZIP_MAGIC {
-            return Some(i);
-        }
-    }
-    None
 }
 
 fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
@@ -298,10 +284,10 @@ fn parse_name(s: &str, bytes: &[u8], mut i: usize) -> Option<(String, usize)> {
     }
 }
 
-fn is_ident_start(b: u8) -> bool {
+pub(crate) fn is_ident_start(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_'
 }
 
-fn is_ident_char(b: u8) -> bool {
+pub(crate) fn is_ident_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }

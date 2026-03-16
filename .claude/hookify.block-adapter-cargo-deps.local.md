@@ -9,7 +9,7 @@ conditions:
     pattern: crates/al-(cli|explorer|mcp)/Cargo\.toml$
   - field: new_text
     operator: regex_match
-    pattern: al-
+    pattern: al-(?!daemon-client)
 ---
 
 **BLOCKED: Thin adapter Cargo.toml dependency violation**

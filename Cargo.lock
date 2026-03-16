@@ -32,6 +32,7 @@ dependencies = [
 name = "al-cli"
 version = "0.1.0"
 dependencies = [
+ "al-daemon-client",
  "clap",
  "dirs",
  "serde",
@@ -64,6 +65,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "al-daemon-client"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "al-dap-client"
 version = "0.1.0"
 dependencies = [
@@ -79,6 +88,7 @@ dependencies = [
 name = "al-explorer"
 version = "0.1.0"
 dependencies = [
+ "al-daemon-client",
  "crossterm",
  "open",
  "ratatui",
@@ -93,6 +103,7 @@ name = "al-lsp"
 version = "0.1.0"
 dependencies = [
  "al-core",
+ "al-daemon-client",
  "al-dap-client",
  "al-symbols",
  "al-syntax",

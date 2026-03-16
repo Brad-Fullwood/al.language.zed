@@ -42,14 +42,9 @@ pub struct AppManifest {
 }
 
 /// A dependency entry in app.json.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppDependency {
-    pub id: String,
-    pub name: String,
-    pub publisher: String,
-    pub version: String,
-}
+///
+/// Canonical type from al-symbols — unified so no field-for-field conversion is needed.
+pub use al_symbols::nuget::AppDependency;
 
 /// A NuGet feed for BC symbol packages.
 #[derive(Debug, Clone)]

@@ -87,18 +87,6 @@ fn make_client(config: &ProfilingConfig) -> Result<reqwest::Client, ProfilingErr
         .build()?)
 }
 
-/// Apply Basic auth if credentials are configured.
-fn apply_auth(
-    req: reqwest::RequestBuilder,
-    config: &ProfilingConfig,
-) -> reqwest::RequestBuilder {
-    if let (Some(user), Some(pass)) = (&config.username, &config.password) {
-        req.basic_auth(user, Some(pass))
-    } else {
-        req
-    }
-}
-
 /// Start CPU profiling on the BC server.
 ///
 /// Returns the profiling session ID assigned by the server.
@@ -113,7 +101,7 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
 
     debug!(url = %url, "profiling: starting CPU profiler");
 
-    let req = apply_auth(client.post(&url).json(&serde_json::json!({})), config);
+    let req = crate::http_auth::apply_basic_auth(client.post(&url).json(&serde_json::json!({})), &config.username, &config.password);
     let resp = req.send().await?;
     let status = resp.status();
 
@@ -160,7 +148,7 @@ pub async fn stop_profiling(
     debug!(url = %url, session_id = session_id, "profiling: stopping profiler");
 
     let body = serde_json::json!({ "sessionId": session_id });
-    let req = apply_auth(client.post(&url).json(&body), config);
+    let req = crate::http_auth::apply_basic_auth(client.post(&url).json(&body), &config.username, &config.password);
     let resp = req.send().await?;
     let status = resp.status();
 

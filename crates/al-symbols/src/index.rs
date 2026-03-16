@@ -332,6 +332,15 @@ pub struct SymbolIndex {
             .unwrap_or_default()
     }
 
+    /// Return all indexed entries.
+    ///
+    /// Prefer this over `search("", usize::MAX)` when iteration over all
+    /// symbols is the intent — it makes the purpose explicit and avoids the
+    /// internal limit check overhead.
+    pub fn all_entries(&self) -> Vec<Arc<SymbolEntry>> {
+        self.all.iter().map(|e| { let (arc, _) = e.value(); Arc::clone(arc) }).collect()
+    }
+
     /// Total number of indexed entries.
     pub fn len(&self) -> usize {
         self.all.len()

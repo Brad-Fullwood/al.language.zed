@@ -606,7 +606,10 @@ impl SymbolReferenceJson {
 
         // Collect Option-typed parameters to create synthetic enum entries.
         // Scan all objects before converting, since we borrow their contents.
-        let mut option_enums: std::collections::HashMap<String, Vec<String>> =
+        // Key: (object_kind, object_name, field_or_param_name) — prevents cross-object
+        // collisions where two unrelated objects share the same field/parameter name but
+        // have different OptionMembers. Each (object, field) pair produces its own entry.
+        let mut option_enums: std::collections::HashMap<(ObjectKind, String, String), Vec<String>> =
             std::collections::HashMap::new();
         let mut existing_enum_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
@@ -623,8 +626,11 @@ impl SymbolReferenceJson {
                 for method in &obj.methods {
                     for param in &method.parameters {
                         if let Some(td) = &param.type_definition {
-                            if td.name.eq_ignore_ascii_case("Option") && !td.option_members.is_empty() {
-                                let existing = option_enums.entry(param.name.clone()).or_default();
+                            if td.name.eq_ignore_ascii_case("Option")
+                                && !td.option_members.is_empty()
+                            {
+                                let key = (*kind, obj.name.clone(), param.name.clone());
+                                let existing = option_enums.entry(key).or_default();
                                 if td.option_members.len() > existing.len() {
                                     *existing = td.option_members.clone();
                                 }
@@ -634,8 +640,11 @@ impl SymbolReferenceJson {
                 }
                 for field in &obj.fields {
                     if let Some(td) = &field.type_definition {
-                        if td.name.eq_ignore_ascii_case("Option") && !td.option_members.is_empty() {
-                            let existing = option_enums.entry(field.name.clone()).or_default();
+                        if td.name.eq_ignore_ascii_case("Option")
+                            && !td.option_members.is_empty()
+                        {
+                            let key = (*kind, obj.name.clone(), field.name.clone());
+                            let existing = option_enums.entry(key).or_default();
                             if td.option_members.len() > existing.len() {
                                 *existing = td.option_members.clone();
                             }
@@ -652,8 +661,10 @@ impl SymbolReferenceJson {
         }
 
         // Create synthetic enum entries from Option-typed parameters.
-        for (name, members) in &option_enums {
-            if existing_enum_names.contains(&name.to_lowercase()) {
+        // Each (object_kind, object_name, field_name) triple produces a separate entry
+        // named after the field, so type resolution can find it by field/parameter name.
+        for ((_obj_kind, _obj_name, field_name), members) in &option_enums {
+            if existing_enum_names.contains(&field_name.to_lowercase()) {
                 continue; // Skip if a real enum with this name exists
             }
             let enum_values: Vec<EnumValueSymbol> = members
@@ -669,7 +680,7 @@ impl SymbolReferenceJson {
                 entries.push(SymbolEntry {
                     kind: ObjectKind::Enum,
                     id: -1,
-                    name: name.clone(),
+                    name: field_name.clone(),
                     extends: None,
                     package: pkg.clone(),
                     methods: Vec::new(),

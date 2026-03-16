@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 
+al-daemon-client = { path = "../al-daemon-client" }
 crossterm = "0.29.0"
 open = "5.3.3"
 ratatui = "0.30.0"

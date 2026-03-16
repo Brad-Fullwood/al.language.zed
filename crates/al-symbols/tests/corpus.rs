@@ -1175,6 +1175,77 @@ fn test_option_params_create_synthetic_enums() {
 }
 
 // ---------------------------------------------------------------------------
+// Test: Option-typed fields with the same name in different objects do not collide
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_option_params_no_cross_object_collision() {
+    // Two codeunits each have a parameter named "Status" but with different members.
+    // Before the fix, the one with more members would silently overwrite the other.
+    // After the fix, both sets of members must be present in the index (two entries).
+    let symbol_json = r#"{
+        "AppId": "00000000-0000-0000-0000-000000000000",
+        "Name": "System",
+        "Publisher": "Microsoft",
+        "Version": "26.0.0.0",
+        "Codeunits": [
+            {
+                "Id": 1,
+                "Name": "Codeunit A",
+                "Methods": [{
+                    "Name": "SetStatus",
+                    "Parameters": [
+                        { "Name": "Status", "TypeDefinition": { "Name": "Option", "OptionMembers": ["Open", "Released"] } }
+                    ],
+                    "Attributes": [],
+                    "IsLocal": false
+                }]
+            },
+            {
+                "Id": 2,
+                "Name": "Codeunit B",
+                "Methods": [{
+                    "Name": "SetStatus",
+                    "Parameters": [
+                        { "Name": "Status", "TypeDefinition": { "Name": "Option", "OptionMembers": ["Pending", "Approved", "Rejected"] } }
+                    ],
+                    "Attributes": [],
+                    "IsLocal": false
+                }]
+            }
+        ],
+        "EnumTypes": []
+    }"#;
+
+    let manifest = r#"<?xml version="1.0" encoding="utf-8"?>
+    <Package><App Id="00000000-0000-0000-0000-000000000000" Name="System" Publisher="Microsoft" Version="26.0.0.0"/></Package>"#;
+
+    let data = build_test_app(manifest, symbol_json);
+    let index = SymbolIndex::new();
+    let _pkg = index.load_package_bytes(&data).unwrap();
+
+    // Both sets of members must be present — two separate synthetic enum entries for "Status"
+    let results = index.get_by_name("Status");
+    assert!(
+        results.len() >= 2,
+        "Both objects' Status enums must be present, got {}",
+        results.len()
+    );
+
+    // Collect all member names across all Status entries
+    let all_members: Vec<&str> = results
+        .iter()
+        .flat_map(|e| e.enum_values.iter().map(|v| v.name.as_str()))
+        .collect();
+
+    assert!(all_members.contains(&"Open"), "Open must be present from Codeunit A");
+    assert!(all_members.contains(&"Released"), "Released must be present from Codeunit A");
+    assert!(all_members.contains(&"Pending"), "Pending must be present from Codeunit B");
+    assert!(all_members.contains(&"Approved"), "Approved must be present from Codeunit B");
+    assert!(all_members.contains(&"Rejected"), "Rejected must be present from Codeunit B");
+}
+
+// ---------------------------------------------------------------------------
 // Test: runtime enums are loaded into the index
 // ---------------------------------------------------------------------------
 

@@ -72,6 +72,21 @@ For bugs you defer:
 - cargo clippy: [clean/warnings]
 ```
 
+## Architecture Constraints (MANDATORY — violations will be reverted)
+These rules are NON-NEGOTIABLE. Breaking them wastes everyone's time.
+- **NEVER create new crates.** All code belongs in existing crates. If you think you need
+  a new crate, you are wrong — find the right existing home. The project has already been
+  through a crate consolidation (al-protocol was removed). No new crates.
+- **Thin adapters (al-cli, al-explorer, al-mcp) have ZERO al-* compile-time dependencies.**
+  They connect to al-lsp at runtime via JSON-RPC (al-cli, al-explorer) or subprocess (al-mcp).
+- **Analysis libs (al-syntax, al-symbols, al-semantic, al-dap-client) must NOT import al-core or al-lsp.**
+  They are standalone. Dependencies flow downward only.
+- **Only al-lsp imports al-core.** No other crate may depend on al-core.
+- **Read `.claude/rules/code-boundaries.md` BEFORE making any cross-crate changes.**
+    If your fix touches more than one crate, verify the dependency direction is allowed.
+- **NEVER edit governance files** (CLAUDE.md, `.claude/rules/`, `.claude/agents/`, hookify rules)
+    unless explicitly told to. If code violates a rule, fix the CODE, not the rule.
+
 ## Rules
 
 - Fix bugs directly — do not just report them

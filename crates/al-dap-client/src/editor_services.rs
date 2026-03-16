@@ -14,9 +14,7 @@ use tracing::info;
 
 use crate::DapError;
 
-#[cfg(target_os = "linux")]
-const HOST_BINARY: &str = "Microsoft.Dynamics.Nav.EditorServices.Host";
-#[cfg(target_os = "macos")]
+#[cfg(not(target_os = "windows"))]
 const HOST_BINARY: &str = "Microsoft.Dynamics.Nav.EditorServices.Host";
 #[cfg(target_os = "windows")]
 const HOST_BINARY: &str = "Microsoft.Dynamics.Nav.EditorServices.Host.exe";

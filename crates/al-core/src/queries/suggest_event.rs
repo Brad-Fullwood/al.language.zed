@@ -41,7 +41,7 @@ pub fn suggest_event(workspace: &Workspace, description: &str) -> Vec<EventSugge
         return Vec::new();
     }
 
-    let all_entries = workspace.symbols.search("", usize::MAX);
+    let all_entries = workspace.symbols.all_entries();
     let mut scored: Vec<(EventSuggestion, usize)> = Vec::new();
 
     for entry in &all_entries {

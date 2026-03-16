@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 
 use al_core::workspace::Workspace;
 use al_core::jsonrpc::{error_codes, Request, Response, RpcError};
+use al_daemon_client::socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, Semaphore};
 
 /// Global socket path for cleanup on exit.
 static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -38,33 +39,10 @@ impl Drop for SocketCleanup {
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+const MAX_CONNECTIONS: usize = 64;
+const ACCEPT_BACKOFF_START: Duration = Duration::from_millis(10);
+const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 
-/// FNV-1a 64-bit hash — stable across Rust compiler versions.
-/// Must match the implementation in al-cli/src/client.rs.
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf29ce484222325;
-    const PRIME: u64 = 0x00000100000001b3;
-    let mut hash = OFFSET;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
-}
-
-/// Compute the deterministic socket path for a project root.
-///
-/// The path is canonicalized before hashing so that symlinks and relative paths
-/// resolve to the same socket as the client (which also canonicalizes).
-pub fn socket_path(project_root: &Path) -> PathBuf {
-    let canonical = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
-    let hash = format!("{:016x}", fnv1a64(canonical.as_os_str().as_encoded_bytes()));
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(format!("{}/al-lsp/{}.sock", runtime_dir, hash))
-}
 
 /// Run the daemon server for a project.
 pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -137,16 +115,36 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
         }
     });
 
+    // Connection semaphore — limits concurrent active connections to avoid FD/memory exhaustion.
+    let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+
     // Accept connections — break when shutdown is signalled so Drop guards run.
+    let mut accept_backoff = ACCEPT_BACKOFF_START;
     loop {
         tokio::select! {
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, _addr)) => {
+                        // Reset backoff on success.
+                        accept_backoff = ACCEPT_BACKOFF_START;
+
+                        // Acquire a connection slot. If at the limit, drop this connection
+                        // rather than blocking the accept loop.
+                        let permit = match connection_limit.clone().try_acquire_owned() {
+                            Ok(p) => p,
+                            Err(_) => {
+                                tracing::warn!("daemon: connection limit ({MAX_CONNECTIONS}) reached, dropping new connection");
+                                drop(stream);
+                                continue;
+                            }
+                        };
+
                         let ws = Arc::clone(&workspace);
                         let activity = Arc::clone(&last_activity);
                         let shutdown_conn = Arc::clone(&shutdown_signal);
                         tokio::spawn(async move {
+                            // Permit is held for the lifetime of the connection task.
+                            let _permit = permit;
                             if let Err(e) = handle_connection(stream, ws, activity, shutdown_conn).await {
                                 tracing::warn!(error = %e, "daemon: connection error");
                             }
@@ -154,6 +152,9 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "daemon: accept error");
+                        // Exponential backoff to avoid spinning on persistent errors (e.g. EMFILE).
+                        tokio::time::sleep(accept_backoff).await;
+                        accept_backoff = (accept_backoff * 2).min(ACCEPT_BACKOFF_CAP);
                     }
                 }
             }
@@ -252,7 +253,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "suggestEvent" => dispatch_suggest_event(workspace, id, &params),
         // Semantic / toolchain
         "permissions" => dispatch_permissions(workspace, id, &params),
-        "compile" => dispatch_compile(workspace, id),
+        "compile" => dispatch_compile(workspace, id).await,
         "package" => dispatch_package(workspace, id).await,
         "newProject" => dispatch_new_project(id, &params),
         "errorCodes" => dispatch_error_codes(workspace, id),
@@ -934,13 +935,50 @@ fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::Value) -> R
     }
 
     if !dry_run && !edits.is_empty() {
-        // Apply edits to the file
+        // Apply the specific TextEdit patches in reverse order to preserve earlier positions.
         if let Ok(path) = uri.to_file_path() {
-            // Apply edits in reverse order to preserve positions
-            let mut new_text = text.clone();
-            // Simple: re-format the file after fixes for now
-            let options = al_core::syntax::FormatOptions::default();
-            new_text = al_core::syntax::format_al(&new_text, &options);
+            let mut doc_lines: Vec<String> = text.lines().map(String::from).collect();
+            // Sort edits by start line descending so later lines are patched first.
+            let mut sorted_edits = edits.clone();
+            sorted_edits.sort_by(|a, b| {
+                let a_line = a.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                let b_line = b.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
+                b_line.cmp(&a_line)
+            });
+            for edit in &sorted_edits {
+                let Some(range) = edit.get("range") else { continue };
+                let Some(start) = range.get("start") else { continue };
+                let Some(end_pos) = range.get("end") else { continue };
+                let start_line = start.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let end_line = end_pos.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let start_char = start.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let end_char = end_pos.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let new_text_str = edit.get("newText").and_then(|v| v.as_str()).unwrap_or("");
+
+                if start_line == end_line {
+                    // Single-line replacement within one line.
+                    if let Some(line) = doc_lines.get_mut(start_line) {
+                        let chars: Vec<char> = line.chars().collect();
+                        let s = start_char.min(chars.len());
+                        let e = end_char.min(chars.len());
+                        let replacement_chars: Vec<char> = new_text_str.chars().collect();
+                        let new_line: String = chars[..s].iter().chain(replacement_chars.iter()).chain(chars[e..].iter()).collect();
+                        *line = new_line;
+                    }
+                } else {
+                    // Multi-line range replacement — remove lines [start_line, end_line) and
+                    // insert new_text_str lines (empty string means delete).
+                    let safe_start = start_line.min(doc_lines.len());
+                    let safe_end = end_line.min(doc_lines.len());
+                    let replacement: Vec<String> = if new_text_str.is_empty() {
+                        vec![]
+                    } else {
+                        new_text_str.lines().map(String::from).collect()
+                    };
+                    doc_lines.splice(safe_start..safe_end, replacement);
+                }
+            }
+            let new_text = doc_lines.join("\n");
             let _ = std::fs::write(&path, &new_text);
             workspace.documents.open(uri, new_text);
         }
@@ -960,15 +998,75 @@ fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::Value) -> R
 
 fn generate_fix(
     diag: &al_core::syntax::LintDiagnostic,
-    _lines: &[&str],
+    lines: &[&str],
 ) -> Option<serde_json::Value> {
-    // Return fix metadata — actual application happens in the CLI or daemon
+    let start_row = diag.range.start_point.row;
+    let end_row = diag.range.end_point.row;
+    let start_col = diag.range.start_point.column;
+    let end_col = diag.range.end_point.column;
+
     match diag.code.as_str() {
-        "AL-L001" | "AL-L005" | "AL-L006" | "AL-L007" | "AL-L016" => Some(serde_json::json!({
-            "code": diag.code,
-            "message": diag.message,
-            "line": diag.range.start_point.row + 1,
-        })),
+        // AL-L001: Empty begin..end block — delete the entire line range.
+        "AL-L001" => {
+            Some(serde_json::json!({
+                "code": diag.code,
+                "message": diag.message,
+                "range": {
+                    "start": { "line": start_row, "character": 0 },
+                    "end": { "line": end_row + 1, "character": 0 }
+                },
+                "newText": "",
+            }))
+        }
+        // AL-L005: Unused variable declaration — delete the declaration line.
+        "AL-L005" => {
+            Some(serde_json::json!({
+                "code": diag.code,
+                "message": diag.message,
+                "range": {
+                    "start": { "line": start_row, "character": 0 },
+                    "end": { "line": end_row + 1, "character": 0 }
+                },
+                "newText": "",
+            }))
+        }
+        // AL-L006: Empty trigger — delete the entire trigger declaration.
+        "AL-L006" => {
+            Some(serde_json::json!({
+                "code": diag.code,
+                "message": diag.message,
+                "range": {
+                    "start": { "line": start_row, "character": 0 },
+                    "end": { "line": end_row + 1, "character": 0 }
+                },
+                "newText": "",
+            }))
+        }
+        // AL-L007: TODO comment — not auto-fixable, report only.
+        "AL-L007" => None,
+        // AL-L016: Procedure name not PascalCase — capitalise the first letter.
+        "AL-L016" => {
+            if let Some(line) = lines.get(start_row) {
+                let chars: Vec<char> = line.chars().collect();
+                if start_col < chars.len() {
+                    let name_end_col = if start_row == end_row { end_col } else { chars.len() };
+                    let name: String = chars[start_col..name_end_col.min(chars.len())].iter().collect();
+                    if let Some(first) = name.chars().next() {
+                        let fixed_name = format!("{}{}", first.to_uppercase(), &name[first.len_utf8()..]);
+                        return Some(serde_json::json!({
+                            "code": diag.code,
+                            "message": diag.message,
+                            "range": {
+                                "start": { "line": start_row, "character": start_col },
+                                "end": { "line": end_row, "character": name_end_col }
+                            },
+                            "newText": fixed_name,
+                        }));
+                    }
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -1173,7 +1271,7 @@ fn dispatch_permissions(workspace: &Workspace, id: u64, params: &serde_json::Val
 // Semantic / toolchain dispatchers
 // ---------------------------------------------------------------------------
 
-fn dispatch_compile(workspace: &Workspace, id: u64) -> Response {
+async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response {
     let tc = match workspace.toolchain.try_read() {
         Ok(guard) => guard,
         Err(_) => {
@@ -1228,35 +1326,32 @@ fn dispatch_compile(workspace: &Workspace, id: u64) -> Response {
     drop(tc);
     drop(project);
 
-    let result: Result<serde_json::Value, String> = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
-            let guard = al_core::semantic::get_or_init_bridge(workspace)
-                .await
-                .ok_or("Failed to initialize semantic bridge")?;
-            let bridge = guard
-                .as_ref()
-                .ok_or("Semantic bridge unavailable")?;
-            let compile_result = bridge
-                .compile(&project_root, None, None)
-                .await
-                .map_err(|e| format!("Compilation failed: {}", e))?;
-            Ok(serde_json::json!({
-                "success": compile_result.success,
-                "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
-                    "file": d.file.display().to_string(),
-                    "line": d.line,
-                    "column": d.column,
-                    "endLine": d.end_line,
-                    "endColumn": d.end_column,
-                    "severity": d.severity,
-                    "code": d.code,
-                    "message": d.message,
-                })).collect::<Vec<_>>(),
-                "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
-            }))
-        })
-    });
+    let result: Result<serde_json::Value, String> = async {
+        let guard = al_core::semantic::get_or_init_bridge(workspace)
+            .await
+            .ok_or("Failed to initialize semantic bridge")?;
+        let bridge = guard
+            .as_ref()
+            .ok_or("Semantic bridge unavailable")?;
+        let compile_result = bridge
+            .compile(&project_root, None, None)
+            .await
+            .map_err(|e| format!("Compilation failed: {}", e))?;
+        Ok(serde_json::json!({
+            "success": compile_result.success,
+            "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
+                "file": d.file.display().to_string(),
+                "line": d.line,
+                "column": d.column,
+                "endLine": d.end_line,
+                "endColumn": d.end_column,
+                "severity": d.severity,
+                "code": d.code,
+                "message": d.message,
+            })).collect::<Vec<_>>(),
+            "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
+        }))
+    }.await;
     match result {
         Ok(value) => Response { id, result: Some(value), error: None },
         Err(msg) => Response {
@@ -1527,14 +1622,11 @@ fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json
                     std::sync::Arc::new(|msg| eprintln!("{msg}")),
                     cfg.accept_invalid_certs,
                 );
+                // al_core::project::AppDependency is re-exported from al-symbols — clone directly.
                 let url_deps: Vec<(String, al_core::symbols::AppDependency)> = all_deps
                     .iter()
                     .filter_map(|dep| {
-                        let sym_dep = al_core::symbols::AppDependency {
-                            id: dep.id.clone(), name: dep.name.clone(),
-                            publisher: dep.publisher.clone(), version: dep.version.clone(),
-                        };
-                        cfg.dev_packages_url(dep).map(|url| (url, sym_dep))
+                        cfg.dev_packages_url(dep).map(|url| (url, dep.clone()))
                     })
                     .collect();
                 let bc_results = client.download_all(&url_deps, &dest).await;
@@ -1562,28 +1654,20 @@ fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json
                         index_url: f.index_url.clone(),
                     })
                     .collect();
-                let nuget_deps: Vec<al_core::symbols::AppDependency> = all_deps
-                    .iter()
-                    .map(|d| al_core::symbols::AppDependency {
-                        id: d.id.clone(),
-                        name: d.name.clone(),
-                        publisher: d.publisher.clone(),
-                        version: d.version.clone(),
-                    })
-                    .collect();
+                // al_core::project::AppDependency is re-exported from al-symbols — pass directly.
                 let client = al_core::symbols::NuGetClient::new(nuget_feeds);
-                let nuget_results = client.download_all(&nuget_deps, &dest).await;
+                let nuget_results = client.download_all(&all_deps, &dest).await;
                 nuget_results
                     .into_iter()
                     .enumerate()
                     .map(|(i, r)| match r {
                         Ok(path) => serde_json::json!({
-                            "name": nuget_deps[i].name,
+                            "name": all_deps[i].name,
                             "status": "ok",
                             "path": path.display().to_string(),
                         }),
                         Err(e) => serde_json::json!({
-                            "name": nuget_deps[i].name,
+                            "name": all_deps[i].name,
                             "status": "error",
                             "error": e.to_string(),
                         }),
@@ -1730,11 +1814,12 @@ async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Val
                 }
             };
 
-            // Compilation can take minutes — run in a blocking task
+            // Compilation can take minutes — run in a blocking task using the existing
+            // runtime handle to avoid creating a nested runtime.
             let config_name_clone = config_name.clone();
+            let handle = tokio::runtime::Handle::current();
             let result = tokio::task::spawn_blocking(move || {
-                let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-                rt.block_on(async {
+                handle.block_on(async {
                     DebugSession::start(&toolchain.alc, &toolchain.dotnet_root, &project_root, config_name_clone.as_deref())
                         .await
                         .map_err(|e| e.to_string())
@@ -2452,24 +2537,12 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    /// Verify FNV-1a produces a known-stable value so we catch any accidental
-    /// algorithm drift in future edits.
-    #[test]
-    fn fnv1a64_stable_known_value() {
-        // FNV-1a of b"hello" is a well-known constant: 0xa430d84680aabd0b
-        assert_eq!(fnv1a64(b"hello"), 0xa430d84680aabd0b);
-        // Empty input is the offset basis
-        assert_eq!(fnv1a64(b""), 0xcbf29ce484222325);
-    }
-
     /// Verify socket_path produces the same result for the same canonical path.
     #[test]
     fn socket_path_is_deterministic() {
         let p = std::path::Path::new("/tmp");
-        let path1 = socket_path(p);
-        let path2 = socket_path(p);
+        let path1 = al_daemon_client::socket_path(p);
+        let path2 = al_daemon_client::socket_path(p);
         assert_eq!(path1, path2);
         assert!(path1.to_str().unwrap().ends_with(".sock"));
         let filename = path1.file_name().unwrap().to_str().unwrap();

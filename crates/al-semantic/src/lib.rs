@@ -184,6 +184,14 @@ impl SemanticBridge {
         &self.version
     }
 
+    /// Deserialize a bridge response value, converting JSON errors to [`SemanticError`].
+    fn parse_response<T: serde::de::DeserializeOwned>(
+        value: serde_json::Value,
+    ) -> Result<T, SemanticError> {
+        serde_json::from_value(value)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+    }
+
     /// Internal: call with timeout on a blocking thread.
     async fn call(
         &self,
@@ -217,8 +225,7 @@ impl SemanticBridge {
         let params = serde_json::to_value(&req)
             .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
         let result = self.call("analyze", params).await?;
-        serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+        Self::parse_response(result)
     }
 
     /// Resolve the type of the symbol at the given position.
@@ -236,8 +243,7 @@ impl SemanticBridge {
         if result.is_null() {
             return Ok(None);
         }
-        let info: TypeInfo = serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
+        let info: TypeInfo = Self::parse_response(result)?;
         Ok(Some(info))
     }
 
@@ -253,8 +259,7 @@ impl SemanticBridge {
             "column": pos.1,
         });
         let result = self.call("completions", params).await?;
-        serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+        Self::parse_response(result)
     }
 
     /// Extract all built-in types and methods from CodeAnalysis.
@@ -267,8 +272,7 @@ impl SemanticBridge {
         }
 
         let result = self.call("builtins", serde_json::Value::Null).await?;
-        let types: Vec<BuiltinType> = serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
+        let types: Vec<BuiltinType> = Self::parse_response(result)?;
 
         // Cache for next time
         cache::write_builtins(&self.version, &types);
@@ -289,8 +293,7 @@ impl SemanticBridge {
         }
 
         let result = self.call("errorCodes", serde_json::Value::Null).await?;
-        let codes: Vec<ErrorCodeInfo> = serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
+        let codes: Vec<ErrorCodeInfo> = Self::parse_response(result)?;
 
         cache::write_error_codes(&self.version, &codes);
 
@@ -316,8 +319,7 @@ impl SemanticBridge {
                 serde_json::Value::String(pkg.to_string_lossy().into_owned());
         }
         let result = self.call("compile", params).await?;
-        serde_json::from_value(result)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+        Self::parse_response(result)
     }
 
     /// Health check — verifies the .NET bridge is responsive.

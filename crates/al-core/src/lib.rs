@@ -16,6 +16,7 @@ pub mod permissions;
 pub mod profiling;
 pub mod project;
 pub mod queries;
+pub(crate) mod http_auth;
 pub(crate) mod resolution;
 pub mod scaffold;
 pub mod semantic;

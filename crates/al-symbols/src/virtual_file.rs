@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 
 use crate::model::SymbolEntry;
 use crate::source_index;
+use crate::source_index::{is_ident_char, is_ident_start};
 
 /// Cache directory for extracted / generated virtual AL files.
 pub fn cache_dir() -> PathBuf {
@@ -525,10 +526,3 @@ fn parse_name_token(
     }
 }
 
-fn is_ident_start(b: u8) -> bool {
-    b.is_ascii_alphabetic() || b == b'_'
-}
-
-fn is_ident_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}

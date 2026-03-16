@@ -100,7 +100,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
         .map(|e| e.name.clone())
         .unwrap_or_else(|| table_name.to_string());
 
-    let all_entries = symbols.search("", usize::MAX);
+    let all_entries = symbols.all_entries();
 
     // Accumulate impacts per object (keyed by (kind, name) to merge duplicates).
     let mut by_object: HashMap<(String, String), ObjectImpact> = HashMap::new();

@@ -32,13 +32,7 @@ use std::path::PathBuf;
 // ---------------------------------------------------------------------------
 
 fn test_project_dir() -> PathBuf {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("test_al_project")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
 }
 
 // Minimal codeunit — always compiles, deterministic line numbers
@@ -477,7 +471,7 @@ async fn test_d04_definition_from_test_project() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     // Read the actual MultiProcedure.al file and use it
-    let code = include_str!("../../../test_al_project/src/MultiProcedure.al");
+    let code = include_str!("../data/test_al_project/src/MultiProcedure.al");
     client.open_file("src/MultiProcedure.al", code).await;
 
     // Line 56: "        SimpleProc();" — should resolve to line 7
@@ -751,7 +745,7 @@ async fn test_f05_document_symbols_empty_file() {
 async fn test_f06_document_symbols_test_project_files() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    let hello = include_str!("../../../test_al_project/src/HelloWorld.al");
+    let hello = include_str!("../data/test_al_project/src/HelloWorld.al");
     client.open_file("src/HelloWorld.al", hello).await;
 
     let symbols = client.document_symbols("src/HelloWorld.al").await;
@@ -1055,9 +1049,15 @@ async fn test_j02_workspace_symbol_empty_query() {
 async fn test_j03_workspace_symbol_finds_test_project_object() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // initialize() polls workspace/symbol until non-empty, so at least some
-    // test_al_project files are indexed
-    let symbols = client.workspace_symbol("Hello").await;
+    // Workspace file scanning is async — retry briefly until HelloWorld is indexed
+    let mut symbols = vec![];
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    while symbols.is_empty() && tokio::time::Instant::now() < deadline {
+        symbols = client.workspace_symbol("Hello").await;
+        if symbols.is_empty() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        }
+    }
     assert!(
         !symbols.is_empty(),
         "workspace symbol search for 'Hello' must find at least 'Hello World' codeunit"
@@ -1071,14 +1071,20 @@ async fn test_j03_workspace_symbol_finds_test_project_object() {
 async fn test_j04_workspace_symbol_case_insensitive() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    let symbols_lower = client.workspace_symbol("hello").await;
-    let symbols_upper = client.workspace_symbol("HELLO").await;
-    let symbols_mixed = client.workspace_symbol("Hello").await;
-
-    // At least one variant must find the "Hello World" codeunit
-    let any_found = !symbols_lower.is_empty()
-        || !symbols_upper.is_empty()
-        || !symbols_mixed.is_empty();
+    // Workspace file scanning is async — retry briefly until HelloWorld is indexed
+    let mut any_found = false;
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    while !any_found && tokio::time::Instant::now() < deadline {
+        let symbols_lower = client.workspace_symbol("hello").await;
+        let symbols_upper = client.workspace_symbol("HELLO").await;
+        let symbols_mixed = client.workspace_symbol("Hello").await;
+        any_found = !symbols_lower.is_empty()
+            || !symbols_upper.is_empty()
+            || !symbols_mixed.is_empty();
+        if !any_found {
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        }
+    }
 
     assert!(
         any_found,
@@ -1530,7 +1536,7 @@ async fn test_q05_hover_out_of_bounds_position() {
 #[tokio::test]
 async fn test_q06_syntax_error_file_is_parsed_tolerantly() {
     // Use the ErrorCases fixture which has intentional syntax errors
-    let code = include_str!("../../../test_al_project/src/ErrorCases.al");
+    let code = include_str!("../data/test_al_project/src/ErrorCases.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_q06.al", code).await;
@@ -1680,7 +1686,7 @@ async fn test_q12_workspace_symbol_with_unknown_field_is_graceful() {
 #[tokio::test]
 async fn test_r01_core_definition_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    let code = include_str!("../../../test_al_project/src/MultiProcedure.al");
+    let code = include_str!("../data/test_al_project/src/MultiProcedure.al");
     client.open_file("src/MultiProcedure.al", code).await;
 
     // CallsOthers calls SimpleProc on line 56
@@ -1895,8 +1901,15 @@ async fn test_r13_core_workspace_symbol_query() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_r13.al", CODEUNIT_SIMPLE).await;
 
-    let symbols = client.workspace_symbol("Hello").await;
-    // initialize() polls until non-empty — so workspace must have symbols
+    // Workspace file scanning is async — retry briefly until HelloWorld is indexed
+    let mut symbols = vec![];
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    while symbols.is_empty() && tokio::time::Instant::now() < deadline {
+        symbols = client.workspace_symbol("Hello").await;
+        if symbols.is_empty() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        }
+    }
     assert!(
         !symbols.is_empty(),
         "core workspace symbol query must find 'Hello World' codeunit"
@@ -1946,7 +1959,7 @@ async fn test_s01_connect_panics_with_daemon_not_implemented_message() {
 /// T-01: interface object parses and produces symbols
 #[tokio::test]
 async fn test_t01_interface_object() {
-    let code = include_str!("../../../test_al_project/src/Interface50100.al");
+    let code = include_str!("../data/test_al_project/src/Interface50100.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/Interface50100.al", code).await;
@@ -1965,7 +1978,7 @@ async fn test_t01_interface_object() {
 /// T-02: page extension parses and produces symbols
 #[tokio::test]
 async fn test_t02_page_extension_object() {
-    let code = include_str!("../../../test_al_project/src/PageExtension50100.al");
+    let code = include_str!("../data/test_al_project/src/PageExtension50100.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/PageExtension50100.al", code).await;
@@ -1980,7 +1993,7 @@ async fn test_t02_page_extension_object() {
 /// T-03: table extension parses and produces symbols
 #[tokio::test]
 async fn test_t03_table_extension_object() {
-    let code = include_str!("../../../test_al_project/src/TableExtension50100.al");
+    let code = include_str!("../data/test_al_project/src/TableExtension50100.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/TableExtension50100.al", code).await;
@@ -1994,7 +2007,7 @@ async fn test_t03_table_extension_object() {
 /// T-04: codeunit with events (integration events + subscribers)
 #[tokio::test]
 async fn test_t04_codeunit_with_integration_events() {
-    let code = include_str!("../../../test_al_project/src/CodeunitWithEvents.al");
+    let code = include_str!("../data/test_al_project/src/CodeunitWithEvents.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/CodeunitWithEvents.al", code).await;
@@ -2013,7 +2026,7 @@ async fn test_t04_codeunit_with_integration_events() {
 /// T-05: deeply nested structures (DeepNesting.al fixture)
 #[tokio::test]
 async fn test_t05_deep_nesting_fixture() {
-    let code = include_str!("../../../test_al_project/src/DeepNesting.al");
+    let code = include_str!("../data/test_al_project/src/DeepNesting.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/DeepNesting.al", code).await;
@@ -2030,7 +2043,7 @@ async fn test_t05_deep_nesting_fixture() {
 /// T-06: table with trigger on field (OnValidate)
 #[tokio::test]
 async fn test_t06_table_with_field_trigger() {
-    let code = include_str!("../../../test_al_project/src/Table50100.al");
+    let code = include_str!("../data/test_al_project/src/Table50100.al");
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/Table50100.al", code).await;

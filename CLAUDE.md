@@ -19,6 +19,7 @@ zed-al (WASM)         ->  al-lsp (stdio)                            ->  al-seman
 | al-symbols | Symbol index for .app packages |
 | al-semantic | In-process .NET CLR via `netcorehost` |
 | al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host |
+| al-daemon-client | Shared daemon IPC: socket path, JSON-RPC types, DaemonClient |
 | al-test-harness | LSP integration + data-driven tests (dev only) |
 | al-cli | Thin adapter: JSON-RPC client to al-lsp daemon |
 | al-explorer | TUI symbol browser: connects to al-lsp daemon via JSON-RPC |

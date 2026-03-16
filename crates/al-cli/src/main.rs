@@ -5,7 +5,6 @@
 //! the responses for human or --json output.
 
 mod client;
-mod jsonrpc;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -500,9 +499,7 @@ fn print_json<T: Serialize>(value: &T) {
     println!("{}", serde_json::to_string_pretty(value).unwrap());
 }
 
-fn print_json_value(value: &serde_json::Value) {
-    println!("{}", serde_json::to_string_pretty(value).unwrap());
-}
+
 
 /// Build JSON params for a BC server command with common connection fields.
 fn bc_server_params(
@@ -610,7 +607,7 @@ fn cmd_setup(json: bool) -> ExitCode {
     match client.request("setup", None) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let altool = result.get("altoolInstalled").and_then(|v| v.as_bool()).unwrap_or(false);
                 let dotnet = result.get("dotnetVersion").and_then(|v| v.as_str());
@@ -645,7 +642,7 @@ fn cmd_doctor(json: bool) -> ExitCode {
     match client.request("setup", None) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let checks = [
                     ("ALTool", result.get("altoolInstalled").and_then(|v| v.as_bool()).unwrap_or(false)),
@@ -677,7 +674,7 @@ fn cmd_download_symbols(project_dir: Option<&str>, source: Option<&str>, json: b
     match client.request("downloadSymbols", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let downloaded = result.get("downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
                 let failed = result.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -716,7 +713,7 @@ fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
     match client.request("search", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let entries = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if entries.is_empty() {
@@ -749,7 +746,7 @@ fn cmd_object(kind: &str, name: &str, json: bool) -> ExitCode {
     match client.request("object", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 print_symbol_entries(&result);
             }
@@ -768,7 +765,7 @@ fn cmd_by_id(kind: &str, id: i32, json: bool) -> ExitCode {
     match client.request("byId", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 print_symbol_entries(&result);
             }
@@ -787,7 +784,7 @@ fn cmd_events(name: &str, json: bool) -> ExitCode {
     match client.request("events", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let events = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if events.is_empty() {
@@ -827,7 +824,7 @@ fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
     match client.request("subscribers", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let subs = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if subs.is_empty() {
@@ -859,7 +856,7 @@ fn cmd_composed(kind: &str, name: &str, json: bool) -> ExitCode {
     match client.request("composed", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 // Print base object + extensions summary
                 if let Some(base) = result.get("base") {
@@ -896,7 +893,7 @@ fn cmd_packages(json: bool) -> ExitCode {
     match client.request("packages", None) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let pkgs = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if pkgs.is_empty() {
@@ -930,7 +927,7 @@ fn cmd_deps(json: bool) -> ExitCode {
     match client.request("deps", None) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 if let Some(proj) = result.get("project") {
                     let name = proj.get("name").and_then(|v| v.as_str()).unwrap_or("?");
@@ -968,7 +965,7 @@ fn cmd_compile(project_dir: Option<&str>, alc: Option<&str>, json: bool) -> Exit
     match client.request("compile", None) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
                 if success {
@@ -1025,7 +1022,7 @@ fn cmd_lint(file: Option<&str>, all: bool, semantic: bool, analyzers: Option<&st
     match client.request("lint", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let diagnostics = if all {
                     // Multi-file result
@@ -1088,7 +1085,7 @@ fn cmd_format(file: Option<&str>, check: bool, stdin: bool, all: bool, json: boo
         Ok(result) => {
             let changed = result.get("changed").and_then(|v| v.as_bool()).unwrap_or(false);
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else if check {
                 if changed {
                     eprintln!("{file}: would reformat");
@@ -1191,12 +1188,12 @@ fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
         Ok(result) => {
             if result.is_null() {
                 if json {
-                    print_json_value(&serde_json::json!(null));
+                    print_json(&serde_json::json!(null));
                 } else {
                     eprintln!("No symbol at {file}:{line}:{col}");
                 }
             } else if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 // Extract markdown content and display
                 let contents = result.get("contents").and_then(|v| v.as_str()).unwrap_or("");
@@ -1231,11 +1228,11 @@ fn cmd_position_query(method: &str, file: &str, line: u32, col: u32, json: bool)
     match client.request(method, Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else if result.is_null() {
                 eprintln!("No results at {file}:{line}:{col}");
             } else {
-                print_json_value(&result);
+                print_json(&result);
             }
             ExitCode::SUCCESS
         }
@@ -1267,7 +1264,7 @@ fn cmd_file_query(method: &str, file: &str, json: bool) -> ExitCode {
     match client.request(method, Some(params)) {
         Ok(result) => {
             if json || !result.is_null() {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 eprintln!("No results for {file}");
             }
@@ -1294,7 +1291,7 @@ fn cmd_rename(file: &str, line: u32, col: u32, new_name: &str, dry_run: bool, js
     match client.request("rename", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else if result.is_null() {
                 eprintln!("Cannot rename symbol at {file}:{line}:{col}");
             } else if let Some(changes) = result.get("changes").and_then(|v| v.as_object()) {
@@ -1327,7 +1324,7 @@ fn cmd_rules(json: bool) -> ExitCode {
     match client.request("rules", None) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let rules = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
                 println!("{:<10} {:<8} {:<25} DESCRIPTION", "CODE", "SEV", "NAME");
@@ -1361,7 +1358,7 @@ fn cmd_permissions(format: &str, name: &str, id: i64, role_id: &str, json: bool)
     match client.request("permissions", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let content = result.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let count = result.get("objectCount").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1382,7 +1379,7 @@ fn cmd_error_codes(json: bool) -> ExitCode {
     match client.request("errorCodes", None) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let codes = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if codes.is_empty() {
@@ -1410,7 +1407,7 @@ fn cmd_builtins(json: bool) -> ExitCode {
     match client.request("builtinTypes", None) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let types = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if types.is_empty() {
@@ -1444,7 +1441,7 @@ fn cmd_parse(file: &str, json: bool) -> ExitCode {
     match client.request("parse", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let errors = result.get("errors").and_then(|v| v.as_u64()).unwrap_or(0);
                 let nodes = result.get("nodeCount").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1483,14 +1480,14 @@ fn cmd_hints(file: &str, start_line: Option<u32>, end_line: Option<u32>, json: b
     match client.request("inlayHints", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let hints = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if hints.is_empty() {
                     eprintln!("No inlay hints");
                 } else {
                     for h in hints {
-                        print_json_value(h);
+                        print_json(h);
                     }
                     eprintln!("\n{} hints", hints.len());
                 }
@@ -1523,7 +1520,7 @@ fn cmd_fix(file: Option<&str>, all: bool, dry_run: bool, rule: Option<&str>, jso
     match client.request("fix", Some(params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let diag_count = result.get("diagnostics").and_then(|v| v.as_u64()).unwrap_or(0);
                 let fix_count = result.get("fixes").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1655,7 +1652,7 @@ fn cmd_dead_code(json: bool) -> ExitCode {
     match client.request("deadCode", None) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let unused = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if unused.is_empty() {
@@ -1688,7 +1685,7 @@ fn cmd_impact(symbol: &str, json: bool) -> ExitCode {
     match client.request("impact", Some(serde_json::json!({ "symbol": symbol }))) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let sym = result.get("symbol").and_then(|v| v.as_str()).unwrap_or(symbol);
                 let impacted = result.get("impacted").and_then(|v| v.as_array()).map(|v| &v[..]).unwrap_or(&[]);
@@ -1725,7 +1722,7 @@ fn cmd_suggest_event(description: &str, json: bool) -> ExitCode {
     match client.request("suggestEvent", Some(serde_json::json!({ "description": description }))) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 let suggestions = result.get("suggestions").and_then(|v| v.as_array()).map(|v| &v[..]).unwrap_or(&[]);
                 if suggestions.is_empty() {
@@ -1776,7 +1773,7 @@ fn cmd_diag(subcmd: &DiagCommands, json: bool) -> ExitCode {
     match client.request("diag", Some(req_params)) {
         Ok(result) => {
             if json {
-                print_json_value(&result);
+                print_json(&result);
             } else {
                 match cmd {
                     "sessions" => {
@@ -1858,7 +1855,7 @@ fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             match client.request("debug", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let session = result.get("session").and_then(|v| v.as_str()).unwrap_or("?");
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1885,7 +1882,7 @@ fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             match client.request("debug", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let bps = result.get("breakpoints").and_then(|v| v.as_array());
                         if let Some(bps) = bps {
@@ -1911,7 +1908,7 @@ fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             match client.request("debug", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                         let session_id = result.get("sessionId").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1946,7 +1943,7 @@ fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             match client.request("debug", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let val = result.get("result").and_then(|v| v.as_str()).unwrap_or("?");
                         let ty = result.get("typeName").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1966,7 +1963,7 @@ fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             match client.request("debug", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                         println!("Continued. Status: {status}");
@@ -1985,7 +1982,7 @@ fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             match client.request("debug", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                         println!("Stepped. Status: {status}");
@@ -2009,7 +2006,7 @@ fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             match client.request("debug", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let hits = result.get("hits").and_then(|v| v.as_array());
                         if let Some(hits) = hits {
@@ -2038,7 +2035,7 @@ fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             match client.request("debug", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                         println!("Debug session {status}.");
@@ -2334,7 +2331,7 @@ fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
             match client.request("snapshot", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let snapshot_id = result.get("snapshotId").and_then(|v| v.as_str()).unwrap_or("?");
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
@@ -2363,7 +2360,7 @@ fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
             match client.request("snapshot", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let snapshots = result.get("snapshots").and_then(|v| v.as_array());
                         if let Some(snaps) = snapshots {
@@ -2408,7 +2405,7 @@ fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
             match client.request("snapshot", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("?");
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
@@ -2446,7 +2443,7 @@ fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
             match client.request("profiling", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let session_id = result.get("sessionId").and_then(|v| v.as_str()).unwrap_or("?");
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
@@ -2481,7 +2478,7 @@ fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
             match client.request("profiling", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("?");
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
@@ -2507,7 +2504,7 @@ fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
             match client.request("profiling", Some(params)) {
                 Ok(result) => {
                     if json {
-                        print_json_value(&result);
+                        print_json(&result);
                     } else {
                         let duration = result.get("durationMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
                         println!("Profile duration: {duration:.1}ms");

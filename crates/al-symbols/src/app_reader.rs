@@ -103,7 +103,7 @@ pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderE
 }
 
 /// Scan for the ZIP PK\x03\x04 signature starting from byte 4.
-fn find_zip_offset(data: &[u8]) -> Option<usize> {
+pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
     // The standard NAVX header is 40 bytes. Check there first (common case O(1)).
     const STANDARD_HEADER: usize = 40;
     if data.len() > STANDARD_HEADER + 3 && &data[STANDARD_HEADER..STANDARD_HEADER + 4] == ZIP_MAGIC {

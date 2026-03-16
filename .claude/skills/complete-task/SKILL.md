@@ -101,6 +101,7 @@ Do not wait for this — continue immediately.
 
 ## Rules
 
+- **NEVER mark a task as completed without recording proof.** Steps 1-3 (tests, compilation, proof entry) are mandatory gates — if any fail, stop and fix before updating progress. A task without a proof entry in `.claude/data/proof.toml` is NOT complete.
 - **NEVER fabricate test output.** Every `actual_log` must come from a command you just ran.
 - **NEVER skip steps.** All 6 steps are mandatory, in order.
 - Use today's date.

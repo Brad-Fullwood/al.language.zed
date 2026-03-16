@@ -725,11 +725,7 @@ impl LanguageServer for AlServer {
 
         let start = std::time::Instant::now();
         let result = match params.command.as_str() {
-            "al.downloadSymbols" => {
-                workspace::download_symbols_command(self, workspace::DownloadSource::Server).await;
-                Ok(None)
-            }
-            "al.downloadSymbolsServer" => {
+            "al.downloadSymbols" | "al.downloadSymbolsServer" => {
                 workspace::download_symbols_command(self, workspace::DownloadSource::Server).await;
                 Ok(None)
             }
