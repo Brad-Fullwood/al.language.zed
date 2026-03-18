@@ -1,15 +1,15 @@
 [
   {
-    "label": "AL: Package (Compile)",
+    "label": "AL: Compile",
+    "command": "al",
+    "args": ["compile"],
+    "tags": ["al-compile"]
+  },
+  {
+    "label": "AL: Package (.app)",
     "command": "al",
     "args": ["package"],
     "tags": ["al-package"]
-  },
-  {
-    "label": "AL: Package (JSON output)",
-    "command": "al",
-    "args": ["package", "--json"],
-    "tags": ["al-package-json"]
   },
   {
     "label": "AL: Debug Start",
@@ -74,7 +74,7 @@
   {
     "label": "AL: Generate Permission Set",
     "command": "al",
-    "args": ["permissions", "al", "GENERATED"],
+    "args": ["permissions"],
     "tags": ["al-permissions"]
   },
   {
@@ -96,5 +96,23 @@
     "command": "al",
     "args": ["trace", "$ZED_SYMBOL", "--json"],
     "tags": ["al-trace"]
+  },
+  {
+    "label": "AL: Generate Debug Config (.zed/debug.json)",
+    "command": "al",
+    "args": ["init-debug"],
+    "tags": ["al-init-debug"]
+  },
+  {
+    "label": "AL: Dead Code Analysis",
+    "command": "al",
+    "args": ["dead-code", "--json"],
+    "tags": ["al-dead-code"]
+  },
+  {
+    "label": "AL: Impact Analysis",
+    "command": "al",
+    "args": ["impact", "$ZED_SYMBOL", "--json"],
+    "tags": ["al-impact"]
   }
 ]

@@ -22,18 +22,12 @@
 (event_procedure_declaration
   name: (_) @name) @item
 
-; Table field declarations
-(field_declaration
-  name: (_) @name) @item
-
 ; Key declarations
 (key_declaration
+  keyword: (_) @context
   name: (_) @name) @item
 
 ; Enum value declarations
 (enum_value_declaration
-  name: (_) @name) @item
-
-; Variable declarations (global)
-(object_variable_declaration
+  keyword: (_) @context
   name: (_) @name) @item

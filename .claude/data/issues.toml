@@ -80,6 +80,805 @@ is incomplete.
 """
 
 [[issues]]
+id = "ISSUE-067"
+title = "7 Zed tasks reference non-existent al CLI commands"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "plan"
+severity = "bug"
+priority = "HIGH"
+status = "fixed"
+triage = "SCHEDULE"
+resolution = """
+Root cause: ~/.local/bin/al was a stale binary from March 12, before package/debug/new/
+permissions/clear-cache/trace commands were added. Updated to current build. Fixed tasks.json:
+- "al package" (compile) split into separate compile and package tasks
+- "al permissions al GENERATED" → "al permissions" (wrong args)
+- Added dead-code and impact tasks
+All 18 tasks now reference valid CLI commands.
+"""
+description = """
+languages/al/tasks.json defines 16 Zed tasks. 7 reference al CLI commands that don't exist:
+
+MISSING: al package          — task "AL: Package (Compile)" + JSON variant
+MISSING: al debug start/stop — tasks "AL: Debug Start", "AL: Debug Stop"
+MISSING: al new              — task "AL: New Project"
+MISSING: al permissions      — task "AL: Generate Permission Set"
+MISSING: al clear-cache      — task "AL: Clear Symbol Cache"
+MISSING: al trace            — task "AL: Event Trace"
+
+Working (9 tasks): download-symbols, lint, format, doctor, al-explorer.
+
+These tasks appear in Zed's task picker but fail when run. Either implement the missing
+CLI commands or remove the broken tasks until they're implemented.
+
+Related: al compile exists but tasks.json uses 'al package' (wrong command name).
+"""
+
+[[issues]]
+id = "ISSUE-068"
+title = "zed://symbol/ URL handler not implemented — repeated errors in Zed log"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+Zed log shows repeated errors:
+  ERROR [zed::zed::open_listener] unhandled url: zed://symbol/Codeunit%20Sales-Quote%20to%20Order
+
+The extension or LSP is generating zed://symbol/ URLs (likely in hover markdown or
+go-to-definition results) but no handler is registered to open them. Each click produces
+an error. Either implement the URL handler or stop generating these URLs.
+"""
+
+[[issues]]
+id = "ISSUE-069"
+title = "Extension binary install mechanism needed for distribution"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "plan"
+severity = "improvement"
+priority = "HIGH"
+status = "open"
+triage = "SCHEDULE"
+description = """
+The zed-al extension currently finds al-lsp via PATH lookup or a hardcoded installed
+extension path. For distribution via Zed marketplace, the extension needs to download
+al-lsp from GitHub releases on first install.
+
+## Research Notes (2026-03-17)
+
+### Zed Extension Build System
+- Zed's extension builder (extension_builder.rs) builds ONLY two things: extension.wasm
+  (WASM component) and grammar .wasm files. NO native binary build support exists.
+- This applies to both dev and published extensions — there is no cargo build hook for
+  native binaries.
+- The WASM extension itself is responsible for finding/downloading the native binary.
+
+### Available Zed APIs (zed_extension_api 0.7.0)
+- `zed::current_platform() -> (Os, Architecture)` — detect OS/arch
+- `zed::latest_github_release(repo, opts) -> GithubRelease` — find latest release
+- `zed::github_release_by_tag_name(repo, tag) -> GithubRelease` — find specific release
+- `zed::download_file(url, path, file_type) -> Result<()>` — download and extract
+  (supports Gzip, GzipTar, Zip, Uncompressed)
+- `zed::make_file_executable(path) -> Result<()>` — chmod +x
+- `zed::set_language_server_installation_status(id, status)` — UI feedback
+  (None, Downloading, CheckingForUpdate, Failed)
+
+### Binary Storage
+- Extension work dir: `~/.local/share/zed/extensions/work/{extension-id}/`
+- Paths in download_file/make_file_executable are relative to work dir
+- std::fs::metadata works in WASM (WASI fs calls, preopened to work dir)
+- Confirmed: other extensions (csharp, glsl) use `{work_dir}/{tool}-{version}/` pattern
+
+### Implementation Design — Priority Chain in language_server_command()
+1. User-configured explicit path (settings override) — highest priority
+2. Cached downloaded binary (from previous GitHub release download)
+3. PATH lookup (worktree.which("al-lsp")) — catches dev builds and system installs
+4. Download from GitHub releases → cache in work dir → return path
+
+### Standard Pattern (from glsl/buf/protols extensions)
+```rust
+// In language_server_command():
+// 1. Check user settings for explicit path
+// 2. Check in-memory cached_binary_path + fs::metadata
+// 3. Check worktree.which("al-lsp")
+// 4. latest_github_release("owner/repo", { require_assets: true })
+//    → find asset matching platform (e.g. "al-lsp-x86_64-linux.tar.gz")
+//    → download_file(url, "al-lsp-{version}/", GzipTar)
+//    → make_file_executable("al-lsp-{version}/al-lsp")
+//    → clean up old versions
+//    → cache path
+```
+
+### Prerequisites
+- al-lsp must be published as GitHub release artifacts with platform-specific binaries
+  (linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64, windows-x86_64)
+- Need a CI/CD pipeline to build and publish releases
+- Extension needs `cached_binary_path: Option<String>` state on the AlExtension struct
+
+### Reference Files
+- WIT definitions: zed-virtual-docs/crates/extension_api/wit/since_v0.6.0/
+- Canonical examples: zed-virtual-docs/extensions/glsl/src/glsl.rs,
+  extensions/proto/src/language_servers/buf.rs, protols.rs
+- Host download impl: extension_host/src/wasm_host/wit/since_v0_8_0.rs:1034
+"""
+
+[[issues]]
+id = "ISSUE-072"
+title = "al-lsp publishes diagnostics for non-workspace paths (cache/symbol files)"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "PARALLEL"
+description = """
+Zed log shows:
+  WARN skipping diagnostics update, no worktree found for path
+  "/home/bradf/.cache/al-lsp/symbols/Base_Application/Table_83_Item_Journal_Line.al"
+
+al-lsp is publishing diagnostics for virtual files extracted from .app packages in the
+symbol cache directory. These are not workspace files — Zed correctly ignores them but
+logs a warning. al-lsp should only publish diagnostics for files within the workspace
+root, not for cached package symbol files.
+"""
+
+[[issues]]
+id = "ISSUE-073"
+title = "al-lsp starts twice on extension load — possible crash and restart"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "PARALLEL"
+description = """
+Zed log shows two language server starts 3 seconds apart:
+  12:14:52 INFO starting language server process. binary path: al-lsp, args: ["--stdio"]
+  12:14:55 INFO starting language server process. binary path: al-lsp, args: ["--stdio"]
+
+This suggests al-lsp crashes during initial startup and Zed restarts it. Alternatively,
+Zed may be opening two workspaces/worktrees that each start a server instance. Need to
+check al-lsp logs for a crash or panic on first start, and check if Zed is sending
+multiple initialize requests.
+"""
+
+[[issues]]
+id = "ISSUE-074"
+title = "Zed tasks pass file paths with spaces unquoted — al CLI rejects them"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "PARALLEL"
+description = """
+Running "AL: Lint Current File" on a file in a path with spaces fails:
+  error: unexpected argument 'Integration/objects/API/ItemJournalStaging.Table.al' found
+  Usage: al lint [OPTIONS] [FILE]
+  Command: /bin/fish -i -c 'al'
+
+The $ZED_FILE variable in tasks.json expands to an unquoted path. When the path contains
+spaces (e.g. "App Integration/objects/..."), the shell splits it into multiple arguments.
+The al CLI sees the second part as an unexpected positional argument.
+
+The task command logged is just 'al' with no visible args — Zed may be passing args
+incorrectly, or the shell expansion of $ZED_FILE is broken for paths with spaces.
+
+Fix options:
+1. Wrap $ZED_FILE in quotes in tasks.json args: but JSON args are already strings, Zed
+   should handle quoting when spawning the process
+2. This may be a Zed bug with $ZED_FILE expansion in task args for paths containing spaces
+3. Test with a project in a path without spaces to confirm the root cause
+"""
+
+[[issues]]
+id = "ISSUE-075"
+title = "Compilation errors from al compile not shown as diagnostics in Zed"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "PARALLEL"
+description = """
+Running "AL: Compile" task produces a real compiler error:
+  objects/API/ItemJournalAPI.Page.al:43:43: error AL0118:
+  The name 'postedEntryNo' does not exist in the current context.
+
+But Zed shows no diagnostics squiggles or errors in the editor for this file. The
+compilation output only appears in the terminal task output.
+
+Two gaps:
+1. The al CLI "compile" command runs alc and outputs errors to stdout/stderr, but these
+   are not fed back to the LSP as publishDiagnostics. The LSP's Phase 2 diagnostics
+   (semantic/compiler errors via the .NET bridge) should catch these, but either the
+   bridge isn't running, ALTool isn't configured, or the bridge results aren't being
+   published for the affected files.
+
+2. Even without the bridge, the "al compile" task output should ideally be parseable by
+   Zed's problem matcher so errors appear in the diagnostics panel. This would require
+   a problem matcher regex in tasks.json or a Zed-compatible error format.
+
+The compile task works (runs alc, produces correct errors) but the feedback loop to the
+editor is broken — users see errors only in the terminal, not inline in their code.
+"""
+
+[[issues]]
+id = "ISSUE-077"
+title = "AL: Package task shows only 'Compilation failed' with no error details"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "PARALLEL"
+description = """
+Running "AL: Package (.app)" shows:
+  Compilation failed
+  Task finished with exit code: 1
+  Command: /bin/fish -i -c 'al'
+
+No compiler errors, no file paths, no line numbers — just "Compilation failed". If the
+failure is due to real code errors (like the AL0118 seen in ISSUE-075), those errors
+should be printed to stdout/stderr so the user knows what to fix. If the failure is
+due to a broken package step (e.g. alc not found, missing dependencies, .app generation
+failure), that should also be reported with a clear error message.
+
+The al CLI "package" command likely calls compile first then packages the .app — if
+compile fails, the error output from alc should be forwarded to the terminal, not
+swallowed. Check dispatch_package() in daemon.rs and the CLI's package command handler
+to see where error output is lost.
+
+Related: ISSUE-075 (compile errors not shown as diagnostics). Same root cause — error
+output from alc is not being surfaced properly.
+"""
+
+[[issues]]
+id = "ISSUE-079"
+title = "Debug/Attach menus empty — DAP adapter not registered with Zed's debug system"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "fixed"
+triage = "SCHEDULE"
+resolution = """
+Two fixes:
+1. Added [debug_adapters.al] section back to extension.toml. This was removed in ISSUE-040
+   when the schema file was deleted — but removing the entire section deregistered the
+   adapter. The schema_path is optional, so the section works without a schema file.
+
+2. Rewrote src/dap.rs to find al-lsp via worktree.which("al-lsp") instead of looking for
+   a non-existent "proxy" binary. al-lsp's --dap mode runs the DAP server over stdio.
+   Removed the old proxy discovery logic and simplified the binary lookup chain to:
+   user-provided path > PATH lookup > error with clear message.
+
+3. Updated dap_config_to_scenario() build step from "AL: Build (LSP)" (non-existent) to
+   "AL: Compile" (the actual task name).
+"""
+description = """
+Zed's task picker has three sections: Run, Debug, and Attach. All AL tasks appear under
+Run — Debug and Attach are empty. Expected entries under Debug/Attach:
+- AL: Publish (deploy to BC server)
+- AL: Publish with Debugging (deploy + attach debugger)
+- AL: Attach to Server (attach debugger to running BC instance)
+
+The extension implements get_dap_binary(), dap_request_kind(), and dap_config_to_scenario()
+in src/lib.rs and src/dap.rs, but the debug adapter is not appearing in Zed's debugger
+dropdown in the Launch tab.
+
+Issues found:
+1. No AL debugger in Zed's debugger selection dropdown — the DAP adapter registration
+   is either incomplete or the extension.toml is missing the debug adapter declaration
+   (the [debug_adapters.al] section was removed in ISSUE-040 because the schema file
+   was deleted — but removing the entire section also removed the adapter registration)
+
+2. Debug tasks should use Zed's debug task format (with "task_type": "debug") rather
+   than run tasks that shell out to `al debug start`. Zed's debug system handles the
+   DAP protocol, breakpoints, stepping, variables panel, etc.
+
+3. The Launch tab has Program, Working Directory, and Stop on Entry fields for debugger
+   configuration but no AL option in the debugger dropdown to use them.
+
+4. src/dap.rs implements the extension-side DAP hooks but these are never reached because
+   the adapter isn't registered.
+
+Root cause: ISSUE-040 removed [debug_adapters.al] from extension.toml entirely. This
+section needs to be restored with the correct configuration (without referencing the
+deleted schema file). Also need debug-type task entries in tasks.json for Publish and
+Publish with Debugging workflows.
+"""
+
+[[issues]]
+id = "ISSUE-078"
+title = "al-explorer double-click on symbol doesn't open it in Zed"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "open"
+triage = "PARALLEL"
+description = """
+Double-clicking a symbol in al-explorer doesn't open the file in Zed. al-explorer runs
+in a terminal inside Zed — when a user selects a symbol and presses Enter or double-clicks,
+it should open the symbol's source file in the editor at the correct line.
+
+Likely causes:
+1. al-explorer may use `open` or `xdg-open` with a file:// URL, which might not route
+   to the Zed instance that spawned it
+2. al-explorer may try to use the zed:// URL scheme (related to ISSUE-068 zed://symbol/
+   errors in the log) which Zed doesn't handle
+3. al-explorer may not implement the open-in-editor action at all for the current
+   daemon-client architecture (it was originally standalone with al-symbols)
+
+Check al-explorer/src/main.rs for the key handler on Enter/double-click — what command
+does it send to open a file? Does it use `zed`, `xdg-open`, or the zed:// URL scheme?
+"""
+
+[[issues]]
+id = "ISSUE-076"
+title = "Dead code analysis reports false positives — procedures that ARE called flagged as unused"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "PARALLEL"
+description = """
+"AL: Dead Code Analysis" reports procedures as dead code (zeroReferences) that are
+actually called. Example:
+
+  {
+    "f": ".../IJLProcessStaging.Report.al",
+    "k": "procedure",
+    "l": 78,
+    "n": "SetAction",
+    "obj": "IJL Process Staging",
+    "reason": "zeroReferences"
+  }
+
+SetAction is called from other codeunits/pages but dead_code.rs doesn't find the
+references. Root cause likely in find_call_references() or find_variable_references()
+in al-syntax/src/navigation.rs — the reference search only scans the current file or
+workspace .al files, but doesn't account for:
+
+1. Cross-object calls: Rec.SetAction() from a different object won't match a bare
+   "SetAction" text search if the search requires exact token matching
+2. Qualified calls: The call may be via a variable (e.g., IJLProcessStaging.SetAction())
+   which the simple identifier scan doesn't resolve
+3. Report-specific: Report procedures called via REPORT.Run or triggered by the
+   report's request page may not appear as direct identifier references
+
+Related: deferred-dead-code-find-variable-references-name-collision was previously fixed
+by adding find_call_references(), but that fix may be incomplete for cross-object calls.
+The dead code feature needs cross-file qualified reference resolution to avoid false
+positives.
+"""
+
+[[issues]]
+id = "ISSUE-085"
+title = "EditorServices.Host depends on Cursor/VS Code installation — must be self-contained"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "open"
+triage = "STOP"
+description = """
+FUNDAMENTAL DESIGN VIOLATION: The AL debugger (DAP) requires Microsoft.Dynamics.Nav.
+EditorServices.Host, which is ONLY distributed inside the MS AL VS Code extension .vsix.
+It is NOT included in ALTool (the dotnet tool package that ships alc, aldoc, altool).
+
+The al-lsp DAP proxy (crates/al-lsp/src/dap/editor_services.rs) searches:
+1. $AL_EDITOR_SERVICES_PATH env var
+2. Next to alc.dll (never there — ALTool doesn't include it)
+3. ~/.cache/al-lsp/editor-services/ (never populated)
+4. ~/.cursor/extensions/ and ~/.vscode/extensions/ (WRONG — depends on external IDE)
+
+Our extension MUST work without VS Code or Cursor installed. The same violation exists
+in crates/al-dap-client/src/editor_services.rs.
+
+Fix: Auto-download EditorServices.Host from the VS Code marketplace on first use:
+1. Download the .vsix from https://marketplace.visualstudio.com (it's a ZIP file)
+2. Extract extension/bin/{platform}/ to ~/.cache/al-lsp/editor-services/
+3. Use that cached copy for all DAP operations
+4. Add `al setup --download-editor-services` CLI command for explicit download
+5. Remove ALL Cursor/VS Code extension directory scanning
+6. The `al doctor` command should check for EditorServices.Host and offer to download
+
+The .vsix URL follows a known pattern:
+  https://marketplace.visualstudio.com/_apis/public/gallery/publishers/ms-dynamics-smb/
+  vsextensions/al/{version}/vspackage
+
+This is similar to how we download symbol packages from NuGet — fetch, extract, cache.
+Long-term: ISSUE-081 (native DAP) eliminates this dependency entirely.
+"""
+
+[[issues]]
+id = "ISSUE-082"
+title = "al CLI should auto-start daemon when connecting to a project"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+Already implemented — DaemonClient::connect() in al-daemon-client auto-starts the daemon
+via start_daemon() + wait_for_daemon(). Verified working: `al doctor` in a project dir
+starts the daemon, connects, and returns results.
+"""
+description = """
+The al CLI should transparently start the al-lsp daemon if it's not running when a
+command is executed. Currently DaemonClient::connect() in al-daemon-client does attempt
+auto-start (start_daemon + wait_for_daemon), but this may not work reliably or may not
+be passing the correct project path.
+
+The flow should be: user runs `al compile` in a project directory → CLI detects no daemon
+→ starts al-lsp daemon for that project → connects → runs the command. Zero manual setup.
+This is critical for MCP/agent usage where there's no interactive setup step.
+"""
+
+[[issues]]
+id = "ISSUE-083"
+title = "al CLI needs 'authenticate' command for interactive browser-based auth"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+Added `al authenticate` CLI command with three modes:
+- `al authenticate` (login) — opens browser for OAuth, caches token. 120s timeout.
+- `al authenticate status` — shows cached token status per tenant (from project config)
+- `al authenticate clear` — clears cached tokens
+
+Daemon-side: added dispatch_authenticate() RPC method. Uses al-symbols::oauth::acquire_token()
+which does browser auth code + PKCE, with device code fallback. Tokens cached to disk
+with refresh token support. Made token_cache_path() public in al-symbols for status checks.
+Re-exported oauth module from al-core for al-lsp access.
+"""
+description = """
+There is no way to authenticate to BC from the CLI. The debug/publish flow requires auth
+tokens (AAD/MicrosoftEntraID) but there's no `al authenticate` command that opens a
+browser for the OAuth flow and caches the token.
+
+Needed:
+1. `al authenticate` — opens browser for OAuth, caches token for subsequent commands
+2. `al authenticate --status` — shows current auth state (cached token, expiry, tenant)
+3. `al authenticate --clear` — clears cached tokens
+
+The auth flow should use the same mechanism as EditorServices.Host (device code flow or
+browser redirect to localhost). Tokens should be cached in a secure location and reused
+by compile, package, debug, download-symbols commands automatically.
+
+Currently al-symbols/src/oauth.rs has OAuth token caching (save_cached_token /
+load_cached_token) but this is only used for NuGet/BC server symbol downloads, not for
+the compile/publish/debug flow which goes through EditorServices.Host.
+"""
+
+[[issues]]
+id = "ISSUE-084"
+title = "al CLI should use cached auth tokens for compile/publish/debug"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+Already working — al-symbols::oauth::acquire_token() checks the disk cache first, tries
+refresh token if expired, and only does interactive auth as last resort. The token cache
+at ~/.cache/al-lsp/oauth/ is shared across CLI, daemon, and Zed sessions. Verified:
+after authenticating via Zed debug session, `al authenticate status` shows the cached
+token as valid. EditorServices.Host also caches its own tokens independently.
+"""
+description = """
+The compile/publish/debug flow through EditorServices.Host handles its own authentication
+independently. Tokens acquired via the interactive browser flow should be cached and reused
+across CLI invocations, MCP calls, and Zed debug sessions.
+
+Currently each debug session triggers a fresh auth flow. If the user authenticated via
+`al authenticate` or via a previous Zed debug session, subsequent commands should reuse
+that cached token without prompting again (until expiry).
+
+The EditorServices.Host already caches tokens (seen in the Zed log: "these credentials
+are cached. Clear the credentials cache to authenticate as another user"). The question
+is whether our CLI/daemon can access or share that cache, or if we need our own token
+cache that gets passed to EditorServices.Host.
+"""
+
+[[issues]]
+id = "ISSUE-081"
+title = "Native DAP implementation — eliminate EditorServices.Host dependency"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "fixed"
+triage = "STOP"
+resolution = """
+Implemented native DAP server in al-dap-client (bc_debug.rs + native_dap.rs).
+Zero dependency on EditorServices.Host.
+
+The native DAP:
+- Speaks standard DAP over stdio to Zed
+- Compiles via alc (dotnet tool)
+- Authenticates via OAuth (browser + device code, cached tokens)
+- Publishes .app via BC REST API (multipart form POST to /v2.0/{env}/dev/apps)
+- Connects to BC debug hub via SignalR WebSocket
+- Sets breakpoints via SignalR AddBreakpoint — VERIFIED by BC server
+- Opens browser with correct debug context URL (connectioncontext, debuggingcontext, sk params)
+- Handles continue, step, variables, evaluate, disconnect via SignalR hub
+
+Protocol was reverse-engineered by:
+1. Decompiling EditorServices.Protocol.dll with ilspycmd (HubBasedDebuggerService class)
+2. Capturing the DAP wire protocol by spawning EditorServices.Host directly
+3. Testing each SignalR hub method against the live BC cloud sandbox
+
+Key findings:
+- BC debug hub methods: AddBreakpoint(ApplicationObjectIdWrapper, SourcePosition, condition),
+  DebugAdapterConfigurationDone(DebugOptions), SetBreakpointResponse, StopDebugging, etc.
+- ApplicationObjectIdWrapper: {ObjectType: int, ObjectNumber: int} (PascalCase)
+- SourcePosition: {Line: ushort, Column: ushort}
+- breakOnError must be boolean, not string (EditorServices patches this internally)
+- Browser URL needs connectioncontext/debuggingcontext/sk = SignalR ConnectionId
+- setBreakpoints must come AFTER launch (project context needed)
+
+Legacy proxy retained as --dap-legacy flag for fallback.
+"""
+description = """
+EditorServices.Host is NOT in ALTool — it's only in the VS Code .vsix. Our extension
+CANNOT depend on VS Code/Cursor being installed (ISSUE-085). Implement DAP natively.
+
+## Research (2026-03-17): The BC Debug Protocol is Simple
+
+Extracted from EditorServices.Protocol.dll — the entire debug API is 13 SignalR methods:
+
+| SignalR Method | DAP Equivalent |
+|---|---|
+| OpenConnectionAsync | session setup |
+| Attach | launch/attach request |
+| ConfigurationDoneAsync | configurationDone |
+| ContinueAsync | continue |
+| AddBreakpointAsync | setBreakpoints |
+| RemoveBreakpointAsync | setBreakpoints |
+| UpdateBreakpointAsync | setBreakpoints |
+| GetVariablesAsync | variables |
+| ExpandGlobalsAsync | scopes |
+| ExpandNodeAsync | variables (expand child) |
+| GetWatchNodeAsync | evaluate |
+| GetSourceAsync | source |
+| TerminateSession | disconnect/terminate |
+| IsAlive | health check |
+
+## REST API (from captured Zed debug session)
+
+1. GET  /v2.0/{env}/dev/metadata?tenant={id} — server info
+2. POST /v2.0/{env}/dev/apps?tenant={id}&SchemaUpdateMode=sync&DependencyPublishingOption=default — publish .app
+3. SignalR hub connection for debug session
+
+## What We Already Have
+
+- OAuth authentication (al-symbols/oauth.rs) — browser + device code + token caching
+- BC REST client (al-symbols/bc_server.rs) — authenticated HTTP
+- DAP protocol types (al-dap-client/protocol.rs) — Request/Response/Event
+- DAP framing (al-lsp/dap/mod.rs) — Content-Length headers, stdio
+- tokio async runtime
+
+## What We Need
+
+1. SignalR client — WebSocket + JSON hub protocol (crate: signalrs-client or raw tokio-tungstenite)
+2. Publish endpoint — POST .app file to /dev/apps (simple multipart/form upload)
+3. Debug hub adapter — translate 13 SignalR methods ↔ DAP messages
+4. Session management — connect, authenticate, attach, detach
+
+## Implementation Plan
+
+Phase 1: Publish (no debug)
+- REST API: authenticate → POST .app → report success/failure
+- Replace compile_project() in session.rs with native REST publish
+
+Phase 2: Debug session setup
+- SignalR: connect to debug hub → Attach → ConfigurationDoneAsync
+- Translate DAP initialize/launch to SignalR calls
+
+Phase 3: Breakpoints + stepping
+- AddBreakpointAsync/RemoveBreakpointAsync ↔ setBreakpoints
+- ContinueAsync ↔ continue
+- Step (if available via SignalR)
+
+Phase 4: Variable inspection
+- GetVariablesAsync/ExpandGlobalsAsync/ExpandNodeAsync ↔ variables/scopes
+- GetWatchNodeAsync ↔ evaluate
+"""
+
+[[issues]]
+id = "ISSUE-080"
+title = "DAP session fails with deserialization error: invalid type null expected string"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "fixed"
+triage = "STOP"
+resolution = """
+EditorServices.Host sends non-standard DAP responses with null values for required string
+fields (command, event, etc.). Zed's DAP deserializer expects non-null strings and fails.
+
+Added patch_incoming() to al-lsp/src/dap/mod.rs that processes all messages from
+EditorServices.Host before forwarding to Zed. It replaces null values for command, event,
+message, and type fields with empty strings. This is applied on top of the existing
+ensure_seq() patching (which adds missing seq fields).
+"""
+description = """
+After successful compile, publish, and SignalR connection, the debug session fails:
+  error: deserializing server message: invalid type: null, expected a string
+
+The full flow works up to the DAP protocol exchange:
+1. Compile succeeds (with warnings)
+2. Authentication to BC cloud succeeds
+3. Package published successfully
+4. SignalR hub connection established
+5. DAP launch request sent with correct config
+6. FAILS: Server response contains a null field where al-dap-client expects a string
+
+The bug is in al-dap-client's DAP message deserialization. A field in the BC server's
+DAP response is null/missing but the Rust struct has it as String (not Option<String>).
+This is a known class of bug — the EditorServices.Host DAP server sends non-standard
+responses with optional fields that our strict deserialization rejects.
+
+Fix: Find the DAP response struct in al-dap-client that fails to deserialize and make
+the relevant String field(s) Option<String> with #[serde(default)].
+"""
+
+[[issues]]
+id = "ISSUE-071"
+title = "al-explorer missing objects (e.g. Customer table) and Events/Call Graph pages return nothing"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "PARALLEL"
+description = """
+al-explorer has three problems observed during real-world testing:
+
+1. Missing objects: Core package symbols like the Customer table are not shown in the
+   object list. These are from the Base Application .app package and should be in the
+   symbol index. Either packages aren't fully loaded, the search/filter is too restrictive,
+   or the daemon's "search" RPC method doesn't return all object types.
+
+2. Events page returns no results: The Events tab (which should list IntegrationEvent and
+   BusinessEvent publishers from packages) shows nothing. The daemon has "events" and
+   "subscribers" RPC methods — either al-explorer isn't calling them correctly, or the
+   event index isn't populated.
+
+3. Call Graph page returns no results: The call graph / event trace visualization shows
+   nothing. The daemon has "trace", "entrypoints", "graphExport", and "insightStats"
+   RPC methods. Either al-explorer doesn't implement these pages, or the insight graph
+   isn't built for the loaded packages.
+
+Diagnosis steps:
+- Run `al search Customer` to check if the daemon returns the table
+- Run `al events OnAfterPost` to check if events are indexed
+- Run `al trace "Sales-Post"` to check if the insight graph works
+- If CLI commands work but al-explorer doesn't, the bug is in al-explorer's RPC calls
+- If CLI commands also fail, the bug is in the daemon or symbol index
+"""
+
+[[issues]]
+id = "ISSUE-070"
+title = "Extension missing Configure button in Zed Extensions panel"
+type = "architecture"
+reporter = "user"
+date = "2026-03-17"
+category = "idea"
+severity = "improvement"
+priority = "MEDIUM"
+status = "open"
+triage = "SCHEDULE"
+description = """
+Other installed Zed extensions show a "Configure" button next to "Uninstall" in the
+Extensions panel. Our AL extension doesn't have this.
+
+This is the Zed equivalent of VS Code's extension settings — global/user-level settings
+for the extension and LSP, NOT project-level settings (those belong in app.json/.vscode).
+The extension already handles settings via workspace/didChangeConfiguration and passes
+them through to al-lsp (see settings.rs and .claude/data/settings.toml for the VS Code →
+Zed mapping). The Configure button would give users a proper UI to set these, e.g.:
+
+- LSP configuration: al-lsp binary path, ALTool path override, log level
+- Extension behaviour: auto-download symbols on open, symbol cache location
+- Editor defaults: formatting options, lint rule severity overrides
+- BC environment defaults: default auth method, default server URL template
+
+Need to investigate what triggers Zed to show the configure button — likely requires
+declaring a settings schema in extension.toml or implementing a specific extension API
+method. Check how extensions like rust-analyzer, python, or typescript expose their
+settings UI.
+"""
+
+[[issues]]
+id = "ISSUE-066"
+title = "No test validates tree-sitter query files against grammar — silent breakage until Zed load"
+type = "infra"
+reporter = "user"
+date = "2026-03-16"
+category = "constraint"
+severity = "bug"
+priority = "CRITICAL"
+status = "fixed"
+triage = "STOP"
+resolution = """
+Added crates/al-syntax/tests/query_validation.rs with 11 tests — one per .scm file plus a
+catch-all that validates ALL .scm files in languages/al/. Uses tree-sitter Query::new() which
+returns errors for invalid node types or impossible patterns. Immediately caught 4 additional
+broken queries beyond the original ISSUE-065:
+- brackets.scm: if_statement -> kw_end impossible pattern (fixed)
+- outline.scm: field_declaration doesn't exist, object_section has no name field (fixed)
+- inline_values.scm: identifier not a valid child of name field (fixed)
+Any future grammar or query changes that break compatibility will be caught by cargo test.
+"""
+description = """
+The languages/al/*.scm query files (highlights, brackets, outline, folds, indents, etc.)
+are never validated against the tree-sitter-al grammar during cargo test. They can reference
+non-existent node types, use impossible parent-child patterns, or have syntax errors — and
+nothing catches it until the user loads the extension in Zed and gets runtime errors.
+
+This caused three separate failures in one session:
+1. ISSUE-065: 29 missing externals made highlights.scm invalid ("Invalid node type kw_analysisview")
+2. brackets.scm: if_statement pattern referenced kw_end which isn't a direct child
+3. outline.scm: referenced field_declaration which doesn't exist in the grammar
+
+Required fixes:
+(1) A test in al-syntax (or al-test-harness) that loads every .scm file from languages/al/
+    and validates it against the compiled tree-sitter-al grammar. tree-sitter's Query::new()
+    returns an error for invalid node types — use that.
+(2) A test in tree-sitter-al that validates queries/highlights.scm against its own grammar.
+(3) Both must run as part of `cargo test` so they catch issues before they reach Zed.
+"""
+
+[[issues]]
 id = "ISSUE-051"
 title = "tree-sitter-al submodule missing data/builtin_variables.json — blocks compilation"
 type = "infra"

@@ -88,23 +88,23 @@ impl DebugSession {
             "supportsRunInTerminalRequest": false,
         });
         client
-            .send_request_timeout("initialize", Some(init_args), Duration::from_secs(30))
+            .send_request_timeout("initialize", Some(init_args), Duration::from_secs(60))
             .await?;
 
         // 6. Wait for initialized event
         client
-            .wait_for_event("initialized", Duration::from_secs(30))
+            .wait_for_event("initialized", Duration::from_secs(60))
             .await?;
 
         // 7. configurationDone
         client
-            .send_request("configurationDone", None)
+            .send_request_timeout("configurationDone", None, Duration::from_secs(60))
             .await?;
 
         // 8. Launch with server config
         let launch_args = build_launch_args(&launch_config, project_root);
         client
-            .send_request_timeout("launch", Some(launch_args), Duration::from_secs(30))
+            .send_request_timeout("launch", Some(launch_args), Duration::from_secs(120))
             .await?;
 
         info!("Debug session started");
@@ -739,7 +739,7 @@ async fn compile_project(alc_path: &Path, project_root: &Path) -> Result<()> {
     let mut cmd = tokio::process::Command::new("dotnet");
     cmd.arg(alc_path.display().to_string());
     cmd.arg(format!("/project:{}", project_root.display()));
-    cmd.arg(format!("/out:{}", project_root.display()));
+    // Don't pass /out: — alc defaults to the project directory with auto-generated .app name
 
     let packages_dir = project_root.join(".alpackages");
     if packages_dir.is_dir() {

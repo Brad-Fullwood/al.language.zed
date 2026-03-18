@@ -3,10 +3,14 @@
 //! Provides a `DapClient` for low-level DAP communication and a
 //! `DebugSession` (T404b) for high-level AL debug lifecycle management.
 //!
-//! This crate communicates with Microsoft's EditorServices.Host binary
-//! via the Debug Adapter Protocol over stdio. It does NOT depend on
-//! al-core, al-syntax, or al-symbols.
+//! Two modes:
+//! 1. Native: `bc_debug` module talks directly to BC via REST + SignalR (no external binary)
+//! 2. Legacy: `client` + `session` modules proxy through EditorServices.Host via DAP/stdio
+//!
+//! This crate does NOT depend on al-core, al-syntax, or al-symbols.
 
+pub mod bc_debug;
+pub mod native_dap;
 pub mod client;
 pub mod config;
 pub mod editor_services;
@@ -46,6 +50,15 @@ pub enum DapError {
 
     #[error("Operation timed out after {0:?}")]
     Timeout(Duration),
+
+    #[error("Publish failed: {0}")]
+    PublishFailed(String),
+
+    #[error("Connection failed: {0}")]
+    ConnectionFailed(String),
+
+    #[error("Server error: {0}")]
+    ServerError(String),
 }
 
 /// Convenience alias for `Result<T, DapError>`.

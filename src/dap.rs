@@ -1,21 +1,15 @@
-use std::collections::HashMap;
-
 use serde_json::{json, Value};
 use zed_extension_api as zed;
 
 /// Build the DAP binary configuration for the AL debug adapter.
 ///
-/// The WASM sandbox cannot scan filesystem directories (read_dir fails),
-/// so we delegate server discovery to the proxy binary which runs natively.
-/// The proxy's `--dap` mode finds the AL server and exec()s into it
-/// with `/startDebugging`.
+/// al-lsp's `--dap` mode runs the DAP server over stdio. Zed communicates
+/// with it using the DAP protocol for breakpoints, stepping, etc.
 pub fn get_dap_binary(
     config: zed::DebugTaskDefinition,
     user_provided_debug_adapter_path: Option<String>,
     worktree: &zed::Worktree,
 ) -> zed::Result<zed::DebugAdapterBinary> {
-    let env_vec = worktree.shell_env();
-    let env_map: HashMap<String, String> = env_vec.into_iter().collect();
     let workspace_path = worktree.root_path();
 
     let config_json: Value =
@@ -32,48 +26,34 @@ pub fn get_dap_binary(
         zed::StartDebuggingRequestArgumentsRequest::Launch
     };
 
-    if let Some(path) = user_provided_debug_adapter_path {
-        let mut args = vec![
-            "/startDebugging".to_string(),
-            format!("/projectRoot:{}", workspace_path),
-        ];
-        if let Some(browser) = config_json.get("browser").and_then(|b| b.as_str()) {
-            args.push(format!("/browser:{}", browser));
-        }
-        return Ok(zed::DebugAdapterBinary {
-            command: Some(path),
-            arguments: args,
-            envs: Default::default(),
-            cwd: Some(workspace_path.to_string()),
-            connection: None,
-            request_args: zed::StartDebuggingRequestArguments {
-                configuration: config.config,
-                request,
-            },
-        });
-    }
-
-    let proxy_path = crate::discovery::find_proxy_path(&env_map)
-        .ok_or_else(|| "AL LSP proxy not found. Cannot start debug adapter.".to_string())?;
-
-    let server_hint = worktree
-        .which("Microsoft.Dynamics.Nav.EditorServices.Host")
-        .unwrap_or_else(|| "auto".to_string());
+    // Find al-lsp binary: user-provided path > PATH lookup
+    let al_lsp_path = if let Some(path) = user_provided_debug_adapter_path {
+        path
+    } else if let Some(path) = worktree.which("al-lsp") {
+        path
+    } else {
+        return Err(
+            "al-lsp not found. Install al-lsp or set the debug adapter path in Zed settings."
+                .to_string(),
+        );
+    };
 
     let mut args = vec![
         "--dap".to_string(),
-        server_hint,
         format!("/projectRoot:{}", workspace_path),
     ];
 
+    if let Some(server) = config_json.get("server").and_then(|s| s.as_str()) {
+        args.push(format!("/server:{}", server));
+    }
     if let Some(browser) = config_json.get("browser").and_then(|b| b.as_str()) {
         args.push(format!("/browser:{}", browser));
     }
 
     Ok(zed::DebugAdapterBinary {
-        command: Some(proxy_path),
+        command: Some(al_lsp_path),
         arguments: args,
-        envs: Default::default(),
+        envs: vec![("AL_DAP_CAPTURE".to_string(), "/tmp/dap-capture.log".to_string())],
         cwd: Some(workspace_path.to_string()),
         connection: None,
         request_args: zed::StartDebuggingRequestArguments {
@@ -108,7 +88,6 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
     match &config.request {
         zed::DebugRequest::Launch(launch) => {
             al_config.insert("request".to_string(), json!("launch"));
-            // Use program as server URL if provided
             if !launch.program.is_empty() {
                 al_config.insert("server".to_string(), json!(launch.program));
             }
@@ -129,8 +108,17 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
     Ok(zed::DebugScenario {
         label: config.label,
         adapter: "al".to_string(),
-        build: Some(zed::BuildTaskDefinition::ByName(
-            "AL: Build (LSP)".to_string(),
+        build: Some(zed::BuildTaskDefinition::Template(
+            zed::BuildTaskDefinitionTemplatePayload {
+                locator_name: None,
+                template: zed::BuildTaskTemplate {
+                    label: "AL: Compile".to_string(),
+                    command: "al".to_string(),
+                    args: vec!["compile".to_string()],
+                    env: Default::default(),
+                    cwd: None,
+                },
+            },
         )),
         config: Value::Object(al_config).to_string(),
         tcp_connection: None,

@@ -614,7 +614,7 @@ fn open_browser(url: &str) -> bool {
 // Token cache
 // ---------------------------------------------------------------------------
 
-fn token_cache_path(tenant: &str) -> PathBuf {
+pub fn token_cache_path(tenant: &str) -> PathBuf {
     let cache_dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("al-lsp")

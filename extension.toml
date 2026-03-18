@@ -17,6 +17,10 @@ version = "0.7.0"
 name = "AL Language Server"
 languages = ["AL"]
 
+[debug_adapters.al]
+
+[debug_locators.al]
+
 [grammars.al]
 repository = "https://github.com/Brad-Fullwood/AL-Tree-Sitter"
-rev = "ca7ff5e61b74cc74f64b603e78b40eef3f5ac0c4"
+rev = "8d3cceae5459d5b1efa37e17d2dcee3186e111df"

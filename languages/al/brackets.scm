@@ -7,10 +7,10 @@
 ; begin/end blocks (procedures, triggers, etc.)
 ((begin_end_block (kw_begin) @open (kw_end) @close))
 
-; if/then (the if keyword opens, end closes)
-((if_statement (kw_if) @open (kw_end) @close))
+; if/then — kw_if opens, the begin_end_block's kw_end closes
+((if_statement (kw_if) @open))
 
-; case/of
+; case — kw_case opens, kw_end closes (kw_end is a direct child of case_statement)
 ((case_statement (kw_case) @open (kw_end) @close))
 
 ; repeat/until

@@ -62,6 +62,9 @@ pub mod symbols {
         pub use al_symbols::nuget::{AppDependency, NuGetClient, NuGetFeed};
     }
     pub use al_symbols::{AppDependency, NuGetClient, NuGetFeed};
+    pub mod oauth {
+        pub use al_symbols::oauth::{acquire_token, token_cache_path};
+    }
 }
 
 /// Re-exports from al-semantic for al-lsp consumption.

@@ -260,6 +260,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "builtinTypes" => dispatch_builtin_types(workspace, id),
         "setup" => dispatch_setup(workspace, id),
         "clearCache" => dispatch_clear_cache(id),
+        "authenticate" => dispatch_authenticate(workspace, id, &params).await,
         "downloadSymbols" => dispatch_download_symbols(workspace, id, &params),
         "debug" => dispatch_debug(workspace, id, &params).await,
         "snapshot" => dispatch_snapshot(id, &params).await,
@@ -1554,6 +1555,129 @@ fn dispatch_clear_cache(id: u64) -> Response {
     }
 }
 
+
+async fn dispatch_authenticate(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let cmd = params.get("cmd").and_then(|v| v.as_str()).unwrap_or("login");
+
+    match cmd {
+        "status" => {
+            // Check cached token status for all known tenants
+            let tenants = get_project_tenants(workspace);
+            let mut statuses = Vec::new();
+            for tenant in &tenants {
+                let cache_path = al_core::symbols::oauth::token_cache_path(tenant);
+                let cached = std::fs::read_to_string(&cache_path).ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+                if let Some(cached) = cached {
+                    let expires_at = cached.get("expires_at").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    statuses.push(serde_json::json!({
+                        "tenant": tenant,
+                        "authenticated": expires_at > now + 60,
+                        "expiresAt": expires_at,
+                        "expired": expires_at <= now + 60,
+                    }));
+                } else {
+                    statuses.push(serde_json::json!({
+                        "tenant": tenant,
+                        "authenticated": false,
+                    }));
+                }
+            }
+            Response {
+                id,
+                result: Some(serde_json::json!({ "tenants": statuses })),
+                error: None,
+            }
+        }
+        "clear" => {
+            let tenants = get_project_tenants(workspace);
+            let tenant_filter = params.get("tenant").and_then(|v| v.as_str());
+            let mut cleared = 0;
+            for tenant in &tenants {
+                if let Some(filter) = tenant_filter {
+                    if tenant != filter { continue; }
+                }
+                let cache_path = al_core::symbols::oauth::token_cache_path(tenant);
+                if std::fs::remove_file(&cache_path).is_ok() {
+                    cleared += 1;
+                }
+            }
+            Response {
+                id,
+                result: Some(serde_json::json!({ "cleared": cleared })),
+                error: None,
+            }
+        }
+        "login" | _ => {
+            let tenant = params.get("tenant").and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| get_project_tenants(workspace).into_iter().next());
+
+            let Some(tenant) = tenant else {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: "No tenant found. Specify --tenant or configure a launch config with a tenant.".to_string(),
+                    }),
+                };
+            };
+
+            let client = reqwest::Client::new();
+            let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let msgs_clone = messages.clone();
+
+            match al_core::symbols::oauth::acquire_token(&client, &tenant, move |msg| {
+                msgs_clone.lock().unwrap().push(msg.to_string());
+                eprintln!("{msg}");
+            }).await {
+                Ok(_token) => {
+                    let msgs = messages.lock().unwrap();
+                    Response {
+                        id,
+                        result: Some(serde_json::json!({
+                            "status": "authenticated",
+                            "tenant": tenant,
+                            "messages": *msgs,
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => {
+                    Response {
+                        id,
+                        result: None,
+                        error: Some(RpcError {
+                            code: error_codes::INTERNAL_ERROR,
+                            message: format!("Authentication failed: {e}"),
+                        }),
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn get_project_tenants(workspace: &Workspace) -> Vec<String> {
+    let mut tenants = Vec::new();
+    if let Ok(guard) = workspace.project.try_read() {
+        if let Some(project) = guard.as_ref() {
+            for cfg in &project.server_configs {
+                if let Some(t) = &cfg.tenant {
+                    if !t.is_empty() && !tenants.contains(t) {
+                        tenants.push(t.clone());
+                    }
+                }
+            }
+        }
+    }
+    tenants
+}
 
 fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("nuget");

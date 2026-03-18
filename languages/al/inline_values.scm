@@ -3,12 +3,8 @@
 
 ; Local variables in procedures
 (regular_variable_declaration
-  name: (identifier) @value)
-
-; Object-level variables
-(object_variable_declaration
-  name: (identifier) @value)
+  name: (_) @value)
 
 ; Parameters
 (parameter
-  name: (identifier) @value)
+  name: (_) @value)

@@ -19,7 +19,8 @@
             "\t\"longRunningSqlStatementsThreshold\": 500,",
             "\t\"numberOfSqlStatements\": 10,",
             "\t\"tenant\": \"default\",",
-            "\t\"usePublicURLFromServer\": true",
+            "\t\"usePublicURLFromServer\": true,",
+            "\t\"useMcpServerForDebugging\": true",
             "}"
         ],
         "description": "Publish the package to your own server"
@@ -40,7 +41,8 @@
             "\t\"enableSqlInformationDebugger\": true,",
             "\t\"enableLongRunningSqlStatements\": true,",
             "\t\"longRunningSqlStatementsThreshold\": 500,",
-            "\t\"numberOfSqlStatements\": 10",
+            "\t\"numberOfSqlStatements\": 10,",
+            "\t\"useMcpServerForDebugging\": true",
             "}"
         ],
         "description": "Publish the package to the Microsoft cloud sandbox"
@@ -63,7 +65,8 @@
             "\t\"longRunningSqlStatementsThreshold\": 500,",
             "\t\"numberOfSqlStatements\": 10,",
             "\t\"breakOnNext\": \"WebServiceClient\",",
-            "\t\"tenant\": \"default\"",
+            "\t\"tenant\": \"default\",",
+            "\t\"useMcpServerForDebugging\": true",
             "}"
         ],
         "description": "Attach to the client on your server"
@@ -83,10 +86,58 @@
             "\t\"enableLongRunningSqlStatements\": true,",
             "\t\"longRunningSqlStatementsThreshold\": 500,",
             "\t\"numberOfSqlStatements\": 10,",
-            "\t\"breakOnNext\": \"WebServiceClient\"",
+            "\t\"breakOnNext\": \"WebServiceClient\",",
+            "\t\"useMcpServerForDebugging\": true",
             "}"
         ],
         "description": "Attach to the client on the cloud sandbox"
+    },
+    "AL: Attach to agent session on the cloud sandbox": {
+        "prefix": "al-attach-agent-cloud",
+        "body": [
+            "{",
+            "\t\"adapter\": \"al\",",
+            "\t\"label\": \"${0:Attach: Agent on Microsoft cloud sandbox}\",",
+            "\t\"request\": \"attach\",",
+            "\t\"environmentType\": \"Sandbox\",",
+            "\t\"environmentName\": \"sandbox\",",
+            "\t\"breakOnError\": \"All\",",
+            "\t\"breakOnRecordWrite\": \"None\",",
+            "\t\"enableSqlInformationDebugger\": true,",
+            "\t\"enableLongRunningSqlStatements\": true,",
+            "\t\"longRunningSqlStatementsThreshold\": 500,",
+            "\t\"numberOfSqlStatements\": 10,",
+            "\t\"breakOnNext\": \"Agent\",",
+            "\t\"userId\": \"${1:<Agent User Security ID>}\",",
+            "\t\"useMcpServerForDebugging\": true",
+            "}"
+        ],
+        "description": "Attach to an agent session on the cloud sandbox"
+    },
+    "AL: Attach to an agent session on your server": {
+        "prefix": "al-attach-agent-server",
+        "body": [
+            "{",
+            "\t\"adapter\": \"al\",",
+            "\t\"label\": \"${1:Attach: Agent on your own server}\",",
+            "\t\"request\": \"attach\",",
+            "\t\"environmentType\": \"OnPrem\",",
+            "\t\"server\": \"${2|http://bcserver,http://localhost|}\",",
+            "\t\"serverInstance\": \"${3:BC}\",",
+            "\t\"authentication\": \"${4|UserPassword,Windows,AAD,MicrosoftEntraID|}\",",
+            "\t\"breakOnError\": \"All\",",
+            "\t\"breakOnRecordWrite\": \"None\",",
+            "\t\"enableSqlInformationDebugger\": true,",
+            "\t\"enableLongRunningSqlStatements\": true,",
+            "\t\"longRunningSqlStatementsThreshold\": 500,",
+            "\t\"numberOfSqlStatements\": 10,",
+            "\t\"breakOnNext\": \"Agent\",",
+            "\t\"tenant\": \"default\",",
+            "\t\"userId\": \"${5:<Agent User Security ID>}\",",
+            "\t\"useMcpServerForDebugging\": true",
+            "}"
+        ],
+        "description": "Attach to an agent session on your server"
     },
     "AL: Initialize a snapshot debugging session on cloud": {
         "prefix": "al-snapshot-cloud",

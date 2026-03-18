@@ -96,7 +96,16 @@ impl zed::Extension for AlExtension {
             });
         }
 
-        // Neither bundled proxy nor user-configured path is available.
+        // Try finding al-lsp on PATH (works for dev builds, cargo install, etc.)
+        if let Some(path_binary) = worktree.which("al-lsp") {
+            return Ok(zed::Command {
+                command: path_binary,
+                args: user_args,
+                env: vec![],
+            });
+        }
+
+        // None of the above worked.
         let platform = platform::detect_platform(&env_map);
         let expected_path = if let Some(home) = env_map.get("HOME") {
             let base = platform.extensions_base(home);
@@ -170,12 +179,8 @@ impl zed::Extension for AlExtension {
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<Option<serde_json::Value>> {
-        let workspace_path = worktree.root_path();
-
-        // User overrides only — proxy provides defaults from package.json
-        let mut al_config = json!({
-            "workspaceRootPath": workspace_path
-        });
+        // User overrides only — workspace root is already provided via rootUri in initialize
+        let mut al_config = json!({});
 
         if let Ok(lsp_settings) = LspSettings::for_worktree(language_server_id.as_ref(), worktree) {
             if let Some(user_settings) = &lsp_settings.settings {
@@ -209,6 +214,62 @@ impl zed::Extension for AlExtension {
         config: zed::DebugConfig,
     ) -> Result<zed::DebugScenario> {
         dap::dap_config_to_scenario(config)
+    }
+
+    fn dap_locator_create_scenario(
+        &mut self,
+        _locator_name: String,
+        build_task: zed::TaskTemplate,
+        _resolved_label: String,
+        _debug_adapter_name: String,
+    ) -> Option<zed::DebugScenario> {
+        // Create debug scenarios for AL compile/package tasks
+        let label = &build_task.label;
+        let command = &build_task.command;
+
+        // Only create scenarios for AL-related build tasks
+        if command != "al" {
+            return None;
+        }
+
+        let args_str = build_task.args.join(" ");
+
+        if args_str.contains("compile") || args_str.contains("package") {
+            // Compile/package task → offer "Publish with Debugging"
+            Some(zed::DebugScenario {
+                label: format!("AL: Publish with Debugging ({})", label),
+                adapter: "al".to_string(),
+                build: Some(zed::BuildTaskDefinition::Template(
+                    zed::BuildTaskDefinitionTemplatePayload {
+                        locator_name: None,
+                        template: zed::BuildTaskTemplate {
+                            label: "AL: Compile".to_string(),
+                            command: "al".to_string(),
+                            args: vec!["compile".to_string()],
+                            env: Default::default(),
+                            cwd: None,
+                        },
+                    },
+                )),
+                config: json!({
+                    "type": "al",
+                    "request": "launch",
+                    "name": "Publish with Debugging",
+                    "environmentType": "OnPrem",
+                    "server": "http://bcserver",
+                    "serverInstance": "BC",
+                    "authentication": "UserPassword",
+                    "startupObjectId": 22,
+                    "breakOnError": "All",
+                    "launchBrowser": true,
+                    "tenant": "default"
+                })
+                .to_string(),
+                tcp_connection: None,
+            })
+        } else {
+            None
+        }
     }
 }
 

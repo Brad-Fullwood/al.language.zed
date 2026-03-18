@@ -1,0 +1,311 @@
+{
+  "description": "AL Language debug adapter configuration for Business Central. Schema extracted from Microsoft AL Language extension v18.",
+  "type": "object",
+  "required": [
+    "adapter",
+    "label",
+    "request"
+  ],
+  "properties": {
+    "adapter": {
+      "type": "string",
+      "const": "al",
+      "description": "Debug adapter type"
+    },
+    "label": {
+      "type": "string",
+      "description": "Display name for this debug configuration"
+    },
+    "request": {
+      "type": "string",
+      "enum": [
+        "launch",
+        "attach",
+        "snapshotInitialize"
+      ],
+      "description": "Debug request type"
+    },
+    "build": {
+      "description": "Build step to run before debugging",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "command"
+          ]
+        }
+      ]
+    },
+    "applicationFamily": {
+      "type": "string",
+      "default": "",
+      "description": "The application family in the cloud server, for example: Fabrikam. This property is reserved for Embed Apps."
+    },
+    "authentication": {
+      "enum": [
+        "MicrosoftEntraID",
+        "AAD",
+        "Windows",
+        "UserPassword"
+      ],
+      "default": "MicrosoftEntraID",
+      "description": "Specifies the server authentication method."
+    },
+    "breakOnError": {
+      "type": [
+        "boolean",
+        "string"
+      ],
+      "enum": [
+        "False",
+        "True",
+        "None",
+        "All",
+        "ExcludeTry"
+      ],
+      "default": "All",
+      "description": "Specifies whether the debugger to break on the next error"
+    },
+    "breakOnNext": {
+      "enum": [
+        "WebServiceClient",
+        "WebClient",
+        "Background",
+        "ClientService",
+        "Agent"
+      ],
+      "default": "WebServiceClient",
+      "description": "Specifies that attach should break on the next available client session."
+    },
+    "breakOnRecordWrite": {
+      "type": [
+        "boolean",
+        "string"
+      ],
+      "enum": [
+        "False",
+        "True",
+        "None",
+        "All",
+        "ExcludeTemporary"
+      ],
+      "default": "None",
+      "description": "Specifies whether the debugger breaks on record changes."
+    },
+    "dependencyPublishingOption": {
+      "enum": [
+        "Default",
+        "Ignore",
+        "Strict"
+      ],
+      "default": "Default",
+      "description": "Specifies the publishing option to use. By specifying the Ignore option, only the current project is published, dependencies are ignored. By specifying the Strict option, publishing will fail if the project has apps that not part of the workspace and depend on it"
+    },
+    "disableHttpRequestTimeout": {
+      "type": "boolean",
+      "default": false,
+      "description": "Turn off Visual Studio Code's HTTP request timeout and allow for requests to run with infinite timeout."
+    },
+    "enableLongRunningSqlStatements": {
+      "type": "boolean",
+      "default": true,
+      "description": "Specifies whether the debugger enables or disables long running SQL statements in the debugger window."
+    },
+    "enableSqlInformationDebugger": {
+      "type": "boolean",
+      "default": true,
+      "description": "Specifies whether the debugger shows the SQL Information in the debugger."
+    },
+    "environmentName": {
+      "type": "string",
+      "description": "Specifies which production, or sandbox environment to use."
+    },
+    "environmentType": {
+      "enum": [
+        "OnPrem",
+        "Sandbox",
+        "Production"
+      ],
+      "description": "Specifies which environment to use to connect to Business Central."
+    },
+    "executionContext": {
+      "enum": [
+        "Debug",
+        "Profile",
+        "DebugAndProfile"
+      ],
+      "default": "DebugAndProfile",
+      "description": "Specifies how the snapshot technology will be applied on the Business Central server executing AL code"
+    },
+    "forceUpgrade": {
+      "type": "boolean",
+      "default": false,
+      "description": "Always run upgrade codeunits, even if the version number of the extension is the same as an already installed version."
+    },
+    "launchBrowser": {
+      "type": "boolean",
+      "default": true,
+      "description": "If the value is set to true, the browser tab is launched, if false, the browser tab is not launched. If publishing with debugging enabled, the browser tab is launched and this setting is ignored. The default value is true."
+    },
+    "longRunningSqlStatementsThreshold": {
+      "type": "number",
+      "default": 500,
+      "description": "Sets the number of milliseconds spent before a SQL statement is considered as long running in the debugger."
+    },
+    "mcpServicePort": {
+      "type": "number",
+      "default": 7047,
+      "description": "The port to access the Business Central MCP server. This is only used if useMcpServerForDebugging is true and it should be the same as the Business Central API service port."
+    },
+    "numberOfSqlStatements": {
+      "type": "number",
+      "default": 10,
+      "description": "Sets the number of SQL statements to be shown in the debugger."
+    },
+    "port": {
+      "type": "number",
+      "default": 7049,
+      "description": "The development service port."
+    },
+    "primaryTenantDomain": {
+      "type": "string",
+      "default": "",
+      "description": "Specifies the Tenant ID or Primary Domain associated with the Microsoft Entra tenant, for example: bf4ab6d6-cd93-424e-91fa-afe03fa286ac or mycustomer.onmicrosoft.com. This setting is used to enable Microsoft Entra ID authentication for on-premises installations."
+    },
+    "profileSamplingInterval": {
+      "enum": [
+        50,
+        100,
+        150
+      ],
+      "default": 100,
+      "description": "Specifies the sampling interval in milliseconds when \"Sampling\" profiling type is specified. Default is 100ms."
+    },
+    "profilingType": {
+      "enum": [
+        "Instrumentation",
+        "Sampling"
+      ],
+      "default": "Instrumentation",
+      "description": "Specifies the profiling type to be used."
+    },
+    "sandboxName": {
+      "type": "string",
+      "description": "Specifies which sandbox to use in cases where multiple sandboxes are owned by the same tenant."
+    },
+    "schemaUpdateMode": {
+      "enum": [
+        "Synchronize",
+        "Recreate",
+        "ForceSync"
+      ],
+      "default": "Synchronize",
+      "description": "Specifies the update mode to use when the extension is already installed."
+    },
+    "server": {
+      "type": "string",
+      "default": "http://bcserver",
+      "description": "The server url."
+    },
+    "serverInstance": {
+      "type": "string",
+      "default": "",
+      "description": "The server instance to connect to."
+    },
+    "sessionId": {
+      "type": "number",
+      "default": -1,
+      "description": "The id of the session to be attached to."
+    },
+    "snapshotFileName": {
+      "type": "string",
+      "default": "",
+      "description": "The name of the snapshot file"
+    },
+    "snapshotVerbosity": {
+      "enum": [
+        "SnapPoint",
+        "Full"
+      ],
+      "default": "SnapPoint",
+      "description": "Specifies the verbosity level of snapshot data. If SnapPoint is specified then stacktraces and line information will only be gathered on snap points."
+    },
+    "startupCompany": {
+      "type": "string",
+      "description": "Specifies the name of the company which should be opened after publishing."
+    },
+    "startupObjectId": {
+      "type": "number",
+      "default": 22,
+      "description": "Specifies the ID of the object which should be opened after publishing."
+    },
+    "startupObjectType": {
+      "enum": [
+        "Page",
+        "Table",
+        "Report",
+        "Query"
+      ],
+      "default": "Page",
+      "description": "Specifies the type of the object which should be opened after publishing."
+    },
+    "tenant": {
+      "type": "string",
+      "default": "default",
+      "description": "The tenant to connect to.\nFor an on-premise server, this parameter must contain a tenant name, for example: MyTenant.\nFor a cloud server, this parameter must contain the Microsoft Entra tenant ID or Primary Domain associated with the Microsoft Entra tenant, for example: bf4ab6d6-cd93-424e-91fa-afe03fa286ac or mycustomer.onmicrosoft.com"
+    },
+    "useMcpServerForDebugging": {
+      "type": "boolean",
+      "default": true,
+      "description": "Specifies whether to connect to the Business Central MCP server for debugging in agent mode."
+    },
+    "usePublicURLFromServer": {
+      "type": "boolean",
+      "default": true,
+      "description": "If the value is set to true, the browser will be launched with the URL provided by the PublicWebBaseURL set by the server. If false, it will use the server defined in the launch configuration."
+    },
+    "useSystemSessionForDeployment": {
+      "type": "boolean",
+      "default": false,
+      "description": "Runs install and upgrade codeunits in a system session. This will prevent debugging install and upgrade codeunits."
+    },
+    "useVsCodeAuthentication": {
+      "type": "boolean",
+      "default": false,
+      "description": "If true, authentication tokens are acquired through Visual Studio Code's built-in authentication instead of the extension's interactive or device code login."
+    },
+    "userId": {
+      "type": "string",
+      "default": "",
+      "description": "Specifies the end user id who will first connect to perform debugging session. It can be either a username or GUID."
+    },
+    "validateServerCertificate": {
+      "type": "boolean",
+      "default": true,
+      "description": "If the value is set to false, the server certificate will not be validated."
+    },
+    "vsCodeAuthenticationProvider": {
+      "type": "string",
+      "enum": [
+        "microsoft",
+        "microsoft-sovereign-cloud"
+      ],
+      "default": "microsoft",
+      "description": "Specifies which Visual Studio Code authentication provider to use when useVsCodeAuthentication is enabled."
+    }
+  }
+}

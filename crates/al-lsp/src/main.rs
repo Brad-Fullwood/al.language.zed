@@ -145,11 +145,73 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.iter().any(|a| a == "--dap") {
-        // DAP mode
+        // DAP mode — native BC debug (no EditorServices.Host dependency)
+        let project_root = env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+
+        let alc_path = al_core::toolchain::find_toolchain()
+            .ok()
+            .map(|tc| tc.alc.clone());
+
+        // Initialize a lightweight file index for resolving AL object types + IDs.
+        // The DAP server needs this to map file paths to BC's ApplicationObjectIdWrapper.
+        let file_index = std::sync::Arc::new(al_core::file_index::FileIndex::new());
+        {
+            let root = PathBuf::from(&project_root);
+            if root.join("app.json").is_file() {
+                file_index.scan(&root);
+                tracing::info!(files = file_index.files.len(), "DAP: indexed workspace files");
+            }
+        }
+        let fi = file_index.clone();
+
+        // ObjectTypeWrapper enum mapping
+        let kind_to_type = |kind: &str| -> i32 {
+            match kind.to_lowercase().as_str() {
+                "table" => 1,
+                "report" => 3,
+                "codeunit" => 5,
+                "xmlport" => 6,
+                "page" => 8,
+                "query" => 9,
+                "pageextension" => 14,
+                "tableextension" => 15,
+                "enum" => 16,
+                "enumextension" => 17,
+                "reportextension" => 22,
+                _ => -1,
+            }
+        };
+
+        let _ = al_dap_client::native_dap::run_native_dap(
+            &project_root,
+            alc_path.as_deref(),
+            |tenant| async move {
+                let client = reqwest::Client::new();
+                al_core::symbols::oauth::acquire_token(&client, &tenant, |msg| {
+                    tracing::info!("{msg}");
+                })
+                .await
+                .map_err(|e| e.to_string())
+            },
+            move |file_path| {
+                let path = PathBuf::from(file_path);
+                fi.object_info.get(&path).map(|info| {
+                    al_dap_client::native_dap::ResolvedObject {
+                        object_type: kind_to_type(&info.kind),
+                        object_id: info.id.unwrap_or(-1) as i32,
+                    }
+                })
+            },
+        )
+        .await;
+    } else if args.iter().any(|a| a == "--dap-legacy") {
+        // Legacy DAP mode — proxy through EditorServices.Host
         let toolchain = match al_core::toolchain::find_toolchain() {
             Ok(tc) => tc,
             Err(e) => {
-                tracing::error!(error = %e, "DAP mode requires ALTool — toolchain not found");
+                tracing::error!(error = %e, "Legacy DAP mode requires ALTool — toolchain not found");
                 std::process::exit(1);
             }
         };

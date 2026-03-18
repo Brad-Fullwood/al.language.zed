@@ -246,6 +246,17 @@ enum Commands {
         #[arg(short, long, default_value = "Default Publisher")]
         publisher: String,
     },
+    /// Generate .zed/debug.json with AL debug configurations
+    InitDebug,
+    /// Authenticate to Business Central (browser-based OAuth)
+    Authenticate {
+        /// Subcommand: login (default), status, clear
+        #[arg(default_value = "login")]
+        cmd: String,
+        /// Tenant ID or domain (auto-detected from project if omitted)
+        #[arg(short, long)]
+        tenant: Option<String>,
+    },
     /// Trace event propagation chain
     Trace {
         /// Event name to trace
@@ -2216,6 +2227,8 @@ fn main() -> ExitCode {
         }
         Commands::Package => cmd_package(cli.json),
         Commands::New { dir, name, publisher } => cmd_new(&dir, &name, &publisher, cli.json),
+        Commands::InitDebug => cmd_init_debug(cli.json),
+        Commands::Authenticate { cmd, tenant } => cmd_authenticate(&cmd, tenant.as_deref(), cli.json),
         Commands::Trace { event, depth } => cmd_trace(&event, depth, cli.json),
         Commands::Entrypoints => cmd_entrypoints(cli.json),
         Commands::Graph { format } => cmd_graph(&format, cli.json),
@@ -2227,6 +2240,184 @@ fn main() -> ExitCode {
         Commands::Debug { subcmd } => cmd_debug(&subcmd, cli.json),
         Commands::Snapshot { subcmd } => cmd_snapshot(&subcmd, cli.json),
         Commands::Profile { subcmd } => cmd_profile(&subcmd, cli.json),
+    }
+}
+
+fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    // For login, set a longer timeout (browser auth can take a while)
+    if cmd == "login" {
+        client.set_read_timeout(std::time::Duration::from_secs(120));
+    }
+
+    let mut params = serde_json::json!({ "cmd": cmd });
+    if let Some(t) = tenant {
+        params["tenant"] = serde_json::json!(t);
+    }
+
+    match client.request("authenticate", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                match cmd {
+                    "status" => {
+                        if let Some(tenants) = result.get("tenants").and_then(|v| v.as_array()) {
+                            if tenants.is_empty() {
+                                eprintln!("No tenants configured in this project.");
+                            }
+                            for t in tenants {
+                                let id = t.get("tenant").and_then(|v| v.as_str()).unwrap_or("?");
+                                let authed = t.get("authenticated").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let expired = t.get("expired").and_then(|v| v.as_bool()).unwrap_or(true);
+                                let status = if authed && !expired {
+                                    "authenticated"
+                                } else if authed && expired {
+                                    "expired"
+                                } else {
+                                    "not authenticated"
+                                };
+                                eprintln!("  {id}: {status}");
+                            }
+                        }
+                    }
+                    "clear" => {
+                        let cleared = result.get("cleared").and_then(|v| v.as_u64()).unwrap_or(0);
+                        eprintln!("Cleared {cleared} cached token(s).");
+                    }
+                    _ => {
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let tenant_id = result.get("tenant").and_then(|v| v.as_str()).unwrap_or("?");
+                        eprintln!("Status: {status}");
+                        eprintln!("Tenant: {tenant_id}");
+                        if let Some(msgs) = result.get("messages").and_then(|v| v.as_array()) {
+                            for msg in msgs {
+                                if let Some(s) = msg.as_str() {
+                                    if !s.is_empty() {
+                                        eprintln!("  {s}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+fn cmd_init_debug(json: bool) -> ExitCode {
+    let debug_path = std::path::Path::new(".zed/debug.json");
+    if debug_path.exists() {
+        if json {
+            print_json(&serde_json::json!({"status": "exists", "path": ".zed/debug.json"}));
+        } else {
+            eprintln!(".zed/debug.json already exists — not overwriting");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if let Err(e) = std::fs::create_dir_all(".zed") {
+        let msg = format!("Failed to create .zed directory: {e}");
+        return report_error(&msg, json);
+    }
+
+    let configs = serde_json::json!([
+        {
+            "adapter": "al",
+            "label": "Publish: Your own server",
+            "request": "launch",
+            "environmentType": "OnPrem",
+            "server": "http://bcserver",
+            "serverInstance": "BC",
+            "authentication": "UserPassword",
+            "startupObjectId": 22,
+            "breakOnError": "All",
+            "breakOnRecordWrite": "None",
+            "launchBrowser": true,
+            "enableSqlInformationDebugger": true,
+            "enableLongRunningSqlStatements": true,
+            "longRunningSqlStatementsThreshold": 500,
+            "numberOfSqlStatements": 10,
+            "tenant": "default",
+            "usePublicURLFromServer": true,
+            "useMcpServerForDebugging": true,
+            "build": {"command": "al", "args": ["compile"]}
+        },
+        {
+            "adapter": "al",
+            "label": "Publish: Cloud Sandbox",
+            "request": "launch",
+            "environmentType": "Sandbox",
+            "environmentName": "sandbox",
+            "startupObjectId": 22,
+            "breakOnError": "All",
+            "breakOnRecordWrite": "None",
+            "launchBrowser": true,
+            "enableSqlInformationDebugger": true,
+            "enableLongRunningSqlStatements": true,
+            "longRunningSqlStatementsThreshold": 500,
+            "numberOfSqlStatements": 10,
+            "useMcpServerForDebugging": true,
+            "build": {"command": "al", "args": ["compile"]}
+        },
+        {
+            "adapter": "al",
+            "label": "Attach: Your own server",
+            "request": "attach",
+            "environmentType": "OnPrem",
+            "server": "http://bcserver",
+            "serverInstance": "BC",
+            "authentication": "UserPassword",
+            "breakOnError": "All",
+            "breakOnRecordWrite": "None",
+            "enableSqlInformationDebugger": true,
+            "enableLongRunningSqlStatements": true,
+            "longRunningSqlStatementsThreshold": 500,
+            "numberOfSqlStatements": 10,
+            "breakOnNext": "WebServiceClient",
+            "tenant": "default",
+            "useMcpServerForDebugging": true
+        },
+        {
+            "adapter": "al",
+            "label": "Attach: Cloud Sandbox",
+            "request": "attach",
+            "environmentType": "Sandbox",
+            "environmentName": "sandbox",
+            "breakOnError": "All",
+            "breakOnRecordWrite": "None",
+            "enableSqlInformationDebugger": true,
+            "enableLongRunningSqlStatements": true,
+            "longRunningSqlStatementsThreshold": 500,
+            "numberOfSqlStatements": 10,
+            "breakOnNext": "WebServiceClient",
+            "useMcpServerForDebugging": true
+        }
+    ]);
+
+    let content = serde_json::to_string_pretty(&configs).unwrap();
+    match std::fs::write(debug_path, &content) {
+        Ok(_) => {
+            if json {
+                print_json(&serde_json::json!({"status": "created", "path": ".zed/debug.json", "configurations": 4}));
+            } else {
+                eprintln!("Created .zed/debug.json with 4 configurations:");
+                eprintln!("  - Publish: Your own server (launch)");
+                eprintln!("  - Publish: Cloud Sandbox (launch)");
+                eprintln!("  - Attach: Your own server (attach)");
+                eprintln!("  - Attach: Cloud Sandbox (attach)");
+                eprintln!("\nEdit .zed/debug.json to configure server URLs and authentication.");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&format!("Failed to write .zed/debug.json: {e}"), json),
     }
 }
 
