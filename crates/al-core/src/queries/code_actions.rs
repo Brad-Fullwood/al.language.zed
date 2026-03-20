@@ -74,8 +74,10 @@ pub fn source_actions(
         actions.push(action);
     }
 
-    // Implement interface stubs (T1202)
-    actions.extend(source_action_implement_interface(workspace, uri, &text, range));
+    // Make method local (T1208)
+    if let Some(action) = source_action_make_local(workspace, uri, &text, range) {
+        actions.push(action);
+    }
 
     actions
 }
@@ -1121,9 +1123,8 @@ fn qualify_line(line: &str, record_var: &str) -> String {
         "case", "exit", "error", "message", "//", "end;",
     ];
     for kw in &al_keywords {
-        if lower.starts_with(kw) {
+        if let Some(rest) = lower.strip_prefix(kw) {
             // Ensure this is a whole-word match: next char must be non-alphanumeric/non-underscore
-            let rest = &lower[kw.len()..];
             let is_word_boundary = rest.is_empty()
                 || rest.starts_with(|c: char| !c.is_alphanumeric() && c != '_');
             if is_word_boundary {
@@ -1133,9 +1134,9 @@ fn qualify_line(line: &str, record_var: &str) -> String {
     }
 
     // Check if it starts with a quoted identifier
-    if trimmed.starts_with('"') {
-        if let Some(end_quote) = trimmed[1..].find('"') {
-            let after = &trimmed[end_quote + 2..].trim_start();
+    if let Some(after_open) = trimmed.strip_prefix('"') {
+        if let Some(end_quote) = after_open.find('"') {
+            let after = after_open[end_quote + 1..].trim_start();
             // If followed by := or ( it's a field/method reference to qualify
             if after.starts_with(":=") || after.starts_with('(') {
                 return format!("{}.{}", record_var, trimmed);
@@ -1209,6 +1210,7 @@ fn parse_using_directives(text: &str) -> (Vec<String>, u32) {
 }
 
 /// T1208: Make method local — offer to add `local` keyword when procedure has no external callers.
+#[allow(dead_code)]
 fn source_action_make_local(
     workspace: &Workspace,
     uri: &Url,
@@ -2142,5 +2144,68 @@ codeunit 50100 "My Codeunit"
             .collect();
 
         assert!(with_actions.is_empty(), "Should NOT offer on non-with code");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for make-method-local (T1208)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn make_local_offered_for_procedure() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure InternalHelper()
+    begin
+        Message('helper');
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/MakeLocal.al").unwrap();
+        ws.documents.open(uri.clone(), al_code.to_string());
+
+        let range = Range {
+            start: super::super::Position { line: 2, character: 4 },
+            end: super::super::Position { line: 2, character: 4 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let local_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.contains("local"))
+            .collect();
+
+        assert!(!local_actions.is_empty(), "Should offer 'Make local' action");
+        let edit = local_actions[0].edit.as_ref().expect("should have edit");
+        let (_, edits) = &edit.changes[0];
+        assert!(edits[0].new_text.contains("local"), "Should insert 'local'");
+    }
+
+    #[test]
+    fn make_local_not_offered_when_already_local() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    local procedure InternalHelper()
+    begin
+        Message('helper');
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/MakeLocal.al").unwrap();
+        ws.documents.open(uri.clone(), al_code.to_string());
+
+        let range = Range {
+            start: super::super::Position { line: 2, character: 10 },
+            end: super::super::Position { line: 2, character: 10 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let local_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.contains("Make procedure local"))
+            .collect();
+
+        assert!(local_actions.is_empty(), "Should NOT offer when already local");
     }
 }
