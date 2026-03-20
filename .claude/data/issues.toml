@@ -1572,8 +1572,14 @@ date = "2026-03-16"
 category = "plan"
 severity = "drift"
 priority = "HIGH"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
+resolution = """
+All 36 missing proof entries backfilled on 2026-03-20. proof.toml now has 71 entries
+covering all 66 completed tasks (100% coverage). Evidence captured from: 911 passing
+tests across all workspace crates, cargo tree boundary checks, WASM compile verification,
+and infrastructure checks. TOML validates clean.
+"""
 description = """
 36 of 85 tasks (42%) are marked completed in tasks.toml but have no corresponding entry
 in proof.toml. Entire work packages lack any evidence:
@@ -2274,6 +2280,67 @@ directory is cleaned or the hash changes after source edits to al-cli.
 """
 
 [[issues]]
+id = "ISSUE-089"
+title = "External linter DLL paths not wired to background diagnostics — hardcoded CodeCop"
+type = "architecture"
+reporter = "gap-analysis"
+date = "2026-03-20"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "PARALLEL"
+description = """
+The al.codeAnalyzers setting correctly accepts DLL paths (e.g. BusinessCentral.LinterCop.dll) \
+via AlConfig.merge(), and the C# bridge's ResolveAnalyzerPath() can load arbitrary DLLs. However, \
+diagnostics.rs:89 hardcodes vec!["CodeCop".to_string()] instead of reading from \
+workspace.config.code_analyzers. External linters like LinterCop produce zero diagnostics.
+
+Fix: Replace hardcoded analyzers in diagnostics.rs with config.code_analyzers.clone().
+"""
+
+[[issues]]
+id = "ISSUE-090"
+title = "External linter DLL paths not wired to alc compilation — only 4 MS analyzers supported"
+type = "architecture"
+reporter = "gap-analysis"
+date = "2026-03-20"
+category = "constraint"
+severity = "bug"
+priority = "HIGH"
+status = "open"
+triage = "PARALLEL"
+description = """
+al-core/src/build.rs compile_project_with_analyzers() accepts an analyzer_filter but all call \
+sites pass None. The AnalyzerPaths struct in toolchain.rs only has 4 fields (code_cop, \
+app_source_cop, ui_cop, per_tenant_cop) with no slot for custom DLL paths. config.code_analyzers \
+is never threaded through to the alc /analyzer: command line.
+
+Fix: Add custom_analyzers: Vec<PathBuf> to AnalyzerPaths. Thread config.code_analyzers through \
+build.rs and all compile call sites (daemon.rs, dap/mod.rs, publish.rs).
+"""
+
+[[issues]]
+id = "ISSUE-091"
+title = "Native lint rules (AL-L001–L018) always-on with no config — should be disabled by default"
+type = "architecture"
+reporter = "gap-analysis"
+date = "2026-03-20"
+category = "constraint"
+severity = "enhancement"
+priority = "MEDIUM"
+status = "open"
+triage = "PARALLEL"
+description = """
+18 native lint rules in al-syntax/src/lint.rs run unconditionally. LintConfig thresholds exist \
+but are never wired to AlConfig. Users cannot disable individual rules. These rules overlap \
+in intent with external analyzers (CodeCop, LinterCop) that users already configure.
+
+The rules should be disabled by default and the infrastructure kept as a placeholder for future \
+custom rules. Add an al.nativeLintRules.enabled setting (default: false) and per-rule enable/disable.
+"""
+
+[[issues]]
 id = "ISSUE-064"
 title = "Two al-syntax unit tests fail: test_extract_symbols_enum and test_extract_symbols_report_dataitem_trigger"
 type = "architecture"
@@ -2654,4 +2721,193 @@ description = """
 crates to ensure reproducible builds.
 
 Fixed: Removed /Cargo.lock from .gitignore so the lock file will be tracked by git.
+"""
+
+[[issues]]
+id = "ISSUE-086"
+title = "36 completed tasks missing proof-of-functionality entries"
+type = "infra"
+reporter = "main"
+date = "2026-03-20"
+category = "workflow"
+severity = "improvement"
+priority = "HIGH"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+All 36 entries backfilled on 2026-03-20. proof.toml: 71 entries, 66 unique task IDs,
+100% coverage of completed tasks. Pre-captured 911 passing tests, then dispatched 5
+parallel agents to generate TOML entries. Enforcement via /complete-task prevents recurrence.
+"""
+description = """
+Only 28/64 completed tasks (43.8%) have proof entries in proof.toml. The remaining 36
+were marked complete without evidence. Root causes: disabled proof stop rule, warn-only
+enforcement, and tasks completed before ISSUE-012 fix.
+
+Worst gaps by WP:
+- WP4 (DAP): 7 tasks without proof
+- WP10 (Explorer): 3 tasks without proof
+- WP11 (Testing/Release): 5 tasks without proof
+- WP9 (Insight): 6 tasks without proof
+
+Approach: Re-verify functionality per task, create proof entries retroactively.
+Enforcement fixes applied in ISSUE-086 session prevent recurrence.
+"""
+
+[[issues]]
+id = "ISSUE-088"
+title = "break_rx channel backpressure blocks SignalR reader task — async await on full channel"
+type = "deferred"
+reporter = "adversarial-agent"
+date = "2026-03-20"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "fixed"
+triage = "PARALLEL"
+blocking_task = "WP4-DAP-stress-testing"
+resolution = "Changed break event channel from bounded(16) to unbounded. send() on unbounded is synchronous and never blocks. Break events are critical (must not be dropped) and infrequent (one per breakpoint hit or step), so unbounded is correct."
+description = """
+In bc_debug.rs (reader task, ~line 460), Break events are forwarded to the break_tx
+channel using `let _ = break_tx_reader.send(evt).await`. The channel has capacity 16.
+
+If 16 Break events pile up before the native_dap main loop processes them (e.g., rapid
+single-stepping or the loop is blocked in an invoke() call), the 17th send will block
+the WebSocket reader task. While the reader is blocked:
+- SignalR completion messages for pending invoke() calls stop being received
+- invoke() timeout (60s) eventually triggers, returning DapError::Timeout
+- IsAlive pings are not processed, causing BC to disconnect the session
+
+The fix is to use `try_send` instead of `send().await` and drop Break events when the
+channel is full (with a warning log), or increase the channel capacity to a larger bound.
+
+File: crates/al-dap-client/src/bc_debug.rs
+Approx line: 460 (break_tx_reader.send(evt).await)
+"""
+
+[[issues]]
+id = "ISSUE-089"
+title = "extract_word_at_position: cursor on closing quote of quoted identifier gives partial word"
+type = "deferred"
+reporter = "adversarial-agent"
+date = "2026-03-20"
+category = "edge-case"
+severity = "minor"
+priority = "LOW"
+status = "open"
+triage = "SERIAL"
+blocking_task = "T1201"
+description = """
+In code_actions.rs, `try_extract_quoted_identifier` is called from `extract_word_at_position`
+when no explicit selection range is available (cursor-only invocation).
+
+When the cursor lands exactly on the closing `"` of a quoted identifier like `"Sales Header"`,
+the function scans left and finds the closing quote as the `open_quote` (byte where `"` is found
+scanning leftward from cursor). It then scans right from `open_quote+1` but finds no further `"`,
+returning `None`. The fallback word-expansion then picks up the partial word to the left of the
+quote (e.g., `Header` instead of `Sales Header`).
+
+The symbol lookup for `Header` will miss `Sales Header` in the index, so no "Add using" action
+is offered.
+
+This only affects the cursor-only path. When code actions are invoked from a diagnostic (which
+provides an explicit selection range covering the full identifier), the issue does not occur.
+For that reason this is low severity.
+
+File: crates/al-core/src/queries/code_actions.rs
+Function: try_extract_quoted_identifier (approx line 540)
+"""
+
+[[issues]]
+id = "ISSUE-090"
+title = "source_action_if_to_case: begin..end branch bodies lose relative indentation"
+type = "deferred"
+reporter = "adversarial-agent"
+date = "2026-03-20"
+category = "edge-case"
+severity = "minor"
+priority = "LOW"
+status = "open"
+triage = "SERIAL"
+blocking_task = "T1203"
+description = """
+In `source_action_if_to_case` (code_actions.rs), when an if-branch body is a `begin..end`
+block, the body is extracted as raw text and then each line is trimmed with `bl.trim()` before
+being re-indented with `body_indent`. This destroys relative indentation — the content inside
+the begin..end block is placed at the same indent level as the `begin` and `end` keywords:
+
+    case x of
+        1:
+            begin
+            Message('a');   ← should be more deeply indented than begin/end
+            end
+
+Generated code is syntactically valid AL (indentation is cosmetic), but is poorly formatted
+and may confuse users.
+
+Fix: preserve relative indentation by computing the base indent of the body and offsetting
+each line by `body_indent - base_indent` rather than trimming to zero.
+
+File: crates/al-core/src/queries/code_actions.rs
+Function: source_action_if_to_case (approx line 582)
+"""
+
+[[issues]]
+id = "ISSUE-091"
+title = "source_action_if_to_case: UTF-16 column used as tree-sitter byte offset for point"
+type = "deferred"
+reporter = "adversarial-agent"
+date = "2026-03-20"
+category = "edge-case"
+severity = "minor"
+priority = "LOW"
+status = "open"
+triage = "SERIAL"
+blocking_task = "T1203"
+description = """
+In `source_action_if_to_case` and `source_action_eliminate_with`, the cursor point is
+constructed using the raw LSP character offset:
+
+    let point = tree_sitter::Point::new(
+        range.start.line as usize,
+        range.start.character as usize,  // ← UTF-16 code unit, not byte offset
+    );
+
+Tree-sitter `Point::column` is a byte offset, but LSP positions use UTF-16 code units.
+For ASCII-only files these are equivalent. For files with non-ASCII content before the
+cursor on the same line (e.g., Norwegian identifiers, comments with umlauts), the column
+mismatch causes `descendant_for_point_range` to return the wrong node or `None`, silently
+failing to offer the code action.
+
+Fix: convert UTF-16 column to byte offset using `utf16_col_to_byte_offset` (already available
+in al-core::resolution) before constructing the tree-sitter Point.
+
+File: crates/al-core/src/queries/code_actions.rs
+Functions: source_action_if_to_case (line ~561), source_action_eliminate_with (line ~783)
+"""
+
+[[issues]]
+id = "ISSUE-092"
+title = "source_action_if_to_case: reversed equality conditions not recognised (Yoda style)"
+type = "deferred"
+reporter = "adversarial-agent"
+date = "2026-03-20"
+category = "edge-case"
+severity = "minor"
+priority = "LOW"
+status = "open"
+triage = "SERIAL"
+blocking_task = "T1203"
+description = """
+`extract_equality_operands` returns `(left, right)` where left is treated as the variable
+name and right as the value to match on. If the developer writes Yoda-style conditions
+(`1 = x`, `2 = x`, `3 = x`), the function returns `("1", "x")`, `("2", "x")`, `("3", "x")`.
+`walk_if_chain` then tries to match `"1"` and `"2"` as the common variable, fails (arm 1
+fires on the second branch), and no conversion is offered.
+
+Fix: after collecting branches, if `common_var` selection fails using left operand, try
+treating the right operand as the common variable (swap detection).
+
+File: crates/al-core/src/queries/code_actions.rs
+Functions: extract_equality_operands, walk_if_chain
 """

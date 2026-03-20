@@ -44,7 +44,7 @@
 # - WP7-WP10 are additive and can be parallelized after WP3.
 
 [meta]
-total_work_packages = 14  # WP0-WP11 (12) + WPX (persistent adversarial) + WP6_5 (build/publish pipeline)
+total_work_packages = 21  # WP0-WP11 (12) + WPX (persistent adversarial) + WP6_5 (build/publish pipeline)
 
 # =============================================================================
 # WORK PACKAGES
@@ -1262,3 +1262,711 @@ complexity = "Medium"
 completed = true
 completed_date = "2026-03-16"
 completed_note = "Fixed al-explorer compilation, cleaned clippy, verified boundaries, all tests pass, WASM build succeeds"
+
+# =============================================================================
+# GAP ANALYSIS WORK PACKAGES (2026-03-20)
+# =============================================================================
+# Identified via comprehensive gap analysis against MS AL Language Extension v18,
+# community tools (AZ AL Dev Tools, CRS, LinterCop, NAB AL Tools, AL Test Runner),
+# and developer ecosystem pain points.
+
+[[work_packages]]
+id = "WP12"
+name = "Code Actions Parity"
+phase = "Phase 7: Feature Parity & Differentiation"
+goal = "Match MS AL extension's code actions. Interface implementer, namespace insertion, IF-CASE conversion, with-statement fixes, promoted action conversion, ApplicationArea defaults, report layout migration."
+zed_impact = "Automated refactoring and compliance fixes from the editor."
+agent_impact = "Code transformation via al fix CLI/MCP."
+
+[[work_packages]]
+id = "WP13"
+name = "Semantic & Language Parity"
+phase = "Phase 7: Feature Parity & Differentiation"
+goal = "Close remaining language-level gaps: 12 missing semantic token types, range formatting, Go to Implementations for interfaces, return type inlay hints, grammar updates, snippet audit, JSON schemas for BC config files."
+zed_impact = "Richer syntax highlighting, better navigation, complete language support."
+agent_impact = "More precise semantic understanding for AI queries."
+
+[[work_packages]]
+id = "WP14"
+name = "XLIFF / Translation Support"
+phase = "Phase 7: Feature Parity & Differentiation"
+goal = "Full translation workflow: XLIFF generation on build, refresh against language files, find untranslated texts, suggest translations from base app symbols."
+zed_impact = "Localization workflow without leaving the editor."
+agent_impact = "Translation queries and bulk operations via CLI/MCP."
+
+[[work_packages]]
+id = "WP15"
+name = "Test Runner Integration"
+phase = "Phase 7: Feature Parity & Differentiation"
+goal = "Test discovery via static analysis, test execution against BC instances via REST API, test results as diagnostics, test-to-code coverage mapping."
+zed_impact = "Run and debug tests from Zed without switching tools."
+agent_impact = "Automated test execution and result analysis."
+
+[[work_packages]]
+id = "WP16"
+name = "Bulk Operations & Wizards"
+phase = "Phase 7: Feature Parity & Differentiation"
+goal = "Object creation wizards, bulk workspace operations (ApplicationArea/tooltips/DataClassification), project templates, code sorting, file organization. Most-requested features from AZ AL Dev Tools and CRS."
+zed_impact = "Dramatic productivity improvement for common tasks."
+agent_impact = "Bulk code generation and project-wide fixes via CLI."
+
+[[work_packages]]
+id = "WP17"
+name = "Innovative Differentiators"
+phase = "Phase 8: Beyond Parity"
+goal = "Features no tool offers: obsolescence timeline, DataClassification audit, cross-extension breaking change analysis, configurable formatter, permission set audit, upgrade impact analysis, profile visualizer, duplicate detection, architectural linting."
+zed_impact = "Features that make Zed the best AL editor, not just equivalent."
+agent_impact = "Deep analytical queries unavailable in any other tool."
+
+[[work_packages]]
+id = "WP18"
+name = "Advanced Lint Rules"
+phase = "Phase 8: Beyond Parity"
+goal = "LinterCop-inspired native lint rules: FlowField editability, complexity metrics, SecretText enforcement, ReadIsolation, API validation, SQL anti-patterns. Placeholder — external linters handle most of this. Only implement rules that cannot be done externally."
+zed_impact = "Instant feedback on common AL anti-patterns."
+agent_impact = "Code quality analysis via CLI."
+
+# --- WP12: Code Actions Parity ---
+
+[[tasks]]
+id = "T1201"
+name = "Insert using Statement for Missing Namespace"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs", "crates/al-lsp/src/handlers.rs"]
+deps = []
+pass_criteria = "When a type reference is unresolved but matches a symbol in a known namespace, a code action offers to add the using directive. Works for types in .alpackages symbol data."
+fail_criteria = "Code action not offered when namespace is resolvable from symbol index."
+complexity = "Large"
+completed = true
+completed_date = "2026-03-20"
+completed_note = "Implemented source_action_add_using in code_actions.rs. Searches symbol index for matching types, filters out already-imported namespaces, inserts using directive after last namespace/using line. 4 unit tests."
+priority = "P0"
+
+[[tasks]]
+id = "T1202"
+name = "Interface Implementer — Generate Stub Methods"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs"]
+deps = ["T1303"]
+pass_criteria = "When a codeunit declares implements IFoo, a code action generates all required method stubs from the interface definition. Parameters, return types, and doc comments populated."
+fail_criteria = "Generated stubs have wrong signatures or missing methods."
+complexity = "Large"
+completed = false
+priority = "P0"
+
+[[tasks]]
+id = "T1203"
+name = "Multiple IF to CASE Conversion"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs"]
+deps = []
+pass_criteria = "Detects chains of if x = A then ... else if x = B then ... (3+ branches on same variable) and offers conversion to case x of. Preserves comments and else clause."
+fail_criteria = "Conversion changes semantics or drops branches."
+complexity = "Medium"
+completed = true
+completed_date = "2026-03-20"
+completed_note = "Implemented source_action_if_to_case in code_actions.rs. Walks if-else chain via tree-sitter, extracts equality operands, validates 3+ branches on same variable, generates case statement. 4 unit tests."
+priority = "P1"
+
+[[tasks]]
+id = "T1204"
+name = "Fix Explicit/Implicit with Statements"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs"]
+deps = []
+pass_criteria = "Offers to qualify all implicit with references with explicit Rec.Field syntax. Supports instance, document, project, and workspace scope. Critical for AppSourceCop AA0205."
+fail_criteria = "Qualification introduces ambiguity or misidentifies the record source."
+complexity = "Large"
+completed = true
+completed_date = "2026-03-20"
+completed_note = "Implemented source_action_eliminate_with in code_actions.rs. Detects with_statement via tree-sitter, extracts record variable, qualifies implicit field references (assignments + method calls), removes with wrapper. AA0205 compliance. 2 unit tests."
+priority = "P1"
+
+[[tasks]]
+id = "T1205"
+name = "Convert Promoted Actions to actionRef Syntax"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs"]
+deps = []
+pass_criteria = "Detects old Promoted = true / PromotedCategory = X properties and offers conversion to new actionRef syntax with area(promoted) section. Instance/document/project scope."
+fail_criteria = "Conversion produces invalid AL or loses promoted category."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1206"
+name = "Set Default ApplicationArea on Page/Report"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs"]
+deps = []
+pass_criteria = "On a page/report, offers to set object-level ApplicationArea and remove redundant field-level ApplicationArea properties."
+fail_criteria = "Removes intentionally different field-level ApplicationArea overrides."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1207"
+name = "Fix Old Report Layout to rendering Section"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs"]
+deps = []
+pass_criteria = "Converts legacy RDLCLayout/WordLayout properties to new rendering { layout(...) { ... } } section syntax."
+fail_criteria = "Conversion drops layout path or produces invalid rendering block."
+complexity = "Small"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1208"
+name = "Make Method Local"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs", "crates/al-core/src/queries/references.rs"]
+deps = []
+pass_criteria = "When a procedure has no external callers (verified via reference analysis), offers to add local accessibility modifier."
+fail_criteria = "Marks a procedure local that is called from another object."
+complexity = "Medium"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1209"
+name = "Add Parentheses to Method Calls"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs"]
+deps = []
+pass_criteria = "Detects method calls without parentheses and offers to add them. Supports workspace-wide scope."
+fail_criteria = "Adds parentheses to property accesses or keywords."
+complexity = "Small"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1210"
+name = "Convert Event Subscriber Parameter Format"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs"]
+deps = []
+pass_criteria = "Converts string-literal event subscriber parameters to identifier format."
+fail_criteria = "Conversion breaks event binding."
+complexity = "Small"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1211"
+name = "Move Tooltip from Page Controls to Table Fields"
+wp = "WP12"
+files = ["crates/al-core/src/queries/code_actions.rs"]
+deps = []
+pass_criteria = "Detects tooltips on page fields and offers to move them to the underlying table field definition, or clean up duplicates."
+fail_criteria = "Moves tooltip when page field has a different semantic context than the table field."
+complexity = "Medium"
+completed = false
+priority = "P2"
+
+# --- WP13: Semantic & Language Parity ---
+
+[[tasks]]
+id = "T1301"
+name = "Add 12 Missing Semantic Token Types"
+wp = "WP13"
+files = ["crates/al-core/src/queries/semantic_tokens.rs", "languages/al/semantic_token_rules.json"]
+deps = []
+pass_criteria = "Add pageView, reportLayout, queryDataItem, queryColumn, queryFilter, xmlportTableElement, xmlportTextElement, xmlportFieldElement, xmlportFieldAttribute, datetime, namespace, attribute. All produce correct Zed highlighting."
+fail_criteria = "Token types registered but never emitted by semantic token analysis."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1302"
+name = "Implement Range Formatting"
+wp = "WP13"
+files = ["crates/al-lsp/src/handlers.rs", "crates/al-core/src/queries/format.rs"]
+deps = []
+pass_criteria = "textDocument/rangeFormatting formats only the selected range, not the entire document. Preserves surrounding content exactly."
+fail_criteria = "Range formatting modifies lines outside the selection."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1303"
+name = "Implement Go to Implementations for Interfaces"
+wp = "WP13"
+files = ["crates/al-lsp/src/handlers.rs", "crates/al-core/src/queries/implementations.rs"]
+deps = []
+pass_criteria = "textDocument/implementation on an interface name or method navigates to all codeunits that implement it. Works across workspace files and .alpackages symbol data."
+fail_criteria = "Missing implementations or false positives for non-implementing codeunits."
+complexity = "Large"
+completed = false
+priority = "P0"
+
+[[tasks]]
+id = "T1304"
+name = "Implement Return Type Inlay Hints"
+wp = "WP13"
+files = ["crates/al-core/src/queries/inlay_hints.rs"]
+deps = []
+pass_criteria = "When al.inlayhints.functionReturnTypes.enabled is true, show inferred return types on procedures. Config wired through AlConfig."
+fail_criteria = "Hints shown for procedures with no return value, or wrong type displayed."
+complexity = "Medium"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1305"
+name = "tree-sitter-al: continue Keyword"
+wp = "WP13"
+files = ["tree-sitter-al/grammar.js"]
+deps = []
+pass_criteria = "continue parsed as a statement node inside loop bodies. tree-sitter generate succeeds. Highlights apply."
+fail_criteria = "continue treated as identifier or causes parse errors."
+complexity = "Small"
+completed = true
+priority = "P0"
+note = "Already implemented: continue_statement in grammar.js:876, kw_continue in scanner.c, highlights.scm, and tokens.rs."
+
+[[tasks]]
+id = "T1306"
+name = "tree-sitter-al: Multiline String Literals"
+wp = "WP13"
+files = ["tree-sitter-al/grammar.js", "tree-sitter-al/src/scanner.c"]
+deps = []
+pass_criteria = "@'multi line string' parsed as a single string literal node. Highlighting works across lines."
+fail_criteria = "Multiline strings break parsing or are split into multiple tokens."
+complexity = "Small"
+completed = true
+priority = "P0"
+
+[[tasks]]
+id = "T1307"
+name = "tree-sitter-al: List of [Interface IFoo] Syntax"
+wp = "WP13"
+files = ["tree-sitter-al/grammar.js"]
+deps = []
+pass_criteria = "List of [Interface IFoo] parsed correctly as a generic type with interface constraint."
+fail_criteria = "Square brackets cause parse ambiguity with array indexing."
+complexity = "Small"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1308"
+name = "Snippet Audit and Additions"
+wp = "WP13"
+files = ["snippets/al.json", "snippets/json.json"]
+deps = []
+pass_criteria = "Compare our 72 snippets against MS 78. Add missing ones. Add JSON snippets for app.json and XML snippets for permission set/web service XML."
+fail_criteria = "Duplicate snippets with conflicting prefixes."
+complexity = "Small"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1309"
+name = "JSON Schemas for BC Config Files"
+wp = "WP13"
+files = ["schemas/app.json", "schemas/ruleset.json", "schemas/appsourcecop.json", "extension.toml"]
+deps = []
+pass_criteria = "Ship JSON schemas for app.json, *.ruleset.json, AppSourceCop.json, Migration.json. Registered in extension.toml for Zed JSON validation."
+fail_criteria = "Schemas too strict (reject valid configs) or too loose (miss required fields)."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+# --- WP14: XLIFF / Translation Support ---
+
+[[tasks]]
+id = "T1401"
+name = "XLIFF Generation on Build"
+wp = "WP14"
+files = ["crates/al-core/src/xliff.rs", "crates/al-core/src/build.rs"]
+deps = []
+pass_criteria = "When features.TranslationFile is set in app.json, al compile generates a .g.xlf file containing all captions, tooltips, labels from workspace AL files."
+fail_criteria = "Missing translation units for valid captions/labels, or malformed XLIFF XML."
+complexity = "Large"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1402"
+name = "XLIFF Refresh Workflow"
+wp = "WP14"
+files = ["crates/al-core/src/xliff.rs", "crates/al-cli/src/main.rs"]
+deps = ["T1401"]
+pass_criteria = "al xlf refresh syncs .g.xlf against language-specific .xlf files. Marks new, changed, and removed translation units. Preserves existing translations."
+fail_criteria = "Refresh overwrites existing translations or misses new units."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1403"
+name = "Find Untranslated Texts"
+wp = "WP14"
+files = ["crates/al-core/src/xliff.rs", "crates/al-cli/src/main.rs"]
+deps = ["T1401"]
+pass_criteria = "al xlf untranslated lists all translation units missing target translations. JSON output."
+fail_criteria = "Reports false positives for units with valid translations."
+complexity = "Small"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1404"
+name = "Translation Suggestion from Base App Symbols"
+wp = "WP14"
+files = ["crates/al-core/src/xliff.rs"]
+deps = ["T1401"]
+pass_criteria = "al xlf suggest matches untranslated captions against base app symbol tooltips/captions from .alpackages for automatic suggestions."
+fail_criteria = "Suggestions from wrong context or unrelated symbols."
+complexity = "Medium"
+completed = false
+priority = "P2"
+
+# --- WP15: Test Runner Integration ---
+
+[[tasks]]
+id = "T1501"
+name = "Test Discovery via Static Analysis"
+wp = "WP15"
+files = ["crates/al-core/src/queries/tests.rs", "crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "al tests discovers all [Test] procedures from workspace files and symbol packages. Groups by codeunit. Daemon query. JSON output."
+fail_criteria = "Misses test methods or includes non-test procedures."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1502"
+name = "Test Execution via BC REST API"
+wp = "WP15"
+files = ["crates/al-core/src/test_runner.rs", "crates/al-cli/src/main.rs"]
+deps = ["T1501"]
+pass_criteria = "al test run <codeunit> [--method] executes tests against a configured BC instance via OData/REST test runner API. Returns pass/fail per method."
+fail_criteria = "Cannot connect to BC test runner or results are unreliable."
+complexity = "Large"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1503"
+name = "Test Results as Diagnostics"
+wp = "WP15"
+files = ["crates/al-lsp/src/diagnostics.rs"]
+deps = ["T1502"]
+pass_criteria = "Test failures published as publishDiagnostics on the test codeunit file at the procedure location. Cleared on next successful run."
+fail_criteria = "Diagnostics point to wrong lines or persist after passing tests."
+complexity = "Medium"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1504"
+name = "Test-to-Code Coverage Mapping"
+wp = "WP15"
+files = ["crates/al-core/src/queries/test_coverage.rs"]
+deps = ["T1501"]
+pass_criteria = "al test-coverage uses static call graph to show which procedures are exercised by test methods. Reports untested public procedures. JSON output."
+fail_criteria = "Call graph misses indirect calls through events or interface dispatch."
+complexity = "Large"
+completed = false
+priority = "P2"
+
+# --- WP16: Bulk Operations & Wizards ---
+
+[[tasks]]
+id = "T1601"
+name = "Additional Project Templates"
+wp = "WP16"
+files = ["crates/al-core/src/scaffold.rs"]
+deps = []
+pass_criteria = "al new --template copilot|agent|api generates project scaffolds. Each template compiles against standard BC symbols."
+fail_criteria = "Generated projects have compile errors or missing required properties."
+complexity = "Small"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1602"
+name = "Object Creation Wizards"
+wp = "WP16"
+files = ["crates/al-core/src/generators.rs", "crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "al generate page --from-table <name> --type list|card|document generates a complete page from table symbol definition. Also al generate report and al generate test."
+fail_criteria = "Generated objects reference non-existent fields or use wrong source table."
+complexity = "Large"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1603"
+name = "Add ApplicationArea Across Project"
+wp = "WP16"
+files = ["crates/al-core/src/queries/bulk_fix.rs", "crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "al fix --add-application-area <value> adds ApplicationArea to all page fields/actions missing it. Respects existing values. Reports count."
+fail_criteria = "Overwrites intentionally different ApplicationArea values."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1604"
+name = "Add Tooltips from Base App Symbols"
+wp = "WP16"
+files = ["crates/al-core/src/queries/bulk_fix.rs"]
+deps = []
+pass_criteria = "al fix --add-tooltips pulls tooltips from base app symbol data and applies to page fields that reference known table fields but lack tooltips."
+fail_criteria = "Applies wrong tooltip or adds tooltip to fields with custom semantics."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1605"
+name = "Add DataClassification to Table Fields"
+wp = "WP16"
+files = ["crates/al-core/src/queries/bulk_fix.rs"]
+deps = []
+pass_criteria = "al fix --add-data-classification <value> adds DataClassification to all table fields missing it. Reports count."
+fail_criteria = "Adds DataClassification to FlowFields or calculated fields where not applicable."
+complexity = "Small"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1606"
+name = "Code Sorting on Save"
+wp = "WP16"
+files = ["crates/al-core/src/queries/code_actions.rs", "crates/al-core/src/queries/sort.rs"]
+deps = []
+pass_criteria = "al sort <file> sorts procedures, fields, keys, variables in configurable order. Preserves doc comments attached to items."
+fail_criteria = "Sorting breaks code by separating doc comments from their targets."
+complexity = "Large"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1607"
+name = "Auto-Rename/Organize Files by Object Type"
+wp = "WP16"
+files = ["crates/al-core/src/queries/organize.rs", "crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "al fix --organize-files renames AL files to match configurable patterns. Supports CRS-style naming. Dry-run mode."
+fail_criteria = "Renames break file references or produce name collisions."
+complexity = "Medium"
+completed = false
+priority = "P2"
+
+# --- WP17: Innovative Differentiators ---
+
+[[tasks]]
+id = "T1701"
+name = "Obsolescence Timeline Dashboard"
+wp = "WP17"
+files = ["crates/al-core/src/queries/obsolescence.rs", "crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "al obsolete lists all pending-obsolete symbols with ObsoleteTag, ObsoleteReason, projected removal version, and downstream caller count. JSON output. Daemon query."
+fail_criteria = "Misses obsolete symbols or wrong caller counts."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1702"
+name = "DataClassification Audit"
+wp = "WP17"
+files = ["crates/al-core/src/queries/audit.rs", "crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "al audit data-classification enumerates all table fields, current classification, fields missing classification, GDPR risk summary. JSON output."
+fail_criteria = "Misses fields or misreports classification values."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1703"
+name = "Cross-Extension Breaking Change Analysis"
+wp = "WP17"
+files = ["crates/al-core/src/queries/breaking_changes.rs"]
+deps = []
+pass_criteria = "al breaking-changes --baseline <old.app> compares two .app symbol sets. Structured diff: added/removed/changed procedures, fields, events, enum values. Human-readable + JSON."
+fail_criteria = "False positives on non-breaking changes (e.g., added optional parameters)."
+complexity = "Large"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1704"
+name = "Dependency Graph with Transitive Resolution"
+wp = "WP17"
+files = ["crates/al-core/src/queries/deps.rs"]
+deps = []
+pass_criteria = "Enhance al deps to show transitive dependencies, version conflicts, and NuGet resolution chain. DOT export. Flag circular or missing dependencies."
+fail_criteria = "Misses transitive dependencies or shows incorrect version resolution."
+complexity = "Medium"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1705"
+name = "Configurable Formatter"
+wp = "WP17"
+files = ["crates/al-core/src/queries/format.rs", "crates/al-core/src/config.rs"]
+deps = []
+pass_criteria = "Support .alformat.json per workspace: keyword casing, blank-line rules, max line length, brace style. MS formatter is non-configurable — this is a differentiator."
+fail_criteria = "Config breaks default formatting behavior or produces invalid AL."
+complexity = "Large"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1706"
+name = "Permission Set Audit"
+wp = "WP17"
+files = ["crates/al-core/src/queries/audit.rs"]
+deps = []
+pass_criteria = "al audit permissions compares defined permission sets against actual object usage. Highlights objects with no permission coverage."
+fail_criteria = "Misses indirect object access through codeunit calls."
+complexity = "Medium"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1707"
+name = "Upgrade Impact Analysis with Migration Hints"
+wp = "WP17"
+files = ["crates/al-core/src/queries/upgrade.rs"]
+deps = ["T1703"]
+pass_criteria = "al upgrade-check --from <v1.app> --to <v2.app> generates upgrade report with breaking changes, obsoletion timeline, data migration needs, and suggested patterns."
+fail_criteria = "Misses data-level breaking changes (field type changes, key changes)."
+complexity = "Large"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1708"
+name = "Duplicate Code Detection"
+wp = "WP17"
+files = ["crates/al-core/src/queries/duplicates.rs"]
+deps = []
+pass_criteria = "al duplicates finds structurally similar code blocks using AST comparison. Reports pairs with similarity score. JSON output."
+fail_criteria = "Reports trivially similar code (e.g., trigger boilerplate) as duplicates."
+complexity = "Large"
+completed = false
+priority = "P3"
+
+[[tasks]]
+id = "T1709"
+name = "Architectural Linting (.alarch.json)"
+wp = "WP17"
+files = ["crates/al-core/src/queries/arch_lint.rs"]
+deps = []
+pass_criteria = "Enforce project-specific rules in .alarch.json. al lint --arch reports violations."
+fail_criteria = "Rules too rigid or too slow for interactive use."
+complexity = "Large"
+completed = false
+priority = "P3"
+
+[[tasks]]
+id = "T1710"
+name = "Profile Visualizer in al-explorer"
+wp = "WP17"
+files = ["crates/al-explorer/src/main.rs", "crates/al-explorer/src/profile_view.rs"]
+deps = []
+pass_criteria = "F4 view in al-explorer: top-down/bottom-up call tree from .alcpuprofile files with timing data, filterable. Navigate to source."
+fail_criteria = "Cannot parse .alcpuprofile format or tree is incomplete."
+complexity = "Large"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1711"
+name = "Profiler Inline Annotations"
+wp = "WP17"
+files = ["crates/al-lsp/src/handlers.rs", "crates/al-core/src/queries/profiler_hints.rs"]
+deps = ["T1710"]
+pass_criteria = "After al profile analyze, publish timing data as inlay hints on source locations. Show execution time and call count per procedure. Clearable."
+fail_criteria = "Hints on wrong lines or persist after clearing."
+complexity = "Medium"
+completed = false
+priority = "P2"
+
+# --- WP18: Advanced Lint Rules ---
+
+[[tasks]]
+id = "T1801"
+name = "FlowField Editability Validation"
+wp = "WP18"
+files = ["crates/al-syntax/src/lint.rs"]
+deps = []
+pass_criteria = "Lint rule warns on direct writes to FlowField/FlowFilter fields. Requires symbol index lookup."
+fail_criteria = "False positives on normal field writes or misidentifies FlowFields."
+complexity = "Small"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1802"
+name = "Cyclomatic/Cognitive Complexity Metrics"
+wp = "WP18"
+files = ["crates/al-syntax/src/complexity.rs", "crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "al metrics computes cyclomatic and cognitive complexity per procedure. Lint warning when exceeding threshold. Project-wide hotspot report. JSON output."
+fail_criteria = "Complexity calculation misses AL-specific constructs."
+complexity = "Medium"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1803"
+name = "SecretText Enforcement"
+wp = "WP18"
+files = ["crates/al-syntax/src/lint.rs"]
+deps = []
+pass_criteria = "Lint rule warns when Text is used for variables named *Password*, *Secret*, *ApiKey*, *Token* instead of SecretText. Configurable patterns."
+fail_criteria = "False positives on display-only text fields."
+complexity = "Small"
+completed = false
+priority = "P1"
+
+[[tasks]]
+id = "T1804"
+name = "ReadIsolation over LockTable"
+wp = "WP18"
+files = ["crates/al-syntax/src/lint.rs"]
+deps = []
+pass_criteria = "Lint rule suggests ReadIsolation instead of deprecated LockTable. Only fires for BC 21+."
+fail_criteria = "Suggests ReadIsolation for BC versions that don't support it."
+complexity = "Small"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1805"
+name = "API Page Mandatory Field Validation"
+wp = "WP18"
+files = ["crates/al-syntax/src/lint.rs"]
+deps = []
+pass_criteria = "Validates API pages have ODataKeyFields, EntityName, EntitySetName, correct APIVersion format."
+fail_criteria = "Doesn't account for valid alternative API page patterns."
+complexity = "Small"
+completed = false
+priority = "P2"
+
+[[tasks]]
+id = "T1806"
+name = "SQL Anti-Pattern Detection"
+wp = "WP18"
+files = ["crates/al-core/src/queries/sql_patterns.rs"]
+deps = []
+pass_criteria = "Detect: FindFirst in loops (N+1), FindSet without filters, CalcFields on non-FlowFields, Get in loops. Requires AST + call graph."
+fail_criteria = "False positives when FindFirst is in a code path that only executes once."
+complexity = "Large"
+completed = false
+priority = "P1"

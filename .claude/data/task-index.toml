@@ -16,6 +16,13 @@
 # WP9: Insight Graph & Agent Discovery Engine [DONE]
 # WP10: Explorer & TUI Transformation [DONE]
 # WP11: Integration & Release Engineering [DONE]
+# WP12: Code Actions Parity [5/11]
+# WP13: Semantic & Language Parity [4/9]
+# WP14: XLIFF / Translation Support [0/4]
+# WP15: Test Runner Integration [0/4]
+# WP16: Bulk Operations & Wizards [0/7]
+# WP17: Innovative Differentiators [0/11]
+# WP18: Advanced Lint Rules [0/6]
 
 [index]
 T001 = { wp = "WP0", name = "Harness Baseline Verification", done = true, deps = [] }
@@ -82,3 +89,62 @@ T1102 = { wp = "WP11", name = "Zed Fidelity Test Suite", done = true, deps = ["T
 T1103 = { wp = "WP11", name = "Build and Release Pipeline", done = true, deps = ["T602"] }
 T1104 = { wp = "WP11", name = "Documentation and Extension Packaging", done = true, deps = ["T1103"] }
 T1105 = { wp = "WP11", name = "Final Surgical Audit", done = true, deps = ["T1104"] }
+# --- WP12: Code Actions Parity ---
+T1201 = { wp = "WP12", name = "Insert using Statement for Missing Namespace", done = true, deps = [] }
+T1202 = { wp = "WP12", name = "Interface Implementer — Generate Stub Methods", done = false, deps = ["T1303"] }
+T1203 = { wp = "WP12", name = "Multiple IF to CASE Conversion", done = true, deps = [] }
+T1204 = { wp = "WP12", name = "Fix Explicit/Implicit with Statements", done = true, deps = [] }
+T1205 = { wp = "WP12", name = "Convert Promoted Actions to actionRef Syntax", done = true, deps = [] }
+T1206 = { wp = "WP12", name = "Set Default ApplicationArea on Page/Report", done = true, deps = [] }
+T1207 = { wp = "WP12", name = "Fix Old Report Layout to rendering Section", done = true, deps = [] }
+T1208 = { wp = "WP12", name = "Make Method Local", done = false, deps = [] }
+T1209 = { wp = "WP12", name = "Add Parentheses to Method Calls", done = false, deps = [] }
+T1210 = { wp = "WP12", name = "Convert Event Subscriber Parameter Format", done = false, deps = [] }
+T1211 = { wp = "WP12", name = "Move Tooltip from Page Controls to Table Fields", done = false, deps = [] }
+# --- WP13: Semantic & Language Parity ---
+T1301 = { wp = "WP13", name = "Add 12 Missing Semantic Token Types", done = true, deps = [] }
+T1302 = { wp = "WP13", name = "Implement Range Formatting", done = false, deps = [] }
+T1303 = { wp = "WP13", name = "Implement Go to Implementations for Interfaces", done = true, deps = [] }
+T1304 = { wp = "WP13", name = "Implement Return Type Inlay Hints", done = false, deps = [] }
+T1305 = { wp = "WP13", name = "tree-sitter-al: continue Keyword", done = true, deps = [] }
+T1306 = { wp = "WP13", name = "tree-sitter-al: Multiline String Literals", done = true, deps = [] }
+T1307 = { wp = "WP13", name = "tree-sitter-al: List of [Interface IFoo] Syntax", done = false, deps = [] }
+T1308 = { wp = "WP13", name = "Snippet Audit and Additions", done = false, deps = [] }
+T1309 = { wp = "WP13", name = "JSON Schemas for BC Config Files", done = false, deps = [] }
+# --- WP14: XLIFF / Translation Support ---
+T1401 = { wp = "WP14", name = "XLIFF Generation on Build", done = false, deps = [] }
+T1402 = { wp = "WP14", name = "XLIFF Refresh Workflow", done = false, deps = ["T1401"] }
+T1403 = { wp = "WP14", name = "Find Untranslated Texts", done = false, deps = ["T1401"] }
+T1404 = { wp = "WP14", name = "Translation Suggestion from Base App Symbols", done = false, deps = ["T1401"] }
+# --- WP15: Test Runner Integration ---
+T1501 = { wp = "WP15", name = "Test Discovery via Static Analysis", done = false, deps = [] }
+T1502 = { wp = "WP15", name = "Test Execution via BC REST API", done = false, deps = ["T1501"] }
+T1503 = { wp = "WP15", name = "Test Results as Diagnostics", done = false, deps = ["T1502"] }
+T1504 = { wp = "WP15", name = "Test-to-Code Coverage Mapping", done = false, deps = ["T1501"] }
+# --- WP16: Bulk Operations & Wizards ---
+T1601 = { wp = "WP16", name = "Additional Project Templates", done = false, deps = [] }
+T1602 = { wp = "WP16", name = "Object Creation Wizards", done = false, deps = [] }
+T1603 = { wp = "WP16", name = "Add ApplicationArea Across Project", done = false, deps = [] }
+T1604 = { wp = "WP16", name = "Add Tooltips from Base App Symbols", done = false, deps = [] }
+T1605 = { wp = "WP16", name = "Add DataClassification to Table Fields", done = false, deps = [] }
+T1606 = { wp = "WP16", name = "Code Sorting on Save", done = false, deps = [] }
+T1607 = { wp = "WP16", name = "Auto-Rename/Organize Files by Object Type", done = false, deps = [] }
+# --- WP17: Innovative Differentiators ---
+T1701 = { wp = "WP17", name = "Obsolescence Timeline Dashboard", done = false, deps = [] }
+T1702 = { wp = "WP17", name = "DataClassification Audit", done = false, deps = [] }
+T1703 = { wp = "WP17", name = "Cross-Extension Breaking Change Analysis", done = false, deps = [] }
+T1704 = { wp = "WP17", name = "Dependency Graph with Transitive Resolution", done = false, deps = [] }
+T1705 = { wp = "WP17", name = "Configurable Formatter", done = false, deps = [] }
+T1706 = { wp = "WP17", name = "Permission Set Audit", done = false, deps = [] }
+T1707 = { wp = "WP17", name = "Upgrade Impact Analysis with Migration Hints", done = false, deps = ["T1703"] }
+T1708 = { wp = "WP17", name = "Duplicate Code Detection", done = false, deps = [] }
+T1709 = { wp = "WP17", name = "Architectural Linting", done = false, deps = [] }
+T1710 = { wp = "WP17", name = "Profile Visualizer in al-explorer", done = false, deps = [] }
+T1711 = { wp = "WP17", name = "Profiler Inline Annotations", done = false, deps = ["T1710"] }
+# --- WP18: Advanced Lint Rules ---
+T1801 = { wp = "WP18", name = "FlowField Editability Validation", done = false, deps = [] }
+T1802 = { wp = "WP18", name = "Cyclomatic/Cognitive Complexity Metrics", done = false, deps = [] }
+T1803 = { wp = "WP18", name = "SecretText Enforcement", done = false, deps = [] }
+T1804 = { wp = "WP18", name = "ReadIsolation over LockTable", done = false, deps = [] }
+T1805 = { wp = "WP18", name = "API Page Mandatory Field Validation", done = false, deps = [] }
+T1806 = { wp = "WP18", name = "SQL Anti-Pattern Detection", done = false, deps = [] }
