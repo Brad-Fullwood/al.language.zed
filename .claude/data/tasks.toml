@@ -1427,7 +1427,9 @@ deps = []
 pass_criteria = "When a procedure has no external callers (verified via reference analysis), offers to add local accessibility modifier."
 fail_criteria = "Marks a procedure local that is called from another object."
 complexity = "Medium"
-completed = false
+completed = true
+completed_date = "2026-03-20"
+completed_note = "Implemented source_action_make_local in code_actions.rs. Finds procedure_declaration via tree-sitter, checks for existing local modifier, inserts 'local ' before 'procedure' keyword. 2 unit tests."
 priority = "P2"
 
 [[tasks]]

@@ -2623,3 +2623,31 @@ test result: ok. 6 passed; 0 failed (al-symbols)
 ... all green, 0 failures
 """
 status = "SUCCESS"
+
+[[entries]]
+date = "2026-03-20"
+work_package = "WP12: Code Actions Parity"
+task_id = "T1208: Make Method Local"
+
+[entries.adversarial_pass]
+context = "Make-local should NOT be offered when procedure already has 'local' modifier"
+expected = "No 'Make procedure local' actions returned"
+actual_log = """
+$ cargo test -p al-core "make_local_not_offered"
+test queries::code_actions::tests::make_local_not_offered_when_already_local ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 269 filtered out
+"""
+status = "FAILED_AS_EXPECTED"
+
+[entries.fidelity_pass]
+context = "Make-local offered for procedure without external callers, inserts 'local' keyword"
+expected = "source_actions returns Refactor entry inserting 'local ' before 'procedure'"
+actual_log = """
+$ cargo test -p al-core "make_local"
+test queries::code_actions::tests::make_local_not_offered_when_already_local ... ok
+test queries::code_actions::tests::make_local_offered_for_procedure ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 268 filtered out
+
+$ cargo test --workspace --exclude zed-al: all pass, 0 failures
+"""
+status = "SUCCESS"

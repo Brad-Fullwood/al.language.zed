@@ -97,7 +97,7 @@ T1204 = { wp = "WP12", name = "Fix Explicit/Implicit with Statements", done = tr
 T1205 = { wp = "WP12", name = "Convert Promoted Actions to actionRef Syntax", done = true, deps = [] }
 T1206 = { wp = "WP12", name = "Set Default ApplicationArea on Page/Report", done = true, deps = [] }
 T1207 = { wp = "WP12", name = "Fix Old Report Layout to rendering Section", done = true, deps = [] }
-T1208 = { wp = "WP12", name = "Make Method Local", done = false, deps = [] }
+T1208 = { wp = "WP12", name = "Make Method Local", done = true, deps = [] }
 T1209 = { wp = "WP12", name = "Add Parentheses to Method Calls", done = false, deps = [] }
 T1210 = { wp = "WP12", name = "Convert Event Subscriber Parameter Format", done = false, deps = [] }
 T1211 = { wp = "WP12", name = "Move Tooltip from Page Controls to Table Fields", done = false, deps = [] }
