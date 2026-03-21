@@ -973,24 +973,25 @@ fn extract_interface_names(obj_node: tree_sitter::Node, source: &[u8]) -> Vec<St
 /// Collect names of existing procedure declarations in the object node.
 fn collect_existing_procedures(obj_node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
     let mut procs = Vec::new();
-    collect_procs_recursive(obj_node, source, &mut procs);
-    procs
-}
-
-fn collect_procs_recursive(node: tree_sitter::Node, source: &[u8], procs: &mut Vec<String>) {
-    if node.kind() == "procedure_declaration" || node.kind() == "event_procedure_declaration" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(name) = name_node.utf8_text(source) {
-                procs.push(name.trim_matches('"').to_string());
+    // Iterative BFS/DFS to avoid stack overflow on deep trees.
+    let mut stack = vec![obj_node];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "procedure_declaration" || node.kind() == "event_procedure_declaration" {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    procs.push(name.trim_matches('"').to_string());
+                }
+            }
+            // Don't descend into procedure bodies
+            continue;
+        }
+        for i in (0..node.child_count()).rev() {
+            if let Some(child) = node.child(i) {
+                stack.push(child);
             }
         }
-        return;
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            collect_procs_recursive(child, source, procs);
-        }
-    }
+    procs
 }
 
 /// Find the line to insert stubs — the line of the closing `}` of the codeunit.

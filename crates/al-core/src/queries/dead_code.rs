@@ -4,7 +4,6 @@
 //! and orphaned event subscribers. Returns a list of `UnusedSymbol` entries
 //! with the reason each symbol is considered dead.
 
-use al_syntax::AlParser;
 use serde::Serialize;
 
 use crate::workspace::Workspace;
@@ -60,16 +59,15 @@ pub struct UnusedSymbol {
 pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
     let mut results = Vec::new();
 
-    // Pre-parse all workspace files
+    // Collect cached (text, tree) pairs — no re-parsing needed
     let parsed_files: Vec<(String, String, tree_sitter::Tree)> = workspace
         .file_index
         .files
         .iter()
-        .map(|entry| {
-            let path = entry.key().to_string_lossy().to_string();
-            let text = entry.value().clone();
-            let result = AlParser::parse_quick(&text);
-            (path, text, result.tree)
+        .filter_map(|entry| {
+            let path = entry.key();
+            let (text, tree) = workspace.file_index.get_cached_parse(path)?;
+            Some((path.to_string_lossy().to_string(), text, tree))
         })
         .collect();
 

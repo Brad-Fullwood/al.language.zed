@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use al_symbols::{ObjectKind, SymbolEntry};
-use al_syntax::AlParser;
 use serde::Serialize;
 
 use crate::workspace::Workspace;
@@ -238,13 +237,15 @@ fn search_workspace_files(
     results: &mut Vec<ImpactEntry>,
 ) {
     for entry in workspace.file_index.files.iter() {
-        let file_text = entry.value();
-        let result = AlParser::parse_quick(file_text);
-        let refs = al_syntax::find_variable_references(&result.tree, file_text, search_name);
+        let path = entry.key();
+        let Some((file_text, tree)) = workspace.file_index.get_cached_parse(path) else {
+            continue;
+        };
+        let refs = al_syntax::find_variable_references(&tree, &file_text, search_name);
 
         if !refs.is_empty() {
             // Determine the object info from this file
-            if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text) {
+            if let Some(obj_info) = al_syntax::find_object_declaration(&tree, &file_text) {
                 let kind = obj_info.kind.parse::<ObjectKind>().unwrap_or(ObjectKind::Codeunit);
                 let id = obj_info.id.unwrap_or(0) as i32;
 
@@ -284,6 +285,8 @@ mod tests {
             id,
             name: name.to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "Base".to_string(),
             methods: Vec::new(),
             fields: vec![FieldSymbol {
@@ -306,6 +309,8 @@ mod tests {
             id,
             name: name.to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "Base".to_string(),
             methods: Vec::new(),
             fields: Vec::new(),
@@ -326,6 +331,8 @@ mod tests {
             id,
             name: name.to_string(),
             extends: Some(extends.to_string()),
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "ExtPkg".to_string(),
             methods: Vec::new(),
             fields: Vec::new(),
