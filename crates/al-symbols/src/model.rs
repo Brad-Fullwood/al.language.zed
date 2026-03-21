@@ -261,7 +261,10 @@ pub struct EnumValueSymbol {
 }
 
 /// A complete symbol entry for one AL object.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Derives `Default` for test construction with struct update syntax:
+/// `SymbolEntry { kind: ObjectKind::Page, name: "X".into(), ..Default::default() }`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SymbolEntry {
     pub kind: ObjectKind,
     pub id: i32,
