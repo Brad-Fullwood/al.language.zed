@@ -22,7 +22,7 @@
 # WP15: Test Runner Integration [0/4]
 # WP16: Bulk Operations & Wizards [0/7]
 # WP17: Innovative Differentiators [0/11]
-# WP18: Advanced Lint Rules [0/6]
+# WP18: Advanced Lint Rules [DONE]
 
 [index]
 T001 = { wp = "WP0", name = "Harness Baseline Verification", done = true, deps = [] }
@@ -142,9 +142,9 @@ T1709 = { wp = "WP17", name = "Architectural Linting", done = false, deps = [] }
 T1710 = { wp = "WP17", name = "Profile Visualizer in al-explorer", done = false, deps = [] }
 T1711 = { wp = "WP17", name = "Profiler Inline Annotations", done = false, deps = ["T1710"] }
 # --- WP18: Advanced Lint Rules ---
-T1801 = { wp = "WP18", name = "FlowField Editability Validation", done = false, deps = [] }
-T1802 = { wp = "WP18", name = "Cyclomatic/Cognitive Complexity Metrics", done = false, deps = [] }
-T1803 = { wp = "WP18", name = "SecretText Enforcement", done = false, deps = [] }
-T1804 = { wp = "WP18", name = "ReadIsolation over LockTable", done = false, deps = [] }
-T1805 = { wp = "WP18", name = "API Page Mandatory Field Validation", done = false, deps = [] }
-T1806 = { wp = "WP18", name = "SQL Anti-Pattern Detection", done = false, deps = [] }
+T1801 = { wp = "WP18", name = "FlowField Editability Validation", done = true, deps = [] }
+T1802 = { wp = "WP18", name = "Cyclomatic/Cognitive Complexity Metrics", done = true, deps = [] }
+T1803 = { wp = "WP18", name = "SecretText Enforcement", done = true, deps = [] }
+T1804 = { wp = "WP18", name = "ReadIsolation over LockTable", done = true, deps = [] }
+T1805 = { wp = "WP18", name = "API Page Mandatory Field Validation", done = true, deps = [] }
+T1806 = { wp = "WP18", name = "SQL Anti-Pattern Detection", done = true, deps = [] }

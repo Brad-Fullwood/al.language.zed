@@ -2748,3 +2748,69 @@ $ cargo check --workspace --exclude zed-al
 Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.43s
 """
 status = "SUCCESS"
+
+[[proof]]
+task = "T1801"
+date = "2026-03-21"
+method = "unit_tests"
+evidence = "AL-L019 FlowFieldEditable lint rule: text-based scan of field() blocks for FieldClass=FlowField/FlowFilter + Editable=true. Tests: test_l019_flowfield_editable_true, test_l019_flowfield_no_editable_no_warn, test_l019_normal_field_editable_no_warn"
+actual_log = """
+$ cargo test -p al-syntax
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+"""
+status = "SUCCESS"
+
+[[proof]]
+task = "T1802"
+date = "2026-03-21"
+method = "unit_tests"
+evidence = "Cyclomatic/cognitive complexity via al-syntax::complexity::compute_complexity(). Daemon dispatch_metrics() in build_dispatch.rs. CLI 'al metrics' command with threshold args. All 392+ al-core tests pass."
+actual_log = """
+$ cargo test -p al-core
+test result: ok. 392 passed; 0 failed
+"""
+status = "SUCCESS"
+
+[[proof]]
+task = "T1803"
+date = "2026-03-21"
+method = "unit_tests"
+evidence = "AL-L020 SecretTextEnforcement: AST-based check on regular_variable_declaration nodes for Text type with sensitive name (Password/Secret/ApiKey/Token). Tests: test_l020_password_as_text_warns, test_l020_apikey_as_text_warns, test_l020_secrettext_no_warn, test_l020_non_sensitive_name_no_warn"
+actual_log = """
+$ cargo test -p al-syntax
+test result: ok. 11 passed; 0 failed
+"""
+status = "SUCCESS"
+
+[[proof]]
+task = "T1804"
+date = "2026-03-21"
+method = "unit_tests"
+evidence = "AL-L021 LockTableDeprecated: scans expression_statement text for .locktable() calls, suggests ReadIsolation. Tests: test_l021_locktable_warns, test_l021_no_locktable_no_warn"
+actual_log = """
+$ cargo test -p al-syntax
+test result: ok. 11 passed; 0 failed
+"""
+status = "SUCCESS"
+
+[[proof]]
+task = "T1805"
+date = "2026-03-21"
+method = "unit_tests"
+evidence = "AL-L022 ApiPageMandatoryFields: text-based scan of page objects for APIVersion/EntityName/EntitySetName/ODataKeyFields properties. Tests: test_l022_api_page_missing_odatakeyfields, test_l022_api_page_complete_no_warn, test_l022_non_api_page_no_warn"
+actual_log = """
+$ cargo test -p al-syntax
+test result: ok. 11 passed; 0 failed
+"""
+status = "SUCCESS"
+
+[[proof]]
+task = "T1806"
+date = "2026-03-21"
+method = "unit_tests"
+evidence = "SQL anti-pattern detection in al-core::queries::sql_patterns::detect_sql_patterns(). Daemon dispatch_sql_patterns() in build_dispatch.rs. CLI 'al sql-scan' command. All 392+ al-core tests pass."
+actual_log = """
+$ cargo test -p al-core
+test result: ok. 392 passed; 0 failed
+"""
+status = "SUCCESS"

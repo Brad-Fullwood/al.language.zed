@@ -718,5 +718,21 @@ fn main() -> ExitCode {
         Commands::Snapshot { subcmd } => debug::cmd_snapshot(&subcmd, cli.json),
         Commands::Profile { subcmd } => debug::cmd_profile(&subcmd, cli.json),
         Commands::Xlf { subcmd } => build::cmd_xlf(&subcmd, cli.json),
+        Commands::Tests => lsp::cmd_tests_discover(cli.json),
+        Commands::TestCoverage => lsp::cmd_tests_coverage(cli.json),
+        Commands::Generate { kind, id, name, table, page_type, subject } => {
+            lsp::cmd_generate(&kind, id, &name, table.as_deref(), page_type.as_deref(), subject.as_deref(), cli.json)
+        }
+        Commands::Obsolete => lsp::cmd_obsolete(cli.json),
+        Commands::AuditData => lsp::cmd_audit_data_classification(cli.json),
+        Commands::PermissionAudit => lsp::cmd_permission_audit(cli.json),
+        Commands::DepsGraph { format } => lsp::cmd_deps_graph(&format, cli.json),
+        Commands::Breaking => lsp::cmd_breaking_changes(cli.json),
+        Commands::ArchLint => lsp::cmd_arch_lint(cli.json),
+        Commands::Duplicates { min_tokens, min_similarity } => {
+            lsp::cmd_duplicates(min_tokens, min_similarity, cli.json)
+        }
+        Commands::Upgrade => lsp::cmd_upgrade_report(cli.json),
+        Commands::ProfilerHints { hotspots } => lsp::cmd_profiler_hints(&hotspots, cli.json),
     }
 }

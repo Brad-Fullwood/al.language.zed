@@ -1930,7 +1930,7 @@ deps = []
 pass_criteria = "Lint rule warns on direct writes to FlowField/FlowFilter fields. Requires symbol index lookup."
 fail_criteria = "False positives on normal field writes or misidentifies FlowFields."
 complexity = "Small"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1942,7 +1942,7 @@ deps = []
 pass_criteria = "al metrics computes cyclomatic and cognitive complexity per procedure. Lint warning when exceeding threshold. Project-wide hotspot report. JSON output."
 fail_criteria = "Complexity calculation misses AL-specific constructs."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1954,7 +1954,7 @@ deps = []
 pass_criteria = "Lint rule warns when Text is used for variables named *Password*, *Secret*, *ApiKey*, *Token* instead of SecretText. Configurable patterns."
 fail_criteria = "False positives on display-only text fields."
 complexity = "Small"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1966,7 +1966,7 @@ deps = []
 pass_criteria = "Lint rule suggests ReadIsolation instead of deprecated LockTable. Only fires for BC 21+."
 fail_criteria = "Suggests ReadIsolation for BC versions that don't support it."
 complexity = "Small"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1978,7 +1978,7 @@ deps = []
 pass_criteria = "Validates API pages have ODataKeyFields, EntityName, EntitySetName, correct APIVersion format."
 fail_criteria = "Doesn't account for valid alternative API page patterns."
 complexity = "Small"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1990,5 +1990,5 @@ deps = []
 pass_criteria = "Detect: FindFirst in loops (N+1), FindSet without filters, CalcFields on non-FlowFields, Get in loops. Requires AST + call graph."
 fail_criteria = "False positives when FindFirst is in a code path that only executes once."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P1"
