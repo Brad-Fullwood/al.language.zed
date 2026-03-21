@@ -243,6 +243,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "rules" => dispatch_rules(id),
         "parse" => dispatch_parse(workspace, id, &params),
         "source" => dispatch_source(workspace, id, &params),
+        "location" => dispatch_location(workspace, id, &params),
         // Insight engine
         "trace" => dispatch_trace(workspace, id, &params),
         "entrypoints" => dispatch_entrypoints(workspace, id),
@@ -487,7 +488,7 @@ fn dispatch_search(workspace: &Workspace, id: u64, params: &serde_json::Value) -
         return invalid_params(id);
     };
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-    let limit = limit.min(1000);
+    let limit = limit.min(500_000);
     let results = workspace.symbols.search(query, limit);
     let value: Vec<serde_json::Value> = results
         .iter()
@@ -1158,6 +1159,37 @@ fn dispatch_source(workspace: &Workspace, id: u64, params: &serde_json::Value) -
             error: Some(RpcError {
                 code: error_codes::INVALID_PARAMS,
                 message: format!("Object '{}' not found", name),
+            }),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Object location
+// ---------------------------------------------------------------------------
+
+/// Return the absolute workspace file path for an object by name.
+/// Used by al-explorer to open objects in Zed via zed://file/path:line:col URLs.
+fn dispatch_location(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let name = match params.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return invalid_params(id),
+    };
+    match workspace.file_index.find_by_object_name(name) {
+        Some(path) => Response {
+            id,
+            result: Some(serde_json::json!({
+                "path": path.to_string_lossy(),
+                "line": 1,
+            })),
+            error: None,
+        },
+        None => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Object '{}' not found in workspace", name),
             }),
         },
     }

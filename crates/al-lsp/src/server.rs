@@ -123,11 +123,18 @@ impl AlServer {
         self.workspace.documents.cache_tree(uri, version, result.tree.clone());
 
         if let Ok(path) = uri.to_file_path() {
-            self.workspace.file_index.add_file(path, text.to_string());
+            self.workspace.file_index.add_file(path.clone(), text.to_string());
+            // Invalidate only the composed view for the object in this file (ISSUE-146).
+            // add_file already updated object_info, so we can read the name immediately.
+            if let Some(info) = self.workspace.file_index.object_info.get(&path) {
+                self.workspace.symbols.invalidate_composed(&info.name);
+            } else {
+                // No recognisable object declaration -- full invalidation is the safe fallback.
+                self.workspace.symbols.invalidate_all_composed();
+            }
+        } else {
+            self.workspace.symbols.invalidate_all_composed();
         }
-
-        // Invalidate composed view cache — file change may affect extensions
-        self.workspace.symbols.invalidate_all_composed();
     }
 
     /// Ensure builtins are loaded. Tries disk cache first, then bridge.

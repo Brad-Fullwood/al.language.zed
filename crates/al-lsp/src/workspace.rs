@@ -103,6 +103,8 @@ pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Clie
 
             // Load runtime enum definitions (compiler built-ins not in any package)
             workspace.symbols.load_runtime_enums();
+            // Invalidate insight graph -- packages changed (ISSUE-132 fix)
+            workspace.invalidate_insight_graph();
 
             *workspace.project.write().await = Some(project.clone());
 
@@ -404,6 +406,8 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
     let cache = al_core::symbols::cache::SymbolCache::default_location();
     let loaded = server.workspace.symbols.load_packages_cached(&packages, &cache);
     server.workspace.symbols.load_runtime_enums();
+    // Invalidate insight graph -- packages changed (ISSUE-132 fix)
+    server.workspace.invalidate_insight_graph();
     info!(
         loaded = loaded.len(),
         total_symbols = server.workspace.symbols.len(),

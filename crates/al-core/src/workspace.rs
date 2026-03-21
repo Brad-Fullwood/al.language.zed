@@ -17,12 +17,13 @@ use tokio::sync::RwLock;
 use crate::config::AlConfig;
 use crate::documents::DocumentStore;
 use crate::file_index::FileIndex;
+use crate::insight::graph::InsightGraph;
 use crate::semantic::SemanticCache;
 
 /// Callback for surfacing bridge/toolchain notifications to the user.
 ///
 /// In the LSP path this calls `client.show_message`; in the daemon path it logs.
-/// Takes only `&str` — no tower-lsp types in al-core.
+/// Takes only `&str` -- no tower-lsp types in al-core.
 pub type NotifySink = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Summary metadata for a loaded symbol package.
@@ -38,6 +39,18 @@ pub struct PackageInfo {
 ///
 /// Owns all per-project state: documents, symbols, workspace file index,
 /// semantic bridge, builtins, and configuration.
+///
+/// ## Lock strategy (ISSUE-114)
+///
+/// Two RwLock flavors are used intentionally:
+/// - `tokio::sync::RwLock` -- fields written in async contexts that hold the lock
+///   across `.await` points: `toolchain`, `project`, `semantic`, `config`.
+/// - `std::sync::RwLock` -- fields accessed from sync query code only:
+///   `builtins`, `package_info`, `semantic_cache`, `insight_graph`.
+///   Using `tokio::sync` here would require `.await` in every sync query caller.
+///
+/// Never hold a `std::sync::RwLock` guard across an `.await` -- that deadlocks
+/// the tokio executor.
 pub struct Workspace {
     /// Open document management with rope-based text and parse tree caching.
     pub documents: DocumentStore,
@@ -55,7 +68,7 @@ pub struct Workspace {
     pub config: RwLock<AlConfig>,
     /// Builtins loaded once at init, read-only afterward.
     pub builtins: std::sync::RwLock<Arc<Vec<BuiltinType>>>,
-    /// Compiler error codes — code → description mapping for diagnostic enrichment.
+    /// Compiler error codes -- code -> description mapping for diagnostic enrichment.
     pub error_codes: DashMap<String, String>,
     /// Number of times the semantic bridge has been restarted (capped at MAX_RESTARTS).
     pub bridge_restart_count: std::sync::atomic::AtomicU32,
@@ -70,6 +83,8 @@ pub struct Workspace {
     /// Set by al-lsp after workspace construction. In the LSP path the closure
     /// calls `client.show_message`; in the daemon path it logs. Not set in tests.
     pub notify_sink: std::sync::OnceLock<NotifySink>,
+    /// Cached insight graph. Built lazily; invalidated when packages reload (ISSUE-132 fix).
+    pub insight_graph: std::sync::RwLock<Option<Arc<InsightGraph>>>,
 }
 
 impl Workspace {
@@ -90,6 +105,34 @@ impl Workspace {
             semantic_cache: std::sync::RwLock::new(SemanticCache::new()),
             debug_session: tokio::sync::Mutex::new(None),
             notify_sink: std::sync::OnceLock::new(),
+            insight_graph: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// Get (or lazily build) the cached InsightGraph (ISSUE-132 fix).
+    ///
+    /// The graph is built once from the current symbol index and cached.
+    /// Call `invalidate_insight_graph()` after reloading packages.
+    pub fn get_or_build_insight_graph(&self) -> Arc<InsightGraph> {
+        if let Ok(guard) = self.insight_graph.read() {
+            if let Some(arc) = guard.as_ref() {
+                return Arc::clone(arc);
+            }
+        }
+        // Build and cache
+        let mut graph = InsightGraph::new();
+        graph.build_from_index(&self.symbols);
+        let arc = Arc::new(graph);
+        if let Ok(mut guard) = self.insight_graph.write() {
+            *guard = Some(Arc::clone(&arc));
+        }
+        arc
+    }
+
+    /// Invalidate the cached InsightGraph (call when packages reload).
+    pub fn invalidate_insight_graph(&self) {
+        if let Ok(mut guard) = self.insight_graph.write() {
+            *guard = None;
         }
     }
 }

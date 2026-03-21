@@ -1,7 +1,7 @@
-//! Document store — open file management with rope-based text.
+//! Document store -- open file management with rope-based text.
 //!
 //! Transport-agnostic: uses [`TextChange`] instead of LSP-specific types.
-//! al-lsp converts `TextDocumentContentChangeEvent` → `TextChange` at the boundary.
+//! al-lsp converts `TextDocumentContentChangeEvent` -> `TextChange` at the boundary.
 
 use dashmap::DashMap;
 use ropey::Rope;
@@ -34,8 +34,9 @@ pub struct DocumentStore {
 
 struct Document {
     text: Rope,
-    /// Cached String form — updated on every change, avoids repeated Rope::to_string().
-    text_cache: String,
+    /// Cached Arc<String> -- updated on every change, avoids repeated Rope::to_string().
+    /// Arc allows get_text_arc() to return a cheap pointer copy instead of a string clone.
+    text_cache: std::sync::Arc<String>,
     version: i32,
 }
 
@@ -58,7 +59,7 @@ impl DocumentStore {
             uri,
             Document {
                 text: Rope::from_str(&text),
-                text_cache: text,
+                text_cache: std::sync::Arc::new(text),
                 version: 0,
             },
         );
@@ -69,8 +70,19 @@ impl DocumentStore {
         self.trees.remove(uri);
     }
 
+    /// Return the document text as a cloned `String`.
+    ///
+    /// Prefer `get_text_arc` on hot paths to avoid deep-copying large file content.
     pub fn get_text(&self, uri: &Url) -> Option<String> {
-        self.docs.get(uri).map(|d| d.text_cache.clone())
+        self.docs.get(uri).map(|d| d.text_cache.as_ref().clone())
+    }
+
+    /// Return the document text as a cheaply-cloneable `Arc<String>` (ISSUE-142 fix).
+    ///
+    /// Cloning the returned `Arc` is a pointer copy -- no string allocation.
+    /// Use this on hot query paths to avoid deep-copying large file content.
+    pub fn get_text_arc(&self, uri: &Url) -> Option<std::sync::Arc<String>> {
+        self.docs.get(uri).map(|d| std::sync::Arc::clone(&d.text_cache))
     }
 
     pub fn get_version(&self, uri: &Url) -> Option<i32> {
@@ -95,7 +107,7 @@ impl DocumentStore {
                     doc.text = Rope::from_str(&change.text);
                 }
             }
-            doc.text_cache = doc.text.to_string();
+            doc.text_cache = std::sync::Arc::new(doc.text.to_string());
             doc.version += 1;
             // Invalidate cached tree since the document changed
             self.trees.remove(uri);
@@ -204,13 +216,11 @@ mod tests {
         let store = DocumentStore::new();
         let uri = test_uri("tree");
         store.open(uri.clone(), "content".to_string());
-        // Simulate caching a tree at version 0
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&al_syntax::parser::language()).unwrap();
         let tree = parser.parse("content", None).unwrap();
         store.cache_tree(&uri, 0, tree);
         assert!(store.get_cached_tree(&uri).is_some());
-        // Change invalidates tree
         store.apply_changes(&uri, &[TextChange { range: None, text: "changed".to_string() }]);
         assert!(store.get_cached_tree(&uri).is_none());
     }
@@ -221,44 +231,60 @@ mod tests {
         assert!(!store.contains(&test_uri("any")));
     }
 
-    /// Verifies that sequential incremental edits produce correct results and that
-    /// the rope's O(log n) line_to_char is used for all offset conversions.
+    #[test]
+    fn test_get_text_arc_cheap_clone() {
+        let store = DocumentStore::new();
+        let uri = test_uri("arc");
+        store.open(uri.clone(), "arc content".to_string());
+        let arc1 = store.get_text_arc(&uri).unwrap();
+        let arc2 = store.get_text_arc(&uri).unwrap();
+        // Both arcs point to the same allocation
+        assert!(std::sync::Arc::ptr_eq(&arc1, &arc2));
+        assert_eq!(arc1.as_str(), "arc content");
+    }
+
+    #[test]
+    fn test_get_text_arc_updates_after_change() {
+        let store = DocumentStore::new();
+        let uri = test_uri("arc_change");
+        store.open(uri.clone(), "original".to_string());
+        let arc1 = store.get_text_arc(&uri).unwrap();
+        store.apply_changes(&uri, &[TextChange { range: None, text: "updated".to_string() }]);
+        let arc2 = store.get_text_arc(&uri).unwrap();
+        assert_eq!(arc1.as_str(), "original");
+        assert_eq!(arc2.as_str(), "updated");
+    }
+
     #[test]
     fn test_incremental_multiline_edits() {
         let store = DocumentStore::new();
         let uri = test_uri("multi");
-        // Three-line document
         store.open(uri.clone(), "line one\nline two\nline three\n".to_string());
 
-        // Patch 1: replace "one" on line 0 with "1"
         store.apply_changes(&uri, &[TextChange {
             range: Some(TextRange { start_line: 0, start_character: 5, end_line: 0, end_character: 8 }),
             text: "1".to_string(),
         }]);
         assert_eq!(store.get_text(&uri), Some("line 1\nline two\nline three\n".to_string()));
 
-        // Patch 2: replace "two" on line 1 with "2"
         store.apply_changes(&uri, &[TextChange {
             range: Some(TextRange { start_line: 1, start_character: 5, end_line: 1, end_character: 8 }),
             text: "2".to_string(),
         }]);
         assert_eq!(store.get_text(&uri), Some("line 1\nline 2\nline three\n".to_string()));
 
-        // Patch 3: delete across line boundary — remove "\nline 2" from end of line 0
         store.apply_changes(&uri, &[TextChange {
             range: Some(TextRange { start_line: 0, start_character: 6, end_line: 1, end_character: 6 }),
             text: "".to_string(),
         }]);
         assert_eq!(store.get_text(&uri), Some("line 1\nline three\n".to_string()));
 
-        // Patch 4: insert text in the middle of a line
         store.apply_changes(&uri, &[TextChange {
             range: Some(TextRange { start_line: 0, start_character: 0, end_line: 0, end_character: 0 }),
             text: "// ".to_string(),
         }]);
         assert_eq!(store.get_text(&uri), Some("// line 1\nline three\n".to_string()));
 
-        // Versions must have incremented once per apply_changes call
         assert_eq!(store.get_version(&uri), Some(4));
     }
 }
