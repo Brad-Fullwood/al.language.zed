@@ -548,30 +548,27 @@ impl App {
 
         if let Some(selected) = self.object_list_state.selected()
             && let Some(entry) = self.current_objects.get(selected) {
-            // Ask the daemon for the virtual file path for this object.
+            // Ask the daemon for the workspace file path for this object.
             let root = std::env::current_dir().unwrap_or_default();
             if let Ok(mut client) = client::DaemonClient::connect(&root) {
-                let vf_result = client.request("virtualFile", Some(serde_json::json!({
-                    "kind": format!("{:?}", entry.kind),
-                    "id": entry.id,
+                let loc_result = client.request("location", Some(serde_json::json!({
                     "name": entry.name,
-                    "package": entry.package,
                 })));
-                if let Ok(val) = vf_result
-                    && let Some(path_str) = val.as_str()
-                    && let Ok(abs_path) = std::fs::canonicalize(path_str)
-                    && let Some(abs_str) = abs_path.to_str() {
-                    let mut zed_url = format!("zed://file{}", abs_str);
-                    if let Some(member) = target_member
-                        && let Some(line) = find_member_line_in_file(&abs_path, &member.name) {
-                        zed_url = format!("zed://file{}:{}:1", abs_str, line + 1);
-                    }
+                if let Ok(val) = loc_result
+                    && let Some(path_str) = val.get("path").and_then(|v| v.as_str()) {
+                    let abs_path = std::path::Path::new(path_str);
+                    let line = if let Some(member) = &target_member {
+                        find_member_line_in_file(abs_path, &member.name)
+                            .map(|l| l + 1)
+                            .unwrap_or(1)
+                    } else {
+                        1
+                    };
+                    let zed_url = format!("zed://file{}:{}:1", path_str, line);
                     let _ = open::that(zed_url);
-                    return;
                 }
             }
-            // Fallback: no file path available (e.g. symbol from a .app package).
-            // zed://symbol/ URLs are not handled by Zed and produce errors — skip.
+            // No fallback for .app package symbols -- they have no workspace file.
         }
     }
 
