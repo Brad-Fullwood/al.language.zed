@@ -1276,7 +1276,7 @@ mod tests {
     /// Open `al_code` in `ws` at `uri`.  Centralises the `uri.clone()` +
     /// `to_string()` noise that appeared in every test.
     fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
-        open_doc(&ws, &uri, al_code);
+        ws.documents.open(uri.clone(), al_code.to_string());
     }
 
     fn make_entry_with_namespace(kind: ObjectKind, id: i32, name: &str, ns: &str) -> SymbolEntry {
