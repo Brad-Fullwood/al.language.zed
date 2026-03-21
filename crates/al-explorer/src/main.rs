@@ -30,6 +30,7 @@ enum ViewMode {
     ObjectBrowser,
     EventChain,
     CallGraph,
+    Profiler,
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +301,153 @@ impl CallGraphView {
 }
 
 // ---------------------------------------------------------------------------
+// Profiler view
+// ---------------------------------------------------------------------------
+
+/// A single hotspot row parsed from a `.alcpuprofile` file.
+#[derive(Debug, Clone)]
+struct HotspotRow {
+    procedure: String,
+    object: String,
+    self_time_ms: f64,
+    total_time_ms: f64,
+    hit_count: u64,
+}
+
+struct ProfilerView {
+    /// File path input typed by the user.
+    file_path: String,
+    /// Whether the file path input is focused.
+    input_focused: bool,
+    /// Parsed hotspot rows.
+    hotspots: Vec<HotspotRow>,
+    list_state: ListState,
+    /// Status/error message.
+    status: String,
+    /// Total session duration (ms).
+    duration_ms: f64,
+}
+
+impl ProfilerView {
+    fn new() -> Self {
+        Self {
+            file_path: String::new(),
+            input_focused: true,
+            hotspots: Vec::new(),
+            list_state: ListState::default(),
+            status: String::from("Enter path to .alcpuprofile and press Enter to load"),
+            duration_ms: 0.0,
+        }
+    }
+
+    /// Parse a Chrome-style `.alcpuprofile` JSON file and populate `hotspots`.
+    fn load_profile(&mut self) {
+        let path = self.file_path.trim().to_string();
+        if path.is_empty() {
+            self.status = "No file path entered".to_string();
+            return;
+        }
+        let data = match std::fs::read(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                self.status = format!("Cannot read file: {e}");
+                return;
+            }
+        };
+        // Strip UTF-8 BOM if present
+        let data = if data.starts_with(&[0xEF, 0xBB, 0xBF]) { &data[3..] } else { &data[..] };
+
+        let json: serde_json::Value = match serde_json::from_slice(data) {
+            Ok(v) => v,
+            Err(e) => {
+                self.status = format!("JSON parse error: {e}");
+                return;
+            }
+        };
+
+        // Compute session duration
+        let start = json.get("startTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let end = json.get("endTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        // Chrome profiles use microseconds
+        self.duration_ms = (end - start) / 1000.0;
+
+        let nodes = match json.get("nodes").and_then(|v| v.as_array()) {
+            Some(n) => n,
+            None => {
+                self.status = "No 'nodes' array found in profile".to_string();
+                return;
+            }
+        };
+
+        // Build a map: node id -> (functionName, url, hitCount)
+        let mut rows: Vec<HotspotRow> = Vec::new();
+        for node in nodes {
+            let hit_count = node.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
+            if hit_count == 0 {
+                continue;
+            }
+            let call_frame = node.get("callFrame").unwrap_or(&serde_json::Value::Null);
+            let function_name = call_frame.get("functionName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(unknown)")
+                .to_string();
+            let url = call_frame.get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            // Skip internal/empty nodes
+            if function_name == "(root)" || function_name == "(idle)" || function_name == "(garbage collector)" {
+                continue;
+            }
+
+            // Each sample is 1ms in Chrome profiles by default; use hitCount as self-time estimate
+            let self_time_ms = hit_count as f64;
+            rows.push(HotspotRow {
+                procedure: function_name,
+                object: url,
+                self_time_ms,
+                total_time_ms: self_time_ms, // simplified: no call tree aggregation
+                hit_count,
+            });
+        }
+
+        // Sort descending by self_time_ms
+        rows.sort_by(|a, b| b.self_time_ms.partial_cmp(&a.self_time_ms).unwrap_or(std::cmp::Ordering::Equal));
+
+        let count = rows.len();
+        self.hotspots = rows;
+        self.status = if count == 0 {
+            "No hotspots found in profile (all hitCount=0?)".to_string()
+        } else {
+            format!("{count} hotspots loaded — duration {:.1}ms", self.duration_ms)
+        };
+        if !self.hotspots.is_empty() {
+            self.list_state.select(Some(0));
+            self.input_focused = false;
+        }
+    }
+
+    fn next_row(&mut self) {
+        if self.hotspots.is_empty() { return; }
+        let i = match self.list_state.selected() {
+            Some(i) => if i >= self.hotspots.len().saturating_sub(1) { 0 } else { i + 1 },
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    fn prev_row(&mut self) {
+        if self.hotspots.is_empty() { return; }
+        let i = match self.list_state.selected() {
+            Some(i) => if i == 0 { self.hotspots.len().saturating_sub(1) } else { i - 1 },
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main application
 // ---------------------------------------------------------------------------
 
@@ -330,9 +478,10 @@ struct App {
     pub last_click_target: Option<ClickTarget>,
     pub last_click_index: usize,
 
-    // Event chain and call graph views
+    // Event chain, call graph, and profiler views
     pub event_chain: EventChainView,
     pub call_graph: CallGraphView,
+    pub profiler: ProfilerView,
 }
 
 impl App {
@@ -358,6 +507,7 @@ impl App {
             last_click_index: 0,
             event_chain: EventChainView::new(project_root.clone()),
             call_graph: CallGraphView::new(project_root),
+            profiler: ProfilerView::new(),
         }
     }
 
@@ -658,7 +808,7 @@ fn run_app<B: Backend<Error = io::Error>>(terminal: &mut Terminal<B>, mut app: A
                         return Ok(());
                     }
 
-                    // Global view switching — F1/F2/F3
+                    // Global view switching — F1/F2/F3/F4
                     match key.code {
                         KeyCode::F(1) => {
                             app.view_mode = ViewMode::ObjectBrowser;
@@ -672,6 +822,10 @@ fn run_app<B: Backend<Error = io::Error>>(terminal: &mut Terminal<B>, mut app: A
                             app.view_mode = ViewMode::CallGraph;
                             continue;
                         }
+                        KeyCode::F(4) => {
+                            app.view_mode = ViewMode::Profiler;
+                            continue;
+                        }
                         _ => {}
                     }
 
@@ -679,6 +833,7 @@ fn run_app<B: Backend<Error = io::Error>>(terminal: &mut Terminal<B>, mut app: A
                         ViewMode::ObjectBrowser => handle_object_browser_key(&mut app, key),
                         ViewMode::EventChain => handle_event_chain_key(&mut app, key),
                         ViewMode::CallGraph => handle_call_graph_key(&mut app, key),
+                        ViewMode::Profiler => handle_profiler_key(&mut app, key),
                     }
                 }
                 Event::Mouse(mouse_event) => {
@@ -846,6 +1001,40 @@ fn handle_call_graph_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 view.input_focused = true;
             }
             KeyCode::Enter => {
+                view.input_focused = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn handle_profiler_key(app: &mut App, key: crossterm::event::KeyEvent) {
+    let view = &mut app.profiler;
+    if view.input_focused {
+        match key.code {
+            KeyCode::Char(c) => view.file_path.push(c),
+            KeyCode::Backspace => { view.file_path.pop(); }
+            KeyCode::Esc => {
+                view.file_path.clear();
+                view.hotspots.clear();
+                view.status = "Cleared".to_string();
+            }
+            KeyCode::Enter => {
+                view.load_profile();
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                if !view.hotspots.is_empty() {
+                    view.input_focused = false;
+                    view.list_state.select(Some(0));
+                }
+            }
+            _ => {}
+        }
+    } else {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => view.next_row(),
+            KeyCode::Char('k') | KeyCode::Up => view.prev_row(),
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::BackTab => {
                 view.input_focused = true;
             }
             _ => {}
@@ -1022,13 +1211,17 @@ fn ui(f: &mut Frame, app: &mut App) {
         ViewMode::ObjectBrowser => render_object_browser(f, top_split[1], app),
         ViewMode::EventChain => render_event_chain(f, top_split[1], &mut app.event_chain),
         ViewMode::CallGraph => render_call_graph(f, top_split[1], &mut app.call_graph),
+        ViewMode::Profiler => render_profiler(f, top_split[1], &mut app.profiler),
     }
 }
 
 fn render_mode_bar(f: &mut Frame, area: Rect, mode: ViewMode) {
-    let tabs = [(" F1: Objects ", ViewMode::ObjectBrowser),
+    let tabs = [
+        (" F1: Objects ", ViewMode::ObjectBrowser),
         (" F2: Events  ", ViewMode::EventChain),
-        (" F3: CallGraph ", ViewMode::CallGraph)];
+        (" F3: CallGraph ", ViewMode::CallGraph),
+        (" F4: Profiler ", ViewMode::Profiler),
+    ];
 
     let spans: Vec<Span> = tabs.iter().map(|(label, tab_mode)| {
         if *tab_mode == mode {
@@ -1438,6 +1631,100 @@ fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphView) {
         " Call Graph / Impact (no results) "
     } else {
         " Call Graph / Impact (j/k navigate, Esc back to search) "
+    };
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title).border_style(list_style))
+        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
+        .highlight_symbol(">> ");
+    f.render_stateful_widget(list, chunks[1], &mut view.list_state);
+
+    // Status bar
+    f.render_widget(
+        Paragraph::new(view.status.clone()).style(Style::default().fg(Color::DarkGray)),
+        chunks[2],
+    );
+}
+
+fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+
+    // File path input
+    let input_style = if view.input_focused {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let cursor = if view.input_focused { "█" } else { "" };
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Profile Path (.alcpuprofile — Enter to load, Tab to navigate) ")
+        .border_style(input_style);
+    let input_inner = input_block.inner(chunks[0]);
+    f.render_widget(input_block, chunks[0]);
+    f.render_widget(
+        Paragraph::new(format!("{}{}", view.file_path, cursor))
+            .style(Style::default().fg(Color::White)),
+        input_inner,
+    );
+
+    // Hotspot table
+    let list_style = if !view.input_focused {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let items: Vec<ListItem> = if view.hotspots.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "No profile loaded — enter a path above and press Enter",
+            Style::default().fg(Color::DarkGray),
+        )))]
+    } else {
+        // Header row
+        let header_text = format!("{:<40} {:<30} {:>10} {:>10} {:>8}",
+            "Procedure", "Object/File", "Self(ms)", "Total(ms)", "Hits");
+        let mut rows: Vec<ListItem> = vec![ListItem::new(Line::from(
+            Span::styled(header_text, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ))];
+
+        for h in &view.hotspots {
+            let procedure = truncate_with_ellipsis(&h.procedure, 39);
+            let object = truncate_with_ellipsis(&h.object, 29);
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{:<40} ", procedure),
+                    Style::default().fg(Color::Green),
+                ),
+                Span::styled(
+                    format!("{:<30} ", object),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{:>10.1} ", h.self_time_ms),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    format!("{:>10.1} ", h.total_time_ms),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    format!("{:>8}", h.hit_count),
+                    Style::default().fg(Color::Magenta),
+                ),
+            ]);
+            rows.push(ListItem::new(line));
+        }
+        rows
+    };
+
+    let title = if view.hotspots.is_empty() {
+        " Hotspots "
+    } else {
+        " Hotspots (j/k navigate, Esc back to input) "
     };
 
     let list = List::new(items)
