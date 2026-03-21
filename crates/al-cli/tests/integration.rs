@@ -11,12 +11,40 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// Get the path to the `al` binary built by cargo.
+///
+/// CARGO_BIN_EXE_al is baked in at compile time. When cargo test --workspace
+/// picks up a stale test binary from a previous workspace path, that path may
+/// be wrong. We resolve the real binary by walking up from the test binary
+/// location to find target/debug/al, which is always correct for the current
+/// workspace build.
 fn al_binary() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_BIN_EXE_al"));
-    if !path.exists() {
-        path = PathBuf::from("../../target/debug/al");
+    // First try: CARGO_BIN_EXE_al baked in at compile time (correct when fresh).
+    let compile_time = PathBuf::from(env!("CARGO_BIN_EXE_al"));
+    if compile_time.exists() {
+        return compile_time;
     }
-    path
+    // Fallback: walk up from the test binary to find <workspace>/target/debug/al.
+    // The test binary lives at <workspace>/target/debug/deps/integration-<hash>.
+    if let Ok(exe) = std::env::current_exe() {
+        // exe = .../target/debug/deps/integration-xxx
+        // go up 3 levels to reach target root, then target/debug/al
+        if let Some(deps) = exe.parent() {          // deps/
+            if let Some(debug) = deps.parent() {    // debug/
+                let candidate = debug.join("al");
+                if candidate.exists() {
+                    return candidate;
+                }
+                if let Some(target) = debug.parent() { // target/
+                    let candidate = target.join("debug").join("al");
+                    if candidate.exists() {
+                        return candidate;
+                    }
+                }
+            }
+        }
+    }
+    // Last resort: rely on PATH
+    PathBuf::from("al")
 }
 
 /// Write AL source to a temp file and return the path.
@@ -466,7 +494,6 @@ fn cli_no_args_shows_help() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "requires a running al-lsp daemon (al parse connects to Unix socket)"]
 fn cli_parse_clean_file_succeeds() {
     let tmp = write_temp_al("parse-clean", TABLE_AL);
     let output = Command::new(al_binary())
@@ -486,7 +513,6 @@ fn cli_parse_clean_file_succeeds() {
 }
 
 #[test]
-#[ignore = "requires a running al-lsp daemon (al parse connects to Unix socket)"]
 fn cli_parse_error_file_reports_errors() {
     let tmp = write_temp_al("parse-errors", ERROR_AL);
     let output = Command::new(al_binary())
@@ -505,7 +531,6 @@ fn cli_parse_error_file_reports_errors() {
 }
 
 #[test]
-#[ignore = "requires a running al-lsp daemon (al parse connects to Unix socket)"]
 fn cli_parse_json_has_structure() {
     let tmp = write_temp_al("parse-json", CLEAN_CODEUNIT);
     let output = Command::new(al_binary())
@@ -528,7 +553,6 @@ fn cli_parse_json_has_structure() {
 }
 
 #[test]
-#[ignore = "requires a running al-lsp daemon (al parse connects to Unix socket)"]
 fn cli_parse_missing_file_fails() {
     let output = Command::new(al_binary())
         .args(["parse", "/nonexistent/file.al"])
@@ -543,7 +567,6 @@ fn cli_parse_missing_file_fails() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_dry_run_shows_available_fixes() {
     let tmp = write_temp_al("fix-dryrun", LINT_ISSUES);
     let output = Command::new(al_binary())
@@ -562,7 +585,6 @@ fn cli_fix_dry_run_shows_available_fixes() {
 }
 
 #[test]
-#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_dry_run_json_has_structure() {
     let tmp = write_temp_al("fix-dryrun-json", LINT_ISSUES);
     let output = Command::new(al_binary())
@@ -582,7 +604,6 @@ fn cli_fix_dry_run_json_has_structure() {
 }
 
 #[test]
-#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_with_rule_filter() {
     let tmp = write_temp_al("fix-filter", LINT_ISSUES);
     let output = Command::new(al_binary())
@@ -609,7 +630,6 @@ fn cli_fix_with_rule_filter() {
 }
 
 #[test]
-#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_runs_without_error() {
     let tmp = write_temp_al("fix-apply", LINT_ISSUES);
     let output = Command::new(al_binary())
@@ -628,7 +648,6 @@ fn cli_fix_runs_without_error() {
 }
 
 #[test]
-#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_clean_file_no_fixes() {
     let tmp = write_temp_al("fix-clean", CLEAN_CODEUNIT);
     let output = Command::new(al_binary())
