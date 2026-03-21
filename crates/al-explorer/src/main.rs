@@ -570,9 +570,8 @@ impl App {
                     return;
                 }
             }
-            // Fallback: open by object name
-            let query = format!("{:?} {}", entry.kind, entry.name);
-            let _ = open::that(format!("zed://symbol/{}", urlencoding_encode(&query)));
+            // Fallback: no file path available (e.g. symbol from a .app package).
+            // zed://symbol/ URLs are not handled by Zed and produce errors — skip.
         }
     }
 
@@ -630,7 +629,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     terminal.show_cursor()?;
 
     if let Err(err) = res {
-        println!("{:?}", err);
+        eprintln!("{:?}", err);
     }
 
     Ok(())
@@ -1483,19 +1482,3 @@ fn find_member_line_in_file(path: &std::path::Path, member_name: &str) -> Option
     None
 }
 
-/// Percent-encode a string for use in a URL path segment.
-fn urlencoding_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                out.push('%');
-                out.push_str(&format!("{:02X}", b));
-            }
-        }
-    }
-    out
-}
