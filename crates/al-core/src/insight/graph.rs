@@ -450,6 +450,8 @@ mod tests {
             id,
             name: name.to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods,
             fields: Vec::new(),
@@ -467,6 +469,8 @@ mod tests {
             id,
             name: name.to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods: Vec::new(),
             fields: vec![FieldSymbol {
@@ -489,6 +493,8 @@ mod tests {
             id,
             name: name.to_string(),
             extends: Some(extends.to_string()),
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "ExtPkg".to_string(),
             methods: Vec::new(),
             fields: vec![FieldSymbol {
@@ -887,6 +893,8 @@ mod tests {
             id: 18,
             name: "Customer".to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods: Vec::new(),
             fields: vec![FieldSymbol {
@@ -908,6 +916,8 @@ mod tests {
             id: 36,
             name: "Sales Header".to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods: Vec::new(),
             fields: vec![FieldSymbol {

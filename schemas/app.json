@@ -1,0 +1,146 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AL App Manifest",
+    "description": "Schema for app.json — the AL extension/app manifest for Business Central",
+    "type": "object",
+    "required": ["id", "name", "publisher", "version"],
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Unique identifier (GUID) for the app",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "name": {
+            "type": "string",
+            "description": "Display name of the app"
+        },
+        "publisher": {
+            "type": "string",
+            "description": "Name of the app publisher"
+        },
+        "version": {
+            "type": "string",
+            "description": "Version in Major.Minor.Build.Revision format",
+            "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$"
+        },
+        "brief": {
+            "type": "string",
+            "description": "Brief description (shown in AppSource)"
+        },
+        "description": {
+            "type": "string",
+            "description": "Full description of the app"
+        },
+        "privacyStatement": {
+            "type": "string",
+            "description": "URL to the privacy statement"
+        },
+        "EULA": {
+            "type": "string",
+            "description": "URL to the end-user license agreement"
+        },
+        "help": {
+            "type": "string",
+            "description": "URL to the help documentation"
+        },
+        "url": {
+            "type": "string",
+            "description": "URL to the app website"
+        },
+        "logo": {
+            "type": "string",
+            "description": "Path to the app logo file"
+        },
+        "platform": {
+            "type": "string",
+            "description": "Minimum platform version required",
+            "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$"
+        },
+        "application": {
+            "type": "string",
+            "description": "Minimum application version required",
+            "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$"
+        },
+        "runtime": {
+            "type": "string",
+            "description": "AL runtime version"
+        },
+        "target": {
+            "type": "string",
+            "description": "Compilation target",
+            "enum": ["Internal", "Extension", "Cloud", "OnPrem"]
+        },
+        "features": {
+            "type": "array",
+            "description": "Enabled features",
+            "items": {
+                "type": "string",
+                "enum": ["TranslationFile", "GenerateCaptions", "NoImplicitWith", "ExcludeGeneratedTranslations"]
+            }
+        },
+        "idRanges": {
+            "type": "array",
+            "description": "Object ID ranges allocated to this app",
+            "items": {
+                "type": "object",
+                "required": ["from", "to"],
+                "properties": {
+                    "from": { "type": "integer", "minimum": 1 },
+                    "to": { "type": "integer", "minimum": 1 }
+                }
+            }
+        },
+        "dependencies": {
+            "type": "array",
+            "description": "App dependencies",
+            "items": {
+                "type": "object",
+                "required": ["id", "name", "publisher", "version"],
+                "properties": {
+                    "id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "publisher": { "type": "string" },
+                    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+\\.\\d+$" }
+                }
+            }
+        },
+        "screenshots": {
+            "type": "array",
+            "description": "Paths to screenshot files",
+            "items": { "type": "string" }
+        },
+        "resourceExposurePolicy": {
+            "type": "object",
+            "description": "Controls how the app source is exposed",
+            "properties": {
+                "allowDebugging": { "type": "boolean" },
+                "allowDownloadingSource": { "type": "boolean" },
+                "includeSourceInSymbolFile": { "type": "boolean" }
+            }
+        },
+        "preprocessorSymbols": {
+            "type": "array",
+            "description": "Preprocessor symbols for conditional compilation",
+            "items": { "type": "string" }
+        },
+        "keyVaultUrls": {
+            "type": "array",
+            "description": "Azure Key Vault URLs for secrets",
+            "items": { "type": "string" }
+        },
+        "supportedLocales": {
+            "type": "array",
+            "description": "Supported locale codes",
+            "items": { "type": "string" }
+        },
+        "contextSensitiveHelpUrl": {
+            "type": "string",
+            "description": "Base URL for context-sensitive help"
+        },
+        "showMyCode": {
+            "type": "boolean",
+            "description": "Expose source code (deprecated, use resourceExposurePolicy)"
+        }
+    },
+    "additionalProperties": true
+}

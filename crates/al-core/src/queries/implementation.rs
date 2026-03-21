@@ -136,8 +136,17 @@ mod tests {
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),
+            extends: None,
             implements,
-            ..Default::default()
+            package: String::new(),
+            namespace: String::new(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
         }
     }
 

@@ -150,13 +150,25 @@ fn find_unused_procedures(
             if *other_path == file_path {
                 return false;
             }
+            // Primary: tree-sitter call references (misses action triggers due to grammar limitation).
+            // Fallback: text scan for calls inside trigger bodies that braced_block doesn't parse.
+            // ISSUE-076: prevents false positives for procedures called inside action triggers.
             al_syntax::find_call_references(other_tree, other_text, proc_name) > 0
+                || text_contains_call_outside_declaration(
+                    other_text,
+                    proc_name,
+                )
         });
 
         let referenced_in_same_file = {
             // find_call_references counts call sites only (excludes the declaration itself),
             // so any non-zero count means the procedure is actually called within this file.
+            // Fallback text scan handles calls in action triggers not visible to tree-sitter.
             al_syntax::find_call_references(file_tree, file_text, proc_name) > 0
+                || text_contains_call_outside_declaration(
+                    file_text,
+                    proc_name,
+                )
         };
 
         let referenced = referenced_in_other_file || referenced_in_same_file;
@@ -172,6 +184,29 @@ fn find_unused_procedures(
             });
         }
     }
+}
+
+/// Text-based fallback: checks if `proc_name` appears as a call in the source text,
+/// excluding its own declaration line.
+///
+/// This handles ISSUE-076: calls inside action triggers are invisible to tree-sitter
+/// because `braced_block` nodes do not include `trigger_declaration` children.
+/// The fallback scans for `proc_name(` patterns (case-insensitive) outside of
+/// `procedure ProcName` declaration lines to avoid counting the declaration itself.
+fn text_contains_call_outside_declaration(text: &str, proc_name: &str) -> bool {
+    let name_lower = proc_name.to_lowercase();
+    let call_pat = format!("{}(", name_lower);
+    for line in text.lines() {
+        let lower = line.to_lowercase();
+        // Skip the declaration line itself
+        if lower.contains("procedure ") && lower.contains(&name_lower) {
+            continue;
+        }
+        if lower.contains(&call_pat) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Recursively collect procedure declarations: (name, is_event_publisher, line_1based).

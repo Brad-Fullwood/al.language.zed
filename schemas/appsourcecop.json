@@ -1,0 +1,37 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AppSourceCop Configuration",
+    "description": "Schema for AppSourceCop.json — configuration for the AppSource analyzer",
+    "type": "object",
+    "properties": {
+        "mandatoryAffixes": {
+            "type": "array",
+            "description": "Object name prefixes or suffixes required for AppSource submission",
+            "items": { "type": "string" }
+        },
+        "mandatoryPrefix": {
+            "type": "string",
+            "description": "Required prefix for all object names"
+        },
+        "mandatorySuffix": {
+            "type": "string",
+            "description": "Required suffix for all object names"
+        },
+        "supportedCountries": {
+            "type": "array",
+            "description": "Country codes this app is validated for",
+            "items": { "type": "string" }
+        },
+        "targetVersion": {
+            "type": "string",
+            "description": "Target Business Central version for validation",
+            "pattern": "^\\d+\\.\\d+$"
+        },
+        "obsoleteTagMinAllowedMajorMinor": {
+            "type": "string",
+            "description": "Minimum major.minor for ObsoleteTag values",
+            "pattern": "^\\d+\\.\\d+$"
+        }
+    },
+    "additionalProperties": false
+}

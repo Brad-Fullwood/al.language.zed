@@ -267,6 +267,8 @@ mod tests {
             id,
             name: name.to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods: Vec::new(),
             fields: Vec::new(),

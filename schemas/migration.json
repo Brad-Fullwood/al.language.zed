@@ -1,0 +1,33 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AL Migration Schema",
+    "description": "Schema for Migration.json — Business Central data upgrade migration manifest",
+    "type": "object",
+    "properties": {
+        "apprules": {
+            "type": "array",
+            "description": "List of migration rules for extension data upgrades",
+            "items": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Unique identifier (GUID) for the migration rule",
+                        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+                    },
+                    "publisher": {
+                        "type": "string",
+                        "description": "Publisher of the source extension being migrated from"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the source extension being migrated from"
+                    }
+                },
+                "additionalProperties": false
+            }
+        }
+    },
+    "additionalProperties": false
+}

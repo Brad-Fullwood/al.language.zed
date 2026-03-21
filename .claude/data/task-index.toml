@@ -112,10 +112,10 @@ T1307 = { wp = "WP13", name = "tree-sitter-al: List of [Interface IFoo] Syntax",
 T1308 = { wp = "WP13", name = "Snippet Audit and Additions", done = false, deps = [] }
 T1309 = { wp = "WP13", name = "JSON Schemas for BC Config Files", done = false, deps = [] }
 # --- WP14: XLIFF / Translation Support ---
-T1401 = { wp = "WP14", name = "XLIFF Generation on Build", done = false, deps = [] }
-T1402 = { wp = "WP14", name = "XLIFF Refresh Workflow", done = false, deps = ["T1401"] }
-T1403 = { wp = "WP14", name = "Find Untranslated Texts", done = false, deps = ["T1401"] }
-T1404 = { wp = "WP14", name = "Translation Suggestion from Base App Symbols", done = false, deps = ["T1401"] }
+T1401 = { wp = "WP14", name = "XLIFF Generation on Build", done = true, deps = [] }
+T1402 = { wp = "WP14", name = "XLIFF Refresh Workflow", done = true, deps = ["T1401"] }
+T1403 = { wp = "WP14", name = "Find Untranslated Texts", done = true, deps = ["T1401"] }
+T1404 = { wp = "WP14", name = "Translation Suggestion from Base App Symbols", done = true, deps = ["T1401"] }
 # --- WP15: Test Runner Integration ---
 T1501 = { wp = "WP15", name = "Test Discovery via Static Analysis", done = false, deps = [] }
 T1502 = { wp = "WP15", name = "Test Execution via BC REST API", done = false, deps = ["T1501"] }

@@ -337,6 +337,8 @@ mod tests {
             id: 18,
             name: "Customer".to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![al_symbols::MethodSymbol {
                 name: "GetBalance".to_string(),

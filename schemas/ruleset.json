@@ -1,0 +1,56 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "AL Ruleset",
+    "description": "Schema for *.ruleset.json — diagnostic severity overrides for AL analyzers",
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string",
+            "description": "Display name for this ruleset"
+        },
+        "description": {
+            "type": "string",
+            "description": "Description of what this ruleset configures"
+        },
+        "includedRuleSets": {
+            "type": "array",
+            "description": "Other ruleset files to include",
+            "items": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string", "description": "Relative path to the ruleset file" },
+                    "action": {
+                        "type": "string",
+                        "enum": ["Default", "None", "Hidden", "Info", "Warning", "Error"],
+                        "description": "Default action applied to rules from this ruleset"
+                    }
+                }
+            }
+        },
+        "rules": {
+            "type": "array",
+            "description": "Individual rule severity overrides",
+            "items": {
+                "type": "object",
+                "required": ["id", "action"],
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Rule ID (e.g. AA0001, AL0001)"
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["Default", "None", "Hidden", "Info", "Warning", "Error"],
+                        "description": "Severity action for this rule"
+                    },
+                    "justification": {
+                        "type": "string",
+                        "description": "Reason for this override"
+                    }
+                }
+            }
+        }
+    },
+    "additionalProperties": false
+}

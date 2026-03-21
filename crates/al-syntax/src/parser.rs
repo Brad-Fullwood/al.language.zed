@@ -207,4 +207,49 @@ mod tests {
         // At minimum it should not panic
         let _ = result;
     }
+
+    // -----------------------------------------------------------------------
+    // T1307: List of [Interface IFoo] syntax
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_list_of_interface_variable() {
+        // `List of [Interface IFoo]` should parse without errors
+        let mut parser = AlParser::new();
+        let source = r#"codeunit 50100 "Test"
+{
+    var
+        Tools: List of [Interface "AOAI Function"];
+
+    procedure DoSomething()
+    var
+        LocalList: List of [Interface IMyInterface];
+    begin
+    end;
+}"#;
+        let result = parser.parse(source);
+        assert!(result.tree.root_node().child_count() > 0, "Should parse List of [Interface ...] successfully");
+        // The parse should have no ERROR nodes for this valid syntax
+        let root_text = result.tree.root_node().to_sexp();
+        assert!(!root_text.contains("ERROR"), "No parse errors expected for List of [Interface ...] syntax");
+    }
+
+    #[test]
+    fn test_parse_list_of_interface_return_type() {
+        // `List of [Interface IFoo]` as a procedure return type
+        let mut parser = AlParser::new();
+        let source = r#"codeunit 50100 "Test"
+{
+    procedure GetTools(): List of [Interface "AOAI Function"]
+    var
+        List: List of [Interface "AOAI Function"];
+    begin
+        exit(List);
+    end;
+}"#;
+        let result = parser.parse(source);
+        assert!(result.tree.root_node().child_count() > 0);
+        let root_text = result.tree.root_node().to_sexp();
+        assert!(!root_text.contains("ERROR"), "No parse errors expected for List of [Interface ...] return type");
+    }
 }

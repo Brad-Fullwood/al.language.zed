@@ -374,6 +374,7 @@ Build failed.";
                 ui_cop: PathBuf::new(),
                 per_tenant_cop: PathBuf::new(),
                 common: PathBuf::new(),
+                custom: Vec::new(),
             },
         };
         let result = compile_project(&tc, dir.path(), None).await;

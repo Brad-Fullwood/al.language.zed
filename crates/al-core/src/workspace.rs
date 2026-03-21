@@ -77,7 +77,7 @@ pub struct Workspace {
     /// In-memory cache of builtin types indexed by name for O(1) lookups.
     pub semantic_cache: std::sync::RwLock<SemanticCache>,
     /// Active AL debug session (None if not debugging).
-    pub debug_session: tokio::sync::Mutex<Option<al_dap_client::session::DebugSession>>,
+    pub debug_session: tokio::sync::Mutex<Option<crate::native_debug::NativeDebugSession>>,
     /// Optional callback for user-visible notifications (bridge failures, etc.).
     ///
     /// Set by al-lsp after workspace construction. In the LSP path the closure

@@ -225,6 +225,11 @@ impl DebugSession {
 
     /// Continue execution until the next breakpoint or program exit.
     ///
+    /// Alias for `continue_()` for call-site compatibility.
+    pub async fn continue_exec(&mut self) -> Result<&DebugState> {
+        self.continue_().await
+    }
+
     /// Sends DAP `continue` and waits for a `stopped` event (30s timeout).
     /// Returns the updated debug state.
     pub async fn continue_(&mut self) -> Result<&DebugState> {

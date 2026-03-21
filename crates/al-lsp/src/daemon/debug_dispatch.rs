@@ -13,6 +13,7 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
 
 pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     use al_core::native_debug::NativeDebugSession;
+    use al_dap_client::bc_debug::BcDebugConfig;
     use al_core::jsonrpc::error_codes;
 
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
@@ -22,58 +23,13 @@ pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serd
 
     match cmd {
         "start" => {
-            let config_name = params.get("config").and_then(|v| v.as_str());
+            let access_token = params
+                .get("accessToken")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let config = BcDebugConfig::from_dap_args(params);
 
-            // Resolve launch config from project
-            let project_root = match workspace.project.read().await.as_ref().map(|p| p.root.clone()) {
-                Some(root) => root,
-                None => {
-                    return Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: "No project loaded".to_string(),
-                        }),
-                    };
-                }
-            };
-
-            let launch_file = al_core::launch::find_launch_config(&project_root);
-            let bc_config = match resolve_debug_config(launch_file.as_ref(), config_name) {
-                Ok(cfg) => cfg,
-                Err(e) => {
-                    return Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: format!("Config error: {e}"),
-                        }),
-                    };
-                }
-            };
-
-            // Acquire OAuth token
-            let tenant = bc_config.tenant.clone();
-            let http = reqwest::Client::new();
-            let token = match al_core::symbols::oauth::acquire_token(&http, &tenant, |msg| {
-                tracing::info!("{msg}");
-            }).await {
-                Ok(t) => t,
-                Err(e) => {
-                    return Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: format!("Token acquisition failed: {e}"),
-                        }),
-                    };
-                }
-            };
-
-            match NativeDebugSession::start(bc_config, &token).await {
+            match NativeDebugSession::start(config, access_token).await {
                 Ok(session) => {
                     let session_id = session.session_id().to_string();
                     *workspace.debug_session.lock().await = Some(session);
@@ -115,28 +71,15 @@ pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serd
             let line = params.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let condition = params.get("condition").and_then(|v| v.as_str()).map(String::from);
 
-            // Resolve AL object type + ID from workspace file index
-            let file_path = std::path::PathBuf::from(&file);
-            let (object_type, object_id) = match workspace.file_index.object_info.get(&file_path) {
-                Some(info) => (kind_to_object_type(&info.kind), info.id.unwrap_or(-1) as i32),
-                None => {
-                    return Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: format!("Cannot resolve object type for file: {file}"),
-                        }),
-                    };
-                }
-            };
-
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
                 None => no_session(id),
                 Some(session) => {
                     let bps: Vec<(u32, Option<&str>)> = vec![(line, condition.as_deref())];
-                    match session.set_breakpoints(&file, &bps, object_type, object_id).await {
+                    // object_type/object_id: use defaults (0) when not provided by caller
+                    let obj_type = params.get("objectType").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let obj_id = params.get("objectId").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    match session.set_breakpoints(&file, &bps, obj_type, obj_id).await {
                         Ok(verified) => {
                             let bp_json: Vec<serde_json::Value> = verified
                                 .iter()
@@ -360,49 +303,4 @@ pub(super) fn kind_to_object_type(kind: &str) -> i32 {
         "reportextension" => 22,
         _ => -1,
     }
-}
-
-/// Resolve the BcDebugConfig from launch config files.
-pub(super) fn resolve_debug_config(
-    launch_file: Option<&al_core::launch::DebugConfigFile>,
-    config_name: Option<&str>,
-) -> std::result::Result<al_dap_client::bc_debug::BcDebugConfig, String> {
-    let bc_server = match launch_file {
-        Some(df) => {
-            if let Some(name) = config_name {
-                df.configs.iter().find(|c| c.name == name)
-                    .ok_or_else(|| format!("Config '{}' not found in {}", name, df.path.display()))?
-                    .clone()
-            } else {
-                df.configs.first()
-                    .ok_or_else(|| format!("No AL configs in {}", df.path.display()))?
-                    .clone()
-            }
-        }
-        None => {
-            return Err("No debug configuration found (.zed/debug.json or .vscode/launch.json)".to_string());
-        }
-    };
-
-    // Convert BcServerConfig → BcDebugConfig
-    let mut cfg = al_dap_client::bc_debug::BcDebugConfig::default();
-    cfg.server = bc_server.server;
-    cfg.server_instance = bc_server.server_instance;
-    if let Some(port) = bc_server.port {
-        cfg.port = port;
-    }
-    cfg.tenant = bc_server.tenant.unwrap_or_else(|| "default".to_string());
-    cfg.environment_name = bc_server.environment_name;
-    cfg.accept_invalid_certs = bc_server.accept_invalid_certs;
-    cfg.environment_type = match bc_server.environment_type {
-        al_core::launch::EnvironmentType::OnPrem => "OnPrem".to_string(),
-        al_core::launch::EnvironmentType::Sandbox => "Sandbox".to_string(),
-        al_core::launch::EnvironmentType::Production => "Production".to_string(),
-    };
-    cfg.authentication = match bc_server.authentication {
-        al_core::launch::AuthMethod::Windows => "Windows".to_string(),
-        al_core::launch::AuthMethod::UserPassword => "UserPassword".to_string(),
-        al_core::launch::AuthMethod::AAD => "AAD".to_string(),
-    };
-    Ok(cfg)
 }

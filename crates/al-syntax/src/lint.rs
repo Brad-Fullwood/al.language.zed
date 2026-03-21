@@ -86,6 +86,10 @@ pub fn lint_rules() -> &'static [LintRuleInfo] {
         LintRuleInfo { code: "AL-L016", name: "ProcedureNaming", severity: LintSeverity::Warning, description: "Procedure name does not follow PascalCase convention" },
         LintRuleInfo { code: "AL-L017", name: "HardcodedString", severity: LintSeverity::Info, description: "Hard-coded text string — consider using a Label variable" },
         LintRuleInfo { code: "AL-L018", name: "RecordVarNaming", severity: LintSeverity::Info, description: "Record variable should use a descriptive name matching the table" },
+        LintRuleInfo { code: "AL-L019", name: "FlowFieldEditable", severity: LintSeverity::Warning, description: "FlowField/FlowFilter field marked Editable = true" },
+        LintRuleInfo { code: "AL-L020", name: "SecretTextEnforcement", severity: LintSeverity::Warning, description: "Variable with sensitive name (Password/Secret/ApiKey/Token) should use SecretText type" },
+        LintRuleInfo { code: "AL-L021", name: "LockTableDeprecated", severity: LintSeverity::Info, description: "LockTable() is deprecated — use ReadIsolation instead (BC 21+)" },
+        LintRuleInfo { code: "AL-L022", name: "ApiPageMandatoryFields", severity: LintSeverity::Warning, description: "API page is missing mandatory properties (ODataKeyFields, EntityName, EntitySetName, APIVersion)" },
     ];
     RULES
 }
@@ -102,6 +106,13 @@ pub fn lint_with_config(tree: &Tree, text: &str, config: &LintConfig) -> Vec<Lin
     let mut diagnostics = Vec::new();
 
     walk_and_lint(root, source, text, config, &mut diagnostics, 0);
+
+    // AL-L019: text-based FlowField editability check (AL grammar doesn't parse field
+    // properties as structured nodes — braced_block contains raw tokens).
+    check_flowfield_editable_text(text, &mut diagnostics);
+
+    // AL-L022: text-based API page mandatory property check
+    check_api_page_mandatory_fields_text(text, &mut diagnostics);
 
     diagnostics
 }
@@ -202,6 +213,9 @@ fn walk_and_lint(
 
             // AL-L017: Hard-coded text string (should use Label)
             check_hardcoded_string(node, source, diagnostics);
+
+            // AL-L021: LockTable() deprecated
+            check_locktable_deprecated(node, source, diagnostics);
         }
 
         "integer" => {
@@ -215,6 +229,11 @@ fn walk_and_lint(
 
             // AL-L018: Record variable naming convention
             check_record_variable_naming(node, source, diagnostics);
+        }
+
+        "regular_variable_declaration" => {
+            // AL-L020: SecretText enforcement for sensitive variable names
+            check_secret_text_enforcement(node, source, diagnostics);
         }
 
         _ => {}
@@ -872,6 +891,266 @@ fn check_record_variable_naming(
     }
 }
 
+// ── AL-L019: FlowField Editable = true (text-based) ─────────────────
+//
+// The AL tree-sitter grammar parses field properties as raw tokens in a
+// braced_block — not as structured property_assignment nodes.
+// Use text-based scanning (same approach as audit.rs).
+
+fn check_flowfield_editable_text(text: &str, diagnostics: &mut Vec<LintDiagnostic>) {
+    struct FieldCtx {
+        is_flowfield: bool,
+        editable_true_line: Option<u32>,
+        brace_depth: i32,
+    }
+
+    let mut stack: Vec<FieldCtx> = Vec::new();
+
+    for (idx, line) in text.lines().enumerate() {
+        let line_num = idx as u32;
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+
+        // Detect `field(` opening
+        if lower.starts_with("field(") || lower.starts_with("field (") {
+            let opens = line.chars().filter(|&c| c == '{').count() as i32;
+            let closes = line.chars().filter(|&c| c == '}').count() as i32;
+            stack.push(FieldCtx {
+                is_flowfield: false,
+                editable_true_line: None,
+                brace_depth: opens - closes,
+            });
+            continue;
+        }
+
+        if let Some(ctx) = stack.last_mut() {
+            let opens = line.chars().filter(|&c| c == '{').count() as i32;
+            let closes = line.chars().filter(|&c| c == '}').count() as i32;
+            ctx.brace_depth += opens - closes;
+
+            // Detect FieldClass = FlowField / FlowFilter
+            if lower.contains("fieldclass") {
+                let no_ws: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
+                if no_ws.contains("fieldclass=flowfield") || no_ws.contains("fieldclass=flowfilter") {
+                    ctx.is_flowfield = true;
+                }
+            }
+
+            // Detect Editable = true
+            if lower.contains("editable") {
+                let no_ws: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
+                if no_ws.contains("editable=true") {
+                    ctx.editable_true_line = Some(line_num);
+                }
+            }
+
+            // End of field block
+            if ctx.brace_depth <= 0 {
+                let ctx = stack.pop().unwrap();
+                if ctx.is_flowfield {
+                    if let Some(editable_line) = ctx.editable_true_line {
+                        let range = tree_sitter::Range {
+                            start_byte: 0,
+                            end_byte: 0,
+                            start_point: tree_sitter::Point { row: editable_line as usize, column: 0 },
+                            end_point: tree_sitter::Point { row: editable_line as usize, column: 80 },
+                        };
+                        diagnostics.push(LintDiagnostic {
+                            code: "AL-L019".to_string(),
+                            message: "FlowField/FlowFilter field is marked Editable = true — FlowFields are computed and cannot be edited directly".to_string(),
+                            range,
+                            severity: LintSeverity::Warning,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// ── AL-L020: SecretText enforcement ─────────────────────────────────
+
+/// Sensitive name patterns that should use SecretText instead of Text.
+const SECRET_PATTERNS: &[&str] = &["password", "secret", "apikey", "token", "privatekey"];
+
+fn check_secret_text_enforcement(
+    node: Node,
+    source: &[u8],
+    diagnostics: &mut Vec<LintDiagnostic>,
+) {
+    let name_node = match node.child_by_field_name("name") {
+        Some(n) => n,
+        None => return,
+    };
+    let name = match name_node.utf8_text(source) {
+        Ok(n) => n.trim_matches('"').to_lowercase(),
+        Err(_) => return,
+    };
+
+    let is_sensitive = SECRET_PATTERNS.iter().any(|pat| name.contains(pat));
+    if !is_sensitive {
+        return;
+    }
+
+    // Check if the type is Text (not SecretText)
+    let type_node = match node.child_by_field_name("type") {
+        Some(n) => n,
+        None => return,
+    };
+    let type_text = match type_node.utf8_text(source) {
+        Ok(t) => t.trim().to_lowercase(),
+        Err(_) => return,
+    };
+
+    // Text[n] or plain Text — but not SecretText
+    if (type_text.starts_with("text") && !type_text.starts_with("secrettext"))
+        || type_text == "code"
+    {
+        diagnostics.push(LintDiagnostic {
+            code: "AL-L020".to_string(),
+            message: format!(
+                "Variable '{}' has a sensitive name — use SecretText instead of {}",
+                name_node.utf8_text(source).unwrap_or("").trim_matches('"'),
+                type_node.utf8_text(source).unwrap_or("Text").trim(),
+            ),
+            range: name_node.range(),
+            severity: LintSeverity::Warning,
+        });
+    }
+}
+
+// ── AL-L021: LockTable deprecated ───────────────────────────────────
+
+fn check_locktable_deprecated(node: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
+    if let Ok(text) = node.utf8_text(source) {
+        let lower = text.trim().to_lowercase();
+        if lower.contains(".locktable()") || lower.contains(".locktable ()") {
+            diagnostics.push(LintDiagnostic {
+                code: "AL-L021".to_string(),
+                message: "LockTable() is deprecated — use ReadIsolation property or SetLoadFields() with ReadIsolation instead (BC 21+)".to_string(),
+                range: node.range(),
+                severity: LintSeverity::Info,
+            });
+        }
+    }
+}
+
+// ── AL-L022: API page mandatory field validation (text-based) ────────
+//
+// AL page objects have top-level property assignments as raw identifier
+// tokens, not structured AST nodes.  Scan the file text directly.
+
+fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDiagnostic>) {
+    // Only applies to page objects.  Scan lines for:
+    //   page <id> "<name>"  { ... }
+    // and within the object body check for APIVersion, EntityName, EntitySetName, ODataKeyFields.
+    //
+    // We scan until we find a line starting with "page " and then track brace depth
+    // to stay within the object, collecting property lines.
+
+    struct PageCtx {
+        start_line: u32,
+        brace_depth: i32,
+        has_api_version: bool,
+        api_version_line: Option<u32>,
+        has_entity_name: bool,
+        has_entity_set_name: bool,
+        has_odata_key_fields: bool,
+    }
+
+    let mut page_ctx: Option<PageCtx> = None;
+
+    for (idx, line) in text.lines().enumerate() {
+        let line_num = idx as u32;
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+
+        // Detect page object start
+        if page_ctx.is_none() {
+            if lower.starts_with("page ") {
+                let opens = line.chars().filter(|&c| c == '{').count() as i32;
+                let closes = line.chars().filter(|&c| c == '}').count() as i32;
+                page_ctx = Some(PageCtx {
+                    start_line: line_num,
+                    brace_depth: opens - closes,
+                    has_api_version: false,
+                    api_version_line: None,
+                    has_entity_name: false,
+                    has_entity_set_name: false,
+                    has_odata_key_fields: false,
+                });
+                continue;
+            }
+        }
+
+        if let Some(ctx) = page_ctx.as_mut() {
+            let opens = line.chars().filter(|&c| c == '{').count() as i32;
+            let closes = line.chars().filter(|&c| c == '}').count() as i32;
+            ctx.brace_depth += opens - closes;
+
+            // Scan property assignments (only at the top level of the page object, depth ~1)
+            if ctx.brace_depth == 1 {
+                let no_ws: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
+                if no_ws.starts_with("apiversion=") || no_ws.starts_with("apiversion =") {
+                    ctx.has_api_version = true;
+                    ctx.api_version_line = Some(line_num);
+                }
+                if no_ws.starts_with("entityname=") {
+                    ctx.has_entity_name = true;
+                }
+                if no_ws.starts_with("entitysetname=") {
+                    ctx.has_entity_set_name = true;
+                }
+                if no_ws.starts_with("odatakeyfields=") {
+                    ctx.has_odata_key_fields = true;
+                }
+            }
+
+            // End of page object
+            if ctx.brace_depth <= 0 {
+                let ctx = page_ctx.take().unwrap();
+
+                // Only emit if this is an API page
+                if ctx.has_api_version {
+                    let diag_line = ctx.api_version_line.unwrap_or(ctx.start_line);
+                    let range = tree_sitter::Range {
+                        start_byte: 0,
+                        end_byte: 0,
+                        start_point: tree_sitter::Point { row: diag_line as usize, column: 0 },
+                        end_point: tree_sitter::Point { row: diag_line as usize, column: 80 },
+                    };
+                    if !ctx.has_entity_name {
+                        diagnostics.push(LintDiagnostic {
+                            code: "AL-L022".to_string(),
+                            message: "API page is missing mandatory property 'EntityName'".to_string(),
+                            range,
+                            severity: LintSeverity::Warning,
+                        });
+                    }
+                    if !ctx.has_entity_set_name {
+                        diagnostics.push(LintDiagnostic {
+                            code: "AL-L022".to_string(),
+                            message: "API page is missing mandatory property 'EntitySetName'".to_string(),
+                            range,
+                            severity: LintSeverity::Warning,
+                        });
+                    }
+                    if !ctx.has_odata_key_fields {
+                        diagnostics.push(LintDiagnostic {
+                            code: "AL-L022".to_string(),
+                            message: "API page is missing mandatory property 'ODataKeyFields'".to_string(),
+                            range,
+                            severity: LintSeverity::Warning,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /// Get the name of a declaration node.
@@ -1142,10 +1421,10 @@ mod tests {
     }
 
     #[test]
-    fn test_lint_rules_returns_17_rules() {
+    fn test_lint_rules_returns_21_rules() {
         let rules = lint_rules();
         // AL-L012 is excluded (stub — no-op implementation).
-        assert_eq!(rules.len(), 17, "Should have exactly 17 lint rules (AL-L012 excluded as stub)");
+        assert_eq!(rules.len(), 21, "Should have exactly 21 lint rules (AL-L012 excluded as stub)");
         // AL-L012 must not appear in the registry
         assert!(
             !rules.iter().any(|r| r.code == "AL-L012"),
@@ -1182,5 +1461,220 @@ mod tests {
 }"#;
         let diags2 = lint_src(src2);
         assert!(has_code(&diags2, "AL-L007"), "Should detect HACK comment");
+    }
+
+    // ── T1801: FlowField editability ──────────────────────────────────
+
+    #[test]
+    fn test_l019_flowfield_editable_true() {
+        let src = r#"table 50100 "Test Table"
+{
+    fields
+    {
+        field(1; "Amount Sold"; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = sum("Sales Line".Amount);
+            Editable = true;
+        }
+    }
+}"#;
+        let diags = lint_src(src);
+        assert!(has_code(&diags, "AL-L019"), "Should detect FlowField with Editable=true: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l019_flowfield_no_editable_no_warn() {
+        let src = r#"table 50100 "Test Table"
+{
+    fields
+    {
+        field(1; "Amount Sold"; Decimal)
+        {
+            FieldClass = FlowField;
+            CalcFormula = sum("Sales Line".Amount);
+        }
+    }
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L019"), "Should not warn when Editable not set: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l019_normal_field_editable_no_warn() {
+        let src = r#"table 50100 "Test Table"
+{
+    fields
+    {
+        field(1; Name; Text[50])
+        {
+            Editable = true;
+        }
+    }
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L019"), "Normal field with Editable=true is fine: {:?}", diags);
+    }
+
+    // ── T1803: SecretText enforcement ─────────────────────────────────
+
+    #[test]
+    fn test_l020_password_as_text_warns() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Login()
+    var
+        Password: Text[100];
+    begin
+        Password := 'secret';
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(has_code(&diags, "AL-L020"), "Should warn on Text variable named Password: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l020_apikey_as_text_warns() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Connect()
+    var
+        ApiKey: Text[50];
+    begin
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(has_code(&diags, "AL-L020"), "Should warn on Text variable named ApiKey: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l020_secrettext_no_warn() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Login()
+    var
+        Password: SecretText;
+    begin
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L020"), "SecretText variable should not warn: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l020_non_sensitive_name_no_warn() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Process()
+    var
+        CustomerName: Text[100];
+    begin
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L020"), "Non-sensitive name should not warn: {:?}", diags);
+    }
+
+    // ── T1804: ReadIsolation over LockTable ───────────────────────────
+
+    #[test]
+    fn test_l021_locktable_warns() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure ProcessItem()
+    var
+        Item: Record Item;
+    begin
+        Item.LockTable();
+        if Item.Get('ITEM001') then
+            Item.Modify();
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(has_code(&diags, "AL-L021"), "Should warn on LockTable(): {:?}", diags);
+    }
+
+    #[test]
+    fn test_l021_no_locktable_no_warn() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure ProcessItem()
+    var
+        Item: Record Item;
+    begin
+        if Item.Get('ITEM001') then
+            Item.Modify();
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L021"), "No LockTable should not warn: {:?}", diags);
+    }
+
+    // ── T1805: API page mandatory fields ─────────────────────────────
+
+    #[test]
+    fn test_l022_api_page_missing_odatakeyfields() {
+        let src = r#"page 50100 "Customer API"
+{
+    APIVersion = 'v2.0';
+    EntityName = 'customer';
+    EntitySetName = 'customers';
+
+    layout
+    {
+        area(content)
+        {
+            group(General)
+            {
+                field(number; Rec."No.") { }
+            }
+        }
+    }
+}"#;
+        let diags = lint_src(src);
+        assert!(has_code(&diags, "AL-L022"), "Should warn when ODataKeyFields missing: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l022_api_page_complete_no_warn() {
+        let src = r#"page 50100 "Customer API"
+{
+    APIVersion = 'v2.0';
+    EntityName = 'customer';
+    EntitySetName = 'customers';
+    ODataKeyFields = "No.";
+
+    layout
+    {
+        area(content)
+        {
+            group(General)
+            {
+                field(number; Rec."No.") { }
+            }
+        }
+    }
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L022"), "Complete API page should not warn: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l022_non_api_page_no_warn() {
+        let src = r#"page 50100 "Customer List"
+{
+    layout
+    {
+        area(content)
+        {
+            group(General)
+            {
+                field(number; Rec."No.") { }
+            }
+        }
+    }
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L022"), "Non-API page should not warn: {:?}", diags);
     }
 }

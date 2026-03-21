@@ -87,6 +87,21 @@ pub fn source_actions(
     // Implement interface stub methods (T1202)
     actions.extend(source_action_implement_interface(workspace, uri, &text, range));
 
+    // Add parentheses to bare method call (T1209)
+    if let Some(action) = source_action_add_parens(workspace, uri, &text, range) {
+        actions.push(action);
+    }
+
+    // Convert event subscriber string literal to identifier (T1210)
+    if let Some(action) = source_action_convert_event_subscriber(workspace, uri, &text, range) {
+        actions.push(action);
+    }
+
+    // Move ToolTip from page field to table field (T1211)
+    if let Some(action) = source_action_move_tooltip(workspace, uri, &text, range) {
+        actions.push(action);
+    }
+
     actions
 }
 
@@ -524,8 +539,13 @@ fn try_extract_quoted_identifier(bytes: &[u8], cursor: usize) -> Option<String> 
     }
 
     // Scan left from cursor to find an opening quote.
+    // If cursor is ON a closing `"`, we need to look past it — treat that position
+    // as possibly the close quote and keep scanning left for the open quote.
     let open_quote = {
-        let mut pos = cursor;
+        // Start one position to the left of cursor if cursor is itself a quote
+        // (it may be the closing quote, not the opening one).
+        let start = if bytes[cursor] == b'"' && cursor > 0 { cursor - 1 } else { cursor };
+        let mut pos = start;
         loop {
             if bytes[pos] == b'"' {
                 break Some(pos);
@@ -776,7 +796,34 @@ fn extract_equality_operands(node: tree_sitter::Node, source: &[u8]) -> Option<(
         return None;
     }
 
-    Some((left, right))
+    // Normalize Yoda-style conditions: if the left side is a literal (number, quoted
+    // string, keyword), swap so the variable is always the first element.
+    if is_literal(&left) && !is_literal(&right) {
+        Some((right, left))
+    } else {
+        Some((left, right))
+    }
+}
+
+/// Returns true if `s` looks like a literal value rather than a variable.
+/// Handles: integer/decimal numbers, single-quoted AL strings, `true`/`false`.
+fn is_literal(s: &str) -> bool {
+    let t = s.trim();
+    // Numeric literal
+    if t.chars().next().map_or(false, |c| c.is_ascii_digit() || c == '-') {
+        if t.chars().skip(1).all(|c| c.is_ascii_digit() || c == '.') {
+            return true;
+        }
+    }
+    // Single-quoted string
+    if t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2 {
+        return true;
+    }
+    // Boolean keywords
+    if t.eq_ignore_ascii_case("true") || t.eq_ignore_ascii_case("false") {
+        return true;
+    }
+    false
 }
 
 /// Generate "Implement interface" code actions for codeunits with `implements` clauses.
@@ -1262,6 +1309,298 @@ fn source_action_make_local(
 
     Some(CodeActionEntry {
         title: "Make procedure local".to_string(),
+        kind: CodeActionKind::Refactor,
+        edit: Some(single_edit_ws(uri, vec![edit])),
+        is_preferred: false,
+    })
+}
+
+/// T1211: Move ToolTip from page field control to table field definition.
+///
+/// When the cursor is on a `ToolTip` property inside a page `field(...)` control,
+/// offers to remove the tooltip from the page (as it should live on the table field).
+/// This is a "clean up duplicate" action — the authoritative tooltip belongs on the table.
+fn source_action_move_tooltip(
+    _workspace: &Workspace,
+    uri: &Url,
+    text: &str,
+    range: Range,
+) -> Option<CodeActionEntry> {
+    let cursor_line = range.start.line as usize;
+    let line = text.lines().nth(cursor_line)?;
+    let trimmed = line.trim();
+
+    // Must be on a ToolTip property assignment line
+    let lower_trimmed = trimmed.to_lowercase();
+    if !lower_trimmed.starts_with("tooltip") {
+        return None;
+    }
+
+    // Verify we're inside a page object (not a table). Walk up looking for
+    // the object type declaration. A simple heuristic: scan backwards for
+    // lines matching `^page ` or `^table ` at the start of the file.
+    let object_kind = detect_object_kind(text);
+    if object_kind != Some(AlObjectKind::Page) {
+        return None;
+    }
+
+    // Verify we're inside a field control (not a table fieldgroup or other context).
+    // Scan backwards from cursor for "field(" pattern — page field controls start with `field(`
+    let in_page_field = {
+        let mut found = false;
+        let mut depth = 0i32;
+        for (i, l) in text.lines().enumerate().take(cursor_line + 1).collect::<Vec<_>>().into_iter().rev() {
+            let lt = l.trim().to_lowercase();
+            // Count braces to track nesting
+            for ch in l.chars() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            // Check if this line starts a page field control
+            if lt.starts_with("field(") && i < cursor_line {
+                found = true;
+                break;
+            }
+            // If we've crossed a page/layout/area keyword going backwards, stop
+            if lt == "layout" || lt == "area(content)" || lt == "area(factboxes)" {
+                break;
+            }
+            let _ = depth; // suppress warning
+        }
+        found
+    };
+
+    if !in_page_field {
+        return None;
+    }
+
+    // Offer to remove the ToolTip line from the page field.
+    // Delete the entire line (including newline).
+    let line_start_byte: usize = text
+        .lines()
+        .take(cursor_line)
+        .map(|l| l.len() + 1) // +1 for newline
+        .sum();
+    let line_len = line.len();
+
+    // Delete from start of line to start of next line
+    let edit = TextEdit {
+        range: Range {
+            start: super::Position { line: cursor_line as u32, character: 0 },
+            end: super::Position { line: (cursor_line + 1) as u32, character: 0 },
+        },
+        new_text: String::new(),
+    };
+
+    let _ = line_start_byte; // used for calculation
+    let _ = line_len;
+
+    Some(CodeActionEntry {
+        title: "Move ToolTip to table field (remove from page)".to_string(),
+        kind: CodeActionKind::Refactor,
+        edit: Some(single_edit_ws(uri, vec![edit])),
+        is_preferred: false,
+    })
+}
+
+/// Simple object kind detector — checks the first `object` line in the file.
+#[derive(PartialEq, Eq)]
+enum AlObjectKind {
+    Page,
+    Table,
+    Codeunit,
+    Other,
+}
+
+fn detect_object_kind(text: &str) -> Option<AlObjectKind> {
+    for line in text.lines().take(5) {
+        let lower = line.trim().to_lowercase();
+        if lower.starts_with("page ") || lower.starts_with("page\t") {
+            return Some(AlObjectKind::Page);
+        }
+        if lower.starts_with("table ") || lower.starts_with("table\t") {
+            return Some(AlObjectKind::Table);
+        }
+        if lower.starts_with("codeunit ") {
+            return Some(AlObjectKind::Codeunit);
+        }
+        if lower.starts_with("pageextension ")
+            || lower.starts_with("tableextension ")
+            || lower.starts_with("report ")
+            || lower.starts_with("xmlport ")
+            || lower.starts_with("query ")
+            || lower.starts_with("enum ")
+            || lower.starts_with("interface ")
+        {
+            return Some(AlObjectKind::Other);
+        }
+    }
+    None
+}
+
+/// T1209: Add parentheses to a bare method call (e.g. `Commit;` → `Commit();`).
+///
+/// Detects when the cursor is on a line containing a standalone identifier statement
+/// without parentheses (e.g. `Commit;`, `MyProc;`) and offers to add `()`.
+fn source_action_add_parens(
+    _workspace: &Workspace,
+    uri: &Url,
+    text: &str,
+    range: Range,
+) -> Option<CodeActionEntry> {
+    let line_idx = range.start.line as usize;
+    let line = text.lines().nth(line_idx)?;
+    let trimmed = line.trim();
+
+    // Must end with semicolon and look like a bare identifier call: word chars only, then ';'
+    // e.g. "Commit;" or "MyHelper;" — not "Commit();" or "x := Commit;"
+    let is_bare_call = {
+        // Strip leading indent
+        let s = trimmed;
+        // Check pattern: identifier (possibly dotted e.g. Rec.Validate) followed immediately by ';'
+        // No '(' anywhere before the ';'
+        if let Some(body) = s.strip_suffix(';') {
+            let body = body.trim_end();
+            // A bare identifier call: no '(' anywhere, no ':=' assignment
+            !body.is_empty()
+                && !body.contains('(')
+                && !body.contains(":=")
+                && body.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '"')
+        } else {
+            false
+        }
+    };
+
+    if !is_bare_call {
+        return None;
+    }
+
+    // Find where to insert "()" — right before the ';'
+    let semicolon_col = line.rfind(';')?;
+
+    let edit = TextEdit {
+        range: Range {
+            start: super::Position { line: line_idx as u32, character: semicolon_col as u32 },
+            end: super::Position { line: line_idx as u32, character: semicolon_col as u32 },
+        },
+        new_text: "()".to_string(),
+    };
+
+    Some(CodeActionEntry {
+        title: "Add parentheses to method call".to_string(),
+        kind: CodeActionKind::Refactor,
+        edit: Some(single_edit_ws(uri, vec![edit])),
+        is_preferred: false,
+    })
+}
+
+/// T1210: Convert EventSubscriber string literal to identifier.
+///
+/// Detects `[EventSubscriber(..., 'EventName', ...)]` where the third argument
+/// is a string literal and offers to convert it to an unquoted identifier:
+/// `[EventSubscriber(..., EventName, ...)]`.
+fn source_action_convert_event_subscriber(
+    _workspace: &Workspace,
+    uri: &Url,
+    text: &str,
+    range: Range,
+) -> Option<CodeActionEntry> {
+    // Find the attribute line at or near the cursor. The EventSubscriber attribute
+    // is typically on the same line as the cursor or we look within a small window.
+    let cursor_line = range.start.line as usize;
+
+    // Scan a few lines around the cursor for the EventSubscriber attribute
+    let search_start = cursor_line.saturating_sub(2);
+    let search_end = (cursor_line + 3).min(text.lines().count());
+
+    let mut attr_line_idx: Option<usize> = None;
+    let mut attr_line_text = String::new();
+
+    for (offset, line) in text.lines().enumerate().skip(search_start).take(search_end - search_start) {
+        if line.trim_start().starts_with('[') && line.to_lowercase().contains("eventsubscriber") {
+            attr_line_idx = Some(offset);
+            attr_line_text = line.to_string();
+            break;
+        }
+    }
+
+    let line_idx = attr_line_idx?;
+    let line = &attr_line_text;
+
+    // Find the third argument (index 2) in the EventSubscriber(arg0, arg1, arg2, ...) call.
+    // The third argument is the event name. We detect it as a single-quoted string: 'EventName'
+    let lower = line.to_lowercase();
+    let es_start = lower.find("eventsubscriber(")?;
+    let args_start = es_start + "eventsubscriber(".len();
+
+    // Parse out arguments by scanning with paren/quote awareness
+    let rest = &line[args_start..];
+    let mut args: Vec<(usize, usize)> = Vec::new(); // byte offsets within `rest`
+    let mut depth = 0usize;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut arg_start = 0usize;
+
+    for (i, ch) in rest.char_indices() {
+        match ch {
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            '(' if !in_single_quote && !in_double_quote => depth += 1,
+            ')' if !in_single_quote && !in_double_quote => {
+                if depth == 0 {
+                    // End of EventSubscriber args
+                    args.push((arg_start, i));
+                    break;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 && !in_single_quote && !in_double_quote => {
+                args.push((arg_start, i));
+                arg_start = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    // The event name is the 3rd argument (index 2)
+    if args.len() < 3 {
+        return None;
+    }
+
+    let (start_off, end_off) = args[2];
+    let arg_text = rest[start_off..end_off].trim();
+
+    // Must be a single-quoted string
+    if !arg_text.starts_with('\'') || !arg_text.ends_with('\'') || arg_text.len() < 2 {
+        return None;
+    }
+
+    let event_name = &arg_text[1..arg_text.len() - 1];
+    if event_name.is_empty() {
+        return None;
+    }
+
+    // Compute character column offsets within the full line
+    let abs_start = args_start + start_off;
+    let trimmed_prefix_len = rest[start_off..end_off].len() - rest[start_off..end_off].trim_start().len();
+    let quote_col = abs_start + trimmed_prefix_len;
+
+    // The quoted string in the line
+    let quote_end_col = quote_col + arg_text.len();
+
+    let edit = TextEdit {
+        range: Range {
+            start: super::Position { line: line_idx as u32, character: quote_col as u32 },
+            end: super::Position { line: line_idx as u32, character: quote_end_col as u32 },
+        },
+        new_text: event_name.to_string(),
+    };
+
+    Some(CodeActionEntry {
+        title: "Convert event name to identifier".to_string(),
         kind: CodeActionKind::Refactor,
         edit: Some(single_edit_ws(uri, vec![edit])),
         is_preferred: false,
@@ -1782,6 +2121,125 @@ codeunit 50100 "My Codeunit"
     }
 
     // -----------------------------------------------------------------------
+    // SERIAL bug fixes
+    // -----------------------------------------------------------------------
+
+    // Bug: if_to_case indentation loss
+    // The generated case statement should preserve the body indentation
+    // relative to the case label, not strip all indentation.
+    #[test]
+    fn if_to_case_preserves_relative_indentation_in_begin_end_body() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff(x: Integer)
+    begin
+        if x = 1 then begin
+            Message('one');
+            x := 10;
+        end else if x = 2 then begin
+            Message('two');
+            x := 20;
+        end else if x = 3 then begin
+            Message('three');
+            x := 30;
+        end;
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/IfIndent.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        let range = Range {
+            start: super::super::Position { line: 4, character: 8 },
+            end: super::super::Position { line: 4, character: 8 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let case_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.contains("Convert to case"))
+            .collect();
+
+        assert!(!case_actions.is_empty(), "Should offer conversion");
+        let edit = case_actions[0].edit.as_ref().unwrap();
+        let (_, edits) = &edit.changes[0];
+        let new_text = &edits[0].new_text;
+        // The generated case body should have begin/end preserved at correct indent
+        assert!(new_text.contains("begin"), "Body should contain begin");
+        assert!(new_text.contains("end"), "Body should contain end");
+        // The body lines (Message, assignment) should be indented more than the case label
+        let msg_line = new_text.lines().find(|l| l.contains("Message('one')")).expect("should have Message line");
+        let label_line = new_text.lines().find(|l| l.trim() == "1:").expect("should have 1: label");
+        assert!(
+            msg_line.len() - msg_line.trim_start().len() > label_line.len() - label_line.trim_start().len(),
+            "Body should be indented more than label"
+        );
+    }
+
+    // Bug: if_to_case Yoda-style conditions
+    // `if 'X' = Var then` should be treated as `Var = 'X'` for the case variable
+    #[test]
+    fn if_to_case_handles_yoda_style_conditions() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure DoStuff(x: Integer)
+    begin
+        if 1 = x then
+            Message('one')
+        else if 2 = x then
+            Message('two')
+        else if 3 = x then
+            Message('three');
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/IfYoda.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        let range = Range {
+            start: super::super::Position { line: 4, character: 8 },
+            end: super::super::Position { line: 4, character: 8 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let case_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.contains("Convert to case"))
+            .collect();
+
+        assert!(!case_actions.is_empty(), "Should offer conversion for yoda-style");
+        let edit = case_actions[0].edit.as_ref().unwrap();
+        let (_, edits) = &edit.changes[0];
+        let new_text = &edits[0].new_text;
+        // The variable in the case should be 'x', not a literal
+        assert!(new_text.contains("case x of"), "Should use variable x in case, not literal");
+    }
+
+    // Bug: extract_word_at_position closing quote
+    // When cursor is on a closing `"` of a quoted identifier, the word
+    // extracted should be the full inner name, not empty.
+    #[test]
+    fn extract_word_at_cursor_on_closing_quote_returns_inner_name() {
+        // Line: `        SH: Record "Sales Header";`
+        // Positions (0-based):
+        //   `"` open  at col 19
+        //   `S` at col 20
+        //   `r` at col 31
+        //   `"` close at col 32
+        let text = "        SH: Record \"Sales Header\";\n";
+        // Place cursor on the closing quote (col 32)
+        let range = Range {
+            start: super::super::Position { line: 0, character: 32 },
+            end: super::super::Position { line: 0, character: 32 },
+        };
+
+        let word = extract_word_at_position(text, range);
+        assert_eq!(word, "Sales Header", "Should extract 'Sales Header' when cursor is on closing quote");
+    }
+
+    // -----------------------------------------------------------------------
     // Tests for with-statement elimination (T1204)
     // -----------------------------------------------------------------------
 
@@ -2221,5 +2679,209 @@ codeunit 50100 "My Codeunit"
             .collect();
 
         assert!(local_actions.is_empty(), "Should NOT offer when already local");
+    }
+
+    // -----------------------------------------------------------------------
+    // T1209: Add Parentheses to Method Calls
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn add_parens_offered_for_call_without_parens() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure Caller()
+    begin
+        Commit;
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/AddParens.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        // Cursor on "Commit" (line 4, col 8)
+        let range = Range {
+            start: super::super::Position { line: 4, character: 8 },
+            end: super::super::Position { line: 4, character: 8 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let paren_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.contains("parentheses") || a.title.contains("()"))
+            .collect();
+
+        assert!(!paren_actions.is_empty(), "Should offer 'Add parentheses' action");
+    }
+
+    #[test]
+    fn add_parens_not_offered_when_already_has_parens() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure Caller()
+    begin
+        Commit();
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/AddParens2.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        // Cursor on "Commit" (line 4, col 8)
+        let range = Range {
+            start: super::super::Position { line: 4, character: 8 },
+            end: super::super::Position { line: 4, character: 8 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let paren_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.contains("parentheses") || a.title.contains("()"))
+            .collect();
+
+        assert!(paren_actions.is_empty(), "Should NOT offer when already has ()");
+    }
+
+    // -----------------------------------------------------------------------
+    // T1210: Convert Event Subscriber Parameter Format
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn event_subscriber_string_to_identifier_offered() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "My Subscriber"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Sales Header", 'OnBeforeInsertEvent', '', false, false)]
+    procedure OnSalesHeaderInsert(var Rec: Record "Sales Header"; RunTrigger: Boolean)
+    begin
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/EventSub.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        // Cursor on line 2 where the EventSubscriber attribute is
+        let range = Range {
+            start: super::super::Position { line: 2, character: 5 },
+            end: super::super::Position { line: 2, character: 5 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let ev_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.to_lowercase().contains("event") && a.title.to_lowercase().contains("identifier"))
+            .collect();
+
+        assert!(!ev_actions.is_empty(), "Should offer event subscriber conversion");
+        let edit = ev_actions[0].edit.as_ref().expect("has edit");
+        let (_, edits) = &edit.changes[0];
+        // The edit should remove the quotes around 'OnBeforeInsertEvent'
+        assert!(
+            edits.iter().any(|e| e.new_text.contains("OnBeforeInsertEvent") && !e.new_text.contains('\'')),
+            "Should replace string literal with identifier"
+        );
+    }
+
+    #[test]
+    fn event_subscriber_not_offered_when_already_identifier() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "My Subscriber"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Sales Header", OnBeforeInsertEvent, '', false, false)]
+    procedure OnSalesHeaderInsert(var Rec: Record "Sales Header"; RunTrigger: Boolean)
+    begin
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/EventSub2.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        let range = Range {
+            start: super::super::Position { line: 2, character: 5 },
+            end: super::super::Position { line: 2, character: 5 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let ev_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.to_lowercase().contains("event") && a.title.to_lowercase().contains("identifier"))
+            .collect();
+
+        assert!(ev_actions.is_empty(), "Should NOT offer when already using identifier");
+    }
+
+    // -----------------------------------------------------------------------
+    // T1211: Move Tooltip from Page Controls to Table Fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn tooltip_on_page_field_offered_for_removal() {
+        let ws = Workspace::new();
+        // A page object with a field that has a ToolTip property
+        let al_code = r#"page 50100 "My Page"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(Name; Rec.Name)
+            {
+                ApplicationArea = All;
+                ToolTip = 'Specifies the name.';
+            }
+        }
+    }
+}
+"#;
+        let uri = Url::parse("file:///test/MyPage.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        // Cursor on the ToolTip line (line 9)
+        let range = Range {
+            start: super::super::Position { line: 9, character: 16 },
+            end: super::super::Position { line: 9, character: 16 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let tt_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.to_lowercase().contains("tooltip"))
+            .collect();
+
+        assert!(!tt_actions.is_empty(), "Should offer ToolTip action on page field");
+    }
+
+    #[test]
+    fn tooltip_not_offered_outside_page_field() {
+        let ws = Workspace::new();
+        // A table field with ToolTip — no action should be offered here
+        let al_code = r#"table 50100 "My Table"
+{
+    fields
+    {
+        field(1; Name; Text[100])
+        {
+            ToolTip = 'Specifies the name.';
+        }
+    }
+}
+"#;
+        let uri = Url::parse("file:///test/MyTable.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        // Cursor on the ToolTip line (line 6)
+        let range = Range {
+            start: super::super::Position { line: 6, character: 12 },
+            end: super::super::Position { line: 6, character: 12 },
+        };
+
+        let actions = source_actions(&ws, &uri, range);
+        let tt_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| a.title.to_lowercase().contains("tooltip") && a.title.to_lowercase().contains("table"))
+            .collect();
+
+        assert!(tt_actions.is_empty(), "Should NOT offer move-to-table action inside a table object");
     }
 }

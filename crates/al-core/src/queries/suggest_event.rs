@@ -214,6 +214,8 @@ mod tests {
             id,
             name: name.to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "Base".to_string(),
             methods: vec![MethodSymbol {
                 name: event_name.to_string(),

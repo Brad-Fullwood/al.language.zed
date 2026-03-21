@@ -86,6 +86,11 @@ pub fn cmd_package(json: bool) -> ExitCode {
                 } else {
                     eprintln!("Compilation failed");
                 }
+                let diag_count = result
+                    .get("diagnostics")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
                 if let Some(diags) = result.get("diagnostics").and_then(|v| v.as_array()) {
                     for d in diags {
                         let severity =
@@ -96,6 +101,14 @@ pub fn cmd_package(json: bool) -> ExitCode {
                         let code = d.get("code").and_then(|v| v.as_str()).unwrap_or("");
                         let msg = d.get("message").and_then(|v| v.as_str()).unwrap_or("");
                         eprintln!("{file}({line},{col}): {severity} {code}: {msg}");
+                    }
+                }
+                // ISSUE-077: when no structured diagnostics, show raw output
+                if !success && diag_count == 0 {
+                    if let Some(output) = result.get("output").and_then(|v| v.as_str()) {
+                        if !output.trim().is_empty() {
+                            eprintln!("{output}");
+                        }
                     }
                 }
             }

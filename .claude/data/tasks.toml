@@ -1590,7 +1590,7 @@ deps = []
 pass_criteria = "When features.TranslationFile is set in app.json, al compile generates a .g.xlf file containing all captions, tooltips, labels from workspace AL files."
 fail_criteria = "Missing translation units for valid captions/labels, or malformed XLIFF XML."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1602,7 +1602,7 @@ deps = ["T1401"]
 pass_criteria = "al xlf refresh syncs .g.xlf against language-specific .xlf files. Marks new, changed, and removed translation units. Preserves existing translations."
 fail_criteria = "Refresh overwrites existing translations or misses new units."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1614,7 +1614,7 @@ deps = ["T1401"]
 pass_criteria = "al xlf untranslated lists all translation units missing target translations. JSON output."
 fail_criteria = "Reports false positives for units with valid translations."
 complexity = "Small"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1626,7 +1626,7 @@ deps = ["T1401"]
 pass_criteria = "al xlf suggest matches untranslated captions against base app symbol tooltips/captions from .alpackages for automatic suggestions."
 fail_criteria = "Suggestions from wrong context or unrelated symbols."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P2"
 
 # --- WP15: Test Runner Integration ---

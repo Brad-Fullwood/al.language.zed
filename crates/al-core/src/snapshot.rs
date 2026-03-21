@@ -248,7 +248,6 @@ pub async fn download_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn test_config() -> SnapshotConfig {
         SnapshotConfig {

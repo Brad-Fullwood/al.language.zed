@@ -21,6 +21,7 @@ pub mod publish;
 pub mod queries;
 pub(crate) mod http_auth;
 pub(crate) mod resolution;
+pub mod generators;
 pub mod scaffold;
 pub mod semantic;
 pub mod snapshot;
@@ -41,6 +42,9 @@ pub mod syntax {
         lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity,
         find_object_declaration, ts_range_to_lsp,
     };
+    pub mod complexity {
+        pub use al_syntax::complexity::{compute_complexity, ProcedureComplexity};
+    }
     pub mod context {
         pub use al_syntax::context::{detect_context, CompletionContext};
     }
@@ -53,7 +57,7 @@ pub mod syntax {
 
 /// Re-exports from al-symbols for al-lsp consumption.
 pub mod symbols {
-    pub use al_symbols::{ObjectKind, SymbolIndex};
+    pub use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
     pub mod cache {
         pub use al_symbols::cache::SymbolCache;
     }

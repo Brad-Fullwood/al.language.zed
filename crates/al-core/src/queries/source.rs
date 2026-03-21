@@ -378,6 +378,8 @@ mod tests {
             id: 18,
             name: "Customer".to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 MethodSymbol {
@@ -431,6 +433,8 @@ mod tests {
             id: 50100,
             name: "Sales Document Type".to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: Vec::new(),
             fields: Vec::new(),
@@ -453,6 +457,8 @@ mod tests {
             id: 80,
             name: "Sales-Post".to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 MethodSymbol {
@@ -513,6 +519,8 @@ mod tests {
             id: 50100,
             name: "Customer Ext".to_string(),
             extends: Some("Customer".to_string()),
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "My Extension".to_string(),
             methods: Vec::new(),
             fields: vec![FieldSymbol {
@@ -642,6 +650,8 @@ mod tests {
             id: 50100,
             name: "Empty CU".to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "pkg".to_string(),
             methods: Vec::new(),
             fields: Vec::new(),

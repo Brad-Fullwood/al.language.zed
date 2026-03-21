@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::AUTHORIZATION;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
@@ -281,27 +281,6 @@ pub async fn get_metadata(
 // ---------------------------------------------------------------------------
 // SignalR Debug Hub Client
 // ---------------------------------------------------------------------------
-
-/// SignalR message types for the JSON hub protocol.
-#[derive(Debug, Serialize, Deserialize)]
-struct SignalRInvocation {
-    #[serde(rename = "type")]
-    type_: i32, // 1 = invocation
-    target: String,
-    arguments: Vec<serde_json::Value>,
-    #[serde(rename = "invocationId", skip_serializing_if = "Option::is_none")]
-    invocation_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SignalRCompletion {
-    #[serde(rename = "type")]
-    type_: i32, // 3 = completion
-    #[serde(rename = "invocationId")]
-    invocation_id: Option<String>,
-    result: Option<serde_json::Value>,
-    error: Option<String>,
-}
 
 #[derive(Debug, Deserialize)]
 struct SignalRMessage {

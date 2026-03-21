@@ -366,14 +366,25 @@ impl App {
         let mut client = client::DaemonClient::connect(&root)
             .map_err(|e| format!("Cannot connect to al-lsp daemon: {e}"))?;
 
-        // Load all symbols from the daemon's search endpoint (empty query = all)
-        let result = client.request("search", Some(serde_json::json!({
-            "query": "",
-            "limit": 100_000
-        }))).map_err(|e| format!("search request failed: {e}"))?;
+        // ISSUE-071: daemon may still be loading packages at startup.
+        // Retry up to 5 times with 800ms delay if the result is empty.
+        let mut entries: Vec<types::SymbolEntry> = Vec::new();
+        for attempt in 0..5usize {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+            }
+            let result = client.request("search", Some(serde_json::json!({
+                "query": "",
+                "limit": 100_000
+            }))).map_err(|e| format!("search request failed: {e}"))?;
 
-        let entries: Vec<types::SymbolEntry> = serde_json::from_value(result)
-            .map_err(|e| format!("Failed to deserialize symbol entries from daemon: {e}"))?;
+            let parsed: Vec<types::SymbolEntry> = serde_json::from_value(result)
+                .map_err(|e| format!("Failed to deserialize symbol entries from daemon: {e}"))?;
+            if !parsed.is_empty() {
+                entries = parsed;
+                break;
+            }
+        }
 
         self.symbols.load(entries);
         self.packages = self.symbols.package_names();
@@ -564,8 +575,10 @@ impl App {
                     } else {
                         1
                     };
-                    let zed_url = format!("zed://file{}:{}:1", path_str, line);
-                    let _ = open::that(zed_url);
+                    // ISSUE-078: use `zed <path>:<line>:<col>` CLI instead of
+                    // zed:// URL which is unreliable on Linux.
+                    let file_spec = format!("{}:{}:1", path_str, line);
+                    let _ = std::process::Command::new("zed").arg(&file_spec).spawn();
                 }
             }
             // No fallback for .app package symbols -- they have no workspace file.
