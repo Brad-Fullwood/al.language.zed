@@ -10,8 +10,29 @@ use tower_lsp::lsp_types::*;
 
 use crate::server::AlServer;
 
+/// Return true if the URI points to a file inside the al-lsp symbol cache.
+///
+/// Cache files are virtual AL outlines extracted from .app packages — Zed can
+/// navigate to them for go-to-definition, but they are not workspace files so
+/// diagnostics must not be published for them (ISSUE-072).
+pub(crate) fn is_cache_path(uri: &Url) -> bool {
+    if let Ok(path) = uri.to_file_path() {
+        let cache_root = al_core::symbols::virtual_file::cache_dir();
+        path.starts_with(&cache_root)
+    } else {
+        false
+    }
+}
+
 /// Run two-phase diagnostics and publish results to the client.
 pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str) {
+    // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
+    // workspace files and Zed logs a warning for every publishDiagnostics on them.
+    if is_cache_path(uri) {
+        tracing::debug!(uri = %uri, "publish_diagnostics: skipping cache file");
+        return;
+    }
+
     tracing::debug!(uri = %uri, text_len = text.len(), "publish_diagnostics: entry");
     let mut diagnostics = Vec::new();
 
@@ -51,15 +72,19 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
             diagnostics.push(syntax_error_to_diagnostic(err, source_bytes));
         }
 
-        // Native lint rules
+        // Native lint rules — filtered by per-rule config
         let lint_start = std::time::Instant::now();
         let lint_results = al_core::syntax::lint(&tree, text);
         let lint_elapsed = lint_start.elapsed();
         let lint_count = lint_results.len();
         tracing::debug!(uri = %uri, lint_count, lint_us = lint_elapsed.as_micros() as u64, "publish_diagnostics: linted");
+        let config_guard = server.workspace.config.read().await;
         for lint in lint_results {
-            diagnostics.push(lint_to_diagnostic(&lint, source_bytes));
+            if config_guard.is_lint_rule_enabled(&lint.code) {
+                diagnostics.push(lint_to_diagnostic(&lint, source_bytes));
+            }
         }
+        drop(config_guard);
     }
 
     // Publish phase 1 immediately
@@ -83,10 +108,17 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
                 PathBuf::from(".alpackages")
             };
 
+            let analyzers = server
+                .workspace
+                .config
+                .read()
+                .await
+                .code_analyzers
+                .clone();
             let req = al_core::semantic_types::AnalyzeRequest {
                 file: file_path,
                 source: text.to_string(),
-                analyzers: vec!["CodeCop".to_string()],
+                analyzers,
                 package_cache,
             };
 

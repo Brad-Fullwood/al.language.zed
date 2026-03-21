@@ -94,15 +94,15 @@ pub async fn compile_project_with_analyzers(
         cmd.arg(format!("/packagecachepath:{}", pkg_dir.display()));
     }
 
-    // Add analyzers — filtered if a specific list is requested
-    let all_analyzers = [
+    // Add analyzers — MS named analyzers filtered by name, custom DLL paths by absolute path.
+    let named_analyzers: [(&str, &PathBuf); 4] = [
         ("CodeCop", &toolchain.analyzers.code_cop),
         ("AppSourceCop", &toolchain.analyzers.app_source_cop),
         ("UICop", &toolchain.analyzers.ui_cop),
         ("PerTenantCop", &toolchain.analyzers.per_tenant_cop),
     ];
-    let mut analyzer_paths = Vec::new();
-    for (name, path) in &all_analyzers {
+    let mut analyzer_paths = Vec::<String>::new();
+    for (name, path) in &named_analyzers {
         if !path.is_file() {
             continue;
         }
@@ -112,6 +112,35 @@ pub async fn compile_project_with_analyzers(
             }
         }
         analyzer_paths.push(path.display().to_string());
+    }
+    // Custom DLL paths from toolchain (pre-populated from workspace config).
+    for custom_path in &toolchain.analyzers.custom {
+        if !custom_path.is_file() {
+            continue;
+        }
+        if let Some(filter) = analyzer_filter {
+            let path_str = custom_path.display().to_string();
+            let stem_lower = custom_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let matched = filter
+                .iter()
+                .any(|f| f == &path_str || f.to_lowercase() == stem_lower);
+            if !matched {
+                continue;
+            }
+        }
+        analyzer_paths.push(custom_path.display().to_string());
+    }
+    // Absolute DLL paths in the filter not already covered by toolchain.custom.
+    if let Some(filter) = analyzer_filter {
+        for entry in filter {
+            let p = Path::new(entry.as_str());
+            if p.is_absolute() && p.is_file() && !analyzer_paths.contains(entry) {
+                analyzer_paths.push(entry.clone());
+            }
+        }
     }
     if !analyzer_paths.is_empty() {
         cmd.arg(format!("/analyzer:{}", analyzer_paths.join(",")));

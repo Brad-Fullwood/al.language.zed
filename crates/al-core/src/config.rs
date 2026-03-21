@@ -7,6 +7,7 @@
 //! Settings follow MS AL extension naming conventions where applicable
 //! (e.g., `enableCodeAnalysis`, `backgroundCodeAnalysis`).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,17 @@ pub struct AlConfig {
 
     /// Enable semantic folding (fold based on AST, not just indentation).
     pub semantic_folding: bool,
+
+    // -----------------------------------------------------------------------
+    // Native lint
+    // -----------------------------------------------------------------------
+
+    /// Master toggle for native lint rules (AL-L001–AL-L018). Default: true.
+    pub enable_native_lint: bool,
+
+    /// Per-rule enable/disable overrides. Key is rule code (e.g. "AL-L001").
+    /// Rules absent from this map default to enabled when `enable_native_lint` is true.
+    pub native_lint_rules: HashMap<String, bool>,
 
     // -----------------------------------------------------------------------
     // Symbol management
@@ -114,6 +126,8 @@ pub struct AlConfig {
     pub algo_suggested_folder: Option<PathBuf>,
 }
 
+
+
 /// NuGet feed configuration for symbol download.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,6 +177,9 @@ impl Default for AlConfig {
             enable_code_actions: true,
             inlay_hints: InlayHintConfig::default(),
             semantic_folding: true,
+            // Native lint
+            enable_native_lint: true,
+            native_lint_rules: HashMap::new(),
             // Symbols
             package_cache_path: None,
             app_local_folder_paths: Vec::new(),
@@ -194,6 +211,17 @@ impl Default for InlayHintConfig {
 }
 
 impl AlConfig {
+    /// Return true if the given native lint rule code should run.
+    ///
+    /// Returns false when `enable_native_lint` is false (master toggle off).
+    /// Otherwise checks `native_lint_rules` for an explicit override; defaults to true.
+    pub fn is_lint_rule_enabled(&self, code: &str) -> bool {
+        if !self.enable_native_lint {
+            return false;
+        }
+        *self.native_lint_rules.get(code).unwrap_or(&true)
+    }
+
     /// Default path for persisted settings: `~/.config/al-lsp/settings.json`.
     ///
     /// Returns `None` if the home directory cannot be determined.
@@ -271,6 +299,16 @@ impl AlConfig {
                     }
                 }
                 "semanticFolding" => merge_bool(obj, key, &mut self.semantic_folding),
+                "enableNativeLint" => merge_bool(obj, key, &mut self.enable_native_lint),
+                "nativeLintRules" => {
+                    if let Some(map) = obj.get(key).and_then(|v| v.as_object()) {
+                        for (rule, val) in map {
+                            if let Some(enabled) = val.as_bool() {
+                                self.native_lint_rules.insert(rule.clone(), enabled);
+                            }
+                        }
+                    }
+                }
                 // -- Symbols --
                 "packageCachePath" => merge_optional_path(obj, key, &mut self.package_cache_path),
                 "appLocalFolderPaths" => merge_path_array(obj, key, &mut self.app_local_folder_paths),
@@ -407,6 +445,9 @@ mod tests {
         assert!(config.publisher.is_none());
         assert!(config.namespace_template.is_none());
         assert!(config.algo_suggested_folder.is_none());
+        // Native lint
+        assert!(config.enable_native_lint);
+        assert!(config.native_lint_rules.is_empty());
     }
 
     #[test]
@@ -704,5 +745,57 @@ mod tests {
         let p = path.unwrap();
         assert!(p.to_str().unwrap().contains("al-lsp"));
         assert!(p.to_str().unwrap().ends_with("settings.json"));
+    }
+
+    #[test]
+    fn is_lint_rule_enabled_defaults_all_on() {
+        let config = AlConfig::default();
+        assert!(config.is_lint_rule_enabled("AL-L001"));
+        assert!(config.is_lint_rule_enabled("AL-L018"));
+        assert!(config.is_lint_rule_enabled("AL-L999")); // unknown rule enabled by default
+    }
+
+    #[test]
+    fn is_lint_rule_enabled_master_toggle_off() {
+        let mut config = AlConfig::default();
+        config.enable_native_lint = false;
+        assert!(!config.is_lint_rule_enabled("AL-L001"));
+        assert!(!config.is_lint_rule_enabled("AL-L010"));
+    }
+
+    #[test]
+    fn is_lint_rule_enabled_per_rule_override() {
+        let mut config = AlConfig::default();
+        config.native_lint_rules.insert("AL-L001".to_string(), false);
+        config.native_lint_rules.insert("AL-L002".to_string(), true);
+        assert!(!config.is_lint_rule_enabled("AL-L001")); // explicitly disabled
+        assert!(config.is_lint_rule_enabled("AL-L002")); // explicitly enabled
+        assert!(config.is_lint_rule_enabled("AL-L003")); // absent = default on
+    }
+
+    #[test]
+    fn merge_lint_settings() {
+        let mut config = AlConfig::default();
+        let settings = serde_json::json!({
+            "enableNativeLint": false,
+            "nativeLintRules": {
+                "AL-L001": false,
+                "AL-L007": true
+            }
+        });
+        config.merge(&settings);
+
+        assert!(!config.enable_native_lint);
+        assert_eq!(config.native_lint_rules.get("AL-L001"), Some(&false));
+        assert_eq!(config.native_lint_rules.get("AL-L007"), Some(&true));
+    }
+
+    #[test]
+    fn merge_lint_rules_are_additive() {
+        let mut config = AlConfig::default();
+        config.native_lint_rules.insert("AL-L001".to_string(), false);
+        config.merge(&serde_json::json!({"nativeLintRules": {"AL-L002": false}}));
+        assert_eq!(config.native_lint_rules.get("AL-L001"), Some(&false));
+        assert_eq!(config.native_lint_rules.get("AL-L002"), Some(&false));
     }
 }

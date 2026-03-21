@@ -35,6 +35,9 @@ pub struct AnalyzerPaths {
     pub ui_cop: PathBuf,
     pub per_tenant_cop: PathBuf,
     pub common: PathBuf,
+    /// Custom analyzer DLL paths (e.g. BusinessCentral.LinterCop.dll).
+    /// Populated from `al.codeAnalyzers` entries that are absolute DLL paths.
+    pub custom: Vec<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +160,7 @@ fn find_analyzers(dir: &Path) -> AnalyzerPaths {
         ui_cop: find_dll(ANALYZER_DLLS[2].1),
         per_tenant_cop: find_dll(ANALYZER_DLLS[3].1),
         common: find_dll(ANALYZER_DLLS[4].1),
+        custom: Vec::new(),
     }
 }
 
@@ -432,6 +436,7 @@ mod tests {
                 ui_cop: dir.join("Microsoft.Dynamics.Nav.UICop.dll"),
                 per_tenant_cop: dir.join("Microsoft.Dynamics.Nav.PerTenantExtensionCop.dll"),
                 common: dir.join("Microsoft.Dynamics.Nav.Analyzers.Common.dll"),
+                custom: Vec::new(),
             },
             dotnet_root: dir.to_path_buf(),
             version: "26.0.12345.0".to_string(),
