@@ -2,6 +2,9 @@
 //!
 //! Provides parameter name hints for function calls. Resolves overloads
 //! using type-aware scoring when multiple signatures exist.
+//!
+//! Also provides return type hints for procedure declarations when
+//! `al.inlayhints.returnTypes` is enabled.
 
 use tower_lsp::lsp_types::{self, DocumentSymbol, InlayHint, InlayHintKind, InlayHintLabel, Position, Range, SymbolKind};
 use url::Url;
@@ -14,9 +17,20 @@ pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: lsp_types::Range) ->
     let root = tree.root_node();
     let source = text.as_bytes();
     let mut hints = Vec::new();
-    let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
 
-    collect_inlay_hints(root, source, &text, &tree, workspace, &doc_symbols, &range, &mut hints);
+    let config = workspace.config.blocking_read();
+    let param_hints = config.inlay_hints.parameter_names;
+    let return_hints = config.inlay_hints.return_types;
+    drop(config);
+
+    if param_hints {
+        let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
+        collect_inlay_hints(root, source, &text, &tree, workspace, &doc_symbols, &range, &mut hints);
+    }
+
+    if return_hints {
+        collect_return_type_hints(root, source, &range, &mut hints);
+    }
 
     if hints.is_empty() { None } else { Some(hints) }
 }
@@ -377,6 +391,65 @@ fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
 
 use super::parse_detail_params;
 
+/// Walk the tree and emit return type hints for procedures/triggers that declare
+/// a return type. The hint appears immediately after the closing `)` of the
+/// parameter list and shows `: <ReturnType>`.
+fn collect_return_type_hints(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    range: &Range,
+    hints: &mut Vec<InlayHint>,
+) {
+    let node_start = node.start_position().row as u32;
+    let node_end = node.end_position().row as u32;
+    if node_end < range.start.line || node_start > range.end.line { return; }
+
+    let kind = node.kind();
+    if kind == "procedure_declaration" || kind == "trigger_declaration" || kind == "event_procedure_declaration" {
+        if let Some(rt_node) = node.child_by_field_name("return_type") {
+            if let Ok(rt_text) = rt_node.utf8_text(source) {
+                let rt_text = rt_text.trim();
+                if !rt_text.is_empty() {
+                    // Place the hint at the end of the parameter list (closing paren).
+                    // Fall back to the name-node end position if no parameter node exists.
+                    let hint_pos = node
+                        .child_by_field_name("parameters")
+                        .map(|p| Position {
+                            line: p.end_position().row as u32,
+                            character: p.end_position().column as u32,
+                        })
+                        .or_else(|| {
+                            node.child_by_field_name("name").map(|n| Position {
+                                line: n.end_position().row as u32,
+                                character: n.end_position().column as u32,
+                            })
+                        });
+
+                    if let Some(pos) = hint_pos {
+                        if pos.line >= range.start.line && pos.line <= range.end.line {
+                            hints.push(InlayHint {
+                                position: pos,
+                                label: InlayHintLabel::String(format!(": {rt_text}")),
+                                kind: Some(InlayHintKind::TYPE),
+                                text_edits: None,
+                                tooltip: None,
+                                padding_left: Some(true),
+                                padding_right: None,
+                                data: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_return_type_hints(child, source, range, hints);
+    }
+}
+
 fn add_parameter_hints(
     arg_list: tree_sitter::Node<'_>,
     _source: &[u8],
@@ -406,5 +479,131 @@ fn add_parameter_hints(
             data: None,
         });
         arg_idx += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use al_syntax::AlParser;
+
+    fn full_range() -> Range {
+        Range {
+            start: Position { line: 0, character: 0 },
+            end: Position { line: 999, character: 0 },
+        }
+    }
+
+    fn parse(src: &str) -> (String, tree_sitter::Tree) {
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        (src.to_string(), result.tree)
+    }
+
+    #[test]
+    fn return_type_hint_for_boolean_procedure() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure IsValid(Customer: Record Customer): Boolean
+    begin
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let mut hints = Vec::new();
+        collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
+
+        assert_eq!(hints.len(), 1, "Expected one return type hint, got: {hints:?}");
+        let h = &hints[0];
+        assert_eq!(h.kind, Some(InlayHintKind::TYPE));
+        match &h.label {
+            InlayHintLabel::String(s) => assert_eq!(s, ": Boolean"),
+            _ => panic!("Unexpected label type"),
+        }
+    }
+
+    #[test]
+    fn no_hint_for_void_procedure() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure DoWork()
+    begin
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let mut hints = Vec::new();
+        collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
+
+        assert!(hints.is_empty(), "Void procedure should not get return type hint");
+    }
+
+    #[test]
+    fn return_type_hint_with_record_type() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure GetHeader(No: Code[20]): Record "Sales Header"
+    begin
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let mut hints = Vec::new();
+        collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
+
+        assert_eq!(hints.len(), 1);
+        match &hints[0].label {
+            InlayHintLabel::String(s) => assert!(s.contains("Record"), "Expected Record in hint: {s}"),
+            _ => panic!("Unexpected label type"),
+        }
+    }
+
+    #[test]
+    fn multiple_procedures_only_returning_ones_get_hints() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure GetCount(): Integer
+    begin
+    end;
+
+    procedure DoWork()
+    begin
+    end;
+
+    procedure GetName(): Text[50]
+    begin
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let mut hints = Vec::new();
+        collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
+
+        assert_eq!(hints.len(), 2, "Expected 2 hints (Integer + Text), got: {hints:?}");
+    }
+
+    #[test]
+    fn range_filter_excludes_out_of_range_procedures() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure First(): Integer
+    begin
+    end;
+
+    procedure Second(): Boolean
+    begin
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let mut hints = Vec::new();
+        // Only the first few lines — First() is at line 2, Second() is at line 7
+        let narrow_range = Range {
+            start: Position { line: 0, character: 0 },
+            end: Position { line: 3, character: 0 },
+        };
+        collect_return_type_hints(tree.root_node(), source, &narrow_range, &mut hints);
+
+        assert_eq!(hints.len(), 1, "Expected only First() hint in narrow range, got: {hints:?}");
     }
 }
