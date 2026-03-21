@@ -173,12 +173,20 @@ const ENUM_CODE: &str = r#"enum 50100 "My Status"
 }"#;
 
 // ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+fn make_parser() -> AlParser {
+    AlParser::new()
+}
+
+// ---------------------------------------------------------------------------
 // Parsing tests
 // ---------------------------------------------------------------------------
 
 #[test]
 fn parse_page_no_errors() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(PAGE_CODE);
     assert!(
         result.errors.is_empty(),
@@ -189,7 +197,7 @@ fn parse_page_no_errors() {
 
 #[test]
 fn parse_codeunit_no_errors() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
     assert!(
         result.errors.is_empty(),
@@ -200,7 +208,7 @@ fn parse_codeunit_no_errors() {
 
 #[test]
 fn parse_table_no_errors() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(TABLE_CODE);
     assert!(
         result.errors.is_empty(),
@@ -211,7 +219,7 @@ fn parse_table_no_errors() {
 
 #[test]
 fn parse_enum_no_errors() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(ENUM_CODE);
     assert!(
         result.errors.is_empty(),
@@ -222,7 +230,7 @@ fn parse_enum_no_errors() {
 
 #[test]
 fn parse_all_object_types() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
 
     let objects = vec![
         ("table", r#"table 50100 Test { fields { } }"#),
@@ -251,7 +259,7 @@ fn parse_all_object_types() {
 
 #[test]
 fn incremental_parse_works() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
 
     let original = r#"codeunit 50100 Test
 {
@@ -282,7 +290,7 @@ fn incremental_parse_works() {
 
 #[test]
 fn symbols_page_hierarchy() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(PAGE_CODE);
     let symbols = extract_document_symbols(&result.tree, PAGE_CODE);
 
@@ -298,7 +306,7 @@ fn symbols_page_hierarchy() {
 
 #[test]
 fn symbols_codeunit_procedures() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
     let symbols = extract_document_symbols(&result.tree, CODEUNIT_CODE);
 
@@ -333,7 +341,7 @@ fn symbols_codeunit_procedures() {
 
 #[test]
 fn symbols_table_structure() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(TABLE_CODE);
     let symbols = extract_document_symbols(&result.tree, TABLE_CODE);
 
@@ -364,7 +372,7 @@ fn symbols_table_structure() {
 
 #[test]
 fn symbols_enum_values() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(ENUM_CODE);
     let symbols = extract_document_symbols(&result.tree, ENUM_CODE);
 
@@ -392,7 +400,7 @@ fn symbols_enum_values() {
 
 #[test]
 fn tokens_page_cover_basic_types() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(PAGE_CODE);
     let tokens = extract_semantic_tokens(&result.tree, PAGE_CODE);
 
@@ -420,7 +428,7 @@ fn tokens_page_cover_basic_types() {
 
 #[test]
 fn tokens_codeunit_has_keywords_and_comments() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
     let tokens = extract_semantic_tokens(&result.tree, CODEUNIT_CODE);
 
@@ -433,7 +441,7 @@ fn tokens_codeunit_has_keywords_and_comments() {
 
 #[test]
 fn tokens_table_has_expected_tokens() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(TABLE_CODE);
     let tokens = extract_semantic_tokens(&result.tree, TABLE_CODE);
 
@@ -450,7 +458,7 @@ fn tokens_table_has_expected_tokens() {
 
 #[test]
 fn tokens_delta_encoding_consistent_for_all_fixtures() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
 
     let fixtures = &[PAGE_CODE, CODEUNIT_CODE, TABLE_CODE, ENUM_CODE];
 
@@ -487,7 +495,7 @@ fn tokens_delta_encoding_consistent_for_all_fixtures() {
 
 #[test]
 fn folding_page_has_structural_ranges() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(PAGE_CODE);
     let ranges = extract_folding_ranges(&result.tree, PAGE_CODE);
 
@@ -506,7 +514,7 @@ fn folding_page_has_structural_ranges() {
 
 #[test]
 fn folding_codeunit_has_procedure_folds() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
     let ranges = extract_folding_ranges(&result.tree, CODEUNIT_CODE);
 
@@ -525,7 +533,7 @@ fn folding_codeunit_has_procedure_folds() {
 
 #[test]
 fn folding_table_includes_field_sections() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(TABLE_CODE);
     let ranges = extract_folding_ranges(&result.tree, TABLE_CODE);
 
@@ -549,7 +557,7 @@ fn folding_table_includes_field_sections() {
 
 #[test]
 fn folding_enum_has_value_folds() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(ENUM_CODE);
     let ranges = extract_folding_ranges(&result.tree, ENUM_CODE);
 
@@ -597,7 +605,7 @@ fn format_enum_is_idempotent() {
 
 #[test]
 fn format_preserves_parseability() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let opts = FormatOptions::default();
 
     let fixtures = &[PAGE_CODE, CODEUNIT_CODE, TABLE_CODE, ENUM_CODE];
@@ -707,7 +715,7 @@ end;
 
 #[test]
 fn lint_codeunit_detects_todo() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
     let diagnostics = lint(&result.tree, CODEUNIT_CODE);
 
@@ -725,7 +733,7 @@ fn lint_codeunit_detects_todo() {
 
 #[test]
 fn lint_table_detects_empty_trigger() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(TABLE_CODE);
     let diagnostics = lint(&result.tree, TABLE_CODE);
 
@@ -756,7 +764,7 @@ fn lint_naming_violations() {
     end;
 }"#;
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(code);
     let diagnostics = lint(&result.tree, code);
 
@@ -789,7 +797,7 @@ fn lint_empty_begin_end() {
     end;
 }"#;
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(code);
     let diagnostics = lint(&result.tree, code);
 
@@ -820,7 +828,7 @@ fn lint_deep_nesting() {
     end;
 }"#;
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(code);
     let diagnostics = lint(&result.tree, code);
 
@@ -851,7 +859,7 @@ fn lint_config_custom_thresholds() {
     lines.push("}".to_string());
     let code = lines.join("\n");
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(&code);
 
     // With default config (100 lines), should NOT trigger
@@ -881,7 +889,7 @@ fn lint_config_custom_thresholds() {
 
 #[test]
 fn find_object_in_all_fixtures() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
 
     let cases = vec![
         (PAGE_CODE, "page", Some(50100i64), "Customer Card Ext"),
@@ -904,7 +912,7 @@ fn find_object_in_all_fixtures() {
 
 #[test]
 fn find_procedure_at_position() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
 
     // Position inside ProcessOrders body (line ~10)
@@ -928,7 +936,7 @@ fn find_procedure_at_position() {
 
 #[test]
 fn find_variable_references() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
 
     let refs = al_syntax::find_variable_references(&result.tree, CODEUNIT_CODE, "SalesLine");
@@ -945,7 +953,7 @@ fn find_variable_references() {
 
 #[test]
 fn full_pipeline_all_fixtures() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let opts = FormatOptions::default();
 
     let fixtures = &[

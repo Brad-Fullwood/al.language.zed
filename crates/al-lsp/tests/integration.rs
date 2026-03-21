@@ -304,12 +304,20 @@ fn document_store_open_change_close_lifecycle() {
 }
 
 // ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+fn make_parser() -> AlParser {
+    AlParser::new()
+}
+
+// ---------------------------------------------------------------------------
 // Parse -> Diagnostics integration
 // ---------------------------------------------------------------------------
 
 #[test]
 fn parse_valid_code_produces_no_syntax_errors() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
     assert!(
         result.errors.is_empty(),
@@ -320,7 +328,7 @@ fn parse_valid_code_produces_no_syntax_errors() {
 
 #[test]
 fn parse_page_produces_no_syntax_errors() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(PAGE_AL);
     assert!(
         result.errors.is_empty(),
@@ -331,7 +339,7 @@ fn parse_page_produces_no_syntax_errors() {
 
 #[test]
 fn parse_codeunit_with_events_produces_no_syntax_errors() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
     assert!(
         result.errors.is_empty(),
@@ -348,7 +356,7 @@ fn syntax_error_to_lsp_diagnostic_conversion() {
     begin
     end;
 }"#;
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(bad_code);
 
     // Should have at least one error (missing closing paren or similar)
@@ -384,7 +392,7 @@ fn lint_diagnostics_convert_to_lsp() {
     end;
 }"#;
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(code);
     let lints = al_syntax::lint(&result.tree, code);
 
@@ -474,7 +482,7 @@ fn symbol_index_get_by_kind() {
 
 #[test]
 fn document_symbols_from_codeunit() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
     let symbols = al_syntax::extract_document_symbols(&result.tree, SIMPLE_CODEUNIT);
 
@@ -498,7 +506,7 @@ fn document_symbols_from_codeunit() {
 
 #[test]
 fn document_symbols_from_page() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(PAGE_AL);
     let symbols = al_syntax::extract_document_symbols(&result.tree, PAGE_AL);
 
@@ -510,7 +518,7 @@ fn document_symbols_from_page() {
 
 #[test]
 fn document_symbols_from_codeunit_with_events() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
     let symbols = al_syntax::extract_document_symbols(&result.tree, CODEUNIT_AL);
 
@@ -534,7 +542,7 @@ fn document_symbols_from_codeunit_with_events() {
 
 #[test]
 fn semantic_tokens_cover_all_token_types() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
     let tokens = al_syntax::extract_semantic_tokens(&result.tree, SIMPLE_CODEUNIT);
 
@@ -569,7 +577,7 @@ fn semantic_tokens_cover_all_token_types() {
 
 #[test]
 fn semantic_tokens_delta_encoding_is_valid() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
     let tokens = al_syntax::extract_semantic_tokens(&result.tree, CODEUNIT_AL);
 
@@ -601,7 +609,7 @@ fn semantic_tokens_delta_encoding_is_valid() {
 
 #[test]
 fn folding_ranges_cover_structural_elements() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
     let ranges = al_syntax::extract_folding_ranges(&result.tree, SIMPLE_CODEUNIT);
 
@@ -635,7 +643,7 @@ codeunit 50100 Test
     end;
 }"#;
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(code);
     let ranges = al_syntax::extract_folding_ranges(&result.tree, code);
 
@@ -698,7 +706,7 @@ fn formatting_produces_valid_parseable_output() {
     let opts = FormatOptions::default();
     let formatted = al_syntax::format_al(SIMPLE_CODEUNIT, &opts);
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(&formatted);
 
     assert!(
@@ -714,7 +722,7 @@ fn formatting_produces_valid_parseable_output() {
 
 #[test]
 fn lint_detects_todo_in_codeunit() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
     let lints = al_syntax::lint(&result.tree, CODEUNIT_AL);
 
@@ -737,7 +745,7 @@ fn lint_detects_pascal_case_violation() {
     end;
 }"#;
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(code);
     let lints = al_syntax::lint(&result.tree, code);
 
@@ -764,7 +772,7 @@ fn lint_no_false_positives_on_clean_code() {
     end;
 }"#;
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(code);
     let lints = al_syntax::lint(&result.tree, code);
 
@@ -785,7 +793,7 @@ fn lint_no_false_positives_on_clean_code() {
 
 #[test]
 fn find_object_declaration_in_page() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(PAGE_AL);
     let obj = al_syntax::find_object_declaration(&result.tree, PAGE_AL);
 
@@ -798,7 +806,7 @@ fn find_object_declaration_in_page() {
 
 #[test]
 fn find_object_declaration_in_codeunit() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
     let obj = al_syntax::find_object_declaration(&result.tree, CODEUNIT_AL);
 
@@ -815,7 +823,7 @@ fn find_object_declaration_in_codeunit() {
 
 #[test]
 fn find_variable_references_in_codeunit() {
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
 
     let refs = al_syntax::find_variable_references(&result.tree, CODEUNIT_AL, "SalesHeader");
@@ -877,7 +885,7 @@ fn workspace_scans_al_files() {
 
     // The file should be parseable
     let content = fs::read_to_string(tmp.join("src/Table50100.al")).unwrap();
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(&content);
     assert!(result.errors.is_empty(), "Test file should parse cleanly");
 
@@ -910,7 +918,7 @@ end;
     assert_ne!(formatted, unformatted, "Formatting should change the code");
 
     // Step 2: Parse the formatted code
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(&formatted);
     assert!(
         result.errors.is_empty(),
@@ -963,7 +971,7 @@ fn fixture_test_al_parses_correctly() {
         .join("test.al");
     let content = std::fs::read_to_string(&fixture_path).expect("Should read test.al fixture");
 
-    let mut parser = AlParser::new();
+    let mut parser = make_parser();
     let result = parser.parse(&content);
 
     assert!(
