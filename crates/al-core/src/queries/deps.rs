@@ -6,6 +6,11 @@
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// A package entry: (name, publisher, version, transitive-dependencies).
+///
+/// Each dependency tuple is (dep_name, dep_publisher, required_version).
+pub type PackageEntry = (String, String, String, Vec<(String, String, String)>);
+
 /// A single dependency node in the graph.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,7 +84,7 @@ impl DependencyGraph {
 /// `packages` is a list of (name, publisher, version, dependencies_json).
 pub fn build_dependency_graph(
     app_json: &str,
-    packages: &[(String, String, String, Vec<(String, String, String)>)],
+    packages: &[PackageEntry],
 ) -> DependencyGraph {
     // Parse root app info from app.json
     let root_app = parse_root_app(app_json);

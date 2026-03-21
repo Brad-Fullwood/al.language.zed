@@ -278,6 +278,7 @@ fn collect_coverage_from_tree(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_test_proc_bodies(
     node: tree_sitter::Node,
     source: &[u8],

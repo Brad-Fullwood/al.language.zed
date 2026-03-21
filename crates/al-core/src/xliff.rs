@@ -255,7 +255,7 @@ fn parse_property_value(line: &str, property: &str) -> Option<String> {
         return None;
     }
     // Extract the single-quoted string value
-    let after_eq = &line[prefix.len()..].trim_start_matches(|c| c == ' ' || c == '\t');
+    let after_eq = &line[prefix.len()..].trim_start_matches([' ', '\t']);
     extract_single_quoted(after_eq)
 }
 
@@ -661,7 +661,7 @@ pub fn build_xliff(workspace: &Workspace, project_root: &Path) -> Option<(PathBu
 fn read_app_name(project_root: &Path) -> Option<String> {
     let bytes = std::fs::read(project_root.join("app.json")).ok()?;
     let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    v.get("name")?.as_str().map(|s| s.replace(' ', "").replace('"', "").replace('\'', ""))
+    v.get("name")?.as_str().map(|s| s.replace([' ', '"', '\''], ""))
 }
 
 // ---------------------------------------------------------------------------

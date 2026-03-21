@@ -173,7 +173,7 @@ fn is_member_keyword(trimmed_lower: &str) -> bool {
         || (trimmed_lower.starts_with('[') && trimmed_lower.ends_with(']'))
 }
 
-fn extract_member_name<'a>(line: &'a str, keyword: &str) -> String {
+fn extract_member_name(line: &str, keyword: &str) -> String {
     let lower = line.trim().to_lowercase();
     let after = lower
         .strip_prefix(keyword)

@@ -277,10 +277,8 @@ fn count_call_refs_recursive(
     if matches!(node.kind(), "identifier" | "quoted_identifier") {
         if let Ok(text) = node.utf8_text(source) {
             let text_clean = text.trim_matches('"');
-            if text_clean.eq_ignore_ascii_case(target_name) {
-                if is_call_reference(node, source) {
-                    *count += 1;
-                }
+            if text_clean.eq_ignore_ascii_case(target_name) && is_call_reference(node, source) {
+                *count += 1;
             }
         }
     }

@@ -16,6 +16,7 @@ pub mod definition;
 pub mod deps;
 pub mod duplicates;
 pub mod folding;
+pub mod format;
 pub mod hover;
 pub mod impact;
 pub mod implementation;

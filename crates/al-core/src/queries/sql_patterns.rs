@@ -74,7 +74,7 @@ fn scan_procedures(
 
         if let Ok(proc_text) = node.utf8_text(source) {
             let start_line = node.start_position().row as u32 + 1;
-            analyze_proc_text(&proc_text, start_line, file_path, object_name, &proc_name, violations);
+            analyze_proc_text(proc_text, start_line, file_path, object_name, &proc_name, violations);
         }
         return;
     }

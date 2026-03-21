@@ -120,16 +120,16 @@ fn apply_rule(
     match rule.kind {
         ArchRuleKind::NamingConvention => {
             if let Some(name_pattern) = rule.values.first() {
-                if name_pattern.contains("[A-Z]") {
-                    if !obj_info.name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                        violations.push(ArchViolation {
-                            rule_id: rule.id.clone(),
-                            message: format!("{}: '{}' does not start with uppercase", rule.description, obj_info.name),
-                            object: obj_info.name.clone(),
-                            file: Some(file_path.to_string()),
-                            line: Some(1),
-                        });
-                    }
+                if name_pattern.contains("[A-Z]")
+                    && !obj_info.name.chars().next().is_some_and(|c| c.is_uppercase())
+                {
+                    violations.push(ArchViolation {
+                        rule_id: rule.id.clone(),
+                        message: format!("{}: '{}' does not start with uppercase", rule.description, obj_info.name),
+                        object: obj_info.name.clone(),
+                        file: Some(file_path.to_string()),
+                        line: Some(1),
+                    });
                 }
             }
         }
