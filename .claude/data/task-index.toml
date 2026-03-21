@@ -20,7 +20,7 @@
 # WP13: Semantic & Language Parity [DONE]
 # WP14: XLIFF / Translation Support [DONE]
 # WP15: Test Runner Integration [2/4]
-# WP16: Bulk Operations & Wizards [5/7]
+# WP16: Bulk Operations & Wizards [DONE]
 # WP17: Innovative Differentiators [9/11]
 # WP18: Advanced Lint Rules [DONE]
 
@@ -127,8 +127,8 @@ T1602 = { wp = "WP16", name = "Object Creation Wizards", done = true, deps = [] 
 T1603 = { wp = "WP16", name = "Add ApplicationArea Across Project", done = true, deps = [] }
 T1604 = { wp = "WP16", name = "Add Tooltips from Base App Symbols", done = true, deps = [] }
 T1605 = { wp = "WP16", name = "Add DataClassification to Table Fields", done = true, deps = [] }
-T1606 = { wp = "WP16", name = "Code Sorting on Save", done = false, deps = [] }
-T1607 = { wp = "WP16", name = "Auto-Rename/Organize Files by Object Type", done = false, deps = [] }
+T1606 = { wp = "WP16", name = "Code Sorting on Save", done = true, deps = [] }
+T1607 = { wp = "WP16", name = "Auto-Rename/Organize Files by Object Type", done = true, deps = [] }
 # --- WP17: Innovative Differentiators ---
 T1701 = { wp = "WP17", name = "Obsolescence Timeline Dashboard", done = true, deps = [] }
 T1702 = { wp = "WP17", name = "DataClassification Audit", done = true, deps = [] }

@@ -40,7 +40,7 @@ pub mod syntax {
         AlParser, ParseResult, SyntaxError,
         format_al, format_range, FormatOptions, BraceStyle, KeywordCasing, BlankLinesBetweenProcedures,
         lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity,
-        find_object_declaration, ts_range_to_lsp,
+        find_object_declaration, ts_range_to_lsp, sort_members,
     };
     pub mod complexity {
         pub use al_syntax::complexity::{compute_complexity, ProcedureComplexity};

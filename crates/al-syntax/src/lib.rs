@@ -10,9 +10,11 @@ pub mod folding;
 pub mod type_resolver;
 pub mod context;
 pub mod complexity;
+pub mod sort;
 
 pub use parser::{AlParser, ParseResult, SyntaxError};
 pub use formatting::{format_al, format_range, FormatOptions, KeywordCasing, BlankLinesBetweenProcedures, BraceStyle};
+pub use sort::sort_members;
 pub use lint::{lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity};
 pub use symbols::extract_document_symbols;
 pub use tokens::{extract_semantic_tokens, SemanticToken};

@@ -1853,3 +1853,61 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
         Err(e) => report_error(&e, json),
     }
 }
+
+pub fn cmd_sort_members(file: Option<&str>, _all: bool, dry_run: bool, json: bool) -> std::process::ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let params = if let Some(f) = file {
+        let uri = file_to_uri(f).unwrap_or_else(|| f.to_string());
+        serde_json::json!({ "uri": uri, "dryRun": dry_run })
+    } else {
+        serde_json::json!({ "all": true, "dryRun": dry_run })
+    };
+    match client.request("sortMembers", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                let changed = result.get("changed").and_then(|v| v.as_bool()).unwrap_or(false);
+                if changed {
+                    println!("Members sorted.");
+                } else {
+                    println!("Already sorted — no changes.");
+                }
+            }
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+pub fn cmd_organize_files(dry_run: bool, json: bool) -> std::process::ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    match client.request("organizeFiles", Some(serde_json::json!({ "dryRun": dry_run }))) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                let files = result.get("files").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                if files.is_empty() {
+                    println!("All files already correctly named.");
+                } else {
+                    for f in &files {
+                        let from = f.get("from").and_then(|v| v.as_str()).unwrap_or("?");
+                        let to = f.get("to").and_then(|v| v.as_str()).unwrap_or("?");
+                        let renamed = f.get("renamed").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let status = if dry_run { "[dry-run]" } else if renamed { "[renamed]" } else { "[failed]" };
+                        println!("{status} {from} -> {to}");
+                    }
+                }
+            }
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}

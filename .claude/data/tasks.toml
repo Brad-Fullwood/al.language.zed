@@ -1765,24 +1765,24 @@ priority = "P1"
 id = "T1606"
 name = "Code Sorting on Save"
 wp = "WP16"
-files = ["crates/al-core/src/queries/code_actions.rs", "crates/al-core/src/queries/sort.rs"]
+files = ["crates/al-syntax/src/sort.rs", "crates/al-lsp/src/daemon/build_dispatch.rs", "crates/al-cli/src/main.rs"]
 deps = []
 pass_criteria = "al sort <file> sorts procedures, fields, keys, variables in configurable order. Preserves doc comments attached to items."
 fail_criteria = "Sorting breaks code by separating doc comments from their targets."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
 id = "T1607"
 name = "Auto-Rename/Organize Files by Object Type"
 wp = "WP16"
-files = ["crates/al-core/src/queries/organize.rs", "crates/al-cli/src/main.rs"]
+files = ["crates/al-lsp/src/daemon/build_dispatch.rs", "crates/al-cli/src/main.rs"]
 deps = []
 pass_criteria = "al fix --organize-files renames AL files to match configurable patterns. Supports CRS-style naming. Dry-run mode."
 fail_criteria = "Renames break file references or produce name collisions."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P2"
 
 # --- WP17: Innovative Differentiators ---

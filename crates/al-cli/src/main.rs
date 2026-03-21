@@ -428,6 +428,25 @@ enum Commands {
         #[arg(num_args = 0..)]
         hotspots: Vec<String>,
     },
+    /// Sort AL object members (var, triggers, procedures) in canonical order
+    #[command(name = "sort-members")]
+    SortMembers {
+        /// File to sort (omit to sort all .al files)
+        file: Option<String>,
+        /// Sort all .al files in the workspace
+        #[arg(long)]
+        all: bool,
+        /// Preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Rename .al files to match <Type><Id>.<Name>.al convention
+    #[command(name = "organize-files")]
+    OrganizeFiles {
+        /// Preview renames without applying
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -773,5 +792,9 @@ fn main() -> ExitCode {
         }
         Commands::Upgrade => lsp::cmd_upgrade_report(cli.json),
         Commands::ProfilerHints { hotspots } => lsp::cmd_profiler_hints(&hotspots, cli.json),
+        Commands::SortMembers { file, all, dry_run } => {
+            lsp::cmd_sort_members(file.as_deref(), all, dry_run, cli.json)
+        }
+        Commands::OrganizeFiles { dry_run } => lsp::cmd_organize_files(dry_run, cli.json),
     }
 }

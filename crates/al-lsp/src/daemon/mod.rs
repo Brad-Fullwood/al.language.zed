@@ -253,6 +253,8 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "parse" => build_dispatch::dispatch_parse(workspace, id, &params),
         "metrics" => build_dispatch::dispatch_metrics(workspace, id, &params),
         "sqlPatterns" => build_dispatch::dispatch_sql_patterns(workspace, id, &params),
+        "sortMembers" => build_dispatch::dispatch_sort_members(workspace, id, &params),
+        "organizeFiles" => build_dispatch::dispatch_organize_files(workspace, id, &params),
         "source" => build_dispatch::dispatch_source(workspace, id, &params),
         "location" => build_dispatch::dispatch_location(workspace, id, &params),
         // Insight engine
@@ -284,6 +286,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "xlf.suggest" => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
         // WP15: Test runner
         "tests.discover" => build_dispatch::dispatch_tests_discover(workspace, id),
+        "tests.run" => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
         "tests.coverage" => build_dispatch::dispatch_tests_coverage(workspace, id),
         // WP16: Object generation
         "generate" => build_dispatch::dispatch_generate(workspace, id, &params),

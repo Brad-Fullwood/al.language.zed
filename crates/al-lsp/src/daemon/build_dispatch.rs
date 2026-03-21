@@ -1631,6 +1631,111 @@ pub(super) fn dispatch_tests_coverage(workspace: &Workspace, id: u64) -> Respons
     Response { id, result: Some(value), error: None }
 }
 
+/// T1502: Execute tests via BC REST API + T1503: Return results as diagnostics.
+///
+/// Params:
+/// - `codeunit` (i64): codeunit ID to run. Required.
+/// - `codeunitName` (str): display name for the result. Defaults to the ID as a string.
+/// - `method` (str, optional): run only this test method.
+///
+/// Launch config is read from the project root (`.vscode/launch.json` or `.zed/debug.json`).
+/// The first config entry is used unless `config` (str) names a specific one.
+///
+/// Response includes:
+/// - `result`: `TestCodeunitResult` JSON
+/// - `diagnostics`: array of `TestDiagnostic` for failed/skipped tests (T1503)
+pub(super) async fn dispatch_tests_run(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    use al_core::launch::find_launch_config;
+    use al_core::test_runner::TestRunnerClient;
+    use al_core::queries::test_diagnostics::results_to_diagnostics;
+
+    // -- Resolve project root from workspace -----------------------------------
+    let project_root = match workspace.project.read().await.as_ref().map(|p| p.root.clone()) {
+        Some(root) => root,
+        None => {
+            return rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded");
+        }
+    };
+
+    // -- Parse params ----------------------------------------------------------
+    let codeunit_id = match params.get("codeunit").and_then(|v| v.as_i64()) {
+        Some(n) => n as i32,
+        None => {
+            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'codeunit' parameter (i64 codeunit ID)");
+        }
+    };
+    let codeunit_name = params
+        .get("codeunitName")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&codeunit_id.to_string())
+        .to_string();
+    // Rebind after borrow ends
+    let codeunit_name = if codeunit_name == codeunit_id.to_string() {
+        codeunit_id.to_string()
+    } else {
+        codeunit_name
+    };
+    let method = params.get("method").and_then(|v| v.as_str()).map(String::from);
+    let config_name = params.get("config").and_then(|v| v.as_str());
+
+    // -- Find launch config ----------------------------------------------------
+    let launch_cfg = match find_launch_config(&project_root) {
+        Some(cfg) => cfg,
+        None => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                "No launch config found — create .vscode/launch.json or .zed/debug.json",
+            );
+        }
+    };
+
+    let server_config = if let Some(name) = config_name {
+        launch_cfg.configs.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+    } else {
+        launch_cfg.configs.first()
+    };
+
+    let server_config = match server_config {
+        Some(c) => c,
+        None => {
+            return rpc_error(id, error_codes::INTERNAL_ERROR, "No BC server config found in launch config");
+        }
+    };
+
+    // -- Run tests via BC REST API (T1502) ------------------------------------
+    let client = TestRunnerClient::new(server_config);
+    let run_result = client
+        .run_codeunit(codeunit_id, &codeunit_name, method.as_deref())
+        .await;
+
+    let result = match run_result {
+        Ok(r) => r,
+        Err(e) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("Test run failed: {e}"),
+            );
+        }
+    };
+
+    // -- Convert to diagnostics (T1503) ----------------------------------------
+    let diagnostics = results_to_diagnostics(&[result.clone()], workspace);
+
+    let result_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+    let diag_json = serde_json::to_value(&diagnostics).unwrap_or(serde_json::json!([]));
+
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "result": result_json,
+            "diagnostics": diag_json,
+        })),
+        error: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WP16: Object wizards / code generation
 // ---------------------------------------------------------------------------
@@ -1806,6 +1911,127 @@ pub(super) fn dispatch_sql_patterns(workspace: &Workspace, id: u64, _params: &se
     let findings = al_core::queries::sql_patterns::detect_sql_patterns(workspace);
     let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
     Response { id, result: Some(value), error: None }
+}
+
+/// Sort members (variables, triggers, procedures) in canonical order.
+/// Params: `file` (URI) or `content` (raw text). If `file` specified, writes back.
+pub(super) fn dispatch_sort_members(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let content = if let Some(text) = params.get("content").and_then(|v| v.as_str()) {
+        text.to_string()
+    } else if let Some(uri) = file_uri_from_params(params) {
+        ensure_document(workspace, &uri);
+        match workspace.documents.get_text(&uri) {
+            Some(t) => t,
+            None => return invalid_params(id),
+        }
+    } else {
+        return invalid_params(id);
+    };
+
+    let sorted = match al_core::syntax::sort_members(&content) {
+        Some(s) => s,
+        None => content.clone(),
+    };
+    let changed = sorted != content;
+
+    // Write back if file was specified
+    if changed {
+        if let Some(uri) = file_uri_from_params(params) {
+            if let Ok(path) = uri.to_file_path() {
+                let _ = std::fs::write(&path, &sorted);
+                workspace.documents.open(uri, sorted.clone());
+            }
+        }
+    }
+
+    Response {
+        id,
+        result: Some(serde_json::json!({ "sorted": sorted, "changed": changed })),
+        error: None,
+    }
+}
+
+/// Rename .al files to match `<Type><Id>.<Name>.al` convention.
+/// Scans the workspace root; returns list of `{from, to, renamed}` entries.
+pub(super) fn dispatch_organize_files(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let root: std::path::PathBuf = match workspace.project.try_read().ok().and_then(|g| g.as_ref().map(|p| p.root.clone())) {
+        Some(r) => r,
+        None => return invalid_params(id),
+    };
+
+    let mut results = Vec::new();
+
+    for entry in workspace.file_index.files.iter() {
+        let path = entry.key().clone();
+        let text = entry.value().clone();
+
+        // Parse object info from text
+        let parsed = al_core::syntax::AlParser::parse_quick(&text);
+        let obj = match al_core::syntax::find_object_declaration(&parsed.tree, &text) {
+            Some(o) => o,
+            None => continue,
+        };
+
+        // Build expected filename: <Kind><Id>.<Name>.al
+        let kind_cap = capitalize_first(&obj.kind);
+        let id_part = obj.id.map(|i| i.to_string()).unwrap_or_default();
+        let name_clean = sanitize_filename(&obj.name);
+
+        let expected_name = if id_part.is_empty() {
+            format!("{}.{}.al", kind_cap, name_clean)
+        } else {
+            format!("{}{}.{}.al", kind_cap, id_part, name_clean)
+        };
+
+        let current_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        if current_name == expected_name {
+            continue;
+        }
+
+        let new_path = path.parent().unwrap_or(&root).join(&expected_name);
+
+        let renamed = if !dry_run {
+            std::fs::rename(&path, &new_path).is_ok()
+        } else {
+            false
+        };
+
+        results.push(serde_json::json!({
+            "from": path.display().to_string(),
+            "to": new_path.display().to_string(),
+            "renamed": renamed,
+        }));
+    }
+
+    Response {
+        id,
+        result: Some(serde_json::json!({ "files": results })),
+        error: None,
+    }
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().to_string() + c.as_str(),
+    }
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect()
 }
 
 pub(super) fn dispatch_profiler_hints(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {

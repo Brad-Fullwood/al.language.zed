@@ -2814,3 +2814,26 @@ $ cargo test -p al-core
 test result: ok. 392 passed; 0 failed
 """
 status = "SUCCESS"
+
+[[proof]]
+task = "T1606"
+date = "2026-03-21"
+method = "unit_tests"
+evidence = "sort_members() in al-syntax::sort: text-based member sorter. Order: var block → triggers (alpha) → procedures (alpha). 6 tests in sort::tests: sorted alphabetically, var stays first, triggers before procedures, already sorted unchanged, case-insensitive sort, non-object input. Daemon: dispatch_sort_members (sortMembers route). CLI: al sort-members [--file] [--all] [--dry-run]."
+actual_log = """
+$ cargo test -p al-syntax sort
+test result: ok. 6 passed; 0 failed; 0 ignored
+"""
+status = "SUCCESS"
+
+[[proof]]
+task = "T1607"
+date = "2026-03-21"
+method = "unit_tests"
+evidence = "dispatch_organize_files in build_dispatch.rs: scans workspace files, parses ObjectInfo (kind/id/name), computes expected filename <Kind><Id>.<Name>.al, renames mismatches. Dry-run mode supported. CLI: al organize-files [--dry-run]. Daemon route: organizeFiles. All 393 al-core tests pass."
+actual_log = """
+$ cargo test -p al-core && cargo check -p al-lsp -p al-cli
+test result: ok. 393 passed; 0 failed
+Finished dev profile
+"""
+status = "SUCCESS"
