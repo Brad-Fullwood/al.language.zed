@@ -1425,6 +1425,86 @@ pub fn cmd_sql_scan(json: bool) -> ExitCode {
 }
 
 // ---------------------------------------------------------------------------
+// WP16: Bulk fix commands (T1603-T1605)
+// ---------------------------------------------------------------------------
+
+pub fn cmd_add_application_area(value: &str, dry_run: bool, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    match client.request("fix.applicationArea", Some(serde_json::json!({ "value": value, "dryRun": dry_run }))) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                let files = result.get("filesModified").and_then(|v| v.as_u64()).unwrap_or(0);
+                let changes = result.get("totalChanges").and_then(|v| v.as_u64()).unwrap_or(0);
+                if dry_run {
+                    println!("Dry run: would modify {files} file(s) with {changes} change(s)");
+                } else {
+                    println!("Applied ApplicationArea = {value} to {changes} control(s) in {files} file(s)");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+pub fn cmd_add_tooltips(from_table: Option<&str>, dry_run: bool, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let mut params = serde_json::json!({ "dryRun": dry_run });
+    if let Some(t) = from_table {
+        params["fromTable"] = serde_json::Value::String(t.to_string());
+    }
+    match client.request("fix.tooltips", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                let files = result.get("filesModified").and_then(|v| v.as_u64()).unwrap_or(0);
+                let changes = result.get("totalChanges").and_then(|v| v.as_u64()).unwrap_or(0);
+                if dry_run {
+                    println!("Dry run: would modify {files} file(s) with {changes} tooltip(s)");
+                } else {
+                    println!("Added {changes} tooltip(s) across {files} file(s)");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    match client.request("fix.dataClassification", Some(serde_json::json!({ "value": value, "dryRun": dry_run }))) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                let files = result.get("filesModified").and_then(|v| v.as_u64()).unwrap_or(0);
+                let changes = result.get("totalChanges").and_then(|v| v.as_u64()).unwrap_or(0);
+                if dry_run {
+                    println!("Dry run: would modify {files} file(s) with {changes} field(s)");
+                } else {
+                    println!("Applied DataClassification = {value} to {changes} field(s) in {files} file(s)");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WP15: Test runner commands
 // ---------------------------------------------------------------------------
 

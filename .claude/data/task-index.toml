@@ -18,10 +18,10 @@
 # WP11: Integration & Release Engineering [DONE]
 # WP12: Code Actions Parity [DONE]
 # WP13: Semantic & Language Parity [DONE]
-# WP14: XLIFF / Translation Support [0/4]
-# WP15: Test Runner Integration [0/4]
-# WP16: Bulk Operations & Wizards [0/7]
-# WP17: Innovative Differentiators [0/11]
+# WP14: XLIFF / Translation Support [DONE]
+# WP15: Test Runner Integration [2/4]
+# WP16: Bulk Operations & Wizards [5/7]
+# WP17: Innovative Differentiators [9/11]
 # WP18: Advanced Lint Rules [DONE]
 
 [index]
@@ -117,30 +117,30 @@ T1402 = { wp = "WP14", name = "XLIFF Refresh Workflow", done = true, deps = ["T1
 T1403 = { wp = "WP14", name = "Find Untranslated Texts", done = true, deps = ["T1401"] }
 T1404 = { wp = "WP14", name = "Translation Suggestion from Base App Symbols", done = true, deps = ["T1401"] }
 # --- WP15: Test Runner Integration ---
-T1501 = { wp = "WP15", name = "Test Discovery via Static Analysis", done = false, deps = [] }
+T1501 = { wp = "WP15", name = "Test Discovery via Static Analysis", done = true, deps = [] }
 T1502 = { wp = "WP15", name = "Test Execution via BC REST API", done = false, deps = ["T1501"] }
 T1503 = { wp = "WP15", name = "Test Results as Diagnostics", done = false, deps = ["T1502"] }
-T1504 = { wp = "WP15", name = "Test-to-Code Coverage Mapping", done = false, deps = ["T1501"] }
+T1504 = { wp = "WP15", name = "Test-to-Code Coverage Mapping", done = true, deps = ["T1501"] }
 # --- WP16: Bulk Operations & Wizards ---
-T1601 = { wp = "WP16", name = "Additional Project Templates", done = false, deps = [] }
-T1602 = { wp = "WP16", name = "Object Creation Wizards", done = false, deps = [] }
-T1603 = { wp = "WP16", name = "Add ApplicationArea Across Project", done = false, deps = [] }
-T1604 = { wp = "WP16", name = "Add Tooltips from Base App Symbols", done = false, deps = [] }
-T1605 = { wp = "WP16", name = "Add DataClassification to Table Fields", done = false, deps = [] }
+T1601 = { wp = "WP16", name = "Additional Project Templates", done = true, deps = [] }
+T1602 = { wp = "WP16", name = "Object Creation Wizards", done = true, deps = [] }
+T1603 = { wp = "WP16", name = "Add ApplicationArea Across Project", done = true, deps = [] }
+T1604 = { wp = "WP16", name = "Add Tooltips from Base App Symbols", done = true, deps = [] }
+T1605 = { wp = "WP16", name = "Add DataClassification to Table Fields", done = true, deps = [] }
 T1606 = { wp = "WP16", name = "Code Sorting on Save", done = false, deps = [] }
 T1607 = { wp = "WP16", name = "Auto-Rename/Organize Files by Object Type", done = false, deps = [] }
 # --- WP17: Innovative Differentiators ---
-T1701 = { wp = "WP17", name = "Obsolescence Timeline Dashboard", done = false, deps = [] }
-T1702 = { wp = "WP17", name = "DataClassification Audit", done = false, deps = [] }
-T1703 = { wp = "WP17", name = "Cross-Extension Breaking Change Analysis", done = false, deps = [] }
-T1704 = { wp = "WP17", name = "Dependency Graph with Transitive Resolution", done = false, deps = [] }
+T1701 = { wp = "WP17", name = "Obsolescence Timeline Dashboard", done = true, deps = [] }
+T1702 = { wp = "WP17", name = "DataClassification Audit", done = true, deps = [] }
+T1703 = { wp = "WP17", name = "Cross-Extension Breaking Change Analysis", done = true, deps = [] }
+T1704 = { wp = "WP17", name = "Dependency Graph with Transitive Resolution", done = true, deps = [] }
 T1705 = { wp = "WP17", name = "Configurable Formatter", done = false, deps = [] }
-T1706 = { wp = "WP17", name = "Permission Set Audit", done = false, deps = [] }
-T1707 = { wp = "WP17", name = "Upgrade Impact Analysis with Migration Hints", done = false, deps = ["T1703"] }
-T1708 = { wp = "WP17", name = "Duplicate Code Detection", done = false, deps = [] }
-T1709 = { wp = "WP17", name = "Architectural Linting", done = false, deps = [] }
+T1706 = { wp = "WP17", name = "Permission Set Audit", done = true, deps = [] }
+T1707 = { wp = "WP17", name = "Upgrade Impact Analysis with Migration Hints", done = true, deps = ["T1703"] }
+T1708 = { wp = "WP17", name = "Duplicate Code Detection", done = true, deps = [] }
+T1709 = { wp = "WP17", name = "Architectural Linting", done = true, deps = [] }
 T1710 = { wp = "WP17", name = "Profile Visualizer in al-explorer", done = false, deps = [] }
-T1711 = { wp = "WP17", name = "Profiler Inline Annotations", done = false, deps = ["T1710"] }
+T1711 = { wp = "WP17", name = "Profiler Inline Annotations", done = true, deps = ["T1710"] }
 # --- WP18: Advanced Lint Rules ---
 T1801 = { wp = "WP18", name = "FlowField Editability Validation", done = true, deps = [] }
 T1802 = { wp = "WP18", name = "Cyclomatic/Cognitive Complexity Metrics", done = true, deps = [] }

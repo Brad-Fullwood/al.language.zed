@@ -337,6 +337,36 @@ enum Commands {
         #[command(subcommand)]
         subcmd: XlfCommands,
     },
+    /// Add ApplicationArea to all page/report controls missing it
+    #[command(name = "add-application-area")]
+    AddApplicationArea {
+        /// ApplicationArea value (default: All)
+        #[arg(long, default_value = "All")]
+        value: String,
+        /// Preview changes without applying
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Add Tooltips to page controls from base app symbol data
+    #[command(name = "add-tooltips")]
+    AddTooltips {
+        /// Source table name to copy tooltips from
+        #[arg(long)]
+        from_table: Option<String>,
+        /// Preview changes without applying
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Add DataClassification to all table fields missing it
+    #[command(name = "add-data-classification")]
+    AddDataClassification {
+        /// DataClassification value (default: CustomerContent)
+        #[arg(long, default_value = "CustomerContent")]
+        value: String,
+        /// Preview changes without applying
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Discover test codeunits in the workspace
     Tests,
     /// Show test coverage summary
@@ -718,6 +748,15 @@ fn main() -> ExitCode {
         Commands::Snapshot { subcmd } => debug::cmd_snapshot(&subcmd, cli.json),
         Commands::Profile { subcmd } => debug::cmd_profile(&subcmd, cli.json),
         Commands::Xlf { subcmd } => build::cmd_xlf(&subcmd, cli.json),
+        Commands::AddApplicationArea { value, dry_run } => {
+            lsp::cmd_add_application_area(&value, dry_run, cli.json)
+        }
+        Commands::AddTooltips { from_table, dry_run } => {
+            lsp::cmd_add_tooltips(from_table.as_deref(), dry_run, cli.json)
+        }
+        Commands::AddDataClassification { value, dry_run } => {
+            lsp::cmd_add_data_classification(&value, dry_run, cli.json)
+        }
         Commands::Tests => lsp::cmd_tests_discover(cli.json),
         Commands::TestCoverage => lsp::cmd_tests_coverage(cli.json),
         Commands::Generate { kind, id, name, table, page_type, subject } => {
