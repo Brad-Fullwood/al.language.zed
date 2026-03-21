@@ -25,6 +25,18 @@ use tracing::{debug, error, info, warn};
 
 use crate::{DapError, Result};
 
+/// Parse a DAP arg value that may be a `bool` or a `string` ("none"/"false" → false).
+/// `default` is returned for non-bool, non-string variants.
+fn parse_bool_or_string(v: &serde_json::Value, default: bool) -> bool {
+    match v {
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::String(s) => {
+            !s.eq_ignore_ascii_case("none") && !s.eq_ignore_ascii_case("false")
+        }
+        _ => default,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BC Server Configuration
 // ---------------------------------------------------------------------------
@@ -73,6 +85,11 @@ impl Default for BcDebugConfig {
 }
 
 impl BcDebugConfig {
+    /// Start a fluent builder.
+    pub fn builder() -> BcDebugConfigBuilder {
+        BcDebugConfigBuilder(Self::default())
+    }
+
     /// Build from DAP launch/attach arguments.
     pub fn from_dap_args(args: &serde_json::Value) -> Self {
         let mut cfg = Self::default();
@@ -97,20 +114,12 @@ impl BcDebugConfig {
         if let Some(s) = args.get("authentication").and_then(|v| v.as_str()) {
             cfg.authentication = s.to_string();
         }
-        // breakOnError can be bool or string
+        // breakOnError / breakOnRecordWrite can be bool or string ("none"/"false" → false)
         if let Some(v) = args.get("breakOnError") {
-            cfg.break_on_error = match v {
-                serde_json::Value::Bool(b) => *b,
-                serde_json::Value::String(s) => !s.eq_ignore_ascii_case("none") && !s.eq_ignore_ascii_case("false"),
-                _ => true,
-            };
+            cfg.break_on_error = parse_bool_or_string(v, true);
         }
         if let Some(v) = args.get("breakOnRecordWrite") {
-            cfg.break_on_record_write = match v {
-                serde_json::Value::Bool(b) => *b,
-                serde_json::Value::String(s) => !s.eq_ignore_ascii_case("none") && !s.eq_ignore_ascii_case("false"),
-                _ => false,
-            };
+            cfg.break_on_record_write = parse_bool_or_string(v, false);
         }
         if let Some(s) = args.get("breakOnNext").and_then(|v| v.as_str()) {
             cfg.break_on_next = Some(s.to_string());
@@ -160,6 +169,33 @@ impl BcDebugConfig {
             format!("https://api.businesscentral.dynamics.com/v2.0/{env}/dev/DebuggerHub")
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// BcDebugConfig builder
+// ---------------------------------------------------------------------------
+
+/// Fluent builder for `BcDebugConfig`. Start with `BcDebugConfig::builder()`.
+pub struct BcDebugConfigBuilder(BcDebugConfig);
+
+impl BcDebugConfigBuilder {
+    pub fn server(mut self, s: impl Into<String>) -> Self { self.0.server = Some(s.into()); self }
+    pub fn server_instance(mut self, s: impl Into<String>) -> Self { self.0.server_instance = Some(s.into()); self }
+    pub fn port(mut self, p: u16) -> Self { self.0.port = p; self }
+    pub fn tenant(mut self, s: impl Into<String>) -> Self { self.0.tenant = s.into(); self }
+    pub fn environment_type(mut self, s: impl Into<String>) -> Self { self.0.environment_type = s.into(); self }
+    pub fn environment_name(mut self, s: impl Into<String>) -> Self { self.0.environment_name = Some(s.into()); self }
+    pub fn authentication(mut self, s: impl Into<String>) -> Self { self.0.authentication = s.into(); self }
+    pub fn break_on_error(mut self, b: bool) -> Self { self.0.break_on_error = b; self }
+    pub fn break_on_record_write(mut self, b: bool) -> Self { self.0.break_on_record_write = b; self }
+    pub fn break_on_next(mut self, s: impl Into<String>) -> Self { self.0.break_on_next = Some(s.into()); self }
+    pub fn startup_object_type(mut self, s: impl Into<String>) -> Self { self.0.startup_object_type = s.into(); self }
+    pub fn startup_object_id(mut self, id: i64) -> Self { self.0.startup_object_id = id; self }
+    pub fn launch_browser(mut self, b: bool) -> Self { self.0.launch_browser = b; self }
+    pub fn schema_update_mode(mut self, s: impl Into<String>) -> Self { self.0.schema_update_mode = s.into(); self }
+    pub fn dependency_publishing_option(mut self, s: impl Into<String>) -> Self { self.0.dependency_publishing_option = s.into(); self }
+    pub fn accept_invalid_certs(mut self, b: bool) -> Self { self.0.accept_invalid_certs = b; self }
+    pub fn build(self) -> BcDebugConfig { self.0 }
 }
 
 // ---------------------------------------------------------------------------
@@ -293,8 +329,6 @@ pub struct BcDebugSession {
     next_id: AtomicI64,
     /// SignalR connection ID — used in browser URL for debug context
     pub connection_id: String,
-    /// Thread ID for the debug session
-    thread_id: Mutex<Option<i64>>,
     /// Whether we're currently stopped at a breakpoint
     is_stopped: Mutex<bool>,
 }
@@ -444,12 +478,17 @@ impl BcDebugSession {
             event_rx: Mutex::new(event_rx),
             next_id: AtomicI64::new(1),
             connection_id,
-            thread_id: Mutex::new(None),
             is_stopped: Mutex::new(false),
         })
     }
 
     /// Invoke a SignalR method and wait for completion.
+    ///
+    /// Acquires `event_rx` for the duration of the call. Concurrent calls will
+    /// queue on the mutex — this is intentional: BC requires request/response
+    /// serialisation. Do NOT call this from within `handle_server_callback`
+    /// (which is invoked while `event_rx` is held) — use `ws_tx.try_send`
+    /// directly instead to avoid deadlock.
     async fn invoke(
         &self,
         target: &str,
@@ -523,14 +562,16 @@ impl BcDebugSession {
                     }
                 }
                 "IsAlive" => {
-                    // Ping — respond directly via ws_tx to avoid recursion
+                    // Ping — respond with try_send to avoid blocking while event_rx is held.
+                    // If the send channel is full, the ping is silently dropped; BC will
+                    // retry. Using .await here would deadlock when invoke() holds event_rx.
                     debug!("IsAlive ping from server");
                     let ack = serde_json::json!({
                         "type": 1,
                         "target": "AcknowledgeIsAlive",
                         "arguments": [],
                     });
-                    let _ = self.ws_tx.send(ack.to_string()).await;
+                    let _ = self.ws_tx.try_send(ack.to_string());
                 }
                 "OnAttachedToConnection" => {
                     info!("Attached to debug connection");
@@ -649,17 +690,25 @@ impl BcDebugSession {
         Ok(())
     }
 
+    /// Step over the current statement (BC BreakpointExitReason = 1).
+    pub async fn step_over(&self) -> Result<()> {
+        self.continue_execution(serde_json::json!(1)).await
+    }
+
+    /// Step into the current call (BC BreakpointExitReason = 2).
+    pub async fn step_in(&self) -> Result<()> {
+        self.continue_execution(serde_json::json!(2)).await
+    }
+
+    /// Step out of the current procedure (BC BreakpointExitReason = 3).
+    pub async fn step_out(&self) -> Result<()> {
+        self.continue_execution(serde_json::json!(3)).await
+    }
+
     /// Stop debugging.
     /// BC hub method: `StopDebugging`
     pub async fn stop_debugging(&self) -> Result<()> {
         let _ = self.invoke("StopDebugging", vec![]).await;
-        Ok(())
-    }
-
-    /// Acknowledge alive ping.
-    /// BC hub method: `AcknowledgeIsAlive`
-    pub async fn acknowledge_alive(&self) -> Result<()> {
-        self.invoke("AcknowledgeIsAlive", vec![]).await?;
         Ok(())
     }
 
@@ -709,6 +758,11 @@ impl BcDebugSession {
     }
 
     /// Check if the debug hub is alive.
+    ///
+    /// Calls `invoke()`, which acquires `event_rx`. Only safe to call when no
+    /// other `invoke()` is in progress (i.e. outside of an active debug loop).
+    /// Server-side `IsAlive` pings during a session are handled automatically
+    /// via `try_send` in `handle_server_callback`.
     pub async fn is_alive(&self) -> bool {
         self.invoke("IsAlive", vec![]).await.is_ok()
     }

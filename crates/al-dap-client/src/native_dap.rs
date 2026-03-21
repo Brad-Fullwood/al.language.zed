@@ -515,6 +515,12 @@ async fn read_dap_body(
     Ok(body)
 }
 
+/// Compile via `dotnet alc` and return raw output.
+///
+/// This is a DAP-local version of compilation. It returns raw output as a string
+/// rather than structured diagnostics because the DAP path streams output to the
+/// client as console events. al-core has a richer `compile_project` with diagnostics
+/// and analyzer support, but al-dap-client cannot import al-core (boundary rule).
 async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<String, DapError> {
     let project_path = Path::new(project_root);
     if !project_path.join("app.json").is_file() {
@@ -563,32 +569,37 @@ async fn find_app_file(project_root: &str) -> Option<std::path::PathBuf> {
 }
 
 fn open_browser(url: &str) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok()
+    let result = {
+        #[cfg(target_os = "linux")]
+        { try_spawn("xdg-open", &[url]) }
+        #[cfg(target_os = "macos")]
+        { try_spawn("open", &[url]) }
+        #[cfg(target_os = "windows")]
+        { try_spawn("cmd", &["/c", "start", url]) }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        { false }
+    };
+
+    if !result {
+        // Platform opener failed or unknown — try common fallbacks
+        for opener in &["xdg-open", "open", "firefox", "chromium", "chromium-browser", "google-chrome"] {
+            if try_spawn(opener, &[url]) {
+                return true;
+            }
+        }
+        warn!("open_browser: all openers failed for URL: {url}");
+        return false;
     }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok()
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd").args(["/c", "start", url])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok()
-    }
+
+    result
+}
+
+fn try_spawn(cmd: &str, args: &[&str]) -> bool {
+    std::process::Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .is_ok()
 }
