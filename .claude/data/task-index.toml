@@ -19,7 +19,7 @@
 # WP12: Code Actions Parity [DONE]
 # WP13: Semantic & Language Parity [DONE]
 # WP14: XLIFF / Translation Support [DONE]
-# WP15: Test Runner Integration [2/4]
+# WP15: Test Runner Integration [DONE]
 # WP16: Bulk Operations & Wizards [DONE]
 # WP17: Innovative Differentiators [DONE]
 # WP18: Advanced Lint Rules [DONE]
@@ -118,8 +118,8 @@ T1403 = { wp = "WP14", name = "Find Untranslated Texts", done = true, deps = ["T
 T1404 = { wp = "WP14", name = "Translation Suggestion from Base App Symbols", done = true, deps = ["T1401"] }
 # --- WP15: Test Runner Integration ---
 T1501 = { wp = "WP15", name = "Test Discovery via Static Analysis", done = true, deps = [] }
-T1502 = { wp = "WP15", name = "Test Execution via BC REST API", done = false, deps = ["T1501"] }
-T1503 = { wp = "WP15", name = "Test Results as Diagnostics", done = false, deps = ["T1502"] }
+T1502 = { wp = "WP15", name = "Test Execution via BC REST API", done = true, deps = ["T1501"] }
+T1503 = { wp = "WP15", name = "Test Results as Diagnostics", done = true, deps = ["T1502"] }
 T1504 = { wp = "WP15", name = "Test-to-Code Coverage Mapping", done = true, deps = ["T1501"] }
 # --- WP16: Bulk Operations & Wizards ---
 T1601 = { wp = "WP16", name = "Additional Project Templates", done = true, deps = [] }

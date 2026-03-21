@@ -1393,7 +1393,7 @@ deps = []
 pass_criteria = "Detects old Promoted = true / PromotedCategory = X properties and offers conversion to new actionRef syntax with area(promoted) section. Instance/document/project scope."
 fail_criteria = "Conversion produces invalid AL or loses promoted category."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1405,7 +1405,7 @@ deps = []
 pass_criteria = "On a page/report, offers to set object-level ApplicationArea and remove redundant field-level ApplicationArea properties."
 fail_criteria = "Removes intentionally different field-level ApplicationArea overrides."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1417,7 +1417,7 @@ deps = []
 pass_criteria = "Converts legacy RDLCLayout/WordLayout properties to new rendering { layout(...) { ... } } section syntax."
 fail_criteria = "Conversion drops layout path or produces invalid rendering block."
 complexity = "Small"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1487,7 +1487,7 @@ deps = []
 pass_criteria = "Add pageView, reportLayout, queryDataItem, queryColumn, queryFilter, xmlportTableElement, xmlportTextElement, xmlportFieldElement, xmlportFieldAttribute, datetime, namespace, attribute. All produce correct Zed highlighting."
 fail_criteria = "Token types registered but never emitted by semantic token analysis."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1660,7 +1660,7 @@ deps = []
 pass_criteria = "al tests discovers all [Test] procedures from workspace files and symbol packages. Groups by codeunit. Daemon query. JSON output."
 fail_criteria = "Misses test methods or includes non-test procedures."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1672,7 +1672,7 @@ deps = ["T1501"]
 pass_criteria = "al test run <codeunit> [--method] executes tests against a configured BC instance via OData/REST test runner API. Returns pass/fail per method."
 fail_criteria = "Cannot connect to BC test runner or results are unreliable."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1684,7 +1684,7 @@ deps = ["T1502"]
 pass_criteria = "Test failures published as publishDiagnostics on the test codeunit file at the procedure location. Cleared on next successful run."
 fail_criteria = "Diagnostics point to wrong lines or persist after passing tests."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1696,7 +1696,7 @@ deps = ["T1501"]
 pass_criteria = "al test-coverage uses static call graph to show which procedures are exercised by test methods. Reports untested public procedures. JSON output."
 fail_criteria = "Call graph misses indirect calls through events or interface dispatch."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P2"
 
 # --- WP16: Bulk Operations & Wizards ---
@@ -1710,7 +1710,7 @@ deps = []
 pass_criteria = "al new --template copilot|agent|api generates project scaffolds. Each template compiles against standard BC symbols."
 fail_criteria = "Generated projects have compile errors or missing required properties."
 complexity = "Small"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1722,7 +1722,7 @@ deps = []
 pass_criteria = "al generate page --from-table <name> --type list|card|document generates a complete page from table symbol definition. Also al generate report and al generate test."
 fail_criteria = "Generated objects reference non-existent fields or use wrong source table."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1734,7 +1734,7 @@ deps = []
 pass_criteria = "al fix --add-application-area <value> adds ApplicationArea to all page fields/actions missing it. Respects existing values. Reports count."
 fail_criteria = "Overwrites intentionally different ApplicationArea values."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1746,7 +1746,7 @@ deps = []
 pass_criteria = "al fix --add-tooltips pulls tooltips from base app symbol data and applies to page fields that reference known table fields but lack tooltips."
 fail_criteria = "Applies wrong tooltip or adds tooltip to fields with custom semantics."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1758,7 +1758,7 @@ deps = []
 pass_criteria = "al fix --add-data-classification <value> adds DataClassification to all table fields missing it. Reports count."
 fail_criteria = "Adds DataClassification to FlowFields or calculated fields where not applicable."
 complexity = "Small"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1796,7 +1796,7 @@ deps = []
 pass_criteria = "al obsolete lists all pending-obsolete symbols with ObsoleteTag, ObsoleteReason, projected removal version, and downstream caller count. JSON output. Daemon query."
 fail_criteria = "Misses obsolete symbols or wrong caller counts."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1808,7 +1808,7 @@ deps = []
 pass_criteria = "al audit data-classification enumerates all table fields, current classification, fields missing classification, GDPR risk summary. JSON output."
 fail_criteria = "Misses fields or misreports classification values."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1820,7 +1820,7 @@ deps = []
 pass_criteria = "al breaking-changes --baseline <old.app> compares two .app symbol sets. Structured diff: added/removed/changed procedures, fields, events, enum values. Human-readable + JSON."
 fail_criteria = "False positives on non-breaking changes (e.g., added optional parameters)."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P1"
 
 [[tasks]]
@@ -1832,7 +1832,7 @@ deps = []
 pass_criteria = "Enhance al deps to show transitive dependencies, version conflicts, and NuGet resolution chain. DOT export. Flag circular or missing dependencies."
 fail_criteria = "Misses transitive dependencies or shows incorrect version resolution."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1844,7 +1844,7 @@ deps = []
 pass_criteria = "Support .alformat.json per workspace: keyword casing, blank-line rules, max line length, brace style. MS formatter is non-configurable — this is a differentiator."
 fail_criteria = "Config breaks default formatting behavior or produces invalid AL."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1856,7 +1856,7 @@ deps = []
 pass_criteria = "al audit permissions compares defined permission sets against actual object usage. Highlights objects with no permission coverage."
 fail_criteria = "Misses indirect object access through codeunit calls."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1868,7 +1868,7 @@ deps = ["T1703"]
 pass_criteria = "al upgrade-check --from <v1.app> --to <v2.app> generates upgrade report with breaking changes, obsoletion timeline, data migration needs, and suggested patterns."
 fail_criteria = "Misses data-level breaking changes (field type changes, key changes)."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1880,7 +1880,7 @@ deps = []
 pass_criteria = "al duplicates finds structurally similar code blocks using AST comparison. Reports pairs with similarity score. JSON output."
 fail_criteria = "Reports trivially similar code (e.g., trigger boilerplate) as duplicates."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P3"
 
 [[tasks]]
@@ -1892,7 +1892,7 @@ deps = []
 pass_criteria = "Enforce project-specific rules in .alarch.json. al lint --arch reports violations."
 fail_criteria = "Rules too rigid or too slow for interactive use."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P3"
 
 [[tasks]]
@@ -1904,7 +1904,7 @@ deps = []
 pass_criteria = "F4 view in al-explorer: top-down/bottom-up call tree from .alcpuprofile files with timing data, filterable. Navigate to source."
 fail_criteria = "Cannot parse .alcpuprofile format or tree is incomplete."
 complexity = "Large"
-completed = false
+completed = true
 priority = "P2"
 
 [[tasks]]
@@ -1916,7 +1916,7 @@ deps = ["T1710"]
 pass_criteria = "After al profile analyze, publish timing data as inlay hints on source locations. Show execution time and call count per procedure. Clearable."
 fail_criteria = "Hints on wrong lines or persist after clearing."
 complexity = "Medium"
-completed = false
+completed = true
 priority = "P2"
 
 # --- WP18: Advanced Lint Rules ---
