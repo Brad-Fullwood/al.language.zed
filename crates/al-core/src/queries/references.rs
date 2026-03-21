@@ -20,11 +20,9 @@ pub fn references(
     let Some(node) = al_syntax::find_node_at_position(&tree, lsp_pos) else {
         return Vec::new();
     };
-    let node_text = node.utf8_text(text.as_bytes()).unwrap_or("");
-    let clean_name = node_text.trim_matches('"');
-    if clean_name.is_empty() {
+    let Some(clean_name) = super::node_clean_name(node, text.as_bytes()) else {
         return Vec::new();
-    }
+    };
 
     let mut locations = Vec::new();
 

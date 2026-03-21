@@ -42,15 +42,7 @@ pub(crate) fn handle_rename(
 ) -> Option<WorkspaceEdit> {
     let core_pos = al_core::queries::Position { line: position.line, character: position.character };
     let result = al_core::queries::rename::rename(&server.workspace, uri, core_pos, &new_name)?;
-    let mut changes = std::collections::HashMap::new();
-    for (uri, edits) in result.changes {
-        let lsp_edits: Vec<TextEdit> = edits.into_iter().map(|e| TextEdit {
-            range: e.range.into(),
-            new_text: e.new_text,
-        }).collect();
-        changes.insert(uri, lsp_edits);
-    }
-    Some(WorkspaceEdit { changes: Some(changes), ..Default::default() })
+    Some(crate::handlers::core_workspace_edit_to_lsp(result))
 }
 
 /// Handle textDocument/prepareRename.

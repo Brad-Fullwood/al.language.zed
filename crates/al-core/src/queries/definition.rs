@@ -14,11 +14,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     let node = al_syntax::find_node_at_position(&tree, lsp_pos)?;
     let source = text.as_bytes();
-    let node_text = node.utf8_text(source).unwrap_or("");
-    let clean_name = node_text.trim_matches('"');
-    if clean_name.is_empty() {
-        return None;
-    }
+    let clean_name = super::node_clean_name(node, source)?;
 
     // Access path resolution
     if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos) {
@@ -38,7 +34,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                     }
                     _ => {
                         if let Some(entry) = find_package_entry_for_type(workspace, &receiver.type_name, receiver.type_subtype.as_deref()) {
-                            if let Some((file_uri, range)) = get_or_create_virtual_file(workspace, &entry, Some(&access.member)) {
+                            if let Some((file_uri, range)) = super::get_or_create_virtual_file(workspace, &entry, Some(&access.member)) {
                                 return Some(vec![Location { uri: file_uri, range: range.into() }]);
                             }
                         }
@@ -55,7 +51,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
         let pkg_entries = workspace.symbols.get_by_name(clean_name);
         if let Some(entry) = pkg_entries.into_iter().find(|e| !e.kind.is_extension()) {
-            if let Some((file_uri, range)) = get_or_create_virtual_file(workspace, &entry, None) {
+            if let Some((file_uri, range)) = super::get_or_create_virtual_file(workspace, &entry, None) {
                 return Some(vec![Location { uri: file_uri, range: range.into() }]);
             }
         }
@@ -128,42 +124,12 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     let symbols = workspace.symbols.get_by_name(clean_name);
     if let Some(entry) = symbols.into_iter().find(|e| !e.kind.is_extension()) {
-        if let Some((file_uri, range)) = get_or_create_virtual_file(workspace, &entry, None) {
+        if let Some((file_uri, range)) = super::get_or_create_virtual_file(workspace, &entry, None) {
             return Some(vec![Location { uri: file_uri, range: range.into() }]);
         }
     }
 
     None
-}
-
-fn get_or_create_virtual_file(
-    workspace: &Workspace,
-    entry: &SymbolEntry,
-    member_name: Option<&str>,
-) -> Option<(Url, tower_lsp::lsp_types::Range)> {
-    let app_path = workspace.symbols.app_path(&entry.package);
-    match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
-        Ok(path) => {
-            let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
-            let range = member_name
-                .and_then(|name| find_member_range_in_file(&path, name))
-                .unwrap_or_default();
-            Some((uri, range))
-        }
-        Err(_) => None,
-    }
-}
-
-fn find_member_range_in_file(path: &std::path::Path, member_name: &str) -> Option<tower_lsp::lsp_types::Range> {
-    let range = al_symbols::virtual_file::find_member_range(
-        path,
-        member_name,
-        al_symbols::virtual_file::MemberKind::Unknown,
-    )?;
-    Some(tower_lsp::lsp_types::Range::new(
-        tower_lsp::lsp_types::Position::new(range.line, range.col_start),
-        tower_lsp::lsp_types::Position::new(range.line, range.col_end),
-    ))
 }
 
 fn find_package_entry_for_type(

@@ -5,23 +5,53 @@
 //!
 //! T301: skeleton with stubs. T302: full migration from al-lsp.
 
+pub mod arch_lint;
+pub mod audit;
+pub mod breaking_changes;
 pub mod code_actions;
 pub mod completions;
 pub mod dead_code;
 pub mod definition;
+pub mod deps;
+pub mod duplicates;
 pub mod folding;
 pub mod hover;
 pub mod impact;
+pub mod implementation;
 pub mod inlay_hints;
+pub mod obsolescence;
+pub mod profiler_hints;
 pub mod references;
 pub mod rename;
 pub mod semantic_tokens;
 pub mod signature;
 pub mod source;
+pub mod sql_patterns;
 pub mod suggest_event;
 pub mod symbols;
+pub mod test_coverage;
+pub mod test_diagnostics;
+pub mod tests;
+pub mod upgrade;
 
+use al_symbols::SymbolEntry;
 use url::Url;
+
+// ---------------------------------------------------------------------------
+// Shared node-text extraction helper
+// ---------------------------------------------------------------------------
+
+/// Extract the clean (unquoted) name from a tree-sitter node.
+///
+/// Returns `None` when the node's text is invalid UTF-8 or empty after stripping
+/// surrounding double-quotes. Callers typically early-return on `None` — this
+/// bundles the three-line pattern repeated across hover, definition, references,
+/// rename, and implementation.
+pub fn node_clean_name<'a>(node: tree_sitter::Node<'_>, source: &'a [u8]) -> Option<&'a str> {
+    let text = node.utf8_text(source).ok()?;
+    let clean = text.trim_matches('"');
+    if clean.is_empty() { None } else { Some(clean) }
+}
 
 // ---------------------------------------------------------------------------
 // Shared parameter-parsing helper
@@ -90,25 +120,63 @@ pub fn parse_detail_params(detail: &str) -> Vec<(String, String, String)> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared virtual-file helper
+// ---------------------------------------------------------------------------
+
+/// Create (or look up) the virtual AL file for a symbol index entry and return
+/// its URI and the range of `member_name` within it (or a default range when
+/// `member_name` is `None` or the member cannot be located).
+///
+/// Shared by definition, implementation, and any other query that needs to
+/// navigate into a symbol from a `.app` package.
+pub fn get_or_create_virtual_file(
+    workspace: &crate::workspace::Workspace,
+    entry: &SymbolEntry,
+    member_name: Option<&str>,
+) -> Option<(Url, tower_lsp::lsp_types::Range)> {
+    let app_path = workspace.symbols.app_path(&entry.package);
+    match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
+        Ok(path) => {
+            let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
+            let range = member_name
+                .and_then(|name| {
+                    let r = al_symbols::virtual_file::find_member_range(
+                        &path,
+                        name,
+                        al_symbols::virtual_file::MemberKind::Unknown,
+                    )?;
+                    Some(tower_lsp::lsp_types::Range::new(
+                        tower_lsp::lsp_types::Position::new(r.line, r.col_start),
+                        tower_lsp::lsp_types::Position::new(r.line, r.col_end),
+                    ))
+                })
+                .unwrap_or_default();
+            Some((uri, range))
+        }
+        Err(_) => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Transport-agnostic position/range types
 // ---------------------------------------------------------------------------
 
 /// A position in a document (0-indexed line and character).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub line: u32,
     pub character: u32,
 }
 
 /// A range in a document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
 }
 
 /// A location in a specific document.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     pub uri: Url,
     pub range: Range,

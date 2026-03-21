@@ -147,6 +147,19 @@ pub(crate) fn handle_code_action(
     if actions.is_empty() { None } else { Some(actions) }
 }
 
+/// Convert an `al-core` transport-agnostic `WorkspaceEdit` to a tower-lsp `WorkspaceEdit`.
+pub(crate) fn core_workspace_edit_to_lsp(we: al_core::queries::WorkspaceEdit) -> WorkspaceEdit {
+    let mut changes = std::collections::HashMap::new();
+    for (uri, edits) in we.changes {
+        let lsp_edits: Vec<TextEdit> = edits.into_iter().map(|e| TextEdit {
+            range: e.range.into(),
+            new_text: e.new_text,
+        }).collect();
+        changes.insert(uri, lsp_edits);
+    }
+    WorkspaceEdit { changes: Some(changes), ..Default::default() }
+}
+
 fn core_action_to_lsp(
     entry: al_core::queries::code_actions::CodeActionEntry,
     diag: Option<&Diagnostic>,
@@ -156,17 +169,7 @@ fn core_action_to_lsp(
         al_core::queries::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
         al_core::queries::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
     };
-    let edit = entry.edit.map(|we| {
-        let mut changes = std::collections::HashMap::new();
-        for (uri, edits) in we.changes {
-            let lsp_edits: Vec<TextEdit> = edits.into_iter().map(|e| TextEdit {
-                range: e.range.into(),
-                new_text: e.new_text,
-            }).collect();
-            changes.insert(uri, lsp_edits);
-        }
-        WorkspaceEdit { changes: Some(changes), ..Default::default() }
-    });
+    let edit = entry.edit.map(core_workspace_edit_to_lsp);
     CodeActionOrCommand::CodeAction(CodeAction {
         title: entry.title,
         kind: Some(kind),

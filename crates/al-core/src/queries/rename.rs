@@ -16,11 +16,7 @@ pub fn prepare_rename(
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
     let node = al_syntax::find_node_at_position(&tree, lsp_pos)?;
-    let node_text = node.utf8_text(text.as_bytes()).unwrap_or("");
-    let clean_name = node_text.trim_matches('"');
-    if clean_name.is_empty() {
-        return None;
-    }
+    let clean_name = super::node_clean_name(node, text.as_bytes())?;
     if !matches!(node.kind(), "identifier" | "quoted_identifier" | "name" | "name_or_keyword") {
         return None;
     }
@@ -38,11 +34,7 @@ pub fn rename(
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
     let node = al_syntax::find_node_at_position(&tree, lsp_pos)?;
-    let node_text = node.utf8_text(text.as_bytes()).unwrap_or("");
-    let clean_name = node_text.trim_matches('"');
-    if clean_name.is_empty() {
-        return None;
-    }
+    let clean_name = super::node_clean_name(node, text.as_bytes())?;
 
     let mut changes: Vec<(Url, Vec<TextEdit>)> = Vec::new();
 
