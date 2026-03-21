@@ -1614,3 +1614,206 @@ fn procedure_complexity_to_json(m: &al_core::syntax::complexity::ProcedureComple
         "cognitive": m.cognitive,
     })
 }
+
+// ---------------------------------------------------------------------------
+// WP15: Test runner
+// ---------------------------------------------------------------------------
+
+pub(super) fn dispatch_tests_discover(workspace: &Workspace, id: u64) -> Response {
+    let tests = al_core::queries::tests::discover_tests(workspace);
+    let value = serde_json::to_value(&tests).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+pub(super) fn dispatch_tests_coverage(workspace: &Workspace, id: u64) -> Response {
+    let report = al_core::queries::test_coverage::test_coverage(workspace);
+    let value = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+// ---------------------------------------------------------------------------
+// WP16: Object wizards / code generation
+// ---------------------------------------------------------------------------
+
+pub(super) fn dispatch_generate(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let kind = params.get("kind").and_then(|v| v.as_str()).unwrap_or("page");
+    let object_id = params.get("id").and_then(|v| v.as_i64()).unwrap_or(50100) as i32;
+    let table_name = params.get("table").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Resolve the source table symbol from the workspace symbol index.
+    let table_entry = if !table_name.is_empty() {
+        workspace.symbols.search(table_name, 10)
+            .into_iter()
+            .find(|e| e.kind == al_symbols::ObjectKind::Table && e.name.eq_ignore_ascii_case(table_name))
+    } else {
+        None
+    };
+
+    match kind {
+        "page" => {
+            let page_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("NewPage").to_string();
+            let page_type_str = params.get("pageType").and_then(|v| v.as_str()).unwrap_or("List");
+            let page_type = page_type_str.parse::<al_core::generators::PageType>().unwrap_or_default();
+
+            let Some(source) = table_entry else {
+                return rpc_error(id, error_codes::INVALID_PARAMS, &format!("Table '{}' not found in symbol index", table_name));
+            };
+            let config = al_core::generators::GeneratePageConfig {
+                object_id,
+                page_name,
+                page_type,
+                source_table: (*source).clone(),
+            };
+            let code = al_core::generators::generate_page(&config);
+            Response { id, result: Some(serde_json::json!({ "code": code, "kind": "page" })), error: None }
+        }
+        "report" => {
+            let report_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("NewReport").to_string();
+            let Some(source) = table_entry else {
+                return rpc_error(id, error_codes::INVALID_PARAMS, &format!("Table '{}' not found in symbol index", table_name));
+            };
+            let config = al_core::generators::GenerateReportConfig {
+                object_id,
+                report_name,
+                source_table: (*source).clone(),
+            };
+            let code = al_core::generators::generate_report(&config);
+            Response { id, result: Some(serde_json::json!({ "code": code, "kind": "report" })), error: None }
+        }
+        "test" => {
+            let test_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("NewTests").to_string();
+            let subject = table_entry.map(|e| (*e).clone());
+            let config = al_core::generators::GenerateTestConfig {
+                object_id,
+                test_name,
+                subject,
+            };
+            let code = al_core::generators::generate_test(&config);
+            Response { id, result: Some(serde_json::json!({ "code": code, "kind": "test" })), error: None }
+        }
+        other => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Unknown generate kind: {other}. Use page, report, or test"),
+            }),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WP17: Analysis differentiators
+// ---------------------------------------------------------------------------
+
+pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
+    let entries = al_core::queries::obsolescence::obsolescence_timeline(workspace);
+    let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64) -> Response {
+    let entries = al_core::queries::audit::data_classification_audit(workspace);
+    let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+pub(super) fn dispatch_permission_set_audit(workspace: &Workspace, id: u64) -> Response {
+    let entries = al_core::queries::audit::permission_set_audit(workspace);
+    let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+pub(super) fn dispatch_deps_graph(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("json");
+
+    // Read app.json from project root
+    let app_json = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|p| p.as_ref().map(|p| p.root.join("app.json")))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+
+    // Build package list from loaded symbols — name, publisher, version, deps
+    // Currently we pass the packages list without transitive dependency info;
+    // the dep graph will still resolve direct dependencies from app.json.
+    let packages: Vec<(String, String, String, Vec<(String, String, String)>)> = Vec::new();
+
+    let graph = al_core::queries::deps::build_dependency_graph(&app_json, &packages);
+
+    if format == "dot" {
+        let dot = graph.to_dot();
+        Response { id, result: Some(serde_json::json!({ "format": "dot", "content": dot })), error: None }
+    } else {
+        let value = serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null);
+        Response { id, result: Some(value), error: None }
+    }
+}
+
+pub(super) fn dispatch_breaking_changes(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+    // Compare baseline (empty) against current workspace symbols to find
+    // all changes relative to a clean slate.  Callers can pass baseline
+    // symbols in params.baselineSymbols in a future iteration.
+    let current: Vec<al_symbols::SymbolEntry> = workspace.symbols.all_entries()
+        .into_iter()
+        .map(|a| (*a).clone())
+        .collect();
+    let baseline: Vec<al_symbols::SymbolEntry> = Vec::new();
+    let changes = al_core::queries::breaking_changes::analyze_breaking_changes(&baseline, &current);
+    let value = serde_json::to_value(&changes).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+pub(super) fn dispatch_arch_lint(workspace: &Workspace, id: u64) -> Response {
+    // Load .alarch.json from project root if present; fall back to defaults
+    let config = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|p| p.as_ref().map(|p| p.root.join(".alarch.json")))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|json| al_core::queries::arch_lint::ArchConfig::from_json(&json).ok())
+        .unwrap_or_default();
+    let violations = al_core::queries::arch_lint::arch_lint(workspace, &config);
+    let value = serde_json::to_value(&violations).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+pub(super) fn dispatch_find_duplicates(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let min_tokens = params.get("minTokens").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let min_similarity = params.get("minSimilarity").and_then(|v| v.as_f64()).unwrap_or(0.8) as f32;
+    let duplicates = al_core::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity);
+    let value = serde_json::to_value(&duplicates).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+pub(super) fn dispatch_upgrade_report(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+    // Use empty baseline to find all symbols that are new/changed relative
+    // to a fresh install.  In practice callers supply a previous .app snapshot.
+    let current: Vec<al_symbols::SymbolEntry> = workspace.symbols.all_entries()
+        .into_iter()
+        .map(|a| (*a).clone())
+        .collect();
+    let baseline: Vec<al_symbols::SymbolEntry> = Vec::new();
+    let issues = al_core::queries::upgrade::upgrade_report(&baseline, &current);
+    let value = serde_json::to_value(&issues).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+pub(super) fn dispatch_sql_patterns(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+    let findings = al_core::queries::sql_patterns::detect_sql_patterns(workspace);
+    let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}
+
+pub(super) fn dispatch_profiler_hints(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let hotspots = params.get("hotspots")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let hints = al_core::queries::profiler_hints::profiler_hints(workspace, &hotspots);
+    let value = serde_json::to_value(&hints).unwrap_or(serde_json::Value::Null);
+    Response { id, result: Some(value), error: None }
+}

@@ -196,6 +196,23 @@ enum Commands {
     Tokens { file: String },
     /// Parse an AL file and show parse info
     Parse { file: String },
+    /// Compute cyclomatic/cognitive complexity metrics for AL file(s)
+    Metrics {
+        /// File to analyse (omit with --all for workspace-wide)
+        file: Option<String>,
+        /// Analyse all .al files in the project directory
+        #[arg(long)]
+        all: bool,
+        /// Cyclomatic complexity threshold for hotspot warnings (default: 10)
+        #[arg(long, default_value = "10")]
+        threshold_cyclomatic: u32,
+        /// Cognitive complexity threshold for hotspot warnings (default: 15)
+        #[arg(long, default_value = "15")]
+        threshold_cognitive: u32,
+    },
+    /// Detect SQL anti-patterns across the workspace (FindFirst in loops, unfiltered FindSet, etc.)
+    #[command(name = "sql-scan")]
+    SqlScan,
     /// Show inlay hints for an AL file
     Hints {
         file: String,
@@ -319,6 +336,67 @@ enum Commands {
     Xlf {
         #[command(subcommand)]
         subcmd: XlfCommands,
+    },
+    /// Discover test codeunits in the workspace
+    Tests,
+    /// Show test coverage summary
+    TestCoverage,
+    /// Generate an AL object scaffold (page, report, test)
+    Generate {
+        /// Object kind: page, report, test
+        kind: String,
+        /// Object ID
+        #[arg(long, default_value = "50100")]
+        id: i64,
+        /// Object name
+        #[arg(long, default_value = "NewObject")]
+        name: String,
+        /// Source table name (required for page/report)
+        #[arg(long)]
+        table: Option<String>,
+        /// Page type: List, Card, Document (for page kind)
+        #[arg(long)]
+        page_type: Option<String>,
+        /// Subject codeunit name (for test kind)
+        #[arg(long)]
+        subject: Option<String>,
+    },
+    /// Show obsolescence timeline (deprecated symbols)
+    Obsolete,
+    /// Audit DataClassification on table fields
+    #[command(name = "audit-data")]
+    AuditData,
+    /// Audit permission set coverage
+    #[command(name = "permission-audit")]
+    PermissionAudit,
+    /// Show full dependency graph
+    #[command(name = "deps-graph")]
+    DepsGraph {
+        /// Output format: json (default) or dot
+        #[arg(short, long, default_value = "json")]
+        format: String,
+    },
+    /// Detect breaking API changes
+    Breaking,
+    /// Run architecture lint rules
+    #[command(name = "arch-lint")]
+    ArchLint,
+    /// Find duplicate code blocks
+    Duplicates {
+        /// Minimum token count to consider a block
+        #[arg(long, default_value = "20")]
+        min_tokens: usize,
+        /// Minimum similarity ratio (0.0-1.0)
+        #[arg(long, default_value = "0.8")]
+        min_similarity: f32,
+    },
+    /// Generate upgrade analysis report
+    Upgrade,
+    /// Get profiler optimization hints
+    ProfilerHints {
+        /// Hotspot procedure names
+        #[arg(num_args = 0..)]
+        hotspots: Vec<String>,
     },
 }
 
@@ -605,6 +683,10 @@ fn main() -> ExitCode {
         Commands::Folding { file } => lsp::cmd_folding(&file, cli.json),
         Commands::Tokens { file } => lsp::cmd_tokens(&file, cli.json),
         Commands::Parse { file } => lsp::cmd_parse(&file, cli.json),
+        Commands::Metrics { file, all, threshold_cyclomatic, threshold_cognitive } => {
+            lsp::cmd_metrics(file.as_deref(), all, threshold_cyclomatic, threshold_cognitive, cli.json)
+        }
+        Commands::SqlScan => lsp::cmd_sql_scan(cli.json),
         Commands::Hints { file, start_line, end_line } => {
             lsp::cmd_hints(&file, start_line, end_line, cli.json)
         }

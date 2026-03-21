@@ -1200,5 +1200,87 @@
             "}"
         ],
         "description": "Snippet: XmlPort"
+    },
+    "Snippet: Try Procedure": {
+        "prefix": "ttryprocedure",
+        "body": [
+            "[TryFunction]",
+            "${1:local} procedure ${2:TryDoSomething}(${3}): Boolean",
+            "begin",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: Try Procedure"
+    },
+    "Snippet: Label": {
+        "prefix": "tlabel",
+        "body": [
+            "${1:MyLabel}: Label '${2:Label Text}';",
+            "$0"
+        ],
+        "description": "Snippet: Label variable declaration"
+    },
+    "Snippet: Request Page": {
+        "prefix": "trequestpage",
+        "body": [
+            "requestpage",
+            "{",
+            "\tlayout",
+            "\t{",
+            "\t\tarea(content)",
+            "\t\t{",
+            "\t\t\tgroup(${1:Options})",
+            "\t\t\t{",
+            "\t\t\t\tCaption = '${2:Options}';",
+            "\t\t\t\tfield(${3:FieldName}; ${4:FieldSource})",
+            "\t\t\t\t{",
+            "\t\t\t\t\tApplicationArea = All;",
+            "\t\t\t\t\tCaption = '${5:Caption}';",
+            "\t\t\t\t\t$0",
+            "\t\t\t\t}",
+            "\t\t\t}",
+            "\t\t}",
+            "\t}",
+            "}"
+        ],
+        "description": "Snippet: Request Page"
+    },
+    "Snippet: Notification": {
+        "prefix": "tnotification",
+        "body": [
+            "var",
+            "\t${1:MyNotification}: Notification;",
+            "begin",
+            "\t${1:MyNotification}.Message := '${2:Notification message}';",
+            "\t${1:MyNotification}.Scope := NotificationScope::LocalScope;",
+            "\t${1:MyNotification}.Send();",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: Notification"
+    },
+    "Snippet: Error Info": {
+        "prefix": "terrorinfo",
+        "body": [
+            "var",
+            "\t${1:ErrorInfo}: ErrorInfo;",
+            "begin",
+            "\t${1:ErrorInfo}.Message := '${2:Error message}';",
+            "\t${1:ErrorInfo}.DetailedMessage := '${3:Detailed message}';",
+            "\t${1:ErrorInfo}.AddAction('${4:Fix}', Codeunit::${5:MyCodeunit}, '${6:FixAction}');",
+            "\tError(${1:ErrorInfo});",
+            "\t$0",
+            "end;"
+        ],
+        "description": "Snippet: Error Info"
+    },
+    "Snippet: Record Modify": {
+        "prefix": "tmodify",
+        "body": [
+            "${1:Rec}.${2:Field} := ${3:Value};",
+            "${1:Rec}.Modify(true);",
+            "$0"
+        ],
+        "description": "Snippet: Record Modify"
     }
 }

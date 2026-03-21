@@ -251,6 +251,8 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "fix.dataClassification" => build_dispatch::dispatch_fix_data_classification(workspace, id, &params),
         "rules" => build_dispatch::dispatch_rules(id),
         "parse" => build_dispatch::dispatch_parse(workspace, id, &params),
+        "metrics" => build_dispatch::dispatch_metrics(workspace, id, &params),
+        "sqlPatterns" => build_dispatch::dispatch_sql_patterns(workspace, id, &params),
         "source" => build_dispatch::dispatch_source(workspace, id, &params),
         "location" => build_dispatch::dispatch_location(workspace, id, &params),
         // Insight engine
@@ -280,6 +282,21 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "xlf.refresh" => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
         "xlf.untranslated" => build_dispatch::dispatch_xlf_untranslated(id, &params),
         "xlf.suggest" => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
+        // WP15: Test runner
+        "tests.discover" => build_dispatch::dispatch_tests_discover(workspace, id),
+        "tests.coverage" => build_dispatch::dispatch_tests_coverage(workspace, id),
+        // WP16: Object generation
+        "generate" => build_dispatch::dispatch_generate(workspace, id, &params),
+        // WP17: Analysis differentiators
+        "obsolete" => build_dispatch::dispatch_obsolete(workspace, id),
+        "audit.dataClassification" => build_dispatch::dispatch_audit_data_classification(workspace, id),
+        "permissions.audit" => build_dispatch::dispatch_permission_set_audit(workspace, id),
+        "deps.graph" => build_dispatch::dispatch_deps_graph(workspace, id, &params),
+        "breaking" => build_dispatch::dispatch_breaking_changes(workspace, id, &params),
+        "arch.lint" => build_dispatch::dispatch_arch_lint(workspace, id),
+        "duplicates" => build_dispatch::dispatch_find_duplicates(workspace, id, &params),
+        "upgrade" => build_dispatch::dispatch_upgrade_report(workspace, id, &params),
+        "profiler.hints" => build_dispatch::dispatch_profiler_hints(workspace, id, &params),
         "ping" => Response { id, result: Some(serde_json::json!("pong")), error: None },
         "shutdown" => {
             tracing::info!("daemon: shutdown requested");

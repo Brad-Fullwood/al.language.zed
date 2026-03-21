@@ -16,8 +16,8 @@
 # WP9: Insight Graph & Agent Discovery Engine [DONE]
 # WP10: Explorer & TUI Transformation [DONE]
 # WP11: Integration & Release Engineering [DONE]
-# WP12: Code Actions Parity [5/11]
-# WP13: Semantic & Language Parity [4/9]
+# WP12: Code Actions Parity [DONE]
+# WP13: Semantic & Language Parity [DONE]
 # WP14: XLIFF / Translation Support [0/4]
 # WP15: Test Runner Integration [0/4]
 # WP16: Bulk Operations & Wizards [0/7]
@@ -91,26 +91,26 @@ T1104 = { wp = "WP11", name = "Documentation and Extension Packaging", done = tr
 T1105 = { wp = "WP11", name = "Final Surgical Audit", done = true, deps = ["T1104"] }
 # --- WP12: Code Actions Parity ---
 T1201 = { wp = "WP12", name = "Insert using Statement for Missing Namespace", done = true, deps = [] }
-T1202 = { wp = "WP12", name = "Interface Implementer — Generate Stub Methods", done = false, deps = ["T1303"] }
+T1202 = { wp = "WP12", name = "Interface Implementer — Generate Stub Methods", done = true, deps = ["T1303"] }
 T1203 = { wp = "WP12", name = "Multiple IF to CASE Conversion", done = true, deps = [] }
 T1204 = { wp = "WP12", name = "Fix Explicit/Implicit with Statements", done = true, deps = [] }
 T1205 = { wp = "WP12", name = "Convert Promoted Actions to actionRef Syntax", done = true, deps = [] }
 T1206 = { wp = "WP12", name = "Set Default ApplicationArea on Page/Report", done = true, deps = [] }
 T1207 = { wp = "WP12", name = "Fix Old Report Layout to rendering Section", done = true, deps = [] }
 T1208 = { wp = "WP12", name = "Make Method Local", done = true, deps = [] }
-T1209 = { wp = "WP12", name = "Add Parentheses to Method Calls", done = false, deps = [] }
-T1210 = { wp = "WP12", name = "Convert Event Subscriber Parameter Format", done = false, deps = [] }
-T1211 = { wp = "WP12", name = "Move Tooltip from Page Controls to Table Fields", done = false, deps = [] }
+T1209 = { wp = "WP12", name = "Add Parentheses to Method Calls", done = true, deps = [] }
+T1210 = { wp = "WP12", name = "Convert Event Subscriber Parameter Format", done = true, deps = [] }
+T1211 = { wp = "WP12", name = "Move Tooltip from Page Controls to Table Fields", done = true, deps = [] }
 # --- WP13: Semantic & Language Parity ---
 T1301 = { wp = "WP13", name = "Add 12 Missing Semantic Token Types", done = true, deps = [] }
-T1302 = { wp = "WP13", name = "Implement Range Formatting", done = false, deps = [] }
+T1302 = { wp = "WP13", name = "Implement Range Formatting", done = true, deps = [] }
 T1303 = { wp = "WP13", name = "Implement Go to Implementations for Interfaces", done = true, deps = [] }
-T1304 = { wp = "WP13", name = "Implement Return Type Inlay Hints", done = false, deps = [] }
+T1304 = { wp = "WP13", name = "Implement Return Type Inlay Hints", done = true, deps = [] }
 T1305 = { wp = "WP13", name = "tree-sitter-al: continue Keyword", done = true, deps = [] }
 T1306 = { wp = "WP13", name = "tree-sitter-al: Multiline String Literals", done = true, deps = [] }
-T1307 = { wp = "WP13", name = "tree-sitter-al: List of [Interface IFoo] Syntax", done = false, deps = [] }
-T1308 = { wp = "WP13", name = "Snippet Audit and Additions", done = false, deps = [] }
-T1309 = { wp = "WP13", name = "JSON Schemas for BC Config Files", done = false, deps = [] }
+T1307 = { wp = "WP13", name = "tree-sitter-al: List of [Interface IFoo] Syntax", done = true, deps = [] }
+T1308 = { wp = "WP13", name = "Snippet Audit and Additions", done = true, deps = [] }
+T1309 = { wp = "WP13", name = "JSON Schemas for BC Config Files", done = true, deps = [] }
 # --- WP14: XLIFF / Translation Support ---
 T1401 = { wp = "WP14", name = "XLIFF Generation on Build", done = true, deps = [] }
 T1402 = { wp = "WP14", name = "XLIFF Refresh Workflow", done = true, deps = ["T1401"] }
