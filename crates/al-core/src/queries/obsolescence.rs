@@ -244,9 +244,9 @@ fn extract_property_value(text: &str, prop_name: &str) -> Option<String> {
     if let Some(pos) = lower.find(&prop_lower) {
         let after = &text[pos + prop_lower.len()..];
         // Skip "= " and extract quoted value
-        let after = after.trim_start_matches(|c: char| c == ' ' || c == '=' || c == ':');
+        let after = after.trim_start_matches([' ', '=', ':']);
         let after = after.trim_start_matches('\'').trim_start_matches('"');
-        let end = after.find(|c: char| c == '\'' || c == '"' || c == ';' || c == '\n')
+        let end = after.find(['\'', '"', ';', '\n'])
             .unwrap_or(after.len().min(200));
         let val = after[..end].trim().to_string();
         if !val.is_empty() { return Some(val); }

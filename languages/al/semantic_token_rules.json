@@ -74,5 +74,53 @@
   {
     "token_type": "returnParameter",
     "style": ["variable.parameter", "variable"]
+  },
+  {
+    "token_type": "pageView",
+    "style": ["tag", "property"]
+  },
+  {
+    "token_type": "reportLayout",
+    "style": ["type.parameter", "type"]
+  },
+  {
+    "token_type": "queryDataItem",
+    "style": ["variable.other.member", "variable"]
+  },
+  {
+    "token_type": "queryColumn",
+    "style": ["property", "variable.other.member"]
+  },
+  {
+    "token_type": "queryFilter",
+    "style": ["variable.parameter", "variable"]
+  },
+  {
+    "token_type": "xmlportTableElement",
+    "style": ["variable.other.member", "variable"]
+  },
+  {
+    "token_type": "xmlportTextElement",
+    "style": ["tag", "property"]
+  },
+  {
+    "token_type": "xmlportFieldElement",
+    "style": ["property", "variable.other.member"]
+  },
+  {
+    "token_type": "xmlportFieldAttribute",
+    "style": ["tag.attribute", "tag"]
+  },
+  {
+    "token_type": "datetime",
+    "style": ["number.float", "number"]
+  },
+  {
+    "token_type": "namespaceName",
+    "style": ["namespace", "type"]
+  },
+  {
+    "token_type": "attribute",
+    "style": ["attribute", "type"]
   }
 ]

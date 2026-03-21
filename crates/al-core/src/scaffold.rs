@@ -485,7 +485,8 @@ fn generate_agent_job_handler(config: &ScaffoldConfig) -> String {
 {{
     procedure Execute(Instructions: Text; var Result: Text)
     begin
-        // TODO: implement agent logic using AzureOpenAI
+        // Call your AI endpoint here, e.g. via HttpClient to Azure OpenAI
+        // and store the response text in Result.
         Result := StrSubstNo('Processed: %1', Instructions);
     end;
 }}

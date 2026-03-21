@@ -1525,7 +1525,7 @@ pub fn cmd_tests_discover(json: bool) -> ExitCode {
                     for t in &tests {
                         let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                         let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                        let count = t.get("procedures").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                        let count = t.get("tests").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
                         println!("  Codeunit {id} \"{name}\" -- {count} test(s)");
                     }
                     eprintln!("\n{} test codeunit(s) found", tests.len());
@@ -1551,6 +1551,73 @@ pub fn cmd_tests_coverage(json: bool) -> ExitCode {
                 let total = result.get("totalProcedures").and_then(|v| v.as_u64()).unwrap_or(0);
                 let pct = if total > 0 { covered * 100 / total } else { 0 };
                 println!("Test coverage: {covered}/{total} procedures ({pct}%)");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+/// `al test-run <codeunit> [--name <name>] [--method <method>] [--config <config>]`
+///
+/// Sends a `tests.run` JSON-RPC request to the al-lsp daemon. The daemon
+/// calls the BC REST dev API and returns the test results plus diagnostics.
+pub fn cmd_test_run(
+    codeunit: i64,
+    name: Option<&str>,
+    method: Option<&str>,
+    config: Option<&str>,
+    json: bool,
+) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    let mut params = serde_json::json!({ "codeunit": codeunit });
+    if let Some(n) = name {
+        params["codeunitName"] = serde_json::Value::String(n.to_string());
+    }
+    if let Some(m) = method {
+        params["method"] = serde_json::Value::String(m.to_string());
+    }
+    if let Some(c) = config {
+        params["config"] = serde_json::Value::String(c.to_string());
+    }
+
+    match client.request("tests.run", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                // Human-readable summary
+                if let Some(run) = result.get("result") {
+                    let cu_name = run.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let total = run.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let passed = run.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let failed = run.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let skipped = run.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0);
+                    println!("Codeunit \"{cu_name}\": {passed}/{total} passed, {failed} failed, {skipped} skipped");
+
+                    if let Some(methods) = run.get("methods").and_then(|v| v.as_array()) {
+                        for m in methods {
+                            let mname = m.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                            let status = m.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                            let icon = match status {
+                                "pass" => "✓",
+                                "fail" => "✗",
+                                _ => "~",
+                            };
+                            print!("  {icon} {mname}");
+                            if let Some(err) = m.get("error").and_then(|v| v.as_str()) {
+                                print!(" -- {err}");
+                            }
+                            println!();
+                        }
+                    }
+                } else {
+                    println!("No test results returned");
+                }
             }
             ExitCode::SUCCESS
         }

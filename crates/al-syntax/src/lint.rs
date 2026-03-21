@@ -78,8 +78,9 @@ pub fn lint_rules() -> &'static [LintRuleInfo] {
         LintRuleInfo { code: "AL-L009", name: "ExcessiveParams", severity: LintSeverity::Warning, description: "Procedure has too many parameters" },
         LintRuleInfo { code: "AL-L010", name: "MissingCaseElse", severity: LintSeverity::Warning, description: "Case statement is missing an else branch" },
         LintRuleInfo { code: "AL-L011", name: "RedundantBeginEnd", severity: LintSeverity::Hint, description: "Redundant begin..end around single statement" },
-        // AL-L012 (AssignmentInCondition) is intentionally omitted: check_suspicious_equals is
-        // a no-op stub. TODO: implement detection of `:=` vs `=` confusion in if conditions.
+        // AL-L012 (AssignmentInCondition) is intentionally omitted: in AL, `=` is the
+        // comparison operator and `:=` is assignment; `:=` cannot appear in an if-condition,
+        // so there is no confusion to detect.
         LintRuleInfo { code: "AL-L013", name: "EmptyRepeat", severity: LintSeverity::Warning, description: "Empty repeat..until loop" },
         LintRuleInfo { code: "AL-L014", name: "UnreachableCode", severity: LintSeverity::Warning, description: "Unreachable code after exit/error" },
         LintRuleInfo { code: "AL-L015", name: "GlobalVarNaming", severity: LintSeverity::Info, description: "Global variable has a non-descriptive name" },
@@ -173,9 +174,6 @@ fn walk_and_lint(
                     severity: LintSeverity::Warning,
                 });
             }
-
-            // AL-L012: Assignment in IF condition (= instead of :=)
-            check_assignment_in_condition(node, source, diagnostics);
 
             // Recurse with incremented depth
             let mut cursor = node.walk();
@@ -601,25 +599,6 @@ fn check_redundant_begin_end(node: Node, _source: &[u8], diagnostics: &mut Vec<L
             }
         }
     }
-}
-
-// ── AL-L012: Assignment in IF condition ─────────────────────────────
-
-fn check_assignment_in_condition(node: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
-    if let Some(condition) = node.child_by_field_name("condition") {
-        // Look for lone `=` operators in the condition that might be assignment
-        check_suspicious_equals(condition, source, diagnostics);
-    }
-}
-
-fn check_suspicious_equals(node: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
-    // We look for `=` used where `:=` might be intended, but `=` is the correct
-    // comparison operator in AL. This is more of a style hint — only flag
-    // patterns like `x = y` at the top level of a condition where the user
-    // likely meant `:=`.
-    // For now, we skip this rule as `=` is the comparison operator in AL.
-    // In Pascal-derived languages, assignment is `:=` and comparison is `=`.
-    let _ = (node, source, diagnostics);
 }
 
 // ── AL-L013: Empty REPEAT..UNTIL loop ───────────────────────────────
@@ -1067,21 +1046,19 @@ fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDi
         let lower = trimmed.to_lowercase();
 
         // Detect page object start
-        if page_ctx.is_none() {
-            if lower.starts_with("page ") {
-                let opens = line.chars().filter(|&c| c == '{').count() as i32;
-                let closes = line.chars().filter(|&c| c == '}').count() as i32;
-                page_ctx = Some(PageCtx {
-                    start_line: line_num,
-                    brace_depth: opens - closes,
-                    has_api_version: false,
-                    api_version_line: None,
-                    has_entity_name: false,
-                    has_entity_set_name: false,
-                    has_odata_key_fields: false,
-                });
-                continue;
-            }
+        if page_ctx.is_none() && lower.starts_with("page ") {
+            let opens = line.chars().filter(|&c| c == '{').count() as i32;
+            let closes = line.chars().filter(|&c| c == '}').count() as i32;
+            page_ctx = Some(PageCtx {
+                start_line: line_num,
+                brace_depth: opens - closes,
+                has_api_version: false,
+                api_version_line: None,
+                has_entity_name: false,
+                has_entity_set_name: false,
+                has_odata_key_fields: false,
+            });
+            continue;
         }
 
         if let Some(ctx) = page_ctx.as_mut() {

@@ -268,7 +268,7 @@ fn extract_permission_objects(text: &str) -> Vec<String> {
                 let name = if let Some(stripped) = rest.strip_prefix('"') {
                     stripped.find('"').map(|i| stripped[..i].to_string())
                 } else {
-                    rest.find(|c: char| c == '=' || c == ' ').map(|i| rest[..i].trim().to_string())
+                    rest.find(['=', ' ']).map(|i| rest[..i].trim().to_string())
                 };
                 if let Some(n) = name {
                     if !n.is_empty() { objects.push(n); }

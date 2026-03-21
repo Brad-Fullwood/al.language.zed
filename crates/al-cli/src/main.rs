@@ -369,6 +369,21 @@ enum Commands {
     },
     /// Discover test codeunits in the workspace
     Tests,
+    /// Run tests in a codeunit via BC REST API
+    #[command(name = "test-run")]
+    TestRun {
+        /// Codeunit object ID to run
+        codeunit: i64,
+        /// Optional codeunit name (used in output)
+        #[arg(long)]
+        name: Option<String>,
+        /// Run only this specific test method
+        #[arg(long)]
+        method: Option<String>,
+        /// Named launch config to use (defaults to first)
+        #[arg(long)]
+        config: Option<String>,
+    },
     /// Show test coverage summary
     TestCoverage,
     /// Generate an AL object scaffold (page, report, test)
@@ -777,6 +792,9 @@ fn main() -> ExitCode {
             lsp::cmd_add_data_classification(&value, dry_run, cli.json)
         }
         Commands::Tests => lsp::cmd_tests_discover(cli.json),
+        Commands::TestRun { codeunit, name, method, config } => {
+            lsp::cmd_test_run(codeunit, name.as_deref(), method.as_deref(), config.as_deref(), cli.json)
+        }
         Commands::TestCoverage => lsp::cmd_tests_coverage(cli.json),
         Commands::Generate { kind, id, name, table, page_type, subject } => {
             lsp::cmd_generate(&kind, id, &name, table.as_deref(), page_type.as_deref(), subject.as_deref(), cli.json)

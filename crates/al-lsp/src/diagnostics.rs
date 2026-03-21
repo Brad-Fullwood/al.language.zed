@@ -194,6 +194,62 @@ pub fn lint_to_diagnostic(lint: &al_core::syntax::LintDiagnostic, source: &[u8])
     }
 }
 
+// ---------------------------------------------------------------------------
+// T1503: Test diagnostics — convert test results to LSP publishDiagnostics
+// ---------------------------------------------------------------------------
+
+/// Convert a `TestDiagnostic` (from al-core's test runner) to an LSP `Diagnostic`.
+///
+/// Lines in `TestDiagnostic` are 1-based; LSP positions are 0-based.
+pub fn test_diag_to_lsp(td: &al_core::queries::test_diagnostics::TestDiagnostic) -> Diagnostic {
+    use al_core::queries::test_diagnostics::DiagnosticSeverity as TDSev;
+
+    let severity = match td.severity {
+        TDSev::Error => DiagnosticSeverity::ERROR,
+        TDSev::Warning => DiagnosticSeverity::WARNING,
+        TDSev::Information => DiagnosticSeverity::INFORMATION,
+        TDSev::Hint => DiagnosticSeverity::HINT,
+    };
+
+    let line = td.line.saturating_sub(1); // 1-based → 0-based
+    Diagnostic {
+        range: Range {
+            start: Position { line, character: 0 },
+            end: Position { line, character: 0 },
+        },
+        severity: Some(severity),
+        code: Some(NumberOrString::String("AL-TEST".to_string())),
+        source: Some("al-test-runner".to_string()),
+        message: format!("[{}] {}", td.test_name, td.message),
+        ..Default::default()
+    }
+}
+
+/// Publish test-result diagnostics for all affected files.
+///
+/// Groups the flat list by file and calls `publishDiagnostics` once per file.
+/// Pass an empty `diagnostics` slice to clear test diagnostics.
+pub async fn publish_test_diagnostics(
+    client: &tower_lsp::Client,
+    diagnostics: &[al_core::queries::test_diagnostics::TestDiagnostic],
+) {
+    use al_core::queries::test_diagnostics::group_by_file;
+
+    let grouped = group_by_file(diagnostics.to_vec());
+
+    for (file, tds) in grouped {
+        let uri = match Url::from_file_path(&file) {
+            Ok(u) => u,
+            Err(_) => {
+                tracing::warn!(file = %file, "publish_test_diagnostics: cannot convert path to URI");
+                continue;
+            }
+        };
+        let lsp_diags: Vec<Diagnostic> = tds.iter().map(test_diag_to_lsp).collect();
+        client.publish_diagnostics(uri, lsp_diags, None).await;
+    }
+}
+
 /// Convert a semantic diagnostic entry to an LSP Diagnostic.
 pub fn semantic_to_diagnostic(entry: &al_core::semantic_types::DiagnosticEntry) -> Diagnostic {
     let severity = match entry.severity.to_lowercase().as_str() {
@@ -313,6 +369,57 @@ mod tests {
         // Lines are 1-based in semantic, 0-based in LSP
         assert_eq!(diag.range.start.line, 9);
         assert_eq!(diag.range.start.character, 4);
+    }
+
+    // T1503: test diagnostic conversion
+    #[test]
+    fn test_diag_fail_maps_to_error() {
+        use al_core::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
+        let td = TestDiagnostic {
+            file: "/src/Tests.al".to_string(),
+            line: 10,
+            severity: TDSev::Error,
+            message: "Assert.AreEqual failed".to_string(),
+            test_name: "TestSomething".to_string(),
+            codeunit: "MyTests".to_string(),
+        };
+        let diag = test_diag_to_lsp(&td);
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diag.range.start.line, 9); // 1-based → 0-based
+        assert_eq!(diag.source, Some("al-test-runner".to_string()));
+        assert!(diag.message.contains("TestSomething"));
+        assert!(diag.message.contains("Assert.AreEqual failed"));
+    }
+
+    #[test]
+    fn test_diag_skip_maps_to_warning() {
+        use al_core::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
+        let td = TestDiagnostic {
+            file: "/src/Tests.al".to_string(),
+            line: 5,
+            severity: TDSev::Warning,
+            message: "Test was skipped".to_string(),
+            test_name: "TestSkipped".to_string(),
+            codeunit: "MyTests".to_string(),
+        };
+        let diag = test_diag_to_lsp(&td);
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(diag.range.start.line, 4);
+    }
+
+    #[test]
+    fn test_diag_line_zero_stays_zero() {
+        use al_core::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
+        let td = TestDiagnostic {
+            file: "".to_string(),
+            line: 0,
+            severity: TDSev::Error,
+            message: "fail".to_string(),
+            test_name: "T".to_string(),
+            codeunit: "CU".to_string(),
+        };
+        let diag = test_diag_to_lsp(&td);
+        assert_eq!(diag.range.start.line, 0); // saturating_sub(1) on 0 stays 0
     }
 
     #[test]

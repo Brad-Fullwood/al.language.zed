@@ -13,6 +13,7 @@
 //!   GetVariablesAsync, ExpandGlobalsAsync, ExpandNodeAsync,
 //!   GetWatchNodeAsync, GetSourceAsync, TerminateSession, IsAlive
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -297,6 +298,9 @@ struct SignalRMessage {
     // Type 6: ping
 }
 
+/// Maximum number of server-push events buffered between `invoke()` calls.
+const PENDING_EVENT_CAPACITY: usize = 64;
+
 /// Native BC debug session over SignalR.
 pub struct BcDebugSession {
     /// Send SignalR messages to the hub
@@ -309,6 +313,9 @@ pub struct BcDebugSession {
     pub connection_id: String,
     /// Whether we're currently stopped at a breakpoint
     is_stopped: Mutex<bool>,
+    /// Server-push type-1 events that arrived while an `invoke()` was waiting
+    /// for its own completion. Callers drain this buffer after each invoke.
+    pending_events: Mutex<VecDeque<SignalRMessage>>,
 }
 
 impl BcDebugSession {
@@ -457,6 +464,7 @@ impl BcDebugSession {
             next_id: AtomicI64::new(1),
             connection_id,
             is_stopped: Mutex::new(false),
+            pending_events: Mutex::new(VecDeque::with_capacity(PENDING_EVENT_CAPACITY)),
         })
     }
 
@@ -502,11 +510,16 @@ impl BcDebugSession {
                         debug!("SignalR result for {target}: {:?}", msg.result);
                         return Ok(msg.result);
                     }
-                    // It's an event or different completion — store for later
-                    // TODO: buffer events for async delivery
+                    // Server-push event received while waiting for our completion.
+                    // Buffer it so it isn't dropped; the caller drains via
+                    // `drain_pending_events()` after the invoke returns.
                     if msg.type_ == 1 {
-                        // Server-side invocation (callback)
-                        self.handle_server_callback(&msg).await;
+                        let mut buf = self.pending_events.lock().await;
+                        if buf.len() < PENDING_EVENT_CAPACITY {
+                            buf.push_back(msg);
+                        } else {
+                            warn!("pending_events buffer full — dropping server callback");
+                        }
                     }
                 }
                 Ok(None) => return Err(DapError::ConnectionFailed("SignalR channel closed".to_string())),
@@ -572,6 +585,23 @@ impl BcDebugSession {
                     debug!("Unhandled server callback: {target}");
                 }
             }
+        }
+    }
+
+    // ----- Pending event buffer -----
+
+    /// Process server-push events that arrived during the last `invoke()` call.
+    ///
+    /// Call this after every `invoke()` to handle buffered callbacks (e.g.
+    /// `Break`, `OnDetachedFromConnection`) that arrived while the invoke loop
+    /// was consuming the event channel.
+    pub async fn flush_pending_events(&self) {
+        let events: Vec<SignalRMessage> = {
+            let mut buf = self.pending_events.lock().await;
+            buf.drain(..).collect()
+        };
+        for event in events {
+            self.handle_server_callback(&event).await;
         }
     }
 

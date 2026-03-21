@@ -21,7 +21,7 @@
 # WP14: XLIFF / Translation Support [DONE]
 # WP15: Test Runner Integration [2/4]
 # WP16: Bulk Operations & Wizards [DONE]
-# WP17: Innovative Differentiators [9/11]
+# WP17: Innovative Differentiators [DONE]
 # WP18: Advanced Lint Rules [DONE]
 
 [index]
@@ -134,12 +134,12 @@ T1701 = { wp = "WP17", name = "Obsolescence Timeline Dashboard", done = true, de
 T1702 = { wp = "WP17", name = "DataClassification Audit", done = true, deps = [] }
 T1703 = { wp = "WP17", name = "Cross-Extension Breaking Change Analysis", done = true, deps = [] }
 T1704 = { wp = "WP17", name = "Dependency Graph with Transitive Resolution", done = true, deps = [] }
-T1705 = { wp = "WP17", name = "Configurable Formatter", done = false, deps = [] }
+T1705 = { wp = "WP17", name = "Configurable Formatter", done = true, deps = [] }
 T1706 = { wp = "WP17", name = "Permission Set Audit", done = true, deps = [] }
 T1707 = { wp = "WP17", name = "Upgrade Impact Analysis with Migration Hints", done = true, deps = ["T1703"] }
 T1708 = { wp = "WP17", name = "Duplicate Code Detection", done = true, deps = [] }
 T1709 = { wp = "WP17", name = "Architectural Linting", done = true, deps = [] }
-T1710 = { wp = "WP17", name = "Profile Visualizer in al-explorer", done = false, deps = [] }
+T1710 = { wp = "WP17", name = "Profile Visualizer in al-explorer", done = true, deps = [] }
 T1711 = { wp = "WP17", name = "Profiler Inline Annotations", done = true, deps = ["T1710"] }
 # --- WP18: Advanced Lint Rules ---
 T1801 = { wp = "WP18", name = "FlowField Editability Validation", done = true, deps = [] }
