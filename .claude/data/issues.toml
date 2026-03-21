@@ -242,8 +242,14 @@ date = "2026-03-17"
 category = "constraint"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "PARALLEL"
+resolution = """
+Added is_cache_path() helper in diagnostics.rs that checks if a URI is inside
+~/.cache/al-lsp/. publish_diagnostics() returns early for cache files.
+schedule_diagnostics() in server.rs also calls is_cache_path() to skip
+debounced diagnostics for cache files. Both code paths guarded.
+"""
 description = """
 Zed log shows:
   WARN skipping diagnostics update, no worktree found for path
@@ -264,8 +270,14 @@ date = "2026-03-17"
 category = "constraint"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "PARALLEL"
+resolution = """
+Added init_done: AtomicBool field to AlServer. initialized() uses
+compare_exchange(false, true) to guard against duplicate calls. If Zed sends
+initialized twice (multiple worktrees or crash-restart), the second call logs
+a warning and returns immediately without spawning a second workspace init task.
+"""
 description = """
 Zed log shows two language server starts 3 seconds apart:
   12:14:52 INFO starting language server process. binary path: al-lsp, args: ["--stdio"]
@@ -275,6 +287,52 @@ This suggests al-lsp crashes during initial startup and Zed restarts it. Alterna
 Zed may be opening two workspaces/worktrees that each start a server instance. Need to
 check al-lsp logs for a crash or panic on first start, and check if Zed is sending
 multiple initialize requests.
+"""
+
+[[issues]]
+id = "ISSUE-096"
+title = "Position/Range/Location missing Serialize/Deserialize derives"
+type = "architecture"
+reporter = "team-lead"
+date = "2026-03-21"
+category = "constraint"
+severity = "bug"
+priority = "MEDIUM"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+Added serde::Serialize + serde::Deserialize to al_core::queries::{Position, Range, Location}
+in crates/al-core/src/queries/mod.rs. Enables these types to be used in JSON-RPC
+daemon responses and serde_json serialization without manual field-by-field mapping.
+"""
+description = """
+Transport-agnostic Position, Range, and Location types in al-core::queries lack
+Serialize/Deserialize derives. Daemon dispatch code must manually serialize these
+types field-by-field. Adding derives enables cleaner daemon response generation.
+"""
+
+[[issues]]
+id = "ISSUE-141"
+title = "didChange triggers 2-3 full parses per keystroke"
+type = "architecture"
+reporter = "team-lead"
+date = "2026-03-21"
+category = "performance"
+severity = "bug"
+priority = "MEDIUM"
+status = "fixed"
+triage = "PARALLEL"
+resolution = """
+update_workspace_index() parses once and caches the tree via documents.cache_tree().
+publish_diagnostics() uses al_core::parsing::get_or_parse() which returns the cached
+tree as a zero-cost cache hit immediately after update_workspace_index. schedule_diagnostics()
+(used for did_change) is a separate debounced path that re-parses once after debounce
+delay — this is acceptable since the debounce prevents rapid-fire re-parsing.
+"""
+description = """
+didChange notification triggers multiple full parses: once in update_workspace_index,
+once in publish_diagnostics, potentially again in schedule_diagnostics. Should parse
+once and reuse the tree across all callers.
 """
 
 [[issues]]
