@@ -166,23 +166,6 @@ async fn main() {
         }
         let fi = file_index.clone();
 
-        // ObjectTypeWrapper enum mapping
-        let kind_to_type = |kind: &str| -> i32 {
-            match kind.to_lowercase().as_str() {
-                "table" => 1,
-                "report" => 3,
-                "codeunit" => 5,
-                "xmlport" => 6,
-                "page" => 8,
-                "query" => 9,
-                "pageextension" => 14,
-                "tableextension" => 15,
-                "enum" => 16,
-                "enumextension" => 17,
-                "reportextension" => 22,
-                _ => -1,
-            }
-        };
 
         let _ = al_dap_client::native_dap::run_native_dap(
             &project_root,
@@ -199,7 +182,7 @@ async fn main() {
                 let path = PathBuf::from(file_path);
                 fi.object_info.get(&path).map(|info| {
                     al_dap_client::native_dap::ResolvedObject {
-                        object_type: kind_to_type(&info.kind),
+                        object_type: al_dap_client::native_dap::kind_to_object_type(&info.kind),
                         object_id: info.id.unwrap_or(-1) as i32,
                     }
                 })

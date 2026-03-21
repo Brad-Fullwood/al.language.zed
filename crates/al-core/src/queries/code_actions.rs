@@ -34,6 +34,11 @@ pub struct DiagnosticInfo {
     pub code: Option<String>,
 }
 
+/// Build a `WorkspaceEdit` with a single file's edits — the overwhelmingly common case.
+fn single_edit_ws(uri: &Url, edits: Vec<TextEdit>) -> WorkspaceEdit {
+    WorkspaceEdit { changes: vec![(uri.clone(), edits)] }
+}
+
 /// Get code actions for a range in a document.
 ///
 /// This handles diagnostic-independent source actions (doc comment, region).
@@ -147,7 +152,7 @@ pub fn namespace_quick_fix_for_diagnostic(
             CodeActionEntry {
                 title: format!("Add using {}", ns),
                 kind: CodeActionKind::QuickFix,
-                edit: Some(WorkspaceEdit { changes: vec![(uri.clone(), vec![edit])] }),
+                edit: Some(single_edit_ws(uri, vec![edit])),
                 is_preferred: ns_count == 1,
             }
         })
@@ -281,7 +286,7 @@ fn make_quickfix(title: &str, uri: &Url, edits: Vec<TextEdit>) -> CodeActionEntr
     CodeActionEntry {
         title: title.to_string(),
         kind: CodeActionKind::QuickFix,
-        edit: Some(WorkspaceEdit { changes: vec![(uri.clone(), edits)] }),
+        edit: Some(single_edit_ws(uri, edits)),
         is_preferred: false,
     }
 }
@@ -360,7 +365,7 @@ fn source_action_add_doc_comment(
                     return Some(CodeActionEntry {
                         title: "Add procedure documentation".to_string(),
                         kind: CodeActionKind::Refactor,
-                        edit: Some(WorkspaceEdit { changes: vec![(uri.clone(), vec![edit])] }),
+                        edit: Some(single_edit_ws(uri, vec![edit])),
                         is_preferred: false,
                     });
                 }
@@ -389,7 +394,7 @@ fn source_action_add_region(uri: &Url, text: &str, range: tower_lsp::lsp_types::
     Some(CodeActionEntry {
         title: "AL: Wrap in region".to_string(),
         kind: CodeActionKind::Refactor,
-        edit: Some(WorkspaceEdit { changes: vec![(uri.clone(), vec![region_start, region_end])] }),
+        edit: Some(single_edit_ws(uri, vec![region_start, region_end])),
         is_preferred: false,
     })
 }
@@ -457,7 +462,7 @@ fn source_action_add_using(
             CodeActionEntry {
                 title: format!("Add using {}", ns),
                 kind: CodeActionKind::QuickFix,
-                edit: Some(WorkspaceEdit { changes: vec![(uri.clone(), vec![edit])] }),
+                edit: Some(single_edit_ws(uri, vec![edit])),
                 is_preferred: false,
             }
         })
@@ -620,7 +625,7 @@ fn source_action_if_to_case(
     Some(CodeActionEntry {
         title: format!("Convert to case statement on '{}'", var_name),
         kind: CodeActionKind::Refactor,
-        edit: Some(WorkspaceEdit { changes: vec![(uri.clone(), vec![edit])] }),
+        edit: Some(single_edit_ws(uri, vec![edit])),
         is_preferred: false,
     })
 }
@@ -888,9 +893,7 @@ fn source_action_implement_interface(
         actions.push(CodeActionEntry {
             title: format!("Implement interface '{}'", iface_name),
             kind: CodeActionKind::Refactor,
-            edit: Some(WorkspaceEdit {
-                changes: vec![(uri.clone(), vec![edit])],
-            }),
+            edit: Some(single_edit_ws(uri, vec![edit])),
             is_preferred: false,
         });
     }
@@ -1047,7 +1050,7 @@ fn source_action_eliminate_with(
     Some(CodeActionEntry {
         title: format!("Eliminate with {} (AA0205)", record_var),
         kind: CodeActionKind::Refactor,
-        edit: Some(WorkspaceEdit { changes: vec![(uri.clone(), vec![edit])] }),
+        edit: Some(single_edit_ws(uri, vec![edit])),
         is_preferred: false,
     })
 }
@@ -1259,7 +1262,7 @@ fn source_action_make_local(
     Some(CodeActionEntry {
         title: "Make procedure local".to_string(),
         kind: CodeActionKind::Refactor,
-        edit: Some(WorkspaceEdit { changes: vec![(uri.clone(), vec![edit])] }),
+        edit: Some(single_edit_ws(uri, vec![edit])),
         is_preferred: false,
     })
 }
@@ -1269,6 +1272,12 @@ mod tests {
     use super::*;
     use crate::workspace::Workspace;
     use al_symbols::{ObjectKind, SymbolEntry};
+
+    /// Open `al_code` in `ws` at `uri`.  Centralises the `uri.clone()` +
+    /// `to_string()` noise that appeared in every test.
+    fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
+        open_doc(&ws, &uri, al_code);
+    }
 
     fn make_entry_with_namespace(kind: ObjectKind, id: i32, name: &str, ns: &str) -> SymbolEntry {
         SymbolEntry {
@@ -1308,7 +1317,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/MyCU.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         // Cursor on line 5: "        Cust: Record Customer;"
         // "Customer" starts at col 21, ends at col 29
@@ -1351,7 +1360,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/MyCU.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         // Line 6: "        Cust: Record Customer;" — Customer at col 21-29
         let range = Range {
@@ -1382,7 +1391,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/MyCU.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         // "NonExistentTable" at col 21-37
         let range = Range {
@@ -1418,7 +1427,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/MyCU.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         // "Customer" at col 21-29
         let range = Range {
@@ -1506,7 +1515,7 @@ codeunit 50100 "My Codeunit"
 
         let al_code = "namespace MyApp;\n\ncodeunit 50100 Test { var c: Record Customer; }\n";
         let uri = Url::parse("file:///test/T.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let diag = DiagnosticInfo {
             range: Range::default(),
@@ -1536,7 +1545,7 @@ codeunit 50100 "My Codeunit"
 
         let al_code = "namespace MyApp;\n\ncodeunit 50100 Test { }\n";
         let uri = Url::parse("file:///test/T.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let diag = DiagnosticInfo {
             range: Range::default(),
@@ -1560,7 +1569,7 @@ codeunit 50100 "My Codeunit"
 
         let al_code = "namespace MyApp;\nusing Microsoft.Sales;\n\ncodeunit 50100 Test { }\n";
         let uri = Url::parse("file:///test/T.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let diag = DiagnosticInfo {
             range: Range::default(),
@@ -1581,7 +1590,7 @@ codeunit 50100 "My Codeunit"
 
         let al_code = "namespace MyApp;\n\ncodeunit 50100 Test { }\n";
         let uri = Url::parse("file:///test/T.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         // Unrelated diagnostic code
         let diag = DiagnosticInfo {
@@ -1603,7 +1612,7 @@ codeunit 50100 "My Codeunit"
 
         let al_code = "namespace MyApp;\n\ncodeunit 50200 Test { }\n";
         let uri = Url::parse("file:///test/T.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let diag = DiagnosticInfo {
             range: Range::default(),
@@ -1638,7 +1647,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/IfCase.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         // Cursor on the first `if` line (line 4)
         let range = Range {
@@ -1680,7 +1689,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/IfCase.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 4, character: 8 },
@@ -1714,7 +1723,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/IfCase.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 4, character: 8 },
@@ -1750,7 +1759,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/IfCase.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 4, character: 8 },
@@ -1793,7 +1802,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/With.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         // Cursor on the `with` line (line 6)
         let range = Range {
@@ -1934,7 +1943,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/Impl.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         // Cursor on line 0 (the codeunit declaration line)
         let range = Range {
@@ -1986,7 +1995,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/Impl.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 0, character: 10 },
@@ -2032,7 +2041,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/Impl.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 0, character: 10 },
@@ -2062,7 +2071,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/NoImpl.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 0, character: 10 },
@@ -2097,7 +2106,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/Proc.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 0, character: 10 },
@@ -2134,7 +2143,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/NoWith.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 4, character: 8 },
@@ -2166,7 +2175,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/MakeLocal.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 2, character: 4 },
@@ -2197,7 +2206,7 @@ codeunit 50100 "My Codeunit"
 }
 "#;
         let uri = Url::parse("file:///test/MakeLocal.al").unwrap();
-        ws.documents.open(uri.clone(), al_code.to_string());
+        open_doc(&ws, &uri, al_code);
 
         let range = Range {
             start: super::super::Position { line: 2, character: 10 },

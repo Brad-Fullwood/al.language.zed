@@ -4,10 +4,17 @@ mod platform;
 mod settings;
 
 use std::collections::HashMap;
+use std::fs;
 use zed_extension_api::{self as zed, settings::LspSettings, Result};
 use serde_json::{json, Value};
 
-struct AlExtension;
+const GITHUB_REPO: &str = "Brad-Fullwood/zed-al";
+
+struct AlExtension {
+    /// Path to a previously downloaded al-lsp binary in the extension work dir.
+    /// Set after a successful GitHub release download; re-checked on each call.
+    cached_binary_path: Option<String>,
+}
 
 /// Deep-merge `overrides` into `base`, returning the merged result.
 /// - Objects are merged recursively (override keys replace base keys)
@@ -32,9 +39,122 @@ fn merge_json(base: &Value, overrides: &Value) -> Value {
     }
 }
 
+impl AlExtension {
+    /// Resolve the al-lsp binary path using the priority chain from ISSUE-069:
+    /// 1. User-configured explicit path (settings override)
+    /// 2. Locally installed binary (extension work dir, previously downloaded)
+    /// 3. PATH lookup (dev builds, `cargo install`, system installs)
+    /// 4. GitHub release download → cache in work dir
+    fn find_or_download_binary(
+        &mut self,
+        language_server_id: &zed::LanguageServerId,
+        worktree: &zed::Worktree,
+        user_configured_path: Option<&str>,
+    ) -> Result<String> {
+        // 1. User-configured explicit path.
+        if let Some(path) = user_configured_path {
+            return Ok(path.to_string());
+        }
+
+        // 2. Previously downloaded binary still on disk.
+        if let Some(path) = &self.cached_binary_path {
+            if fs::metadata(path).is_ok_and(|m| m.is_file()) {
+                return Ok(path.clone());
+            }
+            self.cached_binary_path = None;
+        }
+
+        // 3. PATH lookup — works for dev builds and `cargo install`.
+        if let Some(path) = worktree.which("al-lsp") {
+            return Ok(path);
+        }
+
+        // 4. Download from GitHub releases.
+        zed::set_language_server_installation_status(
+            language_server_id,
+            &zed::LanguageServerInstallationStatus::CheckingForUpdate,
+        );
+
+        let release = zed::latest_github_release(
+            GITHUB_REPO,
+            zed::GithubReleaseOptions {
+                require_assets: true,
+                pre_release: false,
+            },
+        )?;
+
+        let (os, arch) = zed::current_platform();
+        let asset_name = format!(
+            "al-lsp-{arch}-{os}.tar.gz",
+            arch = match arch {
+                zed::Architecture::Aarch64 => "aarch64",
+                zed::Architecture::X86 => "x86",
+                zed::Architecture::X8664 => "x86_64",
+            },
+            os = match os {
+                zed::Os::Mac => "apple-darwin",
+                zed::Os::Linux => "unknown-linux-gnu",
+                zed::Os::Windows => "pc-windows-msvc",
+            }
+        );
+
+        let asset = release
+            .assets
+            .iter()
+            .find(|a| a.name == asset_name)
+            .ok_or_else(|| {
+                format!(
+                    "No al-lsp release asset found for this platform ({asset_name}). \
+                     Set the binary path manually in Zed settings: \
+                     {{\"lsp\": {{\"al-lsp\": {{\"binary\": {{\"path\": \"/path/to/al-lsp\"}}}}}}}}"
+                )
+            })?;
+
+        let version_dir = format!("al-lsp-{}", release.version);
+        let binary_name = match os {
+            zed::Os::Windows => "al-lsp.exe",
+            _ => "al-lsp",
+        };
+        let binary_path = format!("{version_dir}/{binary_name}");
+
+        if !fs::metadata(&binary_path).is_ok_and(|m| m.is_file()) {
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Downloading,
+            );
+
+            zed::download_file(
+                &asset.download_url,
+                &version_dir,
+                zed::DownloadedFileType::GzipTar,
+            )
+            .map_err(|e| format!("Failed to download al-lsp: {e}"))?;
+
+            zed::make_file_executable(&binary_path)
+                .map_err(|e| format!("Failed to make al-lsp executable: {e}"))?;
+
+            // Remove old version directories.
+            if let Ok(entries) = fs::read_dir(".") {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with("al-lsp-") && name != version_dir {
+                        let _ = fs::remove_dir_all(entry.path());
+                    }
+                }
+            }
+        }
+
+        self.cached_binary_path = Some(binary_path.clone());
+        Ok(binary_path)
+    }
+}
+
 impl zed::Extension for AlExtension {
     fn new() -> Self {
-        Self
+        Self {
+            cached_binary_path: None,
+        }
     }
 
     fn language_server_command(
@@ -71,9 +191,8 @@ impl zed::Extension for AlExtension {
             .or_else(|| worktree.which("Microsoft.Dynamics.Nav.EditorServices.Host"))
             .unwrap_or_else(|| "auto".to_string());
 
-        // Find the bundled proxy binary (existence-checked).
-        // If the user supplied an explicit binary path we skip proxy discovery entirely
-        // and treat the configured path as the proxy itself.
+        // Check for bundled proxy binary at the installed extension path.
+        // If found, use it (proxy discovers EditorServices.Host itself).
         if let Some(proxy_path) = discovery::find_proxy_path(&env_map) {
             let mut proxy_args = vec![al_server_path];
             proxy_args.extend(user_args);
@@ -85,57 +204,18 @@ impl zed::Extension for AlExtension {
             });
         }
 
-        // Proxy binary was not found at the installed extension path.
-        // If the user configured an explicit binary path, try to use it directly —
-        // it may point to a standalone al-lsp binary.
-        if let Some(explicit_path) = user_configured_path {
-            return Ok(zed::Command {
-                command: explicit_path,
-                args: user_args,
-                env: vec![("AL_LSP_DEBUG".to_string(), "1".to_string())],
-            });
-        }
+        // No bundled proxy — resolve al-lsp via cached path, PATH, or GitHub download.
+        let binary_path = self.find_or_download_binary(
+            language_server_id,
+            worktree,
+            user_configured_path.as_deref(),
+        )?;
 
-        // Try finding al-lsp on PATH (works for dev builds, cargo install, etc.)
-        if let Some(path_binary) = worktree.which("al-lsp") {
-            return Ok(zed::Command {
-                command: path_binary,
-                args: user_args,
-                env: vec![],
-            });
-        }
-
-        // None of the above worked.
-        let platform = platform::detect_platform(&env_map);
-        let expected_path = if let Some(home) = env_map.get("HOME") {
-            let base = platform.extensions_base(home);
-            format!("{}/al.language.zed/bin/{}/{}", base, platform.bin_dir(), platform.binary_name())
-        } else {
-            "<HOME not set>".to_string()
-        };
-
-        Err(format!(
-            "AL Language Server proxy not found.\n\
-            \n\
-            The proxy binary was not found at the expected extension path:\n\
-            {expected_path}\n\
-            \n\
-            To fix: set the binary path explicitly in Zed settings:\n\
-            {{\n\
-              \"lsp\": {{\n\
-                \"al-language-server\": {{\n\
-                  \"binary\": {{\n\
-                    \"path\": \"/path/to/al-lsp\"\n\
-                  }}\n\
-                }}\n\
-              }}\n\
-            }}\n\
-            \n\
-            Debug info: shell_env entries={}, HOME={:?}, platform={:?}",
-            env_map.len(),
-            env_map.get("HOME"),
-            platform,
-        ))
+        Ok(zed::Command {
+            command: binary_path,
+            args: user_args,
+            env: vec![],
+        })
     }
 
     fn language_server_initialization_options(

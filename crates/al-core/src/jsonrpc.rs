@@ -40,6 +40,22 @@ impl std::fmt::Display for RpcError {
     }
 }
 
+impl Response {
+    /// Successful response with a JSON result value.
+    pub fn ok(id: u64, result: serde_json::Value) -> Self {
+        Self { id, result: Some(result), error: None }
+    }
+
+    /// Error response.
+    pub fn error(id: u64, code: i32, message: impl Into<String>) -> Self {
+        Self {
+            id,
+            result: None,
+            error: Some(RpcError { code, message: message.into() }),
+        }
+    }
+}
+
 /// Standard JSON-RPC error codes plus bridge-specific ones.
 pub mod error_codes {
     pub const PARSE_ERROR: i32 = -32700;

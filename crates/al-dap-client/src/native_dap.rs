@@ -20,15 +20,63 @@ use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use crate::bc_debug::{BcDebugConfig, BcDebugSession, publish_app, get_metadata};
-use crate::protocol::{DapRequest, DapResponse, DapEvent};
+use crate::bc_debug::{BcDebugConfig, BcDebugSession, publish_app};
 use crate::{DapError, Result};
+
+// ---------------------------------------------------------------------------
+// BC ObjectTypeWrapper constants
+// ---------------------------------------------------------------------------
+
+/// BC `ObjectTypeWrapper` enum values (integer encoding used by SignalR hub).
+///
+/// Source: EditorServices.Protocol.dll reverse-engineering.
+/// Newtonsoft.Json defaults to integer enum serialization, so these are
+/// transmitted as integers in SignalR JSON messages.
+pub mod bc_object_type {
+    pub const TABLE: i32 = 1;
+    pub const REPORT: i32 = 3;
+    pub const CODEUNIT: i32 = 5;
+    pub const XMLPORT: i32 = 6;
+    pub const PAGE: i32 = 8;
+    pub const QUERY: i32 = 9;
+    pub const PAGE_EXTENSION: i32 = 14;
+    pub const TABLE_EXTENSION: i32 = 15;
+    pub const ENUM: i32 = 16;
+    pub const ENUM_EXTENSION: i32 = 17;
+    pub const REPORT_EXTENSION: i32 = 22;
+    pub const UNKNOWN: i32 = -1;
+}
+
+/// Map an AL object kind string (from the file index) to a BC `ObjectTypeWrapper` integer.
+///
+/// The kind strings come from the workspace file index (lowercased AL object type names).
+/// Returns `bc_object_type::UNKNOWN` for unrecognised kinds.
+pub fn kind_to_object_type(kind: &str) -> i32 {
+    match kind.to_lowercase().as_str() {
+        "table" => bc_object_type::TABLE,
+        "report" => bc_object_type::REPORT,
+        "codeunit" => bc_object_type::CODEUNIT,
+        "xmlport" => bc_object_type::XMLPORT,
+        "page" => bc_object_type::PAGE,
+        "query" => bc_object_type::QUERY,
+        "pageextension" => bc_object_type::PAGE_EXTENSION,
+        "tableextension" => bc_object_type::TABLE_EXTENSION,
+        "enum" => bc_object_type::ENUM,
+        "enumextension" => bc_object_type::ENUM_EXTENSION,
+        "reportextension" => bc_object_type::REPORT_EXTENSION,
+        _ => bc_object_type::UNKNOWN,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ResolvedObject
+// ---------------------------------------------------------------------------
 
 /// Object info resolved from the workspace symbol index.
 /// Used to map file paths to BC object types and IDs for breakpoints.
 #[derive(Debug, Clone)]
 pub struct ResolvedObject {
-    /// BC ObjectTypeWrapper value (Table=1, CodeUnit=5, Page=8, etc.)
+    /// BC ObjectTypeWrapper value — use `bc_object_type` constants.
     pub object_type: i32,
     /// Object numeric ID
     pub object_id: i32,

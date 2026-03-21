@@ -13,9 +13,8 @@
 //!   GetVariablesAsync, ExpandGlobalsAsync, ExpandNodeAsync,
 //!   GetWatchNodeAsync, GetSourceAsync, TerminateSession, IsAlive
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::AUTHORIZATION;
@@ -640,8 +639,7 @@ impl BcDebugSession {
     /// BC hub method: `AddBreakpoint(ApplicationObjectIdWrapper, SourcePosition, string condition)`
     /// - ApplicationObjectIdWrapper: `{objectType: int, objectNumber: int}`
     /// - SourcePosition: `{line: int, column: int}`
-    /// - ObjectTypeWrapper enum: Table=1, Report=3, CodeUnit=5, XmlPort=6, Page=8, Query=9,
-    ///   PageExtension=14, TableExtension=15, Enum=16, EnumExtension=17, ReportExtension=22
+    /// - ObjectTypeWrapper enum: use `crate::native_dap::bc_object_type` constants
     pub async fn add_breakpoint(
         &self,
         object_type: i32,

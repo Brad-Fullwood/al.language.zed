@@ -17,6 +17,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{Mutex, Notify, Semaphore};
 
+/// Default BC server URL for on-prem dispatch commands (snapshot, profiling).
+///
+/// Users can override by passing `serverUrl` in the JSON-RPC params.
+const DEFAULT_BC_SERVER_URL: &str = "http://localhost:7049/BC";
+
 /// Global socket path for cleanup on exit.
 static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
@@ -256,6 +261,11 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "permissions" => dispatch_permissions(workspace, id, &params),
         "compile" => dispatch_compile(workspace, id).await,
         "package" => dispatch_package(workspace, id).await,
+        // XLIFF translation support
+        "xlf.generate" => dispatch_xlf_generate(workspace, id, &params),
+        "xlf.refresh" => dispatch_xlf_refresh(workspace, id, &params),
+        "xlf.untranslated" => dispatch_xlf_untranslated(workspace, id, &params),
+        "xlf.suggest" => dispatch_xlf_suggest(workspace, id, &params),
         "newProject" => dispatch_new_project(id, &params),
         "errorCodes" => dispatch_error_codes(workspace, id),
         "builtinTypes" => dispatch_builtin_types(workspace, id),
@@ -771,13 +781,14 @@ fn dispatch_lint(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
     let all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if all {
-        // Lint all workspace files
+        // Lint all workspace files using cached parse trees (ISSUE-140)
         let mut results: Vec<serde_json::Value> = Vec::new();
         for entry in workspace.file_index.files.iter() {
             let path = entry.key();
-            let content = entry.value();
-            let result = al_core::syntax::AlParser::parse_quick(content);
-            let diagnostics = al_core::syntax::lint(&result.tree, content);
+            let Some((content, tree)) = workspace.file_index.get_cached_parse(path) else {
+                continue;
+            };
+            let diagnostics = al_core::syntax::lint(&tree, &content);
             if !diagnostics.is_empty() {
                 let diags: Vec<serde_json::Value> = diagnostics
                     .iter()
@@ -1301,63 +1312,77 @@ fn dispatch_permissions(workspace: &Workspace, id: u64, params: &serde_json::Val
 }
 
 // ---------------------------------------------------------------------------
-// Semantic / toolchain dispatchers
+// Workspace guard helpers
 // ---------------------------------------------------------------------------
 
-async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response {
-    let tc = match workspace.toolchain.try_read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: "Workspace is initializing, try again".to_string(),
-                }),
-            };
-        }
-    };
-    let project = match workspace.project.try_read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: "Workspace is initializing, try again".to_string(),
-                }),
-            };
-        }
-    };
-
-    let project_root = match project.as_ref() {
-        Some(p) => p.root.clone(),
-        None => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: "No project loaded".to_string(),
-                }),
-            };
-        }
-    };
-    if tc.is_none() {
-        return Response {
+/// Try to read the project root from the workspace.
+///
+/// Returns `Ok(root_path)` when a project is loaded, or an error `Response`
+/// when the lock is poisoned or no project is loaded.
+fn require_project(workspace: &Workspace, id: u64) -> Result<std::path::PathBuf, Response> {
+    let guard = workspace.project.try_read().map_err(|_| Response {
+        id,
+        result: None,
+        error: Some(RpcError {
+            code: error_codes::INTERNAL_ERROR,
+            message: "Workspace is initializing, try again".to_string(),
+        }),
+    })?;
+    match guard.as_ref() {
+        Some(p) => Ok(p.root.clone()),
+        None => Err(Response {
             id,
             result: None,
             error: Some(RpcError {
                 code: error_codes::INTERNAL_ERROR,
-                message: "No toolchain loaded".to_string(),
+                message: "No project loaded".to_string(),
             }),
-        };
+        }),
     }
-    // Drop the read guards before acquiring async locks
-    drop(tc);
-    drop(project);
+}
+
+/// Try to read the toolchain from the workspace.
+///
+/// Returns `Ok(toolchain)` when the toolchain is available, or an error `Response`
+/// when the lock is poisoned or no toolchain is installed.
+fn require_toolchain(
+    workspace: &Workspace,
+    id: u64,
+) -> Result<al_core::toolchain::AlToolchain, Response> {
+    let guard = workspace.toolchain.try_read().map_err(|_| Response {
+        id,
+        result: None,
+        error: Some(RpcError {
+            code: error_codes::INTERNAL_ERROR,
+            message: "Workspace is initializing, try again".to_string(),
+        }),
+    })?;
+    match guard.clone() {
+        Some(tc) => Ok(tc),
+        None => Err(Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INTERNAL_ERROR,
+                message: "No toolchain available. Run 'al setup' first.".to_string(),
+            }),
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Semantic / toolchain dispatchers
+// ---------------------------------------------------------------------------
+
+async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response {
+    // Validate toolchain + project before acquiring async locks
+    if let Err(resp) = require_toolchain(workspace, id) {
+        return resp;
+    }
+    let project_root = match require_project(workspace, id) {
+        Ok(root) => root,
+        Err(resp) => return resp,
+    };
 
     let result: Result<serde_json::Value, String> = async {
         let guard = al_core::semantic::get_or_init_bridge(workspace)
@@ -1399,59 +1424,13 @@ async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response {
 }
 
 async fn dispatch_package(workspace: &Workspace, id: u64) -> Response {
-    let tc = match workspace.toolchain.try_read() {
-        // SILENT: avoid RwLock poison panic per CLAUDE.md
-        Ok(guard) => guard.clone(),
-        Err(_) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: "Workspace is initializing, try again".to_string(),
-                }),
-            };
-        }
+    let toolchain = match require_toolchain(workspace, id) {
+        Ok(tc) => tc,
+        Err(resp) => return resp,
     };
-    let toolchain = match tc {
-        Some(tc) => tc,
-        None => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: "No toolchain available. Run 'al setup' first.".to_string(),
-                }),
-            };
-        }
-    };
-    let project = match workspace.project.try_read() {
-        // SILENT: avoid RwLock poison panic per CLAUDE.md
-        Ok(guard) => guard.clone(),
-        Err(_) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: "Workspace is initializing, try again".to_string(),
-                }),
-            };
-        }
-    };
-    let project_root = match project.as_ref() {
-        Some(p) => p.root.clone(),
-        None => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: "No project loaded".to_string(),
-                }),
-            };
-        }
+    let project_root = match require_project(workspace, id) {
+        Ok(root) => root,
+        Err(resp) => return resp,
     };
 
     match al_core::build::compile_project(&toolchain, &project_root, None).await {
@@ -1487,6 +1466,12 @@ fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Response {
         }
     };
 
+    let template = params
+        .get("template")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<al_core::scaffold::ProjectTemplate>().ok())
+        .unwrap_or_default();
+
     let config = al_core::scaffold::ScaffoldConfig {
         name: params
             .get("name")
@@ -1498,6 +1483,7 @@ fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Response {
             .and_then(|v| v.as_str())
             .unwrap_or("Default Publisher")
             .to_string(),
+        template,
         ..al_core::scaffold::ScaffoldConfig::default()
     };
 
@@ -1926,16 +1912,7 @@ async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Val
 
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
         Some(c) => c,
-        None => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INVALID_PARAMS,
-                    message: "Missing 'cmd' in debug params".to_string(),
-                }),
-            };
-        }
+        None => return Response::error(id, error_codes::INVALID_PARAMS, "Missing 'cmd' in debug params"),
     };
 
     match cmd {
@@ -2295,22 +2272,13 @@ async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Val
 async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Response {
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
         Some(c) => c,
-        None => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INVALID_PARAMS,
-                    message: "Missing 'cmd' parameter (expected: start, list, download)".to_string(),
-                }),
-            };
-        }
+        None => return Response::error(id, error_codes::INVALID_PARAMS, "Missing 'cmd' parameter (expected: start, list, download)"),
     };
 
     let server_url = params
         .get("serverUrl")
         .and_then(|v| v.as_str())
-        .unwrap_or("http://localhost:7049/BC")
+        .unwrap_or(DEFAULT_BC_SERVER_URL)
         .to_string();
     let company = params
         .get("company")
@@ -2455,22 +2423,13 @@ async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Response {
 async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> Response {
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
         Some(c) => c,
-        None => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INVALID_PARAMS,
-                    message: "Missing 'cmd' parameter (expected: start, stop, analyze)".to_string(),
-                }),
-            };
-        }
+        None => return Response::error(id, error_codes::INVALID_PARAMS, "Missing 'cmd' parameter (expected: start, stop, analyze)"),
     };
 
     let server_url = params
         .get("serverUrl")
         .and_then(|v| v.as_str())
-        .unwrap_or("http://localhost:7049/BC")
+        .unwrap_or(DEFAULT_BC_SERVER_URL)
         .to_string();
     let company = params
         .get("company")
@@ -2689,6 +2648,269 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
             tracing::info!(error = %e, "daemon: no toolchain (syntax-only mode)");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// XLIFF translation dispatchers
+// ---------------------------------------------------------------------------
+
+fn dispatch_xlf_generate(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let project_root = match params.get("project").and_then(|v| v.as_str()) {
+        Some(p) => std::path::PathBuf::from(p),
+        None => match require_project(workspace, id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        },
+    };
+
+    match al_core::xliff::build_xliff(workspace, &project_root) {
+        Some((path, units)) => Response {
+            id,
+            result: Some(serde_json::json!({
+                "path": path.display().to_string(),
+                "units": units,
+            })),
+            error: None,
+        },
+        None => Response {
+            id,
+            result: Some(serde_json::json!({ "path": null, "units": 0 })),
+            error: None,
+        },
+    }
+}
+
+fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let xlf_path = match params.get("xlf").and_then(|v| v.as_str()) {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: "Missing 'xlf' parameter".to_string(),
+                }),
+            };
+        }
+    };
+
+    // Read language-specific xlf
+    let lang_content = match std::fs::read_to_string(&xlf_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("Cannot read {}: {e}", xlf_path.display()),
+                }),
+            };
+        }
+    };
+    let lang_map = al_core::xliff::parse_xliff(&lang_content);
+
+    // Get generated xlf — from explicit param or auto-detect .g.xlf in same dir
+    let generated_units = if let Some(gen_path) = params.get("generated").and_then(|v| v.as_str()) {
+        let gen_content = match std::fs::read_to_string(gen_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("Cannot read generated xlf {gen_path}: {e}"),
+                    }),
+                };
+            }
+        };
+        al_core::xliff::parse_xliff(&gen_content).into_values().collect::<Vec<_>>()
+    } else {
+        // Auto-generate from workspace
+        let project_root = match require_project(workspace, id) {
+            Ok(r) => r,
+            Err(e) => return e,
+        };
+        let app_name = {
+            let bytes = std::fs::read(project_root.join("app.json")).ok();
+            bytes
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(|s| s.replace(' ', "").replace('"', "")))
+                .unwrap_or_else(|| "App".to_string())
+        };
+        let gen_path = project_root.join("Translations").join(format!("{app_name}.g.xlf"));
+        if gen_path.is_file() {
+            let gen_content = match std::fs::read_to_string(&gen_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Response {
+                        id,
+                        result: None,
+                        error: Some(RpcError {
+                            code: error_codes::INTERNAL_ERROR,
+                            message: format!("Cannot read {}: {e}", gen_path.display()),
+                        }),
+                    };
+                }
+            };
+            al_core::xliff::parse_xliff(&gen_content).into_values().collect::<Vec<_>>()
+        } else {
+            al_core::xliff::extract_translation_units(workspace)
+        }
+    };
+
+    let (updated_units, refresh_result) = al_core::xliff::refresh_xliff(&generated_units, &lang_map);
+
+    // Determine source/target language from existing xlf or default
+    let (src_lang, tgt_lang, app_name) = extract_xliff_metadata(&lang_content);
+
+    // Write updated xlf back
+    let new_content = al_core::xliff::generate_xliff(&app_name, &src_lang, &tgt_lang, &updated_units);
+    if let Err(e) = std::fs::write(&xlf_path, &new_content) {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INTERNAL_ERROR,
+                message: format!("Cannot write {}: {e}", xlf_path.display()),
+            }),
+        };
+    }
+
+    // SILENT: serialization of valid struct should not fail
+    Response {
+        id,
+        result: Some(serde_json::to_value(&refresh_result).unwrap_or(serde_json::Value::Null)),
+        error: None,
+    }
+}
+
+fn dispatch_xlf_untranslated(_workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let xlf_path = match params.get("xlf").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: "Missing 'xlf' parameter".to_string(),
+                }),
+            };
+        }
+    };
+
+    let content = match std::fs::read_to_string(&xlf_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("Cannot read {xlf_path}: {e}"),
+                }),
+            };
+        }
+    };
+
+    let units_map = al_core::xliff::parse_xliff(&content);
+    let all_units: Vec<_> = units_map.into_values().collect();
+    let untranslated = al_core::xliff::find_untranslated(&all_units);
+
+    let items: Vec<serde_json::Value> = untranslated
+        .iter()
+        .map(|u| serde_json::json!({ "id": u.id, "source": u.source }))
+        .collect();
+
+    Response {
+        id,
+        result: Some(serde_json::json!({ "count": items.len(), "untranslated": items })),
+        error: None,
+    }
+}
+
+fn dispatch_xlf_suggest(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let xlf_path = match params.get("xlf").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: "Missing 'xlf' parameter".to_string(),
+                }),
+            };
+        }
+    };
+
+    let content = match std::fs::read_to_string(&xlf_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("Cannot read {xlf_path}: {e}"),
+                }),
+            };
+        }
+    };
+
+    let units_map = al_core::xliff::parse_xliff(&content);
+    let all_units: Vec<_> = units_map.into_values().collect();
+    let untranslated = al_core::xliff::find_untranslated(&all_units);
+
+    let suggestions = al_core::xliff::suggest_translations(&untranslated, workspace);
+
+    // SILENT: serialization of valid struct should not fail
+    let items: Vec<serde_json::Value> = suggestions
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null))
+        .collect();
+
+    Response {
+        id,
+        result: Some(serde_json::json!({ "count": items.len(), "suggestions": items })),
+        error: None,
+    }
+}
+
+/// Extract source-language, target-language, and app name from existing XLIFF content.
+fn extract_xliff_metadata(content: &str) -> (String, String, String) {
+    let mut src_lang = "en-US".to_string();
+    let mut tgt_lang = "en-US".to_string();
+    let mut app_name = "App".to_string();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<file ") {
+            if let Some(s) = extract_xml_attr_simple(trimmed, "source-language") {
+                src_lang = s;
+            }
+            if let Some(t) = extract_xml_attr_simple(trimmed, "target-language") {
+                tgt_lang = t;
+            }
+            if let Some(o) = extract_xml_attr_simple(trimmed, "original") {
+                app_name = o;
+            }
+            break;
+        }
+    }
+    (src_lang, tgt_lang, app_name)
+}
+
+/// Simple XML attribute extractor for single-line attribute parsing.
+fn extract_xml_attr_simple(s: &str, attr: &str) -> Option<String> {
+    let needle = format!("{attr}=\"");
+    let start = s.find(&needle)? + needle.len();
+    let rest = &s[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 #[cfg(test)]
