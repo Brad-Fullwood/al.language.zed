@@ -79,6 +79,9 @@ pub fn source_actions(
         actions.push(action);
     }
 
+    // Implement interface stub methods (T1202)
+    actions.extend(source_action_implement_interface(workspace, uri, &text, range));
+
     actions
 }
 
@@ -1210,7 +1213,6 @@ fn parse_using_directives(text: &str) -> (Vec<String>, u32) {
 }
 
 /// T1208: Make method local — offer to add `local` keyword when procedure has no external callers.
-#[allow(dead_code)]
 fn source_action_make_local(
     workspace: &Workspace,
     uri: &Url,
@@ -1871,17 +1873,22 @@ codeunit 50100 "My Codeunit"
         assert_eq!(qualify_line("Customer.\"No.\" := '100';", "Rec"), "Customer.\"No.\" := '100';");
     }
 
-    // T1202 interface implementer tests — removed, function not yet implemented
-    // Helper functions and tests will be added when T1202 is implemented
-
-    #[allow(dead_code)]
     fn make_interface_entry(name: &str, methods: Vec<al_symbols::MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
             kind: ObjectKind::Interface,
             id: 0,
             name: name.to_string(),
+            extends: None,
+            implements: Vec::new(),
+            package: String::new(),
+            namespace: String::new(),
             methods,
-            ..Default::default()
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
         }
     }
 
@@ -1908,7 +1915,6 @@ codeunit 50100 "My Codeunit"
     }
 
     #[test]
-    #[ignore = "T1202 not yet implemented"]
     fn implement_interface_offered_for_codeunit_with_implements() {
         let ws = Workspace::new();
 
@@ -1959,7 +1965,6 @@ codeunit 50100 "My Codeunit"
     }
 
     #[test]
-    #[ignore = "T1202 not yet implemented"]
     fn implement_interface_skips_already_implemented_methods() {
         let ws = Workspace::new();
 
@@ -2074,7 +2079,6 @@ codeunit 50100 "My Codeunit"
     }
 
     #[test]
-    #[ignore = "T1202 not yet implemented"]
     fn implement_interface_handles_var_parameters() {
         let ws = Workspace::new();
 

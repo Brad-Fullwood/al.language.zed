@@ -289,6 +289,8 @@ mod tests {
                 id: 1,
                 name: "TestTable".to_string(),
                 extends: None,
+                implements: Vec::new(),
+                namespace: String::new(),
                 package: name.to_string(),
                 methods: Vec::new(),
                 fields: vec![FieldSymbol {

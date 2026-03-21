@@ -212,6 +212,8 @@ mod tests {
                 id: 50100,
                 name: "Sales Event Publisher".to_string(),
                 extends: None,
+                implements: Vec::new(),
+                namespace: String::new(),
                 package: "TestPkg".to_string(),
                 methods: vec![
                     MethodSymbol {
@@ -254,6 +256,8 @@ mod tests {
                 id: 50101,
                 name: "Sales Subscriber".to_string(),
                 extends: None,
+                implements: Vec::new(),
+                namespace: String::new(),
                 package: "TestPkg".to_string(),
                 methods: vec![MethodSymbol {
                     name: "HandlePostSalesOrder".to_string(),

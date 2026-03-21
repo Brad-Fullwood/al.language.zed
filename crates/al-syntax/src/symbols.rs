@@ -1,6 +1,7 @@
 //! Document symbol extraction from tree-sitter trees.
+// DocumentSymbol has a deprecated `deprecated` field that must be populated when constructing the struct.
+#![allow(deprecated)]
 
-#[allow(deprecated)]
 use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind};
 use tracing::debug;
 use tree_sitter::{Node, Tree};
@@ -90,7 +91,6 @@ fn object_kind_display(kind: &str) -> &str {
     }
 }
 
-#[allow(deprecated)]
 fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kind_node = node.child_by_field_name("kind")?;
     let kind_str = kind_node.kind();
@@ -158,7 +158,6 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     })
 }
 
-#[allow(deprecated)]
 fn extract_namespace_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
@@ -186,7 +185,6 @@ fn extract_namespace_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
 }
 
 /// Extract children symbols from an object body.
-#[allow(deprecated)]
 fn extract_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     let mut cursor = body.walk();
     for child in body.children(&mut cursor) {
@@ -232,7 +230,6 @@ fn extract_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSy
     }
 }
 
-#[allow(deprecated)]
 fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
@@ -282,7 +279,6 @@ fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
     })
 }
 
-#[allow(deprecated)]
 fn extract_trigger_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
@@ -309,7 +305,6 @@ fn extract_trigger_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     })
 }
 
-#[allow(deprecated)]
 fn extract_event_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
@@ -336,7 +331,6 @@ fn extract_event_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     })
 }
 
-#[allow(deprecated)]
 fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let keyword_node = node.child_by_field_name("keyword")?;
     let keyword = keyword_node
@@ -400,7 +394,6 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
 ///
 /// The name is the last identifier/quoted_identifier in the parenthesized block.
 /// The ordinal is the integer before the semicolon.
-#[allow(deprecated)]
 fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let range = ts_range_to_lsp(&node.range(), source);
 
@@ -487,7 +480,6 @@ fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
 /// Page controls in the grammar appear as sibling sequences:
 ///   metadata_keyword ("area") + parenthesized_block ("(Content)") + braced_block ("{ ... }")
 /// Uses next_sibling() for zero-allocation look-ahead instead of collecting all children.
-#[allow(deprecated)]
 fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     let mut cursor = body.walk();
     if !cursor.goto_first_child() { return; }
@@ -556,7 +548,6 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
 ///   `control_keyword("trigger")` + `identifier("OnPreDataItem")` + `parenthesized_block("()")`
 ///
 /// This function walks the block's children looking for that pattern.
-#[allow(deprecated)]
 fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     let mut cursor = block.walk();
     if !cursor.goto_first_child() { return; }
@@ -608,7 +599,6 @@ fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut 
 
 /// Try to extract a page control symbol from a metadata_keyword node.
 /// Looks ahead at next_sibling() for parenthesized_block and braced_block.
-#[allow(deprecated)]
 fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kw_text = kw_node.utf8_text(source).ok()?;
 
@@ -695,7 +685,6 @@ fn extract_control_name(paren: Node, source: &[u8]) -> String {
         .unwrap_or_default()
 }
 
-#[allow(deprecated)]
 fn extract_enum_value_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
@@ -727,7 +716,6 @@ fn extract_enum_value_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol
     })
 }
 
-#[allow(deprecated)]
 fn extract_key_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
@@ -792,7 +780,6 @@ fn is_dataitem_key_declaration(node: Node, source: &[u8]) -> bool {
 /// Unlike table keys, the body braced_block may contain raw trigger tokens
 /// (`control_keyword("trigger") identifier("OnPreDataItem") ...`) that are not
 /// parsed as `trigger_declaration` nodes.
-#[allow(deprecated)]
 fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     // The dataitem name is the first name_or_keyword / identifier / quoted_identifier
     // child (before the semicolon).
@@ -865,13 +852,11 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
 }
 
 /// Extract variable symbols from a var section.
-#[allow(deprecated)]
 fn extract_var_section_children(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     collect_var_symbols_recursive(node, source, symbols);
     collect_label_symbols_from_text(node, source, symbols);
 }
 
-#[allow(deprecated)]
 fn collect_var_symbols_recursive(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     match node.kind() {
         "regular_variable_declaration" => {
@@ -997,7 +982,6 @@ fn clean_node_text(node: Node, source: &[u8]) -> Option<String> {
     }
 }
 
-#[allow(deprecated)]
 fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     let Ok(section_text) = node.utf8_text(source) else {
         return;

@@ -14,8 +14,9 @@ use std::str::FromStr;
 // ---------------------------------------------------------------------------
 
 /// The kind of an AL object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
 pub enum ObjectKind {
+    #[default]
     Table,
     TableExtension,
     Page,
@@ -268,9 +269,15 @@ pub struct SymbolEntry {
     /// For extensions: the name of the object being extended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
+    /// For codeunits: list of interface names from `implements` clause. Used by go-to-implementation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implements: Vec<String>,
     /// Package this symbol came from.
     #[serde(default)]
     pub package: String,
+    /// AL namespace this object belongs to (empty if none). Used by namespace-aware code actions.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub namespace: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<MethodSymbol>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -380,6 +387,9 @@ pub(crate) struct ObjectJson {
     pub name: String,
     #[serde(alias = "ExtendsObjectName", default)]
     pub extends: Option<String>,
+    /// Interface names from `implements` clause (codeunits only).
+    #[serde(alias = "Implements", default)]
+    pub implements: Vec<String>,
     #[serde(alias = "Methods", default)]
     pub methods: Vec<MethodJson>,
     #[serde(alias = "Fields", default)]
@@ -690,6 +700,8 @@ impl SymbolReferenceJson {
                     keys: Vec::new(),
                     properties: Vec::new(),
                     variables: Vec::new(),
+                    implements: Vec::new(),
+                    namespace: String::new(),
                 });
             }
         }
@@ -716,6 +728,8 @@ impl ObjectJson {
             keys: self.keys.into_iter().map(|k| k.into_key()).collect(),
             properties: self.properties.into_iter().map(|p| PropertyValue { name: p.name, value: p.value }).collect(),
             variables: self.variables.into_iter().map(|v| v.into_var()).collect(),
+            implements: self.implements,
+            namespace: String::new(),
         }
     }
 }
@@ -951,6 +965,8 @@ mod tests {
             id: 1,
             name: "Test".to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "pkg".to_string(),
             methods: vec![],
             fields: vec![],
@@ -1084,6 +1100,8 @@ mod tests {
             id: 50100,
             name: "MyEnum".to_string(),
             extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "test".to_string(),
             methods: vec![],
             fields: vec![],
