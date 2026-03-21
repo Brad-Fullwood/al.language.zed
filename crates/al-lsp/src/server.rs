@@ -408,6 +408,7 @@ impl LanguageServer for AlServer {
                         "al.lintFile".to_string(),
                         "al.getStatus".to_string(),
                         "al.reindex".to_string(),
+                        "al.compile".to_string(),
                     ],
                     ..Default::default()
                 }),
@@ -860,6 +861,93 @@ impl LanguageServer for AlServer {
                     self.client
                         .show_message(MessageType::WARNING, "No workspace root — cannot reindex")
                         .await;
+                }
+                Ok(None)
+            }
+            // al.compile — run alc and publish per-file diagnostics as publishDiagnostics.
+            // ISSUE-075 fix: compile errors now show as Zed editor squiggles, not only terminal output.
+            "al.compile" => {
+                let toolchain_guard = self.workspace.toolchain.read().await;
+                let project_guard = self.workspace.project.read().await;
+                let toolchain = toolchain_guard.clone();
+                let project_root = project_guard.as_ref().map(|p| p.root.clone());
+                drop(toolchain_guard);
+                drop(project_guard);
+
+                match (toolchain, project_root) {
+                    (Some(tc), Some(root)) => {
+                        match al_core::build::compile_project(&tc, &root, None).await {
+                            Ok(result) => {
+                                // Group compile diagnostics by file and publish per-file.
+                                let mut by_file: std::collections::HashMap<String, Vec<Diagnostic>> =
+                                    std::collections::HashMap::new();
+                                for d in &result.diagnostics {
+                                    let severity = match d.severity {
+                                        al_core::build::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
+                                        al_core::build::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
+                                        al_core::build::DiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
+                                    };
+                                    let lsp_diag = Diagnostic {
+                                        range: Range {
+                                            start: Position {
+                                                line: d.line.saturating_sub(1),
+                                                character: d.column.saturating_sub(1),
+                                            },
+                                            end: Position {
+                                                line: d.line.saturating_sub(1),
+                                                character: d.column.saturating_sub(1),
+                                            },
+                                        },
+                                        severity: Some(severity),
+                                        code: Some(NumberOrString::String(d.code.clone())),
+                                        source: Some("al-compiler".to_string()),
+                                        message: d.message.clone(),
+                                        ..Default::default()
+                                    };
+                                    by_file
+                                        .entry(d.file.clone())
+                                        .or_default()
+                                        .push(lsp_diag);
+                                }
+                                for (file, diags) in by_file {
+                                    if let Ok(uri) = Url::from_file_path(&file) {
+                                        self.client
+                                            .publish_diagnostics(uri, diags, None)
+                                            .await;
+                                    }
+                                }
+                                if result.success {
+                                    self.client
+                                        .show_message(MessageType::INFO, "Compilation succeeded")
+                                        .await;
+                                }
+                            }
+                            Err(e) => {
+                                self.client
+                                    .show_message(
+                                        MessageType::ERROR,
+                                        format!("Compilation error: {e}"),
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                    (None, _) => {
+                        self.client
+                            .show_message(
+                                MessageType::WARNING,
+                                "No AL toolchain configured — run 'al setup' first",
+                            )
+                            .await;
+                    }
+                    (_, None) => {
+                        self.client
+                            .show_message(
+                                MessageType::WARNING,
+                                "No AL project loaded — open an AL workspace first",
+                            )
+                            .await;
+                    }
                 }
                 Ok(None)
             }

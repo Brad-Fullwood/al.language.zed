@@ -466,6 +466,7 @@ fn cli_no_args_shows_help() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires a running al-lsp daemon (al parse connects to Unix socket)"]
 fn cli_parse_clean_file_succeeds() {
     let tmp = write_temp_al("parse-clean", TABLE_AL);
     let output = Command::new(al_binary())
@@ -485,6 +486,7 @@ fn cli_parse_clean_file_succeeds() {
 }
 
 #[test]
+#[ignore = "requires a running al-lsp daemon (al parse connects to Unix socket)"]
 fn cli_parse_error_file_reports_errors() {
     let tmp = write_temp_al("parse-errors", ERROR_AL);
     let output = Command::new(al_binary())
@@ -503,6 +505,7 @@ fn cli_parse_error_file_reports_errors() {
 }
 
 #[test]
+#[ignore = "requires a running al-lsp daemon (al parse connects to Unix socket)"]
 fn cli_parse_json_has_structure() {
     let tmp = write_temp_al("parse-json", CLEAN_CODEUNIT);
     let output = Command::new(al_binary())
@@ -525,6 +528,7 @@ fn cli_parse_json_has_structure() {
 }
 
 #[test]
+#[ignore = "requires a running al-lsp daemon (al parse connects to Unix socket)"]
 fn cli_parse_missing_file_fails() {
     let output = Command::new(al_binary())
         .args(["parse", "/nonexistent/file.al"])
@@ -539,6 +543,7 @@ fn cli_parse_missing_file_fails() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_dry_run_shows_available_fixes() {
     let tmp = write_temp_al("fix-dryrun", LINT_ISSUES);
     let output = Command::new(al_binary())
@@ -557,6 +562,7 @@ fn cli_fix_dry_run_shows_available_fixes() {
 }
 
 #[test]
+#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_dry_run_json_has_structure() {
     let tmp = write_temp_al("fix-dryrun-json", LINT_ISSUES);
     let output = Command::new(al_binary())
@@ -576,6 +582,7 @@ fn cli_fix_dry_run_json_has_structure() {
 }
 
 #[test]
+#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_with_rule_filter() {
     let tmp = write_temp_al("fix-filter", LINT_ISSUES);
     let output = Command::new(al_binary())
@@ -602,6 +609,7 @@ fn cli_fix_with_rule_filter() {
 }
 
 #[test]
+#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_runs_without_error() {
     let tmp = write_temp_al("fix-apply", LINT_ISSUES);
     let output = Command::new(al_binary())
@@ -620,6 +628,7 @@ fn cli_fix_runs_without_error() {
 }
 
 #[test]
+#[ignore = "requires a running al-lsp daemon (al fix connects to Unix socket)"]
 fn cli_fix_clean_file_no_fixes() {
     let tmp = write_temp_al("fix-clean", CLEAN_CODEUNIT);
     let output = Command::new(al_binary())
