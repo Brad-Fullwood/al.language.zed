@@ -143,6 +143,8 @@ fn build_test_index() -> SymbolIndex {
             id: 18,
             name: "Customer".to_string(),
             extends: None,
+            implements: vec![],
+            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![
                 MethodSymbol {
@@ -202,6 +204,8 @@ fn build_test_index() -> SymbolIndex {
             id: 80,
             name: "Sales-Post".to_string(),
             extends: None,
+            implements: vec![],
+            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![MethodSymbol {
                 name: "RunWithCheck".to_string(),
@@ -226,6 +230,8 @@ fn build_test_index() -> SymbolIndex {
             id: 1530,
             name: "Customer Blocked".to_string(),
             extends: None,
+            implements: vec![],
+            namespace: String::new(),
             package: "Base Application".to_string(),
             methods: vec![],
             fields: vec![],
