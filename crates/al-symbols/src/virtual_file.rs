@@ -60,20 +60,6 @@ pub struct MemberRange {
     pub col_end: u32,
 }
 
-/// Scan a generated virtual AL file for the line that declares `member_name`.
-pub fn find_member_line(path: &Path, member_name: &str) -> Option<u32> {
-    find_member_range(path, member_name, MemberKind::Unknown).map(|r| r.line)
-}
-
-/// Scan a generated virtual AL file for the line that declares `member_name`, with a known kind.
-pub fn find_member_line_with_kind(
-    path: &Path,
-    member_name: &str,
-    kind: MemberKind,
-) -> Option<u32> {
-    find_member_range(path, member_name, kind).map(|r| r.line)
-}
-
 /// Find a precise member range (line/column) for deep-linking.
 pub fn find_member_range(path: &Path, member_name: &str, kind: MemberKind) -> Option<MemberRange> {
     let content = fs::read_to_string(path).ok()?;

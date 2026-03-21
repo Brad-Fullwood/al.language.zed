@@ -10,19 +10,6 @@ pub fn hover_content(hover: &Value) -> Option<&str> {
         .and_then(|v| v.as_str())
 }
 
-/// Extract the hover range.
-pub fn hover_range(hover: &Value) -> Option<(u32, u32, u32, u32)> {
-    let range = hover.get("range")?;
-    let start = range.get("start")?;
-    let end = range.get("end")?;
-    Some((
-        start.get("line")?.as_u64()? as u32,
-        start.get("character")?.as_u64()? as u32,
-        end.get("line")?.as_u64()? as u32,
-        end.get("character")?.as_u64()? as u32,
-    ))
-}
-
 /// Extract completion item labels.
 pub fn completion_labels(items: &[Value]) -> Vec<&str> {
     items
@@ -76,22 +63,6 @@ pub fn definition_uri(result: &Value) -> Option<&str> {
         return arr.first().and_then(|loc| loc.get("uri").and_then(|u| u.as_str()));
     }
     None
-}
-
-/// Extract diagnostic messages from publishDiagnostics params.
-pub fn diagnostic_messages(diags: &[Value]) -> Vec<&str> {
-    diags
-        .iter()
-        .filter_map(|d| d.get("message").and_then(|m| m.as_str()))
-        .collect()
-}
-
-/// Extract diagnostic codes from publishDiagnostics params.
-pub fn diagnostic_codes(diags: &[Value]) -> Vec<&str> {
-    diags
-        .iter()
-        .filter_map(|d| d.get("code").and_then(|c| c.as_str()))
-        .collect()
 }
 
 /// Check if a folding range covers the expected lines.

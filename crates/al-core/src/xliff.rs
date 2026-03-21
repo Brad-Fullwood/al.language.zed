@@ -177,15 +177,24 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
 
 /// Detect the first AL object declaration line: (type, id, name).
 fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
+    // Extension types MUST appear before their base types so that `starts_with` doesn't
+    // falsely match "tableextension" as "table", "pageextension" as "page", etc.
     let object_types = [
+        "tableextension", "pageextension", "reportextension", "enumextension",
+        "permissionsetextension", "profileextension",
         "table", "page", "codeunit", "report", "query", "xmlport",
-        "enum", "tableextension", "pageextension", "reportextension",
-        "enumextension", "interface",
+        "enum", "interface", "permissionset", "profile",
     ];
     for line in text.lines().take(10) {
         let lower = line.trim().to_lowercase();
         for ot in &object_types {
-            if lower.starts_with(ot) {
+            // Require a word boundary after the keyword (space, tab, or digit) to avoid
+            // false prefix matches like "pagepart" matching "page".
+            if let Some(after) = lower.strip_prefix(ot) {
+                let boundary = after.starts_with(|c: char| c.is_ascii_whitespace() || c.is_ascii_digit());
+                if !boundary {
+                    continue;
+                }
                 // e.g. "table 50100 \"My Table\""
                 let rest = line.trim()[ot.len()..].trim();
                 let (id_str, rest2) = split_id_and_name(rest);
@@ -194,7 +203,7 @@ fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
                 if !name.is_empty() || id > 0 {
                     return Some((capitalize(ot), id, name));
                 }
-            }
+            } // end if let Some(after)
         }
     }
     None

@@ -534,8 +534,8 @@ mod tests {
         let result = parser.parse("codeunit 50100 Test { }");
         let pos = Position { line: 999, character: 0 };
         let node = find_node_at_position(&result.tree, pos);
-        // Should not panic on out-of-range position
-        assert!(node.is_none() || node.is_some());
+        // Out-of-range position should not panic; tree-sitter clamps to nearest node
+        assert!(node.is_some(), "tree-sitter returns the nearest node for out-of-range positions");
     }
 
     #[test]

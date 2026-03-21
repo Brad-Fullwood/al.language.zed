@@ -652,7 +652,7 @@ mod tests {
         let mut view = ObjectBrowserView::new();
         view.focused = false;
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        matches!(view.handle_key(key), BrowserAction::None);
+        assert!(matches!(view.handle_key(key), BrowserAction::None));
     }
 
     #[test]
@@ -660,7 +660,7 @@ mod tests {
         let mut view = ObjectBrowserView::new();
         view.focused = true;
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        matches!(view.handle_key(key), BrowserAction::Unfocus);
+        assert!(matches!(view.handle_key(key), BrowserAction::Unfocus));
     }
 
     #[test]
@@ -668,7 +668,7 @@ mod tests {
         let mut view = ObjectBrowserView::new();
         view.focused = true;
         let key = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
-        matches!(view.handle_key(key), BrowserAction::StartSearch);
+        assert!(matches!(view.handle_key(key), BrowserAction::StartSearch));
     }
 
     #[test]

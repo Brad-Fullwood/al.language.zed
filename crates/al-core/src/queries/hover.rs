@@ -275,13 +275,7 @@ fn format_symbol_hover(entry: &al_symbols::SymbolEntry) -> String {
 }
 
 fn format_builtin_method(method: &al_semantic::BuiltinMethod) -> String {
-    let params: Vec<String> = method
-        .parameters
-        .iter()
-        .map(|p| format!("{}{}: {}", if p.is_var { "var " } else { "" }, p.name, p.type_name))
-        .collect();
-    let return_str = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
-    format!("{}({}){}", method.name, params.join("; "), return_str)
+    crate::resolution::format_builtin_signature(method)
 }
 
 #[cfg(test)]

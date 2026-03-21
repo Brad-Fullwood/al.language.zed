@@ -44,7 +44,7 @@
 # - WP7-WP10 are additive and can be parallelized after WP3.
 
 [meta]
-total_work_packages = 21  # WP0-WP11 (12) + WPX (persistent adversarial) + WP6_5 (build/publish pipeline)
+total_work_packages = 30  # WP0-WP11 (12) + WPX + WP6_5 + WP12-WP18 (7 advanced) + WP19-WP27 (9 production readiness)
 
 # =============================================================================
 # WORK PACKAGES
@@ -1899,7 +1899,7 @@ priority = "P3"
 id = "T1710"
 name = "Profile Visualizer in al-explorer"
 wp = "WP17"
-files = ["crates/al-explorer/src/main.rs", "crates/al-explorer/src/profile_view.rs"]
+files = ["crates/al-explorer/src/main.rs"]
 deps = []
 pass_criteria = "F4 view in al-explorer: top-down/bottom-up call tree from .alcpuprofile files with timing data, filterable. Navigate to source."
 fail_criteria = "Cannot parse .alcpuprofile format or tree is incomplete."
@@ -1992,3 +1992,573 @@ fail_criteria = "False positives when FindFirst is in a code path that only exec
 complexity = "Large"
 completed = true
 priority = "P1"
+
+# =============================================================================
+# PRODUCTION READINESS PHASE (WP19–WP27)
+# Added: 2026-03-21 — Full production audit findings
+# =============================================================================
+
+# ─── WP19: Bug Fixes ─────────────────────────────────────────────────────────
+
+[[work_packages]]
+id = "WP19"
+name = "Audit Bug Fixes"
+phase = "Phase 4: Production Readiness"
+goal = "Fix all bugs found during the 2026-03-21 production readiness audit. CLI output bugs, daemon stability, schema compliance."
+gating = "All CLI commands must work correctly in both text and JSON mode."
+
+[[tasks]]
+id = "T1901"
+name = "Fix compile --json null appPath on success"
+wp = "WP19"
+files = ["crates/al-lsp/src/daemon/build_dispatch.rs"]
+deps = []
+pass_criteria = "al compile --json returns the correct .app file path when compilation succeeds."
+fail_criteria = "appPath is null or missing in JSON output."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T1902"
+name = "Fix text output showing '?' for object names"
+wp = "WP19"
+files = ["crates/al-cli/src/commands/lsp.rs"]
+deps = []
+pass_criteria = "al obsolete, al duplicates, al entrypoints show correct object names in text mode."
+fail_criteria = "Any command renders '?' instead of the actual object/symbol name."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T1903"
+name = "Add workspace objects to search/object commands"
+wp = "WP19"
+files = ["crates/al-lsp/src/daemon/lsp_dispatch.rs"]
+deps = []
+pass_criteria = "al search and al object find objects defined in workspace .al files, not just packages."
+fail_criteria = "Workspace-defined objects are not returned by search/object."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T1904"
+name = "Fix rename text output misleading 'applied' message"
+wp = "WP19"
+files = ["crates/al-cli/src/commands/lsp.rs"]
+deps = []
+pass_criteria = "al rename text output says 'planned' or 'preview' instead of 'applied' when not writing to disk."
+fail_criteria = "Text output implies changes were written when they were not."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T1905"
+name = "Implement or remove diag subcommands"
+wp = "WP19"
+files = ["crates/al-lsp/src/daemon/mod.rs", "crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "diag subcommands either work or are removed from CLI. No Unknown method errors."
+fail_criteria = "CLI accepts diag commands but daemon returns errors."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T1906"
+name = "Fix schemas.toml to match actual CLI JSON output"
+wp = "WP19"
+files = [".claude/data/schemas.toml"]
+deps = []
+pass_criteria = "Every CLI command's --json output matches the schema defined in schemas.toml."
+fail_criteria = "Field names, structure, or types in schemas.toml differ from actual output."
+complexity = "Medium"
+completed = false
+
+# ─── WP20: Performance Optimization ──────────────────────────────────────────
+
+[[work_packages]]
+id = "WP20"
+name = "Hot Path Performance"
+phase = "Phase 4: Production Readiness"
+goal = "Fix performance issues on hot paths (hover, completions, signature, inlay hints). Target: all interactive queries < 5ms p99."
+gating = "No performance regression in existing benchmarks. All hot-path queries use cached data."
+
+[[tasks]]
+id = "T2001"
+name = "Replace get_text() with get_text_arc() in query modules"
+wp = "WP20"
+files = ["crates/al-core/src/queries/completions.rs", "crates/al-core/src/queries/signature.rs", "crates/al-core/src/queries/code_actions.rs"]
+deps = []
+pass_criteria = "All query modules use get_text_arc() for document text access. Zero redundant String clones per request."
+fail_criteria = "Any query module still calls get_text() on the hot path."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2002"
+name = "Replace symbols.search() with get_by_name() for exact lookups"
+wp = "WP20"
+files = ["crates/al-core/src/queries/signature.rs", "crates/al-core/src/queries/inlay_hints.rs"]
+deps = []
+pass_criteria = "Exact-name symbol lookups use O(1) get_by_name() instead of O(n) search()."
+fail_criteria = "search() still used for exact-name lookups."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2003"
+name = "Cache object info for hover cross-file lookups"
+wp = "WP20"
+files = ["crates/al-core/src/queries/hover.rs"]
+deps = []
+pass_criteria = "Hover on cross-file object names uses FileIndex.object_info cache, not parse_quick()."
+fail_criteria = "parse_quick() still called on hover hot path."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2004"
+name = "Add procedure-name reverse index to FileIndex"
+wp = "WP20"
+files = ["crates/al-core/src/file_index.rs", "crates/al-core/src/queries/definition.rs"]
+deps = []
+pass_criteria = "Go-to-definition for cross-file procedures uses O(1) reverse index, not O(n×files) tree walk."
+fail_criteria = "definition.rs still iterates all workspace files for procedure name fallback."
+complexity = "Large"
+completed = false
+
+[[tasks]]
+id = "T2005"
+name = "Parallelize package loading with rayon"
+wp = "WP20"
+files = ["crates/al-symbols/src/index.rs"]
+deps = []
+pass_criteria = "load_packages uses rayon parallel iteration. Startup time reduced proportionally to core count."
+fail_criteria = "Packages still loaded sequentially."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2006"
+name = "Add find_by_name() to SymbolIndex to avoid Vec clone"
+wp = "WP20"
+files = ["crates/al-symbols/src/index.rs"]
+deps = []
+pass_criteria = "Callers that need only the first match use find_by_name() without cloning the entire Vec."
+fail_criteria = "get_by_name() still clones Vec<Arc<SymbolEntry>> on every lookup."
+complexity = "Medium"
+completed = false
+
+# ─── WP21: Test Coverage & Harness ───────────────────────────────────────────
+
+[[work_packages]]
+id = "WP21"
+name = "Test Coverage & Harness Hardening"
+phase = "Phase 4: Production Readiness"
+goal = "Close critical test gaps found in audit. Add unit tests for untested query modules, failure path tests, and stress tests. Fix test integrity issues. STOP: ISSUE-161."
+gating = "All public query functions have at least one success and one failure test. Failure-path coverage >= 25%."
+
+[[tasks]]
+id = "T2101"
+name = "Add unit tests for definition.rs resolution logic"
+wp = "WP21"
+files = ["crates/al-core/src/queries/definition.rs"]
+deps = []
+pass_criteria = "Tests cover: access path resolution, object name lookup, TypeResolver fallback, textual fallback, file index hit, symbol index hit, and None return for unknown identifiers."
+fail_criteria = "definition.rs still has zero in-file unit tests."
+complexity = "Large"
+completed = false
+
+[[tasks]]
+id = "T2102"
+name = "Add unit tests for rename.rs"
+wp = "WP21"
+files = ["crates/al-core/src/queries/rename.rs"]
+deps = []
+pass_criteria = "Tests cover: successful rename, empty changes returns None, quoted identifier handling."
+fail_criteria = "rename.rs still has zero in-file unit tests."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2103"
+name = "Add failure path tests for completions.rs"
+wp = "WP21"
+files = ["crates/al-core/src/queries/completions.rs"]
+deps = []
+pass_criteria = "Tests cover: empty completion context, malformed files, completion at invalid positions, empty workspace."
+fail_criteria = "completions.rs still has only 1 test."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2104"
+name = "Add al-mcp integration tests"
+wp = "WP21"
+files = ["crates/al-mcp/tests"]
+deps = []
+pass_criteria = "Tests cover: tool dispatch, argument parsing, JSON output validation, error handling for each MCP tool."
+fail_criteria = "al-mcp still has only 2 smoke tests."
+complexity = "Large"
+completed = false
+
+[[tasks]]
+id = "T2105"
+name = "Add daemon stress/concurrency tests"
+wp = "WP21"
+files = ["crates/al-test-harness/tests"]
+deps = []
+pass_criteria = "Tests cover: rapid-fire requests, concurrent connections, request while indexing, daemon crash recovery."
+fail_criteria = "No concurrency tests exist for the daemon."
+complexity = "Large"
+completed = false
+
+[[tasks]]
+id = "T2106"
+name = "Fix T1404 proof entry — add or remove claimed test"
+wp = "WP21"
+files = ["crates/al-core/src/xliff.rs", ".claude/data/proof.toml"]
+deps = []
+pass_criteria = "Either test_suggest_translations_empty exists and passes, or proof entry is corrected to remove false claim."
+fail_criteria = "Proof still references non-existent test."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2107"
+name = "Add regression tests for audit-fixed bugs"
+wp = "WP21"
+files = ["crates/al-lsp/tests", "crates/al-core/tests"]
+deps = []
+pass_criteria = "Regression tests exist for: sort-members --dry-run, inlay hints with tokio config lock, file-not-found error paths."
+fail_criteria = "No regression tests for bugs fixed in this audit."
+complexity = "Medium"
+completed = false
+
+# ─── WP22: Code Quality & Cleanup ────────────────────────────────────────────
+
+[[work_packages]]
+id = "WP22"
+name = "Code Quality & Deduplication"
+phase = "Phase 4: Production Readiness"
+goal = "Address remaining code quality issues from audit: duplication, parameter sprawl, leaky abstractions, inconsistent patterns."
+gating = "No new clippy warnings. All HIGH and MEDIUM quality issues resolved."
+
+[[tasks]]
+id = "T2201"
+name = "Unify parameter formatting logic across signature/hover/virtual_file"
+wp = "WP22"
+files = ["crates/al-core/src/queries/signature.rs", "crates/al-core/src/queries/hover.rs", "crates/al-symbols/src/virtual_file.rs"]
+deps = []
+pass_criteria = "Single format_method_params() function used everywhere. No duplicate var/name/type formatting."
+fail_criteria = "Parameter formatting still duplicated across 3+ files."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2202"
+name = "Extract require_document_text() helper in daemon dispatch"
+wp = "WP22"
+files = ["crates/al-lsp/src/daemon/build_dispatch.rs"]
+deps = []
+pass_criteria = "ensure_document + get_text + error pattern extracted into a single helper. All dispatch handlers use it."
+fail_criteria = "Triple pattern still repeated at every file-based handler."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2203"
+name = "Reduce Workspace field publicity — add accessor methods"
+wp = "WP22"
+files = ["crates/al-core/src/workspace.rs"]
+deps = []
+pass_criteria = "Lock-guarded fields (semantic_cache, builtins, error_codes) accessed via methods that hide lock details."
+fail_criteria = "All 14 Workspace fields still pub with callers managing locks directly."
+complexity = "Large"
+completed = false
+
+[[tasks]]
+id = "T2204"
+name = "Add is_procedure_symbol() predicate for SymbolKind checks"
+wp = "WP22"
+files = ["crates/al-core/src/queries/mod.rs"]
+deps = []
+pass_criteria = "SymbolKind::FUNCTION || SymbolKind::EVENT pattern replaced with named predicate across all query modules."
+fail_criteria = "Magic SymbolKind combination still appears in 6+ places."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2205"
+name = "Rename duplicate ParameterInfo types"
+wp = "WP22"
+files = ["crates/al-core/src/queries/signature.rs"]
+deps = []
+pass_criteria = "signature.rs ParameterInfo renamed to SignatureParameter to avoid collision with navigation.rs ParameterInfo."
+fail_criteria = "Two different types with same name in same codebase."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2206"
+name = "Deduplicate cmd_setup/cmd_doctor connect+request boilerplate"
+wp = "WP22"
+files = ["crates/al-cli/src/commands/lsp.rs"]
+deps = []
+pass_criteria = "Shared helper for connect+request, both commands call it."
+fail_criteria = "Identical connect+request+error handling still in both functions."
+complexity = "Small"
+completed = false
+
+# ─── WP23: Security Audit ────────────────────────────────────────────────────
+
+[[work_packages]]
+id = "WP23"
+name = "Security Audit & Hardening"
+phase = "Phase 4: Production Readiness"
+goal = "Audit all input boundaries, path handling, credential storage, and network communication for security vulnerabilities."
+gating = "No path traversal, injection, or credential exposure vulnerabilities."
+
+[[tasks]]
+id = "T2301"
+name = "Audit URI/path handling for path traversal"
+wp = "WP23"
+files = ["crates/al-lsp/src/daemon/mod.rs", "crates/al-lsp/src/daemon/build_dispatch.rs"]
+deps = []
+pass_criteria = "All file URIs validated: no .. traversal out of workspace root, no symlink following to sensitive paths. file_uri_from_params rejects non-file:// URIs."
+fail_criteria = "A crafted URI can read/write files outside the workspace."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2302"
+name = "Audit OAuth token handling and storage"
+wp = "WP23"
+files = ["crates/al-symbols/src/oauth.rs"]
+deps = []
+pass_criteria = "Tokens stored with restricted file permissions (0600). Token cache not world-readable. Tokens cleared from memory after use where possible."
+fail_criteria = "Token cache is world-readable or tokens persist in memory unnecessarily."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2303"
+name = "Audit daemon socket permissions"
+wp = "WP23"
+files = ["crates/al-daemon-client/src/socket.rs", "crates/al-lsp/src/daemon/mod.rs"]
+deps = []
+pass_criteria = "Unix socket created with 0700 permissions. Only the owning user can connect. Socket path is not predictable enough for symlink attacks."
+fail_criteria = "Any user on the system can connect to the daemon socket."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2304"
+name = "Audit JSON-RPC input validation"
+wp = "WP23"
+files = ["crates/al-lsp/src/daemon/mod.rs", "crates/al-lsp/src/daemon/build_dispatch.rs"]
+deps = []
+pass_criteria = "All JSON-RPC params validated: max string lengths, valid ranges for line/column, no uncontrolled recursion in JSON parsing."
+fail_criteria = "A malformed JSON-RPC request causes panic, OOM, or undefined behavior."
+complexity = "Large"
+completed = false
+
+[[tasks]]
+id = "T2305"
+name = "Audit TLS and network security for BC/NuGet connections"
+wp = "WP23"
+files = ["crates/al-symbols/src/bc_server.rs", "crates/al-symbols/src/nuget.rs", "crates/al-core/src/bc_client.rs"]
+deps = []
+pass_criteria = "TLS certificate validation enabled by default. insecure_tls flag requires explicit opt-in. No sensitive data in URLs. NuGet feed URLs validated."
+fail_criteria = "Default TLS validation is disabled or can be bypassed silently."
+complexity = "Medium"
+completed = false
+
+# ─── WP24: Schema & Documentation Compliance ─────────────────────────────────
+
+[[work_packages]]
+id = "WP24"
+name = "Schema & Data Compliance"
+phase = "Phase 4: Production Readiness"
+goal = "Ensure all CLI JSON output matches documented schemas. All proof entries are valid. All data files are internally consistent."
+gating = "Automated schema validation passes for every CLI command."
+
+[[tasks]]
+id = "T2401"
+name = "Add CLI JSON output schema validation tests"
+wp = "WP24"
+files = ["crates/al-cli/tests/integration.rs"]
+deps = ["T1906"]
+pass_criteria = "Integration tests validate JSON output structure against schemas.toml for every command that supports --json."
+fail_criteria = "No automated schema validation exists."
+complexity = "Large"
+completed = false
+
+[[tasks]]
+id = "T2402"
+name = "Audit and fix all proof.toml entries"
+wp = "WP24"
+files = [".claude/data/proof.toml"]
+deps = []
+pass_criteria = "Every [[entries]] and [[proof]] entry references real, existing tests. No fabricated evidence. Consistent format across all entries."
+fail_criteria = "Any proof entry references non-existent tests or has inconsistent format."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2403"
+name = "Wire up AlFormatConfig loading in formatter dispatch"
+wp = "WP24"
+files = ["crates/al-core/src/queries/format.rs", "crates/al-lsp/src/daemon/build_dispatch.rs"]
+deps = []
+pass_criteria = "dispatch_format reads .alformat.json from workspace and passes loaded options. AlFormatConfig.load_options() is called."
+fail_criteria = "FormatOptions::default() still hardcoded in dispatch_format."
+complexity = "Medium"
+completed = false
+
+# ─── WP25: CLI UX & Completeness ─────────────────────────────────────────────
+
+[[work_packages]]
+id = "WP25"
+name = "CLI UX & Completeness"
+phase = "Phase 4: Production Readiness"
+goal = "Polish CLI text output, fix misleading messages, ensure every command has helpful error messages and consistent behavior."
+gating = "Every CLI command produces clear, accurate output in both text and JSON modes."
+
+[[tasks]]
+id = "T2501"
+name = "Fix all text-mode symbol rendering (? bug)"
+wp = "WP25"
+files = ["crates/al-cli/src/commands/lsp.rs"]
+deps = ["T1902"]
+pass_criteria = "All commands that render workspace symbols show correct names in text mode."
+fail_criteria = "Any command shows ? for object names."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2502"
+name = "Add --help examples to all CLI commands"
+wp = "WP25"
+files = ["crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "Every subcommand has at least one usage example in its --help output."
+fail_criteria = "Commands have no examples."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2503"
+name = "Add shell completions generation (bash/zsh/fish)"
+wp = "WP25"
+files = ["crates/al-cli/src/main.rs"]
+deps = []
+pass_criteria = "al completions bash/zsh/fish generates valid shell completion scripts."
+fail_criteria = "No shell completion support."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2504"
+name = "Improve error messages for common failure modes"
+wp = "WP25"
+files = ["crates/al-cli/src/commands/lsp.rs"]
+deps = []
+pass_criteria = "Daemon not running: suggests 'al-lsp daemon --project'. No app.json: suggests project root. Auth expired: suggests 'al authenticate'."
+fail_criteria = "Errors show raw RPC codes without actionable guidance."
+complexity = "Medium"
+completed = false
+
+# ─── WP26: Architecture Compliance ───────────────────────────────────────────
+
+[[work_packages]]
+id = "WP26"
+name = "Architecture Compliance & Cleanup"
+phase = "Phase 4: Production Readiness"
+goal = "Address remaining architectural smells, clean up re-export inconsistencies, and ensure boundary rules are fully enforced."
+gating = "Zero boundary violations. All re-exports have a single canonical path."
+
+[[tasks]]
+id = "T2601"
+name = "Fix dual re-export paths in al-core::symbols"
+wp = "WP26"
+files = ["crates/al-core/src/lib.rs"]
+deps = []
+pass_criteria = "Each type has exactly one public path. AppDependency/NuGetClient/NuGetFeed exported at one level only."
+fail_criteria = "Same types reachable via two different import paths."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2602"
+name = "Move al-lsp integration test imports through al-core facade"
+wp = "WP26"
+files = ["crates/al-lsp/tests/integration.rs"]
+deps = []
+pass_criteria = "Integration tests use al_core::symbols::* instead of al_symbols::* directly."
+fail_criteria = "Tests still bypass al-core facade for al-symbols types."
+complexity = "Small"
+completed = false
+
+[[tasks]]
+id = "T2603"
+name = "Add owned-entry variant for SymbolIndex to avoid clone at index time"
+wp = "WP26"
+files = ["crates/al-symbols/src/index.rs"]
+deps = []
+pass_criteria = "add_entries_owned(Vec<SymbolEntry>) wraps entries in Arc without cloning. load_packages uses it."
+fail_criteria = "add_entries still clones every SymbolEntry at index time."
+complexity = "Medium"
+completed = false
+
+# ─── WP27: Observability & Diagnostics ───────────────────────────────────────
+
+[[work_packages]]
+id = "WP27"
+name = "Observability & Runtime Diagnostics"
+phase = "Phase 4: Production Readiness"
+goal = "Add runtime observability: request timing, memory tracking, error rate monitoring, and diagnostic endpoints for troubleshooting."
+gating = "Daemon exposes timing metrics for all hot-path queries."
+
+[[tasks]]
+id = "T2701"
+name = "Add per-request timing instrumentation to daemon dispatch"
+wp = "WP27"
+files = ["crates/al-lsp/src/daemon/mod.rs"]
+deps = []
+pass_criteria = "Every daemon request logs method name and elapsed time via tracing. Slow requests (>50ms) logged at warn level."
+fail_criteria = "No timing data available for daemon requests."
+complexity = "Medium"
+completed = false
+
+[[tasks]]
+id = "T2702"
+name = "Implement diag subcommands"
+wp = "WP27"
+files = ["crates/al-lsp/src/daemon/mod.rs"]
+deps = ["T1905"]
+pass_criteria = "al diag sessions/summary/slow/failures return useful diagnostic data about the running daemon."
+fail_criteria = "diag subcommands return Unknown method."
+complexity = "Large"
+completed = false
+
+[[tasks]]
+id = "T2703"
+name = "Add request deduplication for rapid-fire identical requests"
+wp = "WP27"
+files = ["crates/al-lsp/src/daemon/mod.rs"]
+deps = []
+pass_criteria = "Rapid hover/completion requests for the same position are collapsed. Only the latest is processed."
+fail_criteria = "Every rapid-fire request triggers a full query execution."
+complexity = "Large"
+completed = false
+
+[[tasks]]
+id = "T2704"
+name = "Add memory usage tracking to workspace"
+wp = "WP27"
+files = ["crates/al-core/src/workspace.rs"]
+deps = []
+pass_criteria = "al diag summary shows: symbol count, document count, cache sizes, approximate memory usage."
+fail_criteria = "No visibility into workspace memory consumption."
+complexity = "Medium"
+completed = false

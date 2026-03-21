@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use al_core::workspace::Workspace;
 use al_core::jsonrpc::{error_codes, Response, RpcError};
 
-use super::{rpc_error, invalid_params, ensure_document, file_uri_from_params, lint_diag_to_json, generate_fix};
+use super::{rpc_error, invalid_params, file_not_found, ensure_document, file_uri_from_params, lint_diag_to_json, generate_fix};
 
 // ---------------------------------------------------------------------------
 // Analysis dispatchers (lint, format, fix, rules, parse, source)
@@ -44,14 +44,7 @@ pub(super) fn dispatch_lint(workspace: &Workspace, id: u64, params: &serde_json:
     ensure_document(workspace, &uri);
 
     let Some(text) = workspace.documents.get_text(&uri) else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: "File not found".to_string(),
-            }),
-        };
+        return file_not_found(id);
     };
 
     let result = al_core::syntax::AlParser::parse_quick(&text);
@@ -82,14 +75,7 @@ pub(super) fn dispatch_format(workspace: &Workspace, id: u64, params: &serde_jso
         match workspace.documents.get_text(&uri) {
             Some(t) => t,
             None => {
-                return Response {
-                    id,
-                    result: None,
-                    error: Some(RpcError {
-                        code: error_codes::INVALID_PARAMS,
-                        message: "File not found".to_string(),
-                    }),
-                };
+                return file_not_found(id);
             }
         }
     } else {
@@ -138,14 +124,7 @@ pub(super) fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::
     ensure_document(workspace, &uri);
 
     let Some(text) = workspace.documents.get_text(&uri) else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: "File not found".to_string(),
-            }),
-        };
+        return file_not_found(id);
     };
 
     let result = al_core::syntax::AlParser::parse_quick(&text);
@@ -255,14 +234,7 @@ pub(super) fn dispatch_parse(workspace: &Workspace, id: u64, params: &serde_json
     ensure_document(workspace, &uri);
 
     let Some(text) = workspace.documents.get_text(&uri) else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: "File not found".to_string(),
-            }),
-        };
+        return file_not_found(id);
     };
 
     let start = std::time::Instant::now();
@@ -1480,7 +1452,7 @@ pub(super) fn dispatch_fix_tooltips(workspace: &Workspace, id: u64, params: &ser
         workspace.symbols
             .get_by_name(table_name)
             .into_iter()
-            .filter(|e| e.kind == al_symbols::model::ObjectKind::Table)
+            .filter(|e| e.kind == al_core::symbols::ObjectKind::Table)
             .flat_map(|e| {
                 e.fields.iter().filter_map(|f| {
                     let tooltip = f.properties.iter()
@@ -1575,14 +1547,7 @@ pub(super) fn dispatch_metrics(workspace: &Workspace, id: u64, params: &serde_js
     ensure_document(workspace, &uri);
 
     let Some(text) = workspace.documents.get_text(&uri) else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: "File not found".to_string(),
-            }),
-        };
+        return file_not_found(id);
     };
 
     let parsed = al_core::syntax::AlParser::parse_quick(&text);
@@ -1749,7 +1714,7 @@ pub(super) fn dispatch_generate(workspace: &Workspace, id: u64, params: &serde_j
     let table_entry = if !table_name.is_empty() {
         workspace.symbols.search(table_name, 10)
             .into_iter()
-            .find(|e| e.kind == al_symbols::ObjectKind::Table && e.name.eq_ignore_ascii_case(table_name))
+            .find(|e| e.kind == al_core::symbols::ObjectKind::Table && e.name.eq_ignore_ascii_case(table_name))
     } else {
         None
     };
@@ -1862,11 +1827,11 @@ pub(super) fn dispatch_breaking_changes(workspace: &Workspace, id: u64, _params:
     // Compare baseline (empty) against current workspace symbols to find
     // all changes relative to a clean slate.  Callers can pass baseline
     // symbols in params.baselineSymbols in a future iteration.
-    let current: Vec<al_symbols::SymbolEntry> = workspace.symbols.all_entries()
+    let current: Vec<al_core::symbols::SymbolEntry> = workspace.symbols.all_entries()
         .into_iter()
         .map(|a| (*a).clone())
         .collect();
-    let baseline: Vec<al_symbols::SymbolEntry> = Vec::new();
+    let baseline: Vec<al_core::symbols::SymbolEntry> = Vec::new();
     let changes = al_core::queries::breaking_changes::analyze_breaking_changes(&baseline, &current);
     let value = serde_json::to_value(&changes).unwrap_or(serde_json::Value::Null);
     Response { id, result: Some(value), error: None }
@@ -1898,11 +1863,11 @@ pub(super) fn dispatch_find_duplicates(workspace: &Workspace, id: u64, params: &
 pub(super) fn dispatch_upgrade_report(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
     // Use empty baseline to find all symbols that are new/changed relative
     // to a fresh install.  In practice callers supply a previous .app snapshot.
-    let current: Vec<al_symbols::SymbolEntry> = workspace.symbols.all_entries()
+    let current: Vec<al_core::symbols::SymbolEntry> = workspace.symbols.all_entries()
         .into_iter()
         .map(|a| (*a).clone())
         .collect();
-    let baseline: Vec<al_symbols::SymbolEntry> = Vec::new();
+    let baseline: Vec<al_core::symbols::SymbolEntry> = Vec::new();
     let issues = al_core::queries::upgrade::upgrade_report(&baseline, &current);
     let value = serde_json::to_value(&issues).unwrap_or(serde_json::Value::Null);
     Response { id, result: Some(value), error: None }
@@ -1935,8 +1900,9 @@ pub(super) fn dispatch_sort_members(workspace: &Workspace, id: u64, params: &ser
     };
     let changed = sorted != content;
 
-    // Write back if file was specified
-    if changed {
+    // Write back if file was specified and not a dry run
+    let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+    if changed && !dry_run {
         if let Some(uri) = file_uri_from_params(params) {
             if let Ok(path) = uri.to_file_path() {
                 let _ = std::fs::write(&path, &sorted);

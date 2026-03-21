@@ -7,7 +7,6 @@
 
 pub mod cache;
 pub mod host;
-pub mod protocol;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

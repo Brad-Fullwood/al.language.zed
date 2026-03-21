@@ -10,19 +10,13 @@ use al_dap_client::types::*;
 use al_dap_client::Result;
 use tracing::{info, warn};
 
-/// Maximum number of breakpoint hits to record before dropping oldest.
-#[allow(dead_code)]
-const MAX_HISTORY: usize = 1000;
-
 /// Wraps `BcDebugSession` with daemon-side state: breakpoint tracking, history.
-#[allow(dead_code)]
 pub struct NativeDebugSession {
     pub session: BcDebugSession,
     pub config: BcDebugConfig,
     /// file path → list of BC breakpoint IDs
     breakpoints: HashMap<String, Vec<i64>>,
     history: VecDeque<BreakpointHit>,
-    hit_counter: u32,
 }
 
 impl NativeDebugSession {
@@ -44,7 +38,6 @@ impl NativeDebugSession {
             config,
             breakpoints: HashMap::new(),
             history: VecDeque::new(),
-            hit_counter: 0,
         })
     }
 

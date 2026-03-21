@@ -2913,7 +2913,7 @@ Approx line: 460 (break_tx_reader.send(evt).await)
 """
 
 [[issues]]
-id = "ISSUE-089"
+id = "ISSUE-142"
 title = "extract_word_at_position: cursor on closing quote of quoted identifier gives partial word"
 type = "deferred"
 reporter = "adversarial-agent"
@@ -2947,7 +2947,7 @@ Function: try_extract_quoted_identifier (approx line 540)
 """
 
 [[issues]]
-id = "ISSUE-090"
+id = "ISSUE-143"
 title = "source_action_if_to_case: begin..end branch bodies lose relative indentation"
 type = "deferred"
 reporter = "adversarial-agent"
@@ -2982,7 +2982,7 @@ Function: source_action_if_to_case (approx line 582)
 """
 
 [[issues]]
-id = "ISSUE-091"
+id = "ISSUE-144"
 title = "source_action_if_to_case: UTF-16 column used as tree-sitter byte offset for point"
 type = "deferred"
 reporter = "adversarial-agent"
@@ -3041,4 +3041,282 @@ treating the right operand as the common variable (swap detection).
 
 File: crates/al-core/src/queries/code_actions.rs
 Functions: extract_equality_operands, walk_if_chain
+"""
+
+[[issues]]
+id = "ISSUE-145"
+title = "sql_patterns: loop detection false-negative when nested begin..end inside loop"
+type = "deferred"
+reporter = "adversarial-agent"
+date = "2026-03-21"
+category = "false-negative"
+severity = "minor"
+priority = "LOW"
+status = "open"
+triage = "SERIAL"
+blocking_task = "none"
+description = """
+`is_loop_end` in sql_patterns.rs matches "end;" and "end" on any line.
+Inside a loop body that contains a nested if..then begin..end block, the
+inner "end;" causes `in_loop` to decrement prematurely, making code after
+the inner block invisible to the loop detector.
+
+Example: A FindFirst() call after a nested if..begin..end inside a for loop
+will NOT be flagged as FindInLoop because `in_loop` was zeroed by the inner
+end;.
+
+Fix requires tracking begin..end nesting depth separately from loop depth,
+or switching to a tree-sitter-based approach. Text-based analysis has an
+inherent limitation here.
+
+File: crates/al-core/src/queries/sql_patterns.rs
+Functions: analyze_proc_text, is_loop_end (line ~165)
+"""
+
+[[issues]]
+id = "ISSUE-146"
+title = "profiler_hints: procedure location mapping is non-deterministic with DashMap iteration order"
+type = "deferred"
+reporter = "adversarial-agent"
+date = "2026-03-21"
+category = "non-determinism"
+severity = "minor"
+priority = "LOW"
+status = "open"
+triage = "SERIAL"
+blocking_task = "none"
+description = """
+`resolve_source_locations` in profiler_hints.rs uses `or_insert_with` to build a
+procedure name -> (file, line) map, taking the first occurrence when procedure names
+collide across files. Since `workspace.file_index.files` is a DashMap with non-deterministic
+iteration order, which file "wins" for a given procedure name is unpredictable across
+runs on multi-file workspaces.
+
+The current comment says "Only insert the first occurrence (don't overwrite with a later
+file)" but DashMap does not define iteration order, so "first" is undefined.
+
+Impact: Profiler inlay hints may point to the wrong file when the same procedure name
+exists in multiple AL objects (which is common — e.g. OnAfterValidate trigger).
+
+Fix: When an object name is available in the hint, use it to disambiguate. Match both
+procedure name AND object name case-insensitively.
+
+File: crates/al-core/src/queries/profiler_hints.rs
+Functions: resolve_source_locations (line ~168), collect_procs (line ~207)
+"""
+
+# ─── PRODUCTION READINESS AUDIT (2026-03-21) ─────────────────────────────────
+
+[[issues]]
+id = "ISSUE-147"
+title = "compile --json returns null appPath on successful compilation"
+type = "bug"
+priority = "HIGH"
+status = "open"
+reported = "2026-03-21"
+description = """
+When `al compile --json` succeeds, the `appPath` field is null in the JSON output.
+The .app file IS produced but the output path is not populated. Makes it impossible
+for agents/scripts to know where the compiled artifact was placed.
+"""
+
+[[issues]]
+id = "ISSUE-148"
+title = "Text output shows '?' for object names in obsolete/duplicates/entrypoints commands"
+type = "bug"
+priority = "HIGH"
+status = "open"
+reported = "2026-03-21"
+description = """
+`al obsolete`, `al duplicates`, and `al entrypoints` show '?' instead of object names
+in text mode. JSON output returns correct names — the bug is in text formatting only.
+Likely any command that renders workspace symbols via text mode is affected.
+"""
+
+[[issues]]
+id = "ISSUE-149"
+title = "search/object commands do not find workspace-defined objects"
+type = "bug"
+priority = "MEDIUM"
+status = "open"
+reported = "2026-03-21"
+description = """
+`al search` and `al object` only search loaded packages, not workspace source files.
+Users cannot look up objects they are actively developing. `al symbols <file>` works
+but requires knowing the file path.
+"""
+
+[[issues]]
+id = "ISSUE-150"
+title = "rename text output says 'applied' but does not write to disk"
+type = "bug"
+priority = "LOW"
+status = "open"
+reported = "2026-03-21"
+description = """
+`al rename` text output says '2 edits applied across 1 files' but the file is NOT
+modified on disk. The rename returns the edit plan only. --json output is clear.
+The message 'applied' is misleading.
+"""
+
+[[issues]]
+id = "ISSUE-151"
+title = "diag subcommands all return 'Unknown method: diag'"
+type = "bug"
+priority = "LOW"
+status = "open"
+reported = "2026-03-21"
+description = """
+`al diag sessions/summary/slow/events/failures/search` all return Unknown method.
+The CLI accepts the commands but the daemon has no handler. Either implement or
+remove the commands from the CLI.
+"""
+
+[[issues]]
+id = "ISSUE-152"
+title = "schemas.toml field names mismatch actual CLI JSON output"
+type = "data"
+priority = "MEDIUM"
+status = "open"
+reported = "2026-03-21"
+description = """
+schemas.toml defines different field names than actual CLI output:
+- al object --json: schema says k/n/fields[].t, actual uses kind/name/fields[].type_name
+- al deps --json: schema says app/version/deps/transitive/depBy, actual uses all/explicit/project
+- al compile --json: not defined in schema at all
+"""
+
+[[issues]]
+id = "ISSUE-153"
+title = "Hot path: completions/signature use get_text() instead of get_text_arc()"
+type = "performance"
+priority = "HIGH"
+status = "open"
+reported = "2026-03-21"
+description = """
+Query modules call workspace.documents.get_text() which deep-clones the String.
+get_text_arc() exists and returns Arc<String> (pointer copy) but is unused in all
+query modules. completions.rs clones the text 2-3× per request. signature.rs and
+code_actions.rs also affected. ~30KB of redundant allocation per keystroke for 10KB files.
+
+Files: al-core/src/queries/completions.rs, signature.rs, code_actions.rs
+"""
+
+[[issues]]
+id = "ISSUE-154"
+title = "Sequential package loading should be parallelized"
+type = "performance"
+priority = "MEDIUM"
+status = "open"
+reported = "2026-03-21"
+description = """
+index.rs load_packages/load_packages_cached process packages sequentially.
+10 packages at ~200ms each = 2s startup (at budget limit). DashMap is already
+thread-safe. Use rayon::par_iter() or tokio spawn_blocking for each file.
+
+File: al-symbols/src/index.rs:80-151
+"""
+
+[[issues]]
+id = "ISSUE-155"
+title = "symbols.search() used for exact-name lookups instead of O(1) get_by_name()"
+type = "performance"
+priority = "HIGH"
+status = "open"
+reported = "2026-03-21"
+description = """
+signature.rs:108 and inlay_hints.rs:266 call workspace.symbols.search(func_name, 5)
+which is O(n_symbols) substring scan. The intent is exact-name lookup for function
+parameters. get_by_name() is O(1) via DashMap. For a file with 50 function calls,
+this is 50 × O(n_symbols) scans during inlay hint collection.
+"""
+
+[[issues]]
+id = "ISSUE-156"
+title = "Uncached parse_quick on workspace object hover"
+type = "performance"
+priority = "MEDIUM"
+status = "open"
+reported = "2026-03-21"
+description = """
+hover.rs:220 calls al_syntax::AlParser::parse_quick() on a workspace file instead
+of using FileIndex.object_info cache. Every hover on a cross-file object type
+triggers a full re-parse. Violates 'never full-reparse on keystroke' rule.
+"""
+
+[[issues]]
+id = "ISSUE-157"
+title = "O(n×files) definition fallback walks all workspace files"
+type = "performance"
+priority = "MEDIUM"
+status = "open"
+reported = "2026-03-21"
+description = """
+definition.rs:99-123 iterates every workspace file and calls extract_document_symbols
+on each as a last fallback. For 500 .al files this triggers 500 full tree-walks.
+Fix: add a procedure-name → file reverse index in FileIndex.
+"""
+
+[[issues]]
+id = "ISSUE-158"
+title = "T1404 proof references non-existent test test_suggest_translations_empty"
+type = "data"
+priority = "MEDIUM"
+status = "open"
+reported = "2026-03-21"
+description = """
+proof.toml T1404 adversarial_pass claims 'includes test_suggest_translations_empty'
+but this test does not exist in crates/al-core/src/xliff.rs. The 8 actual tests are
+different. Either add the test or correct the proof entry.
+"""
+
+[[issues]]
+id = "ISSUE-159"
+title = "JSON-RPC types duplicated between al-daemon-client and al-core"
+type = "architecture"
+priority = "LOW"
+status = "open"
+reported = "2026-03-21"
+description = """
+Request, Response, RpcError, and error_codes are defined identically in both
+al-daemon-client/jsonrpc.rs and al-core/jsonrpc.rs. Cannot be unified without
+creating a shared crate (al-protocol) due to boundary rules preventing either
+crate from depending on the other. Known architectural limitation.
+"""
+
+[[issues]]
+id = "ISSUE-160"
+title = "definition.rs and rename.rs have zero unit tests"
+type = "testing"
+priority = "MEDIUM"
+status = "open"
+reported = "2026-03-21"
+description = """
+definition.rs (152 lines of non-trivial resolution logic with multiple fallback
+paths) and rename.rs (106 lines) have zero in-file unit tests. Only exercised
+via integration tests. completions.rs has only 1 test for 347 lines. Only 11%
+of test functions cover failure paths.
+"""
+
+[[issues]]
+id = "ISSUE-161"
+title = "al-test-harness has critical coverage gaps — many LSP features untested end-to-end"
+type = "testing"
+priority = "STOP"
+status = "open"
+reported = "2026-03-21"
+description = """
+The al-test-harness integration tests have major gaps:
+- definition.rs, rename.rs, completions.rs have zero or minimal unit tests
+- Only 11% of tests cover failure/error paths
+- 3 tests had no-op assertions (fixed in audit)
+- al-mcp has only 2 smoke tests
+- al-explorer TUI (1700 lines) has near-zero test coverage
+- No stress/concurrency tests for the daemon
+- No regression tests for known bugs
+- zed_simulation tests silently skip without fixture (51 tests do nothing in CI)
+- Proof entry T1404 references non-existent test (fabricated evidence)
+
+This is a STOP issue because untested code paths hide bugs that surface in production.
+The sort-members --dry-run bug and hints daemon panic were both in untested paths.
 """

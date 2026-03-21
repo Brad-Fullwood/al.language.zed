@@ -1,11 +1,7 @@
 //! al-dap-client: Headless DAP control for AL debugging.
 //!
-//! Provides a `DapClient` for low-level DAP communication and a
-//! `DebugSession` (T404b) for high-level AL debug lifecycle management.
-//!
-//! Two modes:
-//! 1. Native: `bc_debug` module talks directly to BC via REST + SignalR (no external binary)
-//! 2. Legacy: `client` + `session` modules proxy through EditorServices.Host via DAP/stdio
+//! `bc_debug` module talks directly to BC via REST + SignalR (no external binary).
+//! `client` provides low-level DAP communication for EditorServices.Host.
 //!
 //! This crate does NOT depend on al-core, al-syntax, or al-symbols.
 
@@ -17,7 +13,6 @@ pub mod editor_services;
 pub mod framing;
 pub mod json_util;
 pub mod protocol;
-pub mod session;
 pub mod types;
 
 use std::time::Duration;

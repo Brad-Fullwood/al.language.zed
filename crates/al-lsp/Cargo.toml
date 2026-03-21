@@ -24,7 +24,7 @@ walkdir = "2"
 url = "2"
 al-dap-client = { path = "../al-dap-client" }
 al-daemon-client = { path = "../al-daemon-client" }
-al-symbols = { path = "../al-symbols" }
 
 [dev-dependencies]
 al-syntax = { path = "../al-syntax" }
+al-symbols = { path = "../al-symbols" }

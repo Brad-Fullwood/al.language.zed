@@ -341,19 +341,8 @@ fn inside_quoted_identifier(line: &str, idx: usize) -> bool {
     quote_count % 2 == 1
 }
 
-/// Convert a UTF-16 column offset (as supplied by LSP) to the corresponding
-/// byte offset within `line`.  If `utf16_col` is past the end of the string,
-/// the byte length of `line` is returned (clamp-to-end semantics).
-pub(crate) fn utf16_col_to_byte_offset(line: &str, utf16_col: usize) -> usize {
-    let mut remaining = utf16_col;
-    for (byte_idx, ch) in line.char_indices() {
-        if remaining == 0 {
-            return byte_idx;
-        }
-        remaining = remaining.saturating_sub(ch.len_utf16());
-    }
-    line.len() // past end — clamp to end of line
-}
+/// Re-export from al-syntax to avoid duplication.
+pub(crate) use al_syntax::utf16_col_to_byte_offset;
 
 fn is_access_char(ch: u8) -> bool {
     is_identifier_char(ch) || ch == b'"'
@@ -1168,7 +1157,7 @@ fn format_method_signature(
     }
 }
 
-fn format_builtin_signature(method: &al_semantic::BuiltinMethod) -> String {
+pub(crate) fn format_builtin_signature(method: &al_semantic::BuiltinMethod) -> String {
     let params = method
         .parameters
         .iter()

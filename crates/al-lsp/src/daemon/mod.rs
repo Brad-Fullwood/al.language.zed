@@ -358,6 +358,17 @@ pub(crate) fn invalid_params(id: u64) -> Response {
     }
 }
 
+pub(crate) fn file_not_found(id: u64) -> Response {
+    Response {
+        id,
+        result: None,
+        error: Some(RpcError {
+            code: error_codes::INVALID_PARAMS,
+            message: "File not found".to_string(),
+        }),
+    }
+}
+
 pub(crate) fn rpc_error(id: u64, code: i32, message: &str) -> Response {
     Response {
         id,
@@ -421,32 +432,8 @@ pub(crate) fn generate_fix(
     let end_col = diag.range.end_point.column;
 
     match diag.code.as_str() {
-        // AL-L001: Empty begin..end block — delete the entire line range.
-        "AL-L001" => {
-            Some(serde_json::json!({
-                "code": diag.code,
-                "message": diag.message,
-                "range": {
-                    "start": { "line": start_row, "character": 0 },
-                    "end": { "line": end_row + 1, "character": 0 }
-                },
-                "newText": "",
-            }))
-        }
-        // AL-L005: Unused variable declaration — delete the declaration line.
-        "AL-L005" => {
-            Some(serde_json::json!({
-                "code": diag.code,
-                "message": diag.message,
-                "range": {
-                    "start": { "line": start_row, "character": 0 },
-                    "end": { "line": end_row + 1, "character": 0 }
-                },
-                "newText": "",
-            }))
-        }
-        // AL-L006: Empty trigger — delete the entire trigger declaration.
-        "AL-L006" => {
+        // AL-L001/L005/L006: Delete the entire line range (empty block, unused var, empty trigger).
+        "AL-L001" | "AL-L005" | "AL-L006" => {
             Some(serde_json::json!({
                 "code": diag.code,
                 "message": diag.message,

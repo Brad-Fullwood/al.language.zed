@@ -698,8 +698,8 @@ fn check_single_global_var(node: Node, source: &[u8], diagnostics: &mut Vec<Lint
     if let Some(name_node) = node.child_by_field_name("name") {
         if let Ok(name) = name_node.utf8_text(source) {
             let clean = name.trim_matches('"');
-            // Skip if already has a prefix convention
-            if clean.len() <= 1 {
+            // Skip empty names
+            if clean.is_empty() {
                 return;
             }
             // Single lowercase letter variables are suspicious for globals

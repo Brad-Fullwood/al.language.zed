@@ -18,10 +18,10 @@ pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: lsp_types::Range) ->
     let source = text.as_bytes();
     let mut hints = Vec::new();
 
-    let config = workspace.config.blocking_read();
-    let param_hints = config.inlay_hints.parameter_names;
-    let return_hints = config.inlay_hints.return_types;
-    drop(config);
+    let (param_hints, return_hints) = match workspace.config.try_read() {
+        Ok(config) => (config.inlay_hints.parameter_names, config.inlay_hints.return_types),
+        Err(_) => (true, false), // defaults if lock is held
+    };
 
     if param_hints {
         let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);

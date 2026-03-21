@@ -179,7 +179,8 @@ pub(super) fn dispatch_search(workspace: &Workspace, id: u64, params: &serde_jso
         return invalid_params(id);
     };
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-    let limit = limit.min(500_000);
+    const MAX_SEARCH_RESULTS: usize = 500_000;
+    let limit = limit.min(MAX_SEARCH_RESULTS);
     let results = workspace.symbols.search(query, limit);
     let value: Vec<serde_json::Value> = results
         .iter()

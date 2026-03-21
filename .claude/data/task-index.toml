@@ -148,3 +148,65 @@ T1803 = { wp = "WP18", name = "SecretText Enforcement", done = true, deps = [] }
 T1804 = { wp = "WP18", name = "ReadIsolation over LockTable", done = true, deps = [] }
 T1805 = { wp = "WP18", name = "API Page Mandatory Field Validation", done = true, deps = [] }
 T1806 = { wp = "WP18", name = "SQL Anti-Pattern Detection", done = true, deps = [] }
+
+# WP19: Audit Bug Fixes
+T1901 = { wp = "WP19", name = "Fix compile --json null appPath", done = false, deps = [] }
+T1902 = { wp = "WP19", name = "Fix text output ? for object names", done = false, deps = [] }
+T1903 = { wp = "WP19", name = "Add workspace objects to search/object", done = false, deps = [] }
+T1904 = { wp = "WP19", name = "Fix rename misleading applied message", done = false, deps = [] }
+T1905 = { wp = "WP19", name = "Implement or remove diag subcommands", done = false, deps = [] }
+T1906 = { wp = "WP19", name = "Fix schemas.toml vs actual CLI output", done = false, deps = [] }
+
+# WP20: Hot Path Performance
+T2001 = { wp = "WP20", name = "Replace get_text with get_text_arc", done = false, deps = [] }
+T2002 = { wp = "WP20", name = "Replace search() with get_by_name() for exact lookups", done = false, deps = [] }
+T2003 = { wp = "WP20", name = "Cache object info for hover cross-file", done = false, deps = [] }
+T2004 = { wp = "WP20", name = "Add procedure-name reverse index", done = false, deps = [] }
+T2005 = { wp = "WP20", name = "Parallelize package loading with rayon", done = false, deps = [] }
+T2006 = { wp = "WP20", name = "Add find_by_name to SymbolIndex", done = false, deps = [] }
+
+# WP21: Test Coverage & Harness Hardening [STOP: ISSUE-161]
+T2101 = { wp = "WP21", name = "Unit tests for definition.rs", done = false, deps = [] }
+T2102 = { wp = "WP21", name = "Unit tests for rename.rs", done = false, deps = [] }
+T2103 = { wp = "WP21", name = "Failure path tests for completions.rs", done = false, deps = [] }
+T2104 = { wp = "WP21", name = "al-mcp integration tests", done = false, deps = [] }
+T2105 = { wp = "WP21", name = "Daemon stress/concurrency tests", done = false, deps = [] }
+T2106 = { wp = "WP21", name = "Fix T1404 proof — add or remove test", done = false, deps = [] }
+T2107 = { wp = "WP21", name = "Regression tests for audit-fixed bugs", done = false, deps = [] }
+
+# WP22: Code Quality & Deduplication
+T2201 = { wp = "WP22", name = "Unify parameter formatting logic", done = false, deps = [] }
+T2202 = { wp = "WP22", name = "Extract require_document_text helper", done = false, deps = [] }
+T2203 = { wp = "WP22", name = "Reduce Workspace field publicity", done = false, deps = [] }
+T2204 = { wp = "WP22", name = "Add is_procedure_symbol predicate", done = false, deps = [] }
+T2205 = { wp = "WP22", name = "Rename duplicate ParameterInfo types", done = false, deps = [] }
+T2206 = { wp = "WP22", name = "Deduplicate cmd_setup/cmd_doctor", done = false, deps = [] }
+
+# WP23: Security Audit & Hardening
+T2301 = { wp = "WP23", name = "Audit URI/path handling for traversal", done = false, deps = [] }
+T2302 = { wp = "WP23", name = "Audit OAuth token handling/storage", done = false, deps = [] }
+T2303 = { wp = "WP23", name = "Audit daemon socket permissions", done = false, deps = [] }
+T2304 = { wp = "WP23", name = "Audit JSON-RPC input validation", done = false, deps = [] }
+T2305 = { wp = "WP23", name = "Audit TLS/network security", done = false, deps = [] }
+
+# WP24: Schema & Data Compliance
+T2401 = { wp = "WP24", name = "CLI JSON schema validation tests", done = false, deps = ["T1906"] }
+T2402 = { wp = "WP24", name = "Audit and fix all proof.toml entries", done = false, deps = [] }
+T2403 = { wp = "WP24", name = "Wire up AlFormatConfig in formatter", done = false, deps = [] }
+
+# WP25: CLI UX & Completeness
+T2501 = { wp = "WP25", name = "Fix all text-mode symbol rendering", done = false, deps = ["T1902"] }
+T2502 = { wp = "WP25", name = "Add --help examples to all commands", done = false, deps = [] }
+T2503 = { wp = "WP25", name = "Add shell completions generation", done = false, deps = [] }
+T2504 = { wp = "WP25", name = "Improve error messages for common failures", done = false, deps = [] }
+
+# WP26: Architecture Compliance & Cleanup
+T2601 = { wp = "WP26", name = "Fix dual re-export paths in al-core", done = false, deps = [] }
+T2602 = { wp = "WP26", name = "Move test imports through al-core facade", done = false, deps = [] }
+T2603 = { wp = "WP26", name = "Add owned-entry variant for SymbolIndex", done = false, deps = [] }
+
+# WP27: Observability & Runtime Diagnostics
+T2701 = { wp = "WP27", name = "Per-request timing instrumentation", done = false, deps = [] }
+T2702 = { wp = "WP27", name = "Implement diag subcommands", done = false, deps = ["T1905"] }
+T2703 = { wp = "WP27", name = "Request deduplication for rapid-fire", done = false, deps = [] }
+T2704 = { wp = "WP27", name = "Memory usage tracking in workspace", done = false, deps = [] }

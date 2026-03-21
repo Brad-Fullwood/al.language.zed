@@ -85,11 +85,6 @@ impl BcServerClient {
         }
     }
 
-    /// Create a new client that logs auth messages via tracing (for CLI use).
-    pub fn new_cli(auth: AuthMethod, tenant: Option<String>, insecure_tls: bool) -> Self {
-        Self::new(auth, tenant, Arc::new(|msg| info!("{msg}")), insecure_tls)
-    }
-
     /// Download a single dependency from the BC Dev API.
     ///
     /// `url` is the fully-constructed `/dev/packages` URL for this dependency.

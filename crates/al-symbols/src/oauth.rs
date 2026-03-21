@@ -318,9 +318,6 @@ struct DeviceCodeResponse {
     expires_in: u64,
     #[serde(default = "default_5")]
     interval: u64,
-    #[allow(dead_code)]
-    #[serde(default)]
-    message: String,
 }
 
 fn default_900() -> u64 {

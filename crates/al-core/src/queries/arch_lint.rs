@@ -73,10 +73,6 @@ impl ArchConfig {
 pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolation> {
     let mut violations = Vec::new();
 
-    let all_rules: Vec<&ArchRule> = config.rules.iter()
-        // chain removed: temporary value issue
-        .collect::<Vec<_>>();
-
     for entry in workspace.file_index.files.iter() {
         let file_path = entry.key().to_string_lossy().to_string();
         let text = entry.value();
@@ -88,14 +84,12 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
 
         let obj_kind_lower = obj_info.kind.to_lowercase();
         for rule in &config.rules {
-            apply_rule(&file_path, text, &obj_info, &obj_kind_lower, rule, &mut violations);
+            apply_rule(&file_path, text, &parsed.tree, &obj_info, &obj_kind_lower, rule, &mut violations);
         }
 
         for rule in &ArchConfig::builtin_rules() {
-            apply_rule(&file_path, text, &obj_info, &obj_kind_lower, rule, &mut violations);
+            apply_rule(&file_path, text, &parsed.tree, &obj_info, &obj_kind_lower, rule, &mut violations);
         }
-
-        let _ = all_rules; // avoid unused warning
     }
 
     violations
@@ -108,6 +102,7 @@ fn applies_to_kind(rule_pattern: &str, obj_kind_lower: &str) -> bool {
 fn apply_rule(
     file_path: &str,
     text: &str,
+    tree: &tree_sitter::Tree,
     obj_info: &al_syntax::ObjectInfo,
     obj_kind_lower: &str,
     rule: &ArchRule,
@@ -166,8 +161,8 @@ fn apply_rule(
         }
         ArchRuleKind::MaxComplexity => {
             let max: u32 = rule.values.first().and_then(|v| v.parse().ok()).unwrap_or(10);
-            let parsed = AlParser::parse_quick(text);
-            let metrics = al_syntax::complexity::compute_complexity(&parsed.tree, text);
+            // Reuse the already-parsed tree from the caller — no redundant re-parse.
+            let metrics = al_syntax::complexity::compute_complexity(tree, text);
             for m in &metrics {
                 if m.cyclomatic > max {
                     violations.push(ArchViolation {

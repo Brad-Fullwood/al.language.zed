@@ -120,10 +120,8 @@ struct DevTestListResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 struct DevTestMethod {
     pub name: Option<String>,
-    pub method_type: Option<String>,
 }
 
 /// Response from `POST /dev/tests/{codeunit}/run` — test results.

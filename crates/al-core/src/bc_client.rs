@@ -150,24 +150,6 @@ impl BcClient {
         self.handle_response(response).await
     }
 
-    /// Install a published extension into the specified tenant.
-    ///
-    /// Calls `POST /dev/extensions/{appId}/install`.
-    pub async fn install_extension(
-        &self,
-        app_id: &str,
-    ) -> Result<serde_json::Value, BcClientError> {
-        let url = format!("{}/dev/extensions/{}/install", self.base_url, app_id);
-        debug!(url = %url, app_id = %app_id, "Installing extension");
-
-        let mut req = self.client.post(&url).json(&serde_json::json!({}));
-        req = self.apply_auth(req)?;
-        req = self.apply_tenant_header(req);
-
-        let response = req.send().await?;
-        self.handle_response_json(response).await
-    }
-
     // -----------------------------------------------------------------------
     // RAD (Rapid Application Development) flow
     // -----------------------------------------------------------------------
@@ -191,22 +173,6 @@ impl BcClient {
             .patch(&url)
             .body(app_bytes)
             .header("Content-Type", "application/octet-stream");
-        req = self.apply_auth(req)?;
-        req = self.apply_tenant_header(req);
-
-        let response = req.send().await?;
-        self.handle_response(response).await
-    }
-
-    /// Query RAD application state.
-    pub async fn rad_state(
-        &self,
-        app_id: &str,
-    ) -> Result<ApplicationStateResponse, BcClientError> {
-        let url = format!("{}/dev/applications/{}", self.base_url, app_id);
-        debug!(url = %url, "Querying RAD application state");
-
-        let mut req = self.client.get(&url);
         req = self.apply_auth(req)?;
         req = self.apply_tenant_header(req);
 

@@ -448,9 +448,6 @@ pub(crate) struct TypeDefJson {
 pub(crate) struct SubtypeJson {
     #[serde(alias = "Name", default)]
     pub name: String,
-    #[serde(alias = "Id", default)]
-    #[allow(dead_code)]
-    pub id: i32,
 }
 
 impl TypeDefJson {
