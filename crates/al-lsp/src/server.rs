@@ -1,6 +1,7 @@
 //! AlServer state and LSP lifecycle.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use al_core::workspace::Workspace;
 use al_core::syntax::AlParser;
 use tokio::sync::{RwLock, Mutex};
@@ -87,6 +88,10 @@ pub struct AlServer {
     /// Handle to the background workspace initialisation task.
     /// ISSUE-026 fix: workspace init runs async so initialized() returns promptly.
     pub(crate) init_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Guard against double-initialization (ISSUE-073).
+    /// Zed may send `initialized` twice when opening multiple worktrees.
+    /// CAS ensures workspace init runs only once per server instance.
+    pub(crate) init_done: AtomicBool,
 }
 
 impl AlServer {
@@ -110,6 +115,7 @@ impl AlServer {
             root_uri: RwLock::new(None),
             diag_task: Mutex::new(None),
             init_task: Mutex::new(None),
+            init_done: AtomicBool::new(false),
         }
     }
 
@@ -263,6 +269,13 @@ impl AlServer {
     /// publish runs after `DIAGNOSTICS_DEBOUNCE` of silence. This prevents bridge
     /// calls (up to BRIDGE_INTERACTIVE_TIMEOUT = 5s) from blocking hover/completion.
     async fn schedule_diagnostics(&self, uri: Url, text: String) {
+        // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
+        // workspace files and Zed logs a warning for every publishDiagnostics on them.
+        if crate::diagnostics::is_cache_path(&uri) {
+            tracing::debug!(uri = %uri, "schedule_diagnostics: skipping cache file");
+            return;
+        }
+
         // Cancel previous pending task
         if let Some(old) = self.diag_task.lock().await.take() {
             old.abort();
@@ -356,6 +369,7 @@ impl LanguageServer for AlServer {
                 references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                document_range_formatting_provider: Some(OneOf::Left(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 rename_provider: Some(OneOf::Right(RenameOptions {
                     prepare_provider: Some(true),
@@ -407,6 +421,13 @@ impl LanguageServer for AlServer {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        // ISSUE-073: guard against double-init when Zed sends `initialized` more than once
+        // (e.g., when opening multiple worktrees or after a crash-restart cycle).
+        if self.init_done.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            tracing::warn!("initialized: received duplicate `initialized` notification — ignoring");
+            return;
+        }
+
         self.client
             .log_message(MessageType::INFO, "AL Language Server initialized")
             .await;
@@ -485,10 +506,16 @@ impl LanguageServer for AlServer {
         self.workspace.documents.close(&uri);
 
         if let Ok(path) = uri.to_file_path() {
+            // Targeted composed invalidation — only evict the object from this file (ISSUE-146)
+            if let Some(info) = self.workspace.file_index.object_info.get(&path) {
+                self.workspace.symbols.invalidate_composed(&info.name);
+            } else {
+                self.workspace.symbols.invalidate_all_composed();
+            }
             self.workspace.file_index.remove_file(&path);
+        } else {
+            self.workspace.symbols.invalidate_all_composed();
         }
-
-        self.workspace.symbols.invalidate_all_composed();
         self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
@@ -614,6 +641,17 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, edits = count, elapsed_us = elapsed.as_micros() as u64, "formatting");
         Ok(result)
     }
+
+    async fn range_formatting(&self, params: DocumentRangeFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document.uri;
+        let start = std::time::Instant::now();
+        let result = formatting::handle_range_formatting(self, uri, params.range, &params.options);
+        let elapsed = start.elapsed();
+        let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
+        tracing::debug!(uri = %uri, edits = count, elapsed_us = elapsed.as_micros() as u64, "range_formatting");
+        Ok(result)
+    }
+
 
     // -- Folding ranges --
 

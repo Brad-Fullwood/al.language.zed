@@ -3,6 +3,7 @@
 //! All state, queries, and orchestration live here. Only `al-lsp` imports this crate.
 //! Analysis libraries (al-syntax, al-symbols, al-semantic) are standalone dependencies.
 
+pub mod bc_client;
 pub mod build;
 pub mod config;
 pub mod documents;
@@ -11,18 +12,22 @@ pub mod file_index;
 pub mod insight;
 pub mod jsonrpc;
 pub mod launch;
+pub mod native_debug;
 pub mod parsing;
 pub mod permissions;
 pub mod profiling;
 pub mod project;
+pub mod publish;
 pub mod queries;
 pub(crate) mod http_auth;
 pub(crate) mod resolution;
 pub mod scaffold;
 pub mod semantic;
 pub mod snapshot;
+pub mod test_runner;
 pub mod toolchain;
 pub mod workspace;
+pub mod xliff;
 
 // ---------------------------------------------------------------------------
 // Re-exports for al-lsp (thin transport layer should not depend on analysis libs)
@@ -32,7 +37,7 @@ pub mod workspace;
 pub mod syntax {
     pub use al_syntax::{
         AlParser, ParseResult, SyntaxError,
-        format_al, FormatOptions,
+        format_al, format_range, FormatOptions, BraceStyle, KeywordCasing, BlankLinesBetweenProcedures,
         lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity,
         find_object_declaration, ts_range_to_lsp,
     };

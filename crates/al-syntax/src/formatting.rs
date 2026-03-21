@@ -13,11 +13,55 @@
 //! - **Blank lines drain single-statement stack**
 //! - **Property continuation**: preserve whitespace when `prev_ended_with_comma`
 
+/// AL keyword casing style.
+#[derive(Debug, Clone, Default)]
+pub enum KeywordCasing {
+    /// Preserve existing casing.
+    #[default]
+    Preserve,
+    /// Lowercase all keywords.
+    Lower,
+    /// Uppercase all keywords.
+    Upper,
+}
+
+/// How blank lines between procedures should be handled.
+#[derive(Debug, Clone, Default)]
+pub enum BlankLinesBetweenProcedures {
+    /// Preserve existing blank lines.
+    #[default]
+    Preserve,
+    /// Ensure exactly one blank line between procedures.
+    One,
+    /// Ensure exactly two blank lines between procedures.
+    Two,
+}
+
+/// Brace placement style for `begin`/`end` blocks.
+#[derive(Debug, Clone, Default)]
+pub enum BraceStyle {
+    /// `begin` on the same line as the statement.
+    SameLine,
+    /// `begin` on the next line (default AL style).
+    #[default]
+    NextLine,
+}
+
 /// Formatting options.
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
     pub tab_size: usize,
     pub insert_spaces: bool,
+    /// Keyword casing to apply.
+    pub keyword_casing: KeywordCasing,
+    /// Blank lines between procedures.
+    pub blank_lines_between_procedures: BlankLinesBetweenProcedures,
+    /// Maximum line length (0 = no limit).
+    pub max_line_length: usize,
+    /// Brace placement style.
+    pub brace_style: BraceStyle,
+    /// Sort object properties alphabetically.
+    pub sort_properties: bool,
 }
 
 impl Default for FormatOptions {
@@ -25,6 +69,11 @@ impl Default for FormatOptions {
         Self {
             tab_size: 4,
             insert_spaces: true,
+            keyword_casing: KeywordCasing::Preserve,
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::Preserve,
+            max_line_length: 0,
+            brace_style: BraceStyle::NextLine,
+            sort_properties: false,
         }
     }
 }
@@ -267,6 +316,91 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // Ensure file ends with newline
     if !result.ends_with('\n') {
         result.push('\n');
+    }
+
+    result
+}
+
+/// Format a range of lines within AL source code.
+///
+/// Formats the entire document (to derive correct indent context) but returns
+/// `TextEdit`s covering only the requested line range.
+///
+/// `start_line` and `end_line` are 0-based, inclusive.
+/// Returns `None` if `start_line` is out of bounds.
+/// Returns `Some(vec![])` if the selected lines are already correctly formatted.
+pub fn format_range(
+    text: &str,
+    start_line: u32,
+    end_line: u32,
+    options: &FormatOptions,
+) -> Option<Vec<tower_lsp::lsp_types::TextEdit>> {
+    let formatted_full = format_al(text, options);
+
+    let orig_lines: Vec<&str> = text.lines().collect();
+    let fmt_lines: Vec<&str> = formatted_full.lines().collect();
+
+    let start = start_line as usize;
+    if start >= orig_lines.len() {
+        return None;
+    }
+    let end = (end_line as usize).min(orig_lines.len().saturating_sub(1));
+    if start > end {
+        return None;
+    }
+
+    let formatted_region = extract_formatted_region(&orig_lines, &fmt_lines, start, end);
+    let original_region: Vec<&str> = orig_lines[start..=end].to_vec();
+
+    if formatted_region == original_region {
+        return Some(Vec::new());
+    }
+
+    let mut new_text = formatted_region.join("\n");
+    new_text.push('\n');
+
+    let end_char = orig_lines.get(end).map(|l| l.len() as u32).unwrap_or(0);
+
+    Some(vec![tower_lsp::lsp_types::TextEdit {
+        range: tower_lsp::lsp_types::Range {
+            start: tower_lsp::lsp_types::Position { line: start_line, character: 0 },
+            end: tower_lsp::lsp_types::Position { line: end_line, character: end_char },
+        },
+        new_text,
+    }])
+}
+
+/// Extract lines from the formatted output corresponding to orig lines [start..=end].
+///
+/// The formatter collapses consecutive blank lines (two → one). We walk orig and fmt
+/// in lockstep, skipping orig-only collapsed blanks without advancing the fmt cursor.
+fn extract_formatted_region<'a>(
+    orig_lines: &[&str],
+    fmt_lines: &[&'a str],
+    start: usize,
+    end: usize,
+) -> Vec<&'a str> {
+    let mut orig_idx = 0usize;
+    let mut fmt_idx = 0usize;
+    let mut result: Vec<&'a str> = Vec::new();
+    let mut prev_orig_blank = false;
+
+    while orig_idx <= end && fmt_idx < fmt_lines.len() {
+        let orig_is_blank = orig_lines[orig_idx].trim().is_empty();
+
+        if orig_is_blank && prev_orig_blank {
+            orig_idx += 1;
+            continue;
+        }
+
+        prev_orig_blank = orig_is_blank;
+
+        if orig_idx >= start {
+            result.push(fmt_lines[fmt_idx]);
+        }
+
+        orig_idx += 1;
+        fmt_idx += 1;
     }
 
     result
@@ -579,6 +713,7 @@ end;
         let opts = FormatOptions {
             tab_size: 4,
             insert_spaces: false,
+            ..Default::default()
         };
         let result = format_al(input, &opts);
         assert!(result.contains("\tprocedure DoSomething()"));
@@ -626,5 +761,53 @@ end;
 }
 "#;
         assert_eq!(fmt(input), expected);
+    }
+    // -----------------------------------------------------------------------
+    // format_range tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_range_no_change_needed() {
+        let input = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        Message(\'Hello\');\n    end;\n}";
+        let opts = FormatOptions::default();
+        let edits = format_range(input, 2, 5, &opts);
+        assert!(edits.is_some());
+        assert!(edits.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_format_range_single_procedure_body() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nMessage(\'Hello\');\nend;\n}";
+        let opts = FormatOptions::default();
+        let edits = format_range(input, 2, 5, &opts);
+        assert!(edits.is_some());
+        let edits = edits.unwrap();
+        assert!(!edits.is_empty());
+        let edit = &edits[0];
+        assert_eq!(edit.range.start.line, 2);
+        assert_eq!(edit.range.end.line, 5);
+        assert!(edit.new_text.contains("    procedure DoSomething()"));
+        assert!(edit.new_text.contains("    begin"));
+        assert!(edit.new_text.contains("        Message(\'Hello\');"));
+        assert!(edit.new_text.contains("    end;"));
+    }
+
+    #[test]
+    fn test_format_range_out_of_bounds_returns_none() {
+        let input = "codeunit 50100 Test\n{\n}";
+        let opts = FormatOptions::default();
+        assert!(format_range(input, 10, 15, &opts).is_none());
+    }
+
+    #[test]
+    fn test_format_range_preserves_context_indent() {
+        let input = "codeunit 50100 Test\n{\nprocedure Outer()\nbegin\nif x > 0 then\nMessage(\'yes\');\nend;\n}";
+        let opts = FormatOptions::default();
+        let edits = format_range(input, 4, 5, &opts);
+        assert!(edits.is_some());
+        let edits = edits.unwrap();
+        assert!(!edits.is_empty());
+        assert!(edits[0].new_text.contains("        if x > 0 then"));
+        assert!(edits[0].new_text.contains("            Message(\'yes\');"));
     }
 }

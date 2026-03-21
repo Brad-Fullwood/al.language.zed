@@ -627,6 +627,7 @@ fn format_with_tabs() {
     let opts = FormatOptions {
         tab_size: 4,
         insert_spaces: false,
+        ..Default::default()
     };
 
     let code = r#"codeunit 50100 Test
@@ -650,6 +651,7 @@ fn format_with_two_space_indent() {
     let opts = FormatOptions {
         tab_size: 2,
         insert_spaces: true,
+        ..Default::default()
     };
 
     let code = r#"codeunit 50100 Test
