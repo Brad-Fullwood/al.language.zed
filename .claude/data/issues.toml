@@ -125,8 +125,17 @@ date = "2026-03-17"
 category = "constraint"
 severity = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
+resolution = """
+Source was al-explorer open_selected_object() fallback at main.rs:575 — it used
+open::that("zed://symbol/...") when no virtual file path could be found for a package
+symbol. Zed has no built-in zed://symbol/ handler, so every click logged an error.
+
+Fix: removed the zed://symbol/ fallback and the now-unused urlencoding_encode() helper.
+When a symbol has no backing file (e.g. from a .app package), al-explorer now silently
+skips the open action instead of opening an unhandled URL.
+"""
 description = """
 Zed log shows repeated errors:
   ERROR [zed::zed::open_listener] unhandled url: zed://symbol/Codeunit%20Sales-Quote%20to%20Order
@@ -145,8 +154,22 @@ date = "2026-03-17"
 category = "plan"
 severity = "improvement"
 priority = "HIGH"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
+resolution = """
+Implemented find_or_download_binary() in src/lib.rs with the priority chain from the
+issue research notes:
+1. User-configured explicit path (settings override) — highest priority
+2. Cached downloaded binary (cached_binary_path field + fs::metadata check)
+3. PATH lookup (worktree.which("al-lsp")) — dev builds and cargo install
+4. GitHub release download via zed::latest_github_release("Brad-Fullwood/zed-al") with
+   platform-specific asset name (al-lsp-{arch}-{os}.tar.gz), GzipTar extraction,
+   make_file_executable, old version cleanup, and cached_binary_path update
+
+Added cached_binary_path: Option<String> to AlExtension struct (was a unit struct before).
+The bundled proxy path (discovery::find_proxy_path) still takes priority over the download
+chain for installations that bundle the binary alongside the extension.
+"""
 description = """
 The zed-al extension currently finds al-lsp via PATH lookup or a hardcoded installed
 extension path. For distribution via Zed marketplace, the extension needs to download
@@ -815,8 +838,17 @@ date = "2026-03-17"
 category = "idea"
 severity = "improvement"
 priority = "MEDIUM"
-status = "open"
+status = "wont_fix"
 triage = "SCHEDULE"
+resolution = """
+Investigated Zed source (crates/extensions_ui/src/extensions_ui.rs line 1043-1046):
+  let is_configurable = extension.manifest.provides.contains(&ExtensionProvides::ContextServers);
+The Configure button is hardcoded to only appear for extensions that declare context servers.
+Language server settings (lsp.*) in Zed settings.json are documented but not surfaced via
+the Configure button mechanism. This is a Zed limitation — not fixable from the extension side
+without adding a context server (which would be out of scope). Users must configure al-lsp
+settings manually via Zed's settings.json (the usual LSP settings path).
+"""
 description = """
 Other installed Zed extensions show a "Configure" button next to "Uninstall" in the
 Extensions panel. Our AL extension doesn't have this.
@@ -1193,8 +1225,16 @@ date = "2026-03-16"
 category = "plan"
 severity = "drift"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
 triage = "SCHEDULE"
+resolution = """
+Added 4 inline tests in crates/al-mcp/src/main.rs #[cfg(test)] module:
+- find_al_binary_falls_back_to_al_name: verifies binary discovery returns non-empty path
+- run_al_returns_error_json_on_missing_binary: verifies error JSON format when binary absent
+- run_al_returns_error_json_on_stderr_only_output: tests stderr-only branch (#[cfg(unix)])
+- server_can_be_created: smoke test for AlMcpServer::new()
+All 4 pass. The tests cover find_al_binary(), run_al() error paths, and server construction.
+"""
 description = """
 crates/al-mcp has no tests at all — no unit tests, no integration tests. The MCP server's
 argument parsing, command dispatch, subprocess execution, and JSON output formatting are
