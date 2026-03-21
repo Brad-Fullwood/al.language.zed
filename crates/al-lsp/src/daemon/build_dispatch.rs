@@ -760,7 +760,7 @@ pub(super) async fn dispatch_authenticate(workspace: &Workspace, id: u64, params
                 error: None,
             }
         }
-        "login" | _ => {
+        _ => {
             let tenant = params.get("tenant").and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .or_else(|| get_project_tenants(workspace).into_iter().next());
@@ -1721,7 +1721,7 @@ pub(super) async fn dispatch_tests_run(workspace: &Workspace, id: u64, params: &
     };
 
     // -- Convert to diagnostics (T1503) ----------------------------------------
-    let diagnostics = results_to_diagnostics(&[result.clone()], workspace);
+    let diagnostics = results_to_diagnostics(std::slice::from_ref(&result), workspace);
 
     let result_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
     let diag_json = serde_json::to_value(&diagnostics).unwrap_or(serde_json::json!([]));
@@ -1844,6 +1844,7 @@ pub(super) fn dispatch_deps_graph(workspace: &Workspace, id: u64, params: &serde
     // Build package list from loaded symbols — name, publisher, version, deps
     // Currently we pass the packages list without transitive dependency info;
     // the dep graph will still resolve direct dependencies from app.json.
+    #[allow(clippy::type_complexity)]
     let packages: Vec<(String, String, String, Vec<(String, String, String)>)> = Vec::new();
 
     let graph = al_core::queries::deps::build_dependency_graph(&app_json, &packages);

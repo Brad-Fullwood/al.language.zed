@@ -288,6 +288,7 @@ pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serd
 }
 
 /// Convert an AL object kind string to BC's ObjectTypeWrapper enum value.
+#[allow(dead_code)]
 pub(super) fn kind_to_object_type(kind: &str) -> i32 {
     match kind.to_lowercase().as_str() {
         "table" => 1,
