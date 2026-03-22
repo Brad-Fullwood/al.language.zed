@@ -7,13 +7,26 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+/// Maximum DAP message body size (20 MB).
+const MAX_DAP_BODY_SIZE: usize = 20 * 1024 * 1024;
+
+/// Maximum DAP header line length (8 KiB).
+const MAX_DAP_HEADER_LINE: usize = 8192;
+
 /// Read one DAP message body from the wire.
 ///
 /// Reads `Content-Length` headers, then reads exactly that many bytes.
+/// Returns `InvalidData` if `Content-Length` exceeds [`MAX_DAP_BODY_SIZE`].
 pub async fn read_dap_body<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
 ) -> Result<Vec<u8>, std::io::Error> {
     let content_length = read_headers(reader).await?;
+    if content_length > MAX_DAP_BODY_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Content-Length {content_length} exceeds maximum {MAX_DAP_BODY_SIZE}"),
+        ));
+    }
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body).await?;
     Ok(body)
@@ -27,6 +40,12 @@ async fn read_headers<R: tokio::io::AsyncRead + Unpin>(
     loop {
         let mut line = String::new();
         let n = reader.read_line(&mut line).await?;
+        if n > MAX_DAP_HEADER_LINE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("DAP header line exceeds maximum length of {MAX_DAP_HEADER_LINE} bytes"),
+            ));
+        }
         if n == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -213,5 +232,40 @@ mod tests {
         let counter = AtomicI64::new(7);
         let _ = ensure_seq(body, &counter);
         assert_eq!(counter.load(Ordering::Relaxed), 7, "counter must not increment when no `{{` found");
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_content_length() {
+        // 200 MB — well above the 20 MB cap.
+        let data = b"Content-Length: 209715200\r\n\r\n";
+        let mut reader = BufReader::new(&data[..]);
+        let result = read_dap_body(&mut reader).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn accepts_content_length_at_limit() {
+        // Exactly 20 MB should be accepted (allocation guard passes).
+        // We don't actually provide 20 MB of body — read_exact will hit EOF,
+        // but the guard itself must not fire.
+        let data = b"Content-Length: 20971520\r\n\r\n";
+        let mut reader = BufReader::new(&data[..]);
+        let result = read_dap_body(&mut reader).await;
+        // Guard passed; EOF from missing body is expected.
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_header_line() {
+        // Build a header line longer than MAX_DAP_HEADER_LINE (8192).
+        let long_value = "X".repeat(9000);
+        let header = format!("Content-Length: {long_value}\r\n\r\n");
+        let mut reader = BufReader::new(header.as_bytes());
+        let result = read_dap_body(&mut reader).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 }
