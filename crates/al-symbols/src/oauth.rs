@@ -629,6 +629,21 @@ pub fn token_cache_path(tenant: &str) -> PathBuf {
     cache_dir.join(format!("{safe}.json"))
 }
 
+/// Create a directory with owner-only permissions (0o700 on Unix).
+#[cfg(unix)]
+fn create_secure_dir(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+}
+
+#[cfg(not(unix))]
+fn create_secure_dir(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
 fn load_cached_token(path: &PathBuf) -> Option<CachedToken> {
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
@@ -641,7 +656,7 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
     use std::os::unix::fs::OpenOptionsExt;
 
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        let _ = create_secure_dir(parent);
     }
     let cached = CachedToken {
         access_token: tok.access_token.clone(),
@@ -741,5 +756,16 @@ mod tests {
         let params = parse_query_string("code=abc123&state=xyz&session_state=foo");
         assert_eq!(params.get("code").unwrap(), "abc123");
         assert_eq!(params.get("state").unwrap(), "xyz");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oauth_directory_has_restricted_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("oauth");
+        create_secure_dir(&cache_dir).unwrap();
+        let perms = std::fs::metadata(&cache_dir).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, 0o700, "OAuth cache dir must be owner-only");
     }
 }
