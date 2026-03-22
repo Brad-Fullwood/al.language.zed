@@ -37,28 +37,15 @@ impl AlParser {
     }
 
     pub fn parse(&mut self, text: &str) -> ParseResult {
-        // tree-sitter returns None only when parsing is cancelled (timeout/cancellation).
-        // We don't set either, so None is unexpected; fall back to a fresh parser instance.
-        let tree = match self.parser.parse(text, None) {
-            Some(t) => t,
-            None => {
-                let mut fallback = Parser::new();
-                let _ = fallback.set_language(&language());
-                fallback
-                    .parse(text, None)
-                    .or_else(|| fallback.parse("", None))
-                    .expect("empty source parse must succeed")
-            }
-        };
+        let tree = self.parser.parse(text, None)
+            .expect("tree-sitter parse must succeed without timeout or cancellation");
         let errors = collect_errors(&tree, text);
         ParseResult { tree, errors }
     }
 
     pub fn parse_incremental(&mut self, text: &str, old_tree: &Tree) -> ParseResult {
-        let tree = match self.parser.parse(text, Some(old_tree)) {
-            Some(t) => t,
-            None => return self.parse(text),
-        };
+        let tree = self.parser.parse(text, Some(old_tree))
+            .expect("tree-sitter incremental parse must succeed without timeout or cancellation");
         let errors = collect_errors(&tree, text);
         ParseResult { tree, errors }
     }
