@@ -5,6 +5,18 @@ use al_core::jsonrpc::{error_codes, Response, RpcError};
 
 use super::{extract_uri, extract_position, invalid_params};
 
+/// Sentinel package name for workspace-local objects (not from .app packages).
+const WORKSPACE_PACKAGE: &str = "(workspace)";
+
+/// Case-insensitive ASCII substring check without allocation.
+/// `query_lower` must already be lowercase.
+fn ascii_contains_ci(haystack: &str, query_lower: &str) -> bool {
+    let q = query_lower.as_bytes();
+    let h = haystack.as_bytes();
+    if q.len() > h.len() { return false; }
+    h.windows(q.len()).any(|w| w.iter().zip(q).all(|(a, b)| a.to_ascii_lowercase() == *b))
+}
+
 pub(super) fn dispatch_hover(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let Some(position) = extract_position(params) else { return invalid_params(id); };
@@ -188,16 +200,19 @@ pub(super) fn dispatch_search(workspace: &Workspace, id: u64, params: &serde_jso
         .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
         .collect();
     // Workspace file objects
-    let query_lower = query.to_lowercase();
-    for entry in workspace.file_index.object_info.iter() {
-        if value.len() >= limit {
-            break;
+    if !query.is_empty() {
+        let query_lower = query.to_lowercase();
+        for entry in workspace.file_index.object_info.iter() {
+            if value.len() >= limit { break; }
+            let info = entry.value();
+            if !ascii_contains_ci(&info.name, &query_lower) { continue; }
+            value.push(workspace_object_to_json(info));
         }
-        let info = entry.value();
-        if !query.is_empty() && !info.name.to_lowercase().contains(&query_lower) {
-            continue;
+    } else {
+        for entry in workspace.file_index.object_info.iter() {
+            if value.len() >= limit { break; }
+            value.push(workspace_object_to_json(entry.value()));
         }
-        value.push(workspace_object_to_json(info));
     }
     Response { id, result: Some(serde_json::json!(value)), error: None }
 }
@@ -228,10 +243,11 @@ pub(super) fn dispatch_object(workspace: &Workspace, id: u64, params: &serde_jso
         .collect();
     // Workspace file objects
     let name_lower = name.to_lowercase();
+    let kind_lower = kind.to_string().to_lowercase();
     for entry in workspace.file_index.object_info.iter() {
         let info = entry.value();
-        if info.name.to_lowercase() == name_lower
-            && info.kind.to_lowercase() == kind.to_string().to_lowercase()
+        if info.name.eq_ignore_ascii_case(&name_lower)
+            && info.kind.eq_ignore_ascii_case(&kind_lower)
         {
             matches.push(workspace_object_to_json(info));
         }
@@ -256,7 +272,7 @@ fn workspace_object_to_json(info: &al_core::file_index::CachedObjectInfo) -> ser
         "kind": info.kind,
         "id": info.id.unwrap_or(0),
         "name": info.name,
-        "package": "(workspace)",
+        "package": WORKSPACE_PACKAGE,
     })
 }
 

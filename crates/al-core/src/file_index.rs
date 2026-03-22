@@ -107,7 +107,7 @@ pub struct FileIndex {
     /// File path → cached parse tree (avoids re-parsing for cross-file queries).
     pub file_trees: DashMap<PathBuf, tree_sitter::Tree>,
     /// Lowercase procedure/event name → location (reverse index for O(1) go-to-definition).
-    pub procedures: DashMap<String, Vec<CachedProcedureInfo>>,
+    pub(crate) procedures: DashMap<String, Vec<CachedProcedureInfo>>,
     /// File path → list of procedure names (for cleanup on file remove/update).
     path_to_procedures: DashMap<PathBuf, Vec<String>>,
 }
@@ -125,6 +125,11 @@ impl FileIndex {
             procedures: DashMap::new(),
             path_to_procedures: DashMap::new(),
         }
+    }
+
+    /// Look up procedure/event locations by name (case-insensitive).
+    pub fn lookup_procedures(&self, name: &str) -> Option<Vec<CachedProcedureInfo>> {
+        self.procedures.get(&name.to_lowercase()).map(|v| v.value().clone())
     }
 
     /// Get the cached parse tree and text for a workspace file (not an open document).

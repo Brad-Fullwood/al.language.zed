@@ -203,7 +203,7 @@ fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
                 if !name.is_empty() || id > 0 {
                     return Some((capitalize(ot), id, name));
                 }
-            } // end if let Some(after)
+            }
         }
     }
     None

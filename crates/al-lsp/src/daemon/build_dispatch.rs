@@ -900,7 +900,6 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
                     std::sync::Arc::new(|msg| tracing::info!("{msg}")),
                     cfg.accept_invalid_certs,
                 );
-                // al_core::project::AppDependency is re-exported from al-symbols — clone directly.
                 let url_deps: Vec<(String, al_core::symbols::nuget::AppDependency)> = all_deps
                     .iter()
                     .filter_map(|dep| {
@@ -932,7 +931,6 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
                         index_url: f.index_url.clone(),
                     })
                     .collect();
-                // al_core::project::AppDependency is re-exported from al-symbols — pass directly.
                 let client = al_core::symbols::nuget::NuGetClient::new(nuget_feeds);
                 let nuget_results = client.download_all(&all_deps, &dest).await;
                 nuget_results

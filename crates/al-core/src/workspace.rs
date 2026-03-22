@@ -138,7 +138,7 @@ impl Workspace {
 
     /// Approximate memory statistics for the workspace.
     pub fn memory_stats(&self) -> WorkspaceMemoryStats {
-        let symbol_count = self.symbols.all_entries().len();
+        let symbol_count = self.symbols.len();
         let open_docs = self.documents.len();
         let workspace_files = self.file_index.files.len();
         let procedure_index_entries = self.file_index.procedures.len();

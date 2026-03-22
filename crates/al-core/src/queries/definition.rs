@@ -96,9 +96,8 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    // O(1) procedure name reverse index — replaces O(n×files) tree walk.
-    if let Some(proc_entries) = workspace.file_index.procedures.get(&clean_name.to_lowercase()) {
-        for info in proc_entries.value() {
+    if let Some(proc_entries) = workspace.file_index.lookup_procedures(clean_name) {
+        for info in &proc_entries {
             if current_path.as_ref() == Some(&info.file) { continue; }
             if let Ok(file_uri) = Url::from_file_path(&info.file) {
                 return Some(vec![Location {

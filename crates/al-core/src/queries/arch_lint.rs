@@ -161,7 +161,6 @@ fn apply_rule(
         }
         ArchRuleKind::MaxComplexity => {
             let max: u32 = rule.values.first().and_then(|v| v.parse().ok()).unwrap_or(10);
-            // Reuse the already-parsed tree from the caller — no redundant re-parse.
             let metrics = al_syntax::complexity::compute_complexity(tree, text);
             for m in &metrics {
                 if m.cyclomatic > max {

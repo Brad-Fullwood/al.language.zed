@@ -209,7 +209,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         }
     }
 
-    // 5. Check workspace object name index (cached — no parse_quick on hover hot path)
+    // 5. Check workspace object name index
     if let Some(file_path_entry) = workspace.file_index.objects.get(&clean_name.to_lowercase()) {
         let file_path = file_path_entry.value();
         if let Some(cached) = workspace.file_index.object_info.get(file_path) {
