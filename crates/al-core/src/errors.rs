@@ -51,6 +51,10 @@ pub enum AlError {
     #[error("no toolchain available")]
     NoToolchain,
 
+    /// Semantic bridge background task panicked.
+    #[error("semantic bridge task panicked")]
+    BridgePanicked,
+
     /// IO errors (file read/write, socket, etc.)
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
