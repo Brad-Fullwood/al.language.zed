@@ -261,11 +261,11 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
     let params = req.params.unwrap_or(serde_json::Value::Null);
 
     match req.method.as_str() {
-        "hover" => lsp_dispatch::dispatch_hover(workspace, id, &params),
+        "hover" => lsp_dispatch::dispatch_hover(workspace, id, &params).await,
         "definition" => lsp_dispatch::dispatch_definition(workspace, id, &params),
         "references" => lsp_dispatch::dispatch_references(workspace, id, &params),
         "implementations" => lsp_dispatch::dispatch_implementations(workspace, id, &params),
-        "completions" => lsp_dispatch::dispatch_completions(workspace, id, &params),
+        "completions" => lsp_dispatch::dispatch_completions(workspace, id, &params).await,
         "signatureHelp" => lsp_dispatch::dispatch_signature_help(workspace, id, &params),
         "rename" => lsp_dispatch::dispatch_rename(workspace, id, &params),
         "documentSymbols" => lsp_dispatch::dispatch_document_symbols(workspace, id, &params),

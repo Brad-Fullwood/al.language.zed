@@ -166,6 +166,73 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
     items
 }
 
+/// Timeout for interactive bridge calls (completions).
+const BRIDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Full completions: native resolution first, then .NET CodeAnalysis bridge for member access.
+///
+/// This is the single code path for all entry points (LSP and daemon).
+pub async fn completions_full(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
+    let items = completions(workspace, uri, position);
+    if !items.is_empty() {
+        return items;
+    }
+
+    // Bridge fallback: only for member access context
+    let lsp_pos: tower_lsp::lsp_types::Position = position.into();
+    let Some(text) = workspace.documents.get_text(uri) else { return items; };
+    let ctx = al_syntax::context::detect_context(&text, lsp_pos);
+    if !matches!(ctx, al_syntax::context::CompletionContext::MemberAccess) {
+        return items;
+    }
+
+    let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await else { return items; };
+    let Some(bridge) = guard.as_ref() else { return items; };
+    let Ok(path) = uri.to_file_path() else { return items; };
+    let pos = (position.line + 1, position.character + 1);
+    let bridge_items = match tokio::time::timeout(BRIDGE_TIMEOUT, bridge.completions_at(&path, pos)).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "completions_full: bridge error");
+            return items;
+        }
+        Err(_) => {
+            tracing::debug!("completions_full: bridge timed out");
+            return items;
+        }
+    };
+    if bridge_items.is_empty() {
+        return items;
+    }
+
+    fn completion_kind_from_str(s: &str) -> CompletionKind {
+        match s {
+            "Method" | "Function" => CompletionKind::Method,
+            "Property" | "Field" => CompletionKind::Field,
+            "Variable" => CompletionKind::Variable,
+            "Enum" | "EnumMember" => CompletionKind::EnumMember,
+            "Class" | "Struct" => CompletionKind::Class,
+            "Module" | "Namespace" => CompletionKind::Module,
+            "Keyword" => CompletionKind::Keyword,
+            "Snippet" => CompletionKind::Snippet,
+            _ => CompletionKind::Text,
+        }
+    }
+
+    tracing::debug!(count = bridge_items.len(), "completions_full: bridge results");
+    bridge_items
+        .into_iter()
+        .map(|item| CompletionEntry {
+            sort_text: Some(format!("2_{}", item.label.to_ascii_lowercase())),
+            kind: completion_kind_from_str(&item.kind),
+            detail: item.detail,
+            documentation: item.documentation,
+            label: item.label,
+            insert_text: None,
+        })
+        .collect()
+}
+
 fn add_default_completions(
     workspace: &Workspace,
     uri: &Url,

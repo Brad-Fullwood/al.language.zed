@@ -17,63 +17,9 @@ use crate::handlers;
 use crate::hover;
 use crate::workspace;
 
-/// Timeout for interactive bridge calls (hover, completions).
-/// Shorter than the default 30s bridge timeout to keep UX snappy.
-const BRIDGE_INTERACTIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Debounce delay for diagnostics: wait this long after the last keystroke before running.
 /// ISSUE-025 fix: prevents bridge calls (up to 5s) from blocking hover/completion.
 const DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
-
-/// Call a bridge method with timeout, converting errors to `None`.
-///
-/// `$call` receives `(bridge, path, pos)` as parameters, keeping borrows
-/// in the caller's scope and avoiding the lifetime issues that prevent
-/// a generic async wrapper.
-macro_rules! bridge_call {
-    ($self:expr, $uri:expr, $position:expr, $label:literal, |$b:ident, $p:ident, $ps:ident| $call:expr) => {{
-        let guard = $self.get_or_init_bridge().await;
-        let guard = match guard {
-            Some(g) => g,
-            None => return None,
-        };
-        let $b = match guard.as_ref() {
-            Some(b) => b,
-            None => return None,
-        };
-        let $p = match $uri.to_file_path() {
-            Ok(p) => p,
-            Err(_) => return None,
-        };
-        let $ps = ($position.line + 1, $position.character + 1);
-        match tokio::time::timeout(BRIDGE_INTERACTIVE_TIMEOUT, $call).await {
-            Ok(Ok(v)) => Some(v),
-            Ok(Err(e)) => {
-                tracing::debug!(error = %e, concat!($label, ": error"));
-                None
-            }
-            Err(_) => {
-                tracing::debug!(concat!($label, ": timed out"));
-                None
-            }
-        }
-    }};
-}
-
-/// Map a CodeAnalysis completion kind string to an LSP CompletionItemKind.
-fn completion_kind_from_str(s: &str) -> CompletionItemKind {
-    match s {
-        "Method" | "Function" => CompletionItemKind::METHOD,
-        "Property" | "Field" => CompletionItemKind::FIELD,
-        "Variable" => CompletionItemKind::VARIABLE,
-        "Enum" | "EnumMember" => CompletionItemKind::ENUM_MEMBER,
-        "Class" | "Struct" => CompletionItemKind::CLASS,
-        "Module" | "Namespace" => CompletionItemKind::MODULE,
-        "Keyword" => CompletionItemKind::KEYWORD,
-        "Snippet" => CompletionItemKind::SNIPPET,
-        _ => CompletionItemKind::TEXT,
-    }
-}
 
 /// The AL language server.
 pub struct AlServer {
@@ -209,65 +155,12 @@ impl AlServer {
         al_core::semantic::get_or_init_bridge(&self.workspace).await
     }
 
-    /// Bridge fallback for completions — calls CodeAnalysis completions_at.
-    async fn bridge_completions(
-        &self,
-        uri: &Url,
-        position: Position,
-    ) -> Option<Vec<CompletionItem>> {
-        let items: Vec<al_core::semantic_types::CompletionItem> = bridge_call!(
-            self, uri, position, "bridge_completions",
-            |bridge, path, pos| bridge.completions_at(&path, pos))?;
-        if items.is_empty() {
-            return None;
-        }
-
-        tracing::debug!(count = items.len(), "bridge_completions: got results from CodeAnalysis");
-        let lsp_items = items
-            .into_iter()
-            .map(|item| {
-                let kind = completion_kind_from_str(&item.kind);
-                let sort_text = format!("2_{}", item.label.to_ascii_lowercase());
-                CompletionItem {
-                    label: item.label,
-                    kind: Some(kind),
-                    detail: item.detail,
-                    documentation: item.documentation.map(Documentation::String),
-                    sort_text: Some(sort_text),
-                    ..Default::default()
-                }
-            })
-            .collect();
-        Some(lsp_items)
-    }
-
-    /// Bridge fallback for hover — calls CodeAnalysis type_at.
-    async fn bridge_hover(&self, uri: &Url, position: Position) -> Option<Hover> {
-        let info = bridge_call!(self, uri, position, "bridge_hover",
-            |bridge, path, pos| bridge.type_at(&path, pos))?;
-        let info = info?; // type_at returns Option<TypeAtInfo>
-
-        tracing::debug!(name = %info.name, kind = %info.kind, "bridge_hover: got type info from CodeAnalysis");
-        let mut value = format!("```al\n{}\n```\n*({} — CodeAnalysis)*", info.name, info.kind);
-        if let Some(doc) = &info.documentation {
-            value.push_str("\n\n");
-            value.push_str(doc);
-        }
-        Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value,
-            }),
-            range: None,
-        })
-    }
-
     /// Schedule debounced diagnostics for `uri` with the given document text.
     ///
     /// ISSUE-025 fix: Cancels the previous pending task (if any) so that only
     /// the most recent keystroke triggers a diagnostics run. The actual diagnostics
     /// publish runs after `DIAGNOSTICS_DEBOUNCE` of silence. This prevents bridge
-    /// calls (up to BRIDGE_INTERACTIVE_TIMEOUT = 5s) from blocking hover/completion.
+    /// calls (up to bridge timeout = 5s) from blocking hover/completion.
     async fn schedule_diagnostics(&self, uri: Url, text: String) {
         // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
         // workspace files and Zed logs a warning for every publishDiagnostics on them.
@@ -496,7 +389,7 @@ impl LanguageServer for AlServer {
             self.update_workspace_index(&uri, &text);
             // ISSUE-025 fix: diagnostics are debounced and run async.
             // Each keystroke cancels the previous pending task to avoid bridge calls
-            // (up to BRIDGE_INTERACTIVE_TIMEOUT = 5s) blocking hover/completion.
+            // (up to bridge timeout = 5s) blocking hover/completion.
             self.schedule_diagnostics(uri, text).await;
         }
     }
@@ -543,15 +436,7 @@ impl LanguageServer for AlServer {
         let position = params.text_document_position_params.position;
         self.ensure_builtins_loaded().await;
         let start = std::time::Instant::now();
-        let mut result = hover::handle_hover(self, uri, position);
-
-        // Bridge fallback: if native resolution found nothing, try .NET type_at
-        if result.is_none() {
-            if let Some(hover) = self.bridge_hover(uri, position).await {
-                result = Some(hover);
-            }
-        }
-
+        let result = hover::handle_hover(self, uri, position).await;
         let elapsed = start.elapsed();
         tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "hover");
         Ok(result)
@@ -564,21 +449,7 @@ impl LanguageServer for AlServer {
         let position = params.text_document_position.position;
         self.ensure_builtins_loaded().await;
         let start = std::time::Instant::now();
-        let mut result = completions::handle_completion(self, uri, position);
-
-        // Bridge fallback: if native returned nothing for a member access context,
-        // try CodeAnalysis completions
-        if result.is_none() {
-            if let Some(text) = self.workspace.documents.get_text(uri) {
-                let ctx = al_core::syntax::context::detect_context(&text, position);
-                if matches!(ctx, al_core::syntax::context::CompletionContext::MemberAccess) {
-                    if let Some(items) = self.bridge_completions(uri, position).await {
-                        result = Some(CompletionResponse::Array(items));
-                    }
-                }
-            }
-        }
-
+        let result = completions::handle_completion(self, uri, position).await;
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|r| match r {
             CompletionResponse::Array(v) => v.len(),

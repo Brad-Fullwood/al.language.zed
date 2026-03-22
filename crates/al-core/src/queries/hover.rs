@@ -227,6 +227,41 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     None
 }
 
+/// Timeout for interactive bridge calls (hover).
+const BRIDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Full hover: native resolution first, then .NET CodeAnalysis bridge.
+///
+/// This is the single code path for all entry points (LSP and daemon).
+pub async fn hover_full(workspace: &Workspace, uri: &Url, position: Position) -> Option<HoverResult> {
+    if let Some(result) = hover(workspace, uri, position) {
+        return Some(result);
+    }
+
+    // Bridge: try .NET CodeAnalysis type_at
+    let guard = crate::semantic::get_or_init_bridge(workspace).await?;
+    let bridge = guard.as_ref()?;
+    let path = uri.to_file_path().ok()?;
+    let pos = (position.line + 1, position.character + 1);
+    let info = match tokio::time::timeout(BRIDGE_TIMEOUT, bridge.type_at(&path, pos)).await {
+        Ok(Ok(v)) => v?,
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "hover_full: bridge error");
+            return None;
+        }
+        Err(_) => {
+            tracing::debug!("hover_full: bridge timed out");
+            return None;
+        }
+    };
+    let mut contents = format!("```al\n{}\n```\n*({} — CodeAnalysis)*", info.name, info.kind);
+    if let Some(doc) = &info.documentation {
+        contents.push_str("\n\n");
+        contents.push_str(doc);
+    }
+    Some(HoverResult { contents, range: None })
+}
+
 fn format_procedure_hover(proc: &al_syntax::ProcedureInfo) -> String {
     let local = if proc.is_local { "local " } else { "" };
     let params: Vec<String> = proc

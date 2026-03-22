@@ -24,11 +24,14 @@ cargo build -p zed-al --target wasm32-wasip1 --release  # WASM extension
 ## Architecture
 
 ```
-zed-al (WASM extension)  →  al-lsp (stdio)              →  al-core  →  al-syntax
-al-cli / al-explorer     →  al-lsp daemon (Unix socket)           →  al-symbols
+zed-al (WASM extension)  →  al-lsp (stdio)              ┐
+al-cli / al-explorer     →  al-lsp daemon (Unix socket)  ├→  al-core  →  al-syntax
+                                                         │            →  al-symbols
+                                                         │            →  al-semantic
+                                                         └────────────→  al-daemon-client (IPC types)
 
-ALL ENTRY POINTS zed-al/al-cli/al-explorer should use same entry point and code paths.
-
+ALL ENTRY POINTS zed-al/al-cli/al-explorer use the same al-core query functions.
+Transport differs (stdio LSP vs Unix socket JSON-RPC), business logic does not.
 ```
 
 **al-lsp** is the sole server binary with three modes selected by args:

@@ -5,13 +5,13 @@ use tower_lsp::lsp_types::*;
 use crate::server::AlServer;
 
 /// Handle textDocument/completion.
-pub(crate) fn handle_completion(
+pub(crate) async fn handle_completion(
     server: &AlServer,
     uri: &Url,
     position: Position,
 ) -> Option<CompletionResponse> {
     let core_pos = al_core::queries::Position { line: position.line, character: position.character };
-    let entries = al_core::queries::completions::completions(&server.workspace, uri, core_pos);
+    let entries = al_core::queries::completions::completions_full(&server.workspace, uri, core_pos).await;
     if entries.is_empty() {
         return None;
     }

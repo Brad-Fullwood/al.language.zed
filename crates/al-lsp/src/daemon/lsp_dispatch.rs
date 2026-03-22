@@ -17,10 +17,10 @@ fn ascii_contains_ci(haystack: &str, query_lower: &str) -> bool {
     h.windows(q.len()).any(|w| w.iter().zip(q).all(|(a, b)| a.to_ascii_lowercase() == *b))
 }
 
-pub(super) fn dispatch_hover(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) async fn dispatch_hover(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let Some(position) = extract_position(params) else { return invalid_params(id); };
-    let result = al_core::queries::hover::hover(workspace, &uri, position);
+    let result = al_core::queries::hover::hover_full(workspace, &uri, position).await;
     let value = result.map(|r| serde_json::json!({
         "contents": r.contents,
         "range": r.range.map(|rng| serde_json::json!({
@@ -76,10 +76,10 @@ pub(super) fn dispatch_implementations(workspace: &Workspace, id: u64, params: &
     Response { id, result: Some(value), error: None }
 }
 
-pub(super) fn dispatch_completions(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) async fn dispatch_completions(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let Some(position) = extract_position(params) else { return invalid_params(id); };
-    let entries = al_core::queries::completions::completions(workspace, &uri, position);
+    let entries = al_core::queries::completions::completions_full(workspace, &uri, position).await;
     let value = serde_json::json!(entries.iter().map(|e| serde_json::json!({
         "label": e.label,
         "kind": format!("{:?}", e.kind),
