@@ -89,6 +89,11 @@ impl DocumentStore {
         self.docs.get(uri).map(|d| d.version)
     }
 
+    /// Number of open documents.
+    pub fn len(&self) -> usize {
+        self.docs.len()
+    }
+
     pub fn contains(&self, uri: &Url) -> bool {
         self.docs.contains_key(uri)
     }
@@ -286,5 +291,71 @@ mod tests {
         assert_eq!(store.get_text(&uri), Some("// line 1\nline three\n".to_string()));
 
         assert_eq!(store.get_version(&uri), Some(4));
+    }
+
+    #[test]
+    fn concurrent_open_and_read() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let store = Arc::new(DocumentStore::new());
+        let mut handles = Vec::new();
+
+        // Concurrent opens
+        for i in 0..20 {
+            let s = Arc::clone(&store);
+            handles.push(thread::spawn(move || {
+                let uri = Url::parse(&format!("file:///test/doc{i}.al")).unwrap();
+                s.open(uri, format!("content {i}"));
+            }));
+        }
+
+        // Concurrent reads
+        for i in 0..20 {
+            let s = Arc::clone(&store);
+            handles.push(thread::spawn(move || {
+                let uri = Url::parse(&format!("file:///test/doc{i}.al")).unwrap();
+                let _ = s.get_text(&uri);
+                let _ = s.get_text_arc(&uri);
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Verify all 20 docs are accessible
+        for i in 0..20 {
+            let uri = Url::parse(&format!("file:///test/doc{i}.al")).unwrap();
+            assert!(store.get_text(&uri).is_some(), "doc{i} should exist");
+        }
+    }
+
+    #[test]
+    fn concurrent_open_close_no_panic() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let store = Arc::new(DocumentStore::new());
+        let mut handles = Vec::new();
+
+        // Race opens and closes
+        for i in 0..10 {
+            let s = Arc::clone(&store);
+            handles.push(thread::spawn(move || {
+                let uri = Url::parse(&format!("file:///race/{i}.al")).unwrap();
+                s.open(uri.clone(), format!("ver{i}"));
+                s.close(&uri);
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        // All closed — docs should be gone
+        for i in 0..10 {
+            let uri = Url::parse(&format!("file:///race/{i}.al")).unwrap();
+            assert!(store.get_text(&uri).is_none(), "doc{i} should be closed");
+        }
     }
 }

@@ -6,9 +6,10 @@ use super::Position;
 use crate::resolution;
 use crate::workspace::Workspace;
 
-/// A parameter in a signature.
+/// A parameter in a signature help display (label + optional docs).
+/// Distinct from al_syntax::ParameterInfo which holds parsed name/type/is_var.
 #[derive(Debug, Clone)]
-pub struct ParameterInfo {
+pub struct SignatureParameterInfo {
     pub label: String,
     pub documentation: Option<String>,
 }
@@ -18,7 +19,7 @@ pub struct ParameterInfo {
 pub struct SignatureInfo {
     pub label: String,
     pub documentation: Option<String>,
-    pub parameters: Vec<ParameterInfo>,
+    pub parameters: Vec<SignatureParameterInfo>,
     pub active_parameter: Option<u32>,
 }
 
@@ -34,10 +35,10 @@ pub struct SignatureHelpResult {
 ///
 /// Uses `parse_detail_params` for paren-depth-aware splitting; `raw_label` from the triple
 /// is used as the LSP label so that the `var` modifier is preserved for clients.
-fn parse_parameters_from_detail(detail: &str) -> Vec<ParameterInfo> {
+fn parse_parameters_from_detail(detail: &str) -> Vec<SignatureParameterInfo> {
     super::parse_detail_params(detail)
         .into_iter()
-        .map(|(raw_label, _, _)| ParameterInfo {
+        .map(|(raw_label, _, _)| SignatureParameterInfo {
             label: raw_label,
             documentation: None,
         })
@@ -47,7 +48,7 @@ fn parse_parameters_from_detail(detail: &str) -> Vec<ParameterInfo> {
 /// Get signature help at a position (inside a function call).
 pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> Option<SignatureHelpResult> {
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
-    let text = workspace.documents.get_text(uri)?;
+    let text = workspace.documents.get_text_arc(uri)?;
 
     let line_idx = lsp_pos.line as usize;
     let col_utf16 = lsp_pos.character as usize;
@@ -79,8 +80,7 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
         if let Some(children) = &sym.children {
             for child in children {
                 if child.name.eq_ignore_ascii_case(func_name)
-                    && (child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
-                        || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT)
+                    && super::is_procedure_symbol(child.kind)
                 {
                     let detail = child.detail.as_deref().unwrap_or("()");
                     let parameters = parse_parameters_from_detail(detail);
@@ -105,20 +105,18 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
     }
 
     // Package symbols
-    let symbols = workspace.symbols.search(func_name, 5);
+    let symbols = workspace.symbols.get_by_name(func_name);
     for entry in &symbols {
         for method in &entry.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
-                let params: Vec<ParameterInfo> = method.parameters.iter().map(|p| {
-                    let var_prefix = if p.is_var { "var " } else { "" };
-                    ParameterInfo {
-                        label: format!("{}{}: {}", var_prefix, p.name, p.type_name),
+                let params: Vec<SignatureParameterInfo> = method.parameters.iter().map(|p| {
+                    SignatureParameterInfo {
+                        label: p.to_string(),
                         documentation: None,
                     }
                 }).collect();
                 let params_str: Vec<String> = method.parameters.iter().map(|p| {
-                    let var_prefix = if p.is_var { "var " } else { "" };
-                    format!("{}{}: {}", var_prefix, p.name, p.type_name)
+                    p.to_string()
                 }).collect();
                 let return_str = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
                 return Some(SignatureHelpResult {
@@ -141,16 +139,14 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
     for bt in builtins.iter() {
         for method in &bt.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
-                let params: Vec<ParameterInfo> = method.parameters.iter().map(|p| {
-                    let var_prefix = if p.is_var { "var " } else { "" };
-                    ParameterInfo {
-                        label: format!("{}{}: {}", var_prefix, p.name, p.type_name),
+                let params: Vec<SignatureParameterInfo> = method.parameters.iter().map(|p| {
+                    SignatureParameterInfo {
+                        label: p.to_string(),
                         documentation: None,
                     }
                 }).collect();
                 let params_str: Vec<String> = method.parameters.iter().map(|p| {
-                    let var_prefix = if p.is_var { "var " } else { "" };
-                    format!("{}{}: {}", var_prefix, p.name, p.type_name)
+                    p.to_string()
                 }).collect();
                 let return_str = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
                 let doc = if method.documentation.is_empty() {
@@ -213,8 +209,7 @@ fn resolve_receiver_signature(
         if let Some(children) = &sym.children {
             for child in children {
                 if child.name.eq_ignore_ascii_case(func_name)
-                    && (child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
-                        || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT)
+                    && super::is_procedure_symbol(child.kind)
                 {
                     let detail = child.detail.as_deref().unwrap_or("()");
                     let parameters = parse_parameters_from_detail(detail);
@@ -238,16 +233,14 @@ fn resolve_receiver_signature(
     for entry in &pkg_symbols {
         for method in &entry.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
-                let params: Vec<ParameterInfo> = method.parameters.iter().map(|p| {
-                    let var_prefix = if p.is_var { "var " } else { "" };
-                    ParameterInfo {
-                        label: format!("{}{}: {}", var_prefix, p.name, p.type_name),
+                let params: Vec<SignatureParameterInfo> = method.parameters.iter().map(|p| {
+                    SignatureParameterInfo {
+                        label: p.to_string(),
                         documentation: None,
                     }
                 }).collect();
                 let params_str: Vec<String> = method.parameters.iter().map(|p| {
-                    let var_prefix = if p.is_var { "var " } else { "" };
-                    format!("{}{}: {}", var_prefix, p.name, p.type_name)
+                    p.to_string()
                 }).collect();
                 let return_str = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
                 return Some(SignatureHelpResult {

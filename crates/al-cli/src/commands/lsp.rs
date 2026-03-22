@@ -39,89 +39,62 @@ pub fn cmd_clear_cache(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-pub fn cmd_setup(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("setup", None) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let altool = result
-                    .get("altoolInstalled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let dotnet = result.get("dotnetVersion").and_then(|v| v.as_str());
-                let tc = result.get("toolchain");
+fn fetch_setup_result(json: bool) -> Result<serde_json::Value, ExitCode> {
+    let mut client = connect(None).map_err(|e| report_error(&e, json))?;
+    client.request("setup", None).map_err(|e| report_error(&e, json))
+}
 
-                if altool {
-                    let version = tc
-                        .and_then(|t| t.get("version"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let alc = tc
-                        .and_then(|t| t.get("alc"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    println!("[OK] ALTool v{version}");
-                    println!("     alc: {alc}");
-                } else {
-                    println!("[!!] ALTool NOT installed");
-                    println!("     Install: dotnet tool install --global Microsoft.Dynamics.BusinessCentral.Development.Tools");
-                }
-                if let Some(v) = dotnet {
-                    println!("[OK] .NET SDK {v}");
-                } else {
-                    println!("[!!] .NET SDK not found");
-                }
-            }
-            ExitCode::SUCCESS
+pub fn cmd_setup(json: bool) -> ExitCode {
+    let result = match fetch_setup_result(json) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    if json {
+        print_json(&result);
+    } else {
+        let altool = result.get("altoolInstalled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dotnet = result.get("dotnetVersion").and_then(|v| v.as_str());
+        let tc = result.get("toolchain");
+        if altool {
+            let version = tc.and_then(|t| t.get("version")).and_then(|v| v.as_str()).unwrap_or("unknown");
+            let alc = tc.and_then(|t| t.get("alc")).and_then(|v| v.as_str()).unwrap_or("?");
+            println!("[OK] ALTool v{version}");
+            println!("     alc: {alc}");
+        } else {
+            println!("[!!] ALTool NOT installed");
+            println!("     Install: dotnet tool install --global Microsoft.Dynamics.BusinessCentral.Development.Tools");
         }
-        Err(e) => report_error(&e, json),
+        if let Some(v) = dotnet {
+            println!("[OK] .NET SDK {v}");
+        } else {
+            println!("[!!] .NET SDK not found");
+        }
     }
+    ExitCode::SUCCESS
 }
 
 pub fn cmd_doctor(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
+    let result = match fetch_setup_result(json) {
+        Ok(r) => r,
+        Err(code) => return code,
     };
-    match client.request("setup", None) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let checks = [
-                    (
-                        "ALTool",
-                        result
-                            .get("altoolInstalled")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false),
-                    ),
-                    (".NET SDK", result.get("dotnetVersion").is_some()),
-                    ("Project", result.get("project").is_some()),
-                ];
-                for (name, ok) in &checks {
-                    let status = if *ok { "[OK]" } else { "[!!]" };
-                    println!("{status} {name}");
-                }
-                let symbols = result
-                    .get("indexedSymbols")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let files = result
-                    .get("workspaceFiles")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                println!("[OK] {} symbols indexed, {} workspace files", symbols, files);
-            }
-            ExitCode::SUCCESS
+    if json {
+        print_json(&result);
+    } else {
+        let checks = [
+            ("ALTool", result.get("altoolInstalled").and_then(|v| v.as_bool()).unwrap_or(false)),
+            (".NET SDK", result.get("dotnetVersion").is_some()),
+            ("Project", result.get("project").is_some()),
+        ];
+        for (name, ok) in &checks {
+            let status = if *ok { "[OK]" } else { "[!!]" };
+            println!("{status} {name}");
         }
-        Err(e) => report_error(&e, json),
+        let symbols = result.get("indexedSymbols").and_then(|v| v.as_u64()).unwrap_or(0);
+        let files = result.get("workspaceFiles").and_then(|v| v.as_u64()).unwrap_or(0);
+        println!("[OK] {} symbols indexed, {} workspace files", symbols, files);
     }
+    ExitCode::SUCCESS
 }
 
 pub fn cmd_download_symbols(
@@ -802,7 +775,7 @@ pub fn cmd_rename(
                     eprintln!("\n{} total edits (dry run, not applied)", total_edits);
                 } else {
                     eprintln!(
-                        "{} edits applied across {} files",
+                        "{} edits planned across {} files (use --json to get the edit plan)",
                         total_edits,
                         changes.len()
                     );
@@ -1678,10 +1651,11 @@ pub fn cmd_obsolete(json: bool) -> ExitCode {
                 } else {
                     for e in &entries {
                         let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                        let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let object = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                        let symbol = e.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
                         let reason = e.get("reason").and_then(|v| v.as_str()).unwrap_or("");
                         let state = e.get("state").and_then(|v| v.as_str()).unwrap_or("");
-                        println!("{kind} \"{name}\" [{state}]: {reason}");
+                        println!("{kind} {object}::{symbol} [{state}]: {reason}");
                     }
                     eprintln!("\n{} obsolete symbol(s)", entries.len());
                 }
@@ -1788,9 +1762,9 @@ pub fn cmd_breaking_changes(json: bool) -> ExitCode {
                 } else {
                     for c in &changes {
                         let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                        let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let change_type = c.get("changeType").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("[{change_type}] {kind} \"{name}\"");
+                        let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                        let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("[{kind}] \"{object}\": {description}");
                     }
                     eprintln!("\n{} breaking change(s)", changes.len());
                 }
@@ -1816,7 +1790,7 @@ pub fn cmd_arch_lint(json: bool) -> ExitCode {
                     println!("No architecture violations found.");
                 } else {
                     for v in &violations {
-                        let rule = v.get("rule").and_then(|v| v.as_str()).unwrap_or("?");
+                        let rule = v.get("ruleId").and_then(|v| v.as_str()).unwrap_or("?");
                         let object = v.get("object").and_then(|v| v.as_str()).unwrap_or("?");
                         let message = v.get("message").and_then(|v| v.as_str()).unwrap_or("?");
                         println!("[{rule}] {object}: {message}");
@@ -1828,6 +1802,14 @@ pub fn cmd_arch_lint(json: bool) -> ExitCode {
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+fn format_block_location(loc: Option<&serde_json::Value>) -> String {
+    let Some(loc) = loc else { return "?".to_string() };
+    let file = loc.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+    let proc = loc.get("procedure").and_then(|v| v.as_str()).unwrap_or("?");
+    let line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+    format!("{file}:{line} ({proc})")
 }
 
 pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> ExitCode {
@@ -1849,8 +1831,8 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
                 } else {
                     for d in &dups {
                         let sim = d.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let loc1 = d.get("location1").and_then(|v| v.as_str()).unwrap_or("?");
-                        let loc2 = d.get("location2").and_then(|v| v.as_str()).unwrap_or("?");
+                        let loc1 = format_block_location(d.get("first"));
+                        let loc2 = format_block_location(d.get("second"));
                         println!("{:.0}% similarity: {} ~ {}", sim * 100.0, loc1, loc2);
                     }
                     eprintln!("\n{} duplicate block(s)", dups.len());
@@ -1877,10 +1859,14 @@ pub fn cmd_upgrade_report(json: bool) -> ExitCode {
                     println!("No upgrade issues found.");
                 } else {
                     for i in &issues {
-                        let severity = i.get("severity").and_then(|v| v.as_str()).unwrap_or("?");
-                        let name = i.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let message = i.get("message").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("[{severity}] {name}: {message}");
+                        let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                        let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                        let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                        let hint = i.get("migrationHint").and_then(|v| v.as_str()).unwrap_or("");
+                        println!("[{kind}] \"{object}\": {description}");
+                        if !hint.is_empty() {
+                            println!("  Migration: {hint}");
+                        }
                     }
                     eprintln!("\n{} upgrade issue(s)", issues.len());
                 }
@@ -1910,8 +1896,10 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
                 } else {
                     for h in &hints {
                         let procedure = h.get("procedure").and_then(|v| v.as_str()).unwrap_or("?");
-                        let hint = h.get("hint").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("{procedure}: {hint}");
+                        let object = h.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                        let self_ms = h.get("selfTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let hits = h.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                        println!("{object}::{procedure}: {self_ms:.1}ms ({hits} samples)");
                     }
                 }
             }
@@ -1974,6 +1962,27 @@ pub fn cmd_organize_files(dry_run: bool, json: bool) -> std::process::ExitCode {
                 }
             }
             std::process::ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+pub fn cmd_diag(json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    match client.request("diag", Some(serde_json::json!({"cmd": "summary"}))) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                println!("Workspace Diagnostics:");
+                for (key, value) in result.as_object().into_iter().flat_map(|o| o.iter()) {
+                    println!("  {}: {}", key, value);
+                }
+            }
+            ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
     }

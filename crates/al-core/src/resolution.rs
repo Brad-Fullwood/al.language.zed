@@ -408,9 +408,7 @@ pub(crate) fn resolve_expression_type(
 
     let result = workspace
         .symbols
-        .get_by_name(expr)
-        .into_iter()
-        .next()
+        .find_by_name(expr)
         .map(|entry| ResolvedType {
             type_name: entry.kind.to_string(),
             type_subtype: Some(entry.name.clone()),

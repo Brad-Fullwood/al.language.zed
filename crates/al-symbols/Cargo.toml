@@ -17,6 +17,7 @@ tokio = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 tracing = { workspace = true }
 memmap2 = { workspace = true }
+rayon = "1"
 
 [features]
 default = ["nuget"]

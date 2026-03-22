@@ -355,10 +355,7 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
 
 /// Render a method signature string.
 pub fn render_method_signature(m: &MethodSymbol) -> String {
-    let params: Vec<String> = m.parameters.iter().map(|p| {
-        let var_prefix = if p.is_var { "var " } else { "" };
-        format!("{}{}: {}", var_prefix, p.name, p.type_name)
-    }).collect();
+    let params: Vec<String> = m.parameters.iter().map(|p| p.to_string()).collect();
 
     let mut sig = format!("procedure {}({})", m.name, params.join("; "));
     if let Some(ref ret) = m.return_type {

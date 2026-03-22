@@ -27,4 +27,3 @@ al-daemon-client = { path = "../al-daemon-client" }
 
 [dev-dependencies]
 al-syntax = { path = "../al-syntax" }
-al-symbols = { path = "../al-symbols" }

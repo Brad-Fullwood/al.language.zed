@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use crate::{DebugCommands, DiagCommands, ProfileCommands, SnapshotCommands};
+use crate::{DebugCommands, ProfileCommands, SnapshotCommands};
 
 use super::{bc_server_params, connect, file_to_uri, print_json, report_error};
 
@@ -238,123 +238,8 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
     }
 }
 
-pub fn cmd_diag(subcmd: &DiagCommands, json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    let (cmd, params) = match subcmd {
-        DiagCommands::Sessions => ("sessions", serde_json::json!({})),
-        DiagCommands::Events {
-            limit,
-            level,
-            target,
-        } => (
-            "events",
-            serde_json::json!({ "limit": limit, "level": level, "target": target }),
-        ),
-        DiagCommands::Slow { limit } => ("slow", serde_json::json!({ "limit": limit })),
-        DiagCommands::Failures => ("failures", serde_json::json!({})),
-        DiagCommands::Search { query, limit } => (
-            "search",
-            serde_json::json!({ "query": query, "limit": limit }),
-        ),
-        DiagCommands::Summary => ("summary", serde_json::json!({})),
-    };
-
-    let mut req_params = params;
-    req_params["cmd"] = serde_json::Value::String(cmd.to_string());
-
-    match client.request("diag", Some(req_params)) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                match cmd {
-                    "sessions" => {
-                        let sessions = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
-                        println!("{:<6} {:<22} {:<8} EVENTS", "ID", "STARTED", "PID");
-                        println!("{}", "-".repeat(50));
-                        for s in sessions {
-                            println!(
-                                "{:<6} {:<22} {:<8} {}",
-                                s.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
-                                s.get("started_at").and_then(|v| v.as_str()).unwrap_or("?"),
-                                s.get("pid").and_then(|v| v.as_i64()).unwrap_or(0),
-                                s.get("event_count").and_then(|v| v.as_i64()).unwrap_or(0),
-                            );
-                        }
-                    }
-                    "slow" => {
-                        let spans = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
-                        println!("{:<30} {:>12}", "OPERATION", "DURATION");
-                        println!("{}", "-".repeat(44));
-                        for s in spans {
-                            let name =
-                                s.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let dur =
-                                s.get("duration_us").and_then(|v| v.as_i64()).unwrap_or(0);
-                            let dur_ms = dur as f64 / 1000.0;
-                            println!("{:<30} {:>10.1}ms", name, dur_ms);
-                        }
-                    }
-                    "summary" => {
-                        let total = result
-                            .get("total_events")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-                        let failures = result
-                            .get("failure_count")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-                        let avg_span = result
-                            .get("avg_span_duration_us")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-                        println!(
-                            "Session: {}",
-                            result
-                                .get("session_id")
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(0)
-                        );
-                        println!("Events:  {total}");
-                        println!("Failures: {failures}");
-                        println!("Avg span: {:.1}ms", avg_span as f64 / 1000.0);
-                        if let Some(by_level) =
-                            result.get("by_level").and_then(|v| v.as_array())
-                        {
-                            println!("\nBy level:");
-                            for item in by_level {
-                                if let Some(arr) = item.as_array() {
-                                    let level =
-                                        arr.first().and_then(|v| v.as_str()).unwrap_or("?");
-                                    let count =
-                                        arr.get(1).and_then(|v| v.as_i64()).unwrap_or(0);
-                                    println!("  {:<8} {}", level, count);
-                                }
-                            }
-                        }
-                    }
-                    _ => {
-                        let events = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
-                        for e in events {
-                            let level =
-                                e.get("level").and_then(|v| v.as_str()).unwrap_or("?");
-                            let target =
-                                e.get("target").and_then(|v| v.as_str()).unwrap_or("?");
-                            let msg = e.get("msg").and_then(|v| v.as_str()).unwrap_or("");
-                            println!("[{level}] {target}: {msg}");
-                        }
-                        eprintln!("\n{} events", events.len());
-                    }
-                }
-            }
-            ExitCode::SUCCESS
-        }
-        Err(e) => report_error(&e, json),
-    }
-}
+// cmd_diag removed — diag subcommands had no daemon handler (T1905).
+// T2702 will implement proper diagnostic tracing.
 
 pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
     match subcmd {

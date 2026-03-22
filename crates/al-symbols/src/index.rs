@@ -77,10 +77,10 @@ pub struct SymbolIndex {
     /// Load and index all .app files from the given paths.
     ///
     /// Files that fail to parse are logged and skipped.
-    pub fn load_packages(&self, paths: &[impl AsRef<Path>]) -> Vec<SymbolPackage> {
-        let mut packages = Vec::new();
+    pub fn load_packages(&self, paths: &[impl AsRef<Path> + Sync]) -> Vec<SymbolPackage> {
+        use rayon::prelude::*;
 
-        for path in paths {
+        let results: Vec<_> = paths.par_iter().filter_map(|path| {
             let path = path.as_ref();
             match app_reader::read_app_file(path) {
                 Ok(pkg) => {
@@ -91,15 +91,16 @@ pub struct SymbolIndex {
                     );
                     self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
                     self.add_entries(&pkg.objects);
-                    packages.push(pkg);
+                    Some(pkg)
                 }
                 Err(e) => {
                     warn!(path = %path.display(), error = %e, "Failed to load .app file");
+                    None
                 }
             }
-        }
+        }).collect();
 
-        packages
+        results
     }
 
     /// Load and index .app files with disk caching.
@@ -109,20 +110,19 @@ pub struct SymbolIndex {
     /// parses the .app file and saves the result to cache.
     pub fn load_packages_cached(
         &self,
-        paths: &[impl AsRef<Path>],
+        paths: &[impl AsRef<Path> + Sync],
         cache: &crate::cache::SymbolCache,
     ) -> Vec<SymbolPackage> {
-        let mut packages = Vec::new();
+        use rayon::prelude::*;
 
-        for path in paths {
+        let results: Vec<_> = paths.par_iter().filter_map(|path| {
             let path = path.as_ref();
 
             // Try cache first
             if let Some(pkg) = cache.load(path) {
                 self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
                 self.add_entries(&pkg.objects);
-                packages.push(pkg);
-                continue;
+                return Some(pkg);
             }
 
             // Cache miss — parse from .app file
@@ -139,15 +139,16 @@ pub struct SymbolIndex {
                     }
                     self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
                     self.add_entries(&pkg.objects);
-                    packages.push(pkg);
+                    Some(pkg)
                 }
                 Err(e) => {
                     warn!(path = %path.display(), error = %e, "Failed to load .app file");
+                    None
                 }
             }
-        }
+        }).collect();
 
-        packages
+        results
     }
 
     /// Load a package from raw bytes (useful for in-memory / test scenarios).
@@ -251,6 +252,29 @@ pub struct SymbolIndex {
         }
     }
 
+    /// Like `add_entries` but takes owned entries, avoiding the clone into Arc.
+    pub fn add_entries_owned(&self, entries: Vec<SymbolEntry>) {
+        for entry in entries {
+            let name_lower = entry.name.to_lowercase();
+            let kind = entry.kind;
+            let id = entry.id;
+            let extends = entry.extends.clone();
+            let arc = Arc::new(entry);
+            let seq = self
+                .next_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.all.insert(seq, (Arc::clone(&arc), name_lower.clone()));
+            self.by_name.entry(name_lower).or_default().push(Arc::clone(&arc));
+            if id != 0 {
+                self.by_kind_id.entry((kind, id)).or_default().push(Arc::clone(&arc));
+            }
+            self.by_kind.entry(kind).or_default().push(Arc::clone(&arc));
+            if let Some(ref ext) = extends {
+                self.by_extends.entry(ext.to_lowercase()).or_default().push(Arc::clone(&arc));
+            }
+        }
+    }
+
     /// Case-insensitive substring search across all object names.
     /// Returns up to `limit` matching entries.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
@@ -307,6 +331,15 @@ pub struct SymbolIndex {
             .get(&key)
             .map(|v| v.clone())
             .unwrap_or_default()
+    }
+
+    /// Exact name match returning the first entry (case-insensitive).
+    /// Avoids cloning the entire Vec when only one match is needed.
+    pub fn find_by_name(&self, name: &str) -> Option<Arc<SymbolEntry>> {
+        let key = name.to_lowercase();
+        self.by_name
+            .get(&key)
+            .and_then(|v| v.first().map(Arc::clone))
     }
 
     /// Lookup by object kind and ID.

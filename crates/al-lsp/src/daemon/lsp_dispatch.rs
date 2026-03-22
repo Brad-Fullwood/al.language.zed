@@ -181,11 +181,24 @@ pub(super) fn dispatch_search(workspace: &Workspace, id: u64, params: &serde_jso
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     const MAX_SEARCH_RESULTS: usize = 500_000;
     let limit = limit.min(MAX_SEARCH_RESULTS);
+    // Package symbols
     let results = workspace.symbols.search(query, limit);
-    let value: Vec<serde_json::Value> = results
+    let mut value: Vec<serde_json::Value> = results
         .iter()
         .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
         .collect();
+    // Workspace file objects
+    let query_lower = query.to_lowercase();
+    for entry in workspace.file_index.object_info.iter() {
+        if value.len() >= limit {
+            break;
+        }
+        let info = entry.value();
+        if !query.is_empty() && !info.name.to_lowercase().contains(&query_lower) {
+            continue;
+        }
+        value.push(workspace_object_to_json(info));
+    }
     Response { id, result: Some(serde_json::json!(value)), error: None }
 }
 
@@ -206,12 +219,23 @@ pub(super) fn dispatch_object(workspace: &Workspace, id: u64, params: &serde_jso
             }),
         };
     };
+    // Package symbols
     let candidates = workspace.symbols.get_by_name(name);
-    let matches: Vec<serde_json::Value> = candidates
+    let mut matches: Vec<serde_json::Value> = candidates
         .iter()
         .filter(|e| e.kind == kind)
         .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
         .collect();
+    // Workspace file objects
+    let name_lower = name.to_lowercase();
+    for entry in workspace.file_index.object_info.iter() {
+        let info = entry.value();
+        if info.name.to_lowercase() == name_lower
+            && info.kind.to_lowercase() == kind.to_string().to_lowercase()
+        {
+            matches.push(workspace_object_to_json(info));
+        }
+    }
     if matches.is_empty() {
         Response {
             id,
@@ -224,6 +248,16 @@ pub(super) fn dispatch_object(workspace: &Workspace, id: u64, params: &serde_jso
     } else {
         Response { id, result: Some(serde_json::json!(matches)), error: None }
     }
+}
+
+/// Convert a workspace CachedObjectInfo to JSON matching SymbolEntry shape.
+fn workspace_object_to_json(info: &al_core::file_index::CachedObjectInfo) -> serde_json::Value {
+    serde_json::json!({
+        "kind": info.kind,
+        "id": info.id.unwrap_or(0),
+        "name": info.name,
+        "package": "(workspace)",
+    })
 }
 
 pub(super) fn dispatch_by_id(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {

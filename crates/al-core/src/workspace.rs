@@ -135,6 +135,46 @@ impl Workspace {
             *guard = None;
         }
     }
+
+    /// Approximate memory statistics for the workspace.
+    pub fn memory_stats(&self) -> WorkspaceMemoryStats {
+        let symbol_count = self.symbols.all_entries().len();
+        let open_docs = self.documents.len();
+        let workspace_files = self.file_index.files.len();
+        let procedure_index_entries = self.file_index.procedures.len();
+        let error_code_count = self.error_codes.len();
+        let builtin_count = self.builtins
+            .read()
+            .map(|b| b.len())
+            .unwrap_or(0);
+        let package_count = self.package_info
+            .read()
+            .map(|p| p.len())
+            .unwrap_or(0);
+
+        WorkspaceMemoryStats {
+            symbol_count,
+            open_docs,
+            workspace_files,
+            procedure_index_entries,
+            error_code_count,
+            builtin_count,
+            package_count,
+        }
+    }
+}
+
+/// Approximate memory statistics for diagnostic/observability.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceMemoryStats {
+    pub symbol_count: usize,
+    pub open_docs: usize,
+    pub workspace_files: usize,
+    pub procedure_index_entries: usize,
+    pub error_code_count: usize,
+    pub builtin_count: usize,
+    pub package_count: usize,
 }
 
 impl Default for Workspace {

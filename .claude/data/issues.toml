@@ -3112,7 +3112,9 @@ id = "ISSUE-147"
 title = "compile --json returns null appPath on successful compilation"
 type = "bug"
 priority = "HIGH"
-status = "open"
+status = "fixed"
+fixed_date = "2026-03-21"
+fixed_by = "T1901"
 reported = "2026-03-21"
 description = """
 When `al compile --json` succeeds, the `appPath` field is null in the JSON output.
@@ -3125,7 +3127,9 @@ id = "ISSUE-148"
 title = "Text output shows '?' for object names in obsolete/duplicates/entrypoints commands"
 type = "bug"
 priority = "HIGH"
-status = "open"
+status = "fixed"
+fixed_date = "2026-03-21"
+fixed_by = "T1902"
 reported = "2026-03-21"
 description = """
 `al obsolete`, `al duplicates`, and `al entrypoints` show '?' instead of object names
@@ -3138,7 +3142,9 @@ id = "ISSUE-149"
 title = "search/object commands do not find workspace-defined objects"
 type = "bug"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
+fixed_date = "2026-03-21"
+fixed_by = "T1903"
 reported = "2026-03-21"
 description = """
 `al search` and `al object` only search loaded packages, not workspace source files.
@@ -3151,7 +3157,9 @@ id = "ISSUE-150"
 title = "rename text output says 'applied' but does not write to disk"
 type = "bug"
 priority = "LOW"
-status = "open"
+status = "fixed"
+fixed_date = "2026-03-21"
+fixed_by = "T1904"
 reported = "2026-03-21"
 description = """
 `al rename` text output says '2 edits applied across 1 files' but the file is NOT
@@ -3164,7 +3172,9 @@ id = "ISSUE-151"
 title = "diag subcommands all return 'Unknown method: diag'"
 type = "bug"
 priority = "LOW"
-status = "open"
+status = "fixed"
+fixed_date = "2026-03-21"
+fixed_by = "T1905"
 reported = "2026-03-21"
 description = """
 `al diag sessions/summary/slow/events/failures/search` all return Unknown method.
@@ -3177,7 +3187,9 @@ id = "ISSUE-152"
 title = "schemas.toml field names mismatch actual CLI JSON output"
 type = "data"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
+fixed_date = "2026-03-21"
+fixed_by = "T1906"
 reported = "2026-03-21"
 description = """
 schemas.toml defines different field names than actual CLI output:
@@ -3262,7 +3274,9 @@ id = "ISSUE-158"
 title = "T1404 proof references non-existent test test_suggest_translations_empty"
 type = "data"
 priority = "MEDIUM"
-status = "open"
+status = "fixed"
+fixed_date = "2026-03-21"
+fixed_by = "T2106"
 reported = "2026-03-21"
 description = """
 proof.toml T1404 adversarial_pass claims 'includes test_suggest_translations_empty'
@@ -3319,4 +3333,39 @@ The al-test-harness integration tests have major gaps:
 
 This is a STOP issue because untested code paths hide bugs that surface in production.
 The sort-members --dry-run bug and hints daemon panic were both in untested paths.
+"""
+
+[[issues]]
+id = "ISSUE-162"
+title = "completions.rs default path calls search(\"\", 30) — O(n) scan on hot path"
+type = "deferred"
+priority = "medium"
+status = "open"
+reported = "2026-03-21"
+file = "crates/al-core/src/queries/completions.rs"
+blocking_task = "WP21"
+description = """
+In add_default_completions (line 227), workspace.symbols.search("", 30) performs a
+linear scan over all indexed symbols on every default completion request. This was not
+fixed by WP20 (which targeted definition, signature, and inlay_hints). With a large
+symbol index (50k+ objects), this adds ~1ms on each keystroke completion.
+
+Fix: replace with a pre-computed Vec<Arc<SymbolEntry>> of the most common objects,
+cached at index time, or limit via a ranked index. Deferred to WP21 (completion
+ranking and caching milestone).
+"""
+
+[[issues]]
+id = "ISSUE-163"
+title = "lookup_embedded_builtin: CopyStr and StrPos missing first parameter name"
+type = "deferred"
+priority = "low"
+status = "fixed"
+reported = "2026-03-21"
+file = "crates/al-core/src/queries/inlay_hints.rs"
+description = """
+CopyStr(String, Position, Length) was mapped to [\"Position\", \"Length\"] — missing
+the first \"String\" param. StrPos(String, SubString) was mapped to [\"SubString\"] —
+missing the first \"String\" param. Both fixed in this adversarial pass by adding the
+missing first parameter to each entry.
 """

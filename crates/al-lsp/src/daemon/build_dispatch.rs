@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use al_core::workspace::Workspace;
 use al_core::jsonrpc::{error_codes, Response, RpcError};
 
-use super::{rpc_error, invalid_params, file_not_found, ensure_document, file_uri_from_params, lint_diag_to_json, generate_fix};
+use super::{rpc_error, invalid_params, file_not_found, ensure_document, require_document_text, file_uri_from_params, lint_diag_to_json, generate_fix};
 
 // ---------------------------------------------------------------------------
 // Analysis dispatchers (lint, format, fix, rules, parse, source)
@@ -41,10 +41,9 @@ pub(super) fn dispatch_lint(workspace: &Workspace, id: u64, params: &serde_json:
     let Some(uri) = file_uri_from_params(params) else {
         return invalid_params(id);
     };
-    ensure_document(workspace, &uri);
-
-    let Some(text) = workspace.documents.get_text(&uri) else {
-        return file_not_found(id);
+    let text = match require_document_text(workspace, &uri, id) {
+        Ok(t) => t,
+        Err(resp) => return resp,
     };
 
     let result = al_core::syntax::AlParser::parse_quick(&text);
@@ -82,7 +81,14 @@ pub(super) fn dispatch_format(workspace: &Workspace, id: u64, params: &serde_jso
         return invalid_params(id);
     };
 
-    let options = al_core::syntax::FormatOptions::default();
+    // Load per-workspace formatting options from .alformat.json (falls back to defaults).
+    let options = workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
+        .map(|root| al_core::queries::format::AlFormatConfig::load_options(&root))
+        .unwrap_or_default();
     let formatted = al_core::syntax::format_al(&content, &options);
     let changed = formatted != content;
 
@@ -439,6 +445,20 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
             .compile(&project_root, None, None)
             .await
             .map_err(|e| format!("Compilation failed: {}", e))?;
+        // Semantic bridge may not return appPath — fall back to finding the
+        // .app file on disk when compilation succeeded.
+        let app_path = compile_result
+            .app_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .or_else(|| {
+                if compile_result.success {
+                    al_core::build::find_app_file(&project_root)
+                        .map(|p| p.display().to_string())
+                } else {
+                    None
+                }
+            });
         Ok(serde_json::json!({
             "success": compile_result.success,
             "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
@@ -451,7 +471,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                 "code": d.code,
                 "message": d.message,
             })).collect::<Vec<_>>(),
-            "appPath": compile_result.app_path.as_ref().map(|p| p.display().to_string()),
+            "appPath": app_path,
         }))
     }.await;
     match result {
@@ -575,6 +595,18 @@ pub(super) fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Respo
             };
         }
     };
+    // Require an absolute path to prevent path traversal via relative paths
+    // (e.g., "../../etc/malicious-dir").
+    if !dir.is_absolute() {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: "'dir' must be an absolute path".to_string(),
+            }),
+        };
+    }
 
     let config = al_core::scaffold::ScaffoldConfig {
         name: params
@@ -869,7 +901,7 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
                     cfg.accept_invalid_certs,
                 );
                 // al_core::project::AppDependency is re-exported from al-symbols — clone directly.
-                let url_deps: Vec<(String, al_core::symbols::AppDependency)> = all_deps
+                let url_deps: Vec<(String, al_core::symbols::nuget::AppDependency)> = all_deps
                     .iter()
                     .filter_map(|dep| {
                         cfg.dev_packages_url(dep).map(|url| (url, dep.clone()))
@@ -894,14 +926,14 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
                     .collect()
             } else {
                 let feeds = al_core::project::nuget_feeds();
-                let nuget_feeds: Vec<al_core::symbols::NuGetFeed> = feeds
+                let nuget_feeds: Vec<al_core::symbols::nuget::NuGetFeed> = feeds
                     .iter()
-                    .map(|f| al_core::symbols::NuGetFeed {
+                    .map(|f| al_core::symbols::nuget::NuGetFeed {
                         index_url: f.index_url.clone(),
                     })
                     .collect();
                 // al_core::project::AppDependency is re-exported from al-symbols — pass directly.
-                let client = al_core::symbols::NuGetClient::new(nuget_feeds);
+                let client = al_core::symbols::nuget::NuGetClient::new(nuget_feeds);
                 let nuget_results = client.download_all(&all_deps, &dest).await;
                 nuget_results
                     .into_iter()
@@ -1225,6 +1257,17 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                     };
                 }
             };
+            // Require absolute path to prevent path traversal.
+            if !profile_path.is_absolute() {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: "'path' must be an absolute path".to_string(),
+                    }),
+                };
+            }
             let top_n = params
                 .get("topN")
                 .and_then(|v| v.as_u64())
@@ -1276,8 +1319,20 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
 // ---------------------------------------------------------------------------
 
 pub(super) async fn dispatch_xlf_generate(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let project_str = params.get("project").and_then(|v| v.as_str()).unwrap_or(".");
-    let project_root = std::path::PathBuf::from(project_str);
+    // Use the loaded workspace project root by default; only accept an explicit
+    // "project" override if it is an absolute path (prevents path traversal).
+    let project_root = if let Some(p) = params.get("project").and_then(|v| v.as_str()) {
+        let pb = std::path::PathBuf::from(p);
+        if !pb.is_absolute() {
+            return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "'project' must be an absolute path");
+        }
+        pb
+    } else {
+        match workspace.project.try_read().ok().and_then(|g| g.as_ref().map(|p| p.root.clone())) {
+            Some(r) => r,
+            None => return rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"),
+        }
+    };
 
     match al_core::xliff::build_xliff(workspace, &project_root) {
         Some((path, count)) => Response {
@@ -1305,6 +1360,9 @@ pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params:
         Some(p) => std::path::PathBuf::from(p),
         None => return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
     };
+    if !xlf_path.is_absolute() {
+        return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
+    }
 
     // Find the generated .g.xlf
     let generated_path = if let Some(g) = params.get("generated").and_then(|v| v.as_str()) {
@@ -1365,6 +1423,9 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
         Some(p) => p,
         None => return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
     };
+    if !std::path::Path::new(xlf_path).is_absolute() {
+        return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
+    }
     let xlf_content = match std::fs::read_to_string(xlf_path) {
         Ok(c) => c,
         Err(e) => return rpc_error(id, al_core::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {xlf_path}: {e}")),
@@ -1394,6 +1455,9 @@ pub(super) async fn dispatch_xlf_suggest(workspace: &Workspace, id: u64, params:
         Some(p) => p,
         None => return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
     };
+    if !std::path::Path::new(xlf_path).is_absolute() {
+        return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
+    }
 
     let xlf_content = match std::fs::read_to_string(xlf_path) {
         Ok(c) => c,

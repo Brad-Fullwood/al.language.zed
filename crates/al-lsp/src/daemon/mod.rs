@@ -181,6 +181,7 @@ async fn handle_connection(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
+    let mut last_request_cache = std::collections::HashMap::<String, Instant>::new();
 
     while let Some(line) = lines.next_line().await? {
         if line.len() > MAX_MESSAGE_SIZE {
@@ -196,7 +197,30 @@ async fn handle_connection(
         *last_activity.lock().await = Instant::now();
 
         let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => dispatch_request(&workspace, req, &shutdown).await,
+            Ok(req) => {
+                let method = req.method.clone();
+                let req_id = req.id;
+
+                // Request deduplication: skip if identical method+params within 50ms
+                let dedup_key = format!("{}:{}", req.method, req.params.as_ref().map(|p| p.to_string()).unwrap_or_default());
+                let now = Instant::now();
+                let is_dup = {
+                    let prev = last_request_cache.get(&dedup_key);
+                    prev.map(|t| now.duration_since(*t).as_millis() < 50).unwrap_or(false)
+                };
+                last_request_cache.insert(dedup_key.clone(), now);
+
+                if is_dup && matches!(req.method.as_str(), "hover" | "completions" | "signatureHelp" | "inlayHints") {
+                    tracing::trace!(method = %method, id = req_id, "daemon: dedup skip");
+                    Response { id: req_id, result: Some(serde_json::Value::Null), error: None }
+                } else {
+                    let start = Instant::now();
+                    let resp = dispatch_request(&workspace, req, &shutdown).await;
+                    let elapsed = start.elapsed();
+                    tracing::debug!(method = %method, id = req_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
+                    resp
+                }
+            }
             Err(e) => Response {
                 id: 0,
                 result: None,
@@ -300,6 +324,8 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "duplicates" => build_dispatch::dispatch_find_duplicates(workspace, id, &params),
         "upgrade" => build_dispatch::dispatch_upgrade_report(workspace, id, &params),
         "profiler.hints" => build_dispatch::dispatch_profiler_hints(workspace, id, &params),
+        // Diagnostics / observability
+        "diag" => dispatch_diag(workspace, id, &params),
         "ping" => Response { id, result: Some(serde_json::json!("pong")), error: None },
         "shutdown" => {
             tracing::info!("daemon: shutdown requested");
@@ -332,6 +358,25 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
     }
 }
 
+fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+    let cmd = params.get("cmd").and_then(|v| v.as_str()).unwrap_or("summary");
+    match cmd {
+        "summary" => {
+            let stats = workspace.memory_stats();
+            let value = serde_json::to_value(&stats).unwrap_or(serde_json::Value::Null);
+            Response { id, result: Some(value), error: None }
+        }
+        _ => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Unknown diag subcommand: {cmd}. Available: summary"),
+            }),
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared utility functions used by dispatch sub-modules
 // ---------------------------------------------------------------------------
@@ -342,8 +387,9 @@ pub(crate) fn extract_uri(params: &serde_json::Value) -> Option<url::Url> {
 }
 
 pub(crate) fn extract_position(params: &serde_json::Value) -> Option<al_core::queries::Position> {
-    let line = params.get("line")?.as_u64()? as u32;
-    let character = params.get("character")?.as_u64()? as u32;
+    // Cap to u32::MAX to prevent silent truncation of attacker-controlled values.
+    let line = u32::try_from(params.get("line")?.as_u64()?).ok()?;
+    let character = u32::try_from(params.get("character")?.as_u64()?).ok()?;
     Some(al_core::queries::Position { line, character })
 }
 
@@ -378,6 +424,12 @@ pub(crate) fn rpc_error(id: u64, code: i32, message: &str) -> Response {
             message: message.to_string(),
         }),
     }
+}
+
+/// Get document text, loading from disk if needed. Returns the text or a file-not-found Response.
+pub(crate) fn require_document_text(workspace: &Workspace, uri: &url::Url, id: u64) -> Result<String, Response> {
+    ensure_document(workspace, uri);
+    workspace.documents.get_text(uri).ok_or_else(|| file_not_found(id))
 }
 
 /// Ensure a file is loaded in the document store. If not found, read from disk.

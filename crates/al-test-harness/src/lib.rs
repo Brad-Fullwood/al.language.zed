@@ -290,6 +290,101 @@ impl LspClient {
         }
     }
 
+    /// Send a text change to an already-open file (simulates Zed keystroke).
+    ///
+    /// Uses `TextDocumentSyncKind::Full` — sends the complete new content,
+    /// exactly as Zed does. Increments the document version and waits for
+    /// `publishDiagnostics` to confirm the server processed the change.
+    pub async fn change_file(&mut self, relative_path: &str, new_content: &str) {
+        let uri = self.file_uri(relative_path);
+        let version = self.open_docs.get(&uri).copied().unwrap_or(1) + 1;
+        self.open_docs.insert(uri.clone(), version);
+
+        let params = serde_json::json!({
+            "textDocument": {
+                "uri": uri,
+                "version": version
+            },
+            "contentChanges": [{
+                "text": new_content
+            }]
+        });
+
+        self.notify("textDocument/didChange", params).await.unwrap();
+
+        // Wait for publishDiagnostics (same pattern as open_file)
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        loop {
+            match tokio::time::timeout_at(deadline, self.notifications.recv()).await {
+                Ok(Some((method, params))) => {
+                    let is_our_diag = method == "textDocument/publishDiagnostics"
+                        && params.get("uri").and_then(|v| v.as_str()) == Some(uri.as_str());
+                    self.buffered_notifications.push((method, params));
+                    if is_our_diag {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// Send a text change WITHOUT waiting for diagnostics (simulates rapid typing).
+    ///
+    /// Use this for testing rapid-fire edits where you don't want to wait
+    /// for the server to process each one.
+    pub async fn change_file_no_wait(&mut self, relative_path: &str, new_content: &str) {
+        let uri = self.file_uri(relative_path);
+        let version = self.open_docs.get(&uri).copied().unwrap_or(1) + 1;
+        self.open_docs.insert(uri.clone(), version);
+
+        let params = serde_json::json!({
+            "textDocument": {
+                "uri": uri,
+                "version": version
+            },
+            "contentChanges": [{
+                "text": new_content
+            }]
+        });
+
+        self.notify("textDocument/didChange", params).await.unwrap();
+    }
+
+    /// Close a file (simulates Zed closing a tab).
+    pub async fn close_file(&mut self, relative_path: &str) {
+        let uri = self.file_uri(relative_path);
+        self.open_docs.remove(&uri);
+
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri }
+        });
+
+        self.notify("textDocument/didClose", params).await.unwrap();
+    }
+
+    /// Send configuration change (simulates Zed settings update).
+    pub async fn change_configuration(&mut self, settings: Value) {
+        let params = serde_json::json!({
+            "settings": settings
+        });
+
+        self.notify("workspace/didChangeConfiguration", params).await.unwrap();
+    }
+
+    /// Prepare rename — check if a position is renamable and get the range.
+    pub async fn prepare_rename(&mut self, relative_path: &str, line: u32, character: u32) -> Option<Value> {
+        let uri = self.file_uri(relative_path);
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        });
+
+        let result = self.request("textDocument/prepareRename", params).await.ok()?;
+        if result.is_null() { None } else { Some(result) }
+    }
+
     /// Get hover info at a position.
     pub async fn hover(&mut self, relative_path: &str, line: u32, character: u32) -> Option<Value> {
         let uri = self.file_uri(relative_path);
@@ -523,7 +618,8 @@ impl LspClient {
 
     // -- Internal --
 
-    fn file_uri(&self, relative_path: &str) -> String {
+    /// Build a file:// URI from a relative path. Public for test assertions.
+    pub fn file_uri(&self, relative_path: &str) -> String {
         let full_path = self.root_path.join(relative_path);
         // Use percent-encoding for path components to match how tower-lsp's
         // Url type encodes URIs (e.g., spaces become %20).

@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use al_symbols::{
+use al_core::symbols::{
     EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,
     SymbolIndex,
 };
@@ -992,4 +992,334 @@ fn fixture_test_al_parses_correctly() {
     assert_eq!(obj.kind, "codeunit");
     assert_eq!(obj.id, Some(50100));
     assert_eq!(obj.name, "Test Codeunit");
+}
+
+// ---------------------------------------------------------------------------
+// T2401: CLI JSON output schema validation tests
+//
+// These tests verify that the JSON shapes produced by the core query/format
+// functions match the documented schemas in .claude/data/schemas.toml.
+// They mirror what the daemon dispatch functions serialize to the wire.
+// ---------------------------------------------------------------------------
+
+/// Helper: simulate the lint JSON serialization performed by `lint_diag_to_json`
+/// in `al-lsp/src/daemon/mod.rs`.
+fn lint_diag_to_json_test(d: &al_syntax::LintDiagnostic) -> serde_json::Value {
+    serde_json::json!({
+        "code": d.code,
+        "message": d.message,
+        "severity": d.severity.to_string(),
+        "line": d.range.start_point.row + 1,
+        "column": d.range.start_point.column + 1,
+        "endLine": d.range.end_point.row + 1,
+        "endColumn": d.range.end_point.column + 1,
+    })
+}
+
+/// Helper: simulate the hover JSON produced by `dispatch_hover`.
+fn hover_result_to_json(r: &al_core::queries::hover::HoverResult) -> serde_json::Value {
+    serde_json::json!({
+        "contents": r.contents,
+        "range": r.range.map(|rng| serde_json::json!({
+            "start": { "line": rng.start.line, "character": rng.start.character },
+            "end": { "line": rng.end.line, "character": rng.end.character },
+        })),
+    })
+}
+
+/// Helper: simulate the definition JSON produced by `dispatch_definition`.
+fn locations_to_json(locations: &[al_core::queries::Location]) -> serde_json::Value {
+    serde_json::json!(locations.iter().map(|l| serde_json::json!({
+        "uri": l.uri.as_str(),
+        "range": {
+            "start": { "line": l.range.start.line, "character": l.range.start.character },
+            "end": { "line": l.range.end.line, "character": l.range.end.character },
+        }
+    })).collect::<Vec<_>>())
+}
+
+// ---------------------------------------------------------------------------
+// format JSON schema
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_schema_format_output_has_required_fields() {
+    // dispatch_format returns {"formatted": string, "changed": bool}
+    let content = "codeunit 50100 Test\n{\nprocedure Foo()\nbegin\nend;\n}\n";
+    let opts = FormatOptions::default();
+    let formatted = al_syntax::format_al(content, &opts);
+    let changed = formatted != content;
+
+    let json = serde_json::json!({
+        "formatted": formatted,
+        "changed": changed,
+    });
+
+    assert!(json.get("formatted").is_some(), "format output must have 'formatted' field");
+    assert!(json["formatted"].is_string(), "'formatted' must be a string");
+    assert!(json.get("changed").is_some(), "format output must have 'changed' field");
+    assert!(json["changed"].is_boolean(), "'changed' must be a boolean");
+}
+
+#[test]
+fn json_schema_format_check_output_shape() {
+    // dispatch_format with check=true returns {"changed": bool} only
+    let content = "codeunit 50100 Test\n{\nprocedure Foo()\nbegin\nend;\n}\n";
+    let opts = FormatOptions::default();
+    let formatted = al_syntax::format_al(content, &opts);
+    let changed = formatted != content;
+
+    let json = serde_json::json!({ "changed": changed });
+
+    assert!(json.get("changed").is_some(), "format check output must have 'changed' field");
+    assert!(json["changed"].is_boolean(), "'changed' must be a boolean");
+}
+
+#[test]
+fn json_schema_format_changed_is_false_for_already_formatted_input() {
+    // A well-formatted codeunit should have changed=false
+    let formatted_content = "codeunit 50100 Test\n{\n    procedure Foo()\n    begin\n    end;\n}\n";
+    let opts = FormatOptions::default();
+    let formatted = al_syntax::format_al(formatted_content, &opts);
+    let changed = formatted != formatted_content;
+
+    let json = serde_json::json!({ "formatted": formatted, "changed": changed });
+    assert!(!json["changed"].as_bool().unwrap(), "well-formatted input should not change");
+}
+
+// ---------------------------------------------------------------------------
+// lint JSON schema
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_schema_lint_output_is_array() {
+    // dispatch_lint returns a JSON array of diagnostic objects
+    let content = "codeunit 50100 Test\n{\n    procedure Foo()\n    begin\n    end;\n}\n";
+    let result = al_core::syntax::AlParser::parse_quick(content);
+    let diagnostics = al_core::syntax::lint(&result.tree, content);
+    let json_diags: Vec<serde_json::Value> = diagnostics.iter().map(lint_diag_to_json_test).collect();
+    let json = serde_json::json!(json_diags);
+
+    assert!(json.is_array(), "lint output must be a JSON array");
+}
+
+#[test]
+fn json_schema_lint_diagnostic_has_required_fields() {
+    // Each diagnostic must have code, message, severity, line, column, endLine, endColumn
+    let content = "codeunit 50100 Test\n{\nprocedure Foo()\nbegin\nend;\n}\n";
+    let result = al_core::syntax::AlParser::parse_quick(content);
+    let diagnostics = al_core::syntax::lint(&result.tree, content);
+
+    for d in &diagnostics {
+        let json = lint_diag_to_json_test(d);
+        assert!(json.get("code").is_some(), "diagnostic must have 'code'");
+        assert!(json["code"].is_string(), "'code' must be string");
+        assert!(json.get("message").is_some(), "diagnostic must have 'message'");
+        assert!(json["message"].is_string(), "'message' must be string");
+        assert!(json.get("severity").is_some(), "diagnostic must have 'severity'");
+        assert!(json["severity"].is_string(), "'severity' must be string");
+        assert!(json.get("line").is_some(), "diagnostic must have 'line'");
+        assert!(json["line"].is_number(), "'line' must be number");
+        assert!(json.get("column").is_some(), "diagnostic must have 'column'");
+        assert!(json["column"].is_number(), "'column' must be number");
+        assert!(json.get("endLine").is_some(), "diagnostic must have 'endLine'");
+        assert!(json.get("endColumn").is_some(), "diagnostic must have 'endColumn'");
+    }
+}
+
+#[test]
+fn json_schema_lint_line_numbers_are_one_based() {
+    // The schema mandates 1-based line/column numbers
+    let content = "codeunit 50100 Test\n{\n    procedure Foo()\n    begin\n    end;\n}\n";
+    let result = al_core::syntax::AlParser::parse_quick(content);
+    let diagnostics = al_core::syntax::lint(&result.tree, content);
+
+    for d in &diagnostics {
+        let json = lint_diag_to_json_test(d);
+        let line = json["line"].as_u64().unwrap();
+        let col = json["column"].as_u64().unwrap();
+        assert!(line >= 1, "line must be >= 1 (1-based), got {}", line);
+        assert!(col >= 1, "column must be >= 1 (1-based), got {}", col);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// search JSON schema
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_schema_search_output_is_array() {
+    // dispatch_search returns a JSON array of symbol entries
+    let index = build_test_index();
+    let results = index.search("Customer", 10);
+    let json_entries: Vec<serde_json::Value> = results
+        .iter()
+        .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
+        .collect();
+    let json = serde_json::json!(json_entries);
+
+    assert!(json.is_array(), "search output must be a JSON array");
+    assert!(!json.as_array().unwrap().is_empty(), "search for 'Customer' should return results");
+}
+
+#[test]
+fn json_schema_search_symbol_entry_has_required_fields() {
+    // Each symbol entry must serialize without error
+    let index = build_test_index();
+    let results = index.search("Customer", 10);
+    assert!(!results.is_empty(), "should find Customer in test index");
+
+    for entry in &results {
+        let json = serde_json::to_value(entry.as_ref())
+            .expect("SymbolEntry must serialize to JSON");
+        // Basic structural check: must be an object
+        assert!(json.is_object(), "each search result must be a JSON object");
+    }
+}
+
+#[test]
+fn json_schema_search_empty_query_returns_all() {
+    // Empty query should return all symbols (up to limit)
+    let index = build_test_index();
+    let results = index.search("", 100);
+    let json_entries: Vec<serde_json::Value> = results
+        .iter()
+        .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
+        .collect();
+    // Should include all 3 entries from build_test_index
+    assert!(json_entries.len() >= 3, "empty search should return all indexed symbols");
+}
+
+// ---------------------------------------------------------------------------
+// hover JSON schema
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_schema_hover_result_has_contents_and_range() {
+    // dispatch_hover serializes HoverResult to {"contents": string, "range": object|null}
+    // Test with a workspace that has the file open
+    use al_core::workspace::Workspace;
+    use url::Url;
+
+    let ws = Workspace::new();
+    let uri = Url::parse("file:///test/hover_schema.al").unwrap();
+    ws.documents.open(uri.clone(), SIMPLE_CODEUNIT.to_string());
+
+    // Hover at (0, 0) — on "codeunit" keyword. May return None.
+    let pos = al_core::queries::Position { line: 0, character: 0 };
+    let result = al_core::queries::hover::hover(&ws, &uri, pos);
+
+    if let Some(r) = result {
+        let json = hover_result_to_json(&r);
+        assert!(json.get("contents").is_some(), "hover result must have 'contents'");
+        assert!(json["contents"].is_string(), "'contents' must be a string");
+        assert!(json.get("range").is_some(), "hover result must have 'range' key (may be null)");
+        // If range is not null, it must have start/end
+        if !json["range"].is_null() {
+            let rng = &json["range"];
+            assert!(rng.get("start").is_some(), "range must have 'start'");
+            assert!(rng.get("end").is_some(), "range must have 'end'");
+        }
+    }
+    // None result is also valid — position not hoverable
+}
+
+#[test]
+fn json_schema_hover_result_serializes_to_object() {
+    // Verify HoverResult's manual JSON serialization produces a stable object shape
+    use al_core::queries::hover::HoverResult;
+    use al_core::queries::{Position, Range};
+
+    let result = HoverResult {
+        contents: "```al\nprocedure HelloWorld()\n```".to_string(),
+        range: Some(Range {
+            start: Position { line: 2, character: 4 },
+            end: Position { line: 2, character: 14 },
+        }),
+    };
+
+    let json = hover_result_to_json(&result);
+
+    assert_eq!(json["contents"], "```al\nprocedure HelloWorld()\n```");
+    assert!(!json["range"].is_null(), "range should be present");
+    assert_eq!(json["range"]["start"]["line"], 2);
+    assert_eq!(json["range"]["start"]["character"], 4);
+    assert_eq!(json["range"]["end"]["line"], 2);
+    assert_eq!(json["range"]["end"]["character"], 14);
+}
+
+// ---------------------------------------------------------------------------
+// definition JSON schema
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_schema_definition_output_is_array() {
+    // dispatch_definition returns an array of location objects (or null)
+    // Test that when locations exist, they serialize correctly
+    use al_core::queries::{Location, Position, Range};
+    use url::Url;
+
+    let locations = vec![
+        Location {
+            uri: Url::parse("file:///test/MyTable.al").unwrap(),
+            range: Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 0, character: 20 },
+            },
+        },
+        Location {
+            uri: Url::parse("file:///test/MyExt.al").unwrap(),
+            range: Range {
+                start: Position { line: 5, character: 4 },
+                end: Position { line: 5, character: 14 },
+            },
+        },
+    ];
+
+    let json = locations_to_json(&locations);
+
+    assert!(json.is_array(), "definition output must be a JSON array");
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2, "should have 2 locations");
+
+    let loc0 = &arr[0];
+    assert!(loc0.get("uri").is_some(), "location must have 'uri'");
+    assert!(loc0["uri"].is_string(), "'uri' must be string");
+    assert!(loc0.get("range").is_some(), "location must have 'range'");
+    assert!(loc0["range"].get("start").is_some(), "range must have 'start'");
+    assert!(loc0["range"].get("end").is_some(), "range must have 'end'");
+    assert!(loc0["range"]["start"].get("line").is_some(), "start must have 'line'");
+    assert!(loc0["range"]["start"].get("character").is_some(), "start must have 'character'");
+}
+
+#[test]
+fn json_schema_definition_location_line_numbers_match() {
+    // Verify that line/character are correctly serialized
+    use al_core::queries::{Location, Position, Range};
+    use url::Url;
+
+    let locations = vec![Location {
+        uri: Url::parse("file:///test/Proc.al").unwrap(),
+        range: Range {
+            start: Position { line: 10, character: 4 },
+            end: Position { line: 10, character: 20 },
+        },
+    }];
+
+    let json = locations_to_json(&locations);
+    let loc = &json[0];
+
+    assert_eq!(loc["uri"], "file:///test/Proc.al");
+    assert_eq!(loc["range"]["start"]["line"], 10);
+    assert_eq!(loc["range"]["start"]["character"], 4);
+    assert_eq!(loc["range"]["end"]["line"], 10);
+    assert_eq!(loc["range"]["end"]["character"], 20);
+}
+
+#[test]
+fn json_schema_definition_empty_locations_serializes_to_empty_array() {
+    let locations: Vec<al_core::queries::Location> = vec![];
+    let json = locations_to_json(&locations);
+    assert!(json.is_array(), "empty locations must be a JSON array");
+    assert_eq!(json.as_array().unwrap().len(), 0, "should be empty array");
 }

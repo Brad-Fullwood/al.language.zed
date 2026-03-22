@@ -106,6 +106,13 @@ pub struct MethodParameter {
     pub is_var: bool,
 }
 
+impl std::fmt::Display for MethodParameter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_var { write!(f, "var ")?; }
+        write!(f, "{}: {}", self.name, self.type_name)
+    }
+}
+
 /// Information about a compiler error code.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorCodeInfo {

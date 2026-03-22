@@ -1277,8 +1277,13 @@ async fn test_n01_inlay_hints_procedure_call() {
     client.open_file("src/integration_n01.al", code).await;
 
     let hints = client.inlay_hints("src/integration_n01.al", 0, 12).await;
-    // May or may not return hints — just must not crash
-    let _ = hints;
+    // Should return parameter name hints for the Add(10, 20) call
+    if !hints.is_empty() {
+        assert!(hints.iter().all(|h| h.get("label").is_some()),
+            "every inlay hint should have a label: {hints:?}");
+        assert!(hints.iter().all(|h| h.get("position").is_some()),
+            "every inlay hint should have a position: {hints:?}");
+    }
 
     client.shutdown().await;
 }
@@ -1290,7 +1295,8 @@ async fn test_n02_inlay_hints_empty_range_is_graceful() {
     client.open_file("src/integration_n02.al", CODEUNIT_SIMPLE).await;
 
     let hints = client.inlay_hints("src/integration_n02.al", 0, 0).await;
-    let _ = hints;
+    // Empty range — no call sites, so no hints expected
+    assert!(hints.is_empty(), "empty range should produce no inlay hints: {hints:?}");
 
     client.shutdown().await;
 }
@@ -1313,7 +1319,14 @@ async fn test_o01_code_action_empty_begin_end() {
     client.open_file("src/integration_o01.al", code).await;
 
     let actions = client.code_actions("src/integration_o01.al", 3, 5).await;
-    let _ = actions;
+    // Empty begin..end should produce at least one code action (AL-L001 quickfix)
+    assert!(!actions.is_empty(),
+        "empty begin..end should produce code actions: {actions:?}");
+    // Every action must have a title
+    for action in &actions {
+        assert!(action.get("title").and_then(|t| t.as_str()).is_some(),
+            "code action must have title: {action}");
+    }
 
     client.shutdown().await;
 }
@@ -1325,8 +1338,11 @@ async fn test_o02_code_action_on_valid_code() {
     client.open_file("src/integration_o02.al", CODEUNIT_SIMPLE).await;
 
     let actions = client.code_actions("src/integration_o02.al", 2, 10).await;
-    // Empty or non-empty — just must not crash
-    let _ = actions;
+    // Valid code may or may not have actions, but every action must be well-formed
+    for action in &actions {
+        assert!(action.is_object(), "code action must be a JSON object: {action}");
+        assert!(action.get("title").is_some(), "code action must have title: {action}");
+    }
 
     client.shutdown().await;
 }

@@ -505,26 +505,32 @@ fields = [
 [schemas.example]
 json = '''{"files":[{"f":"src/MySub.al","diags":[{"l":32,"c":5,"sev":"warn","code":"AL0604","msg":"Use of implicit \'with\' is deprecated"},{"l":45,"c":1,"sev":"error","code":"AA0005","msg":"Missing documentation comment"}]}]}'''
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ─── CLI Command Schemas (actual daemon JSON output) ──────────────────────────
+# NOTE: These reflect ACTUAL serde serialization output, not the compact
+# abbreviated format used in the slash command schemas above. The slash command
+# schemas describe the intended MCP output format (abbreviated for token density).
 
 [[schemas]]
 command = "al search --json"
 mcp_tool = "al/search"
 description = "Search workspace and package symbols"
-args = "<query> [--package PKG] [--kind KIND] [--limit N]"
+args = "<query> [--limit N]"
 
 [schemas.output]
 format = "array"
+note = "Returns serialized Vec<SymbolEntry>. Only non-default fields are included."
 fields = [
-  { name = "k",   type = "string",      description = "Object kind" },
-  { name = "id",  type = "int",         description = "Object ID" },
-  { name = "n",   type = "string",      description = "Symbol name" },
-  { name = "pkg", type = "string",      description = "Package name or 'workspace'" },
-  { name = "f",   type = "string|null", description = "File path (null = package-only)" },
+  { name = "kind",    type = "string",      description = "Object kind (Table, Page, Codeunit, ...)" },
+  { name = "id",      type = "int",         description = "Object ID" },
+  { name = "name",    type = "string",      description = "Symbol name" },
+  { name = "package", type = "string",      description = "Package name or '(workspace)'" },
+  { name = "extends", type = "string|null", description = "Extended object (extensions only)" },
+  { name = "methods", type = "array",       description = "Procedures (omitted when empty)" },
+  { name = "fields",  type = "array",       description = "Fields (omitted when empty)" },
 ]
 
 [schemas.example]
-json = '[{"k":"Table","id":18,"n":"Customer","pkg":"Base Application","f":null}]'
+json = '[{"kind":"Table","id":18,"name":"Customer","package":"Base Application"},{"kind":"Page","id":21,"name":"Customer Card","package":"Base Application"}]'
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -537,13 +543,12 @@ args = "<file> <line> <col>"
 [schemas.output]
 format = "object"
 fields = [
-  { name = "symbol", type = "object", description = "Symbol at position: {k, id, n}" },
-  { name = "doc",    type = "string", description = "Human-readable documentation string" },
-  { name = "sig",    type = "string", description = "Type signature" },
+  { name = "contents", type = "object", description = "LSP MarkupContent (kind + value)" },
+  { name = "range",    type = "object|null", description = "LSP Range (start/end with line/character)" },
 ]
 
 [schemas.example]
-json = '{"symbol":{"k":"Table","id":18,"n":"Customer"},"doc":"Table 18 Customer\nFields: 150\nSource: Base Application v26.0","sig":"Record \"Customer\""}'
+json = '{"contents":{"kind":"markdown","value":"**Table** 18 **Customer**"},"range":{"start":{"line":0,"character":5},"end":{"line":0,"character":13}}}'
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -554,23 +559,15 @@ description = "Go to definition for a symbol at a source position"
 args = "<file> <line> <col>"
 
 [schemas.output]
-format = "object"
+format = "array"
+note = "Returns array of LSP Location objects (uri + range)"
 fields = [
-  { name = "target", type = "object|null", description = "File location of the definition (null = package, no source)" },
-  { name = "symbol", type = "object",      description = "Symbol info: {k, id, n}" },
-  { name = "pkg",    type = "string",      description = "Package name (present when target is null)" },
+  { name = "uri",   type = "string", description = "File URI" },
+  { name = "range", type = "object", description = "LSP Range (start/end with line/character)" },
 ]
 
-[schemas.output.target_fields]
-fields = [
-  { name = "f", type = "string", description = "File path" },
-  { name = "l", type = "int",    description = "1-based line" },
-  { name = "c", type = "int",    description = "1-based column" },
-]
-
-[schemas.examples]
-workspace = '{"target":{"f":"src/Customer.al","l":1,"c":1},"symbol":{"k":"Table","id":18,"n":"Customer"}}'
-package = '{"target":null,"symbol":{"k":"Table","id":18,"n":"Customer"},"pkg":"Base Application"}'
+[schemas.example]
+json = '[{"uri":"file:///src/Customer.al","range":{"start":{"line":0,"character":0},"end":{"line":0,"character":30}}}]'
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -581,22 +578,15 @@ description = "Find all references to a symbol at a source position"
 args = "<file> <line> <col>"
 
 [schemas.output]
-format = "object"
+format = "array"
+note = "Returns array of LSP Location objects (uri + range)"
 fields = [
-  { name = "symbol", type = "string", description = "Symbol name" },
-  { name = "refs",   type = "array",  description = "Reference locations" },
-]
-
-[schemas.output.refs_item]
-fields = [
-  { name = "f",   type = "string", description = "File path" },
-  { name = "l",   type = "int",    description = "1-based line" },
-  { name = "c",   type = "int",    description = "1-based column" },
-  { name = "ctx", type = "string", description = "Trimmed line content for quick understanding" },
+  { name = "uri",   type = "string", description = "File URI" },
+  { name = "range", type = "object", description = "LSP Range (start/end with line/character)" },
 ]
 
 [schemas.example]
-json = '{"symbol":"Customer","refs":[{"f":"src/SalesHeader.al","l":45,"c":12,"ctx":"var Cust: Record Customer;"},{"f":"src/PostSales.al","l":120,"c":8,"ctx":"Customer.Get(CustNo);"}]}'
+json = '[{"uri":"file:///src/SalesHeader.al","range":{"start":{"line":44,"character":11},"end":{"line":44,"character":19}}}]'
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -608,14 +598,118 @@ args = "<file> <line> <col>"
 [schemas.output]
 format = "array"
 fields = [
-  { name = "label",  type = "string", description = "Display label" },
-  { name = "k",      type = "string", description = "Symbol kind" },
-  { name = "detail", type = "string", description = "Short detail string (e.g. 'Table 18')" },
-  { name = "insert", type = "string", description = "Text to insert" },
+  { name = "label",    type = "string",      description = "Display label" },
+  { name = "kind",     type = "string",      description = "Symbol kind (e.g. 'Field', 'Method')" },
+  { name = "detail",   type = "string|null", description = "Short detail string" },
+  { name = "sortText", type = "string|null", description = "Sort ordering text" },
 ]
 
 [schemas.example]
-json = '[{"label":"Customer","k":"Table","detail":"Table 18","insert":"Customer"},{"label":"CustomerCard","k":"Page","detail":"Page 21","insert":"CustomerCard"}]'
+json = '[{"label":"Customer","kind":"Field","detail":"Record","sortText":"00Customer"}]'
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[schemas]]
+command = "al compile --json"
+description = "Compile the AL project via semantic bridge"
+args = ""
+
+[schemas.output]
+format = "object"
+fields = [
+  { name = "success",     type = "bool",        description = "Whether compilation succeeded" },
+  { name = "diagnostics", type = "array",       description = "Compiler diagnostics" },
+  { name = "appPath",     type = "string|null", description = "Path to produced .app file (null on failure)" },
+]
+
+[schemas.output.diagnostics_item]
+fields = [
+  { name = "file",      type = "string", description = "Source file path" },
+  { name = "line",      type = "int",    description = "Line number" },
+  { name = "column",    type = "int",    description = "Column number" },
+  { name = "endLine",   type = "int",    description = "End line" },
+  { name = "endColumn", type = "int",    description = "End column" },
+  { name = "severity",  type = "string", description = "error, warning, or info" },
+  { name = "code",      type = "string", description = "Diagnostic code (e.g. AL0001)" },
+  { name = "message",   type = "string", description = "Diagnostic message" },
+]
+
+[schemas.example]
+json = '{"success":true,"diagnostics":[],"appPath":"/project/MyPub_MyApp_1.0.0.0.app"}'
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[schemas]]
+command = "al obsolete --json"
+description = "Find obsolete symbols in workspace"
+args = ""
+
+[schemas.output]
+format = "array"
+note = "Returns serialized Vec<ObsoleteEntry> with camelCase fields"
+fields = [
+  { name = "object",      type = "string",      description = "Object name containing the symbol" },
+  { name = "symbol",      type = "string",      description = "Symbol name" },
+  { name = "kind",        type = "string",      description = "Symbol kind (object, procedure, field)" },
+  { name = "state",       type = "string",      description = "pending or removed" },
+  { name = "reason",      type = "string|null", description = "ObsoleteReason text" },
+  { name = "tag",         type = "string|null", description = "ObsoleteTag (version or date)" },
+  { name = "file",        type = "string|null", description = "File path (workspace only)" },
+  { name = "line",        type = "int|null",    description = "1-based line number" },
+  { name = "callerCount", type = "int",         description = "Number of references found" },
+]
+
+[schemas.example]
+json = '[{"object":"Sales Header","symbol":"PostDocument","kind":"procedure","state":"pending","reason":"Use PostSalesDoc instead","tag":"26.0","callerCount":3}]'
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[schemas]]
+command = "al duplicates --json"
+description = "Find duplicate/similar code blocks"
+args = "[--min-tokens N] [--min-similarity F]"
+
+[schemas.output]
+format = "array"
+note = "Returns serialized Vec<DuplicateBlock> with camelCase fields"
+fields = [
+  { name = "first",      type = "object", description = "First occurrence location" },
+  { name = "second",     type = "object", description = "Second occurrence location" },
+  { name = "similarity", type = "float",  description = "Similarity score 0.0-1.0" },
+  { name = "tokenCount", type = "int",    description = "Number of tokens in common" },
+]
+
+[schemas.output.location_fields]
+fields = [
+  { name = "file",      type = "string", description = "File path" },
+  { name = "object",    type = "string", description = "Object name" },
+  { name = "procedure", type = "string", description = "Procedure name" },
+  { name = "line",      type = "int",    description = "1-based line number" },
+]
+
+[schemas.example]
+json = '[{"first":{"file":"src/A.al","object":"CU1","procedure":"Validate","line":10},"second":{"file":"src/B.al","object":"CU2","procedure":"Check","line":20},"similarity":0.92,"tokenCount":35}]'
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+[[schemas]]
+command = "al entrypoints --json"
+description = "Find entry point procedures (no callers)"
+args = ""
+
+[schemas.output]
+format = "array"
+note = "Returns serialized Vec<InsightNode> with serde tag='type'"
+fields = [
+  { name = "type",        type = "string", description = "Node type: Object, Procedure, Event, Subscriber" },
+  { name = "object_name", type = "string", description = "Object containing the procedure" },
+  { name = "name",        type = "string", description = "Procedure/event name" },
+  { name = "object_kind", type = "string", description = "Object kind (Table, Page, Codeunit, ...)" },
+  { name = "is_local",    type = "bool",   description = "Whether procedure is local (Procedure type only)" },
+]
+
+[schemas.example]
+json = '[{"type":"Procedure","object_kind":"Codeunit","object_name":"Sales-Post","name":"PostDocument","is_local":false}]'
 
 # ─────────────────────────────────────────────────────────────────────────────
 

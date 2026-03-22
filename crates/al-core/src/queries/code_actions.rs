@@ -48,7 +48,7 @@ pub fn source_actions(
     uri: &Url,
     range: Range,
 ) -> Vec<CodeActionEntry> {
-    let Some(text) = workspace.documents.get_text(uri) else {
+    let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
     };
     let lsp_range: tower_lsp::lsp_types::Range = range.into();

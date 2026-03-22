@@ -84,6 +84,15 @@ pub struct CachedObjectInfo {
 ///
 /// Incremental scanning is supported via `incremental_scan`: only files whose
 /// mtime or size changed since the last scan are re-read and re-indexed.
+/// A procedure/event location cached at index time.
+#[derive(Debug, Clone)]
+pub struct CachedProcedureInfo {
+    /// File path containing this procedure.
+    pub file: PathBuf,
+    /// Selection range of the procedure name (for go-to-definition).
+    pub selection_range: tower_lsp::lsp_types::Range,
+}
+
 pub struct FileIndex {
     /// File path → full text content.
     pub files: DashMap<PathBuf, String>,
@@ -97,6 +106,10 @@ pub struct FileIndex {
     pub object_info: DashMap<PathBuf, CachedObjectInfo>,
     /// File path → cached parse tree (avoids re-parsing for cross-file queries).
     pub file_trees: DashMap<PathBuf, tree_sitter::Tree>,
+    /// Lowercase procedure/event name → location (reverse index for O(1) go-to-definition).
+    pub procedures: DashMap<String, Vec<CachedProcedureInfo>>,
+    /// File path → list of procedure names (for cleanup on file remove/update).
+    path_to_procedures: DashMap<PathBuf, Vec<String>>,
 }
 
 impl FileIndex {
@@ -109,6 +122,8 @@ impl FileIndex {
             file_metadata: DashMap::new(),
             object_info: DashMap::new(),
             file_trees: DashMap::new(),
+            procedures: DashMap::new(),
+            path_to_procedures: DashMap::new(),
         }
     }
 
@@ -209,6 +224,9 @@ impl FileIndex {
         if let Some((_, old_obj_name)) = self.path_to_object.remove(&path) {
             self.objects.remove(&old_obj_name);
         }
+        // Remove stale procedure entries for this file before re-indexing.
+        self.remove_procedures_for_file(&path);
+
         // Parse once; cache the tree for cross-file queries and extract object metadata.
         let result = al_syntax::AlParser::parse_quick(&content);
         // Cache the tree unconditionally — all files benefit from it.
@@ -227,6 +245,32 @@ impl FileIndex {
             // No object declaration — remove any stale cached metadata.
             self.object_info.remove(&path);
         }
+
+        // Index procedure/event names for O(1) go-to-definition.
+        let doc_symbols = al_syntax::extract_document_symbols(&result.tree, &content);
+        let mut proc_names = Vec::new();
+        for sym in &doc_symbols {
+            if let Some(children) = &sym.children {
+                for child in children {
+                    if crate::queries::is_procedure_symbol(child.kind) {
+                        let proc_key = child.name.to_lowercase();
+                        let info = CachedProcedureInfo {
+                            file: path.clone(),
+                            selection_range: child.selection_range,
+                        };
+                        self.procedures
+                            .entry(proc_key.clone())
+                            .or_default()
+                            .push(info);
+                        proc_names.push(proc_key);
+                    }
+                }
+            }
+        }
+        if !proc_names.is_empty() {
+            self.path_to_procedures.insert(path.clone(), proc_names);
+        }
+
         self.files.insert(path, content);
     }
 
@@ -236,8 +280,24 @@ impl FileIndex {
         self.file_metadata.remove(path);
         self.file_trees.remove(path);
         self.object_info.remove(path);
+        self.remove_procedures_for_file(path);
         if let Some((_, obj_name)) = self.path_to_object.remove(path) {
             self.objects.remove(&obj_name);
+        }
+    }
+
+    /// Remove all procedure index entries associated with a file path.
+    fn remove_procedures_for_file(&self, path: &Path) {
+        if let Some((_, old_proc_names)) = self.path_to_procedures.remove(path) {
+            for proc_name in old_proc_names {
+                if let Some(mut entries) = self.procedures.get_mut(&proc_name) {
+                    entries.retain(|e| e.file != path);
+                    if entries.is_empty() {
+                        drop(entries);
+                        self.procedures.remove(&proc_name);
+                    }
+                }
+            }
         }
     }
 
@@ -674,5 +734,105 @@ mod tests {
 
         delta.removed.push(PathBuf::from("/b.al"));
         assert_eq!(delta.total(), 2);
+    }
+
+    // --- Concurrency / stress tests ---
+
+    #[test]
+    fn concurrent_add_and_read_files() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let index = Arc::new(FileIndex::new());
+
+        // Spawn writers
+        let mut handles = Vec::new();
+        for i in 0..10 {
+            let idx = Arc::clone(&index);
+            handles.push(thread::spawn(move || {
+                let path = PathBuf::from(format!("/test/src/CU{i}.al"));
+                let content = format!(r#"codeunit 5010{i} "CU{i}" {{ procedure Proc{i}() begin end; }}"#);
+                idx.add_file(path, content);
+            }));
+        }
+
+        // Spawn concurrent readers while writers are running
+        for _ in 0..5 {
+            let idx = Arc::clone(&index);
+            handles.push(thread::spawn(move || {
+                // These may or may not see partially-written state — should never panic
+                let _count = idx.files.len();
+                let _obj = idx.objects.get("cu0");
+                let _proc = idx.procedures.get("proc0");
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All 10 files should be indexed
+        assert_eq!(index.files.len(), 10);
+    }
+
+    #[test]
+    fn concurrent_add_and_remove() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let index = Arc::new(FileIndex::new());
+
+        // Pre-populate
+        for i in 0..10 {
+            let path = PathBuf::from(format!("/test/src/T{i}.al"));
+            let content = format!(r#"table 5010{i} "T{i}" {{ fields {{ field(1; "No."; Code[20]) {{ }} }} }}"#);
+            index.add_file(path, content);
+        }
+        assert_eq!(index.files.len(), 10);
+
+        // Concurrently remove half and add new ones
+        let mut handles = Vec::new();
+        for i in 0..5 {
+            let idx = Arc::clone(&index);
+            handles.push(thread::spawn(move || {
+                idx.remove_file(&PathBuf::from(format!("/test/src/T{i}.al")));
+            }));
+        }
+        for i in 10..15 {
+            let idx = Arc::clone(&index);
+            handles.push(thread::spawn(move || {
+                let path = PathBuf::from(format!("/test/src/T{i}.al"));
+                let content = format!(r#"table 5010{i} "T{i}" {{ fields {{ field(1; "No."; Code[20]) {{ }} }} }}"#);
+                idx.add_file(path, content);
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // 5 removed + 5 added = 10 total
+        assert_eq!(index.files.len(), 10);
+    }
+
+    #[test]
+    fn rapid_fire_procedure_index_updates() {
+        let index = FileIndex::new();
+
+        // Add and immediately update same file 50 times
+        for i in 0..50 {
+            let path = PathBuf::from("/test/src/Rapid.al");
+            let content = format!(
+                r#"codeunit 50100 "Rapid" {{ procedure Version{i}() begin end; }}"#
+            );
+            index.add_file(path, content);
+        }
+
+        // Only the latest version should remain
+        let procs = index.procedures.get(&format!("version49"));
+        assert!(procs.is_some(), "latest procedure should be in index");
+        // Earlier versions should have been cleaned up
+        let old = index.procedures.get("version0");
+        assert!(old.is_none(), "old procedure should have been removed");
     }
 }

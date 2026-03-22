@@ -74,7 +74,7 @@ use al_syntax::context::{CompletionContext, detect_context};
 /// Get completions at a position in a document.
 pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
-    let Some(text) = workspace.documents.get_text(uri) else {
+    let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
     };
     let context = detect_context(&text, lsp_pos);
@@ -153,10 +153,10 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                     documentation: None, insert_text: None, sort_text: None,
                 });
             }
-            add_default_completions(workspace, uri, &text, lsp_pos, &mut items);
+            add_default_completions(workspace, uri, lsp_pos, &mut items);
         }
         CompletionContext::Default => {
-            add_default_completions(workspace, uri, &text, lsp_pos, &mut items);
+            add_default_completions(workspace, uri, lsp_pos, &mut items);
         }
     }
 
@@ -169,7 +169,6 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
 fn add_default_completions(
     workspace: &Workspace,
     uri: &Url,
-    text: &str,
     position: tower_lsp::lsp_types::Position,
     items: &mut Vec<CompletionEntry>,
 ) {
@@ -182,12 +181,11 @@ fn add_default_completions(
     }
 
     if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) {
-        let doc_symbols = al_syntax::extract_document_symbols(&tree, text);
+        let doc_symbols = al_syntax::extract_document_symbols(&tree, &file_text);
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
-                    if child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
-                        || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT
+                    if super::is_procedure_symbol(child.kind)
                     {
                         items.push(CompletionEntry {
                             label: child.name.clone(),
@@ -333,6 +331,11 @@ fn from_lsp_completion(item: tower_lsp::lsp_types::CompletionItem) -> Completion
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::Workspace;
+
+    fn test_uri() -> Url {
+        Url::parse("file:///test/src/Test.al").unwrap()
+    }
 
     #[test]
     fn count_params_works() {
@@ -343,5 +346,88 @@ mod tests {
         assert_eq!(count_params("(A: Text; B: Integer; C: Boolean)"), 3);
         assert_eq!(count_params("(A: List of [Text]; B: Integer)"), 2);
         assert_eq!(count_params("(A: Text): Boolean"), 1);
+    }
+
+    // --- Failure path tests ---
+
+    #[test]
+    fn completions_empty_for_unopened_document() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        let pos = Position { line: 0, character: 0 };
+        let result = completions(&ws, &uri, pos);
+        assert!(result.is_empty(), "unopened document should return empty completions");
+    }
+
+    #[test]
+    fn completions_on_empty_file() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        ws.documents.open(uri.clone(), String::new());
+        let pos = Position { line: 0, character: 0 };
+        let result = completions(&ws, &uri, pos);
+        // Empty file — may return keywords but should not panic
+        let _ = result;
+    }
+
+    #[test]
+    fn completions_on_malformed_al() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        ws.documents.open(uri.clone(), "{{{{not valid al code}}}}".to_string());
+        let pos = Position { line: 0, character: 5 };
+        let result = completions(&ws, &uri, pos);
+        // Should not panic on malformed code
+        let _ = result;
+    }
+
+    #[test]
+    fn completions_at_line_beyond_file() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        ws.documents.open(uri.clone(), "codeunit 50100 \"X\" { }".to_string());
+        // Line 100 doesn't exist — should return empty, not panic
+        let pos = Position { line: 100, character: 0 };
+        let result = completions(&ws, &uri, pos);
+        let _ = result; // just ensure no panic
+    }
+
+    #[test]
+    fn completions_include_keywords_in_begin_block() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    begin
+
+    end;
+}"#.to_string());
+        let pos = Position { line: 4, character: 8 }; // inside begin block
+        let result = completions(&ws, &uri, pos);
+        let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"if"), "should include 'if' keyword, got: {:?}", labels);
+        assert!(labels.contains(&"repeat"), "should include 'repeat' keyword");
+    }
+
+    #[test]
+    fn completions_include_local_procedures() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+{
+    procedure Helper()
+    begin
+    end;
+
+    procedure Caller()
+    begin
+
+    end;
+}"#.to_string());
+        let pos = Position { line: 8, character: 8 };
+        let result = completions(&ws, &uri, pos);
+        let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"Helper"), "should include local procedure 'Helper', got: {:?}", labels);
     }
 }

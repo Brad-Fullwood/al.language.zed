@@ -135,13 +135,6 @@ fn infer_argument_types(
 
 fn parse_type_string(type_str: &str) -> (&str, Option<&str>) {
     let trimmed = type_str.trim();
-    if let Some(quote_start) = trimmed.find("\\\"") {
-        let base = trimmed[..quote_start].trim();
-        let rest = &trimmed[quote_start + 2..];
-        if let Some(quote_end) = rest.find("\\\"") {
-            return (base, Some(&rest[..quote_end]));
-        }
-    }
     if let Some(quote_start) = trimmed.find('"') {
         let base = trimmed[..quote_start].trim();
         let rest = &trimmed[quote_start + 1..];
@@ -236,7 +229,7 @@ fn lookup_parameter_names(
         if let Some(children) = &sym.children {
             for child in children {
                 if child.name.eq_ignore_ascii_case(func_name)
-                    && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
+                    && super::is_procedure_symbol(child.kind)
                 {
                     if let Some(detail) = &child.detail {
                         let params = parse_detail_params(detail);
@@ -263,7 +256,7 @@ fn lookup_parameter_names(
     }
 
     // 3. Package symbols
-    let symbols = workspace.symbols.search(func_name, 5);
+    let symbols = workspace.symbols.get_by_name(func_name);
     let candidates: Vec<OverloadCandidate> = symbols.iter()
         .flat_map(|e| e.methods.iter())
         .filter(|m| m.name.eq_ignore_ascii_case(func_name))
@@ -342,7 +335,7 @@ fn lookup_via_receiver(
                     if let Some(children) = &sym.children {
                         for child in children {
                             if child.name.eq_ignore_ascii_case(func_name)
-                                && (child.kind == SymbolKind::FUNCTION || child.kind == SymbolKind::EVENT)
+                                && super::is_procedure_symbol(child.kind)
                             {
                                 if let Some(detail) = &child.detail {
                                     let params = parse_detail_params(detail);
@@ -373,9 +366,9 @@ fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
         "format" => &["Value"],
         "strlen" | "maxstrlen" | "get" | "findset" | "findfirst" | "findlast"
         | "getposition" | "count" | "isempty" | "reset" | "setrecfilter" => return Some(vec![]),
-        "copystr" => &["Position", "Length"],
+        "copystr" => &["String", "Position", "Length"],
         "selectstr" => &["Number", "CommaString"],
-        "strpos" => &["SubString"],
+        "strpos" => &["String", "SubString"],
         "contains" | "startswith" | "endswith" => &["Value"],
         "setrange" => &["FieldNo", "FromValue", "ToValue"],
         "setfilter" => &["FieldNo", "String"],

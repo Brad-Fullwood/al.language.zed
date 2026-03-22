@@ -267,7 +267,7 @@ async fn download_symbols_from_server(
     let insecure_tls = config.accept_invalid_certs;
     let client = al_core::symbols::bc_server::BcServerClient::new(auth, config.tenant.clone(), message_sink, insecure_tls);
     // al_core::project::AppDependency is re-exported from al-symbols — clone directly.
-    let url_deps: Vec<(String, al_core::symbols::AppDependency)> = deps
+    let url_deps: Vec<(String, al_core::symbols::nuget::AppDependency)> = deps
         .iter()
         .filter_map(|dep| {
             config.dev_packages_url(dep).map(|url| (url, dep.clone()))

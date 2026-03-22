@@ -368,7 +368,7 @@ fn find_orphaned_subscribers(
         // to avoid false negatives where an unrelated symbol name contains the target
         // as a substring.
         let target_lower = target_object.to_lowercase();
-        let exists_in_symbols = !workspace.symbols.get_by_name(&target_lower).is_empty();
+        let exists_in_symbols = workspace.symbols.find_by_name(&target_lower).is_some();
         let exists_in_workspace = workspace
             .file_index
             .find_by_object_name(&target_lower)

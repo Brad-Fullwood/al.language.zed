@@ -895,4 +895,41 @@ mod tests {
         assert!(units.iter().any(|u| u.source == "This is a label"), "Should extract Label");
         assert!(units.iter().any(|u| u.source == "Description"), "Should extract Caption 'Description'");
     }
+
+    fn make_test_unit(source: &str) -> TranslationUnit {
+        TranslationUnit {
+            id: "test-id".to_string(),
+            object_type: "Table".to_string(),
+            object_id: 50100,
+            object_name: "Test".to_string(),
+            source: source.to_string(),
+            target: None,
+            state: TranslationState::New,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn test_suggest_translations_empty() {
+        let ws = crate::workspace::Workspace::new();
+        let unit = make_test_unit("Customer");
+        let result = suggest_translations(&[&unit], &ws);
+        assert!(result.is_empty(), "empty workspace should produce no suggestions");
+    }
+
+    #[test]
+    fn test_suggest_translations_exact_match() {
+        let ws = crate::workspace::Workspace::new();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            package: "TestPkg".to_string(),
+            ..Default::default()
+        }]);
+        let unit = make_test_unit("Customer");
+        let result = suggest_translations(&[&unit], &ws);
+        assert!(!result.is_empty(), "should find exact match suggestion");
+        assert_eq!(result[0].confidence, 1.0, "exact match should have confidence 1.0");
+    }
 }

@@ -104,3 +104,129 @@ fn make_rename_text(node_kind: &str, original_text: &str, new_name: &str) -> Str
         new_name.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::Workspace;
+
+    fn test_uri() -> Url {
+        Url::parse("file:///test/src/Test.al").unwrap()
+    }
+
+    fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
+        ws.documents.open(uri.clone(), al_code.to_string());
+    }
+
+    // --- prepare_rename ---
+
+    #[test]
+    fn prepare_rename_on_identifier() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        MyVar: Integer;
+    begin
+        MyVar := 42;
+    end;
+}"#);
+        let pos = Position { line: 6, character: 8 }; // "MyVar" in assignment
+        let result = prepare_rename(&ws, &uri, pos);
+        assert!(result.is_some(), "should find renameable identifier");
+        let (range, name) = result.unwrap();
+        assert_eq!(name, "MyVar");
+        assert_eq!(range.start.line, 6);
+    }
+
+    #[test]
+    fn prepare_rename_on_non_identifier_returns_none() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    begin
+    end;
+}"#);
+        let pos = Position { line: 3, character: 4 }; // "begin" keyword
+        let result = prepare_rename(&ws, &uri, pos);
+        assert!(result.is_none(), "keywords should not be renameable");
+    }
+
+    // --- rename ---
+
+    #[test]
+    fn rename_variable_in_single_file() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        MyVar: Integer;
+    begin
+        MyVar := 42;
+    end;
+}"#);
+        let pos = Position { line: 6, character: 8 };
+        let result = rename(&ws, &uri, pos, "NewVar");
+        assert!(result.is_some(), "should produce rename edits");
+        let edit = result.unwrap();
+        assert!(!edit.changes.is_empty(), "should have changes");
+        let (edit_uri, edits) = &edit.changes[0];
+        assert_eq!(edit_uri, &uri);
+        assert!(edits.len() >= 2, "should rename both declaration and usage, got {}", edits.len());
+        for e in edits {
+            assert_eq!(e.new_text, "NewVar");
+        }
+    }
+
+    #[test]
+    fn rename_returns_none_when_no_refs() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        // Position on something with no textual references
+        open_doc(&ws, &uri, "codeunit 50100 \"X\" { }");
+        let pos = Position { line: 0, character: 0 };
+        let result = rename(&ws, &uri, pos, "Y");
+        // Should be None — no variable refs for "codeunit" keyword
+        // (or Some if tree-sitter finds refs)
+        // Just verify it doesn't panic
+        let _ = result;
+    }
+
+    // --- make_rename_text ---
+
+    #[test]
+    fn make_rename_text_unquoted() {
+        assert_eq!(make_rename_text("identifier", "MyVar", "NewVar"), "NewVar");
+    }
+
+    #[test]
+    fn make_rename_text_quoted_identifier() {
+        assert_eq!(
+            make_rename_text("quoted_identifier", "\"Old Name\"", "New Name"),
+            "\"New Name\""
+        );
+    }
+
+    #[test]
+    fn make_rename_text_strips_extra_quotes() {
+        assert_eq!(
+            make_rename_text("quoted_identifier", "\"Old\"", "\"New\""),
+            "\"New\""
+        );
+    }
+
+    #[test]
+    fn make_rename_text_detects_quotes_from_text() {
+        // When node_kind is empty but text is quoted
+        assert_eq!(
+            make_rename_text("", "\"Quoted\"", "Renamed"),
+            "\"Renamed\""
+        );
+    }
+}

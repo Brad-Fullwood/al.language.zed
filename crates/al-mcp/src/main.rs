@@ -476,44 +476,119 @@ mod tests {
 
     #[test]
     fn find_al_binary_falls_back_to_al_name() {
-        // When no "al" binary exists next to the test executable,
-        // find_al_binary should return PathBuf::from("al").
-        // Either we found a real sibling "al" or we got the PATH fallback.
-        // Either way the result must be non-empty.
         let result = find_al_binary();
         assert!(!result.as_os_str().is_empty());
-    }
-
-    #[tokio::test]
-    async fn run_al_returns_error_json_on_missing_binary() {
-        let server = AlMcpServer::new(PathBuf::from("/nonexistent/al-binary"));
-        let result = server.run_al(&["search", "SalesHeader"]).await;
-        // Must produce valid JSON with an "error" key.
-        let parsed: serde_json::Value =
-            serde_json::from_str(&result).expect("run_al must return valid JSON on error");
-        assert!(
-            parsed.get("error").is_some(),
-            "Error response must contain 'error' key: {result}"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_al_returns_error_json_on_stderr_only_output() {
-        // Use /bin/false which exits with error code 1 and no output.
-        // Tests the stderr-only → error JSON branch.
-        #[cfg(unix)]
-        {
-            let server = AlMcpServer::new(PathBuf::from("/bin/false"));
-            let result = server.run_al(&["search"]).await;
-            // Result must be valid JSON (either error or empty string treated as empty).
-            // We just verify it doesn't panic and returns a string.
-            assert!(!result.is_empty() || result.is_empty()); // always true — smoke test
-        }
     }
 
     #[test]
     fn server_can_be_created() {
         let server = AlMcpServer::new(PathBuf::from("al"));
         assert_eq!(server.al_binary, PathBuf::from("al"));
+    }
+
+    // --- run_al error handling ---
+
+    #[tokio::test]
+    async fn run_al_returns_error_json_on_missing_binary() {
+        let server = AlMcpServer::new(PathBuf::from("/nonexistent/al-binary"));
+        let result = server.run_al(&["search", "SalesHeader"]).await;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result).expect("run_al must return valid JSON on error");
+        assert!(parsed.get("error").is_some(), "must contain 'error' key: {result}");
+    }
+
+    #[tokio::test]
+    async fn run_al_error_json_is_valid_json() {
+        let server = AlMcpServer::new(PathBuf::from("/nonexistent/al"));
+        let result = server.run_al(&["version"]).await;
+        // Must always produce valid JSON, even on error
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&result);
+        assert!(parsed.is_ok(), "error output must be valid JSON: {result}");
+    }
+
+    #[tokio::test]
+    async fn run_al_handles_failing_binary() {
+        #[cfg(unix)]
+        {
+            // /bin/false exits with code 1, no stdout, no stderr.
+            // run_al returns empty string (stdout passthrough) — should not panic.
+            let server = AlMcpServer::new(PathBuf::from("/bin/false"));
+            let _result = server.run_al(&["search"]).await;
+            // Just verifying no panic.
+        }
+    }
+
+    // --- run_al with echo binary (tests stdout passthrough) ---
+
+    #[tokio::test]
+    async fn run_al_passes_through_stdout() {
+        // Use 'echo' as a fake al binary — it outputs its args as text
+        let server = AlMcpServer::new(PathBuf::from("echo"));
+        let result = server.run_al(&["hello", "world"]).await;
+        // echo outputs "hello world --json\n"
+        assert!(result.contains("hello"), "stdout should contain args: {result}");
+        assert!(result.contains("--json"), "should append --json flag: {result}");
+    }
+
+    // --- Argument construction tests ---
+
+    #[tokio::test]
+    async fn run_al_appends_json_flag() {
+        // Verify --json is always appended
+        let server = AlMcpServer::new(PathBuf::from("echo"));
+        let result = server.run_al(&["search", "Customer"]).await;
+        assert!(result.contains("--json"), "must append --json: {result}");
+    }
+
+    #[tokio::test]
+    async fn run_al_handles_empty_args() {
+        let server = AlMcpServer::new(PathBuf::from("echo"));
+        let result = server.run_al(&[]).await;
+        // Should just output "--json\n"
+        assert!(result.contains("--json"), "even empty args should append --json: {result}");
+    }
+
+    // --- Parameter struct tests ---
+
+    #[test]
+    fn search_params_deserialize() {
+        let json = serde_json::json!({"query": "Customer", "limit": 5});
+        let p: SearchParams = serde_json::from_value(json).unwrap();
+        assert_eq!(p.query, "Customer");
+        assert_eq!(p.limit, Some(5));
+    }
+
+    #[test]
+    fn search_params_default_limit() {
+        let json = serde_json::json!({"query": "Test"});
+        let p: SearchParams = serde_json::from_value(json).unwrap();
+        assert!(p.limit.is_none());
+    }
+
+    #[test]
+    fn object_params_uses_type_rename() {
+        let json = serde_json::json!({"type": "table", "name": "Customer"});
+        let p: ObjectParams = serde_json::from_value(json).unwrap();
+        assert_eq!(p.kind, "table");
+        assert_eq!(p.name, "Customer");
+    }
+
+    #[test]
+    fn position_params_deserialize() {
+        let json = serde_json::json!({"path": "/src/Test.al", "line": 10, "column": 5});
+        let p: PositionParams = serde_json::from_value(json).unwrap();
+        assert_eq!(p.path, "/src/Test.al");
+        assert_eq!(p.line, 10);
+        assert_eq!(p.column, 5);
+    }
+
+    #[test]
+    fn rename_params_deserialize() {
+        let json = serde_json::json!({
+            "path": "/src/Test.al", "line": 5, "column": 3,
+            "new_name": "NewProc"
+        });
+        let p: RenameParams = serde_json::from_value(json).unwrap();
+        assert_eq!(p.new_name, "NewProc");
     }
 }

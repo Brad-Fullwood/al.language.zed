@@ -96,28 +96,15 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key().clone();
-        if current_path.as_ref() == Some(&file_path) { continue; }
-        // Use cached parse tree — avoids re-parsing every workspace file on each definition request.
-        let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
-            continue;
-        };
-        let doc_symbols = al_syntax::extract_document_symbols(&file_tree, &file_text);
-        for sym in &doc_symbols {
-            if let Some(children) = &sym.children {
-                for child in children {
-                    if (child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT)
-                        && child.name.eq_ignore_ascii_case(clean_name)
-                    {
-                        if let Ok(file_uri) = Url::from_file_path(&file_path) {
-                            return Some(vec![Location {
-                                uri: file_uri,
-                                range: child.selection_range.into(),
-                            }]);
-                        }
-                    }
-                }
+    // O(1) procedure name reverse index — replaces O(n×files) tree walk.
+    if let Some(proc_entries) = workspace.file_index.procedures.get(&clean_name.to_lowercase()) {
+        for info in proc_entries.value() {
+            if current_path.as_ref() == Some(&info.file) { continue; }
+            if let Ok(file_uri) = Url::from_file_path(&info.file) {
+                return Some(vec![Location {
+                    uri: file_uri,
+                    range: info.selection_range.into(),
+                }]);
             }
         }
     }
@@ -149,4 +136,209 @@ fn find_package_entry_for_type(
         .get_by_name(obj_name)
         .into_iter()
         .find(|e| !e.kind.is_extension())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::Workspace;
+    use al_symbols::{ObjectKind, SymbolEntry, MethodSymbol, FieldSymbol};
+
+    fn test_uri() -> Url {
+        Url::parse("file:///test/src/Test.al").unwrap()
+    }
+
+    fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
+        ws.documents.open(uri.clone(), al_code.to_string());
+    }
+
+    fn make_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
+        SymbolEntry {
+            kind, id, name: name.to_string(),
+            package: "TestPkg".to_string(),
+            ..Default::default()
+        }
+    }
+
+    // --- Unknown identifiers return None ---
+
+    #[test]
+    fn unknown_identifier_returns_none() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    begin
+        UnknownThing := 1;
+    end;
+}"#);
+        let pos = Position { line: 4, character: 8 }; // "UnknownThing"
+        let result = definition(&ws, &uri, pos);
+        assert!(result.is_none(), "unknown identifier should return None");
+    }
+
+    // --- TypeResolver finds local variable declarations ---
+
+    #[test]
+    fn local_variable_resolved_by_type_resolver() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        MyVar: Integer;
+    begin
+        MyVar := 42;
+    end;
+}"#);
+        // Position on "MyVar" in the assignment (line 6, char 8)
+        let pos = Position { line: 6, character: 8 };
+        let result = definition(&ws, &uri, pos);
+        // Should resolve to the variable declaration on line 4
+        assert!(result.is_some(), "should resolve local variable");
+        let locs = result.unwrap();
+        assert_eq!(locs.len(), 1);
+        assert_eq!(locs[0].uri, uri);
+        assert!(locs[0].range.start.line <= 4, "should point to declaration, got line {}", locs[0].range.start.line);
+    }
+
+    // --- Symbol index lookup for known package objects ---
+
+    #[test]
+    fn definition_returns_none_for_empty_workspace() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        // Don't open any document — definition should return None
+        let pos = Position { line: 0, character: 0 };
+        let result = definition(&ws, &uri, pos);
+        assert!(result.is_none(), "empty workspace should return None");
+    }
+
+    #[test]
+    fn symbol_index_hit_for_known_object() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+
+        // Add a "Customer" table to the symbol index
+        ws.symbols.add_entries(&[make_entry(ObjectKind::Table, 18, "Customer")]);
+
+        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        Cust: Record "Customer";
+    begin
+    end;
+}"#);
+        // Quoted "Customer" on line 4
+        let pos = Position { line: 4, character: 24 };
+        let result = definition(&ws, &uri, pos);
+        // Should find the symbol entry (returns a virtual file URI)
+        assert!(result.is_some(), "known package object should return Some");
+    }
+
+    // --- File index hit for workspace objects ---
+
+    #[test]
+    fn file_index_hit_for_workspace_object() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+
+        // Add a workspace file with a table
+        let table_path = std::path::PathBuf::from("/test/src/MyTable.al");
+        ws.file_index.add_file(
+            table_path.clone(),
+            r#"table 50100 "My Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+}"#.to_string(),
+        );
+
+        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        Rec: Record "My Table";
+    begin
+    end;
+}"#);
+        // "My Table" on line 4
+        let pos = Position { line: 4, character: 24 };
+        let result = definition(&ws, &uri, pos);
+        assert!(result.is_some(), "workspace object should be found via file index");
+        let locs = result.unwrap();
+        assert_eq!(locs[0].uri, Url::from_file_path(&table_path).unwrap());
+    }
+
+    // --- Procedure reverse index for cross-file procedures ---
+
+    #[test]
+    fn procedure_reverse_index_hit() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+
+        // Add a workspace file with a procedure
+        let cu_path = std::path::PathBuf::from("/test/src/Helper.al");
+        ws.file_index.add_file(
+            cu_path.clone(),
+            r#"codeunit 50101 "Helper"
+{
+    procedure DoSomething()
+    begin
+    end;
+}"#.to_string(),
+        );
+
+        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    begin
+        DoSomething();
+    end;
+}"#);
+        // "DoSomething" on line 4
+        let pos = Position { line: 4, character: 8 };
+        let result = definition(&ws, &uri, pos);
+        assert!(result.is_some(), "cross-file procedure should be found via reverse index");
+        let locs = result.unwrap();
+        assert_eq!(locs[0].uri, Url::from_file_path(&cu_path).unwrap());
+    }
+
+    // --- find_package_entry_for_type ---
+
+    #[test]
+    fn find_package_entry_skips_extensions() {
+        let ws = Workspace::new();
+        let mut ext = make_entry(ObjectKind::TableExtension, 50100, "Customer");
+        ext.extends = Some("Customer".to_string());
+        let base = make_entry(ObjectKind::Table, 18, "Customer");
+        ws.symbols.add_entries(&[ext, base]);
+
+        let result = find_package_entry_for_type(&ws, "Record", Some("Customer"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().kind, ObjectKind::Table, "should prefer base object over extension");
+    }
+
+    #[test]
+    fn find_package_entry_returns_none_for_unknown() {
+        let ws = Workspace::new();
+        let result = find_package_entry_for_type(&ws, "Record", Some("Nonexistent"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_package_entry_uses_type_name_when_not_record() {
+        let ws = Workspace::new();
+        ws.symbols.add_entries(&[make_entry(ObjectKind::Codeunit, 50100, "MyHelper")]);
+
+        // When type_name is not a generic type like "Record", it should use type_name as object name
+        let result = find_package_entry_for_type(&ws, "MyHelper", None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name, "MyHelper");
+    }
 }

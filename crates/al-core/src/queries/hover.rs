@@ -120,10 +120,8 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         for param in &proc_info.parameters {
             if param.name.eq_ignore_ascii_case(clean_name) {
                 let content = format!(
-                    "```al\n{}{}: {}\n```\n*(parameter)*",
-                    if param.is_var { "var " } else { "" },
-                    param.name,
-                    param.type_name
+                    "```al\n{}\n```\n*(parameter)*",
+                    param
                 );
                 return Some(HoverResult { contents: content, range: Some(node_range) });
             }
@@ -154,10 +152,8 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     }
 
     // 3. Check package symbols from SymbolIndex
-    let symbols = workspace.symbols.get_by_name(clean_name);
-    if !symbols.is_empty() {
-        let entry = &symbols[0];
-        let content = format_symbol_hover(entry);
+    if let Some(entry) = workspace.symbols.find_by_name(clean_name) {
+        let content = format_symbol_hover(&entry);
         return Some(HoverResult { contents: content, range: Some(node_range) });
     }
 
@@ -213,20 +209,18 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         }
     }
 
-    // 5. Check workspace object name index
+    // 5. Check workspace object name index (cached — no parse_quick on hover hot path)
     if let Some(file_path_entry) = workspace.file_index.objects.get(&clean_name.to_lowercase()) {
         let file_path = file_path_entry.value();
-        if let Some(file_text) = workspace.file_index.files.get(file_path) {
-            let result = al_syntax::AlParser::parse_quick(file_text.value());
-            if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, file_text.value()) {
-                let content = format!(
-                    "```al\n{} {} \"{}\"\n```\n*(workspace)*",
-                    obj_info.kind,
-                    obj_info.id.map_or(String::new(), |id| id.to_string()),
-                    obj_info.name
-                );
-                return Some(HoverResult { contents: content, range: Some(node_range) });
-            }
+        if let Some(cached) = workspace.file_index.object_info.get(file_path) {
+            let info = cached.value();
+            let content = format!(
+                "```al\n{} {} \"{}\"\n```\n*(workspace)*",
+                info.kind,
+                info.id.map_or(String::new(), |id| id.to_string()),
+                info.name
+            );
+            return Some(HoverResult { contents: content, range: Some(node_range) });
         }
     }
 
@@ -238,7 +232,7 @@ fn format_procedure_hover(proc: &al_syntax::ProcedureInfo) -> String {
     let params: Vec<String> = proc
         .parameters
         .iter()
-        .map(|p| format!("{}{}: {}", if p.is_var { "var " } else { "" }, p.name, p.type_name))
+        .map(|p| p.to_string())
         .collect();
     let params_str = params.join("; ");
     let return_str = proc

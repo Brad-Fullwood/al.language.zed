@@ -290,7 +290,14 @@ fn build_base_url(config: &BcServerConfig) -> String {
         EnvironmentType::OnPrem => {
             let server = config.server.as_deref().unwrap_or("localhost");
             let instance = config.server_instance.as_deref().unwrap_or("BC");
-            let server_trimmed = server.trim_end_matches('/');
+            // Ensure the server URL has a scheme to prevent accidental plain-HTTP
+            // requests when the caller omits the scheme prefix.
+            let server_with_scheme = if server.starts_with("http://") || server.starts_with("https://") {
+                server.to_string()
+            } else {
+                format!("http://{}", server)
+            };
+            let server_trimmed = server_with_scheme.trim_end_matches('/');
             if let Some(port) = config.port {
                 format!("{}:{}/{}", server_trimmed, port, instance)
             } else {
@@ -351,6 +358,19 @@ mod tests {
         let url = build_base_url(&on_prem_config());
         assert!(url.contains("7049"), "URL should contain port: {}", url);
         assert!(url.contains("/BC"), "URL should contain instance: {}", url);
+    }
+
+    #[test]
+    fn on_prem_url_always_has_scheme() {
+        // If the server field omits the scheme, build_base_url must add http://
+        // to prevent accidental scheme-less URL construction.
+        let mut config = on_prem_config();
+        config.server = Some("localhost".to_string());
+        let url = build_base_url(&config);
+        assert!(
+            url.starts_with("http://") || url.starts_with("https://"),
+            "URL must have a scheme: {url}"
+        );
     }
 
     #[test]

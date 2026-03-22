@@ -57,7 +57,10 @@ pub mod syntax {
 
 /// Re-exports from al-symbols for al-lsp consumption.
 pub mod symbols {
-    pub use al_symbols::{ObjectKind, SymbolEntry, SymbolIndex};
+    pub use al_symbols::{
+        EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,
+        SymbolIndex,
+    };
     pub mod cache {
         pub use al_symbols::cache::SymbolCache;
     }
@@ -70,7 +73,6 @@ pub mod symbols {
     pub mod nuget {
         pub use al_symbols::nuget::{AppDependency, NuGetClient, NuGetFeed};
     }
-    pub use al_symbols::{AppDependency, NuGetClient, NuGetFeed};
     pub mod oauth {
         pub use al_symbols::oauth::{acquire_token, token_cache_path};
     }

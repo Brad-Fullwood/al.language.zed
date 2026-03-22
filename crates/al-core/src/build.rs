@@ -242,7 +242,7 @@ fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
 /// when multiple .app files from old builds are present in the project root.
 /// Falls back to the most-recently-modified .app file if the manifest cannot
 /// be read or the expected path does not exist.
-fn find_app_file(project_root: &Path) -> Option<PathBuf> {
+pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
     // Try the deterministic path derived from app.json
     if let Some(path) = find_app_file_from_manifest(project_root) {
         return Some(path);

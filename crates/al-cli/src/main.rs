@@ -9,7 +9,8 @@ mod commands;
 
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 
 use commands::{build, debug, insight, lsp};
 
@@ -44,12 +45,22 @@ enum Commands {
         source: Option<String>,
     },
     /// Fuzzy symbol search across packages
+    #[command(after_help = "\
+Examples:
+  al search Customer
+  al search \"Sales Post\" --limit 5
+  al search Customer --json")]
     Search {
         query: String,
         #[arg(short, long, default_value = "20")]
         limit: usize,
     },
     /// Look up object by type and name
+    #[command(after_help = "\
+Examples:
+  al object table Customer
+  al object codeunit \"Sales-Post\"
+  al object page \"Customer Card\" --json")]
     Object {
         #[arg(value_name = "TYPE")]
         kind: String,
@@ -76,6 +87,11 @@ enum Commands {
     /// Show dependency graph
     Deps,
     /// Compile the AL project using alc (produces .app file)
+    #[command(after_help = "\
+Examples:
+  al compile
+  al compile --project /path/to/project
+  al compile --json")]
     Compile {
         /// Project directory (default: current dir)
         #[arg(short, long)]
@@ -85,6 +101,12 @@ enum Commands {
         alc: Option<String>,
     },
     /// Run native lint rules on AL file(s)
+    #[command(after_help = "\
+Examples:
+  al lint src/Customer.al
+  al lint --all
+  al lint --all --semantic --analyzers CodeCop,AppSourceCop
+  al lint src/Sales.al --json")]
     Lint {
         /// File or directory to lint (default: current dir with --all).
         /// Accepts multiple path parts joined with spaces (handles $ZED_FILE expansion
@@ -118,6 +140,10 @@ enum Commands {
     /// Extract document symbols (file outline) from an AL file
     Symbols { file: String },
     /// Show type info at a position (hover equivalent)
+    #[command(after_help = "\
+Examples:
+  al hover src/Customer.al 42 15
+  al hover src/Customer.al 42 15 --json")]
     Hover {
         file: String,
         /// Line number (1-based)
@@ -126,6 +152,11 @@ enum Commands {
         col: u32,
     },
     /// Find definition of symbol at a position
+    #[command(after_help = "\
+Examples:
+  al definition src/Customer.al 42 15
+  al definition src/Customer.al 42 15 --workspace
+  al definition src/Customer.al 42 15 --json")]
     Definition {
         file: String,
         /// Line number (1-based)
@@ -166,6 +197,11 @@ enum Commands {
         col: u32,
     },
     /// Rename a symbol across file(s)
+    #[command(after_help = "\
+Examples:
+  al rename src/Customer.al 42 15 NewName
+  al rename src/Customer.al 42 15 NewName --dry-run
+  al rename src/Customer.al 42 15 NewName --workspace --json")]
     Rename {
         file: String,
         /// Line number (1-based)
@@ -188,6 +224,18 @@ enum Commands {
     ErrorCodes,
     /// List all built-in types and methods from CodeAnalysis
     Builtins,
+    /// Generate shell completion scripts (bash, zsh, fish, elvish, powershell)
+    #[command(name = "generate-completions", after_help = "\
+Examples:
+  al generate-completions bash
+  al generate-completions zsh
+  al generate-completions fish
+  al generate-completions bash >> ~/.bash_completion
+  al generate-completions fish > ~/.config/fish/completions/al.fish")]
+    GenerateCompletions {
+        /// Shell to generate completions for (bash, zsh, fish, elvish, powershell)
+        shell: Shell,
+    },
     /// Show version info
     Version,
     /// Show folding ranges for an AL file
@@ -270,6 +318,8 @@ enum Commands {
     },
     /// Generate .zed/debug.json with AL debug configurations
     InitDebug,
+    /// Show workspace diagnostics (memory stats, object counts)
+    Diag,
     /// Authenticate to Business Central (browser-based OAuth)
     Authenticate {
         /// Subcommand: login (default), status, clear
@@ -311,11 +361,6 @@ enum Commands {
     SuggestEvent {
         /// Natural-language description of the business scenario
         description: String,
-    },
-    /// Query diagnostic trace database
-    Diag {
-        #[command(subcommand)]
-        subcmd: DiagCommands,
     },
     /// AL debug session commands
     Debug {
@@ -507,41 +552,8 @@ pub enum DebugCommands {
     Stop,
 }
 
-#[derive(Subcommand)]
-pub enum DiagCommands {
-    /// List diagnostic sessions
-    Sessions,
-    /// Show recent events from current session
-    Events {
-        /// Max events to show
-        #[arg(short, long, default_value = "50")]
-        limit: usize,
-        /// Filter by level (e.g., "WARN", "ERROR")
-        #[arg(long)]
-        level: Option<String>,
-        /// Filter by target module (substring match)
-        #[arg(long)]
-        target: Option<String>,
-    },
-    /// Show slowest operations
-    Slow {
-        /// Max entries to show
-        #[arg(short, long, default_value = "20")]
-        limit: usize,
-    },
-    /// Show resolution failures
-    Failures,
-    /// Search events by text
-    Search {
-        /// Search query (matches message, fields, or target)
-        query: String,
-        /// Max results
-        #[arg(short, long, default_value = "20")]
-        limit: usize,
-    },
-    /// Show summary statistics
-    Summary,
-}
+// DiagCommands removed — diag subcommands had no daemon handler.
+// Tracked as T2702 for future implementation.
 
 #[derive(Subcommand)]
 pub enum SnapshotCommands {
@@ -690,6 +702,11 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::GenerateCompletions { shell } => {
+            let mut cmd = Cli::command();
+            generate(shell, &mut cmd, "al", &mut std::io::stdout());
+            ExitCode::SUCCESS
+        }
         Commands::Version => lsp::cmd_version(cli.json),
         Commands::ClearCache => lsp::cmd_clear_cache(cli.json),
         Commands::Setup => lsp::cmd_setup(cli.json),
@@ -777,7 +794,7 @@ fn main() -> ExitCode {
         Commands::SuggestEvent { description } => {
             insight::cmd_suggest_event(&description, cli.json)
         }
-        Commands::Diag { subcmd } => debug::cmd_diag(&subcmd, cli.json),
+        Commands::Diag => lsp::cmd_diag(cli.json),
         Commands::Debug { subcmd } => debug::cmd_debug(&subcmd, cli.json),
         Commands::Snapshot { subcmd } => debug::cmd_snapshot(&subcmd, cli.json),
         Commands::Profile { subcmd } => debug::cmd_profile(&subcmd, cli.json),

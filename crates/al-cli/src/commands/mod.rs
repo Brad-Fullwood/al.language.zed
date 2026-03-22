@@ -66,7 +66,15 @@ pub fn file_to_uri(file: &str) -> Option<String> {
 /// Connect to the daemon, auto-starting if needed.
 pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
     let root = project_root(project_dir);
-    DaemonClient::connect(&root)
+    DaemonClient::connect(&root).map_err(|e| {
+        if e.contains("No such file") || e.contains("Connection refused") {
+            format!("{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}", root.display())
+        } else if e.contains("app.json") {
+            format!("{e}\n\nHint: No AL project found. Ensure app.json exists in {}", root.display())
+        } else {
+            e
+        }
+    })
 }
 
 /// Report an error in the appropriate format and return FAILURE.

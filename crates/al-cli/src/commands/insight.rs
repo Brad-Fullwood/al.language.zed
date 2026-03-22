@@ -54,7 +54,7 @@ pub fn cmd_entrypoints(json: bool) -> ExitCode {
             } else if let Some(entries) = result.as_array() {
                 println!("Entry points ({} found):", entries.len());
                 for e in entries {
-                    let obj = e.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
+                    let obj = e.get("object_name").and_then(|v| v.as_str()).unwrap_or("?");
                     let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     println!("  {obj}::{name}");
                 }

@@ -159,6 +159,12 @@ pub fn get_or_create_virtual_file(
     }
 }
 
+/// Check if a DocumentSymbol represents a procedure or event (FUNCTION or EVENT).
+pub fn is_procedure_symbol(kind: tower_lsp::lsp_types::SymbolKind) -> bool {
+    kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
+        || kind == tower_lsp::lsp_types::SymbolKind::EVENT
+}
+
 // ---------------------------------------------------------------------------
 // Transport-agnostic position/range types
 // ---------------------------------------------------------------------------
