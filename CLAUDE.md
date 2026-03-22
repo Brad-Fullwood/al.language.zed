@@ -1,91 +1,105 @@
-# Zed AL Extension
+# CLAUDE.md
 
-Custom Rust language server for AL (Microsoft Dynamics 365 Business Central) in Zed.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Build Commands
+
+All native crates exclude the WASM extension (`zed-al`) which requires `wasm32-wasip1`:
+
+```sh
+cargo check --workspace --exclude zed-al     # quick compile check
+cargo build --workspace --exclude zed-al     # build all native crates
+cargo test --workspace --exclude zed-al      # run all tests
+cargo clippy --workspace --exclude zed-al    # lint
+cargo fmt --all                               # format (excludes zed-al automatically)
+cargo test -p al-syntax                      # test a single crate
+cargo test -p al-lsp --test e2e             # run a single test file
+cargo build -p zed-al --target wasm32-wasip1 --release  # WASM extension
+```
+
+`make build` builds all Rust crates + .NET bridges. `make install` also symlinks binaries into `~/.local/bin` and the extension into Zed's extension directory.
+
+**Prerequisites:** Rust stable toolchain, .NET SDK (auto-downloaded if not present).
 
 ## Architecture
 
 ```
-al-cli / al-explorer  ->  al-lsp daemon (Unix socket)  ->  al-core  ->  al-syntax
-al-mcp                ->  al CLI binary (subprocess)                ->  al-symbols
-zed-al (WASM)         ->  al-lsp (stdio)                            ->  al-semantic
-                                                         al-lsp    ->  al-dap-client
+zed-al (WASM extension)  →  al-lsp (stdio)              →  al-core  →  al-syntax
+al-cli / al-explorer     →  al-lsp daemon (Unix socket)           →  al-symbols
+al-mcp                   →  al CLI binary (subprocess)            →  al-semantic
+                                                          al-core →  al-dap-client
 ```
 
-| Crate | Role |
-|-------|------|
-| al-lsp | Sole server binary. LSP (stdio) + daemon (Unix socket) |
-| al-core | All state, queries, orchestration. Owns JSON-RPC types, domain types, discovery logic |
-| al-syntax | Parser, type resolver, tree-sitter |
-| al-symbols | Symbol index for .app packages |
-| al-semantic | In-process .NET CLR via `netcorehost` |
-| al-dap-client | AL debug engine. Headless DAP control of EditorServices.Host |
-| al-daemon-client | Shared daemon IPC: socket path, JSON-RPC types, DaemonClient |
-| al-test-harness | LSP integration + data-driven tests (dev only) |
-| al-cli | Thin adapter: JSON-RPC client to al-lsp daemon |
-| al-explorer | TUI symbol browser: connects to al-lsp daemon via JSON-RPC |
-| al-mcp | MCP server: shells out to `al` CLI binary. No al-* compile-time dependencies |
-| zed-al | WASM extension: connects to al-lsp via stdio |
+**al-lsp** is the sole server binary with three modes selected by args:
+- **LSP mode** (`--stdio`, default): tower-lsp over stdio, how Zed connects
+- **Daemon mode** (`daemon --project <path>`): JSON-RPC over Unix socket at `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock`, serves CLI and explorer. Auto-shuts down after 30min idle.
+- **DAP mode** (`--dap`): Debug Adapter Protocol for AL debugging
 
-Build commands: `.claude/rules/testing.md`. Dependency rules: `.claude/rules/code-boundaries.md`.
+**al-core** owns all state via `Workspace`: `DocumentStore` (rope + parse tree per file), `SymbolIndex` (DashMap-backed), `SemanticBridge` (.NET CLR), `FileIndex`, `InsightGraph`. All query functions in `al-core/src/queries/` take `&Workspace` + position and return transport-agnostic types. al-lsp converts to LSP types at the boundary.
+
+**al-symbols** parses `.app` files (40-byte NAVX header + ZIP containing `SymbolReference.json`) and builds the symbol index. Symbols auto-downloaded from NuGet on first open, cached at `~/.cache/al-lsp/packages/`.
+
+**al-semantic** hosts the .NET CLR in-process via `netcorehost` for CodeAnalysis integration. All CLR calls are Mutex-serialized on a blocking thread with 2s timeout.
+
+**al-daemon-client** contains shared IPC types (socket path computation, JSON-RPC types, `DaemonClient`). Used by al-cli, al-explorer, and al-core.
+
+**zed-al** is a standalone WASM crate implementing `zed_extension_api::Extension`. No compile-time dependency on native crates.
+
+**al-mcp** shells out to the `al` CLI binary — no compile-time dependency on any al-* crate.
+
+## Dependency Rules
+
+Dependencies flow downward only:
+
+```
+al-lsp → al-core → al-syntax (parsing, formatting, type resolution)
+                 → al-symbols (symbol index, .app reading, NuGet)
+                 → al-semantic (.NET bridge)
+                 → al-dap-client (debug adapter)
+                 → al-daemon-client (IPC types)
+```
+
+**al-syntax**, **al-symbols**, and **al-semantic** must never depend on each other or on al-core. al-daemon-client must not depend on al-core. al-mcp and zed-al are isolated.
 
 ## Key Gotchas
 
-- `.app`: 40-byte NAVX header + ZIP. `SymbolReference.json` has UTF-8 BOM, `EnumTypes` not `Enums`.
-- NuGet feed: `dynamicssmb2` (NOT `dynamicssmb`).
-- tree-sitter `braced_block` excludes action triggers — text-based fallback in TypeResolver.
-- Without ALTool: syntax features work, no semantic/compilation/debugging.
-- Symbol cache: `~/.cache/al-lsp/packages/` — auto-downloaded from NuGet on first open.
-- LSP positions are UTF-16 code units — convert to byte offsets before slicing Rust strings.
-- `builtins` behind `RwLock` — use `.read().ok()?` not `.unwrap()` to avoid poison panics.
+- `.app` files: `SymbolReference.json` has UTF-8 BOM prefix, uses `EnumTypes` not `Enums`, `Kind` field is integer in newer BC versions
+- NuGet feed hostname: `dynamicssmb2.pkgs.visualstudio.com` (NOT `dynamicssmb`)
+- tree-sitter `braced_block` excludes action triggers — text-based fallback in `TypeResolver::collect_action_trigger_vars()`
+- Without ALTool/.NET SDK: syntax-only features work; no semantic analysis, compilation, or debugging
+- LSP positions are UTF-16 code units — convert to byte offsets before slicing Rust strings
+- `RwLock` poison recovery: use `.read().ok()?` pattern, not `.unwrap()`
+- Cargo doesn't always detect transitive dependency changes — `touch` source files to force rebuild
 
-## Development Workflow
+## Concurrency Patterns
 
-`/start-work` to begin a session. It handles everything: health check, task selection, implementation, completion, and looping to the next task.
+- `tokio::sync::RwLock` for async-context fields (toolchain, project, config)
+- `tokio::sync::Mutex` for semantic bridge (exclusive CLR access)
+- `std::sync::RwLock` for sync-only fields (builtins, package_info) — never held across `.await`
+- `DashMap` for all concurrent map lookups (symbol index, documents, file index)
 
-### What you can tell the agent
+## Test Infrastructure
 
-| You want to... | Say |
-|---|---|
-| Start implementing tasks | `/start-work` |
-| Check if the project is healthy | `/check-health` |
-| See what's done and what's next | `/show-progress` |
-| Log a bug or issue | `/report-issue <description>` |
-| Work on fixing open issues | `/fix-issues` or `/fix-issues ISSUE-013` |
-| Stress-test specific code | `/find-bugs` |
+End-to-end tests use `al-test-harness` which spawns the real `al-lsp` binary over stdio:
+- `LspClient::spawn(project_root)` — full LSP handshake, polls `workspace/symbol` up to 30s for readiness
+- `open_file()` waits for `publishDiagnostics` (5s timeout)
+- Test fixture project: `crates/al-test-harness/data/test_al_project/`
+- E2E test files: `crates/al-test-harness/tests/` (e2e.rs, regression.rs, real_world.rs, zed_fidelity.rs, etc.)
 
-### How the workflow runs (automatic)
+Integration tests in `crates/al-lsp/tests/integration.rs` test al-syntax + al-symbols together without LSP transport.
 
-1. `/start-work` — health check (STOP issues, compilation, boundaries, deferred bugs), find next task
-2. Agent implements with TDD
-3. `/complete-task` — tests, proof, progress update, bug finder (called automatically)
-4. At WP boundaries, `/review-milestone` runs automatically before starting the next WP
-5. Loop back to step 1
+## Logging
 
-### New features
-`superpowers:brainstorming` → `superpowers:writing-plans` → `superpowers:subagent-driven-development`.
+al-lsp logs to both stderr (`RUST_LOG` env var) and `~/.local/share/al-lsp/logs/al-lsp.log` (INFO level). Parent process monitoring exits al-lsp if its parent (Zed) dies.
 
-## Enforcement
+## Tree-sitter Grammar
 
-- **Architecture**: 8 hookify boundary rules block wrong-direction imports on every edit (including al-protocol in analysis libs)
-- **Completion**: 3 hookify stop rules warn if stopping without `cargo test`, `cargo check`, or proof evidence
-- **Workflow**: hookify warns on direct tasks.toml completion edits
-- **Methodology**: superpowers enforces TDD, verification-before-completion
-- **Code quality**: hookify bare `Ok(())` rule (currently disabled — too many false positives)
-- **Session start**: `/start-work` checks STOP issues, compilation, deferred bugs, and boundary violations
-- **WP gate**: `/start-work` auto-reviews completed WPs before starting the next
-- **Deferred bugs**: `.claude/data/issues.toml` tracks bugs — auto-resolved when blocking task completes
+`tree-sitter-al/` contains a custom AL tree-sitter grammar owned by this project. Key rule: **never edit generated output files directly** — always modify the generators and let them produce the output.
 
-## Data Files
+- `grammar.js` — the grammar definition
+- `queries/` — highlight, indent, fold, and text-object queries
+- `generator/tools/al-gen/` — generates grammar rules from AL syntax docs
+- `generator/tools/al-extract/` — extracts AL syntax information for the generator
+- `tests/` and `data/` — test corpus and reference data
 
-All agent data in `.claude/data/` (TOML):
-
-| File | Contents | Discovered via |
-|---|---|---|
-| `tasks.toml` | Tasks, WPs, completion status | `/start-work`, `/complete-task`, `/show-progress` |
-| `issues.toml` | Issues + deferred bugs | `/fix-issues`, `/report-issue`, `/start-work`, adversarial agent |
-| `proof.toml` | Proof of functionality evidence | `/complete-task`, `/review-milestone` |
-| `schemas.toml` | CLI/MCP JSON output schemas | `agentic-output` rule (when implementing CLI commands) |
-| `features.toml` | Feature scope, command mappings | `code-boundaries` rule (when checking scope) |
-| `settings.toml` | MS VS Code → Zed settings mapping | `agentic-output` rule (when implementing settings) |
-| `adversarial-atlas.toml` | Stress tests + fidelity gaps | adversarial agent (test catalog) |
-| `task-index.toml` | Task lookup index | `/start-work` (auto-generated) |
+When AL syntax changes or the grammar needs updating, modify the generator tools or `grammar.js`, then regenerate.
