@@ -1,6 +1,0 @@
-{
-  "permissions": {
-    "allow": ["Bash(cargo *)", "Bash(wc *)", "Bash(ls *)", "WebSearch"],
-    "deny": ["Read(~/.cargo/credentials.toml)", "Read(~/.cargo/credentials)", "Read(~/.cargo/registry/)"]
-  }
-}

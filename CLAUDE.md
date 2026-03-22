@@ -26,8 +26,9 @@ cargo build -p zed-al --target wasm32-wasip1 --release  # WASM extension
 ```
 zed-al (WASM extension)  →  al-lsp (stdio)              →  al-core  →  al-syntax
 al-cli / al-explorer     →  al-lsp daemon (Unix socket)           →  al-symbols
-al-mcp                   →  al CLI binary (subprocess)            →  al-semantic
-                                                          al-core →  al-dap-client
+
+ALL ENTRY POINTS zed-al/al-cli/al-explorer should use same entry point and code paths.
+
 ```
 
 **al-lsp** is the sole server binary with three modes selected by args:
@@ -45,8 +46,6 @@ al-mcp                   →  al CLI binary (subprocess)            →  al-sema
 
 **zed-al** is a standalone WASM crate implementing `zed_extension_api::Extension`. No compile-time dependency on native crates.
 
-**al-mcp** shells out to the `al` CLI binary — no compile-time dependency on any al-* crate.
-
 ## Dependency Rules
 
 Dependencies flow downward only:
@@ -59,7 +58,7 @@ al-lsp → al-core → al-syntax (parsing, formatting, type resolution)
                  → al-daemon-client (IPC types)
 ```
 
-**al-syntax**, **al-symbols**, and **al-semantic** must never depend on each other or on al-core. al-daemon-client must not depend on al-core. al-mcp and zed-al are isolated.
+**al-syntax**, **al-symbols**, and **al-semantic** must never depend on each other or on al-core. al-daemon-client must not depend on al-core. zed-al is isolated.
 
 ## Key Gotchas
 
@@ -68,15 +67,7 @@ al-lsp → al-core → al-syntax (parsing, formatting, type resolution)
 - tree-sitter `braced_block` excludes action triggers — text-based fallback in `TypeResolver::collect_action_trigger_vars()`
 - Without ALTool/.NET SDK: syntax-only features work; no semantic analysis, compilation, or debugging
 - LSP positions are UTF-16 code units — convert to byte offsets before slicing Rust strings
-- `RwLock` poison recovery: use `.read().ok()?` pattern, not `.unwrap()`
-- Cargo doesn't always detect transitive dependency changes — `touch` source files to force rebuild
 
-## Concurrency Patterns
-
-- `tokio::sync::RwLock` for async-context fields (toolchain, project, config)
-- `tokio::sync::Mutex` for semantic bridge (exclusive CLR access)
-- `std::sync::RwLock` for sync-only fields (builtins, package_info) — never held across `.await`
-- `DashMap` for all concurrent map lookups (symbol index, documents, file index)
 
 ## Test Infrastructure
 
