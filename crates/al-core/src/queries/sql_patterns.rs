@@ -93,21 +93,52 @@ fn analyze_proc_text(
     proc_name: &str,
     violations: &mut Vec<SqlPatternViolation>,
 ) {
-    let mut in_loop: i32 = 0;
+    // ISSUE-145 fix: track a per-loop begin..end nesting depth to prevent an
+    // inner "end;" from prematurely decrementing the loop counter.
+    //
+    // `loop_begin_depth` is a stack — one entry per active loop level.
+    // Each entry counts the number of nested begin..end blocks currently open
+    // inside that loop.  An `end;` only pops the loop itself when the top entry
+    // reaches 0; otherwise it closes a nested block.
+    let mut loop_begin_depth: Vec<u32> = Vec::new();
     let mut has_filter_before_findset = false;
 
     for (offset, line) in proc_text.lines().enumerate() {
         let line_num = start_line + offset as u32;
         let lower = line.trim().to_lowercase();
 
-        if is_loop_start(&lower) { in_loop += 1; }
-        if is_loop_end(&lower) && in_loop > 0 { in_loop -= 1; }
+        if is_loop_start(&lower) {
+            // If the loop header ends with "begin" (e.g. "for ... do begin" or
+            // "while ... do begin"), the loop body is a begin..end block — start
+            // with depth 1 so the matching end; closes the body first.
+            let opens_body = lower.ends_with(" begin") || lower.ends_with("\tbegin") || lower == "begin";
+            loop_begin_depth.push(if opens_body { 1 } else { 0 });
+        } else if lower == "begin" {
+            // A standalone "begin" inside a loop opens a nested block.
+            if let Some(top) = loop_begin_depth.last_mut() {
+                *top += 1;
+            }
+        } else if lower == "end;" || lower == "end" {
+            // Could close a nested begin..end block or the loop itself.
+            if let Some(top) = loop_begin_depth.last_mut() {
+                if *top > 0 {
+                    *top -= 1; // closes a nested block; loop is still active
+                } else {
+                    loop_begin_depth.pop(); // closes the loop (for/while)
+                }
+            }
+        } else if lower.starts_with("until ") {
+            // "until ..." always closes a repeat..until loop.
+            loop_begin_depth.pop();
+        }
+
+        let in_loop = !loop_begin_depth.is_empty();
 
         if lower.contains(".setrange(") || lower.contains(".setfilter(") {
             has_filter_before_findset = true;
         }
 
-        if in_loop > 0 {
+        if in_loop {
             if lower.contains(".findfirst()") || lower.contains(".findlast()") {
                 violations.push(make_violation(
                     SqlAntiPattern::FindInLoop,
@@ -160,10 +191,6 @@ fn contains_get_call(lower: &str) -> bool {
 fn is_loop_start(lower: &str) -> bool {
     lower.starts_with("for ") || lower.starts_with("foreach ") ||
     lower.starts_with("while ") || lower == "repeat" || lower.starts_with("repeat ")
-}
-
-fn is_loop_end(lower: &str) -> bool {
-    lower == "end;" || lower == "end" || lower.starts_with("until ")
 }
 
 fn make_violation(
@@ -270,5 +297,38 @@ mod tests {
     #[test]
     fn empty_workspace_no_violations() {
         assert!(detect_sql_patterns(&Workspace::new()).is_empty());
+    }
+
+    /// ISSUE-145: A FindFirst() call after a nested if..begin..end inside a for loop
+    /// must still be flagged.  Previously the inner "end;" prematurely zeroed
+    /// `in_loop`, making code after the nested block invisible to the detector.
+    #[test]
+    fn detects_findfirst_after_nested_begin_end_in_loop() {
+        let ws = workspace_with(vec![(
+            "/src/Nested.al",
+            r#"codeunit 50100 "Nested CU"
+{
+    procedure ProcessItems()
+    var
+        SalesLine: Record "Sales Line";
+        Item: Record Item;
+    begin
+        for SalesLine.Next() = 1 to 10 do begin
+            if SalesLine.Quantity > 0 then begin
+                Message('Positive');
+            end;
+            if Item.FindFirst() then
+                Message(Item."No.");
+        end;
+    end;
+}"#,
+        )]);
+
+        let v = detect_sql_patterns(&ws);
+        assert!(
+            v.iter().any(|x| x.kind == SqlAntiPattern::FindInLoop),
+            "FindFirst after nested begin..end inside loop should be flagged: {:?}",
+            v
+        );
     }
 }

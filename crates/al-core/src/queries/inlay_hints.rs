@@ -6,7 +6,7 @@
 //! Also provides return type hints for procedure declarations when
 //! `al.inlayhints.returnTypes` is enabled.
 
-use tower_lsp::lsp_types::{self, DocumentSymbol, InlayHint, InlayHintKind, InlayHintLabel, Position, Range, SymbolKind};
+use tower_lsp::lsp_types::{self, DocumentSymbol, InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 use url::Url;
 
 use crate::workspace::Workspace;

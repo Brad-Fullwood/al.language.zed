@@ -170,9 +170,16 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
         return;
     }
 
-    // Build a lowercase lookup: procedure_name -> (file, line)
-    // This avoids re-parsing for every hint.
-    let mut proc_locations: std::collections::HashMap<String, (String, u32)> =
+    // Build two lookup tables to support object-name disambiguation (ISSUE-146):
+    //   qualified:  (object_name_lc, proc_name_lc) -> (file, line)
+    //   fallback:   proc_name_lc                   -> (file, line)
+    //
+    // When the hint carries an object name we use the qualified key first so
+    // that two procedures with the same name in different objects resolve to
+    // their correct source files.
+    let mut qualified: std::collections::HashMap<(String, String), (String, u32)> =
+        std::collections::HashMap::new();
+    let mut fallback: std::collections::HashMap<String, (String, u32)> =
         std::collections::HashMap::new();
 
     for entry in workspace.file_index.files.iter() {
@@ -180,13 +187,34 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
         let text = entry.value();
         let parsed = AlParser::parse_quick(text);
 
-        collect_procedure_locations(&parsed.tree, text, &file_path, &mut proc_locations);
+        // Extract the AL object name declared in this file (e.g. "Alpha Codeunit").
+        let object_name = al_syntax::find_object_declaration(&parsed.tree, text)
+            .map(|o| o.name.to_lowercase())
+            .unwrap_or_default();
+
+        collect_procedure_locations(
+            &parsed.tree,
+            text,
+            &file_path,
+            &object_name,
+            &mut qualified,
+            &mut fallback,
+        );
     }
 
-    // Resolve each hint
+    // Resolve each hint — prefer the object-qualified key when available.
     for hint in hints.iter_mut() {
-        let key = hint.procedure.to_lowercase();
-        if let Some((file, line)) = proc_locations.get(&key) {
+        let proc_lc = hint.procedure.to_lowercase();
+        let obj_lc  = hint.object.to_lowercase();
+
+        let location = if !obj_lc.is_empty() {
+            qualified.get(&(obj_lc, proc_lc.clone()))
+                .or_else(|| fallback.get(&proc_lc))
+        } else {
+            fallback.get(&proc_lc)
+        };
+
+        if let Some((file, line)) = location {
             hint.file = Some(file.clone());
             hint.line = Some(*line);
         }
@@ -198,17 +226,21 @@ fn collect_procedure_locations(
     tree: &tree_sitter::Tree,
     text: &str,
     file_path: &str,
-    locations: &mut std::collections::HashMap<String, (String, u32)>,
+    object_name: &str,
+    qualified: &mut std::collections::HashMap<(String, String), (String, u32)>,
+    fallback: &mut std::collections::HashMap<String, (String, u32)>,
 ) {
     let source = text.as_bytes();
-    collect_procs(tree.root_node(), source, file_path, locations);
+    collect_procs(tree.root_node(), source, file_path, object_name, qualified, fallback);
 }
 
 fn collect_procs(
     node: tree_sitter::Node,
     source: &[u8],
     file_path: &str,
-    locations: &mut std::collections::HashMap<String, (String, u32)>,
+    object_name: &str,
+    qualified: &mut std::collections::HashMap<(String, String), (String, u32)>,
+    fallback: &mut std::collections::HashMap<String, (String, u32)>,
 ) {
     if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
         if let Some(name_node) = node.child_by_field_name("name") {
@@ -216,9 +248,20 @@ fn collect_procs(
                 let name = name_text.trim_matches('"').trim().to_string();
                 if !name.is_empty() {
                     let line = node.start_position().row as u32 + 1; // 1-based
-                    // Only insert the first occurrence (don't overwrite with a later file)
-                    locations.entry(name.to_lowercase())
-                        .or_insert_with(|| (file_path.to_string(), line));
+                    let loc = (file_path.to_string(), line);
+                    // Qualified key: always insert (overwrites — last file wins per object,
+                    // which is fine since object names should be unique in a workspace).
+                    if !object_name.is_empty() {
+                        qualified.insert(
+                            (object_name.to_string(), name.to_lowercase()),
+                            loc.clone(),
+                        );
+                    }
+                    // Fallback: only the first occurrence (DashMap iteration is unordered,
+                    // so this remains non-deterministic for identically-named procs in
+                    // different objects — the qualified key should be used instead).
+                    fallback.entry(name.to_lowercase())
+                        .or_insert(loc);
                 }
             }
         }
@@ -227,7 +270,7 @@ fn collect_procs(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_procs(child, source, file_path, locations);
+        collect_procs(child, source, file_path, object_name, qualified, fallback);
     }
 }
 
@@ -461,6 +504,60 @@ mod tests {
         assert_eq!(process.line, Some(3), "ProcessRecord on line 3");
         assert!(validate.file.is_some(), "ValidateEntry should be mapped to file");
         assert_eq!(validate.line, Some(8), "ValidateEntry on line 8");
+    }
+
+    /// ISSUE-146: When two AL objects define a procedure with the same name (e.g.
+    /// OnAfterValidate), the hint must resolve to the correct file by matching on
+    /// the object name.  Previously the result was non-deterministic because DashMap
+    /// iteration order is undefined.
+    #[test]
+    fn disambiguates_same_proc_name_by_object_name() {
+        let file_a = r#"codeunit 50100 "Alpha Codeunit"
+{
+    procedure OnAfterValidate()
+    begin
+        Message('alpha');
+    end;
+}"#;
+        let file_b = r#"codeunit 50101 "Beta Codeunit"
+{
+    procedure OnAfterValidate()
+    begin
+        Message('beta');
+    end;
+}"#;
+        let ws = workspace_with(vec![
+            ("/src/Alpha.al", file_a),
+            ("/src/Beta.al", file_b),
+        ]);
+
+        // Hint for Beta Codeunit should resolve to /src/Beta.al
+        let hotspots_beta = vec![
+            make_hotspot("OnAfterValidate", "Beta Codeunit", 20.0, 20.0, 20),
+        ];
+        let hints_beta = profiler_hints(&ws, &hotspots_beta);
+        assert_eq!(hints_beta.len(), 1);
+        let h_beta = &hints_beta[0];
+        assert!(h_beta.file.is_some(), "Should resolve file for Beta Codeunit");
+        assert!(
+            h_beta.file.as_deref().unwrap_or("").contains("Beta"),
+            "Should resolve to Beta.al, got: {:?}",
+            h_beta.file
+        );
+
+        // Hint for Alpha Codeunit should resolve to /src/Alpha.al
+        let hotspots_alpha = vec![
+            make_hotspot("OnAfterValidate", "Alpha Codeunit", 10.0, 10.0, 10),
+        ];
+        let hints_alpha = profiler_hints(&ws, &hotspots_alpha);
+        assert_eq!(hints_alpha.len(), 1);
+        let h_alpha = &hints_alpha[0];
+        assert!(h_alpha.file.is_some(), "Should resolve file for Alpha Codeunit");
+        assert!(
+            h_alpha.file.as_deref().unwrap_or("").contains("Alpha"),
+            "Should resolve to Alpha.al, got: {:?}",
+            h_alpha.file
+        );
     }
 
     #[test]

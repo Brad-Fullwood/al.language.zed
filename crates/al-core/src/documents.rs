@@ -94,6 +94,11 @@ impl DocumentStore {
         self.docs.len()
     }
 
+    /// Whether the store has no open documents.
+    pub fn is_empty(&self) -> bool {
+        self.docs.is_empty()
+    }
+
     pub fn contains(&self, uri: &Url) -> bool {
         self.docs.contains_key(uri)
     }

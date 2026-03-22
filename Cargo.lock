@@ -45,6 +45,7 @@ dependencies = [
 name = "al-core"
 version = "0.1.0"
 dependencies = [
+ "al-daemon-client",
  "al-dap-client",
  "al-semantic",
  "al-symbols",

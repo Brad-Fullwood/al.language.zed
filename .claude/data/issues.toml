@@ -3203,8 +3203,10 @@ id = "ISSUE-153"
 title = "Hot path: completions/signature use get_text() instead of get_text_arc()"
 type = "performance"
 priority = "HIGH"
-status = "open"
+status = "closed"
 reported = "2026-03-21"
+fixed_date = "2026-03-22"
+resolution = "completions.rs, signature.rs, and code_actions.rs all switched to get_text_arc() which returns Arc<String> (pointer copy) instead of deep-cloning."
 description = """
 Query modules call workspace.documents.get_text() which deep-clones the String.
 get_text_arc() exists and returns Arc<String> (pointer copy) but is unused in all
@@ -3219,8 +3221,10 @@ id = "ISSUE-154"
 title = "Sequential package loading should be parallelized"
 type = "performance"
 priority = "MEDIUM"
-status = "open"
+status = "closed"
 reported = "2026-03-21"
+fixed_date = "2026-03-22"
+resolution = "load_packages and load_packages_cached in al-symbols/src/index.rs now use rayon::par_iter() for parallel .app file loading."
 description = """
 index.rs load_packages/load_packages_cached process packages sequentially.
 10 packages at ~200ms each = 2s startup (at budget limit). DashMap is already
@@ -3234,8 +3238,10 @@ id = "ISSUE-155"
 title = "symbols.search() used for exact-name lookups instead of O(1) get_by_name()"
 type = "performance"
 priority = "HIGH"
-status = "open"
+status = "closed"
 reported = "2026-03-21"
+fixed_date = "2026-03-22"
+resolution = "signature.rs and inlay_hints.rs both use get_by_name() (O(1) DashMap lookup) instead of search() (O(n) scan) for exact-name function lookups."
 description = """
 signature.rs:108 and inlay_hints.rs:266 call workspace.symbols.search(func_name, 5)
 which is O(n_symbols) substring scan. The intent is exact-name lookup for function
@@ -3248,8 +3254,10 @@ id = "ISSUE-156"
 title = "Uncached parse_quick on workspace object hover"
 type = "performance"
 priority = "MEDIUM"
-status = "open"
+status = "closed"
 reported = "2026-03-21"
+fixed_date = "2026-03-22"
+resolution = "hover.rs uses FileIndex.object_info cache for workspace object hovers instead of calling parse_quick(). No re-parse on keystroke."
 description = """
 hover.rs:220 calls al_syntax::AlParser::parse_quick() on a workspace file instead
 of using FileIndex.object_info cache. Every hover on a cross-file object type
@@ -3261,8 +3269,10 @@ id = "ISSUE-157"
 title = "O(n×files) definition fallback walks all workspace files"
 type = "performance"
 priority = "MEDIUM"
-status = "open"
+status = "closed"
 reported = "2026-03-21"
+fixed_date = "2026-03-22"
+resolution = "definition.rs uses FileIndex.lookup_procedures() reverse index (O(1) by name) instead of walking all workspace files. The reverse index is built at file-add time."
 description = """
 definition.rs:99-123 iterates every workspace file and calls extract_document_symbols
 on each as a last fallback. For 500 .al files this triggers 500 full tree-walks.
@@ -3303,8 +3313,15 @@ id = "ISSUE-160"
 title = "definition.rs and rename.rs have zero unit tests"
 type = "testing"
 priority = "MEDIUM"
-status = "open"
+status = "closed"
 reported = "2026-03-21"
+resolution = """
+Added 9 unit tests to definition.rs and 8 unit tests to rename.rs. Tests cover
+unknown identifier (None), local variable via TypeResolver, empty workspace,
+symbol index hits, file index hits, cross-file procedure lookup, prepare_rename
+on identifiers and keywords, rename in single file, make_rename_text quoting.
+Fixed unused import warning. All 464 al-core lib tests pass.
+"""
 description = """
 definition.rs (152 lines of non-trivial resolution logic with multiple fallback
 paths) and rename.rs (106 lines) have zero in-file unit tests. Only exercised
@@ -3317,8 +3334,16 @@ id = "ISSUE-161"
 title = "al-test-harness has critical coverage gaps — many LSP features untested end-to-end"
 type = "testing"
 priority = "STOP"
-status = "open"
+status = "closed"
 reported = "2026-03-21"
+resolution = """
+Test coverage gaps resolved. definition.rs/rename.rs unit tests added (see ISSUE-160).
+al-test-harness has 292+ tests: e2e.rs (17), completeness.rs (21), integration_full.rs
+(50+), regression.rs (9). completeness.rs Section J verifies all LSP capabilities.
+Fixed pre-existing failing test: profiler_hints disambiguates_same_proc_name_by_object_name
+fixed by building qualified (object, proc) lookup in resolve_source_locations.
+All 464 al-core lib tests pass; all harness test suites pass.
+"""
 description = """
 The al-test-harness integration tests have major gaps:
 - definition.rs, rename.rs, completions.rs have zero or minimal unit tests
@@ -3340,10 +3365,11 @@ id = "ISSUE-162"
 title = "completions.rs default path calls search(\"\", 30) — O(n) scan on hot path"
 type = "deferred"
 priority = "medium"
-status = "open"
+status = "closed"
 reported = "2026-03-21"
+fixed_date = "2026-03-22"
 file = "crates/al-core/src/queries/completions.rs"
-blocking_task = "WP21"
+resolution = "Added get_default_completions() to SymbolIndex backed by a pre-computed Vec (capped at 30) populated at index time. completions.rs now calls get_default_completions() instead of search empty-string 30. O(1) pointer copies instead of O(n) DashMap scan."
 description = """
 In add_default_completions (line 227), workspace.symbols.search("", 30) performs a
 linear scan over all indexed symbols on every default completion request. This was not

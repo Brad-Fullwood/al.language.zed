@@ -241,18 +241,6 @@ impl BcClient {
         self.map_error_response(status, response).await
     }
 
-    async fn handle_response_json(
-        &self,
-        response: reqwest::Response,
-    ) -> Result<serde_json::Value, BcClientError> {
-        let status = response.status();
-        if status.is_success() {
-            let body = response.json::<serde_json::Value>().await?;
-            return Ok(body);
-        }
-        self.map_error_response(status, response).await
-    }
-
     async fn map_error_response<T>(
         &self,
         status: StatusCode,

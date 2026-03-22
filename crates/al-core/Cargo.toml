@@ -8,6 +8,7 @@ al-syntax = { path = "../al-syntax" }
 al-symbols = { path = "../al-symbols" }
 al-semantic = { path = "../al-semantic" }
 al-dap-client = { path = "../al-dap-client" }
+al-daemon-client = { path = "../al-daemon-client" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

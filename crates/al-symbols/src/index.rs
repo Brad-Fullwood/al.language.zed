@@ -12,6 +12,9 @@ use tracing::{debug, warn};
 use crate::app_reader;
 use crate::model::{ObjectKind, SymbolEntry, SymbolPackage};
 
+/// Maximum number of entries kept in the default-completion cache.
+const DEFAULT_COMPLETIONS_CAP: usize = 30;
+
 /// Thread-safe symbol index over multiple AL packages.
 #[derive(Debug)]
 pub struct SymbolIndex {
@@ -34,6 +37,9 @@ pub struct SymbolIndex {
     source_path_cache: DashMap<(String, ObjectKind, i32), String>,
     /// Cached composed views keyed by (ObjectKind, lowercase name).
     composed_cache: DashMap<(ObjectKind, String), Arc<crate::model::ComposedObject>>,
+    /// Pre-computed slice of the first DEFAULT_COMPLETIONS_CAP entries for O(1)
+    /// default completion responses. Populated by add_entries/add_entries_owned.
+    default_completions: std::sync::RwLock<Vec<Arc<SymbolEntry>>>,
     }
 
     impl Default for SymbolIndex {
@@ -55,6 +61,7 @@ pub struct SymbolIndex {
             app_paths: DashMap::new(),
             source_path_cache: DashMap::new(),
             composed_cache: DashMap::new(),
+            default_completions: std::sync::RwLock::new(Vec::new()),
         }
     }
 
@@ -83,14 +90,15 @@ pub struct SymbolIndex {
         let results: Vec<_> = paths.par_iter().filter_map(|path| {
             let path = path.as_ref();
             match app_reader::read_app_file(path) {
-                Ok(pkg) => {
+                Ok(mut pkg) => {
                     debug!(
                         name = %pkg.name,
                         objects = pkg.objects.len(),
                         "Loaded package"
                     );
                     self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
-                    self.add_entries(&pkg.objects);
+                    // Use add_entries_owned to move objects into Arc without cloning.
+                    self.add_entries_owned(std::mem::take(&mut pkg.objects));
                     Some(pkg)
                 }
                 Err(e) => {
@@ -119,26 +127,26 @@ pub struct SymbolIndex {
             let path = path.as_ref();
 
             // Try cache first
-            if let Some(pkg) = cache.load(path) {
+            if let Some(mut pkg) = cache.load(path) {
                 self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
-                self.add_entries(&pkg.objects);
+                self.add_entries_owned(std::mem::take(&mut pkg.objects));
                 return Some(pkg);
             }
 
             // Cache miss — parse from .app file
             match app_reader::read_app_file(path) {
-                Ok(pkg) => {
+                Ok(mut pkg) => {
                     debug!(
                         name = %pkg.name,
                         objects = pkg.objects.len(),
                         "Loaded package (cache miss)"
                     );
-                    // Save to cache for next time
+                    // Save to cache for next time (before taking ownership of objects)
                     if let Err(e) = cache.save(path, &pkg) {
                         warn!(path = %path.display(), error = %e, "Failed to save to cache");
                     }
                     self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
-                    self.add_entries(&pkg.objects);
+                    self.add_entries_owned(std::mem::take(&mut pkg.objects));
                     Some(pkg)
                 }
                 Err(e) => {
@@ -214,6 +222,7 @@ pub struct SymbolIndex {
 
     /// Add a collection of symbol entries to the index.
     pub fn add_entries(&self, entries: &[SymbolEntry]) {
+        let mut new_arcs: Vec<Arc<SymbolEntry>> = Vec::new();
         for entry in entries {
             let arc = Arc::new(entry.clone());
             let id = self
@@ -249,11 +258,15 @@ pub struct SymbolIndex {
                     .or_default()
                     .push(Arc::clone(&arc));
             }
+
+            new_arcs.push(arc);
         }
+        self.update_default_completions(&new_arcs);
     }
 
     /// Like `add_entries` but takes owned entries, avoiding the clone into Arc.
     pub fn add_entries_owned(&self, entries: Vec<SymbolEntry>) {
+        let mut new_arcs: Vec<Arc<SymbolEntry>> = Vec::new();
         for entry in entries {
             let name_lower = entry.name.to_lowercase();
             let kind = entry.kind;
@@ -272,7 +285,46 @@ pub struct SymbolIndex {
             if let Some(ref ext) = extends {
                 self.by_extends.entry(ext.to_lowercase()).or_default().push(Arc::clone(&arc));
             }
+            new_arcs.push(arc);
         }
+        self.update_default_completions(&new_arcs);
+    }
+
+    /// Append newly-added entries into the default_completions cache up to the cap.
+    ///
+    /// Called after all entries from a batch are indexed. Uses a fast read-check
+    /// to skip acquiring the write lock when the cache is already full.
+    fn update_default_completions(&self, new_arcs: &[Arc<SymbolEntry>]) {
+        // Fast path: cache already full — skip write lock entirely.
+        if self.default_completions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+            >= DEFAULT_COMPLETIONS_CAP
+        {
+            return;
+        }
+        let mut cache = self
+            .default_completions
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        for arc in new_arcs {
+            if cache.len() >= DEFAULT_COMPLETIONS_CAP {
+                break;
+            }
+            cache.push(Arc::clone(arc));
+        }
+    }
+
+    /// Return the pre-computed default completion entries (up to DEFAULT_COMPLETIONS_CAP).
+    ///
+    /// O(1) pointer copies — never iterates the full symbol index. Use in place of
+    /// `search("", 30)` on completion hot paths (ISSUE-162).
+    pub fn get_default_completions(&self) -> Vec<Arc<SymbolEntry>> {
+        self.default_completions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Case-insensitive substring search across all object names.

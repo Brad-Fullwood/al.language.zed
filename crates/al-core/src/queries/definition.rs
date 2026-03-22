@@ -141,7 +141,7 @@ fn find_package_entry_for_type(
 mod tests {
     use super::*;
     use crate::workspace::Workspace;
-    use al_symbols::{ObjectKind, SymbolEntry, MethodSymbol, FieldSymbol};
+    use al_symbols::{ObjectKind, SymbolEntry};
 
     fn test_uri() -> Url {
         Url::parse("file:///test/src/Test.al").unwrap()

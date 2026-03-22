@@ -222,7 +222,8 @@ fn add_default_completions(
         }
     }
 
-    let index_results = workspace.symbols.search("", 30);
+    // O(1): uses pre-computed cache instead of a linear scan over all indexed symbols (ISSUE-162).
+    let index_results = workspace.symbols.get_default_completions();
     for entry in &index_results {
         let kind = match entry.kind {
             al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension => CompletionKind::Struct,
