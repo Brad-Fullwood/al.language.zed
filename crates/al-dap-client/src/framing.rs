@@ -85,31 +85,24 @@ pub async fn write_dap_frame<W: tokio::io::AsyncWrite + Unpin>(
 ///
 /// EditorServices.Host sometimes omits the required `seq` field from
 /// its responses and events. This function injects one.
+///
+/// Uses `serde_json` to parse the message and check the actual top-level JSON
+/// object, which avoids false-positives from nested `"seq"` fields or `"seq"`
+/// appearing inside string values.
 pub fn ensure_seq(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
-    // Check if `"seq":` key already exists. We check for the key pattern
-    // `"seq":` (6 bytes) rather than just `"seq"` (5 bytes) to avoid a false
-    // positive when the string literal "seq" appears as a JSON value (e.g.,
-    // `{"command":"evaluate","arguments":{"expression":"seq"}}`).
-    if body.windows(6).any(|w| w == b"\"seq\":") {
-        return body.to_vec();
+    let mut value: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return body.to_vec(),
+    };
+    if let Some(obj) = value.as_object_mut() {
+        if !obj.contains_key("seq") {
+            obj.insert(
+                "seq".to_string(),
+                serde_json::Value::Number(counter.fetch_add(1, Ordering::Relaxed).into()),
+            );
+        }
     }
-
-    // Only increment the counter if we have a `{` to patch into.
-    if let Some(pos) = body.iter().position(|&b| b == b'{') {
-        let seq = counter.fetch_add(1, Ordering::Relaxed);
-        // If the next non-whitespace byte after `{` is `}`, this is an empty
-        // object.  Appending `"seq":N,` would create `{"seq":N,}` which is
-        // invalid JSON (trailing comma).  Omit the comma in that case.
-        let next_content = body[pos + 1..].iter().find(|&&b| b != b' ' && b != b'\t' && b != b'\n' && b != b'\r');
-        let comma = if next_content == Some(&b'}') { "" } else { "," };
-        let mut patched = Vec::with_capacity(body.len() + 20);
-        patched.extend_from_slice(&body[..=pos]);
-        patched.extend_from_slice(format!("\"seq\":{seq}{comma}").as_bytes());
-        patched.extend_from_slice(&body[pos + 1..]);
-        patched
-    } else {
-        body.to_vec()
-    }
+    serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
 }
 
 #[cfg(test)]
@@ -232,6 +225,28 @@ mod tests {
         let counter = AtomicI64::new(7);
         let _ = ensure_seq(body, &counter);
         assert_eq!(counter.load(Ordering::Relaxed), 7, "counter must not increment when no `{{` found");
+    }
+
+    #[test]
+    fn ensure_seq_not_fooled_by_seq_colon_in_string_value() {
+        let body = br#"{"type":"response","body":{"expression":"\"seq\":42"}}"#;
+        let counter = AtomicI64::new(7);
+        let patched = ensure_seq(body, &counter);
+        let value: serde_json::Value = serde_json::from_slice(&patched).unwrap();
+        assert_eq!(value["seq"], 7, "seq must be injected despite \"seq\": appearing in a string value");
+    }
+
+    #[test]
+    fn ensure_seq_not_fooled_by_nested_seq_field() {
+        // A message where "seq": appears only in a *nested* object (body.seq) but NOT at the
+        // top level. The windows(6) byte scan for "seq": false-positives here and skips
+        // injection, leaving no top-level seq field.  The serde_json rewrite checks the
+        // actual top-level JSON object, so it correctly injects seq.
+        let body = br#"{"type":"response","body":{"seq":1,"value":"ok"}}"#;
+        let counter = AtomicI64::new(7);
+        let patched = ensure_seq(body, &counter);
+        let value: serde_json::Value = serde_json::from_slice(&patched).unwrap();
+        assert_eq!(value["seq"], 7, "seq must be injected at top level even when nested body.seq exists");
     }
 
     #[tokio::test]

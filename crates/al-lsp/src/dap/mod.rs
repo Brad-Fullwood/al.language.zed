@@ -408,21 +408,27 @@ async fn write_dap_frame<W: tokio::io::AsyncWrite + Unpin>(
 /// Patch incoming messages from EditorServices.Host before forwarding to Zed.
 ///
 /// EditorServices.Host sends non-standard DAP messages:
-/// - Missing `seq` field (handled by `ensure_seq`)
+/// - Missing `seq` field (EditorServices.Host often omits this required field)
 /// - Null values for required string fields like `command`, `event`, `message`
 ///   which Zed's DAP deserializer expects as non-null strings
 fn patch_incoming(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
-    let with_seq = ensure_seq(body, counter);
-
-    let mut msg: serde_json::Value = match serde_json::from_slice(&with_seq) {
+    let mut msg: serde_json::Value = match serde_json::from_slice(body) {
         Ok(v) => v,
-        Err(_) => return with_seq,
+        Err(_) => return body.to_vec(),
     };
 
     let obj = match msg.as_object_mut() {
         Some(o) => o,
-        None => return with_seq,
+        None => return body.to_vec(),
     };
+
+    // Inject seq if missing (EditorServices.Host often omits it)
+    if !obj.contains_key("seq") {
+        obj.insert(
+            "seq".to_string(),
+            serde_json::Value::Number(counter.fetch_add(1, Ordering::Relaxed).into()),
+        );
+    }
 
     // Patch null string fields that Zed requires to be non-null
     for field in &["command", "event", "message", "type"] {
@@ -434,22 +440,5 @@ fn patch_incoming(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
         }
     }
 
-    serde_json::to_vec(&msg).unwrap_or(with_seq)
-}
-
-fn ensure_seq(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
-    if body.windows(5).any(|w| w == b"\"seq\"") {
-        return body.to_vec();
-    }
-
-    let seq = counter.fetch_add(1, Ordering::Relaxed);
-    if let Some(pos) = body.iter().position(|&b| b == b'{') {
-        let mut patched = Vec::with_capacity(body.len() + 20);
-        patched.extend_from_slice(&body[..=pos]);
-        patched.extend_from_slice(format!("\"seq\":{seq},").as_bytes());
-        patched.extend_from_slice(&body[pos + 1..]);
-        patched
-    } else {
-        body.to_vec()
-    }
+    serde_json::to_vec(&msg).unwrap_or_else(|_| body.to_vec())
 }
