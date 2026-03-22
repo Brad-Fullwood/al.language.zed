@@ -173,6 +173,47 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+/// Read a single newline-delimited line, enforcing a byte limit during reading.
+/// Returns `Ok(None)` on EOF, `Err` if the line exceeds `max_bytes`.
+async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> Result<Option<String>, std::io::Error> {
+    let mut buf = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return if buf.is_empty() { Ok(None) } else {
+                String::from_utf8(buf)
+                    .map(Some)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            };
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            buf.extend_from_slice(&available[..pos]);
+            reader.consume(pos + 1);
+            if buf.len() > max_bytes {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("line exceeds {max_bytes} byte limit"),
+                ));
+            }
+            return String::from_utf8(buf)
+                .map(Some)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+        }
+        let len = available.len();
+        buf.extend_from_slice(available);
+        reader.consume(len);
+        if buf.len() > max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("line exceeds {max_bytes} byte limit"),
+            ));
+        }
+    }
+}
+
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     workspace: Arc<Workspace>,
@@ -180,7 +221,7 @@ async fn handle_connection(
     shutdown: Arc<Notify>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (reader, mut writer) = stream.into_split();
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
     // Dedup cache: bounded ring buffer to avoid unbounded memory growth.
     // Only stores last N entries; old entries are evicted naturally.
     const DEDUP_CACHE_SIZE: usize = 64;
@@ -190,11 +231,7 @@ async fn handle_connection(
     /// Methods eligible for deduplication (rapid-fire interactive requests).
     const DEDUP_METHODS: &[&str] = &["hover", "completions", "signatureHelp", "inlayHints"];
 
-    while let Some(line) = lines.next_line().await? {
-        if line.len() > MAX_MESSAGE_SIZE {
-            tracing::warn!(len = line.len(), "daemon: message exceeds size limit, dropping connection");
-            break;
-        }
+    while let Some(line) = read_bounded_line(&mut reader, MAX_MESSAGE_SIZE).await? {
         let line = line.trim().to_string();
         if line.is_empty() {
             continue;
@@ -616,6 +653,8 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
 
 #[cfg(test)]
 mod tests {
+    use super::read_bounded_line;
+
     /// Verify socket_path produces the same result for the same canonical path.
     #[test]
     fn socket_path_is_deterministic() {
@@ -628,5 +667,53 @@ mod tests {
         let hash_part = filename.strip_suffix(".sock").unwrap();
         assert_eq!(hash_part.len(), 16);
         assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// A line within the limit is returned successfully.
+    #[tokio::test]
+    async fn bounded_read_accepts_line_within_limit() {
+        let input = b"hello world\n";
+        let mut reader = tokio::io::BufReader::new(input.as_ref());
+        let result = read_bounded_line(&mut reader, 64).await.unwrap();
+        assert_eq!(result, Some("hello world".to_string()));
+    }
+
+    /// A line without a newline that exceeds the limit returns an error.
+    #[tokio::test]
+    async fn bounded_read_rejects_line_exceeding_limit() {
+        // 10 bytes of data, no newline, limit of 5 bytes
+        let input = b"0123456789";
+        let mut reader = tokio::io::BufReader::new(input.as_ref());
+        let err = read_bounded_line(&mut reader, 5).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("byte limit"));
+    }
+
+    /// EOF with no data returns None.
+    #[tokio::test]
+    async fn bounded_read_returns_none_on_empty_eof() {
+        let input: &[u8] = b"";
+        let mut reader = tokio::io::BufReader::new(input);
+        let result = read_bounded_line(&mut reader, 64).await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    /// A line where a newline IS found but the content exceeds the limit returns an error.
+    #[tokio::test]
+    async fn bounded_read_rejects_line_with_newline_exceeding_limit() {
+        let input = b"0123456789\nmore data";
+        let mut reader = tokio::io::BufReader::new(input.as_ref());
+        let err = read_bounded_line(&mut reader, 5).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("byte limit"));
+    }
+
+    /// EOF without a newline (partial line) returns the data as Some.
+    #[tokio::test]
+    async fn bounded_read_returns_partial_line_on_eof() {
+        let input = b"no newline here";
+        let mut reader = tokio::io::BufReader::new(input.as_ref());
+        let result = read_bounded_line(&mut reader, 64).await.unwrap();
+        assert_eq!(result, Some("no newline here".to_string()));
     }
 }
