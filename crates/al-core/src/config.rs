@@ -25,6 +25,10 @@ pub struct AlConfig {
     // Semantic analysis
     // -----------------------------------------------------------------------
 
+    // ----- Fields below are parsed from user settings but not yet wired to behavior. -----
+    // They are retained so existing user configs don't break on deserialization.
+    // TODO: Wire up or remove each field as features are implemented.
+
     /// Enable semantic code analysis via .NET bridge.
     pub enable_code_analysis: bool,
 

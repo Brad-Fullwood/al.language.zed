@@ -16,8 +16,7 @@ INSTALL_DIR := $(HOME)/.local/bin
 ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 
 # .NET bridge projects (quoted for paths with spaces)
-ALDAP_PROJ := "$(ROOT)/crates/al-dap/dotnet/AlDap/AlDap.csproj"
-ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/dotnet/AlSemantic/AlSemantic.csproj"
+ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 
 .PHONY: build install rust bridges clean
 
@@ -66,9 +65,6 @@ rust:
 # ── Build .NET bridges ───────────────────────────────────────────
 bridges:
 	@echo "=== Building .NET bridges ==="
-	@if [ -f $(ALDAP_PROJ) ]; then \
-		dotnet build $(ALDAP_PROJ) --nologo -v quiet && echo "  AlDap: OK"; \
-	fi
 	@if [ -f $(ALSEMANTIC_PROJ) ]; then \
 		dotnet build $(ALSEMANTIC_PROJ) --nologo -v quiet && echo "  AlSemantic: OK"; \
 	fi
@@ -76,6 +72,5 @@ bridges:
 # ── Clean ────────────────────────────────────────────────────────
 clean:
 	cargo clean
-	@if [ -f $(ALDAP_PROJ) ]; then dotnet clean $(ALDAP_PROJ) --nologo -v quiet 2>/dev/null; fi
 	@if [ -f $(ALSEMANTIC_PROJ) ]; then dotnet clean $(ALSEMANTIC_PROJ) --nologo -v quiet 2>/dev/null; fi
 	@echo "Clean complete."
