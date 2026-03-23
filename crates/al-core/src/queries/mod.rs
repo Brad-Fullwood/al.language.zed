@@ -274,3 +274,43 @@ impl From<Location> for tower_lsp::lsp_types::Location {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod query_types_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_edit_serializes_to_lsp_map_format() {
+        let edit = WorkspaceEdit {
+            changes: vec![(
+                url::Url::parse("file:///test.al").unwrap(),
+                vec![TextEdit {
+                    range: Range {
+                        start: Position { line: 0, character: 5 },
+                        end: Position { line: 0, character: 10 },
+                    },
+                    new_text: "replaced".to_string(),
+                }],
+            )],
+        };
+        let v = serde_json::to_value(&edit).unwrap();
+        // Must be {"changes": {"file:///test.al": [{"range": ..., "newText": "replaced"}]}}
+        assert!(v["changes"].is_object(), "changes must be a map");
+        let file_edits = &v["changes"]["file:///test.al"];
+        assert!(file_edits.is_array(), "URI value must be an array of edits");
+        assert_eq!(file_edits[0]["newText"], "replaced");
+        assert_eq!(file_edits[0]["range"]["start"]["line"], 0);
+    }
+
+    #[test]
+    fn workspace_edit_empty_changes() {
+        let edit = WorkspaceEdit { changes: vec![] };
+        let v = serde_json::to_value(&edit).unwrap();
+        assert!(v["changes"].is_object());
+        assert_eq!(v["changes"].as_object().unwrap().len(), 0);
+    }
+}
