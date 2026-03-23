@@ -169,19 +169,18 @@ impl Default for SemanticCache {
 /// Store builtins in the workspace and build the semantic cache.
 ///
 /// This should be called whenever builtins are loaded (from disk cache or bridge).
-/// Updates `workspace.builtins` first (so is_empty() guards reflect the new state),
-/// then rebuilds `workspace.semantic_cache`. The two writes are not atomic — callers
-/// that load builtins concurrently must guard with their own synchronization.
+/// Both write locks are held simultaneously to make the update atomic — no reader
+/// can observe one written without the other. A double-check on `builtins_guard`
+/// prevents a second concurrent caller from overwriting a just-written value.
 pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: &str) {
+    let mut builtins_guard = workspace.builtins.write().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
+    let mut cache_guard = workspace.semantic_cache.write().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
+    if !builtins_guard.is_empty() {
+        return; // Another concurrent caller already populated — skip to avoid double-write.
+    }
     let cache = SemanticCache::build(&builtins, version.to_string());
-    *workspace
-        .builtins
-        .write()
-        .unwrap_or_else(|e| e.into_inner()) = std::sync::Arc::new(builtins); // SILENT: recover from RwLock poison
-    *workspace
-        .semantic_cache
-        .write()
-        .unwrap_or_else(|e| e.into_inner()) = cache; // SILENT: recover from RwLock poison
+    *builtins_guard = std::sync::Arc::new(builtins);
+    *cache_guard = cache;
 }
 
 // ---------------------------------------------------------------------------

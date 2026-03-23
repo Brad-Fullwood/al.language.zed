@@ -227,12 +227,10 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     None
 }
 
-/// Timeout for interactive bridge calls (hover).
-const BRIDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Full hover: native resolution first, then .NET CodeAnalysis bridge.
 ///
 /// This is the single code path for all entry points (LSP and daemon).
+/// SemanticBridge already enforces a 30s internal timeout — no outer wrapper needed.
 pub async fn hover_full(workspace: &Workspace, uri: &Url, position: Position) -> Option<HoverResult> {
     if let Some(result) = hover(workspace, uri, position) {
         return Some(result);
@@ -243,14 +241,10 @@ pub async fn hover_full(workspace: &Workspace, uri: &Url, position: Position) ->
     let bridge = guard.as_ref()?;
     let path = uri.to_file_path().ok()?;
     let pos = (position.line + 1, position.character + 1);
-    let info = match tokio::time::timeout(BRIDGE_TIMEOUT, bridge.type_at(&path, pos)).await {
-        Ok(Ok(v)) => v?,
-        Ok(Err(e)) => {
+    let info = match bridge.type_at(&path, pos).await {
+        Ok(v) => v?,
+        Err(e) => {
             tracing::debug!(error = %e, "hover_full: bridge error");
-            return None;
-        }
-        Err(_) => {
-            tracing::debug!("hover_full: bridge timed out");
             return None;
         }
     };

@@ -191,12 +191,10 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
     items
 }
 
-/// Timeout for interactive bridge calls (completions).
-const BRIDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Full completions: native resolution first, then .NET CodeAnalysis bridge for member access.
 ///
 /// This is the single code path for all entry points (LSP and daemon).
+/// SemanticBridge already enforces a 30s internal timeout — no outer wrapper needed.
 pub async fn completions_full(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
     let items = completions(workspace, uri, position);
     if !items.is_empty() {
@@ -215,14 +213,10 @@ pub async fn completions_full(workspace: &Workspace, uri: &Url, position: Positi
     let Some(bridge) = guard.as_ref() else { return items; };
     let Ok(path) = uri.to_file_path() else { return items; };
     let pos = (position.line + 1, position.character + 1);
-    let bridge_items = match tokio::time::timeout(BRIDGE_TIMEOUT, bridge.completions_at(&path, pos)).await {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => {
+    let bridge_items = match bridge.completions_at(&path, pos).await {
+        Ok(v) => v,
+        Err(e) => {
             tracing::debug!(error = %e, "completions_full: bridge error");
-            return items;
-        }
-        Err(_) => {
-            tracing::debug!("completions_full: bridge timed out");
             return items;
         }
     };
