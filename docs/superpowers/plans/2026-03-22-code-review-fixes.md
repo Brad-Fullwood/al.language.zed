@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix 9 validated issues from analysis.md covering security hardening, a correctness bug, robustness improvements, and code simplification.
+**Goal:** Fix 10 validated issues from analysis.md covering security hardening, correctness bugs (including a live bug in DAP seq handling), robustness improvements, and code simplification.
 
 **Architecture:** All changes are leaf-level — no cross-crate dependency changes. Each task modifies 1-2 files in a single crate. Tasks are fully independent and can be parallelized.
 
@@ -1056,4 +1056,129 @@ Expected: All pass.
 ```bash
 git add crates/al-syntax/src/parser.rs
 git commit -m "simplify: remove dead fallback parser code (no timeout/cancellation is set)"
+```
+
+---
+
+## Task 10: Rewrite ensure_seq with serde_json (Correctness Bug + Live Bug)
+
+Two correctness issues found:
+
+1. **`al-dap-client/src/framing.rs:69`**: The `windows(6)` check for `"seq":` false-positives when `"seq":` appears inside a JSON string value (e.g., a watch expression like `Message('seq:%1', seq)`). The byte-level "optimization" saves nothing — the output is immediately parsed by `serde_json::from_slice` in `client.rs:64`.
+
+2. **`al-lsp/src/dap/mod.rs:440`**: A private duplicate of `ensure_seq` using the **older `windows(5)` pattern** that was already fixed in `framing.rs`. This version false-positives on `"seq"` appearing as any JSON value. Additionally, it unconditionally increments the counter before checking for `{`, and always appends a trailing comma (breaks on empty objects). `patch_incoming` (line 414) already does a full serde_json parse/reserialize immediately after calling this broken `ensure_seq`, making the byte-level approach completely redundant.
+
+**Files:**
+- Modify: `crates/al-dap-client/src/framing.rs:69-94`
+- Modify: `crates/al-lsp/src/dap/mod.rs:414-455`
+
+- [ ] **Step 1: Add failing test for the false-positive bug**
+
+In `crates/al-dap-client/src/framing.rs` tests:
+
+```rust
+#[test]
+fn ensure_seq_not_fooled_by_seq_colon_in_string_value() {
+    // A string value containing "seq": (with colon) must NOT suppress injection.
+    // This happens when debugging AL expressions containing "seq" as a variable name.
+    let body = br#"{"type":"response","body":{"expression":"\"seq\":42"}}"#;
+    let counter = AtomicI64::new(7);
+    let patched = ensure_seq(body, &counter);
+    let value: serde_json::Value = serde_json::from_slice(&patched).unwrap();
+    assert_eq!(value["seq"], 7, "seq must be injected despite \"seq\": appearing in a string value");
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cargo test -p al-dap-client ensure_seq_not_fooled_by_seq_colon`
+Expected: FAIL — the `windows(6)` check matches `"seq":` inside the string value and returns without injecting.
+
+- [ ] **Step 3: Rewrite `ensure_seq` in framing.rs with serde_json**
+
+```rust
+/// Patch a DAP message body to include a `seq` field if missing.
+///
+/// EditorServices.Host sometimes omits the required `seq` field from
+/// its responses and events. This function injects one using proper
+/// JSON parsing to avoid false positives from string values containing "seq".
+pub fn ensure_seq(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
+    let mut value: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return body.to_vec(),
+    };
+    if let Some(obj) = value.as_object_mut() {
+        if !obj.contains_key("seq") {
+            obj.insert(
+                "seq".to_string(),
+                serde_json::Value::Number(counter.fetch_add(1, Ordering::Relaxed).into()),
+            );
+        }
+    }
+    serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
+}
+```
+
+- [ ] **Step 4: Run all framing.rs tests**
+
+Run: `cargo test -p al-dap-client`
+Expected: All pass, including the new test and all existing `ensure_seq_*` tests.
+
+- [ ] **Step 5: Fix the `al-lsp/src/dap/mod.rs` duplicate**
+
+Delete the private `ensure_seq` function at lines 440-455. Fold the seq injection directly into `patch_incoming` since it already parses the JSON:
+
+```rust
+fn patch_incoming(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
+    let mut msg: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return body.to_vec(),
+    };
+
+    let obj = match msg.as_object_mut() {
+        Some(o) => o,
+        None => return body.to_vec(),
+    };
+
+    // Inject seq if missing (EditorServices.Host often omits it)
+    if !obj.contains_key("seq") {
+        obj.insert(
+            "seq".to_string(),
+            serde_json::Value::Number(counter.fetch_add(1, Ordering::Relaxed).into()),
+        );
+    }
+
+    // Patch null string fields that Zed requires to be non-null
+    for field in &["command", "event", "message", "type"] {
+        if let Some(val) = obj.get(*field) {
+            if val.is_null() {
+                obj.insert(field.to_string(), serde_json::Value::String(String::new()));
+                debug!("Patched null {field} → empty string in DAP message");
+            }
+        }
+    }
+
+    serde_json::to_vec(&msg).unwrap_or_else(|_| body.to_vec())
+}
+```
+
+This eliminates the duplicate, fixes the `windows(5)` bug, and removes a redundant parse-serialize cycle.
+
+- [ ] **Step 6: Run all tests**
+
+Run: `cargo test --workspace --exclude zed-al`
+Expected: All pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/al-dap-client/src/framing.rs crates/al-lsp/src/dap/mod.rs
+git commit -m "fix: rewrite ensure_seq with serde_json to fix false-positive on seq in string values
+
+The byte-level windows(6) check for \"seq\": false-positives when the
+pattern appears inside a JSON string value (e.g. watch expressions).
+The al-lsp duplicate used the older windows(5) pattern — an active bug.
+
+Folded seq injection into patch_incoming to eliminate a redundant
+parse-serialize cycle."
 ```
