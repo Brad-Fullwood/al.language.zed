@@ -199,19 +199,54 @@ async fn browser_auth_flow(
     }
 }
 
+/// Read an HTTP request from an async stream, looping until the header
+/// terminator `\r\n\r\n` is seen or the 8 KiB buffer limit is reached.
+/// This handles TCP segmentation where a single `read()` may not deliver
+/// the full request line containing the query string.
+async fn read_http_request<R: tokio::io::AsyncRead + Unpin>(
+    stream: R,
+) -> Result<String, OAuthError> {
+    use tokio::io::AsyncReadExt;
+    let mut reader = tokio::io::BufReader::new(stream);
+    let mut buf = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 1024];
+    loop {
+        let n = reader.read(&mut tmp).await.map_err(|e| OAuthError::Protocol {
+            error: "read_failed".into(),
+            description: format!("Failed to read HTTP request: {e}"),
+        })?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > 8192 {
+            break;
+        }
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8(buf).map_err(|e| OAuthError::Protocol {
+        error: "invalid_utf8".into(),
+        description: format!("HTTP request is not valid UTF-8: {e}"),
+    })
+}
+
 /// Wait for the browser redirect to our local server, extract the auth code.
 async fn wait_for_auth_callback(
     listener: &tokio::net::TcpListener,
     expected_state: &str,
 ) -> Result<String, OAuthError> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
-    let (mut stream, _) = listener.accept().await?;
+    let (stream, _) = listener.accept().await?;
 
-    // Read HTTP request
-    let mut buf = vec![0u8; 4096];
-    let n = stream.read(&mut buf).await?;
-    let request = String::from_utf8_lossy(&buf[..n]);
+    // Split the stream so read_http_request can consume the read half while we
+    // keep the write half for sending the HTTP response back to the browser.
+    let (read_half, mut write_half) = tokio::io::split(stream);
+
+    // Read HTTP request — loop until we have the full header (handles TCP segmentation).
+    let request = read_http_request(read_half).await?;
 
     // Parse first line: GET /?code=...&state=... HTTP/1.1
     let path = request
@@ -261,8 +296,8 @@ async fn wait_for_auth_callback(
         body.len(),
         body
     );
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.shutdown().await;
+    let _ = write_half.write_all(response.as_bytes()).await;
+    let _ = write_half.shutdown().await;
 
     // Check for error
     if let Some(err) = params.get("error") {
@@ -476,10 +511,11 @@ fn generate_random_string(len: usize) -> String {
         .collect()
 }
 
+/// Generate `n` cryptographically random bytes using the OS entropy source.
+/// Uses `getrandom` which works on Linux, macOS, Windows, and WASM.
 fn random_bytes(n: usize) -> Vec<u8> {
     let mut buf = vec![0u8; n];
-    let mut f = std::fs::File::open("/dev/urandom").expect("/dev/urandom");
-    std::io::Read::read_exact(&mut f, &mut buf).expect("read urandom");
+    getrandom::getrandom(&mut buf).expect("failed to get random bytes");
     buf
 }
 
@@ -562,6 +598,8 @@ fn hex_val(b: u8) -> Option<u8> {
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
+/// Parse a URL query string into key-value pairs.
+/// Both keys and values are percent-decoded.
 fn parse_query_string(query: &str) -> std::collections::HashMap<String, String> {
     query
         .split('&')
@@ -570,7 +608,7 @@ fn parse_query_string(query: &str) -> std::collections::HashMap<String, String> 
             let mut parts = pair.splitn(2, '=');
             let key = parts.next()?;
             let val = parts.next().unwrap_or("");
-            Some((key.to_string(), val.to_string()))
+            Some((percent_decode(key), percent_decode(val)))
         })
         .collect()
 }
@@ -580,13 +618,14 @@ fn parse_query_string(query: &str) -> std::collections::HashMap<String, String> 
 // ---------------------------------------------------------------------------
 
 fn open_browser(url: &str) -> bool {
+    use std::process::Stdio;
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
             .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .is_ok()
     }
@@ -594,13 +633,23 @@ fn open_browser(url: &str) -> bool {
     {
         std::process::Command::new("open")
             .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .is_ok()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", url])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = url;
         false
@@ -756,6 +805,48 @@ mod tests {
         let params = parse_query_string("code=abc123&state=xyz&session_state=foo");
         assert_eq!(params.get("code").unwrap(), "abc123");
         assert_eq!(params.get("state").unwrap(), "xyz");
+    }
+
+    #[test]
+    fn query_string_percent_decodes_values() {
+        // Simulate a real OAuth redirect where error_description is percent-encoded
+        let params = parse_query_string(
+            "error=access_denied&error_description=The%20user%20denied%20access%2E",
+        );
+        assert_eq!(params.get("error").unwrap(), "access_denied");
+        assert_eq!(
+            params.get("error_description").unwrap(),
+            "The user denied access."
+        );
+    }
+
+    #[test]
+    fn query_string_decodes_plus_as_space() {
+        let params = parse_query_string("msg=hello+world");
+        assert_eq!(params.get("msg").unwrap(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn read_http_request_handles_complete_request() {
+        use tokio::io::AsyncWriteExt;
+
+        // Set up a loopback pair: write a full HTTP request, read it back
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let write_task = tokio::spawn(async move {
+            let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let req = b"GET /?code=AUTH_CODE&state=STATE HTTP/1.1\r\nHost: localhost\r\n\r\n";
+            client.write_all(req).await.unwrap();
+        });
+
+        let (stream, _) = listener.accept().await.unwrap();
+        let result = read_http_request(stream).await.unwrap();
+
+        write_task.await.unwrap();
+
+        assert!(result.contains("GET /?code=AUTH_CODE"));
+        assert!(result.contains("\r\n\r\n"));
     }
 
     #[cfg(unix)]
