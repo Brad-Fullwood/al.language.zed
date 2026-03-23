@@ -103,7 +103,9 @@ pub(super) fn dispatch_format(workspace: &Workspace, id: u64, params: &serde_jso
         if let Some(uri) = file_uri_from_params(params) {
             if let Ok(path) = uri.to_file_path() {
                 if changed {
-                    let _ = std::fs::write(&path, &formatted);
+                    if let Err(e) = std::fs::write(&path, &formatted) {
+                        return rpc_error(id, -32000, &format!("Failed to write formatted file: {e}"));
+                    }
                     // Update document store
                     workspace.documents.open(uri, formatted.clone());
                 }
@@ -199,8 +201,11 @@ pub(super) fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::
                     doc_lines.splice(safe_start..safe_end, replacement);
                 }
             }
-            let new_text = doc_lines.join("\n");
-            let _ = std::fs::write(&path, &new_text);
+            let line_ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
+            let new_text = doc_lines.join(line_ending);
+            if let Err(e) = std::fs::write(&path, &new_text) {
+                return rpc_error(id, -32000, &format!("Failed to write fixed file: {e}"));
+            }
             workspace.documents.open(uri, new_text);
         }
     }

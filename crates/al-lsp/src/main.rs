@@ -127,11 +127,15 @@ async fn main() {
         tracing::error!("{info}");
     }));
 
+    #[cfg(unix)]
+    let ppid_str = std::os::unix::process::parent_id().to_string();
+    #[cfg(not(unix))]
+    let ppid_str = "N/A".to_string();
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         log_dir = %log_dir.display(),
         pid = std::process::id(),
-        ppid = std::os::unix::process::parent_id(),
+        ppid = %ppid_str,
         "al-lsp starting"
     );
 

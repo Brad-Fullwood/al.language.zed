@@ -3,26 +3,36 @@
 //! Connects to the daemon, auto-starts it if not running, and provides
 //! JSON-RPC request/response with retry on "initializing" errors.
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 use crate::jsonrpc::{Request, Response};
+#[cfg(unix)]
 use crate::socket::socket_path;
 
 /// Max retries for "Workspace is initializing" errors.
+#[cfg(unix)]
 const INIT_RETRY_MAX: u32 = 3;
 /// Delay between retries.
+#[cfg(unix)]
 const INIT_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// A synchronous client for the al-lsp daemon.
+#[cfg(unix)]
 pub struct DaemonClient {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     next_id: u64,
 }
 
+#[cfg(unix)]
 impl DaemonClient {
     /// Connect to the daemon for a project, auto-starting if needed.
     pub fn connect(project_root: &Path) -> Result<Self, String> {
@@ -117,6 +127,8 @@ impl DaemonClient {
     }
 
     fn read_response(&mut self) -> Result<Response, String> {
+        const MAX_RESPONSE_LINE: usize = 64 * 1024 * 1024;
+
         let mut line = String::new();
         let bytes_read = self
             .reader
@@ -124,6 +136,9 @@ impl DaemonClient {
             .map_err(|e| format!("Failed to read response: {}", e))?;
         if bytes_read == 0 {
             return Err("Connection closed by daemon (EOF)".to_string());
+        }
+        if line.len() > MAX_RESPONSE_LINE {
+            return Err(format!("Response too large ({} bytes, max {})", line.len(), MAX_RESPONSE_LINE));
         }
         serde_json::from_str(line.trim())
             .map_err(|e| format!("Failed to parse response: {}", e))
@@ -155,6 +170,7 @@ impl DaemonClient {
 }
 
 /// Find the al-lsp binary (next to current exe, then PATH).
+#[cfg(unix)]
 pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -175,7 +191,7 @@ pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
     Err("Cannot find al-lsp binary. Install it or add it to PATH.".to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::jsonrpc::RpcError;

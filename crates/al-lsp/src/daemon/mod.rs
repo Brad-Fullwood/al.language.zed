@@ -19,6 +19,7 @@ use al_core::workspace::Workspace;
 use al_core::jsonrpc::{error_codes, Request, Response, RpcError};
 use al_daemon_client::socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixListener;
 use tokio::sync::{Mutex, Notify, Semaphore};
 
@@ -265,7 +266,11 @@ async fn handle_connection(
 
                 if is_dup {
                     tracing::trace!(method = %method, id = req_id, "daemon: dedup skip");
-                    Response { id: req_id, result: Some(serde_json::Value::Null), error: None }
+                    let empty_result = match method.as_str() {
+                        "completions" | "inlayHints" => serde_json::json!([]),
+                        _ => serde_json::Value::Null,
+                    };
+                    Response { id: req_id, result: Some(empty_result), error: None }
                 } else {
                     let start = Instant::now();
                     let resp = dispatch_request(&workspace, req, &shutdown).await;
