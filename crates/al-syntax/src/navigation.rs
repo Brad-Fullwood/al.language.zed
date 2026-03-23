@@ -222,24 +222,39 @@ pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree
 }
 
 fn find_refs_recursive(
-    node: Node,
+    root: Node,
     source: &[u8],
     target_name: &str,
     refs: &mut Vec<tree_sitter::Range>,
 ) {
-    // Check if this node is an identifier matching the target name
-    if matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
-        if let Ok(text) = node.utf8_text(source) {
-            let text_clean = text.trim_matches('"');
-            if text_clean.eq_ignore_ascii_case(target_name) {
-                refs.push(node.range());
+    let mut cursor = root.walk();
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            // Check if this node is an identifier matching the target name
+            if matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
+                if let Ok(text) = node.utf8_text(source) {
+                    let text_clean = text.trim_matches('"');
+                    if text_clean.eq_ignore_ascii_case(target_name) {
+                        refs.push(node.range());
+                    }
+                }
             }
         }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        find_refs_recursive(child, source, target_name, refs);
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            did_visit = true;
+            continue;
+        }
+        break;
     }
 }
 
@@ -268,24 +283,39 @@ pub fn find_call_references(tree: &Tree, text: &str, name: &str) -> usize {
 }
 
 fn count_call_refs_recursive(
-    node: Node,
+    root: Node,
     source: &[u8],
     target_name: &str,
     count: &mut usize,
 ) {
-    // Check if this node is an identifier matching the target name
-    if matches!(node.kind(), "identifier" | "quoted_identifier") {
-        if let Ok(text) = node.utf8_text(source) {
-            let text_clean = text.trim_matches('"');
-            if text_clean.eq_ignore_ascii_case(target_name) && is_call_reference(node, source) {
-                *count += 1;
+    let mut cursor = root.walk();
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            // Check if this node is an identifier matching the target name
+            if matches!(node.kind(), "identifier" | "quoted_identifier") {
+                if let Ok(text) = node.utf8_text(source) {
+                    let text_clean = text.trim_matches('"');
+                    if text_clean.eq_ignore_ascii_case(target_name) && is_call_reference(node, source) {
+                        *count += 1;
+                    }
+                }
             }
         }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        count_call_refs_recursive(child, source, target_name, count);
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            did_visit = true;
+            continue;
+        }
+        break;
     }
 }
 

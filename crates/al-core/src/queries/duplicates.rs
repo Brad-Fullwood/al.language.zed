@@ -112,40 +112,57 @@ fn collect_procedure_bodies(
 }
 
 fn collect_procs_recursive(
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     file_path: &str,
     object_name: &str,
     procedures: &mut Vec<ProcedureBody>,
 ) {
-    if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-        let name = node
-            .child_by_field_name("name")
-            .and_then(|n| n.utf8_text(source).ok())
-            .unwrap_or("(unknown)")
-            .trim_matches('"')
-            .to_string();
+    let mut cursor = root.walk();
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
+                let name = node
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .unwrap_or("(unknown)")
+                    .trim_matches('"')
+                    .to_string();
 
-        let line = node.start_position().row as u32 + 1;
+                let line = node.start_position().row as u32 + 1;
 
-        // Extract normalized tokens from the procedure body
-        let tokens = extract_normalized_tokens(node, source);
+                // Extract normalized tokens from the procedure body
+                let tokens = extract_normalized_tokens(node, source);
 
-        procedures.push(ProcedureBody {
-            location: BlockLocation {
-                file: file_path.to_string(),
-                object: object_name.to_string(),
-                procedure: name,
-                line,
-            },
-            tokens,
-        });
-        return;
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_procs_recursive(child, source, file_path, object_name, procedures);
+                procedures.push(ProcedureBody {
+                    location: BlockLocation {
+                        file: file_path.to_string(),
+                        object: object_name.to_string(),
+                        procedure: name,
+                        line,
+                    },
+                    tokens,
+                });
+                // Skip children of procedure/trigger declarations
+                did_visit = true;
+                continue;
+            }
+        }
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            did_visit = true;
+            continue;
+        }
+        break;
     }
 }
 

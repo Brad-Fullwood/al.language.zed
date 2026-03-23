@@ -106,7 +106,7 @@ pub fn lint_with_config(tree: &Tree, text: &str, config: &LintConfig) -> Vec<Lin
     let source = text.as_bytes();
     let mut diagnostics = Vec::new();
 
-    walk_and_lint(root, source, text, config, &mut diagnostics, 0);
+    walk_and_lint(root, source, text, config, &mut diagnostics);
 
     // AL-L019: text-based FlowField editability check (AL grammar doesn't parse field
     // properties as structured nodes — braced_block contains raw tokens).
@@ -120,127 +120,158 @@ pub fn lint_with_config(tree: &Tree, text: &str, config: &LintConfig) -> Vec<Lin
 
 /// Walk the tree and apply all lint rules.
 fn walk_and_lint(
-    node: Node,
+    root: Node,
     source: &[u8],
     text: &str,
     config: &LintConfig,
     diagnostics: &mut Vec<LintDiagnostic>,
-    if_depth: usize,
 ) {
-    let kind = node.kind();
+    // depth_stack tracks the if_depth that applies when we *enter* a node.
+    // When descending into a child, we push the depth the child should use.
+    // When ascending back to a parent, we pop back to restore parent's depth.
+    let mut depth_stack: Vec<usize> = Vec::new();
+    let mut cursor = root.walk();
+    let mut current_depth = 0usize;
+    let mut did_visit = false;
 
-    match kind {
-        "begin_end_block" => {
-            // AL-L001: Empty BEGIN..END block
-            check_empty_begin_end(node, source, diagnostics);
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            let kind = node.kind();
 
-            // AL-L011: Redundant BEGIN..END (single statement inside)
-            check_redundant_begin_end(node, source, diagnostics);
-        }
+            match kind {
+                "begin_end_block" => {
+                    // AL-L001: Empty BEGIN..END block
+                    check_empty_begin_end(node, source, diagnostics);
 
-        "procedure_declaration" | "event_procedure_declaration" => {
-            // AL-L002: Procedure exceeds max lines
-            check_procedure_length(node, text, config, diagnostics);
+                    // AL-L011: Redundant BEGIN..END (single statement inside)
+                    check_redundant_begin_end(node, source, diagnostics);
+                }
 
-            // AL-L005: Variable declared but unused (within same procedure)
-            check_unused_variables(node, source, text, diagnostics);
+                "procedure_declaration" | "event_procedure_declaration" => {
+                    // AL-L002: Procedure exceeds max lines
+                    check_procedure_length(node, text, config, diagnostics);
 
-            // AL-L009: Excessive parameters
-            check_excessive_parameters(node, source, config, diagnostics);
+                    // AL-L005: Variable declared but unused (within same procedure)
+                    check_unused_variables(node, source, text, diagnostics);
 
-            // AL-L016: Procedure naming (PascalCase required)
-            check_procedure_naming(node, source, diagnostics);
-        }
+                    // AL-L009: Excessive parameters
+                    check_excessive_parameters(node, source, config, diagnostics);
 
-        "trigger_declaration" => {
-            // AL-L006: Empty trigger body
-            check_empty_trigger(node, source, diagnostics);
+                    // AL-L016: Procedure naming (PascalCase required)
+                    check_procedure_naming(node, source, diagnostics);
+                }
 
-            // AL-L002: Trigger can also be too long
-            check_procedure_length(node, text, config, diagnostics);
-        }
+                "trigger_declaration" => {
+                    // AL-L006: Empty trigger body
+                    check_empty_trigger(node, source, diagnostics);
 
-        "if_statement" | "empty_if_statement" => {
-            // AL-L004: Nested IF depth exceeds max
-            let new_depth = if_depth + 1;
-            if new_depth > config.max_if_depth {
-                diagnostics.push(LintDiagnostic {
-                    code: "AL-L004".to_string(),
-                    message: format!(
-                        "Nested if depth ({}) exceeds maximum ({})",
-                        new_depth, config.max_if_depth
-                    ),
-                    range: node.range(),
-                    severity: LintSeverity::Warning,
-                });
+                    // AL-L002: Trigger can also be too long
+                    check_procedure_length(node, text, config, diagnostics);
+                }
+
+                "if_statement" | "empty_if_statement" => {
+                    // AL-L004: Nested IF depth exceeds max
+                    let new_depth = current_depth + 1;
+                    if new_depth > config.max_if_depth {
+                        diagnostics.push(LintDiagnostic {
+                            code: "AL-L004".to_string(),
+                            message: format!(
+                                "Nested if depth ({}) exceeds maximum ({})",
+                                new_depth, config.max_if_depth
+                            ),
+                            range: node.range(),
+                            severity: LintSeverity::Warning,
+                        });
+                    }
+                    // Children of this if_statement use new_depth.
+                    // We store current_depth on the stack so we can restore it
+                    // when we ascend back past this node.
+                    // The depth update happens below when goto_first_child succeeds.
+                    // We stash new_depth as a sentinel: set current_depth to new_depth
+                    // before descending, and push old depth for restoration.
+                    if cursor.goto_first_child() {
+                        depth_stack.push(current_depth);
+                        current_depth = new_depth;
+                        did_visit = false;
+                        continue;
+                    }
+                    // No children — fall through to sibling/parent traversal
+                }
+
+                "comment" => {
+                    // AL-L007: TODO/FIXME in comments
+                    check_todo_comments(node, source, diagnostics);
+                }
+
+                "case_statement" => {
+                    // AL-L010: Missing CASE else branch
+                    check_case_else(node, source, diagnostics);
+                }
+
+                "repeat_statement" => {
+                    // AL-L013: Empty REPEAT..UNTIL loop
+                    check_empty_repeat(node, source, diagnostics);
+                }
+
+                "exit_statement" => {
+                    // AL-L014: Unreachable code after EXIT/ERROR
+                    check_unreachable_after_exit(node, diagnostics);
+                }
+
+                "expression_statement" => {
+                    // AL-L014: Also check for Error() calls
+                    if let Some(expr) = node.child(0) {
+                        check_error_call_unreachable(expr, node, source, diagnostics);
+                    }
+
+                    // AL-L017: Hard-coded text string (should use Label)
+                    check_hardcoded_string(node, source, diagnostics);
+
+                    // AL-L021: LockTable() deprecated
+                    check_locktable_deprecated(node, source, diagnostics);
+                }
+
+                "integer" => {
+                    // AL-L008: Magic numbers
+                    check_magic_number(node, source, diagnostics);
+                }
+
+                "object_var_section" => {
+                    // AL-L015: Global variable naming (should use g prefix or similar)
+                    check_global_variable_naming(node, source, diagnostics);
+
+                    // AL-L018: Record variable naming convention
+                    check_record_variable_naming(node, source, diagnostics);
+                }
+
+                "regular_variable_declaration" => {
+                    // AL-L020: SecretText enforcement for sensitive variable names
+                    check_secret_text_enforcement(node, source, diagnostics);
+                }
+
+                _ => {}
             }
+        }
 
-            // Recurse with incremented depth
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                walk_and_lint(child, source, text, config, diagnostics, new_depth);
+        if !did_visit && cursor.goto_first_child() {
+            depth_stack.push(current_depth);
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            // Restore the depth that was active when we descended into this subtree
+            if let Some(d) = depth_stack.pop() {
+                current_depth = d;
             }
-            return; // Don't recurse again below
+            did_visit = true;
+            continue;
         }
-
-        "comment" => {
-            // AL-L007: TODO/FIXME in comments
-            check_todo_comments(node, source, diagnostics);
-        }
-
-        "case_statement" => {
-            // AL-L010: Missing CASE else branch
-            check_case_else(node, source, diagnostics);
-        }
-
-        "repeat_statement" => {
-            // AL-L013: Empty REPEAT..UNTIL loop
-            check_empty_repeat(node, source, diagnostics);
-        }
-
-        "exit_statement" => {
-            // AL-L014: Unreachable code after EXIT/ERROR
-            check_unreachable_after_exit(node, diagnostics);
-        }
-
-        "expression_statement" => {
-            // AL-L014: Also check for Error() calls
-            if let Some(expr) = node.child(0) {
-                check_error_call_unreachable(expr, node, source, diagnostics);
-            }
-
-            // AL-L017: Hard-coded text string (should use Label)
-            check_hardcoded_string(node, source, diagnostics);
-
-            // AL-L021: LockTable() deprecated
-            check_locktable_deprecated(node, source, diagnostics);
-        }
-
-        "integer" => {
-            // AL-L008: Magic numbers
-            check_magic_number(node, source, diagnostics);
-        }
-
-        "object_var_section" => {
-            // AL-L015: Global variable naming (should use g prefix or similar)
-            check_global_variable_naming(node, source, diagnostics);
-
-            // AL-L018: Record variable naming convention
-            check_record_variable_naming(node, source, diagnostics);
-        }
-
-        "regular_variable_declaration" => {
-            // AL-L020: SecretText enforcement for sensitive variable names
-            check_secret_text_enforcement(node, source, diagnostics);
-        }
-
-        _ => {}
-    }
-
-    // Recurse into children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk_and_lint(child, source, text, config, diagnostics, if_depth);
+        break;
     }
 }
 
@@ -751,39 +782,57 @@ fn check_hardcoded_string(node: Node, source: &[u8], diagnostics: &mut Vec<LintD
     find_hardcoded_strings(node, source, diagnostics);
 }
 
-fn find_hardcoded_strings(node: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
-    if node.kind() == "string" || node.kind() == "verbatim_string" {
-        if let Ok(text) = node.utf8_text(source) {
-            // Strip quotes
-            let inner = text.trim_start_matches("@'").trim_start_matches('\'').trim_end_matches('\'');
-            // Skip empty strings, format strings (%1), single characters
-            if inner.is_empty() || inner.len() <= 1 {
-                return;
-            }
-            // Skip if it looks like a format placeholder
-            if inner.starts_with('%') && inner.len() <= 3 {
-                return;
-            }
-            // Check if parent is a procedure call (Message, Error, Confirm, StrSubstNo, etc.)
-            if let Some(parent) = node.parent() {
-                let is_in_call = is_user_facing_call_context(parent, source);
-                if is_in_call {
-                    diagnostics.push(LintDiagnostic {
-                        code: "AL-L017".to_string(),
-                        message: "Hard-coded text string — consider using a Label variable"
-                            .to_string(),
-                        range: node.range(),
-                        severity: LintSeverity::Info,
-                    });
-                    return;
+fn find_hardcoded_strings(root: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
+    let root_id = root.id();
+    let mut cursor = root.walk();
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            if node.kind() == "string" || node.kind() == "verbatim_string" {
+                if let Ok(text) = node.utf8_text(source) {
+                    // Strip quotes
+                    let inner = text.trim_start_matches("@'").trim_start_matches('\'').trim_end_matches('\'');
+                    // Skip empty strings, format strings (%1), single characters
+                    if !inner.is_empty() && inner.len() > 1 {
+                        // Skip if it looks like a format placeholder
+                        let skip = inner.starts_with('%') && inner.len() <= 3;
+                        if !skip {
+                            // Check if parent is a procedure call (Message, Error, Confirm, StrSubstNo, etc.)
+                            if let Some(parent) = node.parent() {
+                                let is_in_call = is_user_facing_call_context(parent, source);
+                                if is_in_call {
+                                    diagnostics.push(LintDiagnostic {
+                                        code: "AL-L017".to_string(),
+                                        message: "Hard-coded text string — consider using a Label variable"
+                                            .to_string(),
+                                        range: node.range(),
+                                        severity: LintSeverity::Info,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
+                // String nodes have no meaningful children to recurse into for this check
             }
         }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        find_hardcoded_strings(child, source, diagnostics);
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            if cursor.node().id() == root_id {
+                break;
+            }
+            did_visit = true;
+            continue;
+        }
+        break;
     }
 }
 

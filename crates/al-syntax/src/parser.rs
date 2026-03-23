@@ -79,34 +79,36 @@ impl Default for AlParser {
 fn collect_errors(tree: &Tree, _text: &str) -> Vec<SyntaxError> {
     let mut errors = Vec::new();
     let mut cursor = tree.walk();
-    collect_errors_recursive(&mut cursor, &mut errors);
-    errors
-}
-
-fn collect_errors_recursive(
-    cursor: &mut tree_sitter::TreeCursor,
-    errors: &mut Vec<SyntaxError>,
-) {
-    let node = cursor.node();
-    if node.is_error() || node.is_missing() {
-        errors.push(SyntaxError {
-            message: if node.is_missing() {
-                format!("Missing {}", node.kind())
-            } else {
-                "Syntax error".to_string()
-            },
-            range: node.range(),
-        });
-    }
-    if cursor.goto_first_child() {
-        loop {
-            collect_errors_recursive(cursor, errors);
-            if !cursor.goto_next_sibling() {
-                break;
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            if node.is_error() || node.is_missing() {
+                errors.push(SyntaxError {
+                    message: if node.is_missing() {
+                        format!("Missing {}", node.kind())
+                    } else {
+                        "Syntax error".to_string()
+                    },
+                    range: node.range(),
+                });
             }
         }
-        cursor.goto_parent();
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            did_visit = true;
+            continue;
+        }
+        break;
     }
+    errors
 }
 
 #[cfg(test)]
@@ -238,5 +240,20 @@ mod tests {
         assert!(result.tree.root_node().child_count() > 0);
         let root_text = result.tree.root_node().to_sexp();
         assert!(!root_text.contains("ERROR"), "No parse errors expected for List of [Interface ...] return type");
+    }
+
+    #[test]
+    fn test_deeply_nested_does_not_stackoverflow() {
+        let mut parser = AlParser::new();
+        let mut code = String::from("codeunit 1 Test { trigger OnRun() { ");
+        for _ in 0..500 {
+            code.push_str("if true then begin ");
+        }
+        for _ in 0..500 {
+            code.push_str("end; ");
+        }
+        code.push_str("} }");
+        let result = parser.parse(&code);
+        let _ = result;
     }
 }

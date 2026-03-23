@@ -857,51 +857,68 @@ fn extract_var_section_children(node: Node, source: &[u8], symbols: &mut Vec<Doc
     collect_label_symbols_from_text(node, source, symbols);
 }
 
-fn collect_var_symbols_recursive(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
-    match node.kind() {
-        "regular_variable_declaration" => {
-            let detail = extract_node_text(node.child_by_field_name("type"), source);
-            let range = ts_range_to_lsp(&node.range(), source);
-            for (name, selection_range) in extract_regular_variable_names(node, source) {
-                symbols.push(DocumentSymbol {
-                    name,
-                    detail: detail.clone(),
-                    kind: SymbolKind::VARIABLE,
-                    tags: None,
-                    deprecated: None,
-                    range,
-                    selection_range,
-                    children: None,
-                });
+fn collect_var_symbols_recursive(root: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
+    let mut cursor = root.walk();
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            match node.kind() {
+                "regular_variable_declaration" => {
+                    let detail = extract_node_text(node.child_by_field_name("type"), source);
+                    let range = ts_range_to_lsp(&node.range(), source);
+                    for (name, selection_range) in extract_regular_variable_names(node, source) {
+                        symbols.push(DocumentSymbol {
+                            name,
+                            detail: detail.clone(),
+                            kind: SymbolKind::VARIABLE,
+                            tags: None,
+                            deprecated: None,
+                            range,
+                            selection_range,
+                            children: None,
+                        });
+                    }
+                    // Skip children of variable declarations
+                    did_visit = true;
+                    continue;
+                }
+                "label_declaration" => {
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        if let Some(name) = clean_node_text(name_node, source) {
+                            let detail = extract_node_text(node.child_by_field_name("type"), source);
+                            symbols.push(DocumentSymbol {
+                                name,
+                                detail,
+                                kind: SymbolKind::VARIABLE,
+                                tags: None,
+                                deprecated: None,
+                                range: ts_range_to_lsp(&node.range(), source),
+                                selection_range: ts_range_to_lsp(&name_node.range(), source),
+                                children: None,
+                            });
+                        }
+                    }
+                    // Skip children of label declarations
+                    did_visit = true;
+                    continue;
+                }
+                _ => {}
             }
-            return;
         }
-        "label_declaration" => {
-            let Some(name_node) = node.child_by_field_name("name") else {
-                return;
-            };
-            let Some(name) = clean_node_text(name_node, source) else {
-                return;
-            };
-            let detail = extract_node_text(node.child_by_field_name("type"), source);
-            symbols.push(DocumentSymbol {
-                name,
-                detail,
-                kind: SymbolKind::VARIABLE,
-                tags: None,
-                deprecated: None,
-                range: ts_range_to_lsp(&node.range(), source),
-                selection_range: ts_range_to_lsp(&name_node.range(), source),
-                children: None,
-            });
-            return;
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+            continue;
         }
-        _ => {}
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_var_symbols_recursive(child, source, symbols);
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            did_visit = true;
+            continue;
+        }
+        break;
     }
 }
 

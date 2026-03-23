@@ -188,34 +188,52 @@ fn collect_all_procedures(workspace: &Workspace) -> Vec<ProcDef> {
 }
 
 fn collect_procs_recursive(
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     object: &str,
     file: &str,
     in_test_codeunit: bool,
     result: &mut Vec<ProcDef>,
 ) {
-    if node.kind() == "procedure_declaration" {
-        let is_local = has_local_modifier(node, source);
-        let is_test = in_test_codeunit && has_test_attr_child(node, source);
+    let mut cursor = root.walk();
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            if node.kind() == "procedure_declaration" {
+                let is_local = has_local_modifier(node, source);
+                let is_test = in_test_codeunit && has_test_attr_child(node, source);
 
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(name) = name_node.utf8_text(source) {
-                result.push(ProcDef {
-                    name: name.trim_matches('"').to_string(),
-                    object: object.to_string(),
-                    file: file.to_string(),
-                    line: node.start_position().row as u32 + 1,
-                    is_local,
-                    is_test,
-                });
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    if let Ok(name) = name_node.utf8_text(source) {
+                        result.push(ProcDef {
+                            name: name.trim_matches('"').to_string(),
+                            object: object.to_string(),
+                            file: file.to_string(),
+                            line: node.start_position().row as u32 + 1,
+                            is_local,
+                            is_test,
+                        });
+                    }
+                }
+                // Skip children of procedure_declaration
+                did_visit = true;
+                continue;
             }
         }
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_procs_recursive(child, source, object, file, in_test_codeunit, result);
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            did_visit = true;
+            continue;
+        }
+        break;
     }
 }
 
@@ -264,60 +282,47 @@ fn collect_coverage_from_tree(
     let test_names: HashSet<String> = test_procs.iter().map(|p| p.name.to_lowercase()).collect();
 
     // Walk the tree: when we find a procedure_declaration whose name is a test,
-    // collect all identifier calls inside its body
-    let mut cur = root.walk();
-    collect_test_proc_bodies(
-        root,
-        source,
-        codeunit_name,
-        &test_names,
-        proc_lookup,
-        coverage,
-        covered_names,
-        &mut cur,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn collect_test_proc_bodies(
-    node: tree_sitter::Node,
-    source: &[u8],
-    codeunit_name: &str,
-    test_names: &HashSet<String>,
-    proc_lookup: &HashMap<String, Vec<&ProcDef>>,
-    coverage: &mut Vec<TestCoverageEntry>,
-    covered_names: &mut HashSet<String>,
-    cursor: &mut tree_sitter::TreeCursor,
-) {
-    if node.kind() == "procedure_declaration" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(raw_name) = name_node.utf8_text(source) {
-                let proc_name = raw_name.trim_matches('"');
-                if test_names.contains(&proc_name.to_lowercase()) {
-                    // Collect all identifiers called within this procedure body
-                    let called = collect_called_identifiers(node, source, proc_lookup);
-                    for c in &called {
-                        covered_names.insert(c.name.to_lowercase());
+    // collect all identifier calls inside its body.
+    // Iterative TreeCursor walk — owns its own cursor.
+    let mut cursor = root.walk();
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            if node.kind() == "procedure_declaration" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    if let Ok(raw_name) = name_node.utf8_text(source) {
+                        let proc_name = raw_name.trim_matches('"');
+                        if test_names.contains(&proc_name.to_lowercase()) {
+                            let called = collect_called_identifiers(node, source, proc_lookup);
+                            for c in &called {
+                                covered_names.insert(c.name.to_lowercase());
+                            }
+                            coverage.push(TestCoverageEntry {
+                                codeunit: codeunit_name.to_string(),
+                                test_procedure: proc_name.to_string(),
+                                covers: called,
+                            });
+                        }
                     }
-                    coverage.push(TestCoverageEntry {
-                        codeunit: codeunit_name.to_string(),
-                        test_procedure: proc_name.to_string(),
-                        covers: called,
-                    });
                 }
+                // Do not descend into procedure_declaration children.
+                did_visit = true;
+                continue;
             }
         }
-        return;
-    }
-
-    if cursor.goto_first_child() {
-        let node = cursor.node();
-        collect_test_proc_bodies(node, source, codeunit_name, test_names, proc_lookup, coverage, covered_names, cursor);
-        while cursor.goto_next_sibling() {
-            let node = cursor.node();
-            collect_test_proc_bodies(node, source, codeunit_name, test_names, proc_lookup, coverage, covered_names, cursor);
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+        } else if cursor.goto_next_sibling() {
+            did_visit = false;
+        } else if cursor.goto_parent() {
+            did_visit = true;
+            if cursor.node() == root {
+                break;
+            }
+        } else {
+            break;
         }
-        cursor.goto_parent();
     }
 }
 
@@ -334,42 +339,57 @@ fn collect_called_identifiers(
 }
 
 fn collect_identifiers_recursive(
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     proc_lookup: &HashMap<String, Vec<&ProcDef>>,
     seen: &mut HashSet<String>,
     result: &mut Vec<CoveredProcedure>,
 ) {
-    // Look for function call patterns: identifier followed by argument_list
-    // In AL tree-sitter: method_call / function_call / invocation_expression
-    let kind = node.kind();
-    if kind == "method_call" || kind == "function_call" || kind == "invocation_expression" || kind == "call_expression" {
-        // Find the callee identifier
-        if let Some(callee) = find_callee_name(node, source) {
-            let key = callee.to_lowercase();
-            if !seen.contains(&key) {
-                if let Some(defs) = proc_lookup.get(&key) {
-                    // Only include non-test, non-local procedures
-                    for def in defs {
-                        if !def.is_test {
-                            seen.insert(key.clone());
-                            result.push(CoveredProcedure {
-                                name: def.name.clone(),
-                                object: def.object.clone(),
-                                file: def.file.clone(),
-                                line: def.line,
-                            });
-                            break;
+    let mut cursor = root.walk();
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            // Look for function call patterns: identifier followed by argument_list
+            // In AL tree-sitter: method_call / function_call / invocation_expression
+            let kind = node.kind();
+            if kind == "method_call" || kind == "function_call" || kind == "invocation_expression" || kind == "call_expression" {
+                // Find the callee identifier
+                if let Some(callee) = find_callee_name(node, source) {
+                    let key = callee.to_lowercase();
+                    if !seen.contains(&key) {
+                        if let Some(defs) = proc_lookup.get(&key) {
+                            // Only include non-test, non-local procedures
+                            for def in defs {
+                                if !def.is_test {
+                                    seen.insert(key.clone());
+                                    result.push(CoveredProcedure {
+                                        name: def.name.clone(),
+                                        object: def.object.clone(),
+                                        file: def.file.clone(),
+                                        line: def.line,
+                                    });
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-    }
-
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_identifiers_recursive(child, source, proc_lookup, seen, result);
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            did_visit = true;
+            continue;
+        }
+        break;
     }
 }
 

@@ -38,6 +38,10 @@ pub struct AlServer {
     /// Zed may send `initialized` twice when opening multiple worktrees.
     /// CAS ensures workspace init runs only once per server instance.
     pub(crate) init_done: AtomicBool,
+    /// Set to `true` inside the spawned task, after `initialize_workspace` completes.
+    /// `await_ready` checks this flag, NOT `init_done`, so it only returns once the
+    /// background work has actually finished (not just been scheduled).
+    pub(crate) workspace_ready: Arc<AtomicBool>,
     /// Notified when workspace initialization completes.
     /// Handlers that need the workspace ready await this before proceeding.
     pub(crate) init_notify: Arc<Notify>,
@@ -65,24 +69,35 @@ impl AlServer {
             diag_task: Mutex::new(None),
             init_task: Mutex::new(None),
             init_done: AtomicBool::new(false),
+            workspace_ready: Arc::new(AtomicBool::new(false)),
             init_notify: Arc::new(Notify::new()),
         }
     }
 
     /// Await workspace initialization.
     ///
-    /// If initialization has already completed (`init_done` is true) this returns
+    /// If initialization has already completed (`workspace_ready` is true) this returns
     /// immediately. Otherwise it waits for the `init_notify` signal with a 30s
     /// timeout so that handlers opened immediately after server startup receive
     /// full workspace data rather than empty results.
+    ///
+    /// IMPORTANT: we subscribe to the Notify *before* checking the flag to avoid the
+    /// lost-wakeup race where the background task completes and fires `notify_waiters()`
+    /// between the flag check and the `.await`. By calling `notified()` first we pin
+    /// a permit that survives that window.
     async fn await_ready(&self) {
-        if self.init_done.load(Ordering::Acquire) {
+        // Subscribe *before* the flag check so we cannot miss a wakeup fired
+        // between the check and the await.
+        let notified = self.init_notify.notified();
+        if self.workspace_ready.load(Ordering::Acquire) {
             return; // Already initialized
         }
-        tokio::time::timeout(
+        if tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            self.init_notify.notified(),
-        ).await.ok();
+            notified,
+        ).await.is_err() {
+            tracing::warn!("await_ready: timed out after 30s waiting for workspace initialization");
+        }
     }
 
     /// Update workspace index (object name mapping) for a file.
@@ -356,8 +371,12 @@ impl LanguageServer for AlServer {
         let ws = Arc::clone(&self.workspace);
         let client = self.client.clone();
         let notify = Arc::clone(&self.init_notify);
+        let ready_flag = Arc::clone(&self.workspace_ready);
         let handle = tokio::spawn(async move {
             workspace::initialize_workspace(ws, client, root_uri).await;
+            // Set workspace_ready BEFORE notify_waiters so that any waiter that
+            // re-checks the flag after waking always sees true.
+            ready_flag.store(true, Ordering::Release);
             notify.notify_waiters();
         });
         *self.init_task.lock().await = Some(handle);

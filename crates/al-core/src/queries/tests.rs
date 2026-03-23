@@ -66,30 +66,31 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
 /// Check if the codeunit has `Subtype = Test`.
 pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
     let mut cursor = root.walk();
-    walk_for_subtype(&mut cursor, source)
-}
-
-fn walk_for_subtype(cursor: &mut tree_sitter::TreeCursor, source: &[u8]) -> bool {
-    let node = cursor.node();
-    if node.kind() == "property" || node.kind() == "property_assignment" {
-        if let Ok(text) = node.utf8_text(source) {
-            let lower = text.to_lowercase();
-            if lower.contains("subtype") && lower.contains("test") {
-                return true;
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            if node.kind() == "property" || node.kind() == "property_assignment" {
+                if let Ok(text) = node.utf8_text(source) {
+                    let lower = text.to_lowercase();
+                    if lower.contains("subtype") && lower.contains("test") {
+                        return true;
+                    }
+                }
             }
         }
-    }
-    if cursor.goto_first_child() {
-        loop {
-            if walk_for_subtype(cursor, source) {
-                cursor.goto_parent();
-                return true;
-            }
-            if !cursor.goto_next_sibling() {
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+        } else if cursor.goto_next_sibling() {
+            did_visit = false;
+        } else if cursor.goto_parent() {
+            did_visit = true;
+            if cursor.node() == root {
                 break;
             }
+        } else {
+            break;
         }
-        cursor.goto_parent();
     }
     false
 }
@@ -101,23 +102,41 @@ pub fn collect_test_procedures(root: tree_sitter::Node, source: &[u8]) -> Vec<Te
     procs
 }
 
-fn collect_test_procs_recursive(node: tree_sitter::Node, source: &[u8], procs: &mut Vec<TestProcedure>) {
-    if node.kind() == "procedure_declaration" {
-        if has_test_attribute(node, source) {
-            if let Some(name_node) = node.child_by_field_name("name") {
-                if let Ok(name) = name_node.utf8_text(source) {
-                    procs.push(TestProcedure {
-                        name: name.trim_matches('"').to_string(),
-                        line: node.start_position().row as u32 + 1,
-                    });
+fn collect_test_procs_recursive(root: tree_sitter::Node, source: &[u8], procs: &mut Vec<TestProcedure>) {
+    let mut cursor = root.walk();
+    let mut did_visit = false;
+    loop {
+        if !did_visit {
+            let node = cursor.node();
+            if node.kind() == "procedure_declaration" {
+                if has_test_attribute(node, source) {
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        if let Ok(name) = name_node.utf8_text(source) {
+                            procs.push(TestProcedure {
+                                name: name.trim_matches('"').to_string(),
+                                line: node.start_position().row as u32 + 1,
+                            });
+                        }
+                    }
                 }
+                // Skip children of procedure_declaration
+                did_visit = true;
+                continue;
             }
         }
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_test_procs_recursive(child, source, procs);
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_next_sibling() {
+            did_visit = false;
+            continue;
+        }
+        if cursor.goto_parent() {
+            did_visit = true;
+            continue;
+        }
+        break;
     }
 }
 
