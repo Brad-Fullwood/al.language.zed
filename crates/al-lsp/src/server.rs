@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use al_core::workspace::Workspace;
 use al_core::syntax::AlParser;
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::{RwLock, Mutex, Notify};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -38,6 +38,9 @@ pub struct AlServer {
     /// Zed may send `initialized` twice when opening multiple worktrees.
     /// CAS ensures workspace init runs only once per server instance.
     pub(crate) init_done: AtomicBool,
+    /// Notified when workspace initialization completes.
+    /// Handlers that need the workspace ready await this before proceeding.
+    pub(crate) init_notify: Arc<Notify>,
 }
 
 impl AlServer {
@@ -62,7 +65,24 @@ impl AlServer {
             diag_task: Mutex::new(None),
             init_task: Mutex::new(None),
             init_done: AtomicBool::new(false),
+            init_notify: Arc::new(Notify::new()),
         }
+    }
+
+    /// Await workspace initialization.
+    ///
+    /// If initialization has already completed (`init_done` is true) this returns
+    /// immediately. Otherwise it waits for the `init_notify` signal with a 30s
+    /// timeout so that handlers opened immediately after server startup receive
+    /// full workspace data rather than empty results.
+    async fn await_ready(&self) {
+        if self.init_done.load(Ordering::Acquire) {
+            return; // Already initialized
+        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.init_notify.notified(),
+        ).await.ok();
     }
 
     /// Update workspace index (object name mapping) for a file.
@@ -335,8 +355,10 @@ impl LanguageServer for AlServer {
         // NuGet downloads, package loading, or bridge initialization.
         let ws = Arc::clone(&self.workspace);
         let client = self.client.clone();
+        let notify = Arc::clone(&self.init_notify);
         let handle = tokio::spawn(async move {
             workspace::initialize_workspace(ws, client, root_uri).await;
+            notify.notify_waiters();
         });
         *self.init_task.lock().await = Some(handle);
     }
@@ -432,6 +454,7 @@ impl LanguageServer for AlServer {
     // -- Hover --
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        self.await_ready().await;
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         self.ensure_builtins_loaded().await;
@@ -445,6 +468,7 @@ impl LanguageServer for AlServer {
     // -- Completion --
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        self.await_ready().await;
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         self.ensure_builtins_loaded().await;
@@ -465,6 +489,7 @@ impl LanguageServer for AlServer {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
+        self.await_ready().await;
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let start = std::time::Instant::now();
@@ -477,6 +502,7 @@ impl LanguageServer for AlServer {
     // -- References --
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        self.await_ready().await;
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
@@ -494,6 +520,7 @@ impl LanguageServer for AlServer {
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
+        self.await_ready().await;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
         let result = handlers::handle_document_symbol(self, uri);
@@ -528,6 +555,7 @@ impl LanguageServer for AlServer {
     // -- Folding ranges --
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        self.await_ready().await;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
         let result = handlers::handle_folding_range(self, uri);
@@ -543,6 +571,7 @@ impl LanguageServer for AlServer {
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
+        self.await_ready().await;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
         let result = handlers::handle_semantic_tokens(self, uri);
@@ -558,6 +587,7 @@ impl LanguageServer for AlServer {
     // -- Signature help --
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        self.await_ready().await;
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let start = std::time::Instant::now();
@@ -570,6 +600,7 @@ impl LanguageServer for AlServer {
     // -- Code actions --
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        self.await_ready().await;
         let uri = &params.text_document.uri;
         let range = params.range;
         let diagnostics = &params.context.diagnostics;
@@ -584,6 +615,7 @@ impl LanguageServer for AlServer {
     // -- Rename --
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        self.await_ready().await;
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let new_name = params.new_name.clone();
@@ -613,6 +645,7 @@ impl LanguageServer for AlServer {
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
+        self.await_ready().await;
         let start = std::time::Instant::now();
         let result = workspace::handle_workspace_symbol(self, &params.query);
         let elapsed = start.elapsed();
@@ -624,6 +657,7 @@ impl LanguageServer for AlServer {
     // -- Inlay hints --
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        self.await_ready().await;
         let uri = &params.text_document.uri;
         let range = params.range;
         self.ensure_builtins_loaded().await;
