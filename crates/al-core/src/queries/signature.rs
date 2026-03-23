@@ -8,26 +8,29 @@ use crate::workspace::Workspace;
 
 /// A parameter in a signature help display (label + optional docs).
 /// Distinct from al_syntax::ParameterInfo which holds parsed name/type/is_var.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SignatureParameterInfo {
     pub label: String,
     pub documentation: Option<String>,
 }
 
 /// Signature information for a procedure/function call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SignatureInfo {
     pub label: String,
     pub documentation: Option<String>,
     pub parameters: Vec<SignatureParameterInfo>,
+    #[serde(rename = "activeParameter")]
     pub active_parameter: Option<u32>,
 }
 
 /// Signature help result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SignatureHelpResult {
     pub signatures: Vec<SignatureInfo>,
+    #[serde(rename = "activeSignature")]
     pub active_signature: Option<u32>,
+    #[serde(rename = "activeParameter")]
     pub active_parameter: Option<u32>,
 }
 

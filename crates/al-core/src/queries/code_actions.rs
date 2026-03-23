@@ -10,11 +10,12 @@ use super::{Range, TextEdit, WorkspaceEdit};
 use crate::workspace::Workspace;
 
 /// A code action (quick fix, refactoring, etc.).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CodeActionEntry {
     pub title: String,
     pub kind: CodeActionKind,
     pub edit: Option<WorkspaceEdit>,
+    #[serde(rename = "isPreferred")]
     pub is_preferred: bool,
 }
 
@@ -24,6 +25,17 @@ pub enum CodeActionKind {
     QuickFix,
     Refactor,
     Source,
+}
+
+impl serde::Serialize for CodeActionKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let s = match self {
+            Self::QuickFix => "quickfix",
+            Self::Refactor => "refactor",
+            Self::Source => "source",
+        };
+        serializer.serialize_str(s)
+    }
 }
 
 /// Diagnostic info passed to code action providers.
@@ -2189,6 +2201,13 @@ mod tests {
     use super::*;
     use crate::workspace::Workspace;
     use al_symbols::{ObjectKind, SymbolEntry};
+
+    #[test]
+    fn code_action_kind_serializes_to_lsp_string() {
+        assert_eq!(serde_json::to_value(CodeActionKind::QuickFix).unwrap(), "quickfix");
+        assert_eq!(serde_json::to_value(CodeActionKind::Refactor).unwrap(), "refactor");
+        assert_eq!(serde_json::to_value(CodeActionKind::Source).unwrap(), "source");
+    }
 
     /// Open `al_code` in `ws` at `uri`.  Centralises the `uri.clone()` +
     /// `to_string()` noise that appeared in every test.

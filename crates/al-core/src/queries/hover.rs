@@ -7,7 +7,7 @@ use crate::resolution::{self, ResolvedMemberKind};
 use crate::workspace::Workspace;
 
 /// Hover result: markdown content and optional highlight range.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct HoverResult {
     pub contents: String,
     pub range: Option<Range>,

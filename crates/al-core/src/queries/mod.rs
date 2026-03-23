@@ -191,9 +191,10 @@ pub struct Location {
 }
 
 /// A text edit (replacement text for a range).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TextEdit {
     pub range: Range,
+    #[serde(rename = "newText")]
     pub new_text: String,
 }
 
@@ -201,6 +202,25 @@ pub struct TextEdit {
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceEdit {
     pub changes: Vec<(Url, Vec<TextEdit>)>,
+}
+
+impl serde::Serialize for WorkspaceEdit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(1))?;
+        let changes: serde_json::Map<String, serde_json::Value> = self
+            .changes
+            .iter()
+            .map(|(uri, edits)| {
+                (
+                    uri.as_str().to_string(),
+                    serde_json::to_value(edits).unwrap_or_default(),
+                )
+            })
+            .collect();
+        map.serialize_entry("changes", &changes)?;
+        map.end()
+    }
 }
 
 // ---------------------------------------------------------------------------

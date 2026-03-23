@@ -7,13 +7,15 @@ use crate::resolution;
 use crate::workspace::Workspace;
 
 /// A completion item.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CompletionEntry {
     pub label: String,
     pub kind: CompletionKind,
     pub detail: Option<String>,
     pub documentation: Option<String>,
+    #[serde(rename = "insertText")]
     pub insert_text: Option<String>,
+    #[serde(rename = "sortText")]
     pub sort_text: Option<String>,
 }
 
@@ -35,6 +37,29 @@ pub enum CompletionKind {
     Text,
     Struct,
     Reference,
+}
+
+impl serde::Serialize for CompletionKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let n: u32 = match self {
+            Self::Text => 1,
+            Self::Method => 2,
+            Self::Function => 3,
+            Self::Field => 5,
+            Self::Variable => 6,
+            Self::Class => 7,
+            Self::Module => 9,
+            Self::Property => 10,
+            Self::Value => 12,
+            Self::Enum => 13,
+            Self::Keyword => 14,
+            Self::Snippet => 15,
+            Self::Reference => 18,
+            Self::EnumMember => 20,
+            Self::Struct => 22,
+        };
+        serializer.serialize_u32(n)
+    }
 }
 
 /// AL keywords for general completion.
@@ -403,6 +428,15 @@ mod tests {
 
     fn test_uri() -> Url {
         Url::parse("file:///test/src/Test.al").unwrap()
+    }
+
+    #[test]
+    fn completion_kind_serializes_to_lsp_integer() {
+        assert_eq!(serde_json::to_value(CompletionKind::Function).unwrap(), 3);
+        assert_eq!(serde_json::to_value(CompletionKind::Field).unwrap(), 5);
+        assert_eq!(serde_json::to_value(CompletionKind::Variable).unwrap(), 6);
+        assert_eq!(serde_json::to_value(CompletionKind::Class).unwrap(), 7);
+        assert_eq!(serde_json::to_value(CompletionKind::Keyword).unwrap(), 14);
     }
 
     #[test]

@@ -21,13 +21,7 @@ pub(super) async fn dispatch_hover(workspace: &Workspace, id: u64, params: &serd
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let Some(position) = extract_position(params) else { return invalid_params(id); };
     let result = al_core::queries::hover::hover_full(workspace, &uri, position).await;
-    let value = result.map(|r| serde_json::json!({
-        "contents": r.contents,
-        "range": r.range.map(|rng| serde_json::json!({
-            "start": { "line": rng.start.line, "character": rng.start.character },
-            "end": { "line": rng.end.line, "character": rng.end.character },
-        })),
-    }));
+    let value = result.and_then(|r| serde_json::to_value(&r).ok()); // SILENT: serialization of valid structs should not fail
     Response { id, result: value, error: None }
 }
 
@@ -35,15 +29,7 @@ pub(super) fn dispatch_definition(workspace: &Workspace, id: u64, params: &serde
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let Some(position) = extract_position(params) else { return invalid_params(id); };
     let result = al_core::queries::definition::definition(workspace, &uri, position);
-    let value = result.map(|locations| {
-        serde_json::json!(locations.iter().map(|l| serde_json::json!({
-            "uri": l.uri.as_str(),
-            "range": {
-                "start": { "line": l.range.start.line, "character": l.range.start.character },
-                "end": { "line": l.range.end.line, "character": l.range.end.character },
-            }
-        })).collect::<Vec<_>>())
-    });
+    let value = result.map(|locations| serde_json::to_value(&locations).unwrap_or_default()); // SILENT: serialization of valid structs should not fail
     Response { id, result: value, error: None }
 }
 
@@ -52,13 +38,7 @@ pub(super) fn dispatch_references(workspace: &Workspace, id: u64, params: &serde
     let Some(position) = extract_position(params) else { return invalid_params(id); };
     let include_declaration = params.get("includeDeclaration").and_then(|v| v.as_bool()).unwrap_or(true);
     let locations = al_core::queries::references::references(workspace, &uri, position, include_declaration);
-    let value = serde_json::json!(locations.iter().map(|l| serde_json::json!({
-        "uri": l.uri.as_str(),
-        "range": {
-            "start": { "line": l.range.start.line, "character": l.range.start.character },
-            "end": { "line": l.range.end.line, "character": l.range.end.character },
-        }
-    })).collect::<Vec<_>>());
+    let value = serde_json::to_value(&locations).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
     Response { id, result: Some(value), error: None }
 }
 
@@ -66,13 +46,7 @@ pub(super) fn dispatch_implementations(workspace: &Workspace, id: u64, params: &
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let Some(position) = extract_position(params) else { return invalid_params(id); };
     let locations = al_core::queries::implementation::find_implementations(workspace, &uri, position);
-    let value = serde_json::json!(locations.iter().map(|l| serde_json::json!({
-        "uri": l.uri.as_str(),
-        "range": {
-            "start": { "line": l.range.start.line, "character": l.range.start.character },
-            "end": { "line": l.range.end.line, "character": l.range.end.character },
-        }
-    })).collect::<Vec<_>>());
+    let value = serde_json::to_value(&locations).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
     Response { id, result: Some(value), error: None }
 }
 
@@ -80,12 +54,7 @@ pub(super) async fn dispatch_completions(workspace: &Workspace, id: u64, params:
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let Some(position) = extract_position(params) else { return invalid_params(id); };
     let entries = al_core::queries::completions::completions_full(workspace, &uri, position).await;
-    let value = serde_json::json!(entries.iter().map(|e| serde_json::json!({
-        "label": e.label,
-        "kind": format!("{:?}", e.kind),
-        "detail": e.detail,
-        "sortText": e.sort_text,
-    })).collect::<Vec<_>>());
+    let value = serde_json::to_value(&entries).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
     Response { id, result: Some(value), error: None }
 }
 
@@ -93,18 +62,7 @@ pub(super) fn dispatch_signature_help(workspace: &Workspace, id: u64, params: &s
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let Some(position) = extract_position(params) else { return invalid_params(id); };
     let result = al_core::queries::signature::signature_help(workspace, &uri, position);
-    let value = result.map(|sh| serde_json::json!({
-        "signatures": sh.signatures.iter().map(|s| serde_json::json!({
-            "label": s.label,
-            "documentation": s.documentation,
-            "parameters": s.parameters.iter().map(|p| serde_json::json!({
-                "label": p.label,
-            })).collect::<Vec<_>>(),
-            "activeParameter": s.active_parameter,
-        })).collect::<Vec<_>>(),
-        "activeSignature": sh.active_signature,
-        "activeParameter": sh.active_parameter,
-    }));
+    let value = result.and_then(|sh| serde_json::to_value(&sh).ok()); // SILENT: serialization of valid structs should not fail
     Response { id, result: value, error: None }
 }
 
@@ -113,18 +71,7 @@ pub(super) fn dispatch_rename(workspace: &Workspace, id: u64, params: &serde_jso
     let Some(position) = extract_position(params) else { return invalid_params(id); };
     let Some(new_name) = params.get("newName").and_then(|v| v.as_str()) else { return invalid_params(id); };
     let result = al_core::queries::rename::rename(workspace, &uri, position, new_name);
-    let value = result.map(|we| {
-        let changes: serde_json::Map<String, serde_json::Value> = we.changes.iter().map(|(uri, edits)| {
-            (uri.as_str().to_string(), serde_json::json!(edits.iter().map(|e| serde_json::json!({
-                "range": {
-                    "start": { "line": e.range.start.line, "character": e.range.start.character },
-                    "end": { "line": e.range.end.line, "character": e.range.end.character },
-                },
-                "newText": e.new_text,
-            })).collect::<Vec<_>>()))
-        }).collect();
-        serde_json::json!({ "changes": changes })
-    });
+    let value = result.map(|we| serde_json::to_value(&we).unwrap_or_default()); // SILENT: serialization of valid structs should not fail
     Response { id, result: value, error: None }
 }
 
@@ -145,13 +92,7 @@ pub(super) fn dispatch_folding_ranges(workspace: &Workspace, id: u64, params: &s
 pub(super) fn dispatch_semantic_tokens(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
     let tokens = al_core::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
-    let value = serde_json::json!(tokens.iter().map(|t| serde_json::json!({
-        "deltaLine": t.delta_line,
-        "deltaStart": t.delta_start,
-        "length": t.length,
-        "tokenType": t.token_type,
-        "tokenModifiers": t.token_modifiers,
-    })).collect::<Vec<_>>());
+    let value = serde_json::to_value(&tokens).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
     Response { id, result: Some(value), error: None }
 }
 
@@ -175,10 +116,7 @@ pub(super) fn dispatch_code_actions(workspace: &Workspace, id: u64, params: &ser
     let Some(position) = extract_position(params) else { return invalid_params(id); };
     let range = al_core::queries::Range { start: position, end: position };
     let actions = al_core::queries::code_actions::source_actions(workspace, &uri, range);
-    let value = serde_json::json!(actions.iter().map(|a| serde_json::json!({
-        "title": a.title,
-        "kind": format!("{:?}", a.kind),
-    })).collect::<Vec<_>>());
+    let value = serde_json::to_value(&actions).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
     Response { id, result: Some(value), error: None }
 }
 

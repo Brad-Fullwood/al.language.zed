@@ -257,6 +257,9 @@ pub async fn get_or_init_bridge(
         }
         Err(e) => {
             tracing::warn!(error = %e, "Semantic bridge init task panicked");
+            if let Some(sink) = workspace.notify_sink.get() {
+                sink(&format!("AL semantic bridge init panicked: {e}"));
+            }
             None
         }
     }
@@ -265,24 +268,22 @@ pub async fn get_or_init_bridge(
 /// Restart the bridge after a crash or error.
 ///
 /// Increments the restart counter and re-initializes. Returns Err if
-/// the restart limit has been reached.
+/// the restart limit has been reached or no toolchain is available.
+/// The counter is only incremented after all early-return checks pass,
+/// so `NoToolchain` errors and concurrent-restore early returns do not
+/// consume restart slots.
 pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::AlError> {
     use crate::errors::AlError;
-
-    let count = workspace.bridge_restart_count.fetch_add(1, Ordering::Relaxed) + 1;
-    if count > MAX_RESTARTS {
-        return Err(AlError::BridgeRestartLimitExceeded {
-            attempts: count,
-            max: MAX_RESTARTS,
-        });
-    }
-
-    tracing::info!(attempt = count, "Restarting semantic bridge");
 
     // Drop the old bridge
     let _ = workspace.semantic.write().await.take();
 
-    // Re-initialize
+    // NOTE: Between take() above and re-acquiring the write lock below, another
+    // task could start its own init via get_or_init_bridge. This race is safe:
+    // the triple-check below prevents overwriting a bridge that was just restored.
+    // Worst case is a redundant CLR init (resource waste, not a correctness bug).
+
+    // Return NoToolchain without burning a restart slot
     let toolchain = workspace
         .toolchain
         .read()
@@ -292,10 +293,22 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
 
     let write_guard = workspace.semantic.write().await;
 
-    // Double-check: another task may have re-initialized between our take() and this lock
+    // Double-check: another task may have re-initialized between our take() and this lock.
+    // Return Ok without burning a restart slot — the bridge is already healthy.
     if write_guard.is_some() {
         return Ok(());
     }
+
+    // All early-return checks passed — now consume a restart slot.
+    let count = workspace.bridge_restart_count.fetch_add(1, Ordering::Relaxed) + 1;
+    if count > MAX_RESTARTS {
+        return Err(AlError::BridgeRestartLimitExceeded {
+            attempts: count,
+            max: MAX_RESTARTS,
+        });
+    }
+
+    tracing::info!(attempt = count, "Restarting semantic bridge");
 
     let ca_path = toolchain.code_analysis.clone();
     let version = toolchain.version.clone();
@@ -319,6 +332,7 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
     match bridge_result {
         Ok(Ok(bridge)) => {
             *write_guard = Some(bridge);
+            tracing::info!(attempt = count, "Semantic bridge restarted successfully");
             Ok(())
         }
         Ok(Err(e)) => Err(e.into()),
@@ -506,17 +520,33 @@ mod tests {
     #[tokio::test]
     async fn restart_limit_enforced() {
         use crate::errors::AlError;
+        use crate::toolchain::AlToolchain;
 
         let ws = Workspace::new();
 
-        // Exhaust restart limit
-        for _ in 0..MAX_RESTARTS {
-            let result = restart_bridge(&ws).await;
-            // Will fail because no toolchain, but counter still increments
-            assert!(result.is_err());
-        }
+        // A toolchain must be present so the function reaches the counter check —
+        // NoToolchain is returned before the counter is ever incremented.
+        let dummy_toolchain = AlToolchain {
+            alc: "/dev/null".into(),
+            aldoc: None,
+            code_analysis: "/dev/null".into(),
+            analyzers: crate::toolchain::AnalyzerPaths {
+                code_cop: "/dev/null".into(),
+                app_source_cop: "/dev/null".into(),
+                ui_cop: "/dev/null".into(),
+                per_tenant_cop: "/dev/null".into(),
+                common: "/dev/null".into(),
+                custom: vec![],
+            },
+            dotnet_root: "/dev/null".into(),
+            version: "99.0.0".to_string(),
+        };
+        *ws.toolchain.write().await = Some(dummy_toolchain);
 
-        // Next restart should be rejected due to limit
+        // Seed the counter to the limit so the very next real attempt is rejected.
+        ws.bridge_restart_count.store(MAX_RESTARTS, Ordering::Relaxed);
+
+        // Next restart attempt should be rejected due to limit
         let result = restart_bridge(&ws).await;
         assert!(result.is_err());
         assert!(
@@ -526,14 +556,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restart_count_persists() {
+    async fn restart_count_no_increment_without_toolchain() {
+        // Without a toolchain, restart_bridge returns NoToolchain before the counter
+        // increment, so the counter must remain at 0.
         let ws = Workspace::new();
 
         assert_eq!(ws.bridge_restart_count.load(Ordering::Relaxed), 0);
         let _ = restart_bridge(&ws).await;
-        assert_eq!(ws.bridge_restart_count.load(Ordering::Relaxed), 1);
-        let _ = restart_bridge(&ws).await;
-        assert_eq!(ws.bridge_restart_count.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            ws.bridge_restart_count.load(Ordering::Relaxed),
+            0,
+            "NoToolchain early return must not consume a restart slot"
+        );
     }
 
     #[tokio::test]

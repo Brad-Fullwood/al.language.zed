@@ -5,12 +5,16 @@ use url::Url;
 use crate::workspace::Workspace;
 
 /// A semantic token (delta-encoded position + type + modifiers).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SemanticToken {
+    #[serde(rename = "deltaLine")]
     pub delta_line: u32,
+    #[serde(rename = "deltaStart")]
     pub delta_start: u32,
     pub length: u32,
+    #[serde(rename = "tokenType")]
     pub token_type: u32,
+    #[serde(rename = "tokenModifiers")]
     pub token_modifiers: u32,
 }
 
