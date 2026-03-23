@@ -245,9 +245,9 @@ pub fn quick_fix_for_diagnostic(
                     start: super::Position { line: lsp_range.start.line + 1, character: 0 },
                     end: super::Position { line: lsp_range.start.line + 1, character: 0 },
                 },
-                new_text: format!("{}    // TODO: Implement\n", indent),
+                new_text: format!("{}    Error('Not implemented');\n", indent),
             };
-            Some(make_quickfix("Add TODO comment", uri, vec![edit]))
+            Some(make_quickfix("Add placeholder Error statement", uri, vec![edit]))
         }
         Some("AL-L005") => {
             let edit = TextEdit {
@@ -266,9 +266,9 @@ pub fn quick_fix_for_diagnostic(
                     start: super::Position { line: lsp_range.start.line + 1, character: 0 },
                     end: super::Position { line: lsp_range.start.line + 1, character: 0 },
                 },
-                new_text: format!("{}        // TODO: Implement trigger\n", indent),
+                new_text: format!("{}        Error('Not implemented');\n", indent),
             };
-            Some(make_quickfix("Add TODO comment to trigger", uri, vec![edit]))
+            Some(make_quickfix("Add placeholder Error to trigger", uri, vec![edit]))
         }
         Some("AL-L007") => {
             let edit = TextEdit {
@@ -879,7 +879,6 @@ fn source_action_implement_interface(
 
     // Extract interface names from the implements clause
     let interface_names = extract_interface_names(obj_node, source);
-    eprintln!("DEBUG: interface_names={:?}", interface_names);
     if interface_names.is_empty() {
         return Vec::new();
     }
@@ -952,7 +951,7 @@ fn source_action_implement_interface(
             stub_text.push_str(&indent);
             stub_text.push_str("begin\n");
             stub_text.push_str(&indent);
-            stub_text.push_str("    // TODO: Implement\n");
+            stub_text.push_str("    Error('Not implemented');\n");
             stub_text.push_str(&indent);
             stub_text.push_str("end;\n");
         }
@@ -1408,15 +1407,6 @@ fn source_action_move_tooltip(
         return None;
     }
 
-    // Offer to remove the ToolTip line from the page field.
-    // Delete the entire line (including newline).
-    let line_start_byte: usize = text
-        .lines()
-        .take(cursor_line)
-        .map(|l| l.len() + 1) // +1 for newline
-        .sum();
-    let line_len = line.len();
-
     // Delete from start of line to start of next line
     let edit = TextEdit {
         range: Range {
@@ -1425,9 +1415,6 @@ fn source_action_move_tooltip(
         },
         new_text: String::new(),
     };
-
-    let _ = line_start_byte; // used for calculation
-    let _ = line_len;
 
     Some(CodeActionEntry {
         title: "Move ToolTip to table field (remove from page)".to_string(),
@@ -3024,8 +3011,8 @@ codeunit 50100 "My Codeunit"
         assert!(new_text.contains("Input: Text"), "Should have parameter");
         assert!(new_text.contains("procedure GetValue"), "Should have GetValue stub");
         assert!(new_text.contains(": Integer"), "Should have return type");
-        // Stubs should have TODO bodies
-        assert!(new_text.contains("// TODO"), "Should have TODO placeholder");
+        // Stubs should have Error placeholder bodies
+        assert!(new_text.contains("Error('Not implemented')"), "Should have Error placeholder");
     }
 
     #[test]
