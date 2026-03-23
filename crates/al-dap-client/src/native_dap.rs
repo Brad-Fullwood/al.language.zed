@@ -16,11 +16,12 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::collections::HashMap;
 
-use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{self, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::bc_debug::{BcDebugConfig, BcDebugSession, publish_app};
+use crate::framing::read_dap_body;
 use crate::{DapError, Result};
 
 // ---------------------------------------------------------------------------
@@ -534,33 +535,6 @@ async fn write_dap(
     writer.write_all(header.as_bytes()).await?;
     writer.write_all(&body).await?;
     writer.flush().await
-}
-
-async fn read_dap_body(
-    reader: &mut BufReader<io::Stdin>,
-) -> std::result::Result<Vec<u8>, std::io::Error> {
-    let mut content_length: Option<usize> = None;
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "EOF"));
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some(val) = trimmed.strip_prefix("Content-Length:") {
-            content_length = Some(val.trim().parse::<usize>()
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?);
-        }
-    }
-    let length = content_length.ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing Content-Length")
-    })?;
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).await?;
-    Ok(body)
 }
 
 /// Compile via `dotnet alc` and return raw output.

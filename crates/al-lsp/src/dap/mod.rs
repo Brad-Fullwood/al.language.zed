@@ -20,8 +20,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use al_core::toolchain::AlToolchain;
+use al_dap_client::framing::{read_dap_body, write_dap_frame};
 use thiserror::Error;
-use tokio::io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tracing::{debug, error, info, warn};
 
 pub use editor_services::find_editor_services;
@@ -349,60 +350,6 @@ async fn compile_project(toolchain: &AlToolchain, project_root: &str) -> Result<
     } else {
         Err(DapError::CompilationFailed(combined))
     }
-}
-
-// ---------------------------------------------------------------------------
-// DAP framing helpers
-// ---------------------------------------------------------------------------
-
-async fn read_dap_body<R: tokio::io::AsyncRead + Unpin>(
-    reader: &mut BufReader<R>,
-) -> Result<Vec<u8>, std::io::Error> {
-    let content_length = read_headers(reader).await?;
-    let mut body = vec![0u8; content_length];
-    reader.read_exact(&mut body).await?;
-    Ok(body)
-}
-
-async fn read_headers<R: tokio::io::AsyncRead + Unpin>(
-    reader: &mut BufReader<R>,
-) -> Result<usize, std::io::Error> {
-    let mut content_length: Option<usize> = None;
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "EOF",
-            ));
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some(val) = trimmed.strip_prefix("Content-Length:") {
-            content_length = Some(
-                val.trim()
-                    .parse::<usize>()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-            );
-        }
-    }
-    content_length.ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing Content-Length")
-    })
-}
-
-async fn write_dap_frame<W: tokio::io::AsyncWrite + Unpin>(
-    writer: &mut W,
-    body: &[u8],
-) -> Result<(), std::io::Error> {
-    let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    writer.write_all(header.as_bytes()).await?;
-    writer.write_all(body).await?;
-    writer.flush().await?;
-    Ok(())
 }
 
 /// Patch incoming messages from EditorServices.Host before forwarding to Zed.
