@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use super::{connect, print_json, report_error};
+use super::{connect, print_json, report_error, run_command};
 
 pub fn cmd_trace(event: &str, depth: usize, json: bool) -> ExitCode {
     let mut client = match connect(None) {
@@ -39,30 +39,16 @@ pub fn cmd_trace(event: &str, depth: usize, json: bool) -> ExitCode {
 }
 
 pub fn cmd_entrypoints(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-
-    match client.request("entrypoints", None) {
-        Ok(result) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&result).unwrap_or_default()
-                );
-            } else if let Some(entries) = result.as_array() {
-                println!("Entry points ({} found):", entries.len());
-                for e in entries {
-                    let obj = e.get("object_name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("  {obj}::{name}");
-                }
+    run_command("entrypoints", None, json, None, |result| {
+        if let Some(entries) = result.as_array() {
+            println!("Entry points ({} found):", entries.len());
+            for e in entries {
+                let obj = e.get("object_name").and_then(|v| v.as_str()).unwrap_or("?");
+                let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("  {obj}::{name}");
             }
-            ExitCode::SUCCESS
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
@@ -104,27 +90,11 @@ pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
 }
 
 pub fn cmd_insight_stats(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-
-    match client.request("insightStats", None) {
-        Ok(result) => {
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&result).unwrap_or_default()
-                );
-            } else {
-                let nodes = result.get("nodes").and_then(|v| v.as_u64()).unwrap_or(0);
-                let edges = result.get("edges").and_then(|v| v.as_u64()).unwrap_or(0);
-                println!("Insight graph: {nodes} nodes, {edges} edges");
-            }
-            ExitCode::SUCCESS
-        }
-        Err(e) => report_error(&e, json),
-    }
+    run_command("insightStats", None, json, None, |result| {
+        let nodes = result.get("nodes").and_then(|v| v.as_u64()).unwrap_or(0);
+        let edges = result.get("edges").and_then(|v| v.as_u64()).unwrap_or(0);
+        println!("Insight graph: {nodes} nodes, {edges} edges");
+    })
 }
 
 pub fn cmd_dead_code(json: bool) -> ExitCode {

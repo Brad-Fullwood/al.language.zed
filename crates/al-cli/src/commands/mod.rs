@@ -190,6 +190,41 @@ pub fn print_symbol_entries(result: &serde_json::Value) {
     }
 }
 
+/// Execute a daemon JSON-RPC request with the common connect/request/format lifecycle.
+///
+/// Connects to the daemon, sends `method` with `params`, then calls `format_fn` for
+/// human-readable output (skipped when `json` is true). Returns `ExitCode::SUCCESS`
+/// on success or `ExitCode::FAILURE` on connect/request error.
+///
+/// Commands with conditional exit codes, multi-step logic, early returns inside the
+/// format branch, or non-standard timeouts should stay manual rather than use this helper.
+pub fn run_command<F>(
+    method: &str,
+    params: Option<serde_json::Value>,
+    json: bool,
+    project_dir: Option<&str>,
+    format_fn: F,
+) -> ExitCode
+where
+    F: FnOnce(&serde_json::Value),
+{
+    let mut client = match connect(project_dir) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    match client.request(method, params) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                format_fn(&result);
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
 pub fn print_lint_diag(file: Option<&str>, d: &serde_json::Value) {
     let code = d.get("code").and_then(|v| v.as_str()).unwrap_or("?");
     let msg = d.get("message").and_then(|v| v.as_str()).unwrap_or("?");

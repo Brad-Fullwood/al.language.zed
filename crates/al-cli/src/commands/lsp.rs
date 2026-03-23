@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use super::{
     collect_al_files, connect, file_to_uri, print_json, print_lint_diag, print_symbol_entries,
-    project_root, report_error,
+    project_root, report_error, run_command,
 };
 
 pub fn cmd_version(json: bool) -> ExitCode {
@@ -189,41 +189,17 @@ pub fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
 }
 
 pub fn cmd_object(kind: &str, name: &str, json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
     let params = serde_json::json!({ "kind": kind, "name": name });
-    match client.request("object", Some(params)) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                print_symbol_entries(&result);
-            }
-            ExitCode::SUCCESS
-        }
-        Err(e) => report_error(&e, json),
-    }
+    run_command("object", Some(params), json, None, |result| {
+        print_symbol_entries(result);
+    })
 }
 
 pub fn cmd_by_id(kind: &str, id: i32, json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
     let params = serde_json::json!({ "kind": kind, "id": id });
-    match client.request("byId", Some(params)) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                print_symbol_entries(&result);
-            }
-            ExitCode::SUCCESS
-        }
-        Err(e) => report_error(&e, json),
-    }
+    run_command("byId", Some(params), json, None, |result| {
+        print_symbol_entries(result);
+    })
 }
 
 pub fn cmd_events(name: &str, json: bool) -> ExitCode {
@@ -385,39 +361,26 @@ pub fn cmd_packages(json: bool) -> ExitCode {
 }
 
 pub fn cmd_deps(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("deps", None) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                if let Some(proj) = result.get("project") {
-                    let name = proj.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let publisher = proj.get("publisher").and_then(|v| v.as_str()).unwrap_or("?");
-                    let version = proj.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("Project: {name} by {publisher} v{version}");
-                }
-                if let Some(deps) = result.get("explicit").and_then(|v| v.as_array()) {
-                    println!("\nExplicit dependencies ({}):", deps.len());
-                    for d in deps {
-                        let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let publisher =
-                            d.get("publisher").and_then(|v| v.as_str()).unwrap_or("?");
-                        let version = d.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("  {name} by {publisher} v{version}");
-                    }
-                }
-                if let Some(all) = result.get("all").and_then(|v| v.as_array()) {
-                    println!("\nAll dependencies (including implicit): {}", all.len());
-                }
-            }
-            ExitCode::SUCCESS
+    run_command("deps", None, json, None, |result| {
+        if let Some(proj) = result.get("project") {
+            let name = proj.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let publisher = proj.get("publisher").and_then(|v| v.as_str()).unwrap_or("?");
+            let version = proj.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+            println!("Project: {name} by {publisher} v{version}");
         }
-        Err(e) => report_error(&e, json),
-    }
+        if let Some(deps) = result.get("explicit").and_then(|v| v.as_array()) {
+            println!("\nExplicit dependencies ({}):", deps.len());
+            for d in deps {
+                let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let publisher = d.get("publisher").and_then(|v| v.as_str()).unwrap_or("?");
+                let version = d.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("  {name} by {publisher} v{version}");
+            }
+        }
+        if let Some(all) = result.get("all").and_then(|v| v.as_array()) {
+            println!("\nAll dependencies (including implicit): {}", all.len());
+        }
+    })
 }
 
 pub fn cmd_lint(
@@ -788,31 +751,19 @@ pub fn cmd_rename(
 }
 
 pub fn cmd_rules(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("rules", None) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let rules = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
-                println!("{:<10} {:<8} {:<25} DESCRIPTION", "CODE", "SEV", "NAME");
-                println!("{}", "-".repeat(80));
-                for r in rules {
-                    let code = r.get("code").and_then(|v| v.as_str()).unwrap_or("?");
-                    let sev = r.get("severity").and_then(|v| v.as_str()).unwrap_or("?");
-                    let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let desc = r.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("{:<10} {:<8} {:<25} {}", code, sev, name, desc);
-                }
-                eprintln!("\n{} rules", rules.len());
-            }
-            ExitCode::SUCCESS
+    run_command("rules", None, json, None, |result| {
+        let rules = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        println!("{:<10} {:<8} {:<25} DESCRIPTION", "CODE", "SEV", "NAME");
+        println!("{}", "-".repeat(80));
+        for r in rules {
+            let code = r.get("code").and_then(|v| v.as_str()).unwrap_or("?");
+            let sev = r.get("severity").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let desc = r.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+            println!("{:<10} {:<8} {:<25} {}", code, sev, name, desc);
         }
-        Err(e) => report_error(&e, json),
-    }
+        eprintln!("\n{} rules", rules.len());
+    })
 }
 
 pub fn cmd_permissions(
@@ -852,63 +803,39 @@ pub fn cmd_permissions(
 }
 
 pub fn cmd_error_codes(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("errorCodes", None) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let codes = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
-                if codes.is_empty() {
-                    eprintln!("No error codes loaded (requires ALTool)");
-                } else {
-                    for c in codes {
-                        let code = c.get("code").and_then(|v| v.as_str()).unwrap_or("?");
-                        let desc = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("{code}: {desc}");
-                    }
-                    eprintln!("\n{} error codes", codes.len());
-                }
+    run_command("errorCodes", None, json, None, |result| {
+        let codes = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        if codes.is_empty() {
+            eprintln!("No error codes loaded (requires ALTool)");
+        } else {
+            for c in codes {
+                let code = c.get("code").and_then(|v| v.as_str()).unwrap_or("?");
+                let desc = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("{code}: {desc}");
             }
-            ExitCode::SUCCESS
+            eprintln!("\n{} error codes", codes.len());
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 pub fn cmd_builtins(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("builtinTypes", None) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let types = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
-                if types.is_empty() {
-                    eprintln!("No builtin types loaded (requires ALTool)");
-                } else {
-                    for t in types {
-                        let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let methods = t
-                            .get("methods")
-                            .and_then(|v| v.as_array())
-                            .map(|m| m.len())
-                            .unwrap_or(0);
-                        println!("{name} ({methods} methods)");
-                    }
-                    eprintln!("\n{} builtin types", types.len());
-                }
+    run_command("builtinTypes", None, json, None, |result| {
+        let types = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+        if types.is_empty() {
+            eprintln!("No builtin types loaded (requires ALTool)");
+        } else {
+            for t in types {
+                let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let methods = t
+                    .get("methods")
+                    .and_then(|v| v.as_array())
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                println!("{name} ({methods} methods)");
             }
-            ExitCode::SUCCESS
+            eprintln!("\n{} builtin types", types.len());
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 pub fn cmd_parse(file: &str, json: bool) -> ExitCode {
@@ -1361,40 +1288,27 @@ fn print_complexity_entry(file: Option<&str>, entry: &serde_json::Value) {
 }
 
 pub fn cmd_sql_scan(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-
-    match client.request("sqlPatterns", Some(serde_json::json!({}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let violations = result.as_array().cloned().unwrap_or_default();
-                if violations.is_empty() {
-                    eprintln!("No SQL anti-patterns found");
+    run_command("sqlPatterns", Some(serde_json::json!({})), json, None, |result| {
+        let violations = result.as_array().cloned().unwrap_or_default();
+        if violations.is_empty() {
+            eprintln!("No SQL anti-patterns found");
+        } else {
+            for v in &violations {
+                let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
+                let object = v.get("object").and_then(|o| o.as_str()).unwrap_or("?");
+                let procedure = v.get("procedure").and_then(|p| p.as_str()).unwrap_or("?");
+                let line = v.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
+                let message = v.get("message").and_then(|m| m.as_str()).unwrap_or("?");
+                let file_path = v.get("file").and_then(|f| f.as_str()).unwrap_or("");
+                if file_path.is_empty() {
+                    println!("{object}::{procedure}:{line}: [{kind}] {message}");
                 } else {
-                    for v in &violations {
-                        let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
-                        let object = v.get("object").and_then(|o| o.as_str()).unwrap_or("?");
-                        let procedure = v.get("procedure").and_then(|p| p.as_str()).unwrap_or("?");
-                        let line = v.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
-                        let message = v.get("message").and_then(|m| m.as_str()).unwrap_or("?");
-                        let file_path = v.get("file").and_then(|f| f.as_str()).unwrap_or("");
-                        if file_path.is_empty() {
-                            println!("{object}::{procedure}:{line}: [{kind}] {message}");
-                        } else {
-                            println!("{file_path}:{line}: [{kind}] {object}::{procedure}: {message}");
-                        }
-                    }
-                    eprintln!("\n{} SQL anti-pattern(s) found", violations.len());
+                    println!("{file_path}:{line}: [{kind}] {object}::{procedure}: {message}");
                 }
             }
-            ExitCode::SUCCESS
+            eprintln!("\n{} SQL anti-pattern(s) found", violations.len());
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1482,53 +1396,29 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
 // ---------------------------------------------------------------------------
 
 pub fn cmd_tests_discover(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("tests.discover", Some(serde_json::json!({}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let tests = result.as_array().cloned().unwrap_or_default();
-                if tests.is_empty() {
-                    eprintln!("No test codeunits found");
-                } else {
-                    for t in &tests {
-                        let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                        let count = t.get("tests").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                        println!("  Codeunit {id} \"{name}\" -- {count} test(s)");
-                    }
-                    eprintln!("\n{} test codeunit(s) found", tests.len());
-                }
+    run_command("tests.discover", Some(serde_json::json!({})), json, None, |result| {
+        let tests = result.as_array().cloned().unwrap_or_default();
+        if tests.is_empty() {
+            eprintln!("No test codeunits found");
+        } else {
+            for t in &tests {
+                let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let count = t.get("tests").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                println!("  Codeunit {id} \"{name}\" -- {count} test(s)");
             }
-            ExitCode::SUCCESS
+            eprintln!("\n{} test codeunit(s) found", tests.len());
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 pub fn cmd_tests_coverage(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("tests.coverage", Some(serde_json::json!({}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let covered = result.get("coveredProcedures").and_then(|v| v.as_u64()).unwrap_or(0);
-                let total = result.get("totalProcedures").and_then(|v| v.as_u64()).unwrap_or(0);
-                let pct = if total > 0 { covered * 100 / total } else { 0 };
-                println!("Test coverage: {covered}/{total} procedures ({pct}%)");
-            }
-            ExitCode::SUCCESS
-        }
-        Err(e) => report_error(&e, json),
-    }
+    run_command("tests.coverage", Some(serde_json::json!({})), json, None, |result| {
+        let covered = result.get("coveredProcedures").and_then(|v| v.as_u64()).unwrap_or(0);
+        let total = result.get("totalProcedures").and_then(|v| v.as_u64()).unwrap_or(0);
+        let pct = if total > 0 { covered * 100 / total } else { 0 };
+        println!("Test coverage: {covered}/{total} procedures ({pct}%)");
+    })
 }
 
 /// `al test-run <codeunit> [--name <name>] [--method <method>] [--config <config>]`
@@ -1636,92 +1526,56 @@ pub fn cmd_generate(kind: &str, id: i64, name: &str, table: Option<&str>, page_t
 // ---------------------------------------------------------------------------
 
 pub fn cmd_obsolete(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("obsolete", Some(serde_json::json!({}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let entries = result.as_array().cloned().unwrap_or_default();
-                if entries.is_empty() {
-                    println!("No obsolete symbols found.");
-                } else {
-                    for e in &entries {
-                        let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                        let object = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                        let symbol = e.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
-                        let reason = e.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-                        let state = e.get("state").and_then(|v| v.as_str()).unwrap_or("");
-                        println!("{kind} {object}::{symbol} [{state}]: {reason}");
-                    }
-                    eprintln!("\n{} obsolete symbol(s)", entries.len());
-                }
+    run_command("obsolete", Some(serde_json::json!({})), json, None, |result| {
+        let entries = result.as_array().cloned().unwrap_or_default();
+        if entries.is_empty() {
+            println!("No obsolete symbols found.");
+        } else {
+            for e in &entries {
+                let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let object = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                let symbol = e.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
+                let reason = e.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+                let state = e.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                println!("{kind} {object}::{symbol} [{state}]: {reason}");
             }
-            ExitCode::SUCCESS
+            eprintln!("\n{} obsolete symbol(s)", entries.len());
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("audit.dataClassification", Some(serde_json::json!({}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let entries = result.as_array().cloned().unwrap_or_default();
-                if entries.is_empty() {
-                    println!("All table fields have DataClassification set.");
-                } else {
-                    for e in &entries {
-                        let table = e.get("table").and_then(|v| v.as_str()).unwrap_or("?");
-                        let field = e.get("field").and_then(|v| v.as_str()).unwrap_or("?");
-                        let dc = e.get("dataClassification").and_then(|v| v.as_str()).unwrap_or("missing");
-                        println!("{table}.{field}: {dc}");
-                    }
-                    eprintln!("\n{} field(s) missing DataClassification", entries.len());
-                }
+    run_command("audit.dataClassification", Some(serde_json::json!({})), json, None, |result| {
+        let entries = result.as_array().cloned().unwrap_or_default();
+        if entries.is_empty() {
+            println!("All table fields have DataClassification set.");
+        } else {
+            for e in &entries {
+                let table = e.get("table").and_then(|v| v.as_str()).unwrap_or("?");
+                let field = e.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+                let dc = e.get("dataClassification").and_then(|v| v.as_str()).unwrap_or("missing");
+                println!("{table}.{field}: {dc}");
             }
-            ExitCode::SUCCESS
+            eprintln!("\n{} field(s) missing DataClassification", entries.len());
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 pub fn cmd_permission_audit(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("permissions.audit", Some(serde_json::json!({}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let entries = result.as_array().cloned().unwrap_or_default();
-                if entries.is_empty() {
-                    println!("All objects covered by permission sets.");
-                } else {
-                    for e in &entries {
-                        let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                        let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let covered = e.get("covered").and_then(|v| v.as_bool()).unwrap_or(false);
-                        let status = if covered { "covered" } else { "MISSING" };
-                        println!("{kind} \"{name}\": {status}");
-                    }
-                }
+    run_command("permissions.audit", Some(serde_json::json!({})), json, None, |result| {
+        let entries = result.as_array().cloned().unwrap_or_default();
+        if entries.is_empty() {
+            println!("All objects covered by permission sets.");
+        } else {
+            for e in &entries {
+                let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let covered = e.get("covered").and_then(|v| v.as_bool()).unwrap_or(false);
+                let status = if covered { "covered" } else { "MISSING" };
+                println!("{kind} \"{name}\": {status}");
             }
-            ExitCode::SUCCESS
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
@@ -1747,61 +1601,37 @@ pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
 }
 
 pub fn cmd_breaking_changes(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("breaking", Some(serde_json::json!({}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let changes = result.as_array().cloned().unwrap_or_default();
-                if changes.is_empty() {
-                    println!("No breaking changes detected.");
-                } else {
-                    for c in &changes {
-                        let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                        let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                        let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("[{kind}] \"{object}\": {description}");
-                    }
-                    eprintln!("\n{} breaking change(s)", changes.len());
-                }
+    run_command("breaking", Some(serde_json::json!({})), json, None, |result| {
+        let changes = result.as_array().cloned().unwrap_or_default();
+        if changes.is_empty() {
+            println!("No breaking changes detected.");
+        } else {
+            for c in &changes {
+                let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("[{kind}] \"{object}\": {description}");
             }
-            ExitCode::SUCCESS
+            eprintln!("\n{} breaking change(s)", changes.len());
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 pub fn cmd_arch_lint(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("arch.lint", Some(serde_json::json!({}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let violations = result.as_array().cloned().unwrap_or_default();
-                if violations.is_empty() {
-                    println!("No architecture violations found.");
-                } else {
-                    for v in &violations {
-                        let rule = v.get("ruleId").and_then(|v| v.as_str()).unwrap_or("?");
-                        let object = v.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                        let message = v.get("message").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("[{rule}] {object}: {message}");
-                    }
-                    eprintln!("\n{} architecture violation(s)", violations.len());
-                }
+    run_command("arch.lint", Some(serde_json::json!({})), json, None, |result| {
+        let violations = result.as_array().cloned().unwrap_or_default();
+        if violations.is_empty() {
+            println!("No architecture violations found.");
+        } else {
+            for v in &violations {
+                let rule = v.get("ruleId").and_then(|v| v.as_str()).unwrap_or("?");
+                let object = v.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                let message = v.get("message").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("[{rule}] {object}: {message}");
             }
-            ExitCode::SUCCESS
+            eprintln!("\n{} architecture violation(s)", violations.len());
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 fn format_block_location(loc: Option<&serde_json::Value>) -> String {
@@ -1845,36 +1675,24 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
 }
 
 pub fn cmd_upgrade_report(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("upgrade", Some(serde_json::json!({}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                let issues = result.as_array().cloned().unwrap_or_default();
-                if issues.is_empty() {
-                    println!("No upgrade issues found.");
-                } else {
-                    for i in &issues {
-                        let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                        let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                        let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                        let hint = i.get("migrationHint").and_then(|v| v.as_str()).unwrap_or("");
-                        println!("[{kind}] \"{object}\": {description}");
-                        if !hint.is_empty() {
-                            println!("  Migration: {hint}");
-                        }
-                    }
-                    eprintln!("\n{} upgrade issue(s)", issues.len());
+    run_command("upgrade", Some(serde_json::json!({})), json, None, |result| {
+        let issues = result.as_array().cloned().unwrap_or_default();
+        if issues.is_empty() {
+            println!("No upgrade issues found.");
+        } else {
+            for i in &issues {
+                let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                let hint = i.get("migrationHint").and_then(|v| v.as_str()).unwrap_or("");
+                println!("[{kind}] \"{object}\": {description}");
+                if !hint.is_empty() {
+                    println!("  Migration: {hint}");
                 }
             }
-            ExitCode::SUCCESS
+            eprintln!("\n{} upgrade issue(s)", issues.len());
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
 
 pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
@@ -1968,22 +1786,10 @@ pub fn cmd_organize_files(dry_run: bool, json: bool) -> std::process::ExitCode {
 }
 
 pub fn cmd_diag(json: bool) -> ExitCode {
-    let mut client = match connect(None) {
-        Ok(c) => c,
-        Err(e) => return report_error(&e, json),
-    };
-    match client.request("diag", Some(serde_json::json!({"cmd": "summary"}))) {
-        Ok(result) => {
-            if json {
-                print_json(&result);
-            } else {
-                println!("Workspace Diagnostics:");
-                for (key, value) in result.as_object().into_iter().flat_map(|o| o.iter()) {
-                    println!("  {}: {}", key, value);
-                }
-            }
-            ExitCode::SUCCESS
+    run_command("diag", Some(serde_json::json!({"cmd": "summary"})), json, None, |result| {
+        println!("Workspace Diagnostics:");
+        for (key, value) in result.as_object().into_iter().flat_map(|o| o.iter()) {
+            println!("  {}: {}", key, value);
         }
-        Err(e) => report_error(&e, json),
-    }
+    })
 }
