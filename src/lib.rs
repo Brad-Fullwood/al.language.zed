@@ -85,17 +85,17 @@ impl AlExtension {
 
         let (os, arch) = zed::current_platform();
         let asset_name = format!(
-            "al-lsp-{arch}-{os}.tar.gz",
+            "al-{os}-{arch}.tar.gz",
+            os = match os {
+                zed::Os::Mac => "macos",
+                zed::Os::Linux => "linux",
+                zed::Os::Windows => "windows",
+            },
             arch = match arch {
                 zed::Architecture::Aarch64 => "aarch64",
                 zed::Architecture::X86 => "x86",
                 zed::Architecture::X8664 => "x86_64",
             },
-            os = match os {
-                zed::Os::Mac => "apple-darwin",
-                zed::Os::Linux => "unknown-linux-gnu",
-                zed::Os::Windows => "pc-windows-msvc",
-            }
         );
 
         let asset = release
@@ -133,13 +133,15 @@ impl AlExtension {
             zed::make_file_executable(&binary_path)
                 .map_err(|e| format!("Failed to make al-lsp executable: {e}"))?;
 
-            // Remove old version directories.
-            if let Ok(entries) = fs::read_dir(".") {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if name.starts_with("al-lsp-") && name != version_dir {
-                        let _ = fs::remove_dir_all(entry.path());
+            // Remove old version directories, guarded to only clean up al-lsp-* dirs.
+            if fs::metadata(&version_dir).is_ok_and(|m| m.is_dir()) {
+                if let Ok(entries) = fs::read_dir(".") {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        if name.starts_with("al-lsp-") && name != version_dir {
+                            let _ = fs::remove_dir_all(entry.path());
+                        }
                     }
                 }
             }
@@ -184,16 +186,15 @@ impl zed::Extension for AlExtension {
             .and_then(|b| b.path.as_ref())
             .map(|p| p.to_string());
 
-        // Determine the AL EditorServices.Host path (passed as first arg to the proxy).
-        // Priority: user setting > PATH discovery > "auto" (proxy's own discovery).
-        let al_server_path = user_configured_path
-            .clone()
-            .or_else(|| worktree.which("Microsoft.Dynamics.Nav.EditorServices.Host"))
-            .unwrap_or_else(|| "auto".to_string());
-
         // Check for bundled proxy binary at the installed extension path.
         // If found, use it (proxy discovers EditorServices.Host itself).
         if let Some(proxy_path) = discovery::find_proxy_path(&env_map) {
+            // EditorServices.Host path for the proxy: PATH discovery > "auto".
+            // NOTE: user_configured_path is for al-lsp, not EditorServices.Host.
+            let al_server_path = worktree
+                .which("Microsoft.Dynamics.Nav.EditorServices.Host")
+                .unwrap_or_else(|| "auto".to_string());
+
             let mut proxy_args = vec![al_server_path];
             proxy_args.extend(user_args);
 

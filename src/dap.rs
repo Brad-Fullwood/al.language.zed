@@ -53,7 +53,7 @@ pub fn get_dap_binary(
     Ok(zed::DebugAdapterBinary {
         command: Some(al_lsp_path),
         arguments: args,
-        envs: vec![("AL_DAP_CAPTURE".to_string(), "/tmp/dap-capture.log".to_string())],
+        envs: vec![],
         cwd: Some(workspace_path.to_string()),
         connection: None,
         request_args: zed::StartDebuggingRequestArguments {
