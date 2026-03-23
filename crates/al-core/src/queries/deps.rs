@@ -93,9 +93,10 @@ pub fn build_dependency_graph(
     let mut nodes: HashMap<String, DepNode> = HashMap::new();
     let mut edges: Vec<DepEdge> = Vec::new();
 
-    // Add package nodes
+    // Add package nodes — key is composite (name|publisher|version) to prevent
+    // collisions when multiple versions or publishers share the same package name.
     for (name, publisher, version, _) in packages {
-        let key = name.to_lowercase();
+        let key = format!("{}|{}|{}", name.to_lowercase(), publisher.to_lowercase(), version);
         nodes.entry(key).or_insert_with(|| DepNode {
             app_id: String::new(),
             name: name.clone(),
@@ -125,14 +126,19 @@ pub fn build_dependency_graph(
     }
 
     // Find transitive dependencies (BFS from root)
-    let direct: HashSet<String> = root_deps.iter().map(|(n, _, _)| n.to_lowercase()).collect();
+    // direct set uses composite keys matching the nodes HashMap.
+    let direct: HashSet<String> = root_deps
+        .iter()
+        .map(|(n, p, v)| format!("{}|{}|{}", n.to_lowercase(), p.to_lowercase(), v))
+        .collect();
     let transitive = find_transitive_deps(&root_app.name, &direct, &edges, &nodes);
 
-    // Find missing dependencies
-    let all_node_names: HashSet<String> = nodes.keys().cloned().collect();
+    // Find missing dependencies — a dependency is missing when no loaded node has
+    // a matching name (composite keys in nodes, plain names in edge targets).
+    let loaded_names: HashSet<String> = nodes.values().map(|n| n.name.to_lowercase()).collect();
     let missing: Vec<String> = edges
         .iter()
-        .filter(|e| !all_node_names.contains(&e.to.to_lowercase()))
+        .filter(|e| !loaded_names.contains(&e.to.to_lowercase()))
         .map(|e| e.to.clone())
         .collect::<HashSet<_>>()
         .into_iter()
@@ -214,20 +220,39 @@ fn find_transitive_deps(
     edges: &[DepEdge],
     nodes: &HashMap<String, DepNode>,
 ) -> Vec<DepNode> {
+    // Build a reverse lookup: display name (lowercase) → composite keys in nodes.
+    // One display name may map to multiple composite keys (different versions/publishers).
+    let mut name_to_keys: HashMap<String, Vec<String>> = HashMap::new();
+    for key in nodes.keys() {
+        if let Some(name_lower) = key.split('|').next() {
+            name_to_keys.entry(name_lower.to_string()).or_default().push(key.clone());
+        }
+    }
+
+    // visited and queue use composite keys to avoid re-visiting the same package.
     let mut visited: HashSet<String> = direct.clone();
     let mut queue: VecDeque<String> = direct.iter().cloned().collect();
     let mut transitive = Vec::new();
 
-    while let Some(pkg_name) = queue.pop_front() {
-        // Find edges from this package
+    while let Some(composite_key) = queue.pop_front() {
+        // Extract display name from composite key to match against edge.from
+        let pkg_name_lower = composite_key.split('|').next().unwrap_or("").to_string();
+
         for edge in edges {
-            if edge.from.to_lowercase() == pkg_name {
-                let dep_lower = edge.to.to_lowercase();
-                if dep_lower != root_name.to_lowercase() && !visited.contains(&dep_lower) {
-                    visited.insert(dep_lower.clone());
-                    queue.push_back(dep_lower.clone());
-                    if let Some(node) = nodes.get(&dep_lower) {
-                        transitive.push(node.clone());
+            if edge.from.to_lowercase() == pkg_name_lower {
+                let dep_name_lower = edge.to.to_lowercase();
+                if dep_name_lower != root_name.to_lowercase() {
+                    // Find all nodes matching this display name
+                    if let Some(keys) = name_to_keys.get(&dep_name_lower) {
+                        for key in keys {
+                            if !visited.contains(key) {
+                                visited.insert(key.clone());
+                                queue.push_back(key.clone());
+                                if let Some(node) = nodes.get(key) {
+                                    transitive.push(node.clone());
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -240,7 +265,9 @@ fn find_version_conflicts(
     edges: &[DepEdge],
     nodes: &HashMap<String, DepNode>,
 ) -> Vec<VersionConflict> {
-    let mut requirements: HashMap<String, Vec<(String, String)>> = HashMap::new(); // name -> [(requirer, version)]
+    // requirements key is display name (lowercase) — composite node keys cannot be
+    // used here because edges only carry display names, not publisher/version.
+    let mut requirements: HashMap<String, Vec<(String, String)>> = HashMap::new(); // name_lower -> [(requirer, version)]
 
     for edge in edges {
         if !edge.required_version.is_empty() && edge.required_version != "*" {
@@ -252,12 +279,15 @@ fn find_version_conflicts(
     }
 
     let mut conflicts = Vec::new();
-    for (dep_name, reqs) in &requirements {
+    for (dep_name_lower, reqs) in &requirements {
         let versions: HashSet<&String> = reqs.iter().map(|(_, v)| v).collect();
         if versions.len() > 1 {
-            let actual_name = nodes.get(dep_name)
+            // Look up display name by iterating node values (nodes keyed by composite).
+            let actual_name = nodes
+                .values()
+                .find(|n| n.name.to_lowercase() == *dep_name_lower)
                 .map(|n| n.name.clone())
-                .unwrap_or_else(|| dep_name.clone());
+                .unwrap_or_else(|| dep_name_lower.clone());
             conflicts.push(VersionConflict {
                 name: actual_name,
                 versions: versions.iter().map(|s| s.to_string()).collect(),
@@ -320,5 +350,43 @@ mod tests {
     fn empty_app_json_returns_unknown() {
         let graph = build_dependency_graph("{}", &[]);
         assert_eq!(graph.root_app.name, "Unknown");
+    }
+
+    #[test]
+    fn no_collision_same_name_different_publisher() {
+        // Two packages with the same name but different publishers must both appear as nodes.
+        let app_json = r#"{
+    "name": "My App",
+    "publisher": "Me",
+    "version": "1.0.0.0",
+    "dependencies": []
+}"#;
+
+        let packages = vec![
+            ("Shared Lib".to_string(), "VendorA".to_string(), "1.0.0.0".to_string(), vec![]),
+            ("Shared Lib".to_string(), "VendorB".to_string(), "1.0.0.0".to_string(), vec![]),
+        ];
+
+        let graph = build_dependency_graph(app_json, &packages);
+        assert_eq!(graph.nodes.len(), 2, "Both packages should be present as separate nodes");
+    }
+
+    #[test]
+    fn no_collision_same_name_different_version() {
+        // Two packages with the same name and publisher but different versions must both appear.
+        let app_json = r#"{
+    "name": "My App",
+    "publisher": "Me",
+    "version": "1.0.0.0",
+    "dependencies": []
+}"#;
+
+        let packages = vec![
+            ("My Lib".to_string(), "VendorA".to_string(), "1.0.0.0".to_string(), vec![]),
+            ("My Lib".to_string(), "VendorA".to_string(), "2.0.0.0".to_string(), vec![]),
+        ];
+
+        let graph = build_dependency_graph(app_json, &packages);
+        assert_eq!(graph.nodes.len(), 2, "Both versions should be present as separate nodes");
     }
 }

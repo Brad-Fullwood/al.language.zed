@@ -370,8 +370,18 @@ fn extract_app_from_nupkg(
             let mut out_file = std::fs::File::create(&out_path)?;
             // Limit extraction to 512 MB to guard against decompression bombs.
             // Use Read::take explicitly to avoid ambiguity with Iterator::take.
-            let mut limited = std::io::Read::take(file, 536_870_912);
-            std::io::copy(&mut limited, &mut out_file)?;
+            const MAX_APP_SIZE: u64 = 536_870_912;
+            let mut limited = std::io::Read::take(file, MAX_APP_SIZE);
+            let bytes_copied = std::io::copy(&mut limited, &mut out_file)?;
+            if bytes_copied >= MAX_APP_SIZE {
+                return Err(NuGetError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "Extracted .app file exceeds {:.0} MB limit — possible decompression bomb or oversized package",
+                        MAX_APP_SIZE as f64 / 1_048_576.0
+                    ),
+                )));
+            }
 
             return Ok(out_path);
         }
