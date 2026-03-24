@@ -58,18 +58,24 @@ Sends `"publish"` JSON-RPC request to daemon. Prints result or error.
 
 ### 3. Fix 422 duplicate handling in `al-core::bc_client`
 
-In `publish_extension()`:
-1. POST to publish endpoint
-2. If 422 with "duplicate package" in response body:
-   - Call `DELETE` to unpublish the existing version
-   - Retry POST once
-3. If still fails, return the real error
-
-Also consolidate the publish endpoint. Currently:
+Consolidate the publish endpoint first. Currently:
 - `bc_client::publish_extension()` uses `POST {base}/dev/extensions` (raw binary, `Content-Type: application/octet-stream`)
 - `bc_debug::publish_app()` uses `POST {base}/dev/apps?tenant=...` (multipart form)
 
-The correct BC cloud endpoint is `POST /dev/apps` with multipart. Fix `bc_client` to use the correct endpoint and format. Remove `bc_debug::publish_app()`.
+The correct BC cloud endpoint is `POST {base_url}/apps?tenant={tenant}&SchemaUpdateMode={mode}&DependencyPublishingOption={option}` with multipart form body. Fix `bc_client` to use this endpoint and format. Remove `bc_debug::publish_app()`.
+
+Add `unpublish_extension()` method to `BcClient`:
+- `DELETE {base_url}/apps?appId={app_id}&appVersion={version}&tenant={tenant}`
+- `app_id` comes from `app.json` `"id"` field (already extracted by `publish.rs::extract_app_id_from_manifest()`)
+- `version` comes from `app.json` `"version"` field
+
+422 retry logic in `publish_extension()`:
+1. POST to publish endpoint
+2. If 422 with "duplicate package" in response body:
+   - Parse the response body JSON to extract the error message (currently the body is read as a string — deserialize it as `{"Message": "...", "ErrorType": "..."}`)
+   - Call `unpublish_extension(app_id, version)` using the app_id/version from `app.json`
+   - Retry POST once
+3. If retry still fails, return the real error (not triple-wrapped)
 
 ### 4. Rewrite DAP launch handler
 
@@ -81,10 +87,19 @@ The DAP server needs a daemon client connection. Options:
 
 **Choose Option A** — it matches the CLI pattern and keeps the DAP server as a pure transport adapter. The al-lsp binary already knows the daemon socket path.
 
+**Async/sync bridging:** `DaemonClient` is synchronous (blocking `UnixStream` I/O). `run_native_dap()` is async (Tokio). Use `tokio::task::spawn_blocking` to wrap the `DaemonClient::request()` call. This avoids blocking the Tokio executor during the potentially long compile+publish operation. The connected `DaemonClient` is moved into the closure.
+
+**Timeout:** `DaemonClient` defaults to 30s read timeout, which is too short for compile+publish (can exceed 60s for large projects, plus 300s upload to BC). Call `client.set_read_timeout(Duration::from_secs(300))` before sending the `"publish"` request. This matches the 300s timeout already used in `bc_client.rs` for the HTTP upload.
+
+**Token forwarding:** The DAP server acquires an OAuth Bearer token via the `acquire_token` callback (browser-based device code flow). This token must reach `bc_client` on the daemon side. Pass it as an `"accessToken"` field in the `"publish"` JSON-RPC params. The `dispatch_publish` handler injects it into the `PublishConfig` (add an `access_token: Option<String>` field). `bc_client::apply_auth()` checks for this override token before falling back to `BC_TOKEN` env var.
+
 New launch flow:
 ```
 Zed sends DAP "launch"
-  → native_dap sends "publish" JSON-RPC to daemon (compile + publish)
+  → native_dap acquires OAuth token via acquire_token callback
+  → native_dap sends "publish" JSON-RPC to daemon (via spawn_blocking + DaemonClient)
+    params: { accessToken, configName, incremental }
+  → daemon calls al_core::publish::publish() with token override
   → daemon returns PublishResult (success/failure, diagnostics, app_path)
   → native_dap streams diagnostics to Zed as DAP output events
   → native_dap proceeds to SignalR debug connection (this stays in al-dap-client)
@@ -102,9 +117,11 @@ Remove from `al-dap-client`:
 Currently `dispatch_debug` cmd=start goes straight to `NativeDebugSession::start()` (SignalR connect + attach) without compiling or publishing.
 
 Add compile+publish step before debug session start:
-1. Call `al_core::publish::publish()` first
-2. If publish succeeds, proceed to `NativeDebugSession::start()`
-3. Pass the access token from publish through to debug session
+1. Extract project root via `require_project_root(workspace, id)?`
+2. Build `PublishConfig` from params + project root
+3. Call `al_core::publish::publish()` first
+4. If publish succeeds, proceed to `NativeDebugSession::start()`
+5. Pass the access token (from `params["accessToken"]` or from the publish config) through to the debug session
 
 ### 7. Fix tasks.json
 
