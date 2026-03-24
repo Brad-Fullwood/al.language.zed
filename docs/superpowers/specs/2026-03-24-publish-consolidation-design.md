@@ -64,10 +64,13 @@ Consolidate the publish endpoint first. Currently:
 
 The correct BC cloud endpoint is `POST {base_url}/apps?tenant={tenant}&SchemaUpdateMode={mode}&DependencyPublishingOption={option}` with multipart form body. Fix `bc_client` to use this endpoint and format. Remove `bc_debug::publish_app()`.
 
+**SchemaUpdateMode and DependencyPublishingOption sources:** These come from the launch config (`debug.json` / `launch.json`). Add `schema_update_mode: String` (default `"Synchronize"`) and `dependency_publishing_option: String` (default `"Default"`) fields to `BcServerConfig`. `publish.rs::resolve_server_config()` already parses launch configs — extract these fields there. For CLI-only publish without a launch config, use the defaults.
+
+**Manifest extraction:** Replace `extract_app_id_from_manifest()` in `publish.rs` with `extract_app_manifest_ids(project_root: &Path) -> Option<(String, String)>` returning `(app_id, version)` from `app.json`. Both values are needed for unpublish.
+
 Add `unpublish_extension()` method to `BcClient`:
 - `DELETE {base_url}/apps?appId={app_id}&appVersion={version}&tenant={tenant}`
-- `app_id` comes from `app.json` `"id"` field (already extracted by `publish.rs::extract_app_id_from_manifest()`)
-- `version` comes from `app.json` `"version"` field
+- `app_id` and `version` come from `extract_app_manifest_ids()`
 
 422 retry logic in `publish_extension()`:
 1. POST to publish endpoint
@@ -91,7 +94,12 @@ The DAP server needs a daemon client connection. Options:
 
 **Timeout:** `DaemonClient` defaults to 30s read timeout, which is too short for compile+publish (can exceed 60s for large projects, plus 300s upload to BC). Call `client.set_read_timeout(Duration::from_secs(300))` before sending the `"publish"` request. This matches the 300s timeout already used in `bc_client.rs` for the HTTP upload.
 
-**Token forwarding:** The DAP server acquires an OAuth Bearer token via the `acquire_token` callback (browser-based device code flow). This token must reach `bc_client` on the daemon side. Pass it as an `"accessToken"` field in the `"publish"` JSON-RPC params. The `dispatch_publish` handler injects it into the `PublishConfig` (add an `access_token: Option<String>` field). `bc_client::apply_auth()` checks for this override token before falling back to `BC_TOKEN` env var.
+**Token forwarding:** The DAP server acquires an OAuth Bearer token via the `acquire_token` callback (browser-based device code flow). This token must reach `bc_client` on the daemon side. The plumbing path:
+1. DAP sends `"accessToken"` in the `"publish"` JSON-RPC params
+2. `dispatch_publish` reads it and sets `PublishConfig.access_token` (new `Option<String>` field)
+3. `publish()` passes it to `BcClient` via a new `token_override: Option<String>` field on `BcClient`
+4. `BcClient` gains a `with_token_override(token: String) -> Self` builder method that sets this field
+5. `apply_auth()` checks `self.token_override` first — if `Some`, uses it as Bearer token, skipping the `BC_TOKEN` env var / Basic auth / Windows auth paths
 
 New launch flow:
 ```
