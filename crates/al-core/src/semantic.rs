@@ -34,6 +34,9 @@ use crate::workspace::Workspace;
 pub struct SemanticCache {
     /// Builtin types indexed by lowercase name.
     types: HashMap<String, BuiltinType>,
+    /// Method name → list of (type_index, method_index) for O(1) method-by-name lookup.
+    /// Keys are lowercase method names.
+    method_index: HashMap<String, Vec<(String, usize)>>,
     /// The toolchain version this cache was built for.
     version: String,
     /// Number of cache hits (type or method lookups that found a result).
@@ -47,6 +50,7 @@ impl SemanticCache {
     pub fn new() -> Self {
         Self {
             types: HashMap::new(),
+            method_index: HashMap::new(),
             version: String::new(),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -55,14 +59,24 @@ impl SemanticCache {
 
     /// Build a cache from a slice of builtin types.
     ///
-    /// Indexes all types by their lowercase name for O(1) lookup.
+    /// Indexes all types by their lowercase name for O(1) lookup, and builds
+    /// a secondary index of method names for O(1) method-by-name lookup.
     pub fn build(builtins: &[BuiltinType], version: String) -> Self {
         let mut types = HashMap::with_capacity(builtins.len());
+        let mut method_index: HashMap<String, Vec<(String, usize)>> = HashMap::new();
         for bt in builtins {
-            types.insert(bt.name.to_lowercase(), bt.clone());
+            let type_key = bt.name.to_lowercase();
+            for (i, method) in bt.methods.iter().enumerate() {
+                method_index
+                    .entry(method.name.to_lowercase())
+                    .or_default()
+                    .push((type_key.clone(), i));
+            }
+            types.insert(type_key, bt.clone());
         }
         Self {
             types,
+            method_index,
             version,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -82,43 +96,40 @@ impl SemanticCache {
 
     /// Look up a specific method on a builtin type (both case-insensitive).
     pub fn get_method(&self, type_name: &str, method_name: &str) -> Option<&BuiltinMethod> {
-        let bt = self.types.get(&type_name.to_lowercase());
-        match bt {
-            Some(bt) => {
-                let lower = method_name.to_lowercase();
-                let method = bt
-                    .methods
-                    .iter()
-                    .find(|m| m.name.to_lowercase() == lower);
-                if method.is_some() {
-                    self.hits.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    self.misses.fetch_add(1, Ordering::Relaxed);
-                }
-                method
-            }
-            None => {
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                None
-            }
+        let Some(bt) = self.types.get(&type_name.to_lowercase()) else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        let lower = method_name.to_lowercase();
+        let method = bt.methods.iter().find(|m| m.name.eq_ignore_ascii_case(&lower));
+        if method.is_some() {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.misses.fetch_add(1, Ordering::Relaxed);
         }
+        method
     }
 
     /// Find all builtin types that have a method with the given name (case-insensitive).
     ///
     /// Returns a vec of `(type_name, method)` pairs — one entry per matching overload
-    /// across all types. Used for hover when the receiver type is unknown (e.g., hovering
-    /// a bare method name), replacing an O(n*m) linear scan of `workspace.builtins`.
+    /// across all types. Uses a pre-built method name index for O(1) lookup.
     pub fn find_methods_by_name(&self, method_name: &str) -> Vec<(&str, &BuiltinMethod)> {
         let lower = method_name.to_lowercase();
-        let mut results = Vec::new();
-        for bt in self.types.values() {
-            for method in &bt.methods {
-                if method.name.to_lowercase() == lower {
-                    results.push((bt.name.as_str(), method));
-                }
-            }
-        }
+        let results: Vec<_> = self
+            .method_index
+            .get(&lower)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|(type_key, method_idx)| {
+                        let bt = self.types.get(type_key)?;
+                        let method = bt.methods.get(*method_idx)?;
+                        Some((bt.name.as_str(), method))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         if results.is_empty() {
             self.misses.fetch_add(1, Ordering::Relaxed);
         } else {

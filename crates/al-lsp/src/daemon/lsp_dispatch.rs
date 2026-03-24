@@ -162,15 +162,9 @@ pub(super) fn dispatch_object(workspace: &Workspace, id: u64, params: &serde_jso
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let Ok(kind) = kind_str.parse::<al_core::symbols::ObjectKind>() else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: format!("Unknown object kind: {}", kind_str),
-            }),
-        };
+    let kind = match super::parse_object_kind(id, kind_str) {
+        Ok(k) => k,
+        Err(e) => return e,
     };
     // Package symbols
     let candidates = workspace.symbols.get_by_name(name);
@@ -221,15 +215,9 @@ pub(super) fn dispatch_by_id(workspace: &Workspace, id: u64, params: &serde_json
     let Some(obj_id) = params.get("id").and_then(|v| v.as_i64()) else {
         return invalid_params(id);
     };
-    let Ok(kind) = kind_str.parse::<al_core::symbols::ObjectKind>() else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: format!("Unknown object kind: {}", kind_str),
-            }),
-        };
+    let kind = match super::parse_object_kind(id, kind_str) {
+        Ok(k) => k,
+        Err(e) => return e,
     };
     let results = workspace.symbols.get_by_id(kind, obj_id as i32);
     let value: Vec<serde_json::Value> = results
@@ -303,15 +291,9 @@ pub(super) fn dispatch_composed(workspace: &Workspace, id: u64, params: &serde_j
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let Ok(kind) = kind_str.parse::<al_core::symbols::ObjectKind>() else {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: format!("Unknown object kind: {}", kind_str),
-            }),
-        };
+    let kind = match super::parse_object_kind(id, kind_str) {
+        Ok(k) => k,
+        Err(e) => return e,
     };
     match workspace.symbols.get_composed_cached(kind, name) {
         Some(composed) => {

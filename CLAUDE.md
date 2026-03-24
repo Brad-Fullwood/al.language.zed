@@ -18,6 +18,7 @@ cargo build -p zed-al --target wasm32-wasip1 --release  # WASM extension
 ```
 
 `make build` builds all Rust crates + .NET bridges. `make install` also symlinks binaries into `~/.local/bin` and the extension into Zed's extension directory.
+`make rust` builds just Rust crates. `make bridges` builds just .NET bridges. `make clean` removes all build artifacts.
 
 **Prerequisites:** Rust stable toolchain, .NET SDK (auto-downloaded if not present).
 
@@ -39,7 +40,7 @@ Transport differs (stdio LSP vs Unix socket JSON-RPC), business logic does not.
 - **Daemon mode** (`daemon --project <path>`): JSON-RPC over Unix socket at `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock`, serves CLI and explorer. Auto-shuts down after 30min idle.
 - **DAP mode** (`--dap`): Debug Adapter Protocol for AL debugging
 
-**al-core** owns all state via `Workspace`: `DocumentStore` (rope + parse tree per file), `SymbolIndex` (DashMap-backed), `SemanticBridge` (.NET CLR), `FileIndex`, `InsightGraph`. All query functions in `al-core/src/queries/` take `&Workspace` + position and return transport-agnostic types. al-lsp converts to LSP types at the boundary.
+**al-core** owns all state via `Workspace`: `DocumentStore` (rope + parse tree per file), `SymbolIndex` (DashMap-backed), `SemanticBridge` (.NET CLR), `FileIndex`, `InsightGraph` (lazily-built), plus `AlToolchain`, `AlProject`, `AlConfig`, and `Builtins`. All query functions in `al-core/src/queries/` take `&Workspace` + position and return transport-agnostic types. al-lsp converts to LSP types at the boundary.
 
 **al-symbols** parses `.app` files (40-byte NAVX header + ZIP containing `SymbolReference.json`) and builds the symbol index. Symbols auto-downloaded from NuGet on first open, cached at `~/.cache/al-lsp/packages/`.
 
@@ -74,11 +75,11 @@ al-lsp → al-core → al-syntax (parsing, formatting, type resolution)
 
 ## Test Infrastructure
 
-End-to-end tests use `al-test-harness` which spawns the real `al-lsp` binary over stdio:
+End-to-end tests use `al-test-harness` which spawns the real `al-lsp` binary over stdio. Test files: `e2e.rs`, `regression.rs`, `real_world.rs`, `zed_fidelity.rs`, `zed_simulation.rs`, `completeness.rs`, `data_driven.rs`, `edit_lifecycle.rs`, `integration_full.rs`, `performance.rs`, `transport.rs`.
 - `LspClient::spawn(project_root)` — full LSP handshake, polls `workspace/symbol` up to 30s for readiness
 - `open_file()` waits for `publishDiagnostics` (5s timeout)
 - Test fixture project: `crates/al-test-harness/data/test_al_project/`
-- E2E test files: `crates/al-test-harness/tests/` (e2e.rs, regression.rs, real_world.rs, zed_fidelity.rs, etc.)
+- E2E test directory: `crates/al-test-harness/tests/`
 
 Integration tests in `crates/al-lsp/tests/integration.rs` test al-syntax + al-symbols together without LSP transport.
 

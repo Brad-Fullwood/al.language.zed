@@ -1331,9 +1331,9 @@ pub(super) async fn dispatch_xlf_generate(workspace: &Workspace, id: u64, params
         }
         pb
     } else {
-        match workspace.project.try_read().ok().and_then(|g| g.as_ref().map(|p| p.root.clone())) {
-            Some(r) => r,
-            None => return rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"),
+        match super::require_project_root(workspace, id) {
+            Ok(r) => r,
+            Err(e) => return e,
         }
     };
 
@@ -1487,9 +1487,9 @@ pub(super) async fn dispatch_xlf_suggest(workspace: &Workspace, id: u64, params:
 // ---------------------------------------------------------------------------
 
 pub(super) fn dispatch_fix_application_area(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let project_root = match workspace.project.try_read().ok().and_then(|g| g.as_ref().map(|p| p.root.clone())) {
-        Some(r) => r,
-        None => return rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"),
+    let project_root = match super::require_project_root(workspace, id) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
     let value = params.get("value").and_then(|v| v.as_str()).unwrap_or("All");
@@ -1506,9 +1506,9 @@ pub(super) fn dispatch_fix_application_area(workspace: &Workspace, id: u64, para
 }
 
 pub(super) fn dispatch_fix_tooltips(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let project_root = match workspace.project.try_read().ok().and_then(|g| g.as_ref().map(|p| p.root.clone())) {
-        Some(r) => r,
-        None => return rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"),
+    let project_root = match super::require_project_root(workspace, id) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
     let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -1544,9 +1544,9 @@ pub(super) fn dispatch_fix_tooltips(workspace: &Workspace, id: u64, params: &ser
 }
 
 pub(super) fn dispatch_fix_data_classification(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let project_root = match workspace.project.try_read().ok().and_then(|g| g.as_ref().map(|p| p.root.clone())) {
-        Some(r) => r,
-        None => return rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"),
+    let project_root = match super::require_project_root(workspace, id) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
     let value = params.get("value").and_then(|v| v.as_str()).unwrap_or("CustomerContent");
@@ -1990,9 +1990,9 @@ pub(super) fn dispatch_sort_members(workspace: &Workspace, id: u64, params: &ser
 pub(super) fn dispatch_organize_files(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    let root: std::path::PathBuf = match workspace.project.try_read().ok().and_then(|g| g.as_ref().map(|p| p.root.clone())) {
-        Some(r) => r,
-        None => return invalid_params(id),
+    let root: std::path::PathBuf = match super::require_project_root(workspace, id) {
+        Ok(r) => r,
+        Err(e) => return e,
     };
 
     let mut results = Vec::new();

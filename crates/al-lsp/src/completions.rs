@@ -10,7 +10,7 @@ pub(crate) async fn handle_completion(
     uri: &Url,
     position: Position,
 ) -> Option<CompletionResponse> {
-    let core_pos = al_core::queries::Position { line: position.line, character: position.character };
+    let core_pos = position.into();
     let entries = al_core::queries::completions::completions_full(&server.workspace, uri, core_pos).await;
     if entries.is_empty() {
         return None;

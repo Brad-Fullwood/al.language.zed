@@ -1,5 +1,7 @@
 //! Parse tree caching — avoids redundant re-parses for the same document version.
 
+use std::sync::Arc;
+
 use al_syntax::AlParser;
 use url::Url;
 
@@ -9,8 +11,10 @@ use crate::documents::DocumentStore;
 ///
 /// If the document's version matches a previously cached tree, returns the cached
 /// tree without re-parsing. Otherwise parses the document and caches the result.
-pub fn get_or_parse(documents: &DocumentStore, uri: &Url) -> Option<(String, tree_sitter::Tree)> {
-    let text = documents.get_text(uri);
+///
+/// Returns `Arc<String>` to avoid deep-copying the document on every LSP request.
+pub fn get_or_parse(documents: &DocumentStore, uri: &Url) -> Option<(Arc<String>, tree_sitter::Tree)> {
+    let text = documents.get_text_arc(uri);
     if text.is_none() {
         tracing::warn!(uri = %uri, "get_or_parse: document not in store (not opened?)");
         return None;
@@ -73,7 +77,7 @@ mod tests {
         let result = get_or_parse(&store, &uri);
         assert!(result.is_some());
         let (text, _tree) = result.unwrap();
-        assert_eq!(text, "codeunit 50100 Test { }");
+        assert_eq!(&*text, "codeunit 50100 Test { }");
 
         // Second call: should use cache (same version)
         let result2 = get_or_parse(&store, &uri);
@@ -102,6 +106,6 @@ mod tests {
         // Re-parse
         let result = get_or_parse(&store, &uri);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().0, "codeunit 50100 B { }");
+        assert_eq!(&*result.unwrap().0, "codeunit 50100 B { }");
     }
 }

@@ -53,7 +53,7 @@ pub(crate) fn handle_signature_help(
     uri: &Url,
     position: Position,
 ) -> Option<SignatureHelp> {
-    let core_pos = al_core::queries::Position { line: position.line, character: position.character };
+    let core_pos = position.into();
     let result = al_core::queries::signature::signature_help(&server.workspace, uri, core_pos)?;
     Some(SignatureHelp {
         signatures: result.signatures.into_iter().map(|s| {
@@ -107,10 +107,7 @@ pub(crate) fn handle_code_action(
     }
 
     // Source actions via al-core
-    let core_range = al_core::queries::Range {
-        start: al_core::queries::Position { line: range.start.line, character: range.start.character },
-        end: al_core::queries::Position { line: range.end.line, character: range.end.character },
-    };
+    let core_range: al_core::queries::Range = range.into();
     for entry in al_core::queries::code_actions::source_actions(&server.workspace, uri, core_range) {
         actions.push(core_action_to_lsp(entry, None));
     }

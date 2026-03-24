@@ -10,7 +10,7 @@ pub(crate) fn handle_definition(
     uri: &Url,
     position: Position,
 ) -> Option<GotoDefinitionResponse> {
-    let core_pos = al_core::queries::Position { line: position.line, character: position.character };
+    let core_pos = position.into();
     let locations = al_core::queries::definition::definition(&server.workspace, uri, core_pos)?;
     if locations.len() == 1 {
         // Safety: len == 1 guarantees next() returns Some.
@@ -28,7 +28,7 @@ pub(crate) fn handle_references(
     position: Position,
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
-    let core_pos = al_core::queries::Position { line: position.line, character: position.character };
+    let core_pos = position.into();
     let locations = al_core::queries::references::references(&server.workspace, uri, core_pos, include_declaration);
     if locations.is_empty() { None } else { Some(locations.into_iter().map(Into::into).collect()) }
 }
@@ -40,7 +40,7 @@ pub(crate) fn handle_rename(
     position: Position,
     new_name: String,
 ) -> Option<WorkspaceEdit> {
-    let core_pos = al_core::queries::Position { line: position.line, character: position.character };
+    let core_pos = position.into();
     let result = al_core::queries::rename::rename(&server.workspace, uri, core_pos, &new_name)?;
     Some(crate::handlers::core_workspace_edit_to_lsp(result))
 }
@@ -51,7 +51,7 @@ pub(crate) fn handle_prepare_rename(
     uri: &Url,
     position: Position,
 ) -> Option<PrepareRenameResponse> {
-    let core_pos = al_core::queries::Position { line: position.line, character: position.character };
+    let core_pos = position.into();
     let (range, placeholder) = al_core::queries::rename::prepare_rename(&server.workspace, uri, core_pos)?;
     Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: range.into(),

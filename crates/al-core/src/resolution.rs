@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use al_syntax::AlParser;
 use tower_lsp::lsp_types::{Position, Range, Url};
 use tree_sitter::Tree;
 
@@ -626,10 +625,8 @@ pub(crate) fn resolve_workspace_object_definition(
     name: &str,
 ) -> Option<(Url, Range)> {
     let path = resolve_object_path(workspace, None, name)?;
-    let file_text = workspace.file_index.files.get(&path)?;
-    let file_source = file_text.value();
-    let result = AlParser::parse_quick(file_source);
-    let obj = al_syntax::find_object_declaration(&result.tree, file_source)?;
+    let (file_source, tree) = workspace.file_index.get_cached_parse(&path)?;
+    let obj = al_syntax::find_object_declaration(&tree, &file_source)?;
     let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
     Some((uri, al_syntax::ts_range_to_lsp(&obj.range, file_source.as_bytes())))
 }
@@ -653,10 +650,8 @@ pub(crate) fn completion_items_for_receiver(
 
     if let Some(subtype) = receiver.type_subtype.as_deref() {
         if let Some(path) = resolve_object_path(workspace, None, subtype) {
-            if let Some(file_text) = workspace.file_index.files.get(&path) {
-                let result = AlParser::parse_quick(file_text.value());
-
-                let resolver = al_syntax::TypeResolver::new(&result.tree, file_text.value());
+            if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(&path) {
+                let resolver = al_syntax::TypeResolver::new(&tree, &file_text);
                 for var in resolver.variables_at(Position {
                     line: 0,
                     character: 0,
@@ -676,7 +671,7 @@ pub(crate) fn completion_items_for_receiver(
                     });
                 }
 
-                for symbol in al_syntax::extract_document_symbols(&result.tree, file_text.value()) {
+                for symbol in al_syntax::extract_document_symbols(&tree, &file_text) {
                     if let Some(children) = symbol.children {
                         for child in children {
                             if child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
@@ -694,7 +689,7 @@ pub(crate) fn completion_items_for_receiver(
                     }
                 }
 
-                let field_items = workspace_field_items(file_text.value());
+                let field_items = workspace_field_items(&file_text);
                 workspace_fields = field_items.len();
                 for field in field_items {
                     items.push(field);
@@ -791,9 +786,8 @@ pub(crate) fn enum_completion_items(
 
     // Check workspace enum objects
     if let Some(path) = workspace.file_index.objects.get(&enum_name.to_lowercase()) {
-        if let Some(file_text) = workspace.file_index.files.get(path.value()) {
-            let result = AlParser::parse_quick(file_text.value());
-            for symbol in al_syntax::extract_document_symbols(&result.tree, file_text.value()) {
+        if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(path.value()) {
+            for symbol in al_syntax::extract_document_symbols(&tree, &file_text) {
                 if !symbol.name.eq_ignore_ascii_case(enum_name) {
                     continue;
                 }
@@ -870,9 +864,8 @@ pub(crate) fn format_type_detail(type_name: &str, subtype: Option<&str>) -> Stri
 }
 
 fn workspace_object_type(workspace: &Workspace, path: &Path) -> Option<ResolvedType> {
-    let file_text = workspace.file_index.files.get(path)?;
-    let result = AlParser::parse_quick(file_text.value());
-    let obj = al_syntax::find_object_declaration(&result.tree, file_text.value())?;
+    let (file_text, tree) = workspace.file_index.get_cached_parse(path)?;
+    let obj = al_syntax::find_object_declaration(&tree, &file_text)?;
     Some(ResolvedType {
         type_name: al_syntax::object_kind_to_al_type(&obj.kind).to_string(),
         type_subtype: Some(obj.name),
@@ -901,24 +894,16 @@ fn resolve_object_path(
         return Some(path.value().clone());
     }
 
-    for entry in workspace.file_index.files.iter() {
-        if workspace_object_name(workspace, entry.key())
-            .as_deref()
-            .is_some_and(|object_name| object_name.eq_ignore_ascii_case(name))
-        {
-            tracing::debug!(name = %name, source = "file_scan", path = %entry.key().display(), "resolve_object_path: found via file scan");
-            return Some(entry.key().clone());
-        }
-    }
-
     tracing::debug!(name = %name, "resolve_object_path: not found");
     None
 }
 
 fn workspace_object_name(workspace: &Workspace, path: &Path) -> Option<String> {
-    let file_text = workspace.file_index.files.get(path)?;
-    let result = AlParser::parse_quick(file_text.value());
-    al_syntax::find_object_declaration(&result.tree, file_text.value()).map(|obj| obj.name)
+    workspace
+        .file_index
+        .object_info
+        .get(path)
+        .map(|info| info.name.clone())
 }
 
 fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Option<ResolvedMember> {
@@ -927,11 +912,9 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
         member = %member_name,
         "workspace_member: searching"
     );
-    let file_text = workspace.file_index.files.get(path)?;
-    let content = file_text.value();
-    let result = AlParser::parse_quick(content);
+    let (content, tree) = workspace.file_index.get_cached_parse(path)?;
 
-    for symbol in al_syntax::extract_document_symbols(&result.tree, content) {
+    for symbol in al_syntax::extract_document_symbols(&tree, &content) {
         if let Some(children) = symbol.children {
             for child in children {
                 if (child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
@@ -961,7 +944,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
                                 .map(|d| format!("{}{}", child.name, d))
                                 .unwrap_or_else(|| child.name.clone()),
                             documentation: extract_doc_comment(
-                                content,
+                                &content,
                                 child.selection_range.start.line as usize,
                             ),
                         },
@@ -994,7 +977,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
         }
     }
 
-    let resolver = al_syntax::TypeResolver::new(&result.tree, content);
+    let resolver = al_syntax::TypeResolver::new(&tree, &content);
     for var in resolver.variables_at(Position {
         line: 0,
         character: 0,
@@ -1024,7 +1007,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
         }
     }
 
-    let result = find_workspace_field(content, member_name).map(|(field_type, field_range)| {
+    let result = find_workspace_field(&content, member_name).map(|(field_type, field_range)| {
         ResolvedMember {
             name: member_name.to_string(),
             type_info: Some(field_type),

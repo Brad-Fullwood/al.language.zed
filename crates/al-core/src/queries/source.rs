@@ -148,7 +148,7 @@ fn try_workspace_source(
         pkg: None,
         sig: None,
         range: None,
-        code: text,
+        code: (*text).clone(),
         note: None,
     })
 }

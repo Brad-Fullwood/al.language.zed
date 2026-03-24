@@ -102,19 +102,14 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
                 .to_file_path()
                 .unwrap_or_else(|_| PathBuf::from(uri.path()));
 
+            let config_guard = server.workspace.config.read().await;
+            let analyzers = config_guard.code_analyzers.clone();
             let package_cache = if let Some(project) = server.workspace.project.read().await.as_ref() {
                 project.packages_dir.clone()
             } else {
                 PathBuf::from(".alpackages")
             };
-
-            let analyzers = server
-                .workspace
-                .config
-                .read()
-                .await
-                .code_analyzers
-                .clone();
+            drop(config_guard);
             let req = al_core::semantic_types::AnalyzeRequest {
                 file: file_path,
                 source: text.to_string(),

@@ -366,19 +366,21 @@ fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
 
     for item in items.iter_mut() {
         if item.sort_text.is_some() { continue; }
+        let label_lower = item.label.to_lowercase();
         let is_callable = matches!(item.kind, CompletionKind::Function | CompletionKind::Method);
         if is_callable {
             let pc = item.detail.as_deref().map(count_params).unwrap_or(0);
-            item.sort_text = Some(format!("1_{pc:02}_{}", item.label.to_lowercase()));
+            item.sort_text = Some(format!("1_{pc:02}_{label_lower}"));
         } else {
-            item.sort_text = Some(format!("1_{}", item.label.to_lowercase()));
+            item.sort_text = Some(format!("1_{label_lower}"));
         }
     }
 
+    // sort_text is now populated for every item, so the fallback
+    // to a redundant label lowercase comparison is unnecessary.
     items.sort_by(|a, b| {
-        a.sort_text.as_deref().unwrap_or(a.label.as_str())
-            .cmp(b.sort_text.as_deref().unwrap_or(b.label.as_str()))
-            .then_with(|| a.label.to_lowercase().cmp(&b.label.to_lowercase()))
+        a.sort_text.as_deref().unwrap_or("")
+            .cmp(b.sort_text.as_deref().unwrap_or(""))
     });
 }
 

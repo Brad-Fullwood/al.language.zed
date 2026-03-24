@@ -484,6 +484,23 @@ pub(crate) fn rpc_error(id: u64, code: i32, message: &str) -> Response {
     }
 }
 
+/// Get the project root from workspace, or return an error Response.
+pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<PathBuf, Response> {
+    workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
+        .ok_or_else(|| rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded"))
+}
+
+/// Parse an ObjectKind from a string, or return an invalid-params Response.
+pub(crate) fn parse_object_kind(id: u64, kind_str: &str) -> Result<al_core::symbols::ObjectKind, Response> {
+    kind_str.parse::<al_core::symbols::ObjectKind>().map_err(|_| {
+        rpc_error(id, error_codes::INVALID_PARAMS, &format!("Unknown object kind: {kind_str}"))
+    })
+}
+
 /// Get document text, loading from disk if needed. Returns the text or a file-not-found Response.
 pub(crate) fn require_document_text(workspace: &Workspace, uri: &url::Url, id: u64) -> Result<String, Response> {
     ensure_document(workspace, uri);

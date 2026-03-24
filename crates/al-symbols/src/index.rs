@@ -77,8 +77,7 @@ pub struct SymbolIndex {
 
     /// Check if a package has been indexed for source paths.
     pub fn is_package_indexed(&self, package: &str) -> bool {
-        let pkg = package.to_lowercase();
-        self.source_path_cache.iter().any(|entry| entry.key().0 == pkg)
+        self.app_paths.contains_key(&package.to_lowercase())
     }
 
     /// Load and index all .app files from the given paths.
