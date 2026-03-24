@@ -68,10 +68,17 @@ fn extract_app_manifest_ids(project_root: &Path) -> Option<(String, String)> {
 }
 ```
 
-Update the call site in `publish()` (around line 197) — change `extract_app_id_from_manifest` to `extract_app_manifest_ids` and destructure the tuple:
+Update ALL call sites that reference `extract_app_id_from_manifest`:
 
+1. In `publish()` (around line 197) — the RAD path:
 ```rust
 if let Some((app_id, _version)) = extract_app_manifest_ids(&config.project_root) {
+```
+
+2. Update any existing tests in `publish.rs` (around lines 382-399) that call `extract_app_id_from_manifest` — rename to `extract_app_manifest_ids` and adjust for the tuple return:
+```rust
+// OLD: let id = extract_app_id_from_manifest(dir.path());
+// NEW: let (id, _version) = extract_app_manifest_ids(dir.path()).unwrap();
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -119,6 +126,7 @@ pub struct BcServerConfig {
 Add defaults wherever `BcServerConfig` is constructed. Search with `grep -rn "BcServerConfig {" crates/` to find all sites. Known sites include:
 - `crates/al-core/src/launch.rs` — `parse_zed_debug_file` and `parse_vscode_launch_file` struct literal construction
 - `crates/al-core/src/bc_client.rs` — test fixtures (at least 4 construction sites in the `#[cfg(test)]` module)
+- `crates/al-core/src/test_runner.rs` — constructs `BcServerConfig` for test execution
 
 At every site, add:
 ```rust
@@ -344,9 +352,13 @@ if let Some(ref token) = config.access_token {
 }
 ```
 
-Delete the `do_standard_publish` helper function — inline the upload call directly in `publish()`. The upload now uses the new `publish_extension()` signature:
+Delete the `do_standard_publish` helper function — inline the upload call directly in `publish()`. The upload now uses the new `publish_extension()` signature.
 
-In the standard publish branch of `publish()`, replace the `do_standard_publish` call with:
+**Both paths must be updated:**
+1. The standard (non-incremental) publish path (around line 226) — replace `do_standard_publish(...)` call
+2. The RAD fallback path (around line 222) — when RAD fails, it falls back to `do_standard_publish(...)` which also needs replacing
+
+In both locations, replace the `do_standard_publish` call with:
 
 ```rust
 let (app_id, app_version) = extract_app_manifest_ids(&config.project_root)
