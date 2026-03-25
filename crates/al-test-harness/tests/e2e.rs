@@ -4,11 +4,6 @@
 //! Run with: cargo test -p al-test-harness -- --test-threads=1
 
 use al_test_harness::*;
-use std::path::PathBuf;
-
-fn test_project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
-}
 
 /// Inline AL code for testing without needing a real project.
 const CODEUNIT_AL: &str = r#"codeunit 50100 "Test Helper"

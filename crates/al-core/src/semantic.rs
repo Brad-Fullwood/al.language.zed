@@ -201,6 +201,49 @@ pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: 
 /// Maximum number of bridge restart attempts before giving up.
 pub const MAX_RESTARTS: u32 = 3;
 
+/// Shared CLR init logic: spawn_blocking SemanticBridge::new, re-acquire the write
+/// lock, triple-check, and insert. Returns the bridge on success.
+///
+/// Callers must drop any write lock they hold before calling this, and must
+/// have already performed a double-check (lock → is_some → drop) to avoid
+/// redundant inits.
+async fn init_bridge_inner(
+    workspace: &Workspace,
+    toolchain: crate::toolchain::AlToolchain,
+) -> Result<(), crate::errors::AlError> {
+    use crate::errors::AlError;
+
+    let ca_path = toolchain.code_analysis.clone();
+    let version = toolchain.version.clone();
+
+    // Release the write lock (caller already dropped it) before blocking CLR init
+    // to avoid starving the async executor.
+    let bridge_result = tokio::task::spawn_blocking(move || {
+        SemanticBridge::new(&ca_path, &version)
+    })
+    .await;
+
+    // Re-acquire write lock and insert.
+    let mut write_guard = workspace.semantic.write().await;
+
+    // Triple-check: another task may have init'd while we were in spawn_blocking.
+    if write_guard.is_some() {
+        return Ok(());
+    }
+
+    match bridge_result {
+        Ok(Ok(bridge)) => {
+            *write_guard = Some(bridge);
+            Ok(())
+        }
+        Ok(Err(e)) => Err(e.into()),
+        Err(e) => {
+            tracing::warn!(error = %e, "Semantic bridge init task panicked");
+            Err(AlError::BridgePanicked)
+        }
+    }
+}
+
 /// Get the semantic bridge, initializing it lazily if needed.
 ///
 /// Returns None if:
@@ -233,42 +276,18 @@ pub async fn get_or_init_bridge(
         return Some(write_guard.downgrade());
     }
 
-    let ca_path = toolchain.code_analysis.clone();
-    let version = toolchain.version.clone();
-
-    // Release write lock before blocking CLR init to avoid starving the async executor
+    // Release write lock before the shared init helper takes over
     drop(write_guard);
 
-    let bridge_result = tokio::task::spawn_blocking(move || {
-        SemanticBridge::new(&ca_path, &version)
-    })
-    .await;
-
-    // Re-acquire write lock and insert
-    let mut write_guard = workspace.semantic.write().await;
-
-    // Triple-check: another task may have init'd while we were in spawn_blocking
-    if write_guard.is_some() {
-        return Some(write_guard.downgrade());
-    }
-
-    match bridge_result {
-        Ok(Ok(bridge)) => {
+    match init_bridge_inner(workspace, toolchain).await {
+        Ok(()) => {
             tracing::info!("Semantic bridge initialized");
-            *write_guard = Some(bridge);
-            Some(write_guard.downgrade())
+            Some(workspace.semantic.read().await)
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             tracing::warn!(error = %e, "Failed to initialize semantic bridge");
             if let Some(sink) = workspace.notify_sink.get() {
                 sink(&format!("AL semantic bridge failed to initialize: {e}"));
-            }
-            None
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Semantic bridge init task panicked");
-            if let Some(sink) = workspace.notify_sink.get() {
-                sink(&format!("AL semantic bridge init panicked: {e}"));
             }
             None
         }
@@ -290,8 +309,9 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
 
     // NOTE: Between take() above and re-acquiring the write lock below, another
     // task could start its own init via get_or_init_bridge. This race is safe:
-    // the triple-check below prevents overwriting a bridge that was just restored.
-    // Worst case is a redundant CLR init (resource waste, not a correctness bug).
+    // the triple-check inside init_bridge_inner prevents overwriting a bridge that
+    // was just restored. Worst case is a redundant CLR init (resource waste, not
+    // a correctness bug).
 
     // Return NoToolchain without burning a restart slot
     let toolchain = workspace
@@ -320,36 +340,15 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
 
     tracing::info!(attempt = count, "Restarting semantic bridge");
 
-    let ca_path = toolchain.code_analysis.clone();
-    let version = toolchain.version.clone();
-
-    // Release write lock before blocking CLR init to avoid starving the async executor
+    // Release write lock before the shared init helper takes over
     drop(write_guard);
 
-    let bridge_result = tokio::task::spawn_blocking(move || {
-        SemanticBridge::new(&ca_path, &version)
-    })
-    .await;
-
-    // Re-acquire write lock and insert
-    let mut write_guard = workspace.semantic.write().await;
-
-    // Triple-check: another task may have re-initialized while we were in spawn_blocking
-    if write_guard.is_some() {
-        return Ok(());
-    }
-
-    match bridge_result {
-        Ok(Ok(bridge)) => {
-            *write_guard = Some(bridge);
+    match init_bridge_inner(workspace, toolchain).await {
+        Ok(()) => {
             tracing::info!(attempt = count, "Semantic bridge restarted successfully");
             Ok(())
         }
-        Ok(Err(e)) => Err(e.into()),
-        Err(e) => {
-            tracing::warn!(error = %e, "Semantic bridge restart task panicked");
-            Err(AlError::BridgePanicked)
-        }
+        Err(e) => Err(e),
     }
 }
 

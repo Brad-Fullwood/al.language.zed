@@ -59,19 +59,22 @@ pub struct UnusedSymbol {
 pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
     let mut results = Vec::new();
 
-    // Collect cached (text, tree) pairs — no re-parsing needed
+    // Collect all cached (path, text, tree) triples in one pass — no re-parsing needed.
+    // The owned Vec is required so that `all_files` borrows below have a stable backing store
+    // for the lifetime of the cross-file reference scans.
     let parsed_files: Vec<(String, String, tree_sitter::Tree)> = workspace
         .file_index
-        .files
+        .file_trees
         .iter()
         .filter_map(|entry| {
             let path = entry.key();
-            let (text, tree) = workspace.file_index.get_cached_parse(path)?;
+            let text = workspace.file_index.files.get(path)?.value().clone();
+            let tree = entry.value().clone();
             Some((path.to_string_lossy().to_string(), text, tree))
         })
         .collect();
 
-    // Collect all text+tree pairs for reference scanning
+    // Create borrow-slices once; all inner functions take `&[(&str, &str, &Tree)]`.
     let all_files: Vec<(&str, &str, &tree_sitter::Tree)> = parsed_files
         .iter()
         .map(|(p, t, tree)| (p.as_str(), t.as_str(), tree))

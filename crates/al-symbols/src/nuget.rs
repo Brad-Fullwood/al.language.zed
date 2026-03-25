@@ -104,39 +104,30 @@ fn resolve_package_id(dep: &AppDependency) -> String {
 
     // Core Microsoft packages have special naming on the MSSymbols feed.
     // These were found empirically — Microsoft is inconsistent about GUID inclusion.
-    if id_lower == APPLICATION_APP_ID {
-        return "Microsoft.Application.symbols".to_string();
-    }
-    if id_lower == BASE_APPLICATION_APP_ID {
-        return format!(
+    match id_lower.as_str() {
+        APPLICATION_APP_ID => "Microsoft.Application.symbols".to_string(),
+        BASE_APPLICATION_APP_ID => format!(
             "Microsoft.BaseApplication.symbols.{}",
             BASE_APPLICATION_APP_ID
-        );
-    }
-    if id_lower == BUSINESS_FOUNDATION_APP_ID {
-        return format!(
+        ),
+        BUSINESS_FOUNDATION_APP_ID => format!(
             "Microsoft.BusinessFoundation.symbols.{}",
             BUSINESS_FOUNDATION_APP_ID
-        );
-    }
-    if id_lower == SYSTEM_APPLICATION_APP_ID {
-        return format!(
+        ),
+        SYSTEM_APPLICATION_APP_ID => format!(
             "Microsoft.SystemApplication.symbols.{}",
             SYSTEM_APPLICATION_APP_ID
-        );
+        ),
+        SYSTEM_APP_ID => "Microsoft.Platform.symbols".to_string(),
+        // General pattern: {Publisher}.{AppName}.symbols.{AppId}
+        // Spaces are removed (not replaced with dots) to match ADO feed convention
+        _ => format!(
+            "{}.{}.symbols.{}",
+            dep.publisher.replace(' ', ""),
+            dep.name.replace(' ', ""),
+            id_lower
+        ),
     }
-    if id_lower == SYSTEM_APP_ID {
-        return "Microsoft.Platform.symbols".to_string();
-    }
-
-    // General pattern: {Publisher}.{AppName}.symbols.{AppId}
-    // Spaces are removed (not replaced with dots) to match ADO feed convention
-    format!(
-        "{}.{}.symbols.{}",
-        dep.publisher.replace(' ', ""),
-        dep.name.replace(' ', ""),
-        id_lower
-    )
 }
 
 // -- NuGet v3 service index types --
@@ -251,7 +242,8 @@ async fn download(
                 (*v).clone()
             } else {
                 // Fall back to latest available
-                let latest = version_index.versions.last().unwrap();
+                let latest = version_index.versions.last()
+                    .ok_or_else(|| NuGetError::NoVersions(pkg.id.clone()))?;
                 info!(
                     requested = %requested,
                     resolved = %latest,
@@ -262,7 +254,8 @@ async fn download(
         }
     } else {
         // Use latest
-        version_index.versions.last().unwrap().clone()
+        version_index.versions.last()
+            .ok_or_else(|| NuGetError::NoVersions(pkg.id.clone()))?.clone()
     };
 
     // 4. Download .nupkg

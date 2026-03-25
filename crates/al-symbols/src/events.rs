@@ -163,12 +163,12 @@ fn matches_subscriber_query(
 fn parse_subscriber_args(arguments: &[String]) -> (String, String, String) {
     let target_type = arguments
         .first()
-        .map(|s| clean_arg(s))
+        .map(|s| s.trim().to_string())
         .unwrap_or_default();
     let target_name = arguments
         .get(1)
         .map(|s| {
-            let cleaned = clean_arg(s);
+            let cleaned = s.trim().to_string();
             // Remove "Codeunit::" or "Table::" prefix and quotes
             if let Some(pos) = cleaned.find("::") {
                 clean_quotes(&cleaned[pos + 2..])
@@ -179,15 +179,10 @@ fn parse_subscriber_args(arguments: &[String]) -> (String, String, String) {
         .unwrap_or_default();
     let target_event = arguments
         .get(2)
-        .map(|s| clean_quotes(&clean_arg(s)))
+        .map(|s| clean_quotes(s.trim()))
         .unwrap_or_default();
 
     (target_type, target_name, target_event)
-}
-
-/// Remove surrounding quotes and whitespace from an argument value.
-fn clean_arg(s: &str) -> String {
-    s.trim().to_string()
 }
 
 /// Remove surrounding single/double quotes.

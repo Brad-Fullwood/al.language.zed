@@ -4,7 +4,6 @@
 //! arguments, connects to the daemon, sends JSON-RPC requests, and formats
 //! the responses for human or --json output.
 
-mod client;
 mod commands;
 
 use std::process::ExitCode;
@@ -96,16 +95,13 @@ Examples:
         /// Project directory (default: current dir)
         #[arg(short, long)]
         project: Option<String>,
-        /// Path to alc compiler (auto-detected from toolchain if omitted)
-        #[arg(long)]
-        alc: Option<String>,
     },
     /// Run native lint rules on AL file(s)
     #[command(after_help = "\
 Examples:
   al lint src/Customer.al
   al lint --all
-  al lint --all --semantic --analyzers CodeCop,AppSourceCop
+  al lint --all --analyzers CodeCop,AppSourceCop
   al lint src/Sales.al --json")]
     Lint {
         /// File or directory to lint (default: current dir with --all).
@@ -116,9 +112,6 @@ Examples:
         /// Lint all .al files in the project directory
         #[arg(long)]
         all: bool,
-        /// Also run semantic diagnostics via .NET CodeAnalysis (requires ALTool)
-        #[arg(long)]
-        semantic: bool,
         /// Analyzers to run (comma-separated: CodeCop,AppSourceCop,UICop,PerTenantCop)
         #[arg(long)]
         analyzers: Option<String>,
@@ -155,7 +148,6 @@ Examples:
     #[command(after_help = "\
 Examples:
   al definition src/Customer.al 42 15
-  al definition src/Customer.al 42 15 --workspace
   al definition src/Customer.al 42 15 --json")]
     Definition {
         file: String,
@@ -163,9 +155,6 @@ Examples:
         line: u32,
         /// Column number (1-based)
         col: u32,
-        /// Search workspace files too
-        #[arg(long)]
-        workspace: bool,
     },
     /// Find all references to symbol at a position
     References {
@@ -174,9 +163,6 @@ Examples:
         line: u32,
         /// Column number (1-based)
         col: u32,
-        /// Search workspace files too
-        #[arg(long)]
-        workspace: bool,
     },
     /// Show signature help for function call at a position
     Signature {
@@ -201,7 +187,7 @@ Examples:
 Examples:
   al rename src/Customer.al 42 15 NewName
   al rename src/Customer.al 42 15 NewName --dry-run
-  al rename src/Customer.al 42 15 NewName --workspace --json")]
+  al rename src/Customer.al 42 15 NewName --json")]
     Rename {
         file: String,
         /// Line number (1-based)
@@ -213,9 +199,6 @@ Examples:
         /// Preview changes without applying
         #[arg(long)]
         dry_run: bool,
-        /// Search workspace files too
-        #[arg(long)]
-        workspace: bool,
     },
     /// List all lint rules
     Rules,
@@ -273,11 +256,8 @@ Examples:
     },
     /// Apply code fixes/quickfixes to an AL file
     Fix {
-        /// File to fix (or directory with --all)
+        /// File to fix
         file: Option<String>,
-        /// Apply all available fixes
-        #[arg(long)]
-        all: bool,
         /// Preview changes without applying
         #[arg(long)]
         dry_run: bool,
@@ -722,28 +702,22 @@ fn main() -> ExitCode {
         Commands::Composed { kind, name } => lsp::cmd_composed(&kind, &name, cli.json),
         Commands::Packages => lsp::cmd_packages(cli.json),
         Commands::Deps => lsp::cmd_deps(cli.json),
-        Commands::Compile { project, alc } => {
-            build::cmd_compile(project.as_deref(), alc.as_deref(), cli.json)
+        Commands::Compile { project } => {
+            build::cmd_compile(project.as_deref(), cli.json)
         }
-        Commands::Lint { file, all, semantic, analyzers } => {
+        Commands::Lint { file, all, analyzers } => {
             let joined = if file.is_empty() { None } else { Some(file.join(" ")) };
-            lsp::cmd_lint(joined.as_deref(), all, semantic, analyzers.as_deref(), cli.json)
+            lsp::cmd_lint(joined.as_deref(), all, analyzers.as_deref(), cli.json)
         }
         Commands::Format { file, check, stdin, all } => {
             lsp::cmd_format(file.as_deref(), check, stdin, all, cli.json)
         }
         Commands::Symbols { file } => lsp::cmd_symbols(&file, cli.json),
         Commands::Hover { file, line, col } => lsp::cmd_hover(&file, line, col, cli.json),
-        Commands::Definition { file, line, col, workspace } => {
-            if workspace {
-                eprintln!("Warning: --workspace is not yet implemented and has no effect");
-            }
+        Commands::Definition { file, line, col } => {
             lsp::cmd_position_query("definition", &file, line, col, cli.json)
         }
-        Commands::References { file, line, col, workspace } => {
-            if workspace {
-                eprintln!("Warning: --workspace is not yet implemented and has no effect");
-            }
+        Commands::References { file, line, col } => {
             lsp::cmd_position_query("references", &file, line, col, cli.json)
         }
         Commands::Signature { file, line, col } => {
@@ -752,10 +726,7 @@ fn main() -> ExitCode {
         Commands::Completions { file, line, col } => {
             lsp::cmd_position_query("completions", &file, line, col, cli.json)
         }
-        Commands::Rename { file, line, col, new_name, dry_run, workspace } => {
-            if workspace {
-                eprintln!("Warning: --workspace is not yet implemented and has no effect");
-            }
+        Commands::Rename { file, line, col, new_name, dry_run } => {
             lsp::cmd_rename(&file, line, col, &new_name, dry_run, cli.json)
         }
         Commands::Rules => lsp::cmd_rules(cli.json),
@@ -771,8 +742,8 @@ fn main() -> ExitCode {
         Commands::Hints { file, start_line, end_line } => {
             lsp::cmd_hints(&file, start_line, end_line, cli.json)
         }
-        Commands::Fix { file, all, dry_run, rule } => {
-            lsp::cmd_fix(file.as_deref(), all, dry_run, rule.as_deref(), cli.json)
+        Commands::Fix { file, dry_run, rule } => {
+            lsp::cmd_fix(file.as_deref(), dry_run, rule.as_deref(), cli.json)
         }
         Commands::Permissions { format, name, id, role_id } => {
             lsp::cmd_permissions(&format, &name, id, &role_id, cli.json)

@@ -248,28 +248,37 @@ fn parse_int(bytes: &[u8], mut i: usize) -> Option<(i32, usize)> {
     Some((num, i))
 }
 
+/// Parse a double-quoted AL identifier starting at `start` (which must be the `"` byte).
+///
+/// Handles escaped double-quotes (`""` → `"`). Returns the parsed string and the position
+/// immediately after the closing `"`. Returns `None` if the closing quote is missing.
+pub(crate) fn parse_quoted_ident(bytes: &[u8], start: usize) -> Option<(String, usize)> {
+    debug_assert_eq!(bytes[start], b'"');
+    let s = std::str::from_utf8(bytes).ok()?;
+    let mut i = start + 1;
+    let mut out = String::new();
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                out.push('"');
+                i += 2;
+                continue;
+            }
+            return Some((out, i + 1));
+        }
+        let ch = s[i..].chars().next()?;
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    None // unterminated quoted identifier
+}
+
 fn parse_name(s: &str, bytes: &[u8], mut i: usize) -> Option<(String, usize)> {
     if i >= bytes.len() {
         return None;
     }
     if bytes[i] == b'"' {
-        i += 1;
-        let mut out = String::new();
-        while i < bytes.len() {
-            if bytes[i] == b'"' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
-                    out.push('"');
-                    i += 2;
-                    continue;
-                }
-                i += 1;
-                break;
-            }
-            let ch = s[i..].chars().next()?;
-            out.push(ch);
-            i += ch.len_utf8();
-        }
-        return Some((out, i));
+        return parse_quoted_ident(bytes, i);
     }
 
     let start = i;

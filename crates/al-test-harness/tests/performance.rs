@@ -12,29 +12,16 @@ use al_test_harness::*;
 use std::path::PathBuf;
 use std::time::Instant;
 
-fn test_project_dir() -> PathBuf {
-    PathBuf::from(
-        std::env::var("AL_TEST_PROJECT_PATH")
-            .expect("AL_TEST_PROJECT_PATH must be set to run fixture tests"),
-    )
+fn test_project_exists() -> bool {
+    if test_project_from_env().is_none() {
+        eprintln!("\n[performance] SKIPPING: AL_TEST_PROJECT_PATH not set or invalid.\n");
+        return false;
+    }
+    true
 }
 
-fn test_project_exists() -> bool {
-    let path = match std::env::var("AL_TEST_PROJECT_PATH") {
-        Ok(p) => PathBuf::from(p),
-        Err(_) => {
-            eprintln!("\n[performance] SKIPPING: AL_TEST_PROJECT_PATH not set.\n");
-            return false;
-        }
-    };
-    if path.join("app.json").exists() {
-        return true;
-    }
-    eprintln!(
-        "\n[performance] SKIPPING: AL test fixture not found at: {}\n",
-        path.display()
-    );
-    false
+fn test_project_dir() -> PathBuf {
+    test_project_from_env().expect("AL_TEST_PROJECT_PATH must be set to run fixture tests")
 }
 
 /// Open a representative set of files for warm-up.

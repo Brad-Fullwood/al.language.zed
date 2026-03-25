@@ -29,6 +29,29 @@ mod protocol;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// Return the path to the bundled test AL project.
+///
+/// Used in every e2e test file — centralised here to avoid copy-paste drift.
+pub fn test_project_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
+}
+
+/// Return the path to an external AL test project from the environment, if set
+/// and valid.
+///
+/// Checks `AL_TEST_PROJECT_PATH` and confirms it contains `app.json`.
+/// Returns `None` (with a message to stderr) if the variable is absent or the
+/// project root cannot be found.  Used by `zed_simulation`, `data_driven`, and
+/// `performance` test files.
+pub fn test_project_from_env() -> Option<PathBuf> {
+    let path = std::env::var("AL_TEST_PROJECT_PATH").ok().map(PathBuf::from)?;
+    if path.join("app.json").exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -270,24 +293,7 @@ impl LspClient {
         });
 
         self.notify("textDocument/didOpen", params).await.unwrap();
-
-        // Wait for publishDiagnostics for this URI (signals server has processed the file)
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
-        loop {
-            match tokio::time::timeout_at(deadline, self.notifications.recv()).await {
-                Ok(Some((method, params))) => {
-                    let is_our_diag = method == "textDocument/publishDiagnostics"
-                        && params.get("uri").and_then(|v| v.as_str()) == Some(uri.as_str());
-                    // Buffer the notification so tests can still see it
-                    self.buffered_notifications.push((method, params));
-                    if is_our_diag {
-                        break;
-                    }
-                }
-                Ok(None) => break, // Channel closed
-                Err(_) => break,   // Timeout
-            }
-        }
+        self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5)).await;
     }
 
     /// Send a text change to an already-open file (simulates Zed keystroke).
@@ -311,21 +317,27 @@ impl LspClient {
         });
 
         self.notify("textDocument/didChange", params).await.unwrap();
+        self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5)).await;
+    }
 
-        // Wait for publishDiagnostics (same pattern as open_file)
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    /// Wait for `textDocument/publishDiagnostics` for `uri`, up to `timeout`.
+    ///
+    /// Notifications consumed while waiting are buffered so tests can still
+    /// inspect them via `drain_notifications`.
+    async fn wait_for_diagnostics(&mut self, uri: &str, timeout: tokio::time::Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
         loop {
             match tokio::time::timeout_at(deadline, self.notifications.recv()).await {
                 Ok(Some((method, params))) => {
                     let is_our_diag = method == "textDocument/publishDiagnostics"
-                        && params.get("uri").and_then(|v| v.as_str()) == Some(uri.as_str());
+                        && params.get("uri").and_then(|v| v.as_str()) == Some(uri);
                     self.buffered_notifications.push((method, params));
                     if is_our_diag {
                         break;
                     }
                 }
-                Ok(None) => break,
-                Err(_) => break,
+                Ok(None) => break, // Channel closed
+                Err(_) => break,   // Timeout
             }
         }
     }
@@ -699,7 +711,10 @@ async fn send_message(
 ///
 /// Generic over the reader type so both stdio (BufReader<ChildStdout>) and
 /// socket (BufReader<OwnedReadHalf>) use the same code with zero dynamic dispatch.
-async fn read_loop(
+///
+/// Exposed as `pub` so `transport.rs` tests can drive it directly without a
+/// copy-paste duplicate.
+pub async fn read_loop(
     mut reader: impl tokio::io::AsyncBufRead + Unpin,
     pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
     notif_tx: mpsc::UnboundedSender<(String, Value)>,

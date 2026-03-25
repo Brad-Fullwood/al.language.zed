@@ -4,11 +4,6 @@
 //! not simplified test fixtures.
 
 use al_test_harness::*;
-use std::path::PathBuf;
-
-fn test_project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
-}
 
 // ---------------------------------------------------------------------------
 // Real-world AL code from the AL test project
@@ -685,7 +680,7 @@ async fn test_diagnostics_syntax_error() {
 }"#;
 
     client.open_file("objects/test.al", code).await;
-    tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let diags = client.drain_diagnostics();
     let _all_messages: Vec<&str> = diags
@@ -713,7 +708,7 @@ async fn test_diagnostics_lint_empty_begin_end() {
 }"#;
 
     client.open_file("objects/test.al", code).await;
-    tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let diags = client.drain_diagnostics();
     let all_codes: Vec<&str> = diags

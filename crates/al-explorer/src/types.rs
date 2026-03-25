@@ -189,7 +189,7 @@ impl SymbolIndex {
     }
 
     /// Return all entries for a given package (case-insensitive).
-    pub fn search_in_package(&self, package: &str, _query: &str) -> Vec<Arc<SymbolEntry>> {
+    pub fn search_in_package(&self, package: &str) -> Vec<Arc<SymbolEntry>> {
         self.by_package
             .get(&package.to_lowercase())
             .cloned()

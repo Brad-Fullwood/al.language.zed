@@ -299,6 +299,21 @@ async fn download_symbols_from_server(
     downloaded
 }
 
+/// Convert the global NuGet feed list to the symbol-loader type.
+///
+/// Called from both the LSP workspace initializer and the daemon download dispatcher
+/// so the mapping is defined exactly once.
+pub(crate) fn map_nuget_feeds(
+    feeds: &[al_core::project::NuGetFeed],
+) -> Vec<al_core::symbols::nuget::NuGetFeed> {
+    feeds
+        .iter()
+        .map(|f| al_core::symbols::nuget::NuGetFeed {
+            index_url: f.index_url.clone(),
+        })
+        .collect()
+}
+
 /// Download symbol packages from NuGet into the project's .alpackages directory.
 ///
 /// Returns paths to successfully downloaded .app files.
@@ -313,12 +328,7 @@ async fn download_packages_nuget(
     );
 
     // al_core::project::AppDependency is re-exported from al-symbols — pass directly.
-    let feeds: Vec<al_core::symbols::nuget::NuGetFeed> = al_core::project::nuget_feeds()
-        .iter()
-        .map(|f| al_core::symbols::nuget::NuGetFeed {
-            index_url: f.index_url.clone(),
-        })
-        .collect();
+    let feeds = map_nuget_feeds(&al_core::project::nuget_feeds());
 
     let client = al_core::symbols::nuget::NuGetClient::new(feeds);
     let results = client.download_all(deps, dest).await;
@@ -430,46 +440,39 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
 }
 
 /// Handle workspace/symbol request.
+///
+/// Package symbols (from .app NuGet packages) are intentionally excluded — like
+/// VS Code, this feature returns only the user's project files. Package symbols
+/// are accessible via completion, hover, and go-to-definition.
 pub(crate) fn handle_workspace_symbol(
     server: &AlServer,
     query: &str,
 ) -> Option<Vec<SymbolInformation>> {
+    // Use al-core search to avoid duplicating the name-filter loop (ISSUE-057 fix:
+    // reads from cached object_info, not re-parsing files on every request).
+    const MAX_LSP_SYMBOLS: usize = 10_000;
+    let ws_results = al_core::queries::search::workspace_search(
+        &server.workspace,
+        query,
+        MAX_LSP_SYMBOLS,
+    );
+
     let mut results = Vec::new();
-
-    // Package symbols (from .app NuGet packages) are intentionally excluded from
-    // workspace/symbol. Like VS Code, this feature returns only the user's project
-    // files. Package symbols are accessible via completion, hover, and go-to-definition
-    // which query the symbol index directly.
-
-    // Search workspace files using the object name index.
-    // Read object metadata from the cache built at scan/open time — avoids re-parsing
-    // every workspace file on every workspace/symbol request (ISSUE-057 fix).
-    let query_lower = query.to_lowercase();
-    for ws_entry in server.workspace.file_index.objects.iter() {
-        let obj_name_lower = ws_entry.key();
-        let file_path = ws_entry.value().clone();
-
-        if !query.is_empty() && !obj_name_lower.contains(&query_lower) {
-            continue;
-        }
-
-        if let Some(cached) = server.workspace.file_index.object_info.get(&file_path) {
-            let obj_info = cached.value();
-            if let Some(file_text_entry) = server.workspace.file_index.files.get(&file_path) {
-                if let Ok(file_uri) = Url::from_file_path(&file_path) {
-                    #[allow(deprecated)]
-                    results.push(SymbolInformation {
-                        name: obj_info.name.clone(),
-                        kind: SymbolKind::OBJECT,
-                        tags: None,
-                        deprecated: None,
-                        location: Location {
-                            uri: file_uri,
-                            range: al_core::syntax::ts_range_to_lsp(&obj_info.range, file_text_entry.value().as_bytes()),
-                        },
-                        container_name: Some(obj_info.kind.clone()),
-                    });
-                }
+    for r in ws_results {
+        if let Some(file_text_entry) = server.workspace.file_index.files.get(&r.file_path) {
+            if let Ok(file_uri) = Url::from_file_path(&r.file_path) {
+                #[allow(deprecated)]
+                results.push(SymbolInformation {
+                    name: r.info.name.clone(),
+                    kind: SymbolKind::OBJECT,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: file_uri,
+                        range: al_core::syntax::ts_range_to_lsp(&r.info.range, file_text_entry.value().as_bytes()),
+                    },
+                    container_name: Some(r.info.kind.clone()),
+                });
             }
         }
     }

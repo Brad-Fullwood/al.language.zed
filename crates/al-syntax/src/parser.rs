@@ -1,6 +1,7 @@
 //! Tree-sitter parser wrapper for AL.
 
 use tree_sitter::{Language, Parser, Tree};
+use crate::traversal::walk_tree;
 
 extern "C" {
     fn tree_sitter_al() -> Language;
@@ -78,36 +79,18 @@ impl Default for AlParser {
 
 fn collect_errors(tree: &Tree, _text: &str) -> Vec<SyntaxError> {
     let mut errors = Vec::new();
-    let mut cursor = tree.walk();
-    let mut did_visit = false;
-    loop {
-        if !did_visit {
-            let node = cursor.node();
-            if node.is_error() || node.is_missing() {
-                errors.push(SyntaxError {
-                    message: if node.is_missing() {
-                        format!("Missing {}", node.kind())
-                    } else {
-                        "Syntax error".to_string()
-                    },
-                    range: node.range(),
-                });
-            }
+    walk_tree(tree.root_node(), &mut |node| {
+        if node.is_error() || node.is_missing() {
+            errors.push(SyntaxError {
+                message: if node.is_missing() {
+                    format!("Missing {}", node.kind())
+                } else {
+                    "Syntax error".to_string()
+                },
+                range: node.range(),
+            });
         }
-        if !did_visit && cursor.goto_first_child() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_next_sibling() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_parent() {
-            did_visit = true;
-            continue;
-        }
-        break;
-    }
+    });
     errors
 }
 

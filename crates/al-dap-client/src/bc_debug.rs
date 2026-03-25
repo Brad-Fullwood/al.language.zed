@@ -85,11 +85,6 @@ impl Default for BcDebugConfig {
 }
 
 impl BcDebugConfig {
-    /// Start a fluent builder.
-    pub fn builder() -> BcDebugConfigBuilder {
-        BcDebugConfigBuilder(Self::default())
-    }
-
     /// Build from DAP launch/attach arguments.
     pub fn from_dap_args(args: &serde_json::Value) -> Self {
         let mut cfg = Self::default();
@@ -169,33 +164,6 @@ impl BcDebugConfig {
             format!("https://api.businesscentral.dynamics.com/v2.0/{env}/dev/DebuggerHub")
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// BcDebugConfig builder
-// ---------------------------------------------------------------------------
-
-/// Fluent builder for `BcDebugConfig`. Start with `BcDebugConfig::builder()`.
-pub struct BcDebugConfigBuilder(BcDebugConfig);
-
-impl BcDebugConfigBuilder {
-    pub fn server(mut self, s: impl Into<String>) -> Self { self.0.server = Some(s.into()); self }
-    pub fn server_instance(mut self, s: impl Into<String>) -> Self { self.0.server_instance = Some(s.into()); self }
-    pub fn port(mut self, p: u16) -> Self { self.0.port = p; self }
-    pub fn tenant(mut self, s: impl Into<String>) -> Self { self.0.tenant = s.into(); self }
-    pub fn environment_type(mut self, s: impl Into<String>) -> Self { self.0.environment_type = s.into(); self }
-    pub fn environment_name(mut self, s: impl Into<String>) -> Self { self.0.environment_name = Some(s.into()); self }
-    pub fn authentication(mut self, s: impl Into<String>) -> Self { self.0.authentication = s.into(); self }
-    pub fn break_on_error(mut self, b: bool) -> Self { self.0.break_on_error = b; self }
-    pub fn break_on_record_write(mut self, b: bool) -> Self { self.0.break_on_record_write = b; self }
-    pub fn break_on_next(mut self, s: impl Into<String>) -> Self { self.0.break_on_next = Some(s.into()); self }
-    pub fn startup_object_type(mut self, s: impl Into<String>) -> Self { self.0.startup_object_type = s.into(); self }
-    pub fn startup_object_id(mut self, id: i64) -> Self { self.0.startup_object_id = id; self }
-    pub fn launch_browser(mut self, b: bool) -> Self { self.0.launch_browser = b; self }
-    pub fn schema_update_mode(mut self, s: impl Into<String>) -> Self { self.0.schema_update_mode = s.into(); self }
-    pub fn dependency_publishing_option(mut self, s: impl Into<String>) -> Self { self.0.dependency_publishing_option = s.into(); self }
-    pub fn accept_invalid_certs(mut self, b: bool) -> Self { self.0.accept_invalid_certs = b; self }
-    pub fn build(self) -> BcDebugConfig { self.0 }
 }
 
 // ---------------------------------------------------------------------------

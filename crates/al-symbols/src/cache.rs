@@ -6,7 +6,7 @@
 //! re-parsing the ZIP archive.
 //!
 //! Cache location: `~/.cache/al-lsp/index/`
-//! Format: bincode-serialized Vec<SymbolEntry> per package, keyed by .app filename hash.
+//! Format: `[4-byte LE header_len][JSON header][JSON Vec<SymbolEntry>]` per package, keyed by .app filename hash.
 
 use std::fs;
 use std::path::{Path, PathBuf};

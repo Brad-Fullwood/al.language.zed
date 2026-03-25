@@ -113,12 +113,7 @@ impl AlServer {
             self.workspace.file_index.add_file(path.clone(), text.to_string());
             // Invalidate only the composed view for the object in this file (ISSUE-146).
             // add_file already updated object_info, so we can read the name immediately.
-            if let Some(info) = self.workspace.file_index.object_info.get(&path) {
-                self.workspace.symbols.invalidate_composed(&info.name);
-            } else {
-                // No recognisable object declaration -- full invalidation is the safe fallback.
-                self.workspace.symbols.invalidate_all_composed();
-            }
+            invalidate_composed_for_file(&self.workspace, &path);
         } else {
             self.workspace.symbols.invalidate_all_composed();
         }
@@ -218,36 +213,42 @@ impl AlServer {
             let mut lsp_diags: Vec<Diagnostic> = Vec::new();
             let source = text.as_bytes();
             for err in &parse_result.errors {
-                lsp_diags.push(Diagnostic {
-                    range: al_core::syntax::ts_range_to_lsp(&err.range, source),
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    code: Some(NumberOrString::String("parse-error".to_string())),
-                    message: err.message.clone(),
-                    source: Some("al-lsp".to_string()),
-                    ..Default::default()
-                });
+                lsp_diags.push(crate::diagnostics::syntax_error_to_diagnostic(err, source));
             }
             let lint_result = al_core::syntax::lint(&parse_result.tree, &text);
             for lint in &lint_result {
-                let severity = match lint.severity {
-                    al_core::syntax::LintSeverity::Error => DiagnosticSeverity::ERROR,
-                    al_core::syntax::LintSeverity::Warning => DiagnosticSeverity::WARNING,
-                    al_core::syntax::LintSeverity::Info => DiagnosticSeverity::INFORMATION,
-                    al_core::syntax::LintSeverity::Hint => DiagnosticSeverity::HINT,
-                };
-                lsp_diags.push(Diagnostic {
-                    range: al_core::syntax::ts_range_to_lsp(&lint.range, source),
-                    severity: Some(severity),
-                    code: Some(NumberOrString::String(lint.code.clone())),
-                    message: lint.message.clone(),
-                    source: Some("al-lsp".to_string()),
-                    ..Default::default()
-                });
+                lsp_diags.push(crate::diagnostics::lint_to_diagnostic(lint, source));
             }
             client.publish_diagnostics(uri, lsp_diags, None).await;
         });
 
         *self.diag_task.lock().await = Some(handle);
+    }
+}
+
+/// Extract the "al" sub-object from a settings value, or use the value as-is.
+///
+/// Zed sends settings nested under an "al" key; other clients may send flat objects.
+/// Used by both `initialize` and `did_change_configuration` to normalise the input.
+fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
+    value
+        .get("al")
+        .cloned()
+        .unwrap_or(value)
+}
+
+/// Invalidate the composed symbol cache for the object declared in `path`.
+///
+/// If `path` maps to a known object, only that object's composed entry is evicted;
+/// otherwise the full composed cache is cleared as a safe fallback (ISSUE-146).
+///
+/// Called by both `update_workspace_index` (on edit) and `did_close` (on close)
+/// so the logic is defined in one place.
+fn invalidate_composed_for_file(workspace: &al_core::workspace::Workspace, path: &std::path::Path) {
+    if let Some(info) = workspace.file_index.object_info.get(path) {
+        workspace.symbols.invalidate_composed(&info.name);
+    } else {
+        workspace.symbols.invalidate_all_composed();
     }
 }
 
@@ -272,10 +273,7 @@ impl LanguageServer for AlServer {
 
         // Parse initialization options into config
         if let Some(init_opts) = params.initialization_options {
-            let al_settings = init_opts
-                .get("al")
-                .cloned()
-                .unwrap_or(init_opts);
+            let al_settings = extract_al_settings(init_opts);
             let unknown = self.workspace.config.write().await.merge(&al_settings);
             if !unknown.is_empty() {
                 tracing::warn!("Unknown settings in initializationOptions: {:?}", unknown);
@@ -442,11 +440,7 @@ impl LanguageServer for AlServer {
 
         if let Ok(path) = uri.to_file_path() {
             // Targeted composed invalidation — only evict the object from this file (ISSUE-146)
-            if let Some(info) = self.workspace.file_index.object_info.get(&path) {
-                self.workspace.symbols.invalidate_composed(&info.name);
-            } else {
-                self.workspace.symbols.invalidate_all_composed();
-            }
+            invalidate_composed_for_file(&self.workspace, &path);
             self.workspace.file_index.remove_file(&path);
         } else {
             self.workspace.symbols.invalidate_all_composed();
@@ -456,12 +450,8 @@ impl LanguageServer for AlServer {
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         tracing::info!("did_change_configuration");
-        let settings = params.settings;
         // Zed sends settings nested under "al" key, or as a flat object
-        let al_settings = settings
-            .get("al")
-            .cloned()
-            .unwrap_or(settings);
+        let al_settings = extract_al_settings(params.settings);
         let unknown = self.workspace.config.write().await.merge(&al_settings);
         if !unknown.is_empty() {
             let msg = format!("Unknown AL settings: {}", unknown.join(", "));

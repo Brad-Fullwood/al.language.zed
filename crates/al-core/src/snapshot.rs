@@ -64,11 +64,7 @@ pub enum SnapshotError {
 
 /// Build a [`reqwest::Client`] configured from the snapshot config.
 fn make_client(config: &SnapshotConfig) -> Result<reqwest::Client, SnapshotError> {
-    let builder = reqwest::Client::builder()
-        .danger_accept_invalid_certs(config.accept_invalid_certs)
-        .timeout(std::time::Duration::from_secs(120));
-
-    Ok(builder.build()?)
+    Ok(crate::http_auth::build_http_client(config.accept_invalid_certs, 120)?)
 }
 
 /// Initiate a snapshot debugging session on the BC server.

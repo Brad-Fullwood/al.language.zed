@@ -16,12 +16,12 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::collections::HashMap;
 
-use tokio::io::{self, AsyncWriteExt, BufReader};
+use tokio::io::{self, BufReader};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::bc_debug::{BcDebugConfig, BcDebugSession, publish_app};
-use crate::framing::read_dap_body;
+use crate::framing::{read_dap_body, write_dap_frame};
 use crate::{DapError, Result};
 
 // ---------------------------------------------------------------------------
@@ -525,16 +525,16 @@ fn make_event(
     evt
 }
 
+/// Serialize `msg` to JSON and write a DAP frame to `writer`.
+///
+/// Delegates to [`framing::write_dap_frame`] after serialization.
 async fn write_dap(
     writer: &mut io::Stdout,
     msg: &serde_json::Value,
 ) -> std::result::Result<(), std::io::Error> {
     let body = serde_json::to_vec(msg)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    writer.write_all(header.as_bytes()).await?;
-    writer.write_all(&body).await?;
-    writer.flush().await
+    write_dap_frame(writer, &body).await
 }
 
 /// Compile via `dotnet alc` and return raw output.
@@ -591,7 +591,7 @@ async fn find_app_file(project_root: &str) -> Option<std::path::PathBuf> {
 }
 
 fn open_browser(url: &str) -> bool {
-    let result = {
+    let ok = {
         #[cfg(target_os = "linux")]
         { try_spawn("xdg-open", &[url]) }
         #[cfg(target_os = "macos")]
@@ -602,18 +602,11 @@ fn open_browser(url: &str) -> bool {
         { false }
     };
 
-    if !result {
-        // Platform opener failed or unknown — try common fallbacks
-        for opener in &["xdg-open", "open", "firefox", "chromium", "chromium-browser", "google-chrome"] {
-            if try_spawn(opener, &[url]) {
-                return true;
-            }
-        }
-        warn!("open_browser: all openers failed for URL: {url}");
-        return false;
+    if !ok {
+        warn!("open_browser: platform opener failed for URL: {url}");
     }
 
-    result
+    ok
 }
 
 fn try_spawn(cmd: &str, args: &[&str]) -> bool {

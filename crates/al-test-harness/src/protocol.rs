@@ -65,6 +65,39 @@ pub fn definition_uri(result: &Value) -> Option<&str> {
     None
 }
 
+/// Extract the start line from a definition result.
+///
+/// Handles both a single `Location` object and a `Location[]` array.
+pub fn definition_start_line(result: &Value) -> Option<u32> {
+    if let Some(line) = result
+        .get("range")
+        .and_then(|range| range.get("start"))
+        .and_then(|start| start.get("line"))
+        .and_then(|line| line.as_u64())
+    {
+        return Some(line as u32);
+    }
+
+    result
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|loc| loc.get("range"))
+        .and_then(|range| range.get("start"))
+        .and_then(|start| start.get("line"))
+        .and_then(|line| line.as_u64())
+        .map(|line| line as u32)
+}
+
+/// Extract the label of the first signature from a `textDocument/signatureHelp` result.
+pub fn sig_label(result: &Value) -> Option<&str> {
+    result
+        .get("signatures")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first())
+        .and_then(|s| s.get("label"))
+        .and_then(|l| l.as_str())
+}
+
 /// Check if a folding range covers the expected lines.
 pub fn folding_range_lines(ranges: &[Value]) -> Vec<(u32, u32)> {
     ranges

@@ -2,6 +2,7 @@
 
 pub use tower_lsp::lsp_types::Position;
 use tree_sitter::{Node, Tree};
+use crate::traversal::walk_tree;
 
 /// Find the most specific node at a given position.
 pub fn find_node_at_position(tree: &Tree, pos: Position) -> Option<Node<'_>> {
@@ -114,20 +115,9 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
             }
 
             // Extract name — grammar doesn't assign a field name to the object name,
-            // so we look for identifier/quoted_identifier/string children
-            let mut obj_cursor = child.walk();
-            for c in child.children(&mut obj_cursor) {
-                match c.kind() {
-                    "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
-                        if let Ok(n) = c.utf8_text(source) {
-                            let trimmed = n.trim_matches('"');
-                            if !trimmed.is_empty() {
-                                name = trimmed.to_string();
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+            // so we use the shared extract_object_name helper.
+            if let Some(n) = crate::extract_object_name(child, source) {
+                name = n;
             }
 
             return Some(ObjectInfo {
@@ -149,26 +139,17 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     }
 
     let mut id = None;
-    let mut name = String::new();
+    let name = crate::extract_object_name(child, source).unwrap_or_default();
 
     for i in 0..child.child_count() {
         let c = match child.child(i) {
             Some(c) => c,
             None => continue,
         };
-        match c.kind() {
-            "integer" => {
-                if let Ok(n) = c.utf8_text(source).unwrap_or("0").parse::<i64>() {
-                    id = Some(n);
-                }
+        if c.kind() == "integer" {
+            if let Ok(n) = c.utf8_text(source).unwrap_or("0").parse::<i64>() {
+                id = Some(n);
             }
-            "identifier" | "string" | "quoted_identifier" | "name" | "name_or_keyword" => {
-                let n = c.utf8_text(source).unwrap_or("");
-                if !n.is_empty() {
-                    name = n.trim_matches('"').to_string();
-                }
-            }
-            _ => {}
         }
     }
 
@@ -227,35 +208,17 @@ fn find_refs_recursive(
     target_name: &str,
     refs: &mut Vec<tree_sitter::Range>,
 ) {
-    let mut cursor = root.walk();
-    let mut did_visit = false;
-    loop {
-        if !did_visit {
-            let node = cursor.node();
-            // Check if this node is an identifier matching the target name
-            if matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
-                if let Ok(text) = node.utf8_text(source) {
-                    let text_clean = text.trim_matches('"');
-                    if text_clean.eq_ignore_ascii_case(target_name) {
-                        refs.push(node.range());
-                    }
+    walk_tree(root, &mut |node| {
+        // Check if this node is an identifier matching the target name
+        if matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
+            if let Ok(text) = node.utf8_text(source) {
+                let text_clean = text.trim_matches('"');
+                if text_clean.eq_ignore_ascii_case(target_name) {
+                    refs.push(node.range());
                 }
             }
         }
-        if !did_visit && cursor.goto_first_child() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_next_sibling() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_parent() {
-            did_visit = true;
-            continue;
-        }
-        break;
-    }
+    });
 }
 
 /// Count call-site references to a procedure name within the tree.
@@ -288,35 +251,17 @@ fn count_call_refs_recursive(
     target_name: &str,
     count: &mut usize,
 ) {
-    let mut cursor = root.walk();
-    let mut did_visit = false;
-    loop {
-        if !did_visit {
-            let node = cursor.node();
-            // Check if this node is an identifier matching the target name
-            if matches!(node.kind(), "identifier" | "quoted_identifier") {
-                if let Ok(text) = node.utf8_text(source) {
-                    let text_clean = text.trim_matches('"');
-                    if text_clean.eq_ignore_ascii_case(target_name) && is_call_reference(node, source) {
-                        *count += 1;
-                    }
+    walk_tree(root, &mut |node| {
+        // Check if this node is an identifier matching the target name
+        if matches!(node.kind(), "identifier" | "quoted_identifier") {
+            if let Ok(text) = node.utf8_text(source) {
+                let text_clean = text.trim_matches('"');
+                if text_clean.eq_ignore_ascii_case(target_name) && is_call_reference(node, source) {
+                    *count += 1;
                 }
             }
         }
-        if !did_visit && cursor.goto_first_child() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_next_sibling() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_parent() {
-            did_visit = true;
-            continue;
-        }
-        break;
-    }
+    });
 }
 
 /// Determine whether an identifier node is a call-site reference.

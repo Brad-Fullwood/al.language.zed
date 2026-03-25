@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use al_core::workspace::Workspace;
-use al_core::jsonrpc::{error_codes, Request, Response, RpcError};
+use al_daemon_client::jsonrpc::{error_codes, Request, Response, RpcError};
 use al_daemon_client::socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
@@ -477,7 +477,7 @@ pub(crate) fn rpc_error(id: u64, code: i32, message: &str) -> Response {
     Response {
         id,
         result: None,
-        error: Some(al_core::jsonrpc::RpcError {
+        error: Some(al_daemon_client::jsonrpc::RpcError {
             code,
             message: message.to_string(),
         }),
@@ -549,55 +549,15 @@ pub(crate) fn lint_diag_to_json(d: &al_core::syntax::LintDiagnostic) -> serde_js
     })
 }
 
+/// Generate a text-edit fix for a lint diagnostic.
+///
+/// Thin wrapper around `al_core::queries::code_actions::generate_lint_fix` kept
+/// here so the `pub(crate)` visibility doesn't need to change in call sites.
 pub(crate) fn generate_fix(
     diag: &al_core::syntax::LintDiagnostic,
     lines: &[&str],
 ) -> Option<serde_json::Value> {
-    let start_row = diag.range.start_point.row;
-    let end_row = diag.range.end_point.row;
-    let start_col = diag.range.start_point.column;
-    let end_col = diag.range.end_point.column;
-
-    match diag.code.as_str() {
-        // AL-L001/L005/L006: Delete the entire line range (empty block, unused var, empty trigger).
-        "AL-L001" | "AL-L005" | "AL-L006" => {
-            Some(serde_json::json!({
-                "code": diag.code,
-                "message": diag.message,
-                "range": {
-                    "start": { "line": start_row, "character": 0 },
-                    "end": { "line": end_row + 1, "character": 0 }
-                },
-                "newText": "",
-            }))
-        }
-        // AL-L007: TODO comment — not auto-fixable, report only.
-        "AL-L007" => None,
-        // AL-L016: Procedure name not PascalCase — capitalise the first letter.
-        "AL-L016" => {
-            if let Some(line) = lines.get(start_row) {
-                let chars: Vec<char> = line.chars().collect();
-                if start_col < chars.len() {
-                    let name_end_col = if start_row == end_row { end_col } else { chars.len() };
-                    let name: String = chars[start_col..name_end_col.min(chars.len())].iter().collect();
-                    if let Some(first) = name.chars().next() {
-                        let fixed_name = format!("{}{}", first.to_uppercase(), &name[first.len_utf8()..]);
-                        return Some(serde_json::json!({
-                            "code": diag.code,
-                            "message": diag.message,
-                            "range": {
-                                "start": { "line": start_row, "character": start_col },
-                                "end": { "line": end_row, "character": name_end_col }
-                            },
-                            "newText": fixed_name,
-                        }));
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
+    al_core::queries::code_actions::generate_lint_fix(diag, lines)
 }
 
 // ---------------------------------------------------------------------------
@@ -605,70 +565,21 @@ pub(crate) fn generate_fix(
 // ---------------------------------------------------------------------------
 
 async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path) {
-    // Discover project
-    match al_core::project::find_project(project_root) {
-        Ok(project) => {
-            tracing::info!(
-                name = %project.app_json.name,
-                root = %project.root.display(),
-                packages = project.packages.len(),
-                "daemon: project discovered"
-            );
+    // Delegate common steps (find project, load packages, scan, toolchain) to al-core.
+    let result = al_core::workspace::initialize_core_workspace(workspace, project_root).await;
 
-            // Load symbol packages (with disk cache for fast warm starts)
-            let cache = al_core::symbols::cache::SymbolCache::default_location();
-            let loaded = workspace.symbols.load_packages_cached(&project.packages, &cache);
-            let total_symbols: usize = loaded.iter().map(|p| p.objects.len()).sum();
-            tracing::info!(packages = loaded.len(), symbols = total_symbols, "daemon: loaded symbol packages");
+    tracing::info!(
+        files = result.file_count,
+        packages = result.package_count,
+        symbols = result.total_symbols,
+        has_toolchain = result.has_toolchain,
+        "daemon: workspace initialization complete"
+    );
 
-            // Invalidate insight graph — packages changed
-            workspace.invalidate_insight_graph();
-
-            // Store package metadata for the `packages` query
-            let pkg_info: Vec<al_core::workspace::PackageInfo> = loaded
-                .iter()
-                .map(|p| al_core::workspace::PackageInfo {
-                    name: p.name.clone(),
-                    publisher: p.publisher.clone(),
-                    version: p.version.clone(),
-                    object_count: p.objects.len(),
-                })
-                .collect();
-            *workspace.package_info.write().unwrap_or_else(|e| e.into_inner()) = pkg_info; // SILENT: recover from RwLock poison
-
-            // Scan workspace .al files
-            let file_count = workspace.file_index.scan(&project.root);
-
-            // Also open scanned files in DocumentStore for query access
-            for entry in workspace.file_index.files.iter() {
-                if let Ok(uri) = url::Url::from_file_path(entry.key()) {
-                    workspace.documents.open(uri, entry.value().clone());
-                }
-            }
-
-            // Store project info
-            *workspace.project.write().await = Some(project);
-
-            tracing::info!(
-                symbols = workspace.symbols.len(),
-                workspace_files = file_count,
-                workspace_objects = workspace.file_index.objects.len(),
-                "daemon: workspace initialized"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, root = %project_root.display(), "daemon: project discovery failed");
-        }
-    }
-
-    // Discover toolchain
-    match al_core::toolchain::find_toolchain() {
-        Ok(tc) => {
-            tracing::info!(version = %tc.version, "daemon: toolchain found");
-            *workspace.toolchain.write().await = Some(tc);
-        }
-        Err(e) => {
-            tracing::info!(error = %e, "daemon: no toolchain (syntax-only mode)");
+    // Daemon-specific: open all scanned files in DocumentStore for query access.
+    for entry in workspace.file_index.files.iter() {
+        if let Ok(uri) = url::Url::from_file_path(entry.key()) {
+            workspace.documents.open(uri, entry.value().clone());
         }
     }
 }

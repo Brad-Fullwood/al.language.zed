@@ -132,20 +132,14 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     {
         let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &text);
         if let Some(decl) = resolver.resolve_type(clean_name, lsp_pos) {
-            let scope_label = match decl.scope {
-                al_syntax::type_resolver::VariableScope::Local => "local variable",
-                al_syntax::type_resolver::VariableScope::Parameter => "parameter",
-                al_syntax::type_resolver::VariableScope::Global => "global variable",
-                al_syntax::type_resolver::VariableScope::SelfImplicit => "self",
-                al_syntax::type_resolver::VariableScope::TriggerImplicit => "trigger variable",
-            };
+            let label = super::scope_label(&decl.scope);
             let var_prefix = if decl.is_var { "var " } else { "" };
             let subtype = decl.type_subtype.as_ref()
                 .map(|s| format!(" \"{}\"", s))
                 .unwrap_or_default();
             let content = format!(
                 "```al\n{}{}: {}{}\n```\n*({})*",
-                var_prefix, decl.name, decl.type_name, subtype, scope_label
+                var_prefix, decl.name, decl.type_name, subtype, label
             );
             return Some(HoverResult { contents: content, range: Some(node_range) });
         }

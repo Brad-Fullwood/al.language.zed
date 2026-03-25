@@ -1,0 +1,77 @@
+//! Workspace symbol search query.
+//!
+//! Transport-agnostic search over workspace .al file objects.  Both the LSP
+//! `workspace/symbol` handler and the daemon `search` RPC call this function;
+//! each caller converts the result to its own response type.
+
+use std::path::PathBuf;
+
+use crate::file_index::CachedObjectInfo;
+use crate::workspace::Workspace;
+
+/// A single workspace-file search result.
+#[derive(Debug, Clone)]
+pub struct WorkspaceSearchResult {
+    /// File path containing the object.
+    pub file_path: PathBuf,
+    /// Cached object metadata.
+    pub info: CachedObjectInfo,
+}
+
+/// Case-insensitive ASCII substring check without allocation.
+/// `query_lower` must already be lowercase.
+fn ascii_contains_ci(haystack: &str, query_lower: &str) -> bool {
+    let q = query_lower.as_bytes();
+    let h = haystack.as_bytes();
+    if q.len() > h.len() { return false; }
+    h.windows(q.len()).any(|w| w.iter().zip(q).all(|(a, b)| a.to_ascii_lowercase() == *b))
+}
+
+/// Search workspace .al file objects whose name contains `query` (case-insensitive).
+///
+/// - When `query` is empty, all objects are returned up to `limit`.
+/// - When `query` is non-empty, only objects whose name contains the query are returned.
+/// - Results are limited to `limit` entries.
+pub fn workspace_search(
+    workspace: &Workspace,
+    query: &str,
+    limit: usize,
+) -> Vec<WorkspaceSearchResult> {
+    let mut results = Vec::new();
+    let query_lower = query.to_lowercase();
+
+    for entry in workspace.file_index.object_info.iter() {
+        if results.len() >= limit {
+            break;
+        }
+        let file_path = entry.key().clone();
+        let info = entry.value().clone();
+        if !query.is_empty() && !ascii_contains_ci(&info.name, &query_lower) {
+            continue;
+        }
+        results.push(WorkspaceSearchResult { file_path, info });
+    }
+
+    results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::Workspace;
+
+    #[test]
+    fn workspace_search_empty_query_returns_all_up_to_limit() {
+        let ws = Workspace::new();
+        // No files loaded — should return empty without panic.
+        let results = workspace_search(&ws, "", 10);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn workspace_search_with_query_filters_by_name() {
+        let ws = Workspace::new();
+        let results = workspace_search(&ws, "Customer", 10);
+        assert!(results.is_empty());
+    }
+}

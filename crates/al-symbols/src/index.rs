@@ -219,73 +219,51 @@ pub struct SymbolIndex {
         }
     }
 
+    /// Insert a single Arc<SymbolEntry> into all five index maps.
+    fn add_arc(&self, arc: Arc<SymbolEntry>) -> Arc<SymbolEntry> {
+        let name_lower = arc.name.to_lowercase();
+        let seq = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.all.insert(seq, (Arc::clone(&arc), name_lower.clone()));
+        self.by_name
+            .entry(name_lower)
+            .or_default()
+            .push(Arc::clone(&arc));
+        if arc.id != 0 {
+            self.by_kind_id
+                .entry((arc.kind, arc.id))
+                .or_default()
+                .push(Arc::clone(&arc));
+        }
+        self.by_kind
+            .entry(arc.kind)
+            .or_default()
+            .push(Arc::clone(&arc));
+        if let Some(ref extends) = arc.extends {
+            self.by_extends
+                .entry(extends.to_lowercase())
+                .or_default()
+                .push(Arc::clone(&arc));
+        }
+        arc
+    }
+
     /// Add a collection of symbol entries to the index.
     pub fn add_entries(&self, entries: &[SymbolEntry]) {
-        let mut new_arcs: Vec<Arc<SymbolEntry>> = Vec::new();
-        for entry in entries {
-            let arc = Arc::new(entry.clone());
-            let id = self
-                .next_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let name_lower = entry.name.to_lowercase();
-            self.all.insert(id, (Arc::clone(&arc), name_lower.clone()));
-
-            // Index by lowercase name
-            self.by_name
-                .entry(name_lower)
-                .or_default()
-                .push(Arc::clone(&arc));
-
-            // Index by (kind, id) — skip id=0 as those are unnamed/synthetic
-            if entry.id != 0 {
-                self.by_kind_id
-                    .entry((entry.kind, entry.id))
-                    .or_default()
-                    .push(Arc::clone(&arc));
-            }
-
-            // Index by object kind
-            self.by_kind
-                .entry(entry.kind)
-                .or_default()
-                .push(Arc::clone(&arc));
-
-            // Index extensions by lowercase extends name
-            if let Some(ref extends) = entry.extends {
-                self.by_extends
-                    .entry(extends.to_lowercase())
-                    .or_default()
-                    .push(Arc::clone(&arc));
-            }
-
-            new_arcs.push(arc);
-        }
+        let new_arcs: Vec<Arc<SymbolEntry>> = entries
+            .iter()
+            .map(|entry| self.add_arc(Arc::new(entry.clone())))
+            .collect();
         self.update_default_completions(&new_arcs);
     }
 
     /// Like `add_entries` but takes owned entries, avoiding the clone into Arc.
     pub fn add_entries_owned(&self, entries: Vec<SymbolEntry>) {
-        let mut new_arcs: Vec<Arc<SymbolEntry>> = Vec::new();
-        for entry in entries {
-            let name_lower = entry.name.to_lowercase();
-            let kind = entry.kind;
-            let id = entry.id;
-            let extends = entry.extends.clone();
-            let arc = Arc::new(entry);
-            let seq = self
-                .next_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.all.insert(seq, (Arc::clone(&arc), name_lower.clone()));
-            self.by_name.entry(name_lower).or_default().push(Arc::clone(&arc));
-            if id != 0 {
-                self.by_kind_id.entry((kind, id)).or_default().push(Arc::clone(&arc));
-            }
-            self.by_kind.entry(kind).or_default().push(Arc::clone(&arc));
-            if let Some(ref ext) = extends {
-                self.by_extends.entry(ext.to_lowercase()).or_default().push(Arc::clone(&arc));
-            }
-            new_arcs.push(arc);
-        }
+        let new_arcs: Vec<Arc<SymbolEntry>> = entries
+            .into_iter()
+            .map(|entry| self.add_arc(Arc::new(entry)))
+            .collect();
         self.update_default_completions(&new_arcs);
     }
 
@@ -440,17 +418,6 @@ pub struct SymbolIndex {
     /// Get the `.app` file path for a package name.
     pub fn app_path(&self, package_name: &str) -> Option<std::path::PathBuf> {
         self.app_paths.get(&package_name.to_lowercase()).map(|v| v.clone())
-    }
-
-    /// Get a composed view of an object by merging the base with all extensions.
-    ///
-    /// Convenience method that delegates to [`crate::composition::get_composed`].
-    pub fn get_composed(
-        &self,
-        kind: crate::model::ObjectKind,
-        name: &str,
-    ) -> Option<crate::model::ComposedObject> {
-        crate::composition::get_composed(self, kind, name)
     }
 
     /// Get a composed view with caching. Returns Arc for zero-copy sharing.

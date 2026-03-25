@@ -16,11 +16,6 @@
 //! Run with: cargo test -p al-test-harness --test edit_lifecycle -- --test-threads=1
 
 use al_test_harness::*;
-use std::path::PathBuf;
-
-fn test_project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
-}
 
 // ---------------------------------------------------------------------------
 // AL code snippets for editing scenarios

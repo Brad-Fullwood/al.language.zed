@@ -150,6 +150,30 @@ impl ObjectKind {
     pub fn is_extension(&self) -> bool {
         self.base_kind().is_some()
     }
+
+    /// The lowercase AL keyword used to declare this object kind.
+    pub fn al_keyword(&self) -> &'static str {
+        match self {
+            ObjectKind::Table => "table",
+            ObjectKind::TableExtension => "tableextension",
+            ObjectKind::Page => "page",
+            ObjectKind::PageExtension => "pageextension",
+            ObjectKind::Codeunit => "codeunit",
+            ObjectKind::Report => "report",
+            ObjectKind::ReportExtension => "reportextension",
+            ObjectKind::XmlPort => "xmlport",
+            ObjectKind::Query => "query",
+            ObjectKind::Enum => "enum",
+            ObjectKind::EnumExtension => "enumextension",
+            ObjectKind::Interface => "interface",
+            ObjectKind::PermissionSet => "permissionset",
+            ObjectKind::PermissionSetExtension => "permissionsetextension",
+            ObjectKind::Profile => "profile",
+            ObjectKind::PageCustomization => "pagecustomization",
+            ObjectKind::ControlAddIn => "controladdin",
+            ObjectKind::Entitlement => "entitlement",
+        }
+    }
 }
 
 /// A method/procedure on an AL object.

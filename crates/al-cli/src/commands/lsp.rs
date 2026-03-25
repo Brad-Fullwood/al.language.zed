@@ -386,13 +386,9 @@ pub fn cmd_deps(json: bool) -> ExitCode {
 pub fn cmd_lint(
     file: Option<&str>,
     all: bool,
-    semantic: bool,
     analyzers: Option<&str>,
     json: bool,
 ) -> ExitCode {
-    if semantic {
-        eprintln!("Warning: --semantic is not yet implemented and has no effect");
-    }
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -921,14 +917,10 @@ pub fn cmd_hints(
 
 pub fn cmd_fix(
     file: Option<&str>,
-    all: bool,
     dry_run: bool,
     rule: Option<&str>,
     json: bool,
 ) -> ExitCode {
-    if all {
-        eprintln!("Warning: --all is not yet implemented and has no effect");
-    }
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -1727,7 +1719,7 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
     }
 }
 
-pub fn cmd_sort_members(file: Option<&str>, _all: bool, dry_run: bool, json: bool) -> std::process::ExitCode {
+pub fn cmd_sort_members(file: Option<&str>, all: bool, dry_run: bool, json: bool) -> std::process::ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -1736,7 +1728,7 @@ pub fn cmd_sort_members(file: Option<&str>, _all: bool, dry_run: bool, json: boo
         let uri = file_to_uri(f).unwrap_or_else(|| f.to_string());
         serde_json::json!({ "uri": uri, "dryRun": dry_run })
     } else {
-        serde_json::json!({ "all": true, "dryRun": dry_run })
+        serde_json::json!({ "all": all, "dryRun": dry_run })
     };
     match client.request("sortMembers", Some(params)) {
         Ok(result) => {

@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 
-use crate::client::DaemonClient;
+use al_daemon_client::DaemonClient;
 
 // ---------------------------------------------------------------------------
 // Shared helpers

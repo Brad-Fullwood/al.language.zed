@@ -25,15 +25,10 @@
 //! - Section R: Daemon-layer methods via stdio equivalents
 
 use al_test_harness::*;
-use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
 // ---------------------------------------------------------------------------
-
-fn test_project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
-}
 
 // Minimal codeunit — always compiles, deterministic line numbers
 const CODEUNIT_SIMPLE: &str = r#"codeunit 50150 "Integration Test"

@@ -1,20 +1,20 @@
 //! Debug session dispatcher.
 
 use al_core::workspace::Workspace;
-use al_core::jsonrpc::{Response, RpcError};
+use al_daemon_client::jsonrpc::{Response, RpcError};
 
 fn no_session(id: u64) -> Response {
-    Response::error(id, al_core::jsonrpc::error_codes::INTERNAL_ERROR, "No active debug session")
+    Response::error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, "No active debug session")
 }
 
 fn missing_cmd(id: u64, msg: &str) -> Response {
-    Response::error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, msg)
+    Response::error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, msg)
 }
 
 pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     use al_core::native_debug::NativeDebugSession;
     use al_dap_client::bc_debug::BcDebugConfig;
-    use al_core::jsonrpc::error_codes;
+    use al_daemon_client::jsonrpc::error_codes;
 
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
         Some(c) => c,

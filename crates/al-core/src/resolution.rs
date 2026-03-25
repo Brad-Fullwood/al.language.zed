@@ -1034,21 +1034,33 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
     result
 }
 
+/// Parse a single `field(id; name; type)` line and return `(name_part, type_str)` slices
+/// from the trimmed version of the line.  Returns `None` when the line is not a field
+/// declaration or is missing the name / type segments.
+///
+/// Shared by `find_workspace_field` (needs name_part to compute column offsets) and
+/// `workspace_field_items` (needs both segments to build completion items).
+fn parse_field_line<'a>(trimmed: &'a str) -> Option<(&'a str, &'a str)> {
+    let inside = trimmed
+        .strip_prefix("field(")?
+        .split(')')
+        .next()?;
+    let mut parts = inside.splitn(3, ';');
+    let _ = parts.next()?; // skip id
+    let name_part = parts.next()?.trim();
+    let ty = parts.next()?.trim();
+    if name_part.is_empty() { return None; }
+    Some((name_part, ty))
+}
+
 fn find_workspace_field(text: &str, field_name: &str) -> Option<(ResolvedType, Range)> {
     for (line_idx, line) in text.lines().enumerate() {
         let trimmed = line.trim();
-        if !trimmed.starts_with("field(") {
-            continue;
-        }
-        let inside = trimmed.strip_prefix("field(")?.split(')').next()?;
-        let mut parts = inside.splitn(3, ';');
-        let _ = parts.next()?;
-        let name_part = parts.next()?.trim();
+        let Some((name_part, ty)) = parse_field_line(trimmed) else { continue };
         let candidate_name = name_part.trim_matches('"');
         if !candidate_name.eq_ignore_ascii_case(field_name) {
             continue;
         }
-        let ty = parts.next()?.trim();
         let col_start = line.find(name_part).unwrap_or(0) as u32;
         let col_end = col_start + name_part.len() as u32;
         let range = Range {
@@ -1067,34 +1079,17 @@ fn find_workspace_field(text: &str, field_name: &str) -> Option<(ResolvedType, R
 }
 
 fn workspace_field_items(text: &str) -> Vec<tower_lsp::lsp_types::CompletionItem> {
-    let mut items = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("field(") {
-            continue;
-        }
-        let Some(inside) = trimmed
-            .strip_prefix("field(")
-            .and_then(|s| s.split(')').next())
-        else {
-            continue;
-        };
-        let mut parts = inside.splitn(3, ';');
-        let _ = parts.next();
-        let Some(name) = parts.next() else {
-            continue;
-        };
-        let Some(ty) = parts.next() else {
-            continue;
-        };
-        items.push(tower_lsp::lsp_types::CompletionItem {
-            label: name.trim().trim_matches('"').to_string(),
-            kind: Some(tower_lsp::lsp_types::CompletionItemKind::FIELD),
-            detail: Some(ty.trim().to_string()),
-            ..Default::default()
-        });
-    }
-    items
+    text.lines()
+        .filter_map(|line| {
+            let (name_part, ty) = parse_field_line(line.trim())?;
+            Some(tower_lsp::lsp_types::CompletionItem {
+                label: name_part.trim_matches('"').to_string(),
+                kind: Some(tower_lsp::lsp_types::CompletionItemKind::FIELD),
+                detail: Some(ty.to_string()),
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 fn split_last<'a>(value: &'a str, needle: &str) -> Option<(&'a str, &'a str)> {

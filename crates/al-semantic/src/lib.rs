@@ -161,9 +161,10 @@ pub enum SemanticError {
 /// calls are serialized by a `std::sync::Mutex` around `DotNetHost` — the CLR
 /// response buffer is shared, so only one call may be in flight at a time.
 pub struct SemanticBridge {
+    /// Mutex-wrapped host — serializes concurrent bridge calls (CLR response
+    /// buffer is shared and not safe to access from multiple threads at once).
     host: Arc<std::sync::Mutex<DotNetHost>>,
     version: String,
-    timeout: Duration,
 }
 
 /// Default timeout for bridge calls.
@@ -183,7 +184,6 @@ impl SemanticBridge {
         Ok(Self {
             host: Arc::new(std::sync::Mutex::new(host)),
             version: version.to_string(),
-            timeout: DEFAULT_TIMEOUT,
         })
     }
 
@@ -212,11 +212,10 @@ impl SemanticBridge {
     ) -> Result<serde_json::Value, SemanticError> {
         let host = self.host.clone();
         let method = method.to_string();
-        let timeout = self.timeout;
 
         // Run the .NET call on a blocking thread to avoid blocking the tokio runtime.
         // Lock is acquired inside spawn_blocking so the critical section is sync.
-        let result = tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || {
+        let result = tokio::time::timeout(DEFAULT_TIMEOUT, tokio::task::spawn_blocking(move || {
             let guard = host.lock().unwrap();
             guard.call(&method, params)
         }))
@@ -227,7 +226,7 @@ impl SemanticBridge {
             Ok(Err(join_err)) => Err(SemanticError::HostInit(format!(
                 "Bridge call panicked: {join_err}"
             ))),
-            Err(_) => Err(SemanticError::Timeout(timeout)),
+            Err(_) => Err(SemanticError::Timeout(DEFAULT_TIMEOUT)),
         }
     }
 
@@ -342,11 +341,6 @@ impl SemanticBridge {
         Ok(())
     }
 
-    /// Graceful shutdown. The CLR is cleaned up when DotNetHost is dropped.
-    pub async fn shutdown(self) {
-        // Nothing to do — CLR shuts down with the DotNetHost drop.
-        // This method exists for API compatibility.
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -592,24 +586,3 @@ mod tests {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Concurrency safety tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod concurrency_tests {
-    use super::*;
-
-    /// Compile-time assertion: SemanticBridge.host must be a Mutex-wrapped DotNetHost.
-    /// If `host` is changed back to `Arc<DotNetHost>` (unguarded), this test will
-    /// fail to compile because `assert_mutex_wrapped` requires the Mutex type.
-    #[test]
-    fn semantic_bridge_host_is_mutex_guarded() {
-        fn assert_mutex_wrapped(_: &std::sync::Mutex<DotNetHost>) {}
-        // We cannot construct a real SemanticBridge here (no .NET runtime in tests),
-        // but we can verify the field type by checking Arc<Mutex<DotNetHost>> is accepted.
-        // The compiler enforces this at type-check time — if the field type changes,
-        // the function signature above will cause a compile error elsewhere.
-        let _ = assert_mutex_wrapped; // suppress unused-fn warning
-    }
-}

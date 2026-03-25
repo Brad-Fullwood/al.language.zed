@@ -4,11 +4,6 @@
 //! Run with: cargo test -p al-test-harness --test regression -- --test-threads=1
 
 use al_test_harness::*;
-use std::path::PathBuf;
-
-fn test_project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
-}
 
 // ===========================================================================
 // Regression: Inlay hints daemon panic (BUG 2 / ISSUE-P7)

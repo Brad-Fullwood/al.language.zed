@@ -39,6 +39,18 @@ pub enum VariableScope {
     TriggerImplicit,
 }
 
+impl std::fmt::Display for VariableScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            VariableScope::Local => "local variable",
+            VariableScope::Parameter => "parameter",
+            VariableScope::Global => "global variable",
+            VariableScope::SelfImplicit => "self",
+            VariableScope::TriggerImplicit => "trigger variable",
+        })
+    }
+}
+
 /// Maps a tree-sitter object kind (e.g. "table", "page") to the corresponding
 /// AL type name used for builtin method lookup (e.g. "Record", "Page").
 pub fn object_kind_to_al_type(kind: &str) -> &str {
@@ -192,7 +204,7 @@ impl<'a> TypeResolver<'a> {
         let mut cursor = proc_node.walk();
         for child in proc_node.children(&mut cursor) {
             if child.kind() == "var_section" {
-                self.collect_var_section_decls(child, VariableScope::Local, result);
+                self.collect_var_section_decls(child, "variable_declaration", VariableScope::Local, result);
             }
         }
     }
@@ -224,7 +236,12 @@ impl<'a> TypeResolver<'a> {
                     let mut body_cursor = body.walk();
                     for body_child in body.children(&mut body_cursor) {
                         if body_child.kind() == "object_var_section" {
-                            self.collect_object_var_section_decls(body_child, result);
+                            self.collect_var_section_decls(
+                                body_child,
+                                "object_variable_declaration",
+                                VariableScope::Global,
+                                result,
+                            );
                         }
                         // Also handle standalone variable_declaration nodes
                         // that appear directly in the object body (parsed as
@@ -243,33 +260,22 @@ impl<'a> TypeResolver<'a> {
         }
     }
 
-    /// Collect declarations from an object_var_section (global var section).
-    fn collect_object_var_section_decls(&self, section: Node<'a>, result: &mut Vec<VariableDecl>) {
-        let mut cursor = section.walk();
-        for child in section.children(&mut cursor) {
-            if child.kind() == "object_variable_declaration" {
-                // object_variable_declaration contains regular_variable_declaration
-                if let Some(decl) =
-                    self.parse_regular_var_decl_from_container(child, VariableScope::Global)
-                {
-                    result.push(decl);
-                }
-            }
-        }
-    }
-
-    /// Collect declarations from a var_section (local var section in procedure/trigger).
+    /// Collect variable declarations from a var section node.
+    ///
+    /// `child_kind` is the grammar node kind that wraps each declaration:
+    /// - `"variable_declaration"` for local `var` sections
+    /// - `"object_variable_declaration"` for object-level `var` sections
     fn collect_var_section_decls(
         &self,
         section: Node<'a>,
+        child_kind: &str,
         scope: VariableScope,
         result: &mut Vec<VariableDecl>,
     ) {
         let mut cursor = section.walk();
         for child in section.children(&mut cursor) {
-            if child.kind() == "variable_declaration" {
-                if let Some(decl) = self.parse_regular_var_decl_from_container(child, scope)
-                {
+            if child.kind() == child_kind {
+                if let Some(decl) = self.parse_regular_var_decl_from_container(child, scope) {
                     result.push(decl);
                 }
             }
@@ -748,13 +754,7 @@ impl<'a> TypeResolver<'a> {
 
     /// Extract text from a node, removing surrounding quotes.
     fn node_text_clean(&self, node: Node<'a>) -> Option<String> {
-        let text = node.utf8_text(self.source).ok()?;
-        let clean = text.trim_matches('"').to_string();
-        if clean.is_empty() {
-            None
-        } else {
-            Some(clean)
-        }
+        crate::node_text_clean(node, self.source)
     }
 }
 

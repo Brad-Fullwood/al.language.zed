@@ -217,34 +217,57 @@ fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std:
     Ok(DebugConfigFile { path: path.to_path_buf(), configs })
 }
 
-fn convert_zed_config(raw: ZedDebugConfigJson) -> Option<DapLaunchConfig> {
-    let env_type = parse_environment_type(raw.environment_type.as_deref()?)?;
-    let auth = parse_auth_method(raw.authentication.as_deref(), &env_type);
+/// Shared constructor: resolve env type + auth, then build a [`DapLaunchConfig`].
+///
+/// Returns `None` if `environment_type_str` is absent or unrecognised.
+fn build_launch_config(
+    name: String,
+    environment_type_str: Option<&str>,
+    authentication_str: Option<&str>,
+    server: Option<String>,
+    server_instance: Option<String>,
+    port: Option<u16>,
+    environment_name: Option<String>,
+    tenant: Option<String>,
+) -> Option<DapLaunchConfig> {
+    let env_type = parse_environment_type(environment_type_str?)?;
+    let auth = parse_auth_method(authentication_str, &env_type);
     Some(DapLaunchConfig {
-        name: raw.label,
+        name,
         environment_type: env_type,
-        server: raw.server,
-        server_instance: raw.server_instance,
-        port: raw.port,
-        environment_name: raw.environment_name,
-        tenant: raw.tenant,
+        server,
+        server_instance,
+        port,
+        environment_name,
+        tenant,
         authentication: auth,
     })
 }
 
+fn convert_zed_config(raw: ZedDebugConfigJson) -> Option<DapLaunchConfig> {
+    build_launch_config(
+        raw.label,
+        raw.environment_type.as_deref(),
+        raw.authentication.as_deref(),
+        raw.server,
+        raw.server_instance,
+        raw.port,
+        raw.environment_name,
+        raw.tenant,
+    )
+}
+
 fn convert_vscode_config(raw: VsCodeLaunchConfigJson) -> Option<DapLaunchConfig> {
-    let env_type = parse_environment_type(raw.environment_type.as_deref()?)?;
-    let auth = parse_auth_method(raw.authentication.as_deref(), &env_type);
-    Some(DapLaunchConfig {
-        name: raw.name,
-        environment_type: env_type,
-        server: raw.server,
-        server_instance: raw.server_instance,
-        port: raw.port,
-        environment_name: raw.environment_name,
-        tenant: raw.tenant,
-        authentication: auth,
-    })
+    build_launch_config(
+        raw.name,
+        raw.environment_type.as_deref(),
+        raw.authentication.as_deref(),
+        raw.server,
+        raw.server_instance,
+        raw.port,
+        raw.environment_name,
+        raw.tenant,
+    )
 }
 
 fn parse_environment_type(s: &str) -> Option<EnvironmentType> {

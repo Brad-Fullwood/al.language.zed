@@ -25,6 +25,7 @@ pub mod obsolescence;
 pub mod profiler_hints;
 pub mod references;
 pub mod rename;
+pub mod search;
 pub mod semantic_tokens;
 pub mod signature;
 pub mod source;
@@ -163,6 +164,20 @@ pub fn get_or_create_virtual_file(
 pub fn is_procedure_symbol(kind: tower_lsp::lsp_types::SymbolKind) -> bool {
     kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
         || kind == tower_lsp::lsp_types::SymbolKind::EVENT
+}
+
+/// Human-readable label for a `VariableScope` variant.
+///
+/// Used in hover and completion detail strings. Centralised here so both
+/// callers stay in sync without a Display impl in al-syntax.
+pub(crate) fn scope_label(scope: &al_syntax::type_resolver::VariableScope) -> &'static str {
+    match scope {
+        al_syntax::type_resolver::VariableScope::Local => "local variable",
+        al_syntax::type_resolver::VariableScope::Parameter => "parameter",
+        al_syntax::type_resolver::VariableScope::Global => "global variable",
+        al_syntax::type_resolver::VariableScope::SelfImplicit => "self",
+        al_syntax::type_resolver::VariableScope::TriggerImplicit => "trigger variable",
+    }
 }
 
 // ---------------------------------------------------------------------------

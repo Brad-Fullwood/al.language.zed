@@ -19,7 +19,7 @@ use std::{
     sync::Arc,
 };
 
-mod client;
+use al_daemon_client::DaemonClient;
 
 // ---------------------------------------------------------------------------
 // View mode
@@ -97,7 +97,7 @@ struct EventChainView {
     /// Status/error message shown below the list.
     status: String,
     /// Daemon client (None if not connected).
-    client: Option<client::DaemonClient>,
+    client: Option<DaemonClient>,
     project_root: std::path::PathBuf,
 }
 
@@ -116,7 +116,7 @@ impl EventChainView {
 
     fn ensure_client(&mut self) {
         if self.client.is_none() {
-            match client::DaemonClient::connect(&self.project_root) {
+            match DaemonClient::connect(&self.project_root) {
                 Ok(c) => self.client = Some(c),
                 Err(e) => self.status = format!("Cannot connect to daemon: {e}"),
             }
@@ -206,7 +206,7 @@ struct CallGraphView {
     rows: Vec<CallRow>,
     list_state: ListState,
     status: String,
-    client: Option<client::DaemonClient>,
+    client: Option<DaemonClient>,
     project_root: std::path::PathBuf,
 }
 
@@ -225,7 +225,7 @@ impl CallGraphView {
 
     fn ensure_client(&mut self) {
         if self.client.is_none() {
-            match client::DaemonClient::connect(&self.project_root) {
+            match DaemonClient::connect(&self.project_root) {
                 Ok(c) => self.client = Some(c),
                 Err(e) => self.status = format!("Cannot connect to daemon: {e}"),
             }
@@ -513,7 +513,7 @@ impl App {
 
     fn init_workspace(&mut self) -> Result<(), Box<dyn Error>> {
         let root = std::env::current_dir()?;
-        let mut client = client::DaemonClient::connect(&root)
+        let mut client = DaemonClient::connect(&root)
             .map_err(|e| format!("Cannot connect to al-lsp daemon: {e}"))?;
 
         // ISSUE-071: daemon may still be loading packages at startup.
@@ -552,7 +552,7 @@ impl App {
                 let results = if self.global_search && !self.search_query.is_empty() {
                     self.symbols.search(&self.search_query, 5000)
                 } else {
-                    self.symbols.search_in_package(pkg_name, "")
+                    self.symbols.search_in_package(pkg_name)
                 };
 
                 let query = self.search_query.to_lowercase();
@@ -711,7 +711,7 @@ impl App {
             && let Some(entry) = self.current_objects.get(selected) {
             // Ask the daemon for the workspace file path for this object.
             let root = std::env::current_dir().unwrap_or_default();
-            if let Ok(mut client) = client::DaemonClient::connect(&root) {
+            if let Ok(mut client) = DaemonClient::connect(&root) {
                 let loc_result = client.request("location", Some(serde_json::json!({
                     "name": entry.name,
                 })));

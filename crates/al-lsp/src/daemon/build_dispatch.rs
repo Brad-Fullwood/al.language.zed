@@ -4,9 +4,69 @@
 use std::path::PathBuf;
 
 use al_core::workspace::Workspace;
-use al_core::jsonrpc::{error_codes, Response, RpcError};
+use al_daemon_client::jsonrpc::{error_codes, Response, RpcError};
 
 use super::{rpc_error, invalid_params, file_not_found, ensure_document, require_document_text, file_uri_from_params, lint_diag_to_json, generate_fix};
+
+const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
+const ERR_NO_PROJECT: &str = "No project loaded";
+
+// ---------------------------------------------------------------------------
+// Shared BC server connection params (used by snapshot and profiling)
+// ---------------------------------------------------------------------------
+
+/// Common BC server connection parameters extracted from JSON-RPC params.
+struct BcServerParams {
+    server_url: String,
+    company: String,
+    output_dir: std::path::PathBuf,
+    username: Option<String>,
+    password: Option<String>,
+    accept_invalid_certs: bool,
+}
+
+/// Parse the BC server connection parameters common to snapshot and profiling dispatchers.
+///
+/// `output_subdir` is the subdirectory appended to the default data-local path when
+/// `outputDir` is not provided by the caller (e.g. `"snapshots"` or `"profiles"`).
+fn parse_bc_server_params(
+    params: &serde_json::Value,
+    output_subdir: &str,
+) -> BcServerParams {
+    let server_url = params
+        .get("serverUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("http://localhost:7049/BC")
+        .to_string();
+    let company = params
+        .get("company")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let output_dir = params
+        .get("outputDir")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::data_local_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join("al-lsp")
+                .join(output_subdir)
+        });
+    let username = params
+        .get("username")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let password = params
+        .get("password")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let accept_invalid_certs = params
+        .get("acceptInvalidCerts")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    BcServerParams { server_url, company, output_dir, username, password, accept_invalid_certs }
+}
 
 // ---------------------------------------------------------------------------
 // Analysis dispatchers (lint, format, fix, rules, parse, source)
@@ -158,51 +218,25 @@ pub(super) fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::
     }
 
     if !dry_run && !edits.is_empty() {
-        // Apply the specific TextEdit patches in reverse order to preserve earlier positions.
+        // Apply the specific TextEdit patches via al-core's text-edit engine.
         if let Ok(path) = uri.to_file_path() {
-            let mut doc_lines: Vec<String> = text.lines().map(String::from).collect();
-            // Sort edits by start line descending so later lines are patched first.
-            let mut sorted_edits = edits.clone();
-            sorted_edits.sort_by(|a, b| {
-                let a_line = a.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
-                let b_line = b.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0);
-                b_line.cmp(&a_line)
-            });
-            for edit in &sorted_edits {
-                let Some(range) = edit.get("range") else { continue };
-                let Some(start) = range.get("start") else { continue };
-                let Some(end_pos) = range.get("end") else { continue };
-                let start_line = start.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let end_line = end_pos.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let start_char = start.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let end_char = end_pos.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                let new_text_str = edit.get("newText").and_then(|v| v.as_str()).unwrap_or("");
-
-                if start_line == end_line {
-                    // Single-line replacement within one line.
-                    if let Some(line) = doc_lines.get_mut(start_line) {
-                        let chars: Vec<char> = line.chars().collect();
-                        let s = start_char.min(chars.len());
-                        let e = end_char.min(chars.len());
-                        let replacement_chars: Vec<char> = new_text_str.chars().collect();
-                        let new_line: String = chars[..s].iter().chain(replacement_chars.iter()).chain(chars[e..].iter()).collect();
-                        *line = new_line;
-                    }
-                } else {
-                    // Multi-line range replacement — remove lines [start_line, end_line) and
-                    // insert new_text_str lines (empty string means delete).
-                    let safe_start = start_line.min(doc_lines.len());
-                    let safe_end = end_line.min(doc_lines.len());
-                    let replacement: Vec<String> = if new_text_str.is_empty() {
-                        vec![]
-                    } else {
-                        new_text_str.lines().map(String::from).collect()
-                    };
-                    doc_lines.splice(safe_start..safe_end, replacement);
-                }
-            }
-            let line_ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
-            let new_text = doc_lines.join(line_ending);
+            // Convert JSON edit descriptors to SimpleTextEdit structs.
+            let simple_edits: Vec<al_core::queries::code_actions::SimpleTextEdit> = edits
+                .iter()
+                .filter_map(|edit| {
+                    let range = edit.get("range")?;
+                    let start = range.get("start")?;
+                    let end_pos = range.get("end")?;
+                    Some(al_core::queries::code_actions::SimpleTextEdit {
+                        start_line: start.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                        start_char: start.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                        end_line: end_pos.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                        end_char: end_pos.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                        new_text: edit.get("newText").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    })
+                })
+                .collect();
+            let new_text = al_core::queries::code_actions::apply_text_edits(&text, &simple_edits);
             if let Err(e) = std::fs::write(&path, &new_text) {
                 return rpc_error(id, -32000, &format!("Failed to write fixed file: {e}"));
             }
@@ -393,7 +427,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
-                    message: "Workspace is initializing, try again".to_string(),
+                    message: ERR_INITIALIZING.to_string(),
                 }),
             };
         }
@@ -406,7 +440,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
-                    message: "Workspace is initializing, try again".to_string(),
+                    message: ERR_INITIALIZING.to_string(),
                 }),
             };
         }
@@ -420,7 +454,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
-                    message: "No project loaded".to_string(),
+                    message: ERR_NO_PROJECT.to_string(),
                 }),
             };
         }
@@ -502,7 +536,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
-                    message: "Workspace is initializing, try again".to_string(),
+                    message: ERR_INITIALIZING.to_string(),
                 }),
             };
         }
@@ -529,7 +563,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
-                    message: "Workspace is initializing, try again".to_string(),
+                    message: ERR_INITIALIZING.to_string(),
                 }),
             };
         }
@@ -542,7 +576,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
-                    message: "No project loaded".to_string(),
+                    message: ERR_NO_PROJECT.to_string(),
                 }),
             };
         }
@@ -849,7 +883,7 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INTERNAL_ERROR,
-                    message: "Workspace is initializing, try again".to_string(),
+                    message: ERR_INITIALIZING.to_string(),
                 }),
             };
         }
@@ -860,7 +894,7 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
             result: None,
             error: Some(RpcError {
                 code: error_codes::INTERNAL_ERROR,
-                message: "No project loaded".to_string(),
+                message: ERR_NO_PROJECT.to_string(),
             }),
         };
     };
@@ -929,13 +963,7 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
                     })
                     .collect()
             } else {
-                let feeds = al_core::project::nuget_feeds();
-                let nuget_feeds: Vec<al_core::symbols::nuget::NuGetFeed> = feeds
-                    .iter()
-                    .map(|f| al_core::symbols::nuget::NuGetFeed {
-                        index_url: f.index_url.clone(),
-                    })
-                    .collect();
+                let nuget_feeds = crate::workspace::map_nuget_feeds(&al_core::project::nuget_feeds());
                 let client = al_core::symbols::nuget::NuGetClient::new(nuget_feeds);
                 let nuget_results = client.download_all(&all_deps, &dest).await;
                 nuget_results
@@ -992,46 +1020,14 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
         }
     };
 
-    let server_url = params
-        .get("serverUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or("http://localhost:7049/BC")
-        .to_string();
-    let company = params
-        .get("company")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let output_dir = params
-        .get("outputDir")
-        .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::data_local_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                .join("al-lsp")
-                .join("snapshots")
-        });
-    let username = params
-        .get("username")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let password = params
-        .get("password")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
-    let accept_invalid_certs = params
-        .get("acceptInvalidCerts")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let bc = parse_bc_server_params(params, "snapshots");
     let config = al_core::snapshot::SnapshotConfig {
-        server_url,
-        company,
-        output_dir,
-        username,
-        password,
-        accept_invalid_certs,
+        server_url: bc.server_url,
+        company: bc.company,
+        output_dir: bc.output_dir,
+        username: bc.username,
+        password: bc.password,
+        accept_invalid_certs: bc.accept_invalid_certs,
     };
 
     match cmd {
@@ -1152,46 +1148,14 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
         }
     };
 
-    let server_url = params
-        .get("serverUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or("http://localhost:7049/BC")
-        .to_string();
-    let company = params
-        .get("company")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let output_dir = params
-        .get("outputDir")
-        .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::data_local_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                .join("al-lsp")
-                .join("profiles")
-        });
-    let username = params
-        .get("username")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let password = params
-        .get("password")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
-    let accept_invalid_certs = params
-        .get("acceptInvalidCerts")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let bc = parse_bc_server_params(params, "profiles");
     let config = al_core::profiling::ProfilingConfig {
-        server_url,
-        company,
-        output_dir,
-        username,
-        password,
-        accept_invalid_certs,
+        server_url: bc.server_url,
+        company: bc.company,
+        output_dir: bc.output_dir,
+        username: bc.username,
+        password: bc.password,
+        accept_invalid_certs: bc.accept_invalid_certs,
     };
 
     match cmd {
@@ -1327,7 +1291,7 @@ pub(super) async fn dispatch_xlf_generate(workspace: &Workspace, id: u64, params
     let project_root = if let Some(p) = params.get("project").and_then(|v| v.as_str()) {
         let pb = std::path::PathBuf::from(p);
         if !pb.is_absolute() {
-            return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "'project' must be an absolute path");
+            return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "'project' must be an absolute path");
         }
         pb
     } else {
@@ -1361,10 +1325,10 @@ pub(super) async fn dispatch_xlf_generate(workspace: &Workspace, id: u64, params
 pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let xlf_path = match params.get("xlf").and_then(|v| v.as_str()) {
         Some(p) => std::path::PathBuf::from(p),
-        None => return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
+        None => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
     };
     if !xlf_path.is_absolute() {
-        return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
+        return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
     }
 
     // Find the generated .g.xlf
@@ -1388,11 +1352,11 @@ pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params:
 
     let gen_content = match std::fs::read_to_string(&generated_path) {
         Ok(c) => c,
-        Err(e) => return rpc_error(id, al_core::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {}: {e}", generated_path.display())),
+        Err(e) => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {}: {e}", generated_path.display())),
     };
     let lang_content = match std::fs::read_to_string(&xlf_path) {
         Ok(c) => c,
-        Err(e) => return rpc_error(id, al_core::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {}: {e}", xlf_path.display())),
+        Err(e) => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {}: {e}", xlf_path.display())),
     };
 
     let gen_units_map = al_core::xliff::parse_xliff(&gen_content);
@@ -1410,7 +1374,7 @@ pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params:
         .to_string();
     let new_xlf = al_core::xliff::generate_xliff(&app_name, "en-US", "en-US", &updated_units);
     if let Err(e) = std::fs::write(&xlf_path, new_xlf) {
-        return rpc_error(id, al_core::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot write {}: {e}", xlf_path.display()));
+        return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot write {}: {e}", xlf_path.display()));
     }
 
     let _ = workspace; // workspace used for future workspace-aware refresh
@@ -1424,14 +1388,14 @@ pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params:
 pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> Response {
     let xlf_path = match params.get("xlf").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
+        None => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
     };
     if !std::path::Path::new(xlf_path).is_absolute() {
-        return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
+        return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
     }
     let xlf_content = match std::fs::read_to_string(xlf_path) {
         Ok(c) => c,
-        Err(e) => return rpc_error(id, al_core::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {xlf_path}: {e}")),
+        Err(e) => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {xlf_path}: {e}")),
     };
     let units_map = al_core::xliff::parse_xliff(&xlf_content);
     let all_units: Vec<al_core::xliff::TranslationUnit> = units_map.into_values().collect();
@@ -1456,15 +1420,15 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
 pub(super) async fn dispatch_xlf_suggest(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let xlf_path = match params.get("xlf").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
+        None => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
     };
     if !std::path::Path::new(xlf_path).is_absolute() {
-        return rpc_error(id, al_core::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
+        return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
     }
 
     let xlf_content = match std::fs::read_to_string(xlf_path) {
         Ok(c) => c,
-        Err(e) => return rpc_error(id, al_core::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {xlf_path}: {e}")),
+        Err(e) => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {xlf_path}: {e}")),
     };
 
     let units_map = al_core::xliff::parse_xliff(&xlf_content);
@@ -1685,7 +1649,7 @@ pub(super) async fn dispatch_tests_run(workspace: &Workspace, id: u64, params: &
     let project_root = match workspace.project.read().await.as_ref().map(|p| p.root.clone()) {
         Some(root) => root,
         None => {
-            return rpc_error(id, error_codes::INTERNAL_ERROR, "No project loaded");
+            return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
         }
     };
 

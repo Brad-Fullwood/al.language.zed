@@ -190,6 +190,15 @@ impl DotNetHost {
     }
 }
 
+/// Return `Some((dll, config))` if both files exist, otherwise `None`.
+fn check_bridge_pair(dll: PathBuf, config: PathBuf) -> Option<(PathBuf, PathBuf)> {
+    if dll.is_file() && config.is_file() {
+        Some((dll, config))
+    } else {
+        None
+    }
+}
+
 /// Locate the bridge DLL and runtime config.
 ///
 /// Search order:
@@ -203,9 +212,9 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
         let bridge_dir = PathBuf::from(out_dir).join("bridge");
         let dll = bridge_dir.join("AlBridge.dll");
         let config = bridge_dir.join("AlBridge.runtimeconfig.json");
-        if dll.is_file() && config.is_file() {
-            debug!(path = %dll.display(), "Found bridge DLL from OUT_DIR");
-            return Ok((dll, config));
+        if let Some(pair) = check_bridge_pair(dll, config) {
+            debug!(path = %pair.0.display(), "Found bridge DLL from OUT_DIR");
+            return Ok(pair);
         }
     }
 
@@ -214,16 +223,16 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
         if let Some(exe_dir) = exe.parent() {
             let dll = exe_dir.join("bridge").join("AlBridge.dll");
             let config = exe_dir.join("bridge").join("AlBridge.runtimeconfig.json");
-            if dll.is_file() && config.is_file() {
-                debug!(path = %dll.display(), "Found bridge DLL next to executable");
-                return Ok((dll, config));
+            if let Some(pair) = check_bridge_pair(dll, config) {
+                debug!(path = %pair.0.display(), "Found bridge DLL next to executable");
+                return Ok(pair);
             }
             // Also check flat layout
             let dll = exe_dir.join("AlBridge.dll");
             let config = exe_dir.join("AlBridge.runtimeconfig.json");
-            if dll.is_file() && config.is_file() {
-                debug!(path = %dll.display(), "Found bridge DLL next to executable (flat)");
-                return Ok((dll, config));
+            if let Some(pair) = check_bridge_pair(dll, config) {
+                debug!(path = %pair.0.display(), "Found bridge DLL next to executable (flat)");
+                return Ok(pair);
             }
         }
     }
@@ -233,9 +242,9 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
         let bridge_dir = PathBuf::from(&dir);
         let dll = bridge_dir.join("AlBridge.dll");
         let config = bridge_dir.join("AlBridge.runtimeconfig.json");
-        if dll.is_file() && config.is_file() {
-            debug!(path = %dll.display(), "Found bridge DLL from AL_BRIDGE_DIR");
-            return Ok((dll, config));
+        if let Some(pair) = check_bridge_pair(dll, config) {
+            debug!(path = %pair.0.display(), "Found bridge DLL from AL_BRIDGE_DIR");
+            return Ok(pair);
         }
     }
 
@@ -274,14 +283,12 @@ fn compile_bridge_from_source(csproj: &Path) -> Result<(PathBuf, PathBuf), Seman
 
     let dll = output_dir.join("AlBridge.dll");
     let config = output_dir.join("AlBridge.runtimeconfig.json");
-    if dll.is_file() && config.is_file() {
-        Ok((dll, config))
-    } else {
-        Err(SemanticError::HostInit(format!(
+    check_bridge_pair(dll, config).ok_or_else(|| {
+        SemanticError::HostInit(format!(
             "Bridge built but output not found at {}",
             output_dir.display()
-        )))
-    }
+        ))
+    })
 }
 
 /// Convert a Path to a PdCString for netcorehost.
@@ -315,42 +322,4 @@ mod tests {
         }
     }
 
-    /// Verify that `c_int::try_from` catches values exceeding i32::MAX.
-    /// This mirrors the guard added before each `as c_int` cast.
-    #[test]
-    fn test_c_int_overflow_guard_rejects_oversized_len() {
-        let oversized: usize = (c_int::MAX as usize) + 1;
-        let result = c_int::try_from(oversized);
-        assert!(
-            result.is_err(),
-            "try_from must fail for values > i32::MAX"
-        );
-    }
-
-    /// Values at i32::MAX must not be rejected.
-    #[test]
-    fn test_c_int_overflow_guard_accepts_max() {
-        let at_max: usize = c_int::MAX as usize;
-        let result = c_int::try_from(at_max);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), c_int::MAX);
-    }
-
-    /// Verify the negative-response-length guard logic.
-    #[test]
-    fn test_response_len_negative_is_detected() {
-        let response_len: c_int = -1;
-        // The guard in call() is: if response_len < 0 { return Err(...) }
-        assert!(response_len < 0, "negative response_len must be caught");
-    }
-
-    /// Verify a zero response length is treated as valid (empty body).
-    #[test]
-    fn test_response_len_zero_is_valid() {
-        let response_len: c_int = 0;
-        assert!(response_len >= 0);
-        // Safe cast
-        let as_usize = response_len as usize;
-        assert_eq!(as_usize, 0);
-    }
 }

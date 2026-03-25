@@ -4013,3 +4013,234 @@ codeunit 50100 "My Codeunit"
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Lint fix generation (FIX 1: moved from al-lsp daemon)
+// ---------------------------------------------------------------------------
+
+/// Generate a text-edit fix description for a lint diagnostic.
+///
+/// Interprets lint rule codes (AL-L001, AL-L005, AL-L006, AL-L016) and returns
+/// a JSON object with `code`, `message`, `range`, and `newText` fields.
+/// Returns `None` for unfixable diagnostics (e.g. AL-L007 TODO comments).
+///
+/// `lines` is the document text split by line (used to locate character offsets
+/// for name-based fixes).
+pub fn generate_lint_fix(
+    diag: &al_syntax::LintDiagnostic,
+    lines: &[&str],
+) -> Option<serde_json::Value> {
+    let start_row = diag.range.start_point.row;
+    let end_row = diag.range.end_point.row;
+    let start_col = diag.range.start_point.column;
+    let end_col = diag.range.end_point.column;
+
+    match diag.code.as_str() {
+        // AL-L001/L005/L006: Delete the entire line range (empty block, unused var, empty trigger).
+        "AL-L001" | "AL-L005" | "AL-L006" => {
+            Some(serde_json::json!({
+                "code": diag.code,
+                "message": diag.message,
+                "range": {
+                    "start": { "line": start_row, "character": 0 },
+                    "end": { "line": end_row + 1, "character": 0 }
+                },
+                "newText": "",
+            }))
+        }
+        // AL-L007: TODO comment — not auto-fixable, report only.
+        "AL-L007" => None,
+        // AL-L016: Procedure name not PascalCase — capitalise the first letter.
+        "AL-L016" => {
+            if let Some(line) = lines.get(start_row) {
+                let chars: Vec<char> = line.chars().collect();
+                if start_col < chars.len() {
+                    let name_end_col = if start_row == end_row { end_col } else { chars.len() };
+                    let name: String = chars[start_col..name_end_col.min(chars.len())].iter().collect();
+                    if let Some(first) = name.chars().next() {
+                        let fixed_name = format!("{}{}", first.to_uppercase(), &name[first.len_utf8()..]);
+                        return Some(serde_json::json!({
+                            "code": diag.code,
+                            "message": diag.message,
+                            "range": {
+                                "start": { "line": start_row, "character": start_col },
+                                "end": { "line": end_row, "character": name_end_col }
+                            },
+                            "newText": fixed_name,
+                        }));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Text-edit application engine (FIX 2: moved from al-lsp daemon)
+// ---------------------------------------------------------------------------
+
+/// A simple text edit descriptor used by `apply_text_edits`.
+///
+/// Range values are 0-indexed line/character offsets (character = Unicode code
+/// point index, not UTF-16 units). Edits that delete content use an empty
+/// `new_text`.
+#[derive(Debug, Clone)]
+pub struct SimpleTextEdit {
+    pub start_line: usize,
+    pub start_char: usize,
+    pub end_line: usize,
+    pub end_char: usize,
+    pub new_text: String,
+}
+
+/// Apply a list of text edits (in any order) to `text` and return the result.
+///
+/// Edits are sorted by start line descending before application so that later
+/// positions are patched first, keeping earlier line numbers stable.
+///
+/// Line endings in the output preserve the dominant style of the input
+/// (`\r\n` if the input contains any, otherwise `\n`).
+pub fn apply_text_edits(text: &str, edits: &[SimpleTextEdit]) -> String {
+    if edits.is_empty() {
+        return text.to_string();
+    }
+
+    let mut doc_lines: Vec<String> = text.lines().map(String::from).collect();
+
+    // Sort descending by start line so later lines are patched first.
+    let mut sorted: Vec<&SimpleTextEdit> = edits.iter().collect();
+    sorted.sort_by(|a, b| b.start_line.cmp(&a.start_line));
+
+    for edit in sorted {
+        let start_line = edit.start_line;
+        let end_line = edit.end_line;
+        let start_char = edit.start_char;
+        let end_char = edit.end_char;
+        let new_text_str = edit.new_text.as_str();
+
+        if start_line == end_line {
+            // Single-line replacement within one line.
+            if let Some(line) = doc_lines.get_mut(start_line) {
+                let chars: Vec<char> = line.chars().collect();
+                let s = start_char.min(chars.len());
+                let e = end_char.min(chars.len());
+                let replacement_chars: Vec<char> = new_text_str.chars().collect();
+                *line = chars[..s].iter()
+                    .chain(replacement_chars.iter())
+                    .chain(chars[e..].iter())
+                    .collect();
+            }
+        } else {
+            // Multi-line range replacement — remove lines [start_line, end_line) and
+            // insert new_text_str lines (empty string means delete).
+            let safe_start = start_line.min(doc_lines.len());
+            let safe_end = end_line.min(doc_lines.len());
+            let replacement: Vec<String> = if new_text_str.is_empty() {
+                vec![]
+            } else {
+                new_text_str.lines().map(String::from).collect()
+            };
+            doc_lines.splice(safe_start..safe_end, replacement);
+        }
+    }
+
+    let line_ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut result = doc_lines.join(line_ending);
+    // Preserve trailing newline if the original text had one.
+    if text.ends_with('\n') || text.ends_with("\r\n") {
+        result.push_str(line_ending);
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
+// Tests for generate_lint_fix and apply_text_edits
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod lint_fix_tests {
+    use super::*;
+
+    #[test]
+    fn generate_lint_fix_l001_deletes_line_range() {
+        let diag = al_syntax::LintDiagnostic {
+            code: "AL-L001".to_string(),
+            message: "Empty block".to_string(),
+            range: tree_sitter::Range {
+                start_byte: 0,
+                end_byte: 10,
+                start_point: tree_sitter::Point { row: 2, column: 0 },
+                end_point: tree_sitter::Point { row: 2, column: 10 },
+            },
+            severity: al_syntax::LintSeverity::Warning,
+        };
+        let fix = generate_lint_fix(&diag, &[]).unwrap();
+        assert_eq!(fix["range"]["start"]["line"], 2);
+        assert_eq!(fix["range"]["end"]["line"], 3);
+        assert_eq!(fix["newText"], "");
+    }
+
+    #[test]
+    fn generate_lint_fix_l007_returns_none() {
+        let diag = al_syntax::LintDiagnostic {
+            code: "AL-L007".to_string(),
+            message: "TODO".to_string(),
+            range: tree_sitter::Range {
+                start_byte: 0,
+                end_byte: 5,
+                start_point: tree_sitter::Point { row: 0, column: 0 },
+                end_point: tree_sitter::Point { row: 0, column: 5 },
+            },
+            severity: al_syntax::LintSeverity::Warning,
+        };
+        assert!(generate_lint_fix(&diag, &[]).is_none());
+    }
+
+    #[test]
+    fn generate_lint_fix_l016_capitalises_first_letter() {
+        let diag = al_syntax::LintDiagnostic {
+            code: "AL-L016".to_string(),
+            message: "Not PascalCase".to_string(),
+            range: tree_sitter::Range {
+                start_byte: 0,
+                end_byte: 10,
+                start_point: tree_sitter::Point { row: 0, column: 10 },
+                end_point: tree_sitter::Point { row: 0, column: 16 },
+            },
+            severity: al_syntax::LintSeverity::Warning,
+        };
+        let lines = vec!["procedure myProc()"];
+        let fix = generate_lint_fix(&diag, &lines).unwrap();
+        assert_eq!(fix["newText"], "MyProc");
+    }
+
+    #[test]
+    fn apply_text_edits_single_line_replacement() {
+        let text = "hello world\n";
+        let edits = vec![SimpleTextEdit {
+            start_line: 0, start_char: 6, end_line: 0, end_char: 11,
+            new_text: "Rust".to_string(),
+        }];
+        let result = apply_text_edits(text, &edits);
+        assert_eq!(result, "hello Rust\n");
+    }
+
+    #[test]
+    fn apply_text_edits_multi_line_delete() {
+        let text = "line0\nline1\nline2\n";
+        let edits = vec![SimpleTextEdit {
+            start_line: 1, start_char: 0, end_line: 2, end_char: 0,
+            new_text: String::new(),
+        }];
+        let result = apply_text_edits(text, &edits);
+        assert_eq!(result, "line0\nline2\n");
+    }
+
+    #[test]
+    fn apply_text_edits_empty_edits_returns_unchanged() {
+        let text = "unchanged\n";
+        assert_eq!(apply_text_edits(text, &[]), "unchanged\n");
+    }
+}

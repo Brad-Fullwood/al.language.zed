@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 use crate::model::SymbolEntry;
 use crate::source_index;
-use crate::source_index::{is_ident_char, is_ident_start};
+use crate::source_index::{is_ident_char, is_ident_start, parse_quoted_ident};
 
 /// Cache directory for extracted / generated virtual AL files.
 pub fn cache_dir() -> PathBuf {
@@ -73,8 +73,7 @@ pub fn app_has_source(app_path: &Path) -> bool {
         Err(_) => return false,
     };
 
-    let zip_offset = match (4..data.len().saturating_sub(3))
-        .find(|&i| &data[i..i + 4] == b"\x50\x4B\x03\x04") {
+    let zip_offset = match crate::app_reader::find_zip_offset(&data) {
         Some(o) => o,
         None => return false,
     };
@@ -113,7 +112,7 @@ fn sanitize_filename(s: &str) -> String {
 /// with attributes, and global variables. This is the standard output for packages without
 /// embedded source — not a degraded mode.
 pub fn render_outline(entry: &SymbolEntry) -> String {
-    use crate::model::{FieldSymbol, MethodSymbol, ObjectKind};
+    use crate::model::{FieldSymbol, MethodSymbol};
 
     fn format_name(name: &str) -> String {
         let needs_quoting = name.contains(' ')
@@ -127,29 +126,6 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
             format!("\"{}\"", name)
         } else {
             name.to_string()
-        }
-    }
-
-    fn kind_keyword(kind: ObjectKind) -> &'static str {
-        match kind {
-            ObjectKind::Table => "table",
-            ObjectKind::TableExtension => "tableextension",
-            ObjectKind::Page => "page",
-            ObjectKind::PageExtension => "pageextension",
-            ObjectKind::Codeunit => "codeunit",
-            ObjectKind::Report => "report",
-            ObjectKind::ReportExtension => "reportextension",
-            ObjectKind::XmlPort => "xmlport",
-            ObjectKind::Query => "query",
-            ObjectKind::Enum => "enum",
-            ObjectKind::EnumExtension => "enumextension",
-            ObjectKind::Interface => "interface",
-            ObjectKind::PermissionSet => "permissionset",
-            ObjectKind::PermissionSetExtension => "permissionsetextension",
-            ObjectKind::Profile => "profile",
-            ObjectKind::PageCustomization => "pagecustomization",
-            ObjectKind::ControlAddIn => "controladdin",
-            ObjectKind::Entitlement => "entitlement",
         }
     }
 
@@ -187,7 +163,7 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
 
     let mut out = String::new();
     let name_str = format_name(&entry.name);
-    let kw = kind_keyword(entry.kind);
+    let kw = entry.kind.al_keyword();
 
     // Object header
     if let Some(ref extends) = entry.extends {
@@ -475,23 +451,9 @@ fn parse_name_token(
     }
     if bytes[i] == b'"' {
         let start_col = i + 1;
-        i += 1;
-        let mut out = String::new();
-        while i < bytes.len() {
-            if bytes[i] == b'"' {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
-                    out.push('"');
-                    i += 2;
-                    continue;
-                }
-                let end_col = i;
-                return Some((out, start_col, end_col));
-            }
-            let ch = line[i..].chars().next()?;
-            out.push(ch);
-            i += ch.len_utf8();
-        }
-        return None;
+        let (name, end) = parse_quoted_ident(bytes, i)?;
+        // end points to the byte after the closing `"`, so col_end = end - 1
+        return Some((name, start_col, end - 1));
     }
 
     let start_col = i;

@@ -484,7 +484,10 @@ async fn test_adversarial_read_loop_lf_only_headers_are_accepted() {
 ///
 /// This test always PASSES — it documents the architectural gap rather than
 /// testing runtime behavior.
+// This test documents the architectural gap rather than testing runtime behavior.
+// It asserts nothing meaningful at runtime; the real assertion is compilation.
 #[test]
+#[ignore = "documents a testability gap; no runtime assertion"]
 fn test_adversarial_from_transport_is_not_pub_testability_gap() {
     // from_transport is private — this is a compilation assertion.
     // The following would NOT compile if uncommented:
@@ -565,7 +568,10 @@ fn test_adversarial_file_uri_only_encodes_spaces_not_other_special_chars() {
 ///
 /// Document the gap: the ordering guarantee cannot be externally verified
 /// without white-box access.
+// This test documents the testability gap for notification ordering.
+// It asserts nothing meaningful at runtime.
 #[test]
+#[ignore = "documents a testability gap; no runtime assertion"]
 fn test_adversarial_drain_notifications_ordering_is_not_externally_verifiable() {
     // buffered_notifications is a private field — cannot be set from tests.
     // The ordering guarantee (buffered first, then channel) is an internal
@@ -623,11 +629,9 @@ async fn test_adversarial_read_loop_content_length_trailing_whitespace_is_tolera
 // Internal: replicate read_loop + pending map for white-box testing
 // ---------------------------------------------------------------------------
 
-/// Construct a (pending_map, notification_rx) pair backed by a read_loop
+/// Construct a (pending_map, notification_rx) pair backed by `read_loop`
 /// running on `reader`.  This replicates what `from_transport` does internally,
 /// so we can test the loop's behavior without needing a public constructor.
-///
-/// This is necessary because `from_transport` is private.
 fn make_dispatch_pair(
     reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
 ) -> (
@@ -644,81 +648,9 @@ fn make_dispatch_pair(
     let (notif_tx, notif_rx) = mpsc::unbounded_channel();
     let pending_clone = pending.clone();
 
-    // read_loop is private to the crate — we cannot call it directly.
-    // We re-implement it here to test the same logic path.
     tokio::spawn(async move {
-        run_read_loop(BufReader::new(reader), pending_clone, notif_tx).await;
+        al_test_harness::read_loop(BufReader::new(reader), pending_clone, notif_tx).await;
     });
 
     (pending, notif_rx)
-}
-
-/// Copy of the read_loop logic from lib.rs so tests can exercise it without
-/// white-box access to the private function.
-///
-/// IMPORTANT: if lib.rs's read_loop changes, this copy must be updated too.
-/// Any divergence between this and the real implementation invalidates the tests.
-/// This is a fundamental limitation of testing private code from outside the crate.
-async fn run_read_loop(
-    mut reader: impl tokio::io::AsyncBufRead + Unpin,
-    pending: std::sync::Arc<
-        tokio::sync::Mutex<
-            std::collections::HashMap<i64, tokio::sync::oneshot::Sender<serde_json::Value>>,
-        >,
-    >,
-    notif_tx: tokio::sync::mpsc::UnboundedSender<(String, serde_json::Value)>,
-) {
-    use tokio::io::AsyncBufReadExt;
-    use tokio::io::AsyncReadExt;
-
-    let mut header_buf = String::new();
-
-    loop {
-        // Read headers
-        let mut content_length: Option<usize> = None;
-        loop {
-            header_buf.clear();
-            match reader.read_line(&mut header_buf).await {
-                Ok(0) => return, // EOF
-                Ok(_) => {}
-                Err(_) => return,
-            }
-
-            let line = header_buf.trim();
-            if line.is_empty() {
-                break;
-            }
-
-            if let Some(len_str) = line.strip_prefix("Content-Length: ") {
-                content_length = len_str.parse().ok();
-            }
-        }
-
-        let content_length = match content_length {
-            Some(len) => len,
-            None => continue,
-        };
-
-        // Read body
-        let mut body = vec![0u8; content_length];
-        match reader.read_exact(&mut body).await {
-            Ok(_) => {}
-            Err(_) => return,
-        }
-
-        let msg: serde_json::Value = match serde_json::from_slice(&body) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
-            let mut p = pending.lock().await;
-            if let Some(tx) = p.remove(&id) {
-                let _ = tx.send(msg);
-            }
-        } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
-            let params = msg.get("params").cloned().unwrap_or(serde_json::Value::Null);
-            let _ = notif_tx.send((method.to_string(), params));
-        }
-    }
 }

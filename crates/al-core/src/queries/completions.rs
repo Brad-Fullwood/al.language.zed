@@ -290,17 +290,11 @@ fn add_default_completions(
             let subtype = var.type_subtype.as_ref()
                 .map(|s| format!(" \"{}\"", s))
                 .unwrap_or_default();
-            let scope_label = match var.scope {
-                al_syntax::type_resolver::VariableScope::Local => "local",
-                al_syntax::type_resolver::VariableScope::Parameter => "parameter",
-                al_syntax::type_resolver::VariableScope::Global => "global",
-                al_syntax::type_resolver::VariableScope::SelfImplicit => "self",
-                al_syntax::type_resolver::VariableScope::TriggerImplicit => "trigger",
-            };
+            let label = super::scope_label(&var.scope);
             items.push(CompletionEntry {
                 label: var.name.clone(),
                 kind: CompletionKind::Variable,
-                detail: Some(format!("{}{} ({})", var.type_name, subtype, scope_label)),
+                detail: Some(format!("{}{} ({})", var.type_name, subtype, label)),
                 documentation: None,
                 insert_text: None,
                 sort_text: Some(format!("0_{}", var.name)),
@@ -338,25 +332,6 @@ fn add_default_completions(
     drop(builtins); // release read lock promptly
 }
 
-fn count_params(detail: &str) -> usize {
-    let start = match detail.find('(') { Some(i) => i + 1, None => return 0 };
-    let end = match detail.rfind(')') { Some(i) => i, None => return 0 };
-    if start >= end { return 0; }
-    let inner = detail[start..end].trim();
-    if inner.is_empty() { return 0; }
-    let mut count = 1usize;
-    let mut depth = 0i32;
-    for ch in inner.chars() {
-        match ch {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth -= 1,
-            ';' if depth == 0 => count += 1,
-            _ => {}
-        }
-    }
-    count
-}
-
 fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
     // Sort so that non-keyword items precede keywords before dedup, ensuring
     // a workspace procedure with the same name as a keyword is not shadowed.
@@ -369,7 +344,7 @@ fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
         let label_lower = item.label.to_lowercase();
         let is_callable = matches!(item.kind, CompletionKind::Function | CompletionKind::Method);
         if is_callable {
-            let pc = item.detail.as_deref().map(count_params).unwrap_or(0);
+            let pc = item.detail.as_deref().map(|d| super::parse_detail_params(d).len()).unwrap_or(0);
             item.sort_text = Some(format!("1_{pc:02}_{label_lower}"));
         } else {
             item.sort_text = Some(format!("1_{label_lower}"));
@@ -437,13 +412,14 @@ mod tests {
 
     #[test]
     fn count_params_works() {
-        assert_eq!(count_params("()"), 0);
-        assert_eq!(count_params(""), 0);
-        assert_eq!(count_params("(A: Text)"), 1);
-        assert_eq!(count_params("(A: Text; B: Integer)"), 2);
-        assert_eq!(count_params("(A: Text; B: Integer; C: Boolean)"), 3);
-        assert_eq!(count_params("(A: List of [Text]; B: Integer)"), 2);
-        assert_eq!(count_params("(A: Text): Boolean"), 1);
+        // Verify that parse_detail_params (the canonical implementation) counts correctly.
+        assert_eq!(super::super::parse_detail_params("()").len(), 0);
+        assert_eq!(super::super::parse_detail_params("").len(), 0);
+        assert_eq!(super::super::parse_detail_params("(A: Text)").len(), 1);
+        assert_eq!(super::super::parse_detail_params("(A: Text; B: Integer)").len(), 2);
+        assert_eq!(super::super::parse_detail_params("(A: Text; B: Integer; C: Boolean)").len(), 3);
+        assert_eq!(super::super::parse_detail_params("(A: List of [Text]; B: Integer)").len(), 2);
+        assert_eq!(super::super::parse_detail_params("(A: Text): Boolean").len(), 1);
     }
 
     // --- Failure path tests ---

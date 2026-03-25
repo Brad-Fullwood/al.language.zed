@@ -3,6 +3,8 @@
 use tracing::{debug, trace};
 use tree_sitter::{Node, Tree};
 
+use crate::prev_named_sibling;
+
 /// Semantic token type indices — must match the legend registered with the LSP client.
 pub mod token_types {
     // Standard LSP semantic token types
@@ -594,14 +596,7 @@ fn is_object_name(node: Node, declaration: Node) -> bool {
 }
 
 fn has_ancestor_kind(node: Node, kind: &str) -> bool {
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        if parent.kind() == kind {
-            return true;
-        }
-        current = parent.parent();
-    }
-    false
+    crate::has_ancestor_kind(node, kind)
 }
 
 /// Classify a `key_declaration` name node based on the keyword child of the declaration.
@@ -682,16 +677,6 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
     }
 }
 
-/// Return the previous named sibling of a node (skipping unnamed/anonymous nodes).
-fn prev_named_sibling(node: Node) -> Option<Node> {
-    let mut sibling = node.prev_sibling()?;
-    loop {
-        if sibling.is_named() {
-            return Some(sibling);
-        }
-        sibling = sibling.prev_sibling()?;
-    }
-}
 
 #[cfg(test)]
 mod tests {

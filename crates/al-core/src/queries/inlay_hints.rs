@@ -224,26 +224,7 @@ fn lookup_parameter_names(
     arg_types: &[Option<InferredType>],
 ) -> Vec<String> {
     // 1. Local procedures
-    let mut candidates: Vec<OverloadCandidate> = Vec::new();
-    for sym in doc_symbols {
-        if let Some(children) = &sym.children {
-            for child in children {
-                if child.name.eq_ignore_ascii_case(func_name)
-                    && super::is_procedure_symbol(child.kind)
-                {
-                    if let Some(detail) = &child.detail {
-                        let params = parse_detail_params(detail);
-                        if !params.is_empty() {
-                            candidates.push(OverloadCandidate {
-                                names: params.iter().map(|(_, n, _)| n.clone()).collect(),
-                                types: params.iter().map(|(_, _, t)| t.clone()).collect(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let candidates = overload_candidates_from_symbols(doc_symbols, func_name);
     if !candidates.is_empty() {
         if let Some(best) = select_best_overload(&candidates, arg_types) { return best; }
     }
@@ -330,26 +311,7 @@ fn lookup_via_receiver(
             // Use cached parse tree — avoids re-parsing on every inlay-hint request.
             if let Some((content, file_tree)) = workspace.file_index.get_cached_parse(&file_path) {
                 let target_symbols = al_syntax::extract_document_symbols(&file_tree, &content);
-                let mut candidates: Vec<OverloadCandidate> = Vec::new();
-                for sym in &target_symbols {
-                    if let Some(children) = &sym.children {
-                        for child in children {
-                            if child.name.eq_ignore_ascii_case(func_name)
-                                && super::is_procedure_symbol(child.kind)
-                            {
-                                if let Some(detail) = &child.detail {
-                                    let params = parse_detail_params(detail);
-                                    if !params.is_empty() {
-                                        candidates.push(OverloadCandidate {
-                                            names: params.iter().map(|(_, n, _)| n.clone()).collect(),
-                                            types: params.iter().map(|(_, _, t)| t.clone()).collect(),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                let candidates = overload_candidates_from_symbols(&target_symbols, func_name);
                 if let Some(best) = select_best_overload(&candidates, arg_types) { return Some(best); }
             }
         }
@@ -383,6 +345,37 @@ fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
 }
 
 use super::parse_detail_params;
+
+/// Collect `OverloadCandidate` entries from a slice of `DocumentSymbol` for the given
+/// function name. Shared by `lookup_parameter_names` (local file) and
+/// `lookup_via_receiver` (resolved-type file) to avoid duplicating the nested loop.
+#[allow(deprecated)]
+fn overload_candidates_from_symbols(
+    symbols: &[tower_lsp::lsp_types::DocumentSymbol],
+    func_name: &str,
+) -> Vec<OverloadCandidate> {
+    let mut candidates = Vec::new();
+    for sym in symbols {
+        if let Some(children) = &sym.children {
+            for child in children {
+                if child.name.eq_ignore_ascii_case(func_name)
+                    && super::is_procedure_symbol(child.kind)
+                {
+                    if let Some(detail) = &child.detail {
+                        let params = parse_detail_params(detail);
+                        if !params.is_empty() {
+                            candidates.push(OverloadCandidate {
+                                names: params.iter().map(|(_, n, _)| n.clone()).collect(),
+                                types: params.iter().map(|(_, _, t)| t.clone()).collect(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    candidates
+}
 
 /// Walk the tree and emit return type hints for procedures/triggers that declare
 /// a return type. The hint appears immediately after the closing `)` of the

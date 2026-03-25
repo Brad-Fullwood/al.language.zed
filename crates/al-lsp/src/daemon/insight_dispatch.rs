@@ -1,7 +1,7 @@
 //! Insight engine dispatchers — trace, entrypoints, graph export, dead code, impact, suggest_event.
 
 use al_core::workspace::Workspace;
-use al_core::jsonrpc::{error_codes, Response, RpcError};
+use al_daemon_client::jsonrpc::{error_codes, Response, RpcError};
 
 use super::invalid_params;
 

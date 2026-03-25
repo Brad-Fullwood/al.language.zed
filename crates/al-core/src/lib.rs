@@ -10,7 +10,6 @@ pub mod documents;
 pub mod errors;
 pub mod file_index;
 pub mod insight;
-pub mod jsonrpc;
 pub mod launch;
 pub mod native_debug;
 pub mod parsing;

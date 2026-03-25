@@ -81,10 +81,7 @@ pub enum ProfilingError {
 
 /// Build a [`reqwest::Client`] configured from the profiling config.
 fn make_client(config: &ProfilingConfig) -> Result<reqwest::Client, ProfilingError> {
-    Ok(reqwest::Client::builder()
-        .danger_accept_invalid_certs(config.accept_invalid_certs)
-        .timeout(std::time::Duration::from_secs(300))
-        .build()?)
+    Ok(crate::http_auth::build_http_client(config.accept_invalid_certs, 300)?)
 }
 
 /// Start CPU profiling on the BC server.

@@ -44,51 +44,49 @@ pub fn extract_document_symbols(tree: &Tree, text: &str) -> Vec<DocumentSymbol> 
     symbols
 }
 
+/// Static mapping: (grammar node kind, display name, LSP SymbolKind).
+///
+/// Both `object_kind_display` and `object_kind_to_symbol_kind` derive from this table.
+/// To add a new AL object type, add a single entry here.
+static OBJECT_KIND_MAP: &[(&str, &str, SymbolKind)] = &[
+    ("kw_table",                  "table",                  SymbolKind::STRUCT),
+    ("kw_tableextension",         "tableextension",         SymbolKind::STRUCT),
+    ("kw_page",                   "page",                   SymbolKind::CLASS),
+    ("kw_pageextension",          "pageextension",          SymbolKind::CLASS),
+    ("kw_pagecustomization",      "pagecustomization",      SymbolKind::CLASS),
+    ("kw_codeunit",               "codeunit",               SymbolKind::MODULE),
+    ("kw_report",                 "report",                 SymbolKind::FILE),
+    ("kw_reportextension",        "reportextension",        SymbolKind::FILE),
+    ("kw_query",                  "query",                  SymbolKind::INTERFACE),
+    ("kw_xmlport",                "xmlport",                SymbolKind::INTERFACE),
+    ("kw_enum",                   "enum",                   SymbolKind::ENUM),
+    ("kw_enumextension",          "enumextension",          SymbolKind::ENUM),
+    ("kw_interface",              "interface",              SymbolKind::INTERFACE),
+    ("kw_permissionset",          "permissionset",          SymbolKind::NAMESPACE),
+    ("kw_permissionsetextension", "permissionsetextension", SymbolKind::NAMESPACE),
+    ("kw_profile",                "profile",                SymbolKind::NAMESPACE),
+    ("kw_profileextension",       "profileextension",       SymbolKind::NAMESPACE),
+    ("kw_controladdin",           "controladdin",           SymbolKind::CLASS),
+    ("kw_entitlement",            "entitlement",            SymbolKind::NAMESPACE),
+    ("kw_dotnet",                 "dotnet",                 SymbolKind::NAMESPACE),
+];
+
 /// Map an AL object kind node to an LSP SymbolKind.
 fn object_kind_to_symbol_kind(kind: &str) -> SymbolKind {
-    match kind {
-        "kw_table" | "kw_tableextension" => SymbolKind::STRUCT,
-        "kw_page" | "kw_pageextension" | "kw_pagecustomization" => SymbolKind::CLASS,
-        "kw_codeunit" => SymbolKind::MODULE,
-        "kw_report" | "kw_reportextension" => SymbolKind::FILE,
-        "kw_query" => SymbolKind::INTERFACE,
-        "kw_xmlport" => SymbolKind::INTERFACE,
-        "kw_enum" | "kw_enumextension" => SymbolKind::ENUM,
-        "kw_interface" => SymbolKind::INTERFACE,
-        "kw_permissionset" | "kw_permissionsetextension" => SymbolKind::NAMESPACE,
-        "kw_profile" | "kw_profileextension" => SymbolKind::NAMESPACE,
-        "kw_controladdin" => SymbolKind::CLASS,
-        "kw_entitlement" => SymbolKind::NAMESPACE,
-        "kw_dotnet" => SymbolKind::NAMESPACE,
-        _ => SymbolKind::OBJECT,
-    }
+    OBJECT_KIND_MAP
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, _, sym)| *sym)
+        .unwrap_or(SymbolKind::OBJECT)
 }
 
 /// Extract the object kind as a human-readable string.
 fn object_kind_display(kind: &str) -> &str {
-    match kind {
-        "kw_table" => "table",
-        "kw_tableextension" => "tableextension",
-        "kw_page" => "page",
-        "kw_pageextension" => "pageextension",
-        "kw_pagecustomization" => "pagecustomization",
-        "kw_codeunit" => "codeunit",
-        "kw_report" => "report",
-        "kw_reportextension" => "reportextension",
-        "kw_query" => "query",
-        "kw_xmlport" => "xmlport",
-        "kw_enum" => "enum",
-        "kw_enumextension" => "enumextension",
-        "kw_interface" => "interface",
-        "kw_permissionset" => "permissionset",
-        "kw_permissionsetextension" => "permissionsetextension",
-        "kw_profile" => "profile",
-        "kw_profileextension" => "profileextension",
-        "kw_controladdin" => "controladdin",
-        "kw_entitlement" => "entitlement",
-        "kw_dotnet" => "dotnet",
-        other => other,
-    }
+    OBJECT_KIND_MAP
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, display, _)| *display)
+        .unwrap_or(kind)
 }
 
 fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
@@ -96,27 +94,26 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kind_str = kind_node.kind();
     let sym_kind = object_kind_to_symbol_kind(kind_str);
 
-    // Grammar doesn't assign a field name to the object name,
-    // so we look for identifier/quoted_identifier/string children
-    let mut name = "(unnamed)".to_string();
-    let mut name_node_range = None;
-    {
+    // Grammar doesn't assign a field name to the object name;
+    // use the shared extract_object_name helper.
+    let name = crate::extract_object_name(node, source).unwrap_or_else(|| "(unnamed)".to_string());
+    // Also track the name node range for the selection_range below.
+    let name_node_range = {
+        let mut found_range = None;
         let mut obj_cursor = node.walk();
         for c in node.children(&mut obj_cursor) {
-            match c.kind() {
-                "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword" => {
-                    if let Ok(n) = c.utf8_text(source) {
-                        let trimmed = n.trim_matches('"');
-                        if !trimmed.is_empty() {
-                            name = trimmed.to_string();
-                            name_node_range = Some(c.range());
-                        }
+            if matches!(c.kind(), "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword") {
+                if let Ok(n) = c.utf8_text(source) {
+                    let trimmed = n.trim_matches('"').trim();
+                    if !trimmed.is_empty() {
+                        found_range = Some(c.range());
+                        break;
                     }
                 }
-                _ => {}
             }
         }
-    }
+        found_range
+    };
 
     let id_text = node
         .child_by_field_name("id")
@@ -230,13 +227,46 @@ fn extract_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSy
     }
 }
 
-fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
+/// Shared helper: build a `DocumentSymbol` for any named node (procedure, trigger, event).
+///
+/// `kind` is the LSP `SymbolKind`.  `detail` is the optional detail string shown in the outline.
+fn extract_named_symbol(
+    node: Node,
+    source: &[u8],
+    kind: SymbolKind,
+    detail: Option<String>,
+) -> Option<DocumentSymbol> {
     let name = node
         .child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
         .unwrap_or("(unnamed)")
         .trim_matches('"')
         .to_string();
+
+    let range = ts_range_to_lsp(&node.range(), source);
+    let selection_range = node
+        .child_by_field_name("name")
+        .map(|n| ts_range_to_lsp(&n.range(), source))
+        .unwrap_or(range);
+
+    Some(DocumentSymbol {
+        name,
+        detail,
+        kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children: None,
+    })
+}
+
+fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
+    let name = node
+        .child_by_field_name("name")
+        .and_then(|n| n.utf8_text(source).ok())
+        .unwrap_or("(unnamed)")
+        .trim_matches('"');
 
     if name == "(unnamed)" {
         debug!(
@@ -261,74 +291,15 @@ fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
         Some(params.to_string())
     };
 
-    let range = ts_range_to_lsp(&node.range(), source);
-    let selection_range = node
-        .child_by_field_name("name")
-        .map(|n| ts_range_to_lsp(&n.range(), source))
-        .unwrap_or(range);
-
-    Some(DocumentSymbol {
-        name,
-        detail,
-        kind: SymbolKind::FUNCTION,
-        tags: None,
-        deprecated: None,
-        range,
-        selection_range,
-        children: None,
-    })
+    extract_named_symbol(node, source, SymbolKind::FUNCTION, detail)
 }
 
 fn extract_trigger_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(source).ok())
-        .unwrap_or("(unnamed)")
-        .trim_matches('"')
-        .to_string();
-
-    let range = ts_range_to_lsp(&node.range(), source);
-    let selection_range = node
-        .child_by_field_name("name")
-        .map(|n| ts_range_to_lsp(&n.range(), source))
-        .unwrap_or(range);
-
-    Some(DocumentSymbol {
-        name,
-        detail: Some("trigger".to_string()),
-        kind: SymbolKind::EVENT,
-        tags: None,
-        deprecated: None,
-        range,
-        selection_range,
-        children: None,
-    })
+    extract_named_symbol(node, source, SymbolKind::EVENT, Some("trigger".to_string()))
 }
 
 fn extract_event_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    let name = node
-        .child_by_field_name("name")
-        .and_then(|n| n.utf8_text(source).ok())
-        .unwrap_or("(unnamed)")
-        .trim_matches('"')
-        .to_string();
-
-    let range = ts_range_to_lsp(&node.range(), source);
-    let selection_range = node
-        .child_by_field_name("name")
-        .map(|n| ts_range_to_lsp(&n.range(), source))
-        .unwrap_or(range);
-
-    Some(DocumentSymbol {
-        name,
-        detail: Some("event".to_string()),
-        kind: SymbolKind::EVENT,
-        tags: None,
-        deprecated: None,
-        range,
-        selection_range,
-        children: None,
-    })
+    extract_named_symbol(node, source, SymbolKind::EVENT, Some("event".to_string()))
 }
 
 fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
@@ -859,66 +830,48 @@ fn extract_var_section_children(node: Node, source: &[u8], symbols: &mut Vec<Doc
 
 fn collect_var_symbols_recursive(root: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     let mut cursor = root.walk();
-    let mut did_visit = false;
-    loop {
-        if !did_visit {
-            let node = cursor.node();
-            match node.kind() {
-                "regular_variable_declaration" => {
-                    let detail = extract_node_text(node.child_by_field_name("type"), source);
-                    let range = ts_range_to_lsp(&node.range(), source);
-                    for (name, selection_range) in extract_regular_variable_names(node, source) {
+    for child in root.children(&mut cursor) {
+        match child.kind() {
+            "regular_variable_declaration" => {
+                let detail = extract_node_text(child.child_by_field_name("type"), source);
+                let range = ts_range_to_lsp(&child.range(), source);
+                for (name, selection_range) in extract_regular_variable_names(child, source) {
+                    symbols.push(DocumentSymbol {
+                        name,
+                        detail: detail.clone(),
+                        kind: SymbolKind::VARIABLE,
+                        tags: None,
+                        deprecated: None,
+                        range,
+                        selection_range,
+                        children: None,
+                    });
+                }
+                // Do not recurse into regular_variable_declaration children
+            }
+            "label_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    if let Some(name) = clean_node_text(name_node, source) {
+                        let detail = extract_node_text(child.child_by_field_name("type"), source);
                         symbols.push(DocumentSymbol {
                             name,
-                            detail: detail.clone(),
+                            detail,
                             kind: SymbolKind::VARIABLE,
                             tags: None,
                             deprecated: None,
-                            range,
-                            selection_range,
+                            range: ts_range_to_lsp(&child.range(), source),
+                            selection_range: ts_range_to_lsp(&name_node.range(), source),
                             children: None,
                         });
                     }
-                    // Skip children of variable declarations
-                    did_visit = true;
-                    continue;
                 }
-                "label_declaration" => {
-                    if let Some(name_node) = node.child_by_field_name("name") {
-                        if let Some(name) = clean_node_text(name_node, source) {
-                            let detail = extract_node_text(node.child_by_field_name("type"), source);
-                            symbols.push(DocumentSymbol {
-                                name,
-                                detail,
-                                kind: SymbolKind::VARIABLE,
-                                tags: None,
-                                deprecated: None,
-                                range: ts_range_to_lsp(&node.range(), source),
-                                selection_range: ts_range_to_lsp(&name_node.range(), source),
-                                children: None,
-                            });
-                        }
-                    }
-                    // Skip children of label declarations
-                    did_visit = true;
-                    continue;
-                }
-                _ => {}
+                // Do not recurse into label_declaration children
+            }
+            _ => {
+                // Recurse into container nodes (variable_declaration wrappers, etc.)
+                collect_var_symbols_recursive(child, source, symbols);
             }
         }
-        if !did_visit && cursor.goto_first_child() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_next_sibling() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_parent() {
-            did_visit = true;
-            continue;
-        }
-        break;
     }
 }
 
@@ -980,23 +933,11 @@ fn is_variable_name_node(kind: &str) -> bool {
 }
 
 fn extract_node_text(node: Option<Node>, source: &[u8]) -> Option<String> {
-    let node = node?;
-    let text = node.utf8_text(source).ok()?.trim();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_string())
-    }
+    crate::node_text_clean(node?, source)
 }
 
 fn clean_node_text(node: Node, source: &[u8]) -> Option<String> {
-    let text = node.utf8_text(source).ok()?;
-    let clean = text.trim_matches('"').trim();
-    if clean.is_empty() {
-        None
-    } else {
-        Some(clean.to_string())
-    }
+    crate::node_text_clean(node, source)
 }
 
 fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {

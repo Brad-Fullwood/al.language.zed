@@ -177,6 +177,120 @@ pub struct WorkspaceMemoryStats {
     pub package_count: usize,
 }
 
+/// Result of a successful core workspace initialization.
+///
+/// Callers (LSP and daemon) consume this to perform their transport-specific
+/// post-init steps (sending notifications, opening files in DocumentStore, etc.).
+pub struct CoreInitResult {
+    /// Number of workspace .al files found by the file scanner.
+    pub file_count: usize,
+    /// Number of symbol packages loaded.
+    pub package_count: usize,
+    /// Total symbols across all loaded packages.
+    pub total_symbols: usize,
+    /// Whether a toolchain was found.
+    pub has_toolchain: bool,
+}
+
+/// Initialize the common parts of a workspace.
+///
+/// Shared by the LSP and daemon initialisation paths.  Performs:
+/// 1. `find_project(project_root)` — discover `app.json` and package paths.
+/// 2. `load_packages_cached(packages, cache)` — load symbol packages.
+/// 3. `workspace.symbols.load_runtime_enums()` — load runtime enum definitions.
+/// 4. `workspace.invalidate_insight_graph()` — reset the cached graph.
+/// 5. `file_index.scan(root)` — discover workspace .al files.
+/// 6. Store package metadata in `workspace.package_info`.
+/// 7. Write the project into `workspace.project`.
+/// 8. `find_toolchain()` — discover the AL toolchain.
+/// 9. Write the toolchain into `workspace.toolchain`.
+///
+/// The caller is responsible for transport-specific steps such as: notifying the
+/// user, opening files in DocumentStore, auto-downloading missing packages, or
+/// loading builtins from disk cache.
+///
+/// Returns `Ok(CoreInitResult)` on success; the workspace may be partially
+/// initialised (e.g. project not found but toolchain found) — errors are logged
+/// via `tracing` and represented as partial results.
+pub async fn initialize_core_workspace(
+    workspace: &Workspace,
+    project_root: &std::path::Path,
+) -> CoreInitResult {
+    let file_count;
+    let mut package_count = 0usize;
+    let mut total_symbols = 0usize;
+
+    match crate::project::find_project(project_root) {
+        Ok(project) => {
+            tracing::info!(
+                name = %project.app_json.name,
+                root = %project.root.display(),
+                packages = project.packages.len(),
+                "workspace: project discovered"
+            );
+
+            // Load symbol packages (with disk cache for fast warm starts).
+            let cache = crate::symbols::cache::SymbolCache::default_location();
+            let loaded = workspace.symbols.load_packages_cached(&project.packages, &cache);
+            total_symbols = loaded.iter().map(|p| p.objects.len()).sum();
+            package_count = loaded.len();
+            tracing::info!(packages = package_count, symbols = total_symbols, "workspace: loaded symbol packages");
+
+            // Load runtime enum definitions (compiler built-ins not in any package).
+            workspace.symbols.load_runtime_enums();
+
+            // Invalidate insight graph — packages changed.
+            workspace.invalidate_insight_graph();
+
+            // Store package metadata for the `packages` query.
+            let pkg_info: Vec<PackageInfo> = loaded
+                .iter()
+                .map(|p| PackageInfo {
+                    name: p.name.clone(),
+                    publisher: p.publisher.clone(),
+                    version: p.version.clone(),
+                    object_count: p.objects.len(),
+                })
+                .collect();
+            *workspace.package_info.write().unwrap_or_else(|e| e.into_inner()) = pkg_info; // SILENT: recover from RwLock poison
+
+            // Scan workspace .al files.
+            file_count = workspace.file_index.scan(&project.root);
+
+            // Store project info.
+            *workspace.project.write().await = Some(project);
+
+            tracing::info!(
+                symbols = workspace.symbols.len(),
+                workspace_files = file_count,
+                workspace_objects = workspace.file_index.objects.len(),
+                "workspace: initialized"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, root = %project_root.display(), "workspace: project discovery failed");
+
+            // Still scan for .al files even without a project.
+            file_count = workspace.file_index.scan(project_root);
+        }
+    }
+
+    // Discover toolchain.
+    let has_toolchain = match crate::toolchain::find_toolchain() {
+        Ok(tc) => {
+            tracing::info!(version = %tc.version, "workspace: toolchain found");
+            *workspace.toolchain.write().await = Some(tc);
+            true
+        }
+        Err(e) => {
+            tracing::info!(error = %e, "workspace: no toolchain (syntax-only mode)");
+            false
+        }
+    };
+
+    CoreInitResult { file_count, package_count, total_symbols, has_toolchain }
+}
+
 impl Default for Workspace {
     fn default() -> Self {
         Self::new()

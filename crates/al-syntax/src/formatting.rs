@@ -407,50 +407,28 @@ fn extract_formatted_region<'a>(
 }
 
 /// Count net parentheses on a line: `(` adds +1, `)` adds -1.
-/// Skips characters inside string literals (single-quoted).
+/// Delegates to the crate-level `count_net_delimiters` which skips string literals.
 fn count_net_parens(line: &str) -> i32 {
-    let mut depth = 0i32;
-    let mut in_string = false;
-    for ch in line.chars() {
-        if ch == '\'' {
-            in_string = !in_string;
-            continue;
-        }
-        if in_string {
-            continue;
-        }
-        match ch {
-            '(' => depth += 1,
-            ')' => depth -= 1,
-            _ => {}
-        }
-    }
-    depth
+    crate::count_net_delimiters(line, '(', ')')
 }
+
+/// (keyword_prefix, statement_suffix) pairs for single-statement control flow openers.
+///
+/// A line whose lowercased trimmed form starts with the prefix and ends with the suffix
+/// opens a single implicit statement body (no `begin`/`end` required).
+const SINGLE_STMT_OPENERS: &[(&str, &str)] = &[
+    ("if ",      " then"),
+    ("for ",     " do"),
+    ("while ",   " do"),
+    ("with ",    " do"),
+    ("foreach ", " do"),
+];
 
 /// Returns true if trimmed_lower represents a single-statement control flow opener.
 fn is_single_statement_opener(trimmed_lower: &str) -> bool {
-    // `if ... then` (but not `if ... then begin`)
-    if trimmed_lower.starts_with("if ") && trimmed_lower.ends_with(" then") {
-        return true;
-    }
-    // `for ... do`
-    if trimmed_lower.starts_with("for ") && trimmed_lower.ends_with(" do") {
-        return true;
-    }
-    // `while ... do`
-    if trimmed_lower.starts_with("while ") && trimmed_lower.ends_with(" do") {
-        return true;
-    }
-    // `with ... do`
-    if trimmed_lower.starts_with("with ") && trimmed_lower.ends_with(" do") {
-        return true;
-    }
-    // `foreach ... do`
-    if trimmed_lower.starts_with("foreach ") && trimmed_lower.ends_with(" do") {
-        return true;
-    }
-    false
+    SINGLE_STMT_OPENERS
+        .iter()
+        .any(|(prefix, suffix)| trimmed_lower.starts_with(prefix) && trimmed_lower.ends_with(suffix))
 }
 
 #[cfg(test)]

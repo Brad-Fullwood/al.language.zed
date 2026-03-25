@@ -34,6 +34,34 @@ pub struct SignatureHelpResult {
     pub active_parameter: Option<u32>,
 }
 
+/// Build a `SignatureHelpResult` from a package symbol `MethodSymbol`.
+///
+/// Both `signature_help` and `resolve_receiver_signature` produce this shape —
+/// extracted here to eliminate the verbatim duplication between the two call-sites.
+fn build_signature_from_method(
+    method: &al_symbols::MethodSymbol,
+    active_param: u32,
+) -> SignatureHelpResult {
+    let params: Vec<SignatureParameterInfo> = method.parameters.iter().map(|p| {
+        SignatureParameterInfo {
+            label: p.to_string(),
+            documentation: None,
+        }
+    }).collect();
+    let params_str: Vec<String> = method.parameters.iter().map(|p| p.to_string()).collect();
+    let return_str = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
+    SignatureHelpResult {
+        signatures: vec![SignatureInfo {
+            label: format!("{}({}){}", method.name, params_str.join("; "), return_str),
+            documentation: None,
+            parameters: params,
+            active_parameter: Some(active_param),
+        }],
+        active_signature: Some(0),
+        active_parameter: Some(active_param),
+    }
+}
+
 /// Convert a detail string into `ParameterInfo` entries.
 ///
 /// Uses `parse_detail_params` for paren-depth-aware splitting; `raw_label` from the triple
@@ -112,26 +140,7 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
     for entry in &symbols {
         for method in &entry.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
-                let params: Vec<SignatureParameterInfo> = method.parameters.iter().map(|p| {
-                    SignatureParameterInfo {
-                        label: p.to_string(),
-                        documentation: None,
-                    }
-                }).collect();
-                let params_str: Vec<String> = method.parameters.iter().map(|p| {
-                    p.to_string()
-                }).collect();
-                let return_str = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
-                return Some(SignatureHelpResult {
-                    signatures: vec![SignatureInfo {
-                        label: format!("{}({}){}", method.name, params_str.join("; "), return_str),
-                        documentation: None,
-                        parameters: params,
-                        active_parameter: Some(active_param),
-                    }],
-                    active_signature: Some(0),
-                    active_parameter: Some(active_param),
-                });
+                return Some(build_signature_from_method(method, active_param));
             }
         }
     }
@@ -236,26 +245,7 @@ fn resolve_receiver_signature(
     for entry in &pkg_symbols {
         for method in &entry.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
-                let params: Vec<SignatureParameterInfo> = method.parameters.iter().map(|p| {
-                    SignatureParameterInfo {
-                        label: p.to_string(),
-                        documentation: None,
-                    }
-                }).collect();
-                let params_str: Vec<String> = method.parameters.iter().map(|p| {
-                    p.to_string()
-                }).collect();
-                let return_str = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
-                return Some(SignatureHelpResult {
-                    signatures: vec![SignatureInfo {
-                        label: format!("{}({}){}", method.name, params_str.join("; "), return_str),
-                        documentation: None,
-                        parameters: params,
-                        active_parameter: Some(active_param),
-                    }],
-                    active_signature: Some(0),
-                    active_parameter: Some(active_param),
-                });
+                return Some(build_signature_from_method(method, active_param));
             }
         }
     }

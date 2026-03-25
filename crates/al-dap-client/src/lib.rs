@@ -9,7 +9,6 @@ pub mod bc_debug;
 pub mod native_dap;
 pub mod client;
 pub mod config;
-pub mod editor_services;
 pub mod framing;
 pub mod json_util;
 pub mod protocol;

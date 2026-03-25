@@ -16,11 +16,6 @@
 //! - Zed signature help highlights the active parameter with `activeParameter`
 
 use al_test_harness::*;
-use std::path::PathBuf;
-
-fn test_project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/test_al_project")
-}
 
 // ---------------------------------------------------------------------------
 // Shared AL fixtures
@@ -149,10 +144,11 @@ async fn zed_fidelity_full_sync_repeated_changes() {
     let dir = test_project_dir();
     let mut client = LspClient::spawn(&dir).await.unwrap();
 
-    // Open, then update three times — Zed always sends the complete new text
+    // Open once, then update twice — Zed always sends the complete new text.
+    // After the first open, subsequent updates use didChange (not didOpen).
     client.open_file("src/zed_change.al", CODEUNIT_AL).await;
-    client.open_file("src/zed_change.al", TABLE_AL).await;
-    client.open_file("src/zed_change.al", PAGE_AL).await;
+    client.change_file("src/zed_change.al", TABLE_AL).await;
+    client.change_file("src/zed_change.al", PAGE_AL).await;
 
     // Server must survive repeated sync without error
     client.shutdown().await;

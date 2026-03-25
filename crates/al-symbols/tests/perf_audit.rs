@@ -277,7 +277,7 @@ fn perf_audit_index_build() {
     ];
     for (kind, name) in &compose_queries {
         let t0 = Instant::now();
-        let result = index.get_composed(*kind, name);
+        let result = index.get_composed_cached(*kind, name);
         let dur = t0.elapsed();
         let info = match &result {
             Some(c) => format!(

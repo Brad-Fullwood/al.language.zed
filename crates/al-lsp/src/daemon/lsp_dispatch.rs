@@ -1,21 +1,13 @@
 //! LSP method dispatchers — hover, definition, references, completions, etc.
 
 use al_core::workspace::Workspace;
-use al_core::jsonrpc::{error_codes, Response, RpcError};
+use al_daemon_client::jsonrpc::{error_codes, Response, RpcError};
 
 use super::{extract_uri, extract_position, invalid_params};
 
 /// Sentinel package name for workspace-local objects (not from .app packages).
 const WORKSPACE_PACKAGE: &str = "(workspace)";
 
-/// Case-insensitive ASCII substring check without allocation.
-/// `query_lower` must already be lowercase.
-fn ascii_contains_ci(haystack: &str, query_lower: &str) -> bool {
-    let q = query_lower.as_bytes();
-    let h = haystack.as_bytes();
-    if q.len() > h.len() { return false; }
-    h.windows(q.len()).any(|w| w.iter().zip(q).all(|(a, b)| a.to_ascii_lowercase() == *b))
-}
 
 pub(super) async fn dispatch_hover(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     let Some(uri) = extract_uri(params) else { return invalid_params(id); };
@@ -137,20 +129,11 @@ pub(super) fn dispatch_search(workspace: &Workspace, id: u64, params: &serde_jso
         .iter()
         .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
         .collect();
-    // Workspace file objects
-    if !query.is_empty() {
-        let query_lower = query.to_lowercase();
-        for entry in workspace.file_index.object_info.iter() {
-            if value.len() >= limit { break; }
-            let info = entry.value();
-            if !ascii_contains_ci(&info.name, &query_lower) { continue; }
-            value.push(workspace_object_to_json(info));
-        }
-    } else {
-        for entry in workspace.file_index.object_info.iter() {
-            if value.len() >= limit { break; }
-            value.push(workspace_object_to_json(entry.value()));
-        }
+    // Workspace file objects — use al-core search to avoid duplicating the filter logic.
+    let remaining = limit.saturating_sub(value.len());
+    let ws_results = al_core::queries::search::workspace_search(workspace, query, remaining);
+    for r in ws_results {
+        value.push(workspace_object_to_json(&r.info));
     }
     Response { id, result: Some(serde_json::json!(value)), error: None }
 }

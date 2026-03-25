@@ -4,6 +4,7 @@
 //! and raw source text. No type information or cross-file knowledge is used.
 
 use tree_sitter::{Node, Tree};
+use crate::traversal::walk_tree;
 
 /// A lint diagnostic from a native rule.
 #[derive(Debug, Clone)]
@@ -378,9 +379,9 @@ fn check_unused_variables(
 
     for (var_name, var_range) in &var_declarations {
         let lower_name = var_name.to_lowercase();
-        // Simple heuristic: check if the variable name appears in the body text
-        // This doesn't account for scoping but works for most cases
-        if !body.contains(&lower_name) {
+        // Word-boundary check: the name must not be surrounded by alphanumeric / underscore
+        // characters to avoid false positives (e.g. variable "n" matching inside "end").
+        if !contains_word(&body, &lower_name) {
             diagnostics.push(LintDiagnostic {
                 code: "AL-L005".to_string(),
                 message: format!("Variable '{}' is declared but not used", var_name),
@@ -391,6 +392,32 @@ fn check_unused_variables(
     }
 
     let _ = text; // text is used via source
+}
+
+/// Return `true` if `text` contains `word` as a whole token (word-boundary match).
+///
+/// A match is accepted only when the character immediately before and after the match
+/// are not ASCII alphanumeric or `_`.  This prevents a short variable name (e.g. `n`)
+/// from being considered "used" because it appears as a substring of keywords like
+/// `end`, `then`, `integer`, etc.
+fn contains_word(text: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    for (i, _) in text.match_indices(word) {
+        let before_ok = i == 0 || {
+            let b = text.as_bytes()[i - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        let after_ok = i + word.len() >= text.len() || {
+            let b = text.as_bytes()[i + word.len()];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
 }
 
 fn collect_var_names(
@@ -783,57 +810,34 @@ fn check_hardcoded_string(node: Node, source: &[u8], diagnostics: &mut Vec<LintD
 }
 
 fn find_hardcoded_strings(root: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
-    let root_id = root.id();
-    let mut cursor = root.walk();
-    let mut did_visit = false;
-    loop {
-        if !did_visit {
-            let node = cursor.node();
-            if node.kind() == "string" || node.kind() == "verbatim_string" {
-                if let Ok(text) = node.utf8_text(source) {
-                    // Strip quotes
-                    let inner = text.trim_start_matches("@'").trim_start_matches('\'').trim_end_matches('\'');
-                    // Skip empty strings, format strings (%1), single characters
-                    if !inner.is_empty() && inner.len() > 1 {
-                        // Skip if it looks like a format placeholder
-                        let skip = inner.starts_with('%') && inner.len() <= 3;
-                        if !skip {
-                            // Check if parent is a procedure call (Message, Error, Confirm, StrSubstNo, etc.)
-                            if let Some(parent) = node.parent() {
-                                let is_in_call = is_user_facing_call_context(parent, source);
-                                if is_in_call {
-                                    diagnostics.push(LintDiagnostic {
-                                        code: "AL-L017".to_string(),
-                                        message: "Hard-coded text string — consider using a Label variable"
-                                            .to_string(),
-                                        range: node.range(),
-                                        severity: LintSeverity::Info,
-                                    });
-                                }
+    walk_tree(root, &mut |node| {
+        if node.kind() == "string" || node.kind() == "verbatim_string" {
+            if let Ok(text) = node.utf8_text(source) {
+                // Strip quotes
+                let inner = text.trim_start_matches("@'").trim_start_matches('\'').trim_end_matches('\'');
+                // Skip empty strings, format strings (%1), single characters
+                if !inner.is_empty() && inner.len() > 1 {
+                    // Skip if it looks like a format placeholder
+                    let skip = inner.starts_with('%') && inner.len() <= 3;
+                    if !skip {
+                        // Check if parent is a procedure call (Message, Error, Confirm, StrSubstNo, etc.)
+                        if let Some(parent) = node.parent() {
+                            let is_in_call = is_user_facing_call_context(parent, source);
+                            if is_in_call {
+                                diagnostics.push(LintDiagnostic {
+                                    code: "AL-L017".to_string(),
+                                    message: "Hard-coded text string — consider using a Label variable"
+                                        .to_string(),
+                                    range: node.range(),
+                                    severity: LintSeverity::Info,
+                                });
                             }
                         }
                     }
                 }
-                // String nodes have no meaningful children to recurse into for this check
             }
         }
-        if !did_visit && cursor.goto_first_child() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_next_sibling() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_parent() {
-            if cursor.node().id() == root_id {
-                break;
-            }
-            did_visit = true;
-            continue;
-        }
-        break;
-    }
+    });
 }
 
 fn is_user_facing_call_context(node: Node, source: &[u8]) -> bool {
@@ -941,20 +945,16 @@ fn check_flowfield_editable_text(text: &str, diagnostics: &mut Vec<LintDiagnosti
 
         // Detect `field(` opening
         if lower.starts_with("field(") || lower.starts_with("field (") {
-            let opens = line.chars().filter(|&c| c == '{').count() as i32;
-            let closes = line.chars().filter(|&c| c == '}').count() as i32;
             stack.push(FieldCtx {
                 is_flowfield: false,
                 editable_true_line: None,
-                brace_depth: opens - closes,
+                brace_depth: crate::count_net_delimiters(line, '{', '}'),
             });
             continue;
         }
 
         if let Some(ctx) = stack.last_mut() {
-            let opens = line.chars().filter(|&c| c == '{').count() as i32;
-            let closes = line.chars().filter(|&c| c == '}').count() as i32;
-            ctx.brace_depth += opens - closes;
+            ctx.brace_depth += crate::count_net_delimiters(line, '{', '}');
 
             // Detect FieldClass = FlowField / FlowFilter
             if lower.contains("fieldclass") {
@@ -1096,11 +1096,9 @@ fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDi
 
         // Detect page object start
         if page_ctx.is_none() && lower.starts_with("page ") {
-            let opens = line.chars().filter(|&c| c == '{').count() as i32;
-            let closes = line.chars().filter(|&c| c == '}').count() as i32;
             page_ctx = Some(PageCtx {
                 start_line: line_num,
-                brace_depth: opens - closes,
+                brace_depth: crate::count_net_delimiters(line, '{', '}'),
                 has_api_version: false,
                 api_version_line: None,
                 has_entity_name: false,
@@ -1111,9 +1109,7 @@ fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDi
         }
 
         if let Some(ctx) = page_ctx.as_mut() {
-            let opens = line.chars().filter(|&c| c == '{').count() as i32;
-            let closes = line.chars().filter(|&c| c == '}').count() as i32;
-            ctx.brace_depth += opens - closes;
+            ctx.brace_depth += crate::count_net_delimiters(line, '{', '}');
 
             // Scan property assignments (only at the top level of the page object, depth ~1)
             if ctx.brace_depth == 1 {
@@ -1180,12 +1176,10 @@ fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDi
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /// Get the name of a declaration node.
-fn get_name<'a>(node: Node<'a>, source: &'a [u8]) -> String {
+fn get_name(node: Node, source: &[u8]) -> String {
     node.child_by_field_name("name")
-        .and_then(|n| n.utf8_text(source).ok())
-        .unwrap_or("(unknown)")
-        .trim_matches('"')
-        .to_string()
+        .map(|n| crate::node_text_or(n, source, "(unknown)"))
+        .unwrap_or_else(|| "(unknown)".to_string())
 }
 
 #[cfg(test)]

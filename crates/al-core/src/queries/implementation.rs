@@ -98,29 +98,28 @@ fn find_codeunit_implementing_interface(
     None
 }
 
-/// Recursively search a node's children for `implements_clause` that matches the interface name.
+/// Search direct children of an `object_declaration` node for an `implements_clause`
+/// that names the given interface.
+///
+/// `implements_clause` is always a direct child of `object_declaration`, so a
+/// single-level scan is sufficient — recursion is not needed.
 fn find_implements_clause_match(
-    node: tree_sitter::Node<'_>,
+    obj_node: tree_sitter::Node<'_>,
     source: &[u8],
     interface_lower: &str,
 ) -> bool {
-    if node.kind() == "implements_clause" {
-        // The second child of `implements_clause` is the interface name
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if let Ok(t) = child.utf8_text(source) {
-                    if t.trim_matches('"').to_lowercase() == interface_lower {
-                        return true;
-                    }
-                }
-            }
+    for i in 0..obj_node.child_count() {
+        let Some(child) = obj_node.child(i) else { continue };
+        if child.kind() != "implements_clause" {
+            continue;
         }
-        return false;
-    }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if find_implements_clause_match(child, source, interface_lower) {
-                return true;
+        // Walk the children of the clause looking for a matching interface name token.
+        for j in 0..child.child_count() {
+            let Some(token) = child.child(j) else { continue };
+            if let Ok(t) = token.utf8_text(source) {
+                if t.trim_matches('"').to_lowercase() == interface_lower {
+                    return true;
+                }
             }
         }
     }

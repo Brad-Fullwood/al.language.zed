@@ -3,7 +3,7 @@
 use tower_lsp::lsp_types::{FoldingRange, FoldingRangeKind};
 use tree_sitter::{Node, Tree};
 
-use crate::byte_col_to_utf16_col;
+use crate::{byte_col_to_utf16_col, get_source_line, traversal::walk_tree};
 
 /// Extract folding ranges from a parsed tree.
 ///
@@ -32,94 +32,60 @@ pub fn extract_folding_ranges(tree: &Tree, text: &str) -> Vec<FoldingRange> {
 
 /// Extract structural folding ranges by walking the AST.
 fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<FoldingRange>) {
-    let mut cursor = root.walk();
-    let mut did_visit = false;
-    loop {
-        if !did_visit {
-            let node = cursor.node();
-            match node.kind() {
-                // Object declarations fold their entire body
-                "object_declaration" => {
-                    if let Some(body) = node.child_by_field_name("body") {
-                        add_range(body, FoldingRangeKind::Region, source, ranges);
-                    }
+    walk_tree(root, &mut |node| {
+        match node.kind() {
+            // Object declarations fold their entire body
+            "object_declaration" => {
+                if let Some(body) = node.child_by_field_name("body") {
+                    add_range(body, FoldingRangeKind::Region, source, ranges);
                 }
-
-                // Multi-line structural nodes: procedures, blocks, sections, control flow
-                "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
-                | "begin_end_block" | "object_section" | "object_body" | "braced_block"
-                | "var_section" | "object_var_section"
-                | "if_statement" | "case_statement" | "for_statement" | "foreach_statement"
-                | "while_statement" | "repeat_statement" | "with_statement"
-                | "enum_value_declaration" => {
-                    if node.start_position().row < node.end_position().row {
-                        add_range(node, FoldingRangeKind::Region, source, ranges);
-                    }
-                }
-
-                // Block comments
-                "comment" => {
-                    let start = node.start_position();
-                    let end = node.end_position();
-                    // Only fold multi-line block comments (/* ... */)
-                    if start.row < end.row {
-                        let start_line_str = source
-                            .splitn(start.row + 2, |&b| b == b'\n')
-                            .nth(start.row)
-                            .and_then(|b| std::str::from_utf8(b).ok())
-                            .unwrap_or("");
-                        let end_line_str = source
-                            .splitn(end.row + 2, |&b| b == b'\n')
-                            .nth(end.row)
-                            .and_then(|b| std::str::from_utf8(b).ok())
-                            .unwrap_or("");
-                        ranges.push(FoldingRange {
-                            start_line: start.row as u32,
-                            start_character: Some(byte_col_to_utf16_col(start_line_str, start.column)),
-                            end_line: end.row as u32,
-                            end_character: Some(byte_col_to_utf16_col(end_line_str, end.column)),
-                            kind: Some(FoldingRangeKind::Comment),
-                            collapsed_text: None,
-                        });
-                    }
-                }
-
-                _ => {}
             }
+
+            // Multi-line structural nodes: procedures, blocks, sections, control flow
+            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+            | "begin_end_block" | "object_section" | "object_body" | "braced_block"
+            | "var_section" | "object_var_section"
+            | "if_statement" | "case_statement" | "for_statement" | "foreach_statement"
+            | "while_statement" | "repeat_statement" | "with_statement"
+            | "enum_value_declaration" => {
+                if node.start_position().row < node.end_position().row {
+                    add_range(node, FoldingRangeKind::Region, source, ranges);
+                }
+            }
+
+            // Block comments
+            "comment" => {
+                let start = node.start_position();
+                let end = node.end_position();
+                // Only fold multi-line block comments (/* ... */)
+                if start.row < end.row {
+                    let start_line_str = get_source_line(source, start.row);
+                    let end_line_str = get_source_line(source, end.row);
+                    ranges.push(FoldingRange {
+                        start_line: start.row as u32,
+                        start_character: Some(byte_col_to_utf16_col(start_line_str, start.column)),
+                        end_line: end.row as u32,
+                        end_character: Some(byte_col_to_utf16_col(end_line_str, end.column)),
+                        kind: Some(FoldingRangeKind::Comment),
+                        collapsed_text: None,
+                    });
+                }
+            }
+
+            _ => {}
         }
-        if !did_visit && cursor.goto_first_child() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_next_sibling() {
-            did_visit = false;
-            continue;
-        }
-        if cursor.goto_parent() {
-            did_visit = true;
-            continue;
-        }
-        break;
-    }
+    });
 }
 
 /// Add a folding range from a node.
 fn add_range(node: Node, kind: FoldingRangeKind, source: &[u8], ranges: &mut Vec<FoldingRange>) {
     let start = node.start_position();
     let end = node.end_position();
-    let start_line_str = source
-        .splitn(start.row + 2, |&b| b == b'\n')
-        .nth(start.row)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .unwrap_or("");
+    let start_line_str = get_source_line(source, start.row);
     let end_line_str = if end.row == start.row {
         start_line_str
     } else {
-        source
-            .splitn(end.row + 2, |&b| b == b'\n')
-            .nth(end.row)
-            .and_then(|b| std::str::from_utf8(b).ok())
-            .unwrap_or("")
+        get_source_line(source, end.row)
     };
     ranges.push(FoldingRange {
         start_line: start.row as u32,

@@ -991,7 +991,7 @@ fn test_full_pipeline() {
     assert!(!customer_results.is_empty());
 
     // 5. Compose
-    let composed = index.get_composed(ObjectKind::Table, "Customer").unwrap();
+    let composed = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
     assert_eq!(composed.all_fields.len(), 7);
     assert_eq!(composed.all_methods.len(), 2);
 

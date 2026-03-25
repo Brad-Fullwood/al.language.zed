@@ -9,29 +9,16 @@
 use al_test_harness::*;
 use std::path::PathBuf;
 
-fn test_project_dir() -> PathBuf {
-    PathBuf::from(
-        std::env::var("AL_TEST_PROJECT_PATH")
-            .expect("AL_TEST_PROJECT_PATH must be set to run fixture tests"),
-    )
+fn test_project_exists() -> bool {
+    if test_project_from_env().is_none() {
+        eprintln!("\n[zed_simulation] SKIPPING: AL_TEST_PROJECT_PATH not set or invalid.\n");
+        return false;
+    }
+    true
 }
 
-fn test_project_exists() -> bool {
-    let path = match std::env::var("AL_TEST_PROJECT_PATH") {
-        Ok(p) => PathBuf::from(p),
-        Err(_) => {
-            eprintln!("\n[zed_simulation] SKIPPING: AL_TEST_PROJECT_PATH not set.\n");
-            return false;
-        }
-    };
-    if path.join("app.json").exists() {
-        return true;
-    }
-    eprintln!(
-        "\n[zed_simulation] SKIPPING: AL test fixture not found at: {}\n",
-        path.display()
-    );
-    false
+fn test_project_dir() -> PathBuf {
+    test_project_from_env().expect("AL_TEST_PROJECT_PATH must be set to run fixture tests")
 }
 
 fn find_position(content: &str, needle: &str) -> Option<(u32, u32)> {
@@ -41,26 +28,6 @@ fn find_position(content: &str, needle: &str) -> Option<(u32, u32)> {
         }
     }
     None
-}
-
-fn definition_start_line(result: &serde_json::Value) -> Option<u32> {
-    if let Some(line) = result
-        .get("range")
-        .and_then(|range| range.get("start"))
-        .and_then(|start| start.get("line"))
-        .and_then(|line| line.as_u64())
-    {
-        return Some(line as u32);
-    }
-
-    result
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|loc| loc.get("range"))
-        .and_then(|range| range.get("start"))
-        .and_then(|start| start.get("line"))
-        .and_then(|line| line.as_u64())
-        .map(|line| line as u32)
 }
 
 /// Open common AL test project files into a client.

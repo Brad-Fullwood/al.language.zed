@@ -5,62 +5,21 @@
 use al_test_harness::*;
 use std::path::PathBuf;
 
-fn test_project_dir() -> PathBuf {
-    PathBuf::from(
-        std::env::var("AL_TEST_PROJECT_PATH")
-            .expect("AL_TEST_PROJECT_PATH must be set to run fixture tests"),
-    )
+fn test_project_exists() -> bool {
+    if test_project_from_env().is_none() {
+        eprintln!("\n[data_driven] SKIPPING: AL_TEST_PROJECT_PATH not set or invalid.\n");
+        return false;
+    }
+    true
 }
 
-fn test_project_exists() -> bool {
-    let path = match std::env::var("AL_TEST_PROJECT_PATH") {
-        Ok(p) => PathBuf::from(p),
-        Err(_) => {
-            eprintln!("\n[data_driven] SKIPPING: AL_TEST_PROJECT_PATH not set.\n");
-            return false;
-        }
-    };
-    if path.join("app.json").exists() {
-        return true;
-    }
-    eprintln!(
-        "\n[data_driven] SKIPPING: AL test fixture not found at: {}\n",
-        path.display()
-    );
-    false
+fn test_project_dir() -> PathBuf {
+    test_project_from_env().expect("AL_TEST_PROJECT_PATH must be set to run fixture tests")
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn definition_line(result: &serde_json::Value) -> Option<u32> {
-    if let Some(line) = result
-        .get("range")
-        .and_then(|r| r.get("start"))
-        .and_then(|s| s.get("line"))
-        .and_then(|l| l.as_u64())
-    {
-        return Some(line as u32);
-    }
-    result
-        .as_array()
-        .and_then(|a| a.first())
-        .and_then(|l| l.get("range"))
-        .and_then(|r| r.get("start"))
-        .and_then(|s| s.get("line"))
-        .and_then(|l| l.as_u64())
-        .map(|l| l as u32)
-}
-
-fn sig_label(result: &serde_json::Value) -> Option<&str> {
-    result
-        .get("signatures")
-        .and_then(|s| s.as_array())
-        .and_then(|a| a.first())
-        .and_then(|s| s.get("label"))
-        .and_then(|l| l.as_str())
-}
 
 fn symbol_names_recursive(symbols: &[serde_json::Value]) -> Vec<String> {
     let mut names = vec![];
@@ -395,7 +354,7 @@ async fn test_definition_data_driven() {
         let ok = match &result {
             Some(r) => {
                 let uri = definition_uri(r);
-                let def_line = definition_line(r);
+                let def_line = definition_start_line(r);
                 let file_ok = uri.map_or(false, |u| u.contains(expected_file));
                 let line_ok = match (expected_line, def_line) {
                     (Some(exp), Some(got)) => (got as i64 - exp as i64).unsigned_abs() <= 5,
@@ -411,7 +370,7 @@ async fn test_definition_data_driven() {
             passed += 1;
         } else {
             let uri = result.as_ref().and_then(|r| definition_uri(r)).unwrap_or("null");
-            let line_got = result.as_ref().and_then(|r| definition_line(r));
+            let line_got = result.as_ref().and_then(|r| definition_start_line(r));
             eprintln!(
                 "DEF FAIL [{}/{}] {}:{}:{} — expected file='{}' line={:?}, got uri='{}' line={:?}",
                 i + 1, total, file, line + 1, col + 1,

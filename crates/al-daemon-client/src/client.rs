@@ -81,11 +81,14 @@ impl DaemonClient {
     ) -> Result<serde_json::Value, String> {
         self.send_request(method, &params)?;
 
-        for retry in 0..=INIT_RETRY_MAX {
+        // On each iteration: read the response. If the daemon is still
+        // initializing, sleep and resend. After INIT_RETRY_MAX retries,
+        // fall through to the error below.
+        for _ in 0..INIT_RETRY_MAX {
             let response = self.read_response()?;
 
             if let Some(ref err) = response.error {
-                if err.message.contains("initializing") && retry < INIT_RETRY_MAX {
+                if err.message.contains("initializing") {
                     std::thread::sleep(INIT_RETRY_DELAY);
                     self.send_request(method, &params)?;
                     continue;
@@ -96,7 +99,12 @@ impl DaemonClient {
             return Ok(response.result.unwrap_or(serde_json::Value::Null));
         }
 
-        Err("Workspace is initializing, try again (code -32603)".to_string())
+        // Final attempt after all retries are exhausted.
+        let response = self.read_response()?;
+        if let Some(ref err) = response.error {
+            return Err(format!("{} (code {})", err.message, err.code));
+        }
+        Ok(response.result.unwrap_or(serde_json::Value::Null))
     }
 
     fn send_request(
@@ -160,10 +168,10 @@ impl DaemonClient {
 
     fn wait_for_daemon(sock_path: &Path) -> Result<(), String> {
         for _ in 0..50 {
-            std::thread::sleep(Duration::from_millis(100));
             if UnixStream::connect(sock_path).is_ok() {
                 return Ok(());
             }
+            std::thread::sleep(Duration::from_millis(100));
         }
         Err("Daemon did not start within 5 seconds".to_string())
     }
@@ -180,11 +188,13 @@ pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
             }
         }
     }
-    if let Ok(output) = std::process::Command::new("which").arg("al-lsp").output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
+    // Search PATH directories directly — avoids spawning a subprocess and
+    // works on any Unix system regardless of whether `which` is installed.
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join("al-lsp");
+            if candidate.is_file() {
+                return Ok(candidate);
             }
         }
     }
