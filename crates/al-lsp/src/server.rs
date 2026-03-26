@@ -365,6 +365,7 @@ impl LanguageServer for AlServer {
                         "al.getStatus".to_string(),
                         "al.reindex".to_string(),
                         "al.compile".to_string(),
+                        "al.applyRecommendedSettings".to_string(),
                     ],
                     ..Default::default()
                 }),
@@ -979,6 +980,29 @@ impl LanguageServer for AlServer {
                             .show_message(
                                 MessageType::WARNING,
                                 "No AL project loaded — open an AL workspace first",
+                            )
+                            .await;
+                    }
+                }
+                Ok(None)
+            }
+            "al.applyRecommendedSettings" => {
+                let result = crate::workspace::apply_recommended_settings()
+                    .map_err(|e| e.to_string());
+                match result {
+                    Ok(()) => {
+                        self.client
+                            .show_message(
+                                MessageType::INFO,
+                                "Applied recommended AL settings. Reload Zed to activate.",
+                            )
+                            .await;
+                    }
+                    Err(e) => {
+                        self.client
+                            .show_message(
+                                MessageType::WARNING,
+                                format!("Failed to apply settings: {e}"),
                             )
                             .await;
                     }
