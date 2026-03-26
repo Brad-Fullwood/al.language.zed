@@ -64,6 +64,20 @@ al-lsp → al-core → al-syntax (parsing, formatting, type resolution)
 
 **al-syntax**, **al-symbols**, and **al-semantic** must never depend on each other or on al-core. al-daemon-client must not depend on al-core. zed-al is isolated.
 
+## CRITICAL: No Hardcoded Language Values
+
+**NEVER hardcode AL language keywords, built-in functions, object types, or any language-specific lists.** This is a non-negotiable architectural rule.
+
+AL is a living language — Microsoft updates it with every Business Central release. Hardcoded lists become stale immediately and require manual code changes to update. Instead:
+
+- **Built-in functions, keywords, types** → Use values dynamically extracted by `tree-sitter-al/generator/tools/al-extract/` from Microsoft's DLLs
+- **Symbol data (procedures, fields, events, etc.)** → Use `al-symbols` which reads `.app` packages at runtime
+- **Semantic info (builtins, error codes)** → Use `al-semantic` bridge which queries the .NET CLR at runtime
+
+If a value list doesn't exist in the generation pipeline, **update the generator** (`tree-sitter-al/generator/`) to extract it — do NOT create a hardcoded `const` array.
+
+Violations include: `const AL_BUILTIN_FUNCTIONS`, `const AL_OBJECT_BODY_KEYWORDS`, hardcoded keyword arrays in completions/signatures/dispatchers, any `&[&str]` or `Vec<String>` literal containing AL language tokens.
+
 ## Key Gotchas
 
 - `.app` files: `SymbolReference.json` has UTF-8 BOM prefix, uses `EnumTypes` not `Enums`, `Kind` field is integer in newer BC versions
