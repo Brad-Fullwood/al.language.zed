@@ -336,11 +336,24 @@ Examples:
         /// Symbol to analyze (e.g., "Customer", "Customer.\"Credit Limit\"", "Sales-Post.PostDocument")
         symbol: String,
     },
-    /// Suggest event publishers for a business scenario
+    /// Find integration points (events) for an object, table, or event
     #[command(name = "suggest-event")]
     SuggestEvent {
-        /// Natural-language description of the business scenario
-        description: String,
+        /// Object name to trace (e.g. "Sales-Post")
+        #[arg(long)]
+        object: Option<String>,
+        /// Procedure name within the object
+        #[arg(long)]
+        procedure: Option<String>,
+        /// Table name — find events exposing this table as var
+        #[arg(long)]
+        table: Option<String>,
+        /// Field name filter
+        #[arg(long)]
+        field: Option<String>,
+        /// Event name to trace downstream (requires --object)
+        #[arg(long)]
+        event: Option<String>,
     },
     /// AL debug session commands
     Debug {
@@ -762,8 +775,8 @@ fn main() -> ExitCode {
         Commands::InsightStats => insight::cmd_insight_stats(cli.json),
         Commands::DeadCode => insight::cmd_dead_code(cli.json),
         Commands::Impact { symbol } => insight::cmd_impact(&symbol, cli.json),
-        Commands::SuggestEvent { description } => {
-            insight::cmd_suggest_event(&description, cli.json)
+        Commands::SuggestEvent { object, procedure, table, field, event } => {
+            insight::cmd_suggest_event(object, procedure, table, field, event, cli.json)
         }
         Commands::Diag => lsp::cmd_diag(cli.json),
         Commands::Debug { subcmd } => debug::cmd_debug(&subcmd, cli.json),
