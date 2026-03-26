@@ -18,6 +18,7 @@ use crate::config::AlConfig;
 use crate::documents::DocumentStore;
 use crate::file_index::FileIndex;
 use crate::insight::graph::InsightGraph;
+use crate::insight::index::CallGraph;
 use crate::semantic::SemanticCache;
 
 /// Callback for surfacing bridge/toolchain notifications to the user.
@@ -85,6 +86,8 @@ pub struct Workspace {
     pub notify_sink: std::sync::OnceLock<NotifySink>,
     /// Cached insight graph. Built lazily; invalidated when packages reload (ISSUE-132 fix).
     pub insight_graph: std::sync::RwLock<Option<Arc<InsightGraph>>>,
+    /// Cached call graph. Built lazily after insight graph; invalidated with it.
+    pub call_graph: std::sync::RwLock<Option<CallGraph>>,
 }
 
 impl Workspace {
@@ -106,6 +109,7 @@ impl Workspace {
             debug_session: tokio::sync::Mutex::new(None),
             notify_sink: std::sync::OnceLock::new(),
             insight_graph: std::sync::RwLock::new(None),
+            call_graph: std::sync::RwLock::new(None),
         }
     }
 
@@ -134,6 +138,52 @@ impl Workspace {
         if let Ok(mut guard) = self.insight_graph.write() {
             *guard = None;
         }
+        if let Ok(mut guard) = self.call_graph.write() {
+            *guard = None;
+        }
+    }
+
+    /// Get (or lazily build) the cached CallGraph.
+    ///
+    /// Builds a workspace-enriched InsightGraph (symbol index + workspace file
+    /// objects/procedures/subscribers), then builds the CallGraph and populates
+    /// Tier 1 call edges. The enriched InsightGraph replaces the cached one.
+    pub fn get_or_build_call_graph(&self) -> (Arc<InsightGraph>, std::sync::RwLockReadGuard<'_, Option<CallGraph>>) {
+        // Check if call graph already exists
+        {
+            let cg_guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
+            if cg_guard.is_some() {
+                let insight = self.get_or_build_insight_graph();
+                return (insight, cg_guard);
+            }
+        }
+
+        // Build enriched InsightGraph: symbols + workspace nodes
+        let mut graph = InsightGraph::new();
+        graph.build_from_index(&self.symbols);
+        // Register workspace objects, procedures, events, and subscribers
+        crate::insight::calls::register_workspace_nodes(
+            &self.file_index, &self.symbols, &mut graph,
+        );
+        let insight = Arc::new(graph);
+
+        // Cache the enriched InsightGraph (replaces symbol-only version)
+        if let Ok(mut ig_guard) = self.insight_graph.write() {
+            *ig_guard = Some(Arc::clone(&insight));
+        }
+
+        // Build CallGraph and populate Tier 1 call edges
+        let mut cg = CallGraph::build_from_insight(&insight);
+        crate::insight::calls::populate_workspace_call_edges(
+            &self.file_index, &self.symbols, &insight, &mut cg,
+        );
+
+        let mut guard = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(cg);
+        drop(guard);
+
+        let guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
+        (insight, guard)
     }
 
     /// Approximate memory statistics for the workspace.
