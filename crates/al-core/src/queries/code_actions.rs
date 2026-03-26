@@ -127,6 +127,16 @@ pub fn source_actions(
         actions.push(action);
     }
 
+    // Find event subscribers for [IntegrationEvent] / [BusinessEvent] procedures
+    if let Some(action) = source_action_find_event_subscribers(workspace, uri, &text, range) {
+        actions.push(action);
+    }
+
+    // Show impact analysis for any symbol
+    if let Some(action) = source_action_show_impact(workspace, uri, &text, range) {
+        actions.push(action);
+    }
+
     actions
 }
 
@@ -1201,19 +1211,24 @@ fn qualify_line(line: &str, record_var: &str) -> String {
     // Skip lines that are already qualified (contain . before := or ()
     // Skip keywords: if, then, else, begin, end, for, while, repeat, etc.
     // Use whole-word matching to avoid false positives on field names like EndDate, FormatText, CaseNo.
+    // Also skip comment lines (//) and compound keyword "end;" which are not in the keyword table.
     let lower = trimmed.to_lowercase();
-    let al_keywords = [
-        "if", "then", "else", "begin", "end", "for", "while", "repeat", "until",
-        "case", "exit", "error", "message", "//", "end;",
-    ];
-    for kw in &al_keywords {
-        if let Some(rest) = lower.strip_prefix(kw) {
-            // Ensure this is a whole-word match: next char must be non-alphanumeric/non-underscore
-            let is_word_boundary = rest.is_empty()
-                || rest.starts_with(|c: char| !c.is_alphanumeric() && c != '_');
-            if is_word_boundary {
-                return trimmed.to_string();
-            }
+    // Fast path for comment lines and compound "end;" which are not AL word-keywords.
+    if lower.starts_with("//") || lower.starts_with("end;") {
+        return trimmed.to_string();
+    }
+    // Extract the leading word and check it against the AL keyword table and builtin functions.
+    // Builtin function calls like Error(...) and Message(...) must not be qualified with Rec.
+    {
+        let word_end = lower
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(lower.len());
+        let leading_word = &lower[..word_end];
+        if !leading_word.is_empty()
+            && (al_syntax::language_data::is_keyword(leading_word)
+                || al_syntax::language_data::is_builtin_function(leading_word))
+        {
+            return trimmed.to_string();
         }
     }
 
@@ -4243,4 +4258,124 @@ mod lint_fix_tests {
         let text = "unchanged\n";
         assert_eq!(apply_text_edits(text, &[]), "unchanged\n");
     }
+}
+
+// ── Event Subscriber Finder (code action) ─────────────────────────────
+
+/// If cursor is on a procedure with [IntegrationEvent] or [BusinessEvent] attribute,
+/// offer to find all subscribers in the symbol index.
+fn source_action_find_event_subscribers(
+    workspace: &Workspace,
+    _uri: &Url,
+    text: &str,
+    range: Range,
+) -> Option<CodeActionEntry> {
+    let lsp_range: tower_lsp::lsp_types::Range = range.into();
+    let (_, tree) = crate::parsing::get_or_parse(&workspace.documents, _uri)?;
+
+    // Find procedure at cursor
+    let proc = al_syntax::find_procedure_at(&tree, text, lsp_range.start.into())?;
+
+    // Check if the procedure has an IntegrationEvent or BusinessEvent attribute
+    // by searching the text above the procedure declaration for [IntegrationEvent] or [BusinessEvent]
+    let proc_line = proc.range.start_point.row;
+    if proc_line == 0 {
+        return None;
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+    let mut found_event_attr = false;
+    // Check up to 3 lines above the procedure for an attribute
+    for check_line in (proc_line.saturating_sub(3)..proc_line).rev() {
+        if let Some(line) = lines.get(check_line) {
+            let trimmed = line.trim();
+            if trimmed.starts_with("[IntegrationEvent") || trimmed.starts_with("[BusinessEvent") {
+                found_event_attr = true;
+                break;
+            }
+        }
+    }
+
+    if !found_event_attr {
+        return None;
+    }
+
+    // Search symbol index for subscribers to this event
+    let event_name = &proc.name;
+    let mut subscribers = Vec::new();
+    for entry in workspace.symbols.all_entries() {
+        for method in &entry.methods {
+            if method.attributes.iter().any(|attr| {
+                attr.name.contains("EventSubscriber") && attr.arguments.iter().any(|a| a.contains(event_name))
+            }) {
+                subscribers.push(format!("{}.{} ({})", entry.name, method.name, entry.package));
+                if subscribers.len() >= 20 { break; }
+            }
+        }
+        if subscribers.len() >= 20 { break; }
+    }
+
+    let count = subscribers.len();
+    let title = if count == 0 {
+        format!("AL: No subscribers found for event '{}'", event_name)
+    } else {
+        format!("AL: {} subscriber{} for event '{}': {}",
+            count,
+            if count == 1 { "" } else { "s" },
+            event_name,
+            subscribers.join(", "))
+    };
+
+    Some(CodeActionEntry {
+        title,
+        kind: CodeActionKind::Source,
+        edit: None, // Information-only action
+        is_preferred: false,
+    })
+}
+
+/// Show impact analysis for the symbol at cursor position.
+fn source_action_show_impact(
+    workspace: &Workspace,
+    _uri: &Url,
+    text: &str,
+    range: Range,
+) -> Option<CodeActionEntry> {
+    let lsp_range: tower_lsp::lsp_types::Range = range.into();
+    let (_, tree) = crate::parsing::get_or_parse(&workspace.documents, _uri)?;
+
+    // Find the symbol name at cursor
+    let node = al_syntax::find_node_at_position(&tree, lsp_range.start)?;
+    let name = node.utf8_text(text.as_bytes()).ok()?.trim_matches('"');
+    if name.is_empty() || name.len() < 2 {
+        return None;
+    }
+
+    // Only offer for identifiers that look like procedure/object names
+    if !node.kind().contains("identifier") && node.kind() != "name" {
+        return None;
+    }
+
+    // Use the impact analysis query to find dependents
+    let impacts = super::impact::impact(workspace, name);
+    let dependents: Vec<String> = impacts.iter()
+        .take(10)
+        .map(|e| e.name.clone())
+        .collect();
+
+    if dependents.is_empty() {
+        return None;
+    }
+
+    let title = format!("AL: {} dependent{}: {}",
+        dependents.len(),
+        if dependents.len() == 1 { "" } else { "s" },
+        dependents.join(", "));
+
+    Some(CodeActionEntry {
+        title,
+        kind: CodeActionKind::Source,
+        edit: None,
+        is_preferred: false,
+    })
 }

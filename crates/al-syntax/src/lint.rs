@@ -92,6 +92,7 @@ pub fn lint_rules() -> &'static [LintRuleInfo] {
         LintRuleInfo { code: "AL-L020", name: "SecretTextEnforcement", severity: LintSeverity::Warning, description: "Variable with sensitive name (Password/Secret/ApiKey/Token) should use SecretText type" },
         LintRuleInfo { code: "AL-L021", name: "LockTableDeprecated", severity: LintSeverity::Info, description: "LockTable() is deprecated — use ReadIsolation instead (BC 21+)" },
         LintRuleInfo { code: "AL-L022", name: "ApiPageMandatoryFields", severity: LintSeverity::Warning, description: "API page is missing mandatory properties (ODataKeyFields, EntityName, EntitySetName, APIVersion)" },
+        LintRuleInfo { code: "AL-L023", name: "BareIdentifierStatement", severity: LintSeverity::Warning, description: "Bare identifier used as a statement — missing '()' for function call or ':=' for assignment" },
     ];
     RULES
 }
@@ -231,6 +232,9 @@ fn walk_and_lint(
 
                     // AL-L021: LockTable() deprecated
                     check_locktable_deprecated(node, source, diagnostics);
+
+                    // AL-L023: Bare identifier statement (missing parens or assignment)
+                    check_bare_identifier_statement(node, source, diagnostics);
                 }
 
                 "integer" => {
@@ -844,19 +848,23 @@ fn is_user_facing_call_context(node: Node, source: &[u8]) -> bool {
     // Walk up to find if we are in a call to a user-facing function
     let mut current = node;
     loop {
-        if current.kind() == "member_call_suffix" || current.kind() == "call_suffix" {
-            return false; // Method calls like Rec.SetFilter('...') are OK
+        if current.kind() == "member_call_suffix" {
+            return false; // Method calls like Rec.SetFilter('...') are OK — not user-facing
         }
         if current.kind() == "postfix_expression" || current.kind() == "expression" {
             if let Ok(text) = current.utf8_text(source) {
+                // Extract the leading identifier and check it against language_data.
                 let lower = text.to_lowercase();
-                if lower.starts_with("message(")
-                    || lower.starts_with("error(")
-                    || lower.starts_with("confirm(")
-                    || lower.starts_with("strsubstno(")
-                    || lower.starts_with("fieldcaption(")
-                {
-                    return true;
+                let word_end = lower
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(lower.len());
+                let func_name = &lower[..word_end];
+                if is_user_facing_function(func_name) {
+                    // Confirm it is immediately followed by '(' (possibly with whitespace).
+                    let after = text[word_end..].trim_start();
+                    if after.starts_with('(') {
+                        return true;
+                    }
                 }
             }
         }
@@ -876,6 +884,19 @@ fn is_user_facing_call_context(node: Node, source: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// Returns true if `name` is a global AL function that shows user-visible text.
+///
+/// Dialog-category functions (Message, Error, Confirm, StrMenu) display strings directly.
+/// StrSubstNo builds user-visible format strings. FieldCaption returns UI caption text.
+fn is_user_facing_function(name: &str) -> bool {
+    match crate::language_data::builtin_function_by_name(name) {
+        Some(f) => f.category == "dialog"
+            || f.name.eq_ignore_ascii_case("StrSubstNo")
+            || f.name.eq_ignore_ascii_case("FieldCaption"),
+        None => false,
+    }
 }
 
 // ── AL-L018: Record variable naming convention ──────────────────────
@@ -1061,6 +1082,81 @@ fn check_locktable_deprecated(node: Node, source: &[u8], diagnostics: &mut Vec<L
                 severity: LintSeverity::Info,
             });
         }
+    }
+}
+
+// ── AL-L023: Bare identifier statement ───────────────────────────────
+//
+// Detects expression_statement nodes whose expression is a bare identifier
+// (no call suffix, no assignment, no member access).  E.g. `Message` where
+// the developer almost certainly meant `Message(...)`.
+//
+// AST path for a bare identifier statement:
+//   expression_statement
+//     expression
+//       unary_expression
+//         postfix_expression        ← no suffix children beyond primary_expression
+//           primary_expression
+//             name
+//               identifier / quoted_identifier
+//
+// A postfix_expression that has ONLY a primary_expression child (no suffixes)
+// and whose primary is a name node is a bare identifier.
+
+fn check_bare_identifier_statement(node: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
+    // node is expression_statement; its single child should be expression.
+    let expr = match node.child(0) {
+        Some(n) if n.kind() == "expression" => n,
+        _ => return,
+    };
+
+    // expression must have exactly one child: unary_expression (no binary_operator)
+    if expr.child_count() != 1 {
+        return;
+    }
+    let unary = match expr.child(0) {
+        Some(n) if n.kind() == "unary_expression" => n,
+        _ => return,
+    };
+
+    // unary_expression must not start with a unary_operator — just a postfix_expression
+    if unary.child_count() != 1 {
+        return;
+    }
+    let postfix = match unary.child(0) {
+        Some(n) if n.kind() == "postfix_expression" => n,
+        _ => return,
+    };
+
+    // postfix_expression must have exactly one child: primary_expression (no suffixes)
+    if postfix.child_count() != 1 {
+        return;
+    }
+    let primary = match postfix.child(0) {
+        Some(n) if n.kind() == "primary_expression" => n,
+        _ => return,
+    };
+
+    // primary_expression must be a name node (identifier or quoted_identifier)
+    if primary.child_count() != 1 {
+        return;
+    }
+    let name_node = match primary.child(0) {
+        Some(n) if n.kind() == "name" => n,
+        _ => return,
+    };
+
+    // Extract the text of the name
+    if let Ok(text) = name_node.utf8_text(source) {
+        diagnostics.push(LintDiagnostic {
+            code: "AL-L023".to_string(),
+            message: format!(
+                "Bare identifier '{}' is not a valid statement — missing '()' for a function call or ':=' for an assignment",
+                text
+            ),
+            range: name_node.range(),
+            severity: LintSeverity::Warning,
+        });
     }
 }
 
@@ -1441,10 +1537,10 @@ mod tests {
     }
 
     #[test]
-    fn test_lint_rules_returns_21_rules() {
+    fn test_lint_rules_returns_22_rules() {
         let rules = lint_rules();
         // AL-L012 is excluded (stub — no-op implementation).
-        assert_eq!(rules.len(), 21, "Should have exactly 21 lint rules (AL-L012 excluded as stub)");
+        assert_eq!(rules.len(), 22, "Should have exactly 22 lint rules (AL-L012 excluded as stub)");
         // AL-L012 must not appear in the registry
         assert!(
             !rules.iter().any(|r| r.code == "AL-L012"),
@@ -1696,5 +1792,79 @@ mod tests {
 }"#;
         let diags = lint_src(src);
         assert!(!has_code(&diags, "AL-L022"), "Non-API page should not warn: {:?}", diags);
+    }
+
+    // ── T1806: Bare identifier statement ──────────────────────────────
+
+    #[test]
+    fn test_l023_bare_identifier_warns() {
+        let src = r#"codeunit 50100 "Test"
+{
+    procedure SimpleProc()
+    begin
+        GlobalCounter += 1;Message
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(has_code(&diags, "AL-L023"), "Should warn on bare identifier 'Message': {:?}", diags);
+    }
+
+    #[test]
+    fn test_l023_function_call_no_warn() {
+        let src = r#"codeunit 50100 "Test"
+{
+    procedure SimpleProc()
+    begin
+        Message('Hello');
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L023"), "Function call with () should not warn: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l023_assignment_no_warn() {
+        let src = r#"codeunit 50100 "Test"
+{
+    procedure SimpleProc()
+    var
+        Counter: Integer;
+    begin
+        Counter := 1;
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L023"), "Assignment should not warn: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l023_member_call_no_warn() {
+        let src = r#"codeunit 50100 "Test"
+{
+    procedure SimpleProc()
+    var
+        Item: Record Item;
+    begin
+        Item.Insert();
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L023"), "Member call should not warn: {:?}", diags);
+    }
+
+    #[test]
+    fn test_l023_compound_expression_no_warn() {
+        let src = r#"codeunit 50100 "Test"
+{
+    procedure SimpleProc()
+    var
+        x: Integer;
+        y: Integer;
+    begin
+        x := x + y;
+    end;
+}"#;
+        let diags = lint_src(src);
+        assert!(!has_code(&diags, "AL-L023"), "Compound expression assignment should not warn: {:?}", diags);
     }
 }
