@@ -393,40 +393,25 @@ fn collect_var_name_nodes(
 /// Classify a tree-sitter node kind to a semantic token type.
 /// Returns `None` for nodes that should not be highlighted or should recurse.
 fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
+    // Procedure/trigger/function definition keywords → KEYWORD_FUNCTION.
+    // These appear in token_classification.json's keyword_control list, so we must
+    // check them before the data-driven control-keyword lookup below.
+    if matches!(kind, "kw_procedure" | "kw_function" | "kw_trigger") {
+        return Some(token_types::KEYWORD_FUNCTION);
+    }
+
+    // Data-driven lookups for kw_* node kinds — replaces the old hardcoded match arms.
+    if crate::language_data::is_control_keyword_node(kind) {
+        return Some(token_types::KEYWORD_CONTROL);
+    }
+    if crate::language_data::is_object_keyword_node(kind) {
+        return Some(token_types::OBJECT_KEYWORD);
+    }
+    if crate::language_data::is_type_keyword_node(kind) {
+        return Some(token_types::BUILTIN_TYPE);
+    }
+
     match kind {
-        // Control-flow and access modifier keywords → KEYWORD_CONTROL
-        "kw_begin" | "kw_end" | "kw_var" | "kw_if" | "kw_then" | "kw_else" | "kw_for"
-        | "kw_foreach" | "kw_while" | "kw_do" | "kw_repeat" | "kw_until" | "kw_case" | "kw_of"
-        | "kw_exit" | "kw_break" | "kw_continue" | "kw_with" | "kw_in" | "kw_to" | "kw_downto"
-        | "kw_asserterror" | "kw_local" | "kw_internal" | "kw_protected" | "kw_temporary"
-        | "kw_event" => Some(token_types::KEYWORD_CONTROL),
-
-        // Procedure/trigger/function definition keywords → KEYWORD_FUNCTION
-        "kw_procedure" | "kw_function" | "kw_trigger" => Some(token_types::KEYWORD_FUNCTION),
-
-        // Object keywords — emit OBJECT_KEYWORD for object declaration keyword nodes
-        "kw_codeunit"
-        | "kw_table"
-        | "kw_page"
-        | "kw_report"
-        | "kw_query"
-        | "kw_xmlport"
-        | "kw_enum"
-        | "kw_interface"
-        | "kw_permissionset"
-        | "kw_profile"
-        | "kw_controladdin"
-        | "kw_tableextension"
-        | "kw_pageextension"
-        | "kw_reportextension"
-        | "kw_enumextension"
-        | "kw_permissionsetextension"
-        | "kw_pagecustomization"
-        | "kw_entitlement"
-        | "kw_profileextension"
-        | "kw_dotnet"
-        | "kw_dotnetassembly"
-        | "kw_dotnettypedeclaration" => Some(token_types::OBJECT_KEYWORD),
 
         // Generic keyword categories from external scanner.
         // control_keyword may appear as a structural name inside parenthesized_block
@@ -446,75 +431,6 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         "object_keyword" => Some(token_types::OBJECT_KEYWORD),
         // Metadata keywords — emit KEYWORD
         "metadata_keyword" => Some(token_types::KEYWORD),
-
-        // Built-in type keywords → BUILTIN_TYPE
-        "kw_integer"
-        | "kw_decimal"
-        | "kw_text"
-        | "kw_code"
-        | "kw_boolean"
-        | "kw_date"
-        | "kw_time"
-        | "kw_datetime"
-        | "kw_dateformula"
-        | "kw_duration"
-        | "kw_guid"
-        | "kw_blob"
-        | "kw_biginteger"
-        | "kw_bigtext"
-        | "kw_char"
-        | "kw_byte"
-        | "kw_option"
-        | "kw_record"
-        | "kw_recordid"
-        | "kw_recordref"
-        | "kw_dialog"
-        | "kw_file"
-        | "kw_instream"
-        | "kw_outstream"
-        | "kw_variant"
-        | "kw_list"
-        | "kw_dictionary"
-        | "kw_array"
-        | "kw_httpclient"
-        | "kw_httpcontent"
-        | "kw_httpheaders"
-        | "kw_httprequestmessage"
-        | "kw_httpresponsemessage"
-        | "kw_jsonarray"
-        | "kw_jsonobject"
-        | "kw_jsontoken"
-        | "kw_jsonvalue"
-        | "kw_xmldocument"
-        | "kw_xmlelement"
-        | "kw_xmlnode"
-        | "kw_xmlnodelist"
-        | "kw_xmlattribute"
-        | "kw_xmlattributecollection"
-        | "kw_xmlcdata"
-        | "kw_xmlcomment"
-        | "kw_xmldeclaration"
-        | "kw_xmldocumenttype"
-        | "kw_xmlnamespacemanager"
-        | "kw_xmlnametable"
-        | "kw_xmlprocessinginstruction"
-        | "kw_xmlreadoptions"
-        | "kw_xmltext"
-        | "kw_xmlwriteoptions"
-        | "kw_textbuilder"
-        | "kw_textconst"
-        | "kw_media"
-        | "kw_mediaset"
-        | "kw_notification"
-        | "kw_errorinfo"
-        | "kw_secrettext"
-        | "kw_filterpagebuilder"
-        | "kw_datatransfer"
-        | "kw_sessionsettings"
-        | "kw_testpage"
-        | "kw_testrequestpage"
-        | "kw_fileupload"
-        | "kw_cookie" => Some(token_types::BUILTIN_TYPE),
 
         // Generic type keyword node → BUILTIN_TYPE
         "type_keyword" => Some(token_types::BUILTIN_TYPE),
@@ -552,25 +468,10 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
     }
 }
 
-/// Known implicit trigger variables — these behave like `self`/`this` in other languages.
-/// Loaded at compile time from the canonical list generated by al-gen.
-///
-/// The JSON is a simple `["Rec", "xRec", ...]` array. We parse it at init time
-/// without pulling in serde_json as a dependency.
-static BUILTIN_VARIABLES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-    let json = include_str!("../../../tree-sitter-al/data/implicit_variables.json");
-    json.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim().trim_end_matches(',');
-            trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')).map(String::from)
-        })
-        .collect()
-});
-
 fn is_trigger_variable(text: &str) -> bool {
-    BUILTIN_VARIABLES
+    crate::language_data::implicit_variables()
         .iter()
-        .any(|v| v.eq_ignore_ascii_case(text))
+        .any(|v| v.name.eq_ignore_ascii_case(text))
 }
 
 /// Classify identifiers and quoted names based on parent/ancestor context.
@@ -1161,91 +1062,8 @@ fn find_child_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     None
 }
 
-/// Known AL builtin functions (case-insensitive check).
-///
-/// This list covers the most common system functions. It does NOT include record methods
-/// (FindFirst, Get, etc.) since those appear as member calls (`Rec.FindFirst()`) not bare
-/// function calls.
-static BUILTIN_FUNCTIONS: &[&str] = &[
-    // Error handling / UI
-    "Message",
-    "Error",
-    "Confirm",
-    "Dialog",
-    // String functions
-    "Format",
-    "StrSubstNo",
-    "StrPos",
-    "StrLen",
-    "CopyStr",
-    "SelectStr",
-    "InsStr",
-    "DelStr",
-    "DelChr",
-    "PadStr",
-    "ConvertStr",
-    "UpperCase",
-    "LowerCase",
-    "IncStr",
-    "Evaluate",
-    // Math
-    "Round",
-    "Abs",
-    "Power",
-    "Sqrt",
-    "Random",
-    "Randomize",
-    "Maximum",
-    "Minimum",
-    // Date/time
-    "Today",
-    "Time",
-    "CurrentDateTime",
-    "CreateDateTime",
-    "DT2Date",
-    "DT2Time",
-    "Date2DMY",
-    "DMY2Date",
-    "CalcDate",
-    "NormalDate",
-    "WorkDate",
-    // Array
-    "ArrayLen",
-    "CompressArray",
-    "CopyArray",
-    "SortArray",
-    // Control flow / transaction
-    "Clear",
-    "ClearAll",
-    "Sleep",
-    "Commit",
-    "Rollback",
-    // Misc
-    "IsNull",
-    "IsNullGuid",
-    "NullGuid",
-    "CreateGuid",
-    "TypeHelper",
-    "Hyperlink",
-    "ApplicationPath",
-    "GuiAllowed",
-    "UserId",
-    "CompanyName",
-    "TenantId",
-    "GlobalLanguage",
-    "WindowsLanguage",
-    "GetLastErrorText",
-    "GetLastErrorCode",
-    "ClearLastError",
-    "Variant2Date",
-    "Variant2Time",
-    "TableCaption",
-    "FieldCaption",
-    "FieldNo",
-];
-
 fn is_builtin_function(text: &str) -> bool {
-    BUILTIN_FUNCTIONS.iter().any(|b| b.eq_ignore_ascii_case(text))
+    crate::language_data::is_builtin_function(text)
 }
 
 

@@ -50,30 +50,10 @@ impl std::fmt::Display for ParameterInfo {
     }
 }
 
-/// All recognized AL object type node kinds in the tree-sitter grammar.
-const OBJECT_TYPE_KINDS: &[&str] = &[
-    "kw_table",
-    "kw_page",
-    "kw_codeunit",
-    "kw_report",
-    "kw_query",
-    "kw_xmlport",
-    "kw_enum",
-    "kw_interface",
-    "kw_permissionset",
-    "kw_profile",
-    "kw_pagecustomization",
-    "kw_controladdin",
-    "kw_tableextension",
-    "kw_pageextension",
-    "kw_reportextension",
-    "kw_enumextension",
-    "kw_permissionsetextension",
-    "kw_entitlement",
-    "kw_profileextension",
-    "kw_dotnet",
-    "object_keyword",
-];
+/// Returns true if `kind` is a recognized AL object type node kind.
+fn is_object_type_node(kind: &str) -> bool {
+    crate::language_data::is_object_keyword_node(kind) || kind == "object_keyword"
+}
 
 /// Find the object declaration in the tree.
 ///
@@ -134,7 +114,7 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     let kind = child.kind().to_string();
 
     // Only accept known object types
-    if !OBJECT_TYPE_KINDS.contains(&kind.as_str()) && kind != "object_declaration" {
+    if !is_object_type_node(&kind) && kind != "object_declaration" {
         return None;
     }
 
