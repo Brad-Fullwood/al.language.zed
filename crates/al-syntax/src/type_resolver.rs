@@ -443,50 +443,60 @@ impl<'a> TypeResolver<'a> {
         });
     }
 
-    /// Add Record-typed implicit variables (Rec, xRec, OldRec) from the source table.
-    ///
-    /// These are available across table-bound object members, including page/report
-    /// layout expressions outside procedure bodies.
     fn add_record_implicit_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
+        // Determine the source table name for Record types (if applicable)
         let source_table = self.find_source_table(root);
+
         if let Some(ref table) = source_table {
-            for iv in crate::language_data::implicit_variables().iter().filter(|v| v.r#type == "Record") {
-                result.push(VariableDecl {
-                    name: iv.name.clone(),
-                    type_name: iv.r#type.clone(),
-                    type_subtype: Some(table.clone()),
-                    is_var: false,
-                    scope: VariableScope::TriggerImplicit,
-                    range: root.range(),
-                });
-            }
-        }
-    }
-
-    /// Add trigger-implicit variables based on the object type.
-    ///
-    /// Iterates over `language_data::implicit_variables()` to push all known
-    /// trigger variables.  Record-typed variables (Rec, xRec, OldRec) receive
-    /// the source table as their subtype so that member completion works.
-    fn add_trigger_implicit_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
-        let source_table = self.find_source_table(root);
-
-        for iv in crate::language_data::implicit_variables() {
-            let type_subtype = if iv.r#type == "Record" {
-                source_table.clone()
-            } else {
-                None
-            };
-
             result.push(VariableDecl {
-                name: iv.name.clone(),
-                type_name: iv.r#type.clone(),
-                type_subtype,
+                name: "Rec".to_string(),
+                type_name: "Record".to_string(),
+                type_subtype: Some(table.clone()),
+                is_var: false,
+                scope: VariableScope::TriggerImplicit,
+                range: root.range(),
+            });
+            result.push(VariableDecl {
+                name: "xRec".to_string(),
+                type_name: "Record".to_string(),
+                type_subtype: Some(table.clone()),
                 is_var: false,
                 scope: VariableScope::TriggerImplicit,
                 range: root.range(),
             });
         }
+    }
+
+    /// Add trigger-implicit variables based on the object type.
+    fn add_trigger_implicit_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
+        self.add_record_implicit_vars(root, result);
+
+        result.push(VariableDecl {
+            name: "CurrPage".to_string(),
+            type_name: "Page".to_string(),
+            type_subtype: None,
+            is_var: false,
+            scope: VariableScope::TriggerImplicit,
+            range: root.range(),
+        });
+
+        result.push(VariableDecl {
+            name: "CurrReport".to_string(),
+            type_name: "Report".to_string(),
+            type_subtype: None,
+            is_var: false,
+            scope: VariableScope::TriggerImplicit,
+            range: root.range(),
+        });
+
+        result.push(VariableDecl {
+            name: "CurrFieldNo".to_string(),
+            type_name: "Integer".to_string(),
+            type_subtype: None,
+            is_var: false,
+            scope: VariableScope::TriggerImplicit,
+            range: root.range(),
+        });
     }
 
     /// Find the source table name for table/page/report objects.

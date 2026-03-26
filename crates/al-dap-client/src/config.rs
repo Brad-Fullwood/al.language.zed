@@ -199,10 +199,7 @@ fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::err
         .filter_map(convert_zed_config)
         .collect();
 
-    Ok(DebugConfigFile {
-        path: path.to_path_buf(),
-        configs,
-    })
+    Ok(DebugConfigFile { path: path.to_path_buf(), configs })
 }
 
 fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::error::Error>> {
@@ -217,16 +214,12 @@ fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std:
         .filter_map(convert_vscode_config)
         .collect();
 
-    Ok(DebugConfigFile {
-        path: path.to_path_buf(),
-        configs,
-    })
+    Ok(DebugConfigFile { path: path.to_path_buf(), configs })
 }
 
 /// Shared constructor: resolve env type + auth, then build a [`DapLaunchConfig`].
 ///
 /// Returns `None` if `environment_type_str` is absent or unrecognised.
-#[allow(clippy::too_many_arguments)]
 fn build_launch_config(
     name: String,
     environment_type_str: Option<&str>,
@@ -302,3 +295,4 @@ fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> AuthMethod 
         }
     }
 }
+

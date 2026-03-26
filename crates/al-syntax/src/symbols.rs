@@ -44,28 +44,55 @@ pub fn extract_document_symbols(tree: &Tree, text: &str) -> Vec<DocumentSymbol> 
     symbols
 }
 
-/// Look up an AL object kind node (e.g. `"kw_table"`) and return its display name
-/// and LSP SymbolKind from the language_data object_types registry.
-fn object_kind_for_node(kind: &str) -> Option<(&'static str, SymbolKind)> {
-    let keyword = kind.strip_prefix("kw_").unwrap_or(kind);
-    let ot = crate::language_data::object_type_by_keyword(keyword)?;
-    let sym_kind = match ot.lsp_symbol_kind.as_str() {
-        "Enum" => SymbolKind::ENUM,
-        "Interface" => SymbolKind::INTERFACE,
-        "Module" => SymbolKind::MODULE,
-        "File" => SymbolKind::FILE,
-        "Struct" => SymbolKind::STRUCT,
-        "Namespace" => SymbolKind::NAMESPACE,
-        _ => SymbolKind::CLASS,
-    };
-    Some((ot.display_name.as_str(), sym_kind))
+/// Static mapping: (grammar node kind, display name, LSP SymbolKind).
+///
+/// Both `object_kind_display` and `object_kind_to_symbol_kind` derive from this table.
+/// To add a new AL object type, add a single entry here.
+static OBJECT_KIND_MAP: &[(&str, &str, SymbolKind)] = &[
+    ("kw_table",                  "table",                  SymbolKind::STRUCT),
+    ("kw_tableextension",         "tableextension",         SymbolKind::STRUCT),
+    ("kw_page",                   "page",                   SymbolKind::CLASS),
+    ("kw_pageextension",          "pageextension",          SymbolKind::CLASS),
+    ("kw_pagecustomization",      "pagecustomization",      SymbolKind::CLASS),
+    ("kw_codeunit",               "codeunit",               SymbolKind::MODULE),
+    ("kw_report",                 "report",                 SymbolKind::FILE),
+    ("kw_reportextension",        "reportextension",        SymbolKind::FILE),
+    ("kw_query",                  "query",                  SymbolKind::INTERFACE),
+    ("kw_xmlport",                "xmlport",                SymbolKind::INTERFACE),
+    ("kw_enum",                   "enum",                   SymbolKind::ENUM),
+    ("kw_enumextension",          "enumextension",          SymbolKind::ENUM),
+    ("kw_interface",              "interface",              SymbolKind::INTERFACE),
+    ("kw_permissionset",          "permissionset",          SymbolKind::NAMESPACE),
+    ("kw_permissionsetextension", "permissionsetextension", SymbolKind::NAMESPACE),
+    ("kw_profile",                "profile",                SymbolKind::NAMESPACE),
+    ("kw_profileextension",       "profileextension",       SymbolKind::NAMESPACE),
+    ("kw_controladdin",           "controladdin",           SymbolKind::CLASS),
+    ("kw_entitlement",            "entitlement",            SymbolKind::NAMESPACE),
+    ("kw_dotnet",                 "dotnet",                 SymbolKind::NAMESPACE),
+];
+
+/// Map an AL object kind node to an LSP SymbolKind.
+fn object_kind_to_symbol_kind(kind: &str) -> SymbolKind {
+    OBJECT_KIND_MAP
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, _, sym)| *sym)
+        .unwrap_or(SymbolKind::OBJECT)
+}
+
+/// Extract the object kind as a human-readable string.
+fn object_kind_display(kind: &str) -> &str {
+    OBJECT_KIND_MAP
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, display, _)| *display)
+        .unwrap_or(kind)
 }
 
 fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kind_node = node.child_by_field_name("kind")?;
     let kind_str = kind_node.kind();
-    let (display_name, sym_kind) = object_kind_for_node(kind_str)
-        .unwrap_or((kind_str, SymbolKind::OBJECT));
+    let sym_kind = object_kind_to_symbol_kind(kind_str);
 
     // Grammar doesn't assign a field name to the object name;
     // use the shared extract_object_name helper.
@@ -94,9 +121,9 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         .unwrap_or("");
 
     let detail = if !id_text.is_empty() {
-        Some(format!("{} {}", display_name, id_text))
+        Some(format!("{} {}", object_kind_display(kind_str), id_text))
     } else {
-        Some(display_name.to_string())
+        Some(object_kind_display(kind_str).to_string())
     };
 
     let range = ts_range_to_lsp(&node.range(), source);
@@ -398,15 +425,14 @@ fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<Document
     })
 }
 
-/// Check whether `keyword` is a recognized page control keyword.
-///
-/// Delegates to `language_data::page_controls()` so the list stays in sync with the
-/// canonical data files rather than being duplicated here.
-fn is_page_control_keyword(keyword: &str) -> bool {
-    crate::language_data::page_controls()
-        .iter()
-        .any(|k| k.eq_ignore_ascii_case(keyword))
-}
+/// Page control keywords that appear as metadata_keyword nodes in the grammar.
+/// These produce a pattern: metadata_keyword + parenthesized_block + braced_block
+const PAGE_CONTROL_KEYWORDS: &[&str] = &[
+    "area", "group", "repeater", "field", "part", "action", "separator",
+    "cuegroup", "grid", "fixed", "usercontrol", "label", "dataitem",
+    "column", "filter", "addfirst", "addlast", "addafter", "addbefore",
+    "modify", "moveafter", "movebefore", "actionref",
+];
 
 fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
     match keyword {
@@ -547,7 +573,7 @@ fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut 
 fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kw_text = kw_node.utf8_text(source).ok()?;
 
-    if !is_page_control_keyword(kw_text) {
+    if !PAGE_CONTROL_KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(kw_text)) {
         return None;
     }
 

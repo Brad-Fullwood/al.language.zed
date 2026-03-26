@@ -186,49 +186,7 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
         });
     }
 
-    // Global built-in functions (compile-time fallback when builtins cache is empty)
-    if let Some(result) = signature_global_builtin(func_name, active_param) {
-        return Some(result);
-    }
-
     None
-}
-
-/// Signature help for global AL built-in functions.
-///
-/// This is a compile-time fallback used when the semantic cache is empty (no
-/// .NET bridge / ALTool not installed). Mirrors `hover_global_builtin` in
-/// hover.rs but returns a `SignatureHelpResult` instead of markdown.
-fn signature_global_builtin(name: &str, active_param: u32) -> Option<SignatureHelpResult> {
-    let func = al_syntax::language_data::builtin_function_by_name(name)?;
-
-    // Build parameter labels from the structured parameter list.
-    // Optional parameters are wrapped in `[...]`; variadic ones get `...` suffix.
-    let parameters: Vec<SignatureParameterInfo> = func.parameters.iter().map(|p| {
-        let label = if p.variadic {
-            if p.required {
-                format!("{}: {}...", p.name, p.r#type)
-            } else {
-                format!("[{}: {}...]", p.name, p.r#type)
-            }
-        } else if p.required {
-            format!("{}: {}", p.name, p.r#type)
-        } else {
-            format!("[{}: {}]", p.name, p.r#type)
-        };
-        SignatureParameterInfo { label, documentation: None }
-    }).collect();
-
-    Some(SignatureHelpResult {
-        signatures: vec![SignatureInfo {
-            label: func.signature.clone(),
-            documentation: if func.description.is_empty() { None } else { Some(func.description.clone()) },
-            parameters,
-            active_parameter: Some(active_param),
-        }],
-        active_signature: Some(0),
-        active_parameter: Some(active_param),
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -335,52 +293,5 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].label, "\"Sales Line\": Record");
         assert_eq!(params[1].label, "Qty: Decimal");
-    }
-
-    // --- SH-02: signature help for global built-in functions ---
-
-    #[test]
-    fn signature_help_global_builtin_message() {
-        use crate::workspace::Workspace;
-        use url::Url;
-
-        let ws = Workspace::new();
-        let uri = Url::parse("file:///test/src/HelloWorld.al").unwrap();
-
-        // HelloWorld.al with Message( call
-        let code = r#"codeunit 50100 "Hello World"
-{
-    procedure badName()
-    begin
-        Message('Hello World');
-    end;
-
-    trigger OnRun()
-    begin
-    end;
-}"#;
-        ws.documents.open(uri.clone(), code.to_string());
-
-        // Position inside Message( on line 4: `        Message('Hello World');`
-        // Line 4 (0-indexed), character 16 (after `Message(`)
-        let pos = super::super::Position { line: 4, character: 16 };
-        let result = signature_help(&ws, &uri, pos);
-
-        assert!(
-            result.is_some(),
-            "signature help for Message( should return overloads — got None"
-        );
-        let sig = result.unwrap();
-        assert!(
-            !sig.signatures.is_empty(),
-            "should return at least one signature for Message"
-        );
-        let labels: Vec<&str> = sig.signatures.iter().map(|s| s.label.as_str()).collect();
-        let has_message = labels.iter().any(|l| l.to_ascii_lowercase().contains("message"));
-        assert!(
-            has_message,
-            "at least one signature label should contain 'Message'. Got: {:?}",
-            labels
-        );
     }
 }

@@ -60,11 +60,6 @@ pub mod token_types {
     /// Custom AL attribute decorator name token.
     pub const ATTRIBUTE_NAME: u32 = 42;
 
-    /// Control-flow keywords (begin, end, if, then, else, for, while, etc.).
-    pub const KEYWORD_CONTROL: u32 = 43;
-    /// Function/procedure/trigger definition keywords.
-    pub const KEYWORD_FUNCTION: u32 = 44;
-
     /// The legend entries in order, for registering with the LSP server.
     pub const LEGEND: &[&str] = &[
         "keyword",
@@ -110,18 +105,25 @@ pub mod token_types {
         "datetime",
         "namespaceName",
         "attribute",
-        "keywordControl",  // 43
-        "keywordFunction", // 44
     ];
 }
 
-/// Semantic token modifier bit flags — must match the legend registered with the LSP client.
+/// Semantic token modifier bit-flags and legend.
 pub mod token_modifiers {
-    /// Bit 0: `unnecessary` — the token is for code that is not needed (e.g. unused variable).
-    pub const UNNECESSARY: u32 = 1 << 0;
+    pub const DECLARATION: u32 = 0;
+    pub const READONLY: u32 = 1;
+    pub const DEPRECATED: u32 = 2;
+    pub const STATIC: u32 = 3;
 
-    /// The modifier legend entries in order, for registering with the LSP server.
-    pub const LEGEND: &[&str] = &["unnecessary"];
+    pub const UNNECESSARY: u32 = 1 << 4;
+
+    pub const LEGEND: &[&str] = &[
+        "declaration",
+        "readonly",
+        "deprecated",
+        "static",
+        "unnecessary",
+    ];
 }
 
 /// A semantic token for syntax highlighting.
@@ -151,14 +153,9 @@ pub fn extract_semantic_tokens(tree: &Tree, text: &str) -> Vec<SemanticToken> {
     let root = tree.root_node();
     let source = text.as_bytes();
 
-    // Collect all leaf tokens with their absolute positions.
-    // Tuple: (line, col, len, token_type)
-    let mut raw_tokens: Vec<(u32, u32, u32, u32)> = Vec::new();
+    // Collect all leaf tokens with their absolute positions
+    let mut raw_tokens: Vec<(u32, u32, u32, u32)> = Vec::new(); // (line, col, len, type)
     collect_tokens(root, source, &mut raw_tokens);
-
-    // Build a set of (line, col) positions for unused local variable declaration names.
-    // These receive the `unnecessary` modifier (bit 0) so editors can fade them.
-    let unused_positions = collect_unused_var_positions(root, source);
 
     // Sort by position (line, then column)
     raw_tokens.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -176,18 +173,12 @@ pub fn extract_semantic_tokens(tree: &Tree, text: &str) -> Vec<SemanticToken> {
             col
         };
 
-        let token_modifiers = if unused_positions.contains(&(line, col)) {
-            token_modifiers::UNNECESSARY
-        } else {
-            0
-        };
-
         tokens.push(SemanticToken {
             delta_line,
             delta_start,
             length: len,
             token_type,
-            token_modifiers,
+            token_modifiers: 0,
         });
 
         prev_line = line;
@@ -239,196 +230,128 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
     }
 }
 
-/// Collect the (line, col) positions of unused or write-only local variable declaration name nodes.
-///
-/// Walks all `procedure_declaration` and `trigger_declaration` nodes in the tree,
-/// finds variables in their `var_section`, and returns the set of declaration-name
-/// positions for variables that are:
-///   - Never referenced in the procedure body at all, OR
-///   - Only assigned via plain `:=` (write-only: assigned but never read).
-///
-/// Compound assignments (`+=`, `-=`, etc.) count as reads and are not flagged.
-///
-/// Only local variables (those inside a procedure/trigger var section) are checked.
-/// Global object-level variables are not marked because they may be used across files.
-fn collect_unused_var_positions(
-    root: Node,
-    source: &[u8],
-) -> std::collections::HashSet<(u32, u32)> {
-    let mut result = std::collections::HashSet::new();
-
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if node.kind() == "procedure_declaration"
-            || node.kind() == "trigger_declaration"
-            || node.kind() == "event_procedure_declaration"
-        {
-            collect_unused_in_procedure(node, source, &mut result);
-            // Don't push children — we already handled this subtree
-            continue;
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            stack.push(child);
-        }
-    }
-
-    result
-}
-
-/// Collect unused variable positions within a single procedure/trigger node.
-fn collect_unused_in_procedure(
-    proc_node: Node,
-    source: &[u8],
-    result: &mut std::collections::HashSet<(u32, u32)>,
-) {
-    // Gather variable declarations from the var section
-    let mut var_declarations: Vec<(String, tree_sitter::Point)> = Vec::new();
-    let mut cursor = proc_node.walk();
-    for child in proc_node.children(&mut cursor) {
-        if child.kind() == "var_section" || child.kind() == "empty_var_section" {
-            collect_var_name_nodes(child, source, &mut var_declarations);
-        }
-    }
-
-    if var_declarations.is_empty() {
-        return;
-    }
-
-    // Get the body text (begin..end block) for word-boundary usage checks
-    let mut cursor2 = proc_node.walk();
-    let body_text: Option<String> = proc_node.children(&mut cursor2).find_map(|c| {
-        if c.kind() == "begin_end_block" {
-            c.utf8_text(source).ok().map(|s| s.to_lowercase())
-        } else {
-            None
-        }
-    });
-
-    let body = match body_text {
-        Some(b) => b,
-        None => return,
-    };
-
-    for (var_name, pos) in &var_declarations {
-        let lower_name = var_name.to_lowercase();
-        if is_write_only_var(&body, &lower_name) {
-            result.insert((pos.row as u32, pos.column as u32));
-        }
-    }
-}
-
-/// Return `true` if the variable `word` is considered unused or write-only in `body`.
-///
-/// A variable is unnecessary when:
-/// - It never appears in the body at all (completely unused), OR
-/// - Every word-boundary occurrence is a plain `:=` assignment LHS (write-only: assigned but
-///   never read). Compound assignments like `+=` are excluded because they imply a read.
-fn is_write_only_var(body: &str, word: &str) -> bool {
-    if word.is_empty() {
-        return false;
-    }
-
-    let mut found_any = false;
-    let mut all_lhs = true;
-
-    for (i, _) in body.match_indices(word) {
-        // Word-boundary check
-        let before_ok = i == 0 || {
-            let b = body.as_bytes()[i - 1];
-            !b.is_ascii_alphanumeric() && b != b'_'
-        };
-        let after_idx = i + word.len();
-        let after_ok = after_idx >= body.len() || {
-            let b = body.as_bytes()[after_idx];
-            !b.is_ascii_alphanumeric() && b != b'_'
-        };
-
-        if !before_ok || !after_ok {
-            continue; // not a word boundary match
-        }
-
-        found_any = true;
-
-        // Check whether this occurrence is on the LHS of a plain `:=` assignment.
-        // Skip optional whitespace after the word boundary, then look for `:=`.
-        // A compound assignment like `+=` is NOT a plain assignment — it reads the value too.
-        let rest = &body[after_idx..];
-        let trimmed = rest.trim_start_matches([' ', '\t', '\r', '\n']);
-        if !trimmed.starts_with(":=") {
-            // This occurrence is a read (RHS, function arg, condition, compound assignment, etc.)
-            all_lhs = false;
-        }
-    }
-
-    // Unnecessary if: never appeared, OR every occurrence was an LHS write
-    !found_any || all_lhs
-}
-
-/// Collect variable name nodes from a var_section, recording their start positions.
-fn collect_var_name_nodes(node: Node, source: &[u8], vars: &mut Vec<(String, tree_sitter::Point)>) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "variable_declaration" || child.kind() == "regular_variable_declaration"
-        {
-            if let Some(name_node) = child.child_by_field_name("name") {
-                if let Ok(name) = name_node.utf8_text(source) {
-                    let clean_name = name.trim_matches('"').to_string();
-                    if !clean_name.is_empty() {
-                        vars.push((clean_name, name_node.start_position()));
-                    }
-                }
-            }
-        }
-        // Recurse for nested variable_declaration groups
-        if child.kind() == "variable_declaration" {
-            collect_var_name_nodes(child, source, vars);
-        }
-    }
-}
-
 /// Classify a tree-sitter node kind to a semantic token type.
 /// Returns `None` for nodes that should not be highlighted or should recurse.
 fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
-    // Procedure/trigger/function definition keywords → KEYWORD_FUNCTION.
-    // These appear in token_classification.json's keyword_control list, so we must
-    // check them before the data-driven control-keyword lookup below.
-    if matches!(kind, "kw_procedure" | "kw_function" | "kw_trigger") {
-        return Some(token_types::KEYWORD_FUNCTION);
-    }
-
-    // Data-driven lookups for kw_* node kinds — replaces the old hardcoded match arms.
-    if crate::language_data::is_control_keyword_node(kind) {
-        return Some(token_types::KEYWORD_CONTROL);
-    }
-    if crate::language_data::is_object_keyword_node(kind) {
-        return Some(token_types::OBJECT_KEYWORD);
-    }
-    if crate::language_data::is_type_keyword_node(kind) {
-        return Some(token_types::BUILTIN_TYPE);
-    }
-
     match kind {
+        // Keywords (AL-specific keyword nodes from the external scanner)
+        "kw_begin" | "kw_end" | "kw_var" | "kw_if" | "kw_then" | "kw_else" | "kw_for"
+        | "kw_foreach" | "kw_while" | "kw_do" | "kw_repeat" | "kw_until" | "kw_case" | "kw_of"
+        | "kw_exit" | "kw_break" | "kw_continue" | "kw_with" | "kw_in" | "kw_to" | "kw_downto"
+        | "kw_asserterror" | "kw_local" | "kw_internal" | "kw_protected" | "kw_temporary"
+        | "kw_event" => Some(token_types::KEYWORD),
+
+        // Procedure/trigger/function keywords
+        "kw_procedure" | "kw_function" | "kw_trigger" => Some(token_types::KEYWORD),
+
+        // Object keywords — distinct from control keywords for visual separation
+        "kw_codeunit"
+        | "kw_table"
+        | "kw_page"
+        | "kw_report"
+        | "kw_query"
+        | "kw_xmlport"
+        | "kw_enum"
+        | "kw_interface"
+        | "kw_permissionset"
+        | "kw_profile"
+        | "kw_controladdin"
+        | "kw_tableextension"
+        | "kw_pageextension"
+        | "kw_reportextension"
+        | "kw_enumextension"
+        | "kw_permissionsetextension"
+        | "kw_pagecustomization"
+        | "kw_entitlement"
+        | "kw_profileextension"
+        | "kw_dotnet"
+        | "kw_dotnetassembly"
+        | "kw_dotnettypedeclaration" => Some(token_types::OBJECT_KEYWORD),
+
         // Generic keyword categories from external scanner.
         // control_keyword may appear as a structural name inside parenthesized_block
         // (e.g. `layout(DefaultLayout)`) — check structural context first.
-        // Otherwise emit KEYWORD_CONTROL.
         "control_keyword" => {
             if let Some(paren) = node.parent().filter(|p| p.kind() == "parenthesized_block") {
                 if let Some(t) = classify_parenthesized_block_name(node, paren, source) {
                     return Some(t);
                 }
             }
-            Some(token_types::KEYWORD_CONTROL)
+            Some(token_types::KEYWORD)
         }
-        // Generic keyword nodes — emit coarse KEYWORD
         "keyword" => Some(token_types::KEYWORD),
-        // Object declaration keywords — emit OBJECT_KEYWORD
         "object_keyword" => Some(token_types::OBJECT_KEYWORD),
-        // Metadata keywords — emit KEYWORD
         "metadata_keyword" => Some(token_types::KEYWORD),
 
-        // Generic type keyword node → BUILTIN_TYPE
+        // Built-in type keywords — distinguished from user-defined types
+        "kw_integer"
+        | "kw_decimal"
+        | "kw_text"
+        | "kw_code"
+        | "kw_boolean"
+        | "kw_date"
+        | "kw_time"
+        | "kw_datetime"
+        | "kw_dateformula"
+        | "kw_duration"
+        | "kw_guid"
+        | "kw_blob"
+        | "kw_biginteger"
+        | "kw_bigtext"
+        | "kw_char"
+        | "kw_byte"
+        | "kw_option"
+        | "kw_record"
+        | "kw_recordid"
+        | "kw_recordref"
+        | "kw_dialog"
+        | "kw_file"
+        | "kw_instream"
+        | "kw_outstream"
+        | "kw_variant"
+        | "kw_list"
+        | "kw_dictionary"
+        | "kw_array"
+        | "kw_httpclient"
+        | "kw_httpcontent"
+        | "kw_httpheaders"
+        | "kw_httprequestmessage"
+        | "kw_httpresponsemessage"
+        | "kw_jsonarray"
+        | "kw_jsonobject"
+        | "kw_jsontoken"
+        | "kw_jsonvalue"
+        | "kw_xmldocument"
+        | "kw_xmlelement"
+        | "kw_xmlnode"
+        | "kw_xmlnodelist"
+        | "kw_xmlattribute"
+        | "kw_xmlattributecollection"
+        | "kw_xmlcdata"
+        | "kw_xmlcomment"
+        | "kw_xmldeclaration"
+        | "kw_xmldocumenttype"
+        | "kw_xmlnamespacemanager"
+        | "kw_xmlnametable"
+        | "kw_xmlprocessinginstruction"
+        | "kw_xmlreadoptions"
+        | "kw_xmltext"
+        | "kw_xmlwriteoptions"
+        | "kw_textbuilder"
+        | "kw_textconst"
+        | "kw_media"
+        | "kw_mediaset"
+        | "kw_notification"
+        | "kw_errorinfo"
+        | "kw_secrettext"
+        | "kw_filterpagebuilder"
+        | "kw_datatransfer"
+        | "kw_sessionsettings"
+        | "kw_testpage"
+        | "kw_testrequestpage"
+        | "kw_fileupload"
+        | "kw_cookie" => Some(token_types::BUILTIN_TYPE),
+
         "type_keyword" => Some(token_types::BUILTIN_TYPE),
 
         // Property keywords
@@ -464,10 +387,25 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
     }
 }
 
+/// Known implicit trigger variables — these behave like `self`/`this` in other languages.
+/// Loaded at compile time from the canonical list generated by al-gen.
+///
+/// The JSON is a simple `["Rec", "xRec", ...]` array. We parse it at init time
+/// without pulling in serde_json as a dependency.
+static BUILTIN_VARIABLES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    let json = include_str!("../../../tree-sitter-al/data/implicit_variables.json");
+    json.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim().trim_end_matches(',');
+            trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')).map(String::from)
+        })
+        .collect()
+});
+
 fn is_trigger_variable(text: &str) -> bool {
-    crate::language_data::implicit_variables()
+    BUILTIN_VARIABLES
         .iter()
-        .any(|v| v.name.eq_ignore_ascii_case(text))
+        .any(|v| v.eq_ignore_ascii_case(text))
 }
 
 /// Classify identifiers and quoted names based on parent/ancestor context.
@@ -550,7 +488,7 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                 Some(token_types::PROPERTY)
             } else if matches!(node.kind(), "quoted_identifier") {
                 // In AL, double-quoted values in properties are always object references
-                Some(token_types::BUILTIN_TYPE)
+                Some(token_types::TYPE)
             } else {
                 None
             }
@@ -573,7 +511,9 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         }
         // key_declaration covers: table keys, query/report dataitems, query/report columns,
         // xmlport table elements. Discriminate by the keyword child.
-        "key_declaration" => classify_key_declaration_name(node, parent, source),
+        "key_declaration" => {
+            classify_key_declaration_name(node, parent, source)
+        }
         // Enum value names
         "enum_value_declaration" => Some(token_types::ENUM_MEMBER),
         // Namespace declarations — distinct custom token from standard NAMESPACE (idx 11).
@@ -597,29 +537,24 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         }
         // Identifiers inside parenthesized blocks — classify by preceding sibling keyword.
         // Covers: pageView names, reportLayout names, xmlport element names, queryFilter names.
-        "parenthesized_block" => classify_parenthesized_block_name(node, parent, source),
+        "parenthesized_block" => {
+            classify_parenthesized_block_name(node, parent, source)
+        }
         "object_declaration" => {
             if is_object_name(node, parent) {
-                Some(token_types::NAMESPACE_DECL)
+                Some(token_types::TYPE)
             } else {
                 None
             }
         }
-        // Usage sites: a `name` node appearing as a direct child of `primary_expression`
-        // is a standalone identifier reference (variable, procedure call, builtin).
-        // Resolve it by scanning the enclosing scope.
-        "primary_expression" if node.kind() == "name" => classify_name_in_expression(node, source),
         _ => {
-            if has_ancestor_kind(node, "enum_value_declaration") {
-                return Some(token_types::ENUM_MEMBER);
-            }
             if has_ancestor_kind(node, "type_reference") {
-                Some(token_types::BUILTIN_TYPE)
+                Some(token_types::TYPE)
             } else if matches!(node.kind(), "string" | "verbatim_string") {
                 Some(token_types::STRING)
             } else if matches!(node.kind(), "quoted_identifier") {
                 // Double-quoted identifiers in AL are always object/identifier references
-                Some(token_types::BUILTIN_TYPE)
+                Some(token_types::TYPE)
             } else if matches!(node.kind(), "identifier") {
                 // Check for implicit trigger variables (Rec, xRec, CurrPage, etc.)
                 if let Ok(text) = node.utf8_text(source) {
@@ -699,18 +634,17 @@ fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -
 
     // Look for the keyword child of the key_declaration
     let kw = {
-        let keyword_node = declaration.child_by_field_name("keyword").or_else(|| {
-            // Fallback: find first keyword/property_keyword child by index
-            // to avoid tree-sitter cursor lifetime issues.
-            (0..declaration.child_count())
-                .filter_map(|i| declaration.child(i))
-                .find(|child| {
-                    matches!(
-                        child.kind(),
-                        "keyword" | "property_keyword" | "metadata_keyword"
-                    )
-                })
-        })?;
+        let keyword_node = declaration
+            .child_by_field_name("keyword")
+            .or_else(|| {
+                // Fallback: find first keyword/property_keyword child by index
+                // to avoid tree-sitter cursor lifetime issues.
+                (0..declaration.child_count())
+                    .filter_map(|i| declaration.child(i))
+                    .find(|child| {
+                        matches!(child.kind(), "keyword" | "property_keyword" | "metadata_keyword")
+                    })
+            })?;
         keyword_node.utf8_text(source).ok()?.to_lowercase()
     };
 
@@ -761,304 +695,6 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
     }
 }
 
-// ---------------------------------------------------------------------------
-// Usage-site resolution helpers
-// ---------------------------------------------------------------------------
-
-/// Classify a `name` node that appears inside a `primary_expression` (usage site).
-///
-/// Walk the enclosing scope to determine if the identifier refers to a parameter,
-/// local variable, global variable, procedure, or builtin function.
-fn classify_name_in_expression(name_node: Node, source: &[u8]) -> Option<u32> {
-    let text = name_node.utf8_text(source).ok()?;
-
-    // Check for implicit trigger variables (Rec, xRec, CurrPage, etc.)
-    if is_trigger_variable(text)
-        && (has_ancestor_kind(name_node, "trigger_declaration")
-            || has_ancestor_kind(name_node, "procedure_declaration"))
-    {
-        return Some(token_types::SELF_KEYWORD);
-    }
-
-    // Walk up to the enclosing procedure or trigger declaration.
-    let enclosing_proc = find_ancestor_proc(name_node);
-
-    if let Some(proc) = enclosing_proc {
-        // 1. Check parameters of the enclosing procedure.
-        if procedure_has_parameter(proc, text, source) {
-            return Some(token_types::PARAMETER);
-        }
-
-        // 2. Check local var section of the enclosing procedure.
-        if procedure_has_local_var(proc, text, source) {
-            return Some(token_types::LOCAL_VARIABLE);
-        }
-    }
-
-    // 3. Check object-level var section (global variables).
-    if let Some(obj) = find_ancestor_object(name_node) {
-        if object_has_global_var(obj, text, source) {
-            return Some(token_types::GLOBAL_VARIABLE);
-        }
-
-        // 4. Check if it's a procedure name in this file.
-        if object_has_procedure(obj, text, source) {
-            return Some(token_types::FUNCTION);
-        }
-    }
-
-    // 5. Check known AL builtin functions.
-    if is_builtin_function(text) {
-        return Some(token_types::BUILTIN_FUNCTION);
-    }
-
-    None
-}
-
-/// Walk up the AST to find the nearest enclosing `procedure_declaration` or `trigger_declaration`.
-fn find_ancestor_proc(node: Node) -> Option<Node> {
-    let mut cur = node.parent();
-    while let Some(n) = cur {
-        if matches!(n.kind(), "procedure_declaration" | "trigger_declaration") {
-            return Some(n);
-        }
-        cur = n.parent();
-    }
-    None
-}
-
-/// Walk up the AST to find the nearest enclosing `object_declaration`.
-fn find_ancestor_object(node: Node) -> Option<Node> {
-    let mut cur = node.parent();
-    while let Some(n) = cur {
-        if n.kind() == "object_declaration" {
-            return Some(n);
-        }
-        cur = n.parent();
-    }
-    None
-}
-
-/// Extract the plain text of a `name` or `name_or_keyword` node.
-///
-/// These nodes contain a single `identifier` or keyword child. We return the text
-/// of that child (or the node itself if it is an identifier).
-fn name_node_text<'a>(node: Node, source: &'a [u8]) -> Option<&'a str> {
-    // If the node itself is an identifier or quoted_identifier, use it directly.
-    if matches!(node.kind(), "identifier" | "quoted_identifier") {
-        return node.utf8_text(source).ok();
-    }
-    // Otherwise look for a child identifier.
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if matches!(child.kind(), "identifier" | "quoted_identifier") {
-                return child.utf8_text(source).ok();
-            }
-        }
-    }
-    // Fallback: use the node's own text.
-    node.utf8_text(source).ok()
-}
-
-/// Check whether `proc_node` (a `procedure_declaration` or `trigger_declaration`) has a
-/// parameter named `text` (case-insensitive).
-fn procedure_has_parameter(proc_node: Node, text: &str, source: &[u8]) -> bool {
-    // Find the parameter_list child.
-    for i in 0..proc_node.child_count() {
-        if let Some(child) = proc_node.child(i) {
-            if child.kind() == "parameter_list" && parameter_list_has(child, text, source) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Scan a `parameter_list` node for a parameter with a matching name.
-fn parameter_list_has(list: Node, text: &str, source: &[u8]) -> bool {
-    for i in 0..list.child_count() {
-        if let Some(param) = list.child(i) {
-            if param.kind() == "parameter" {
-                // The `name` field of `parameter` is a `name_or_keyword`.
-                if let Some(name_node) = param.child_by_field_name("name") {
-                    if let Some(param_text) = name_node_text(name_node, source) {
-                        if param_text.eq_ignore_ascii_case(text) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Check whether `proc_node` has a local `var_section` containing a variable named `text`.
-fn procedure_has_local_var(proc_node: Node, text: &str, source: &[u8]) -> bool {
-    for i in 0..proc_node.child_count() {
-        if let Some(child) = proc_node.child(i) {
-            if child.kind() == "var_section" && var_section_has(child, text, source) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Check whether `obj_node` (an `object_declaration`) has an object-level var section
-/// containing a variable named `text`.
-fn object_has_global_var(obj_node: Node, text: &str, source: &[u8]) -> bool {
-    // The object body is in the `body` field or as a direct child `object_body`.
-    let body = obj_node
-        .child_by_field_name("body")
-        .or_else(|| find_child_kind(obj_node, "object_body"));
-    let body = match body {
-        Some(b) => b,
-        None => return false,
-    };
-
-    for i in 0..body.child_count() {
-        if let Some(child) = body.child(i) {
-            if child.kind() == "object_var_section" && object_var_section_has(child, text, source) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Check whether `obj_node` has a `procedure_declaration` or `trigger_declaration` whose
-/// name matches `text` (case-insensitive).
-fn object_has_procedure(obj_node: Node, text: &str, source: &[u8]) -> bool {
-    let body = obj_node
-        .child_by_field_name("body")
-        .or_else(|| find_child_kind(obj_node, "object_body"));
-    let body = match body {
-        Some(b) => b,
-        None => return false,
-    };
-
-    for i in 0..body.child_count() {
-        if let Some(child) = body.child(i) {
-            if matches!(
-                child.kind(),
-                "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
-            ) {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    if let Some(proc_text) = name_node_text(name_node, source) {
-                        if proc_text.eq_ignore_ascii_case(text) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Scan a `var_section` for a `variable_declaration` containing a variable named `text`.
-fn var_section_has(var_section: Node, text: &str, source: &[u8]) -> bool {
-    for i in 0..var_section.child_count() {
-        if let Some(child) = var_section.child(i) {
-            if child.kind() == "variable_declaration"
-                && variable_declaration_has(child, text, source)
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Scan an `object_var_section` for an `object_variable_declaration` containing `text`.
-fn object_var_section_has(var_section: Node, text: &str, source: &[u8]) -> bool {
-    for i in 0..var_section.child_count() {
-        if let Some(child) = var_section.child(i) {
-            if child.kind() == "object_variable_declaration"
-                && object_variable_declaration_has(child, text, source)
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Check a `variable_declaration` node (which may contain multiple `regular_variable_declaration`
-/// children) for a variable named `text`.
-fn variable_declaration_has(var_decl: Node, text: &str, source: &[u8]) -> bool {
-    for i in 0..var_decl.child_count() {
-        if let Some(child) = var_decl.child(i) {
-            if child.kind() == "regular_variable_declaration"
-                && regular_var_decl_has(child, text, source)
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Check an `object_variable_declaration` node for a variable named `text`.
-fn object_variable_declaration_has(obj_var_decl: Node, text: &str, source: &[u8]) -> bool {
-    for i in 0..obj_var_decl.child_count() {
-        if let Some(child) = obj_var_decl.child(i) {
-            if child.kind() == "regular_variable_declaration"
-                && regular_var_decl_has(child, text, source)
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Check a `regular_variable_declaration` for a variable name matching `text`.
-///
-/// A regular_variable_declaration can declare multiple names (comma-separated), all
-/// in `name` fields before the `:` separator.  We check all `name_or_keyword` children
-/// that appear before the colon.
-fn regular_var_decl_has(decl: Node, text: &str, source: &[u8]) -> bool {
-    // The separator `:` is the `sep` field. All `name` fields are before it.
-    let sep_start = decl
-        .child_by_field_name("sep")
-        .map(|s| s.start_byte())
-        .unwrap_or(usize::MAX);
-
-    for i in 0..decl.child_count() {
-        if let Some(child) = decl.child(i) {
-            if child.start_byte() >= sep_start {
-                break;
-            }
-            // `name` field children are `name_or_keyword` nodes
-            if child.kind() == "name_or_keyword" {
-                if let Some(name_text) = name_node_text(child, source) {
-                    if name_text.eq_ignore_ascii_case(text) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Find the first direct child of `node` with a given kind.
-fn find_child_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == kind {
-                return Some(child);
-            }
-        }
-    }
-    None
-}
-
-fn is_builtin_function(text: &str) -> bool {
-    crate::language_data::is_builtin_function(text)
-}
 
 #[cfg(test)]
 mod tests {
@@ -1127,26 +763,16 @@ mod tests {
             assert!(token.length > 0, "Token length should be positive");
         }
 
-        // Verify string, keyword control, and keyword function tokens are present.
-        let string_count = tokens
+        // Verify we get keyword tokens (begin, end, var, procedure, etc.)
+        let keyword_count = tokens
             .iter()
-            .filter(|t| t.token_type == token_types::STRING)
+            .filter(|t| t.token_type == token_types::KEYWORD)
             .count();
         assert!(
-            string_count >= 1,
-            "Should have at least 1 string token ('Hello'), got {}",
-            string_count
+            keyword_count >= 3,
+            "Should have at least 3 keyword tokens (codeunit, procedure, var, begin, end), got {}",
+            keyword_count
         );
-        let kw_control = tokens
-            .iter()
-            .filter(|t| t.token_type == token_types::KEYWORD_CONTROL)
-            .count();
-        assert!(kw_control > 0, "Should have KEYWORD_CONTROL tokens");
-        let kw_fn = tokens
-            .iter()
-            .filter(|t| t.token_type == token_types::KEYWORD_FUNCTION)
-            .count();
-        assert!(kw_fn > 0, "Should have KEYWORD_FUNCTION tokens");
     }
 
     #[test]
@@ -1249,28 +875,11 @@ mod tests {
         let result = parser.parse(source);
         let tokens = extract_semantic_tokens(&result.tree, source);
         assert!(!tokens.is_empty(), "Should have tokens");
-        let number_count = tokens
+        let keyword_count = tokens
             .iter()
-            .filter(|t| t.token_type == token_types::NUMBER)
+            .filter(|t| t.token_type == token_types::KEYWORD)
             .count();
-        assert!(
-            number_count > 0,
-            "Should have number tokens (object ID 50100)"
-        );
-        // Verify control-flow and function-definition keywords emit granular types.
-        let kw_control = tokens
-            .iter()
-            .filter(|t| t.token_type == token_types::KEYWORD_CONTROL)
-            .count();
-        assert!(
-            kw_control > 0,
-            "Should have KEYWORD_CONTROL tokens (begin/end)"
-        );
-        let kw_fn = tokens
-            .iter()
-            .filter(|t| t.token_type == token_types::KEYWORD_FUNCTION)
-            .count();
-        assert!(kw_fn > 0, "Should have KEYWORD_FUNCTION tokens (procedure)");
+        assert!(keyword_count > 0, "Should have keyword tokens");
     }
 
     #[test]
@@ -1311,20 +920,16 @@ mod tests {
 }"#;
         let result = parser.parse(source);
         let tokens = extract_semantic_tokens(&result.tree, source);
-        // Built-in type keywords (Integer, etc.) emit BUILTIN_TYPE tokens.
-        // Verify that variable declarations still produce LOCAL_VARIABLE tokens.
-        let local_var_count = tokens
+        // Should produce builtin type tokens for a procedure with a var section
+        let builtin_type_count = tokens
             .iter()
-            .filter(|t| t.token_type == token_types::LOCAL_VARIABLE)
+            .filter(|t| t.token_type == token_types::BUILTIN_TYPE)
             .count();
-        assert!(
-            local_var_count > 0,
-            "Should have local variable token for 'Counter'"
-        );
+        assert!(builtin_type_count > 0, "Should have builtin type tokens for 'Integer'");
     }
 
     #[test]
-    fn test_tokens_quoted_object_and_type_names_are_classified() {
+    fn test_tokens_quoted_object_and_type_names_are_classified_as_type() {
         let mut parser = AlParser::new();
         let source = r#"table 50100 "My Table"
 {
@@ -1340,17 +945,8 @@ mod tests {
         let result = parser.parse(source);
         let tokens = extract_semantic_tokens(&result.tree, source);
 
-        // Object declaration name → NAMESPACE_DECL; type_reference → BUILTIN_TYPE.
-        // assert_token_type_for_text checks that at least one token with this text has the
-        // given type. "My Table" appears as both object decl (NAMESPACE_DECL) and type ref
-        // (BUILTIN_TYPE); verify the type-reference occurrence is BUILTIN_TYPE.
-        assert_token_type_for_text(source, &tokens, r#""My Table""#, token_types::BUILTIN_TYPE);
-        assert_token_type_for_text(
-            source,
-            &tokens,
-            r#""Another Table""#,
-            token_types::BUILTIN_TYPE,
-        );
+        assert_token_type_for_text(source, &tokens, r#""My Table""#, token_types::TYPE);
+        assert_token_type_for_text(source, &tokens, r#""Another Table""#, token_types::TYPE);
     }
 
     #[test]
@@ -1366,12 +962,7 @@ mod tests {
 
         // Object-level vars are GLOBAL_VARIABLE
         assert_token_type_for_text(source, &tokens, "FirstVar", token_types::GLOBAL_VARIABLE);
-        assert_token_type_for_text(
-            source,
-            &tokens,
-            r#""Second Var""#,
-            token_types::GLOBAL_VARIABLE,
-        );
+        assert_token_type_for_text(source, &tokens, r#""Second Var""#, token_types::GLOBAL_VARIABLE);
     }
 
     // -----------------------------------------------------------------------
@@ -1427,12 +1018,7 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(
-            src,
-            &tokens,
-            "CustomerDataItem",
-            token_types::QUERY_DATA_ITEM,
-        );
+        assert_token_type_for_text(src, &tokens, "CustomerDataItem", token_types::QUERY_DATA_ITEM);
     }
 
     #[test]
@@ -1492,12 +1078,7 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(
-            src,
-            &tokens,
-            "CustomerElem",
-            token_types::XMLPORT_TABLE_ELEMENT,
-        );
+        assert_token_type_for_text(src, &tokens, "CustomerElem", token_types::XMLPORT_TABLE_ELEMENT);
     }
 
     #[test]
@@ -1560,12 +1141,7 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(
-            src,
-            &tokens,
-            "NameAttr",
-            token_types::XMLPORT_FIELD_ATTRIBUTE,
-        );
+        assert_token_type_for_text(src, &tokens, "NameAttr", token_types::XMLPORT_FIELD_ATTRIBUTE);
     }
 
     #[test]
@@ -1603,18 +1179,13 @@ codeunit 50100 Test
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        // At minimum: must have some tokens (object number and object name)
-        assert!(
-            !tokens.is_empty(),
-            "Expected tokens from a namespace-prefixed codeunit file"
+        // At minimum: must have some tokens (codeunit keyword and object name)
+        assert!(!tokens.is_empty(), "Expected tokens from a namespace-prefixed codeunit file");
+        // There must be at least one keyword-class token for the codeunit keyword
+        let has_any_kw = tokens.iter().any(|t|
+            t.token_type == token_types::KEYWORD || t.token_type == token_types::OBJECT_KEYWORD
         );
-        // Keywords are now deferred to tree-sitter highlights.scm; check for number token (50100).
-        let has_number = tokens.iter().any(|t| t.token_type == token_types::NUMBER);
-        assert!(
-            has_number,
-            "Expected number token (object ID 50100) in namespace file, got {} tokens",
-            tokens.len()
-        );
+        assert!(has_any_kw, "Expected at least one keyword token in namespace file, got {} tokens", tokens.len());
     }
 
     #[test]
@@ -1629,12 +1200,7 @@ codeunit 50100 Test
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(
-            src,
-            &tokens,
-            "IntegrationEvent",
-            token_types::ATTRIBUTE_NAME,
-        );
+        assert_token_type_for_text(src, &tokens, "IntegrationEvent", token_types::ATTRIBUTE_NAME);
     }
 
     #[test]
@@ -1661,56 +1227,13 @@ codeunit 50100 Test
         // The LEGEND array must have exactly as many entries as the highest index + 1
         assert_eq!(
             token_types::LEGEND.len(),
-            (token_types::KEYWORD_FUNCTION + 1) as usize,
+            (token_types::ATTRIBUTE_NAME + 1) as usize,
             "LEGEND length must match the number of registered token types"
         );
     }
 
     #[test]
-    fn test_keyword_control_begin_end() {
-        let src = "codeunit 50100 Test { procedure DoIt() begin end; }";
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "begin", token_types::KEYWORD_CONTROL);
-        assert_token_type_for_text(src, &tokens, "end", token_types::KEYWORD_CONTROL);
-    }
-
-    #[test]
-    fn test_keyword_function_procedure_trigger() {
-        let src = "codeunit 50100 Test { procedure DoIt() begin end; }";
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "procedure", token_types::KEYWORD_FUNCTION);
-    }
-
-    #[test]
-    fn test_builtin_type_integer() {
-        let src = r#"codeunit 50100 Test {
-    procedure DoIt()
-    var
-        N: Integer;
-    begin
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "Integer", token_types::BUILTIN_TYPE);
-    }
-
-    #[test]
-    fn test_object_keyword_codeunit_table() {
-        let src = "codeunit 50100 Test { }";
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "codeunit", token_types::OBJECT_KEYWORD);
-    }
-
-    #[test]
-    fn test_permissions_table_name_highlighted_as_builtin_type() {
+    fn test_permissions_table_name_highlighted_as_type() {
         let src = r#"report 50200 "IJL Process Staging"
 {
     Permissions = tabledata "Item Journal Staging" = rm;
@@ -1722,292 +1245,7 @@ codeunit 50100 Test
             src,
             &tokens,
             r#""Item Journal Staging""#,
-            token_types::BUILTIN_TYPE,
-        );
-    }
-}
-
-#[cfg(test)]
-mod usage_site_tests {
-    use super::*;
-    use crate::AlParser;
-
-    fn decoded_tokens_with_text(
-        source: &str,
-        tokens: &[SemanticToken],
-    ) -> Vec<(u32, u32, u32, u32, String)> {
-        let lines: Vec<&str> = source.lines().collect();
-        let mut decoded = Vec::new();
-        let mut line = 0u32;
-        let mut col = 0u32;
-        for t in tokens {
-            line += t.delta_line;
-            col = if t.delta_line > 0 {
-                t.delta_start
-            } else {
-                col + t.delta_start
-            };
-            let text = lines
-                .get(line as usize)
-                .and_then(|l| l.get(col as usize..(col + t.length) as usize))
-                .unwrap_or("?")
-                .to_string();
-            decoded.push((line, col, t.length, t.token_type, text));
-        }
-        decoded
-    }
-
-    fn assert_usage_token(source: &str, tokens: &[SemanticToken], text: &str, expected_type: u32) {
-        let entries = decoded_tokens_with_text(source, tokens);
-        let found = entries
-            .iter()
-            .any(|(_, _, _, tt, t)| *tt == expected_type && t == text);
-        assert!(
-            found,
-            "Expected usage token {:?} with type {} but got:\n{}",
-            text,
-            expected_type,
-            entries
-                .iter()
-                .filter(|(_, _, _, _, t)| t == text)
-                .map(|(l, c, _, tt, t)| format!("  line={} col={} type={} text={:?}", l, c, tt, t))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-    }
-
-    #[test]
-    fn test_global_variable_usage_site() {
-        let src = r#"codeunit 50100 Test
-{
-    var
-        GlobalCounter: Integer;
-
-    procedure DoIt()
-    begin
-        GlobalCounter += 1;
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_usage_token(src, &tokens, "GlobalCounter", token_types::GLOBAL_VARIABLE);
-    }
-
-    #[test]
-    fn test_local_variable_usage_site() {
-        let src = r#"codeunit 50100 Test
-{
-    procedure DoIt()
-    var
-        LocalVar: Integer;
-    begin
-        LocalVar := 42;
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_usage_token(src, &tokens, "LocalVar", token_types::LOCAL_VARIABLE);
-    }
-
-    #[test]
-    fn test_parameter_usage_site() {
-        let src = r#"codeunit 50100 Test
-{
-    procedure DoIt(a: Integer)
-    var
-        LocalVar: Integer;
-    begin
-        LocalVar := a * 2;
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_usage_token(src, &tokens, "a", token_types::PARAMETER);
-    }
-
-    #[test]
-    fn test_procedure_call_usage_site() {
-        let src = r#"codeunit 50100 Test
-{
-    procedure SimpleProc()
-    begin
-    end;
-
-    procedure CallsOthers()
-    begin
-        SimpleProc();
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_usage_token(src, &tokens, "SimpleProc", token_types::FUNCTION);
-    }
-
-    #[test]
-    fn test_builtin_function_usage_site() {
-        let src = r#"codeunit 50100 Test
-{
-    procedure DoIt()
-    begin
-        Message('Hello');
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_usage_token(src, &tokens, "Message", token_types::BUILTIN_FUNCTION);
-    }
-}
-
-#[cfg(test)]
-mod write_only_var_tests {
-    use super::*;
-    use crate::tokens::token_modifiers;
-    use crate::AlParser;
-
-    /// Decode tokens back to absolute positions, returning (line, col, modifiers, text).
-    fn decode_with_text(source: &str, tokens: &[SemanticToken]) -> Vec<(u32, u32, u32, String)> {
-        let lines: Vec<&str> = source.lines().collect();
-        let mut decoded = Vec::new();
-        let mut line = 0u32;
-        let mut col = 0u32;
-        for t in tokens {
-            line += t.delta_line;
-            col = if t.delta_line > 0 {
-                t.delta_start
-            } else {
-                col + t.delta_start
-            };
-            let text = lines
-                .get(line as usize)
-                .and_then(|l| l.get(col as usize..(col + t.length) as usize))
-                .unwrap_or("?")
-                .to_string();
-            decoded.push((line, col, t.token_modifiers, text));
-        }
-        decoded
-    }
-
-    fn has_unnecessary(source: &str, tokens: &[SemanticToken], var_name: &str) -> bool {
-        decode_with_text(source, tokens)
-            .iter()
-            .any(|(_, _, mods, text)| *mods & token_modifiers::UNNECESSARY != 0 && text == var_name)
-    }
-
-    /// A variable that is only assigned (Result := WithReturn()) but never read must be flagged.
-    #[test]
-    fn test_write_only_var_flagged() {
-        let src = r#"codeunit 50100 Test
-{
-    procedure WithReturn(): Boolean
-    begin
-        exit(true);
-    end;
-
-    procedure CallsOthers()
-    var
-        Result: Boolean;
-    begin
-        Result := WithReturn();
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert!(
-            has_unnecessary(src, &tokens, "Result"),
-            "Write-only variable 'Result' (assigned but never read) should have UNNECESSARY modifier"
-        );
-    }
-
-    /// A variable that is read (used in an if condition) must NOT be flagged.
-    #[test]
-    fn test_read_var_not_flagged() {
-        let src = r#"codeunit 50100 Test
-{
-    procedure DoIt()
-    var
-        Counter: Integer;
-    begin
-        Counter := 5;
-        if Counter > 0 then
-            Message('yes');
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert!(
-            !has_unnecessary(src, &tokens, "Counter"),
-            "Variable 'Counter' is read in an if condition — must NOT be flagged as unnecessary"
-        );
-    }
-
-    /// A completely unused variable (never appears in body) must still be flagged.
-    #[test]
-    fn test_completely_unused_var_flagged() {
-        let src = r#"codeunit 50100 Test
-{
-    procedure DoIt()
-    var
-        Unused: Integer;
-    begin
-        Message('hello');
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert!(
-            has_unnecessary(src, &tokens, "Unused"),
-            "Completely unused variable 'Unused' should have UNNECESSARY modifier"
-        );
-    }
-
-    /// A variable used in a compound assignment (+=) is being read — must NOT be flagged.
-    #[test]
-    fn test_compound_assignment_not_flagged() {
-        let src = r#"codeunit 50100 Test
-{
-    procedure DoIt()
-    var
-        Counter: Integer;
-    begin
-        Counter += 1;
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert!(
-            !has_unnecessary(src, &tokens, "Counter"),
-            "Variable 'Counter' used in compound assignment (+=) must NOT be flagged"
-        );
-    }
-
-    /// A variable passed as a function argument (RHS usage) must NOT be flagged.
-    #[test]
-    fn test_rhs_function_arg_not_flagged() {
-        let src = r#"codeunit 50100 Test
-{
-    procedure DoIt()
-    var
-        Value: Integer;
-    begin
-        Value := 42;
-        Message('%1', Value);
-    end;
-}"#;
-        let mut parser = AlParser::new();
-        let result = parser.parse(src);
-        let tokens = extract_semantic_tokens(&result.tree, src);
-        assert!(
-            !has_unnecessary(src, &tokens, "Value"),
-            "Variable 'Value' is passed as an argument — must NOT be flagged"
+            token_types::TYPE,
         );
     }
 }

@@ -524,16 +524,10 @@ pub(crate) fn resolve_member(
     }
 
     // Use semantic cache for O(1) builtin type lookup
-    let cache = workspace
-        .semantic_cache
-        .read()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
-    let builtin = cache.get_type(&receiver.type_name).or_else(|| {
-        receiver
-            .type_subtype
-            .as_deref()
-            .and_then(|s| cache.get_type(s))
-    });
+    let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let builtin = cache
+        .get_type(&receiver.type_name)
+        .or_else(|| receiver.type_subtype.as_deref().and_then(|s| cache.get_type(s)));
     if let Some(builtin) = builtin {
         for method in &builtin.methods {
             if method.name.eq_ignore_ascii_case(target_name) {
@@ -578,16 +572,10 @@ pub(crate) fn resolve_builtin_overloads(
 ) -> Vec<ResolvedMember> {
     let mut results = Vec::new();
     // Use semantic cache for O(1) builtin type lookup
-    let cache = workspace
-        .semantic_cache
-        .read()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
-    let builtin = cache.get_type(&receiver.type_name).or_else(|| {
-        receiver
-            .type_subtype
-            .as_deref()
-            .and_then(|s| cache.get_type(s))
-    });
+    let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let builtin = cache
+        .get_type(&receiver.type_name)
+        .or_else(|| receiver.type_subtype.as_deref().and_then(|s| cache.get_type(s)));
     if let Some(builtin) = builtin {
         for method in &builtin.methods {
             if method.name.eq_ignore_ascii_case(target_name) {
@@ -640,10 +628,7 @@ pub(crate) fn resolve_workspace_object_definition(
     let (file_source, tree) = workspace.file_index.get_cached_parse(&path)?;
     let obj = al_syntax::find_object_declaration(&tree, &file_source)?;
     let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
-    Some((
-        uri,
-        al_syntax::ts_range_to_lsp(&obj.range, file_source.as_bytes()),
-    ))
+    Some((uri, al_syntax::ts_range_to_lsp(&obj.range, file_source.as_bytes())))
 }
 
 pub(crate) fn completion_items_for_receiver(
@@ -742,16 +727,10 @@ pub(crate) fn completion_items_for_receiver(
     }
 
     // Use semantic cache for O(1) builtin type lookup
-    let cache = workspace
-        .semantic_cache
-        .read()
-        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
-    let builtin = cache.get_type(&receiver.type_name).or_else(|| {
-        receiver
-            .type_subtype
-            .as_deref()
-            .and_then(|s| cache.get_type(s))
-    });
+    let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let builtin = cache
+        .get_type(&receiver.type_name)
+        .or_else(|| receiver.type_subtype.as_deref().and_then(|s| cache.get_type(s)));
     if let Some(builtin) = builtin {
         for method in &builtin.methods {
             builtin_methods += 1;
@@ -794,14 +773,10 @@ pub(crate) fn enum_completion_items(
 ) -> Vec<tower_lsp::lsp_types::CompletionItem> {
     // For enum access, the name might be the type_name (for system enums used directly)
     // or the type_subtype (for Enum "MyEnum" declarations)
-    let raw_name = enum_type
+    let enum_name = enum_type
         .type_subtype
         .as_deref()
         .unwrap_or(&enum_type.type_name);
-    // Strip surrounding AL quotes (e.g. `"Test Status"` → `Test Status`) so that
-    // symbol-index and file-index lookups succeed regardless of whether the caller
-    // preserved the quoting from the source text.
-    let enum_name = raw_name.trim_matches('"');
     tracing::debug!(enum_name = %enum_name, type_name = %enum_type.type_name, "enum_completion_items: start");
 
     let mut items = Vec::new();
@@ -854,10 +829,7 @@ pub(crate) fn enum_completion_items(
 
     // Check builtin types for system enums (e.g., TextEncoding, WebServiceActionResultCode)
     if items.is_empty() {
-        let cache = workspace
-            .semantic_cache
-            .read()
-            .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+        let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
         if let Some(bt) = cache.get_type(enum_name) {
             if !bt.enum_values.is_empty() {
                 for value in &bt.enum_values {
@@ -934,11 +906,7 @@ fn workspace_object_name(workspace: &Workspace, path: &Path) -> Option<String> {
         .map(|info| info.name.clone())
 }
 
-fn workspace_member(
-    workspace: &Workspace,
-    path: &Path,
-    member_name: &str,
-) -> Option<ResolvedMember> {
+fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Option<ResolvedMember> {
     tracing::debug!(
         path = %path.display(),
         member = %member_name,
@@ -1072,24 +1040,23 @@ fn workspace_member(
 ///
 /// Shared by `find_workspace_field` (needs name_part to compute column offsets) and
 /// `workspace_field_items` (needs both segments to build completion items).
-fn parse_field_line(trimmed: &str) -> Option<(&str, &str)> {
-    let inside = trimmed.strip_prefix("field(")?.split(')').next()?;
+fn parse_field_line<'a>(trimmed: &'a str) -> Option<(&'a str, &'a str)> {
+    let inside = trimmed
+        .strip_prefix("field(")?
+        .split(')')
+        .next()?;
     let mut parts = inside.splitn(3, ';');
     let _ = parts.next()?; // skip id
     let name_part = parts.next()?.trim();
     let ty = parts.next()?.trim();
-    if name_part.is_empty() {
-        return None;
-    }
+    if name_part.is_empty() { return None; }
     Some((name_part, ty))
 }
 
 fn find_workspace_field(text: &str, field_name: &str) -> Option<(ResolvedType, Range)> {
     for (line_idx, line) in text.lines().enumerate() {
         let trimmed = line.trim();
-        let Some((name_part, ty)) = parse_field_line(trimmed) else {
-            continue;
-        };
+        let Some((name_part, ty)) = parse_field_line(trimmed) else { continue };
         let candidate_name = name_part.trim_matches('"');
         if !candidate_name.eq_ignore_ascii_case(field_name) {
             continue;
@@ -1317,10 +1284,10 @@ mod tests {
         //                  byte 0        2    3    4    5
         // UTF-16 cols:        0           1    2    3    4    5
         let line = "Ønske.Foo";
-        assert_eq!(utf16_col_to_byte_offset(line, 0), 0); // start of 'Ø'
-        assert_eq!(utf16_col_to_byte_offset(line, 1), 2); // 'n' (after 2-byte Ø)
-        assert_eq!(utf16_col_to_byte_offset(line, 5), 6); // '.' at byte 6
-        assert_eq!(utf16_col_to_byte_offset(line, 6), 7); // 'F' at byte 7
+        assert_eq!(utf16_col_to_byte_offset(line, 0), 0);  // start of 'Ø'
+        assert_eq!(utf16_col_to_byte_offset(line, 1), 2);  // 'n' (after 2-byte Ø)
+        assert_eq!(utf16_col_to_byte_offset(line, 5), 6);  // '.' at byte 6
+        assert_eq!(utf16_col_to_byte_offset(line, 6), 7);  // 'F' at byte 7
     }
 
     #[test]
@@ -1363,38 +1330,5 @@ mod tests {
         .expect("receiver before trailing dot when line has multi-byte prefix");
         assert_eq!(receiver, "ÿRec");
         assert_eq!(kind, AccessKind::Member);
-    }
-
-    // --- C-03: enum values after `::` ---
-
-    #[test]
-    fn enum_completion_items_strips_quotes_from_name() {
-        // Regression: when the caller passes `"Test Status"` (with surrounding
-        // AL quotes) as the receiver expression, `enum_completion_items` must
-        // strip the quotes before looking up in the symbol index / file index
-        // so that the lookup key matches the stored name `test status`.
-        //
-        // This test verifies the function does NOT panic or return an empty list
-        // due to a mismatched key for a quoted name.  We use a workspace without
-        // symbols, so the result will be empty — but we verify the two inputs
-        // (quoted vs. unquoted) produce the same (empty) result, confirming the
-        // quote-stripping normalisation step.
-        let ws = crate::workspace::Workspace::new();
-        let quoted = ResolvedType {
-            type_name: "Enum".to_string(),
-            type_subtype: Some("\"Test Status\"".to_string()),
-        };
-        let unquoted = ResolvedType {
-            type_name: "Enum".to_string(),
-            type_subtype: Some("Test Status".to_string()),
-        };
-        let items_quoted = enum_completion_items(&ws, &quoted);
-        let items_unquoted = enum_completion_items(&ws, &unquoted);
-        // Both must produce the same result — quotes must not change the lookup.
-        assert_eq!(
-            items_quoted.len(),
-            items_unquoted.len(),
-            "quoted and unquoted enum names should yield the same number of completions"
-        );
     }
 }

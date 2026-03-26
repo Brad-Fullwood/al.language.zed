@@ -15,9 +15,6 @@ pub struct CompletionEntry {
     pub documentation: Option<String>,
     #[serde(rename = "insertText")]
     pub insert_text: Option<String>,
-    /// LSP InsertTextFormat: 1 = PlainText, 2 = Snippet.
-    #[serde(rename = "insertTextFormat", skip_serializing_if = "Option::is_none")]
-    pub insert_text_format: Option<u8>,
     #[serde(rename = "sortText")]
     pub sort_text: Option<String>,
 }
@@ -65,38 +62,39 @@ impl serde::Serialize for CompletionKind {
     }
 }
 
+/// AL keywords for general completion.
+const AL_KEYWORDS: &[&str] = &[
+    "begin", "end", "var", "procedure", "trigger", "local", "internal", "protected",
+    "if", "then", "else", "case", "of", "for", "to", "downto", "do", "foreach", "in",
+    "while", "repeat", "until", "exit", "break", "with", "asserterror",
+    "true", "false", "not", "and", "or", "xor", "div", "mod",
+];
+
+/// AL type keywords for type position completions.
+const AL_TYPE_KEYWORDS: &[&str] = &[
+    "Integer", "Decimal", "Text", "Code", "Boolean", "Date", "Time", "DateTime",
+    "DateFormula", "Duration", "Guid", "BigInteger", "BigText", "Char", "Byte", "Blob",
+    "Option", "Record", "RecordId", "RecordRef", "Variant", "Dialog", "File",
+    "InStream", "OutStream", "List", "Dictionary", "Array",
+    "HttpClient", "HttpContent", "HttpHeaders", "HttpRequestMessage", "HttpResponseMessage",
+    "JsonArray", "JsonObject", "JsonToken", "JsonValue",
+    "XmlDocument", "XmlElement", "XmlNode", "XmlNodeList",
+    "TextBuilder", "Notification", "ErrorInfo", "SecretText", "FilterPageBuilder",
+    "Media", "MediaSet", "SessionSettings", "Label", "Enum", "Interface",
+    "Codeunit", "Page", "Report", "Query", "XmlPort", "Action", "TestPage", "TestRequestPage",
+];
+
+/// AL built-in trigger-context variables.
+const TRIGGER_VARIABLES: &[(&str, &str)] = &[
+    ("Rec", "Record — the current record"),
+    ("xRec", "Record — the previous record"),
+    ("CurrPage", "Page — the current page"),
+    ("CurrReport", "Report — the current report"),
+    ("CurrFieldNo", "Integer — the current field number"),
+    ("RequestOptionsPage", "Page — the request options page"),
+];
 
 use al_syntax::context::{CompletionContext, detect_context};
-
-/// Return `true` if the cursor position is inside a comment or string node in the parse tree.
-///
-/// Checks both the node at the cursor position and all of its ancestors, so that a
-/// cursor landing on a child node of a string/comment (e.g. an escape sequence) is
-/// also detected.
-fn is_inside_comment_or_string(tree: &tree_sitter::Tree, text: &str, lsp_pos: tower_lsp::lsp_types::Position) -> bool {
-    // Convert the LSP UTF-16 character offset to a byte column for tree-sitter.
-    let line_str = al_syntax::get_source_line(text.as_bytes(), lsp_pos.line as usize);
-    let byte_col = crate::resolution::utf16_col_to_byte_offset(line_str, lsp_pos.character as usize);
-    let point = tree_sitter::Point {
-        row: lsp_pos.line as usize,
-        column: byte_col,
-    };
-    let Some(node) = tree.root_node().descendant_for_point_range(point, point) else {
-        return false;
-    };
-
-    const SUPPRESSED_KINDS: &[&str] = &["comment", "string", "verbatim_string"];
-
-    // Check the node itself and walk up through ancestors.
-    let mut current = Some(node);
-    while let Some(n) = current {
-        if SUPPRESSED_KINDS.contains(&n.kind()) {
-            return true;
-        }
-        current = n.parent();
-    }
-    false
-}
 
 /// Get completions at a position in a document.
 pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
@@ -104,15 +102,6 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
     };
-
-    // Suppress completions inside comments and string literals.
-    if let Some((_, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) {
-        if is_inside_comment_or_string(&tree, &text, lsp_pos) {
-            tracing::debug!(line = lsp_pos.line, character = lsp_pos.character, "completion: suppressed inside comment/string");
-            return Vec::new();
-        }
-    }
-
     let context = detect_context(&text, lsp_pos);
     tracing::debug!(context = ?context, line = lsp_pos.line, character = lsp_pos.character, "completion: detected context");
 
@@ -148,11 +137,11 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             }
         }
         CompletionContext::TypePosition => {
-            for kw in al_syntax::language_data::keywords().r#type.iter() {
+            for kw in AL_TYPE_KEYWORDS {
                 items.push(CompletionEntry {
-                    label: kw.keyword.clone(),
+                    label: kw.to_string(),
                     kind: CompletionKind::Keyword,
-                    detail: None, documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
+                    detail: None, documentation: None, insert_text: None, sort_text: None,
                 });
             }
             // Single pass over `all` — collect up to 50 per kind without 4 separate Vec clones
@@ -171,7 +160,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                             label: format!("\"{}\"", arc.name),
                             kind: CompletionKind::Class,
                             detail: Some(format!("{} {}", arc.kind, arc.id)),
-                            documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
+                            documentation: None, insert_text: None, sort_text: None,
                         });
                     }
                 }
@@ -181,12 +170,12 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             }
         }
         CompletionContext::TriggerBody => {
-            for var in al_syntax::language_data::implicit_variables() {
+            for (name, detail) in TRIGGER_VARIABLES {
                 items.push(CompletionEntry {
-                    label: var.name.clone(),
+                    label: name.to_string(),
                     kind: CompletionKind::Variable,
-                    detail: Some(format!("{} — {}", var.r#type, var.description)),
-                    documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
+                    detail: Some(detail.to_string()),
+                    documentation: None, insert_text: None, sort_text: None,
                 });
             }
             add_default_completions(workspace, uri, lsp_pos, &mut items);
@@ -259,7 +248,6 @@ pub async fn completions_full(workspace: &Workspace, uri: &Url, position: Positi
             documentation: item.documentation,
             label: item.label,
             insert_text: None,
-            insert_text_format: None,
         })
         .collect()
 }
@@ -270,28 +258,11 @@ fn add_default_completions(
     position: tower_lsp::lsp_types::Position,
     items: &mut Vec<CompletionEntry>,
 ) {
-    // Control keywords (begin, end, if, for, while, procedure, trigger, var, etc.)
-    for kw in al_syntax::language_data::keywords().control.iter() {
+    for kw in AL_KEYWORDS {
         items.push(CompletionEntry {
-            label: kw.keyword.clone(),
+            label: kw.to_string(),
             kind: CompletionKind::Keyword,
-            detail: None, documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
-        });
-    }
-    // Operator keywords (not, and, or, xor, div, mod)
-    for kw in al_syntax::language_data::keywords().operator.iter() {
-        items.push(CompletionEntry {
-            label: kw.keyword.clone(),
-            kind: CompletionKind::Keyword,
-            detail: None, documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
-        });
-    }
-    // Boolean literals are values, not in keyword data — add them explicitly.
-    for lit in ["true", "false"] {
-        items.push(CompletionEntry {
-            label: lit.to_string(),
-            kind: CompletionKind::Keyword,
-            detail: None, documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
+            detail: None, documentation: None, insert_text: None, sort_text: None,
         });
     }
 
@@ -306,7 +277,7 @@ fn add_default_completions(
                             label: child.name.clone(),
                             kind: CompletionKind::Function,
                             detail: child.detail.clone(),
-                            documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
+                            documentation: None, insert_text: None, sort_text: None,
                         });
                     }
                 }
@@ -326,7 +297,6 @@ fn add_default_completions(
                 detail: Some(format!("{}{} ({})", var.type_name, subtype, label)),
                 documentation: None,
                 insert_text: None,
-                insert_text_format: None,
                 sort_text: Some(format!("0_{}", var.name)),
             });
         }
@@ -346,7 +316,7 @@ fn add_default_completions(
             label: entry.name.clone(),
             kind,
             detail: Some(format!("{} {}", entry.kind, entry.id)),
-            documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
+            documentation: None, insert_text: None, sort_text: None,
         });
     }
 
@@ -356,23 +326,10 @@ fn add_default_completions(
             label: bt.name.clone(),
             kind: CompletionKind::Class,
             detail: Some("built-in type".to_string()),
-            documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
+            documentation: None, insert_text: None, sort_text: None,
         });
     }
     drop(builtins); // release read lock promptly
-
-    // Global built-in AL functions from language data (available even without
-    // the .NET semantic bridge).  Only add entries not already present from the
-    // symbol index or local procedures; `finalize_completion_items` deduplicates.
-    for func in al_syntax::language_data::builtin_functions() {
-        items.push(CompletionEntry {
-            label: func.name.clone(),
-            kind: CompletionKind::Function,
-            detail: Some(func.signature.clone()),
-            documentation: Some(func.description.clone()),
-            insert_text: None, insert_text_format: None, sort_text: None,
-        });
-    }
 }
 
 fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
@@ -383,17 +340,9 @@ fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
     items.retain(|item| seen.insert(item.label.to_lowercase()));
 
     for item in items.iter_mut() {
+        if item.sort_text.is_some() { continue; }
         let label_lower = item.label.to_lowercase();
         let is_callable = matches!(item.kind, CompletionKind::Function | CompletionKind::Method);
-
-        // Set snippet insert text for callable items (Issue C1).
-        // Only override if not already set (e.g. by bridge results that supply their own).
-        if is_callable && item.insert_text.is_none() {
-            item.insert_text = Some(format!("{}($1)", item.label));
-            item.insert_text_format = Some(2); // LSP InsertTextFormat::Snippet
-        }
-
-        if item.sort_text.is_some() { continue; }
         if is_callable {
             let pc = item.detail.as_deref().map(|d| super::parse_detail_params(d).len()).unwrap_or(0);
             item.sort_text = Some(format!("1_{pc:02}_{label_lower}"));
@@ -433,17 +382,12 @@ fn from_lsp_completion(item: tower_lsp::lsp_types::CompletionItem) -> Completion
         tower_lsp::lsp_types::Documentation::String(s) => s,
         tower_lsp::lsp_types::Documentation::MarkupContent(m) => m.value,
     });
-    // Convert InsertTextFormat: PLAIN_TEXT=1, SNIPPET=2.
-    let insert_text_format = item.insert_text_format.map(|f| {
-        if f == tower_lsp::lsp_types::InsertTextFormat::SNIPPET { 2u8 } else { 1u8 }
-    });
     CompletionEntry {
         label: item.label,
         kind,
         detail: item.detail,
         documentation,
         insert_text: item.insert_text,
-        insert_text_format,
         sort_text: item.sort_text,
     }
 }
@@ -559,135 +503,5 @@ mod tests {
         let result = completions(&ws, &uri, pos);
         let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"Helper"), "should include local procedure 'Helper', got: {:?}", labels);
-    }
-
-    // --- C-04: global built-in functions ---
-
-    #[test]
-    fn completions_include_builtin_functions_in_begin_block() {
-        let ws = Workspace::new();
-        let uri = test_uri();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
-{
-    procedure Foo()
-    begin
-
-    end;
-}"#.to_string());
-        let pos = Position { line: 4, character: 8 }; // inside begin block
-        let result = completions(&ws, &uri, pos);
-        let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
-        assert!(labels.contains(&"Message"), "should include 'Message' builtin, got: {:?}", labels);
-        assert!(labels.contains(&"Error"), "should include 'Error' builtin");
-        assert!(labels.contains(&"Confirm"), "should include 'Confirm' builtin");
-        assert!(labels.contains(&"StrSubstNo"), "should include 'StrSubstNo' builtin");
-        assert!(labels.contains(&"Format"), "should include 'Format' builtin");
-        // Verify they are Function kind
-        let message_kind = result.iter()
-            .find(|c| c.label == "Message")
-            .map(|c| c.kind);
-        assert_eq!(message_kind, Some(CompletionKind::Function), "'Message' should be Function kind");
-    }
-
-    #[test]
-    fn completions_builtin_functions_have_signature_detail() {
-        let ws = Workspace::new();
-        let uri = test_uri();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
-{
-    procedure Foo()
-    begin
-
-    end;
-}"#.to_string());
-        let pos = Position { line: 4, character: 8 };
-        let result = completions(&ws, &uri, pos);
-        let message = result.iter().find(|c| c.label == "Message");
-        assert!(message.is_some(), "Message should appear in completions");
-        let message = message.unwrap();
-        assert!(message.detail.is_some(), "Message should have a detail/signature");
-        assert!(message.detail.as_deref().unwrap_or("").contains("Text"),
-            "Message detail should mention Text parameter");
-    }
-
-    // --- Comment/string suppression tests ---
-
-    #[test]
-    fn completions_empty_inside_line_comment() {
-        let ws = Workspace::new();
-        let uri = test_uri();
-        // Line 2 (0-indexed) is the comment line: "    // TODO: implement properly"
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Hello World"
-{
-    // TODO: implement properly
-    procedure DoSomething()
-    begin
-    end;
-}"#.to_string());
-        // Position 20 is inside "// TODO: implement properly"
-        let pos = Position { line: 2, character: 20 };
-        let result = completions(&ws, &uri, pos);
-        assert!(result.is_empty(),
-            "completions inside a line comment should be empty, got {} items", result.len());
-    }
-
-    #[test]
-    fn completions_empty_inside_string_literal() {
-        let ws = Workspace::new();
-        let uri = test_uri();
-        // Line 4 (0-indexed) is: "        Message('Hello World');"
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
-{
-    procedure badName()
-    begin
-        Message('Hello World');
-    end;
-}"#.to_string());
-        // Position 22 is inside the string 'Hello World'
-        let pos = Position { line: 4, character: 22 };
-        let result = completions(&ws, &uri, pos);
-        assert!(result.is_empty(),
-            "completions inside a string literal should be empty, got {} items", result.len());
-    }
-
-    #[test]
-    fn completions_empty_inside_verbatim_string() {
-        let ws = Workspace::new();
-        let uri = test_uri();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
-{
-    procedure Foo()
-    var
-        x: Text;
-    begin
-        x := @'some verbatim text';
-    end;
-}"#.to_string());
-        // Position 15 is inside @'some verbatim text'
-        let pos = Position { line: 6, character: 15 };
-        let result = completions(&ws, &uri, pos);
-        assert!(result.is_empty(),
-            "completions inside a verbatim string should be empty, got {} items", result.len());
-    }
-
-    #[test]
-    fn completions_non_empty_in_procedure_body_after_comment() {
-        let ws = Workspace::new();
-        let uri = test_uri();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Hello World"
-{
-    // TODO: implement properly
-    procedure DoSomething()
-    begin
-
-    end;
-}"#.to_string());
-        // Position inside the procedure body (line 4 is empty inside begin/end)
-        let pos = Position { line: 5, character: 8 };
-        let result = completions(&ws, &uri, pos);
-        assert!(!result.is_empty(),
-            "completions after a comment but inside procedure body should return items");
-        let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
-        assert!(labels.contains(&"if"), "should include 'if' keyword");
     }
 }

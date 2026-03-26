@@ -52,8 +52,6 @@ struct HyprClient {
     workspace: HyprWorkspace,
     pid: u32,
     class: String,
-    #[serde(default)]
-    title: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,18 +73,6 @@ impl ZedInstance {
     /// - [`ZedTestError::CommandFailed`] — `hyprctl` exited non-zero
     /// - [`ZedTestError::Json`] — unexpected output format
     pub fn discover() -> Result<Self, ZedTestError> {
-        Self::discover_filtered(None)
-    }
-
-    /// Discover a Zed window whose title contains `title_contains`.
-    ///
-    /// When multiple Zed windows are open, use this to target the correct one.
-    /// The match is case-insensitive.
-    pub fn discover_by_title(title_contains: &str) -> Result<Self, ZedTestError> {
-        Self::discover_filtered(Some(title_contains))
-    }
-
-    fn discover_filtered(title_filter: Option<&str>) -> Result<Self, ZedTestError> {
         let output = Command::new("hyprctl")
             .args(["clients", "-j"])
             .output()
@@ -112,11 +98,7 @@ impl ZedInstance {
 
         let client = clients
             .into_iter()
-            .find(|c| {
-                c.class == "dev.zed.Zed"
-                    && title_filter
-                        .is_none_or(|f| c.title.to_lowercase().contains(&f.to_lowercase()))
-            })
+            .find(|c| c.class == "dev.zed.Zed")
             .ok_or(ZedTestError::ZedNotRunning)?;
 
         Ok(ZedInstance {

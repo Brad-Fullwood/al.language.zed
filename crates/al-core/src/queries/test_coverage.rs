@@ -17,8 +17,8 @@ use std::collections::{HashMap, HashSet};
 use al_syntax::AlParser;
 use serde::Serialize;
 
-use crate::queries::tests::{collect_test_procedures, has_test_subtype};
 use crate::workspace::Workspace;
+use crate::queries::tests::{collect_test_procedures, has_test_subtype};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -106,10 +106,7 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
     // Build a lookup map: lowercase name → list of ProcDef
     let mut proc_lookup: HashMap<String, Vec<&ProcDef>> = HashMap::new();
     for p in &all_procs {
-        proc_lookup
-            .entry(p.name.to_lowercase())
-            .or_default()
-            .push(p);
+        proc_lookup.entry(p.name.to_lowercase()).or_default().push(p);
     }
 
     // Step 2: for each test procedure, collect the names it calls
@@ -122,23 +119,15 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
         let parse_result = AlParser::parse_quick(&text);
         let tree = &parse_result.tree;
 
-        let Some(obj_info) = al_syntax::find_object_declaration(tree, &text) else {
-            continue;
-        };
-        if obj_info.kind.to_lowercase() != "codeunit" {
-            continue;
-        }
+        let Some(obj_info) = al_syntax::find_object_declaration(tree, &text) else { continue };
+        if obj_info.kind.to_lowercase() != "codeunit" { continue }
 
         let root = tree.root_node();
         let source = text.as_bytes();
-        if !has_test_subtype(root, source) {
-            continue;
-        }
+        if !has_test_subtype(root, source) { continue }
 
         let test_procs = collect_test_procedures(root, source);
-        if test_procs.is_empty() {
-            continue;
-        }
+        if test_procs.is_empty() { continue }
 
         let codeunit_name = obj_info.name.clone();
 
@@ -160,9 +149,7 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
     // Step 3: untested public (non-local, non-test) procedures
     let untested: Vec<UntestedProcedure> = all_procs
         .iter()
-        .filter(|p| {
-            !p.is_local && !p.is_test && !covered_proc_names.contains(&p.name.to_lowercase())
-        })
+        .filter(|p| !p.is_local && !p.is_test && !covered_proc_names.contains(&p.name.to_lowercase()))
         .map(|p| UntestedProcedure {
             name: p.name.clone(),
             object: p.object.clone(),
@@ -187,15 +174,12 @@ fn collect_all_procedures(workspace: &Workspace) -> Vec<ProcDef> {
         let parse_result = AlParser::parse_quick(&text);
         let tree = &parse_result.tree;
 
-        let Some(obj_info) = al_syntax::find_object_declaration(tree, &text) else {
-            continue;
-        };
+        let Some(obj_info) = al_syntax::find_object_declaration(tree, &text) else { continue };
         let object_name = obj_info.name.clone();
 
         let root = tree.root_node();
         let source = text.as_bytes();
-        let is_test_cu =
-            obj_info.kind.to_lowercase() == "codeunit" && has_test_subtype(root, source);
+        let is_test_cu = obj_info.kind.to_lowercase() == "codeunit" && has_test_subtype(root, source);
 
         collect_procs_recursive(root, source, &object_name, &path, is_test_cu, &mut result);
     }
@@ -327,7 +311,9 @@ fn collect_coverage_from_tree(
                 continue;
             }
         }
-        if (!did_visit && cursor.goto_first_child()) || cursor.goto_next_sibling() {
+        if !did_visit && cursor.goto_first_child() {
+            did_visit = false;
+        } else if cursor.goto_next_sibling() {
             did_visit = false;
         } else if cursor.goto_parent() {
             did_visit = true;
@@ -367,11 +353,7 @@ fn collect_identifiers_recursive(
             // Look for function call patterns: identifier followed by argument_list
             // In AL tree-sitter: method_call / function_call / invocation_expression
             let kind = node.kind();
-            if kind == "method_call"
-                || kind == "function_call"
-                || kind == "invocation_expression"
-                || kind == "call_expression"
-            {
+            if kind == "method_call" || kind == "function_call" || kind == "invocation_expression" || kind == "call_expression" {
                 // Find the callee identifier
                 if let Some(callee) = find_callee_name(node, source) {
                     let key = callee.to_lowercase();
