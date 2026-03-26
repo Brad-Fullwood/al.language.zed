@@ -533,17 +533,28 @@ pub fn populate_call_edges_for_procedure(
     for site in &call_sites {
         match site {
             CallSite::BareCall { name } => {
+                let name_lower = name.to_lowercase();
+                let obj_lower = object_name.to_lowercase();
                 // Resolve against the same object's procedures in insight
                 let callee_key = NodeKey::Procedure(
                     object_kind,
-                    object_name.to_lowercase(),
-                    name.to_lowercase(),
+                    obj_lower.clone(),
+                    name_lower.clone(),
                 );
                 if let Some(callee_id) = CallGraph::node_id_for(insight, &callee_key) {
                     call_graph.add_direct_call(caller_id, callee_id);
+                } else {
+                    // Also check if the call target is an event publisher on the same object
+                    // (e.g. DoProcess() calling OnBeforeProcess() which is an IntegrationEvent)
+                    let event_key = NodeKey::Event(
+                        object_kind,
+                        obj_lower,
+                        name_lower,
+                    );
+                    if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
+                        call_graph.add_direct_call(caller_id, event_id);
+                    }
                 }
-                // Also try resolving across all known codeunits (for global procedure-like calls)
-                // This handles calls to procedures in other codeunits if not qualified.
             }
             CallSite::MemberCall { object, method } => {
                 // Resolve the object against the symbol index
@@ -656,6 +667,8 @@ pub fn register_workspace_nodes(
     symbols: &SymbolIndex,
     insight: &mut InsightGraph,
 ) {
+    let mut workspace_entries: Vec<al_symbols::SymbolEntry> = Vec::new();
+
     for entry in file_index.object_info.iter() {
         let path = entry.key();
         let info = entry.value();
@@ -683,7 +696,7 @@ pub fn register_workspace_nodes(
             None => continue,
         };
 
-        // Walk procedures in the tree
+        // Walk procedures in the tree — registers InsightGraph nodes
         let source_bytes = source.as_bytes();
         register_procedures_from_tree(
             tree.root_node(),
@@ -694,7 +707,187 @@ pub fn register_workspace_nodes(
             symbols,
             insight,
         );
+
+        // Also extract MethodSymbol data and add to SymbolIndex so that
+        // parameter lookups (lookup_event_params) find workspace methods.
+        let methods = extract_methods_from_tree(tree.root_node(), source_bytes);
+        if !methods.is_empty() {
+            workspace_entries.push(al_symbols::SymbolEntry {
+                kind: ok,
+                id,
+                name: info.name.clone(),
+                package: "workspace".to_string(),
+                methods,
+                ..Default::default()
+            });
+        }
     }
+
+    // Add workspace objects to the SymbolIndex so queries can resolve params
+    if !workspace_entries.is_empty() {
+        symbols.add_entries_owned(workspace_entries);
+    }
+}
+
+/// Extract `MethodSymbol` data from all procedures in an AL object AST.
+fn extract_methods_from_tree(
+    root: tree_sitter::Node,
+    source: &[u8],
+) -> Vec<al_symbols::MethodSymbol> {
+    let mut methods = Vec::new();
+    collect_methods_recursive(root, source, &mut methods);
+    methods
+}
+
+fn collect_methods_recursive(
+    node: tree_sitter::Node,
+    source: &[u8],
+    methods: &mut Vec<al_symbols::MethodSymbol>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "procedure_declaration" | "trigger_declaration" => {
+                if let Some(method) = extract_method_symbol(child, source) {
+                    methods.push(method);
+                }
+            }
+            _ => {
+                collect_methods_recursive(child, source, methods);
+            }
+        }
+    }
+}
+
+/// Extract a `MethodSymbol` from a procedure/trigger AST node.
+fn extract_method_symbol(
+    proc_node: tree_sitter::Node,
+    source: &[u8],
+) -> Option<al_symbols::MethodSymbol> {
+    let name_node = proc_node.child_by_field_name("name")?;
+    let proc_name = name_node.utf8_text(source).ok()?.trim_matches('"').trim().to_string();
+    if proc_name.is_empty() {
+        return None;
+    }
+
+    let is_local = has_local_modifier(proc_node, source);
+    let attributes = collect_procedure_attributes(proc_node, source);
+    let al_attrs: Vec<al_symbols::AttributeSymbol> = attributes
+        .iter()
+        .map(|(name, args_text)| {
+            // Parse attribute arguments from the raw text: [Name(arg1, arg2, ...)]
+            let arguments = parse_attr_args_from_text(args_text);
+            al_symbols::AttributeSymbol {
+                name: name.clone(),
+                arguments,
+            }
+        })
+        .collect();
+
+    // Extract parameters from parameter_list
+    let parameters = extract_parameters_from_proc(proc_node, source);
+
+    // Extract return type
+    let return_type = extract_return_type(proc_node, source);
+
+    Some(al_symbols::MethodSymbol {
+        name: proc_name,
+        parameters,
+        return_type,
+        attributes: al_attrs,
+        is_local,
+    })
+}
+
+/// Extract parameters from a procedure's parameter_list node.
+fn extract_parameters_from_proc(
+    proc_node: tree_sitter::Node,
+    source: &[u8],
+) -> Vec<al_symbols::ParameterSymbol> {
+    let mut params = Vec::new();
+    let mut cursor = proc_node.walk();
+    for child in proc_node.children(&mut cursor) {
+        if child.kind() == "parameter_list" {
+            let mut inner = child.walk();
+            for param_node in child.children(&mut inner) {
+                if param_node.kind() == "parameter" {
+                    if let Some(p) = extract_single_parameter(param_node, source) {
+                        params.push(p);
+                    }
+                }
+            }
+            break;
+        }
+    }
+    params
+}
+
+/// Extract a single parameter's name, type, and var-ness.
+fn extract_single_parameter(
+    param_node: tree_sitter::Node,
+    source: &[u8],
+) -> Option<al_symbols::ParameterSymbol> {
+    let mut name: Option<String> = None;
+    let mut type_name = String::new();
+    let mut is_var = false;
+
+    let mut cursor = param_node.walk();
+    for child in param_node.children(&mut cursor) {
+        let kind = child.kind();
+        if kind.starts_with("kw_var") || kind == "kw_var" {
+            is_var = true;
+        } else if (kind == "name" || kind == "name_or_keyword") && name.is_none() {
+            name = child.utf8_text(source).ok().map(|s| s.trim_matches('"').to_string());
+        } else if kind == "type_reference" {
+            type_name = child.utf8_text(source).ok().unwrap_or("").to_string();
+        }
+    }
+
+    Some(al_symbols::ParameterSymbol {
+        name: name?,
+        type_name,
+        is_var,
+    })
+}
+
+/// Extract return type from a procedure declaration.
+fn extract_return_type(
+    proc_node: tree_sitter::Node,
+    source: &[u8],
+) -> Option<String> {
+    let mut cursor = proc_node.walk();
+    for child in proc_node.children(&mut cursor) {
+        if child.kind() == "return_type" || child.kind() == "type_reference" {
+            // Check if preceded by ":" which indicates return type
+            let text = child.utf8_text(source).ok()?.trim().to_string();
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
+/// Parse attribute arguments from the raw attribute text.
+/// Input: `[IntegrationEvent(false, false)]` → `["false", "false"]`
+fn parse_attr_args_from_text(attr_text: &str) -> Vec<String> {
+    let start = match attr_text.find('(') {
+        Some(i) => i + 1,
+        None => return Vec::new(),
+    };
+    let end = match attr_text.rfind(')') {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    if start >= end {
+        return Vec::new();
+    }
+    let inner = &attr_text[start..end];
+    inner
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Recursively walk the AST registering procedure/trigger declarations.

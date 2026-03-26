@@ -10,6 +10,7 @@ pub mod audit;
 pub mod breaking_changes;
 pub mod bulk_fix;
 pub mod code_actions;
+pub mod code_lens;
 pub mod completions;
 pub mod dead_code;
 pub mod definition;

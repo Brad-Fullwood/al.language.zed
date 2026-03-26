@@ -51,6 +51,9 @@ pub mod syntax {
         pub mod token_types {
             pub use al_syntax::tokens::token_types::LEGEND;
         }
+        pub mod token_modifiers {
+            pub use al_syntax::tokens::token_modifiers::LEGEND;
+        }
     }
 }
 

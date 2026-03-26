@@ -191,21 +191,6 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             }
             add_default_completions(workspace, uri, lsp_pos, &mut items);
         }
-        CompletionContext::ObjectBody => {
-            // At object body level only structural keywords make sense.
-            // Variables, builtins, and procedures are only valid inside a begin/end body.
-            // Filter control keywords to the structural subset relevant at object body level.
-            let structural = ["procedure", "trigger", "var", "local", "internal", "protected"];
-            for kw in al_syntax::language_data::keywords().control.iter() {
-                if structural.contains(&kw.keyword.as_str()) {
-                    items.push(CompletionEntry {
-                        label: kw.keyword.clone(),
-                        kind: CompletionKind::Keyword,
-                        detail: None, documentation: None, insert_text: None, insert_text_format: None, sort_text: None,
-                    });
-                }
-            }
-        }
         CompletionContext::Default => {
             add_default_completions(workspace, uri, lsp_pos, &mut items);
         }
