@@ -309,7 +309,10 @@ impl LanguageServer for AlServer {
                                     .iter()
                                     .map(|s| SemanticTokenType::new(s))
                                     .collect(),
-                                token_modifiers: vec![],
+                                token_modifiers: al_core::syntax::tokens::token_modifiers::LEGEND
+                                    .iter()
+                                    .map(|s| SemanticTokenModifier::new(s))
+                                    .collect(),
                             },
                             full: Some(SemanticTokensFullOptions::Bool(true)),
                             range: None,
@@ -317,6 +320,9 @@ impl LanguageServer for AlServer {
                         },
                     ),
                 ),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
@@ -324,6 +330,15 @@ impl LanguageServer for AlServer {
                 }),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                // Pull diagnostics: Zed fetches fresh diagnostics on demand (tab switch, save).
+                // workspace_diagnostics is false because we only support per-document pull;
+                // a workspace/diagnostic handler is not yet implemented.
+                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
+                    identifier: Some("al-lsp".to_string()),
+                    inter_file_dependencies: true,
+                    workspace_diagnostics: false,
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                })),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec![
                         "al.downloadSymbols".to_string(),
@@ -441,11 +456,17 @@ impl LanguageServer for AlServer {
         if let Ok(path) = uri.to_file_path() {
             // Targeted composed invalidation — only evict the object from this file (ISSUE-146)
             invalidate_composed_for_file(&self.workspace, &path);
-            self.workspace.file_index.remove_file(&path);
+            // Don't remove from file_index if project-scoped diagnostics — the file still exists
+            let scope = self.workspace.config.read().await.diagnostics_scope;
+            if scope != al_core::config::DiagnosticsScope::Project {
+                self.workspace.file_index.remove_file(&path);
+                self.client.publish_diagnostics(uri, vec![], None).await;
+            }
+            // If project-scoped, diagnostics persist (file is still in the project)
         } else {
             self.workspace.symbols.invalidate_all_composed();
+            self.client.publish_diagnostics(uri, vec![], None).await;
         }
-        self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
@@ -621,6 +642,37 @@ impl LanguageServer for AlServer {
         Ok(result)
     }
 
+    // -- Pull diagnostics --
+
+    async fn diagnostic(
+        &self,
+        params: DocumentDiagnosticParams,
+    ) -> Result<DocumentDiagnosticReportResult> {
+        self.await_ready().await;
+        let uri = &params.text_document.uri;
+
+        // ISSUE-072: skip diagnostics for virtual symbol cache files.
+        if diagnostics::is_cache_path(uri) {
+            tracing::debug!(uri = %uri, "diagnostic (pull): skipping cache file");
+            return Ok(diagnostics::full_diagnostic_report(vec![]));
+        }
+
+        let text = match self.workspace.documents.get_text_arc(uri) {
+            Some(t) => t,
+            None => {
+                tracing::debug!(uri = %uri, "diagnostic (pull): document not open, returning empty");
+                return Ok(diagnostics::full_diagnostic_report(vec![]));
+            }
+        };
+
+        let start = std::time::Instant::now();
+        let diags = diagnostics::compute_diagnostics(self, uri, &text).await;
+        let elapsed = start.elapsed();
+        tracing::debug!(uri = %uri, count = diags.len(), elapsed_us = elapsed.as_micros() as u64, "diagnostic (pull)");
+
+        Ok(diagnostics::full_diagnostic_report(diags))
+    }
+
     // -- Rename --
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -676,6 +728,34 @@ impl LanguageServer for AlServer {
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
         tracing::debug!(uri = %uri, hints = count, elapsed_us = elapsed.as_micros() as u64, "inlay_hint");
         Ok(result)
+    }
+
+    // -- Code lens --
+
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        self.await_ready().await;
+        let uri = &params.text_document.uri;
+        let start = std::time::Instant::now();
+        let entries = al_core::queries::code_lens::code_lens(&self.workspace, uri);
+        let elapsed = start.elapsed();
+        let count = entries.len();
+        tracing::debug!(uri = %uri, lenses = count, elapsed_us = elapsed.as_micros() as u64, "code_lens");
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let lenses: Vec<CodeLens> = entries
+            .into_iter()
+            .map(|e| CodeLens {
+                range: e.range,
+                command: Some(Command {
+                    title: e.title,
+                    command: String::new(),
+                    arguments: None,
+                }),
+                data: None,
+            })
+            .collect();
+        Ok(Some(lenses))
     }
 
     // -- Execute command --

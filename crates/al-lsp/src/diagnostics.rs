@@ -10,6 +10,19 @@ use tower_lsp::lsp_types::*;
 
 use crate::server::AlServer;
 
+/// Wrap diagnostics in a full pull-diagnostics report.
+pub(crate) fn full_diagnostic_report(items: Vec<Diagnostic>) -> DocumentDiagnosticReportResult {
+    DocumentDiagnosticReportResult::Report(
+        DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+            related_documents: None,
+            full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                result_id: None,
+                items,
+            },
+        }),
+    )
+}
+
 /// Return true if the URI points to a file inside the al-lsp symbol cache.
 ///
 /// Cache files are virtual AL outlines extracted from .app packages — Zed can
@@ -22,6 +35,51 @@ pub(crate) fn is_cache_path(uri: &Url) -> bool {
     } else {
         false
     }
+}
+
+/// Compute diagnostics for a document (syntax + lint + optional bridge).
+///
+/// Runs both Phase 1 (syntax errors + lint) and Phase 2 (bridge/semantic analysis)
+/// and returns the combined `Vec<Diagnostic>`.
+///
+/// Used by the pull path (`textDocument/diagnostic`). The push path
+/// (`publish_diagnostics`) keeps its own two-phase publish logic for instant
+/// Phase-1 feedback.
+pub(crate) async fn compute_diagnostics(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    // Phase 1: Instant syntax + lint.
+    {
+        let tree = match al_core::parsing::get_or_parse(&server.workspace.documents, uri) {
+            Some((_cached_text, t)) => t,
+            None => {
+                let result = AlParser::parse_quick(text);
+                let version = server.workspace.documents.get_version(uri).unwrap_or(0);
+                server.workspace.documents.cache_tree(uri, version, result.tree.clone());
+                result.tree
+            }
+        };
+
+        let source_bytes = text.as_bytes();
+
+        for err in &AlParser::errors_from_tree(&tree) {
+            diagnostics.push(syntax_error_to_diagnostic(err, source_bytes));
+        }
+
+        let lint_results = al_core::syntax::lint(&tree, text);
+        let config_guard = server.workspace.config.read().await;
+        for lint in lint_results {
+            if config_guard.is_lint_rule_enabled(&lint.code) {
+                diagnostics.push(lint_to_diagnostic(&lint, source_bytes));
+            }
+        }
+        drop(config_guard);
+    }
+
+    // Phase 2: Async semantic analysis via .NET bridge.
+    diagnostics.extend(run_semantic_analysis(server, uri, text).await);
+
+    diagnostics
 }
 
 /// Run two-phase diagnostics and publish results to the client.
@@ -95,59 +153,85 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
         .publish_diagnostics(uri.clone(), diagnostics.clone(), None)
         .await;
 
-    // Phase 2: Async semantic analysis (lazy bridge init)
-    if let Some(guard) = server.get_or_init_bridge().await {
-        if let Some(bridge) = guard.as_ref() {
-            let file_path = uri
-                .to_file_path()
-                .unwrap_or_else(|_| PathBuf::from(uri.path()));
+    // Phase 2: Async semantic analysis via .NET bridge.
+    let semantic_diags = run_semantic_analysis(server, uri, text).await;
+    if !semantic_diags.is_empty() {
+        diagnostics.extend(semantic_diags);
+        let total_count = diagnostics.len();
+        tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");
+        server
+            .client
+            .publish_diagnostics(uri.clone(), diagnostics, None)
+            .await;
+    }
+}
 
-            let config_guard = server.workspace.config.read().await;
-            let analyzers = config_guard.code_analyzers.clone();
-            let package_cache = if let Some(project) = server.workspace.project.read().await.as_ref() {
-                project.packages_dir.clone()
-            } else {
-                PathBuf::from(".alpackages")
-            };
-            drop(config_guard);
-            let req = al_core::semantic_types::AnalyzeRequest {
-                file: file_path,
-                source: text.to_string(),
-                analyzers,
-                package_cache,
-            };
+/// Run semantic analysis via .NET bridge if enabled. Returns diagnostics or empty vec.
+///
+/// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
+async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
+    let (enable_analysis, bg_analysis) = {
+        let cfg = server.workspace.config.read().await;
+        (cfg.enable_code_analysis, cfg.background_code_analysis)
+    };
+    if !enable_analysis || !bg_analysis {
+        tracing::debug!(uri = %uri, enable_analysis, bg_analysis, "semantic analysis disabled by config");
+        return vec![];
+    }
 
-            let semantic_start = std::time::Instant::now();
-            match bridge.analyze(req).await {
-                Ok(results) => {
-                    let semantic_elapsed = semantic_start.elapsed();
-                    let semantic_count = results.len();
-                    tracing::debug!(uri = %uri, semantic_count, semantic_us = semantic_elapsed.as_micros() as u64, "publish_diagnostics: semantic analysis complete");
-                    // Load error codes if not yet cached (lazy, one-time)
-                    server.ensure_error_codes_loaded().await;
+    let guard = match server.get_or_init_bridge().await {
+        Some(g) => g,
+        None => return vec![],
+    };
+    let bridge = match guard.as_ref() {
+        Some(b) => b,
+        None => return vec![],
+    };
 
-                    for entry in results {
-                        let mut diag = semantic_to_diagnostic(&entry);
-                        // Enrich with error code description if available
-                        if let Some(desc) = server.error_code_description(&entry.code) {
-                            if !diag.message.contains(&desc) {
-                                diag.message = format!("{} — {}", diag.message, desc);
-                            }
+    let file_path = uri
+        .to_file_path()
+        .unwrap_or_else(|_| PathBuf::from(uri.path()));
+
+    let config_guard = server.workspace.config.read().await;
+    let analyzers = config_guard.code_analyzers.clone();
+    let package_cache = if let Some(project) = server.workspace.project.read().await.as_ref() {
+        project.packages_dir.clone()
+    } else {
+        PathBuf::from(".alpackages")
+    };
+    drop(config_guard);
+
+    let req = al_core::semantic_types::AnalyzeRequest {
+        file: file_path,
+        source: text.to_string(),
+        analyzers,
+        package_cache,
+    };
+
+    let semantic_start = std::time::Instant::now();
+    match bridge.analyze(req).await {
+        Ok(results) => {
+            let semantic_elapsed = semantic_start.elapsed();
+            tracing::debug!(uri = %uri, count = results.len(), elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis complete");
+            server.ensure_error_codes_loaded().await;
+
+            results
+                .into_iter()
+                .map(|entry| {
+                    let mut diag = semantic_to_diagnostic(&entry);
+                    if let Some(desc) = server.error_code_description(&entry.code) {
+                        if !diag.message.contains(&desc) {
+                            diag.message = format!("{} — {}", diag.message, desc);
                         }
-                        diagnostics.push(diag);
                     }
-                    let total_count = diagnostics.len();
-                    tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");
-                    server
-                        .client
-                        .publish_diagnostics(uri.clone(), diagnostics, None)
-                        .await;
-                }
-                Err(error) => {
-                    let semantic_elapsed = semantic_start.elapsed();
-                    tracing::debug!(uri = %uri, %error, semantic_us = semantic_elapsed.as_micros() as u64, "publish_diagnostics: semantic analysis failed");
-                }
-            }
+                    diag
+                })
+                .collect()
+        }
+        Err(error) => {
+            let semantic_elapsed = semantic_start.elapsed();
+            tracing::debug!(uri = %uri, %error, elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis failed");
+            vec![]
         }
     }
 }
