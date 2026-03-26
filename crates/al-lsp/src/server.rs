@@ -204,6 +204,9 @@ impl AlServer {
             old.abort();
         }
 
+        // Read config before spawning so per-rule lint filtering works inside the closure.
+        let config = self.workspace.config.read().await.clone();
+
         let client = self.client.clone();
         let handle = tokio::spawn(async move {
             tokio::time::sleep(DIAGNOSTICS_DEBOUNCE).await;
@@ -217,7 +220,9 @@ impl AlServer {
             }
             let lint_result = al_core::syntax::lint(&parse_result.tree, &text);
             for lint in &lint_result {
-                lsp_diags.push(crate::diagnostics::lint_to_diagnostic(lint, source));
+                if config.is_lint_rule_enabled(&lint.code) {
+                    lsp_diags.push(crate::diagnostics::lint_to_diagnostic(lint, source));
+                }
             }
             client.publish_diagnostics(uri, lsp_diags, None).await;
         });
@@ -283,8 +288,18 @@ impl LanguageServer for AlServer {
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::FULL),
+                        // Request save notifications so did_save can refresh diagnostics.
+                        // `include_text: false` — we already have the latest text in the
+                        // document store from did_change, so there's no need to re-send it.
+                        save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                            include_text: Some(false),
+                        })),
+                        ..Default::default()
+                    },
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
@@ -444,7 +459,18 @@ impl LanguageServer for AlServer {
             // ISSUE-025 fix: diagnostics are debounced and run async.
             // Each keystroke cancels the previous pending task to avoid bridge calls
             // (up to bridge timeout = 5s) blocking hover/completion.
-            self.schedule_diagnostics(uri, text).await;
+            //
+            // Only schedule per-keystroke diagnostics when trigger is Continuous.
+            // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.
+            let trigger = self.workspace.config.read().await.diagnostics_trigger;
+            if trigger == al_core::config::DiagnosticsTrigger::Continuous {
+                self.schedule_diagnostics(uri, text).await;
+            } else {
+                // Cancel any lingering debounced task from a previous Continuous session.
+                if let Some(old) = self.diag_task.lock().await.take() {
+                    old.abort();
+                }
+            }
         }
     }
 
@@ -466,6 +492,20 @@ impl LanguageServer for AlServer {
         } else {
             self.workspace.symbols.invalidate_all_composed();
             self.client.publish_diagnostics(uri, vec![], None).await;
+        }
+    }
+
+    async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        let uri = params.text_document.uri;
+        tracing::debug!(uri = %uri, "did_save");
+
+        // Always publish diagnostics on save — both Continuous and OnSave modes benefit
+        // from a save-time refresh. In OnSave mode this is the *only* time diagnostics run
+        // (did_change is gated by the trigger check above).
+        if let Some(text) = self.workspace.documents.get_text(&uri) {
+            diagnostics::publish_diagnostics(self, &uri, &text).await;
+        } else {
+            tracing::warn!(uri = %uri, "did_save: document not in store, skipping diagnostics");
         }
     }
 

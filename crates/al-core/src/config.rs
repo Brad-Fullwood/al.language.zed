@@ -32,8 +32,16 @@ pub struct AlConfig {
     /// Enable semantic code analysis via .NET bridge.
     pub enable_code_analysis: bool,
 
-    /// Run code analysis in the background on file save.
+    /// Run code analysis in the background continuously.
     pub background_code_analysis: bool,
+
+    /// Scope for diagnostics: "project" (all .al files) or "openFiles" (only open tabs).
+    /// Default: "project" — we are performant enough to lint the entire project.
+    pub diagnostics_scope: DiagnosticsScope,
+
+    /// When to run diagnostics: "continuous" (on every change) or "onSave".
+    /// Default: "continuous" — our native lint is fast enough.
+    pub diagnostics_trigger: DiagnosticsTrigger,
 
     /// Which analyzers to run (e.g., "CodeCop", "AppSourceCop", "UICop", "PerTenantCop").
     pub code_analyzers: Vec<String>,
@@ -142,6 +150,28 @@ pub struct NuGetFeedConfig {
     pub url: String,
 }
 
+/// Scope for diagnostics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiagnosticsScope {
+    /// Lint all .al files in the project (recommended — our lint is fast).
+    #[default]
+    Project,
+    /// Only lint files currently open in the editor.
+    OpenFiles,
+}
+
+/// When to trigger diagnostics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiagnosticsTrigger {
+    /// Run on every change (debounced). Fast enough for our native lint.
+    #[default]
+    Continuous,
+    /// Only run when the file is saved.
+    OnSave,
+}
+
 /// Log level for editor services.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -172,7 +202,14 @@ impl Default for AlConfig {
             // Semantic
             enable_code_analysis: true,
             background_code_analysis: true,
-            code_analyzers: vec!["CodeCop".to_string()],
+            diagnostics_scope: DiagnosticsScope::default(),
+            diagnostics_trigger: DiagnosticsTrigger::default(),
+            code_analyzers: vec![
+                "CodeCop".to_string(),
+                "AppSourceCop".to_string(),
+                "UICop".to_string(),
+                "PerTenantCop".to_string(),
+            ],
             enable_external_rulesets: false,
             rule_set_path: None,
             assembly_probing_paths: Vec::new(),
@@ -285,6 +322,20 @@ impl AlConfig {
                 // -- Semantic --
                 "enableCodeAnalysis" => merge_bool(obj, key, &mut self.enable_code_analysis),
                 "backgroundCodeAnalysis" => merge_bool(obj, key, &mut self.background_code_analysis),
+                "diagnosticsScope" => {
+                    if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
+                        if let Ok(scope) = serde_json::from_value(serde_json::Value::String(s.to_string())) {
+                            self.diagnostics_scope = scope;
+                        }
+                    }
+                }
+                "diagnosticsTrigger" => {
+                    if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
+                        if let Ok(trigger) = serde_json::from_value(serde_json::Value::String(s.to_string())) {
+                            self.diagnostics_trigger = trigger;
+                        }
+                    }
+                }
                 "codeAnalyzers" => merge_string_array(obj, key, &mut self.code_analyzers),
                 "enableExternalRulesets" => merge_bool(obj, key, &mut self.enable_external_rulesets),
                 "ruleSetPath" => merge_optional_path(obj, key, &mut self.rule_set_path),
@@ -422,7 +473,7 @@ mod tests {
         // Semantic
         assert!(config.enable_code_analysis);
         assert!(config.background_code_analysis);
-        assert_eq!(config.code_analyzers, vec!["CodeCop"]);
+        assert_eq!(config.code_analyzers, vec!["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]);
         assert!(!config.enable_external_rulesets);
         assert!(config.rule_set_path.is_none());
         assert!(config.assembly_probing_paths.is_empty());
@@ -550,7 +601,7 @@ mod tests {
 
         assert!(!config.enable_code_analysis);
         assert!(config.background_code_analysis);
-        assert_eq!(config.code_analyzers, vec!["CodeCop"]);
+        assert_eq!(config.code_analyzers, vec!["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]);
     }
 
     #[test]
@@ -801,5 +852,29 @@ mod tests {
         config.merge(&serde_json::json!({"nativeLintRules": {"AL-L002": false}}));
         assert_eq!(config.native_lint_rules.get("AL-L001"), Some(&false));
         assert_eq!(config.native_lint_rules.get("AL-L002"), Some(&false));
+    }
+
+    #[test]
+    fn merge_diagnostics_trigger() {
+        let mut config = AlConfig::default();
+        assert_eq!(config.diagnostics_trigger, DiagnosticsTrigger::Continuous);
+
+        config.merge(&serde_json::json!({"diagnosticsTrigger": "onSave"}));
+        assert_eq!(config.diagnostics_trigger, DiagnosticsTrigger::OnSave);
+
+        config.merge(&serde_json::json!({"diagnosticsTrigger": "continuous"}));
+        assert_eq!(config.diagnostics_trigger, DiagnosticsTrigger::Continuous);
+    }
+
+    #[test]
+    fn merge_diagnostics_scope() {
+        let mut config = AlConfig::default();
+        assert_eq!(config.diagnostics_scope, DiagnosticsScope::Project);
+
+        config.merge(&serde_json::json!({"diagnosticsScope": "openFiles"}));
+        assert_eq!(config.diagnostics_scope, DiagnosticsScope::OpenFiles);
+
+        config.merge(&serde_json::json!({"diagnosticsScope": "project"}));
+        assert_eq!(config.diagnostics_scope, DiagnosticsScope::Project);
     }
 }
