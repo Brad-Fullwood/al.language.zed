@@ -54,6 +54,8 @@ pub enum EdgeKind {
     EventSubscription,
     /// A trigger invokes a procedure.
     TriggerInvocation,
+    /// A record operation (Insert/Modify/Delete/Validate) triggers table events.
+    RecordTrigger,
 }
 
 impl std::fmt::Display for EdgeKind {
@@ -62,8 +64,17 @@ impl std::fmt::Display for EdgeKind {
             EdgeKind::DirectCall => write!(f, "direct_call"),
             EdgeKind::EventSubscription => write!(f, "event_subscription"),
             EdgeKind::TriggerInvocation => write!(f, "trigger_invocation"),
+            EdgeKind::RecordTrigger => write!(f, "record_trigger"),
         }
     }
+}
+
+/// Tracks whether a procedure's call edges have been extracted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeResolutionState {
+    Unresolved,
+    Resolving,
+    Resolved,
 }
 
 /// A single directed edge in the call graph.
@@ -99,6 +110,8 @@ pub struct CallGraph {
     incoming: HashMap<NodeId, Vec<CallEdge>>,
     /// Node metadata for display / serialization.
     nodes: HashMap<NodeId, NodeInfo>,
+    /// Tracks whether each node's call edges have been extracted.
+    resolution: HashMap<NodeId, EdgeResolutionState>,
 }
 
 impl CallGraph {
@@ -157,6 +170,24 @@ impl CallGraph {
     pub fn add_trigger_invocation(&mut self, from: NodeId, to: NodeId) {
         let edge = CallEdge { from, to, kind: EdgeKind::TriggerInvocation };
         self.insert_edge(edge);
+    }
+
+    /// Add a record-trigger edge (procedure triggers table event via Insert/Modify/Delete/Validate).
+    pub fn add_trigger(&mut self, from: NodeId, to: NodeId) {
+        let edge = CallEdge { from, to, kind: EdgeKind::RecordTrigger };
+        self.insert_edge(edge);
+    }
+
+    /// Remove all outgoing edges from `node`. Also removes corresponding
+    /// entries from `incoming` reverse index. Used for invalidation.
+    pub fn remove_edges_from(&mut self, node: NodeId) {
+        if let Some(edges) = self.outgoing.remove(&node) {
+            for edge in &edges {
+                if let Some(incoming) = self.incoming.get_mut(&edge.to) {
+                    incoming.retain(|e| e.from != node);
+                }
+            }
+        }
     }
 
     /// Look up the `NodeId` for a node by its [`NodeKey`].
@@ -225,6 +256,18 @@ impl CallGraph {
     /// incrementally, e.g. after parsing a newly opened file).
     pub fn register_node(&mut self, id: NodeId, info: NodeInfo) {
         self.nodes.insert(id, info);
+    }
+
+    /// Return the edge resolution state for a node.
+    ///
+    /// Defaults to `Unresolved` if no state has been recorded.
+    pub fn resolution_state(&self, node: NodeId) -> EdgeResolutionState {
+        self.resolution.get(&node).copied().unwrap_or(EdgeResolutionState::Unresolved)
+    }
+
+    /// Set the edge resolution state for a node.
+    pub fn set_resolution_state(&mut self, node: NodeId, state: EdgeResolutionState) {
+        self.resolution.insert(node, state);
     }
 
     // ------------------------------------------------------------------
@@ -616,5 +659,68 @@ mod tests {
         );
         let event_id = CallGraph::node_id_for(&graph, &event_key).unwrap();
         assert_eq!(cg.subscribers_of(event_id).len(), 3);
+    }
+
+    #[test]
+    fn record_trigger_edge() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_codeunit(1, "PostCU", vec![regular_method("DoPost")]),
+            make_codeunit(2, "Events", vec![integration_event("OnBeforeInsertEvent")]),
+        ]);
+        let mut graph = InsightGraph::new();
+        graph.build_from_index(&index);
+        let mut cg = CallGraph::build_from_insight(&graph);
+
+        let proc_key = NodeKey::Procedure(ObjectKind::Codeunit, "postcu".into(), "dopost".into());
+        let event_key =
+            NodeKey::Event(ObjectKind::Codeunit, "events".into(), "onbeforeinsertevent".into());
+        let proc_id = CallGraph::node_id_for(&graph, &proc_key).unwrap();
+        let event_id = CallGraph::node_id_for(&graph, &event_key).unwrap();
+
+        cg.add_trigger(proc_id, event_id);
+        let callees = cg.callees_of(proc_id);
+        assert_eq!(callees.len(), 1);
+        assert_eq!(callees[0].kind, EdgeKind::RecordTrigger);
+    }
+
+    #[test]
+    fn remove_edges_from_node() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[make_codeunit(
+            1,
+            "MyCU",
+            vec![regular_method("A"), regular_method("B"), regular_method("C")],
+        )]);
+        let mut graph = InsightGraph::new();
+        graph.build_from_index(&index);
+        let mut cg = CallGraph::build_from_insight(&graph);
+
+        let a = CallGraph::node_id_for(
+            &graph,
+            &NodeKey::Procedure(ObjectKind::Codeunit, "mycu".into(), "a".into()),
+        )
+        .unwrap();
+        let b = CallGraph::node_id_for(
+            &graph,
+            &NodeKey::Procedure(ObjectKind::Codeunit, "mycu".into(), "b".into()),
+        )
+        .unwrap();
+        let c = CallGraph::node_id_for(
+            &graph,
+            &NodeKey::Procedure(ObjectKind::Codeunit, "mycu".into(), "c".into()),
+        )
+        .unwrap();
+
+        cg.add_direct_call(a, b);
+        cg.add_direct_call(a, c);
+        cg.add_direct_call(b, c);
+        assert_eq!(cg.edge_count(), 3);
+
+        cg.remove_edges_from(a);
+        assert_eq!(cg.edge_count(), 1);
+        assert_eq!(cg.callees_of(a).len(), 0);
+        assert_eq!(cg.callers_of(b).len(), 0);
+        assert_eq!(cg.callers_of(c).len(), 1);
     }
 }
