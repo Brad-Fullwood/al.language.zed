@@ -11,7 +11,7 @@ themes = ["themes/bc-themes.json"]
 
 [lib]
 kind = "Rust"
-version = "0.7.0"
+version = "0.8.0"
 
 [language_servers.al-lsp]
 name = "AL Language Server"
