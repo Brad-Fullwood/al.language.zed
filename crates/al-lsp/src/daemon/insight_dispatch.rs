@@ -91,21 +91,28 @@ pub(super) fn dispatch_impact(workspace: &Workspace, id: u64, params: &serde_jso
 }
 
 pub(super) fn dispatch_suggest_event(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let description = params.get("description").and_then(|v| v.as_str()).unwrap_or("");
-    if description.is_empty() {
-        return Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: "Missing 'description' parameter".to_string(),
-            }),
-        };
-    }
-    let suggestions = al_core::queries::suggest_event::suggest_event(workspace, description);
+    // Accept either the new structured `query` field or fall back to the legacy
+    // `description` field for backwards compatibility during the transition.
+    let query_value = params.get("query").cloned().unwrap_or_else(|| params.clone());
+
+    let query: al_core::queries::suggest_event::EventQuery = match serde_json::from_value(query_value) {
+        Ok(q) => q,
+        Err(e) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: format!("Invalid suggestEvent query: {e}"),
+                }),
+            };
+        }
+    };
+
+    let result = al_core::queries::suggest_event::suggest_event(workspace, &query);
     Response {
         id,
-        result: Some(serde_json::json!({ "query": description, "suggestions": suggestions })),
+        result: Some(serde_json::to_value(&result).unwrap_or_default()),
         error: None,
     }
 }
