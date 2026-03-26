@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
 use serde::Serialize;
 
 use al_symbols::{ObjectKind, SymbolEntry};
@@ -68,6 +69,8 @@ pub enum InsightEdge {
     Contains,
     /// Table A has a field with TableRelation to Table B.
     RelatesTo,
+    /// Procedure A triggers table events on Record B (Insert/Modify/Delete/Validate).
+    Triggers,
 }
 
 impl std::fmt::Display for InsightEdge {
@@ -79,6 +82,7 @@ impl std::fmt::Display for InsightEdge {
             InsightEdge::SubscribesTo => write!(f, "subscribes_to"),
             InsightEdge::Contains => write!(f, "contains"),
             InsightEdge::RelatesTo => write!(f, "relates_to"),
+            InsightEdge::Triggers => write!(f, "triggers"),
         }
     }
 }
@@ -158,6 +162,18 @@ impl InsightGraph {
             .any(|e| *e.weight() == edge);
         if !already_exists {
             self.graph.add_edge(from, to, edge);
+        }
+    }
+
+    /// Remove all outgoing edges from `node`. Used for invalidation when
+    /// a file changes and its call edges need re-extraction.
+    pub fn remove_edges_from(&mut self, node: NodeIndex) {
+        let to_remove: Vec<_> = self.graph
+            .edges(node)
+            .map(|e| e.id())
+            .collect();
+        for edge_id in to_remove {
+            self.graph.remove_edge(edge_id);
         }
     }
 
@@ -954,6 +970,44 @@ mod tests {
 
         let edge = g.graph.find_edge(sh_idx, cust_idx).unwrap();
         assert_eq!(*g.graph.edge_weight(edge).unwrap(), InsightEdge::RelatesTo);
+    }
+
+    #[test]
+    fn triggers_edge_display() {
+        assert_eq!(format!("{}", InsightEdge::Triggers), "triggers");
+    }
+
+    #[test]
+    fn remove_edges_from_clears_outgoing() {
+        let mut g = InsightGraph::new();
+
+        // Create two Procedure nodes
+        let a = g.ensure_node(
+            NodeKey::Procedure(ObjectKind::Codeunit, "cu".to_string(), "proc_a".to_string()),
+            InsightNode::Procedure {
+                object_kind: ObjectKind::Codeunit,
+                object_name: "CU".to_string(),
+                name: "ProcA".to_string(),
+                is_local: false,
+            },
+        );
+        let b = g.ensure_node(
+            NodeKey::Procedure(ObjectKind::Codeunit, "cu".to_string(), "proc_b".to_string()),
+            InsightNode::Procedure {
+                object_kind: ObjectKind::Codeunit,
+                object_name: "CU".to_string(),
+                name: "ProcB".to_string(),
+                is_local: false,
+            },
+        );
+
+        // Add a Calls edge from A to B
+        g.add_edge(a, b, InsightEdge::Calls);
+        assert_eq!(g.edge_count(), 1);
+
+        // Remove all outgoing edges from A
+        g.remove_edges_from(a);
+        assert_eq!(g.edge_count(), 0);
     }
 
     #[test]
