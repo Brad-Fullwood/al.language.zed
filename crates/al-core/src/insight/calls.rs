@@ -350,10 +350,7 @@ fn collect_call_sites_from_block(
 ///
 /// A `postfix_expression` has: `primary_expression` followed by zero or more suffixes.
 /// We only care about expressions that end with a call (have an `argument_list` at the end).
-fn parse_postfix_expression(
-    node: tree_sitter::Node,
-    source: &[u8],
-) -> Option<CallSite> {
+fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -> Option<CallSite> {
     let children: Vec<tree_sitter::Node> = {
         let mut cursor = node.walk();
         node.children(&mut cursor).collect()
@@ -445,12 +442,10 @@ fn extract_primary_expression_name(node: tree_sitter::Node, source: &[u8]) -> Op
     };
 
     match inner.kind() {
-        "name" | "name_or_keyword" | "identifier" | "quoted_identifier" => {
-            inner
-                .utf8_text(source)
-                .ok()
-                .map(|t| t.trim_matches('"').to_string())
-        }
+        "name" | "name_or_keyword" | "identifier" | "quoted_identifier" => inner
+            .utf8_text(source)
+            .ok()
+            .map(|t| t.trim_matches('"').to_string()),
         _ => {
             // Fallback: just return the raw text of whatever the primary node is
             inner
@@ -510,6 +505,7 @@ fn parse_run_trigger_arg(
 /// - `MemberCall` → resolves object against `symbols`, then finds method in `insight`.
 /// - `RecordOp` (run_trigger=true) → resolves variable to table via `var_types`,
 ///   then finds the table's `OnBefore{Op}Event` / `OnAfter{Op}Event` in `insight`.
+#[allow(clippy::too_many_arguments)]
 pub fn populate_call_edges_for_procedure(
     tree: &tree_sitter::Tree,
     source: &str,
@@ -590,7 +586,9 @@ pub fn populate_call_edges_for_procedure(
                     }
                 }
             }
-            CallSite::RecordOp { run_trigger: false, .. } => {
+            CallSite::RecordOp {
+                run_trigger: false, ..
+            } => {
                 // RunTrigger=false → no trigger edges
             }
         }
@@ -763,7 +761,9 @@ fn register_single_procedure(
     // Collect attribute names from the procedure
     let attributes = collect_procedure_attributes(proc_node, source);
 
-    let is_integration_event = attributes.iter().any(|(name, _)| name == "IntegrationEvent");
+    let is_integration_event = attributes
+        .iter()
+        .any(|(name, _)| name == "IntegrationEvent");
     let is_business_event = attributes.iter().any(|(name, _)| name == "BusinessEvent");
     let is_subscriber = attributes.iter().any(|(name, _)| name == "EventSubscriber");
     let is_local = has_local_modifier(proc_node, source);
@@ -869,9 +869,7 @@ fn has_local_modifier(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
 ///
 /// The args text looks like: `[EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPost', '', false, false)]`
 /// We extract arg[1] (object name) and arg[2] (event name).
-fn parse_subscriber_target_from_attrs(
-    attrs: &[(String, String)],
-) -> (String, String) {
+fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> (String, String) {
     for (name, args_text) in attrs {
         if name == "EventSubscriber" {
             // Parse args from the raw text: split by comma inside parens
@@ -968,8 +966,13 @@ pub fn populate_workspace_call_edges(
     call_graph: &mut CallGraph,
 ) -> usize {
     // Collect (path, source, tree, object_info, fanout)
-    let mut file_scores: Vec<(std::path::PathBuf, String, tree_sitter::Tree, crate::file_index::CachedObjectInfo, usize)> =
-        Vec::new();
+    let mut file_scores: Vec<(
+        std::path::PathBuf,
+        String,
+        tree_sitter::Tree,
+        crate::file_index::CachedObjectInfo,
+        usize,
+    )> = Vec::new();
 
     for entry in file_index.object_info.iter() {
         let path = entry.key().clone();
@@ -1006,7 +1009,8 @@ pub fn populate_workspace_call_edges(
         // Find all procedures in this file and populate edges for each
         let procedures = collect_procedure_names_from_tree(tree.root_node(), source.as_bytes());
         for proc_name in procedures {
-            let proc_key = NodeKey::Procedure(ok, info.name.to_lowercase(), proc_name.to_lowercase());
+            let proc_key =
+                NodeKey::Procedure(ok, info.name.to_lowercase(), proc_name.to_lowercase());
             if let Some(proc_id) = CallGraph::node_id_for(insight, &proc_key) {
                 if call_graph.resolution_state(proc_id) == EdgeResolutionState::Unresolved {
                     call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolving);
@@ -1014,14 +1018,7 @@ pub fn populate_workspace_call_edges(
                     // We need a mutable insight... but we're working with immutable here.
                     // populate_call_edges_for_procedure takes &InsightGraph + &mut CallGraph.
                     populate_call_edges_for_procedure(
-                        tree,
-                        source,
-                        ok,
-                        &info.name,
-                        &proc_name,
-                        symbols,
-                        insight,
-                        call_graph,
+                        tree, source, ok, &info.name, &proc_name, symbols, insight, call_graph,
                     );
 
                     call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
@@ -1038,7 +1035,13 @@ pub fn populate_workspace_call_edges(
 ///
 /// A file is Tier 1 if its score >= 5 or its score is in the top 20%.
 fn tier1_threshold(
-    files: &[(std::path::PathBuf, String, tree_sitter::Tree, crate::file_index::CachedObjectInfo, usize)],
+    files: &[(
+        std::path::PathBuf,
+        String,
+        tree_sitter::Tree,
+        crate::file_index::CachedObjectInfo,
+        usize,
+    )],
 ) -> usize {
     if files.is_empty() {
         return 5;
@@ -1050,14 +1053,11 @@ fn tier1_threshold(
     let cutoff_idx = scores.len() * 8 / 10; // 80th percentile index
     let percentile_threshold = scores.get(cutoff_idx).copied().unwrap_or(5);
 
-    percentile_threshold.min(5).max(1)
+    percentile_threshold.clamp(1, 5)
 }
 
 /// Collect all procedure names from the AST (not just locally — recursively).
-fn collect_procedure_names_from_tree(
-    node: tree_sitter::Node,
-    source: &[u8],
-) -> Vec<String> {
+fn collect_procedure_names_from_tree(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
     collect_procedure_names_from_node(node, source, &mut names);
     names
@@ -1185,11 +1185,20 @@ mod tests {
         assert!(types.contains_key("cust"), "Should find 'cust' variable");
         assert_eq!(types.get("cust").map(|s| s.as_str()), Some("Customer"));
 
-        assert!(types.contains_key("saleshdr"), "Should find 'saleshdr' variable");
-        assert_eq!(types.get("saleshdr").map(|s| s.as_str()), Some("Sales Header"));
+        assert!(
+            types.contains_key("saleshdr"),
+            "Should find 'saleshdr' variable"
+        );
+        assert_eq!(
+            types.get("saleshdr").map(|s| s.as_str()),
+            Some("Sales Header")
+        );
 
         // Integer is not Record — should not be in the map
-        assert!(!types.contains_key("counter"), "Integer vars should not appear");
+        assert!(
+            !types.contains_key("counter"),
+            "Integer vars should not appear"
+        );
     }
 
     #[test]
@@ -1237,38 +1246,69 @@ mod tests {
 
         let bare_calls: Vec<_> = sites
             .iter()
-            .filter_map(|s| if let CallSite::BareCall { name } = s { Some(name.as_str()) } else { None })
+            .filter_map(|s| {
+                if let CallSite::BareCall { name } = s {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(
-            bare_calls.iter().any(|&n| n.eq_ignore_ascii_case("DoSomething")),
+            bare_calls
+                .iter()
+                .any(|&n| n.eq_ignore_ascii_case("DoSomething")),
             "Should find DoSomething() bare call"
         );
 
         let record_ops: Vec<_> = sites
             .iter()
-            .filter_map(|s| if let CallSite::RecordOp { variable, op, run_trigger } = s {
-                Some((variable.as_str(), *op, *run_trigger))
-            } else { None })
+            .filter_map(|s| {
+                if let CallSite::RecordOp {
+                    variable,
+                    op,
+                    run_trigger,
+                } = s
+                {
+                    Some((variable.as_str(), *op, *run_trigger))
+                } else {
+                    None
+                }
+            })
             .collect();
 
         assert!(
-            record_ops.iter().any(|(v, op, rt)| v.eq_ignore_ascii_case("Cust") && *op == RecordOp::Insert && *rt),
+            record_ops
+                .iter()
+                .any(|(v, op, rt)| v.eq_ignore_ascii_case("Cust")
+                    && *op == RecordOp::Insert
+                    && *rt),
             "Should find Cust.Insert(true)"
         );
         assert!(
-            record_ops.iter().any(|(v, op, _rt)| v.eq_ignore_ascii_case("Cust") && *op == RecordOp::Modify),
+            record_ops
+                .iter()
+                .any(|(v, op, _rt)| v.eq_ignore_ascii_case("Cust") && *op == RecordOp::Modify),
             "Should find Cust.Modify()"
         );
         assert!(
-            record_ops.iter().any(|(v, op, rt)| v.eq_ignore_ascii_case("Cust") && *op == RecordOp::Delete && !*rt),
+            record_ops
+                .iter()
+                .any(|(v, op, rt)| v.eq_ignore_ascii_case("Cust")
+                    && *op == RecordOp::Delete
+                    && !*rt),
             "Should find Cust.Delete(false) with run_trigger=false"
         );
 
         let member_calls: Vec<_> = sites
             .iter()
-            .filter_map(|s| if let CallSite::MemberCall { object, method } = s {
-                Some((object.as_str(), method.as_str()))
-            } else { None })
+            .filter_map(|s| {
+                if let CallSite::MemberCall { object, method } = s {
+                    Some((object.as_str(), method.as_str()))
+                } else {
+                    None
+                }
+            })
             .collect();
         assert!(
             member_calls.iter().any(|(o, m)| o.eq_ignore_ascii_case("SalesPost") && m.eq_ignore_ascii_case("Post")),
@@ -1337,8 +1377,8 @@ mod tests {
             "my cu".to_string(),
             "dopost".to_string(),
         );
-        let caller_id = CallGraph::node_id_for(&insight, &caller_key)
-            .expect("caller node should exist");
+        let caller_id =
+            CallGraph::node_id_for(&insight, &caller_key).expect("caller node should exist");
 
         let callees = call_graph.callees_of(caller_id);
         assert!(!callees.is_empty(), "DoPost should have outgoing edges");
@@ -1429,10 +1469,7 @@ mod tests {
 
         // Simulate file_index registration by directly testing register_single_procedure
         let source_bytes = source.as_bytes();
-        let obj_key = NodeKey::Object(
-            ObjectKind::Codeunit,
-            "test publisher".to_string(),
-        );
+        let obj_key = NodeKey::Object(ObjectKind::Codeunit, "test publisher".to_string());
         let obj_idx = insight.ensure_node(
             obj_key,
             InsightNode::Object {
@@ -1514,7 +1551,10 @@ mod tests {
         assert_eq!(RecordOp::from_method_name("insert"), Some(RecordOp::Insert));
         assert_eq!(RecordOp::from_method_name("MODIFY"), Some(RecordOp::Modify));
         assert_eq!(RecordOp::from_method_name("delete"), Some(RecordOp::Delete));
-        assert_eq!(RecordOp::from_method_name("Validate"), Some(RecordOp::Validate));
+        assert_eq!(
+            RecordOp::from_method_name("Validate"),
+            Some(RecordOp::Validate)
+        );
         assert_eq!(RecordOp::from_method_name("Post"), None);
     }
 }

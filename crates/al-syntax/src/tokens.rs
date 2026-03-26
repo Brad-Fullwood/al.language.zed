@@ -110,8 +110,8 @@ pub mod token_types {
         "datetime",
         "namespaceName",
         "attribute",
-        "keywordControl",    // 43
-        "keywordFunction",   // 44
+        "keywordControl",  // 43
+        "keywordFunction", // 44
     ];
 }
 
@@ -251,7 +251,10 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
 ///
 /// Only local variables (those inside a procedure/trigger var section) are checked.
 /// Global object-level variables are not marked because they may be used across files.
-fn collect_unused_var_positions(root: Node, source: &[u8]) -> std::collections::HashSet<(u32, u32)> {
+fn collect_unused_var_positions(
+    root: Node,
+    source: &[u8],
+) -> std::collections::HashSet<(u32, u32)> {
     let mut result = std::collections::HashSet::new();
 
     let mut stack = vec![root];
@@ -351,7 +354,7 @@ fn is_write_only_var(body: &str, word: &str) -> bool {
         // Skip optional whitespace after the word boundary, then look for `:=`.
         // A compound assignment like `+=` is NOT a plain assignment — it reads the value too.
         let rest = &body[after_idx..];
-        let trimmed = rest.trim_start_matches(|c: char| c == ' ' || c == '\t' || c == '\r' || c == '\n');
+        let trimmed = rest.trim_start_matches([' ', '\t', '\r', '\n']);
         if !trimmed.starts_with(":=") {
             // This occurrence is a read (RHS, function arg, condition, compound assignment, etc.)
             all_lhs = false;
@@ -363,15 +366,10 @@ fn is_write_only_var(body: &str, word: &str) -> bool {
 }
 
 /// Collect variable name nodes from a var_section, recording their start positions.
-fn collect_var_name_nodes(
-    node: Node,
-    source: &[u8],
-    vars: &mut Vec<(String, tree_sitter::Point)>,
-) {
+fn collect_var_name_nodes(node: Node, source: &[u8], vars: &mut Vec<(String, tree_sitter::Point)>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "variable_declaration"
-            || child.kind() == "regular_variable_declaration"
+        if child.kind() == "variable_declaration" || child.kind() == "regular_variable_declaration"
         {
             if let Some(name_node) = child.child_by_field_name("name") {
                 if let Ok(name) = name_node.utf8_text(source) {
@@ -388,7 +386,6 @@ fn collect_var_name_nodes(
         }
     }
 }
-
 
 /// Classify a tree-sitter node kind to a semantic token type.
 /// Returns `None` for nodes that should not be highlighted or should recurse.
@@ -412,7 +409,6 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
     }
 
     match kind {
-
         // Generic keyword categories from external scanner.
         // control_keyword may appear as a structural name inside parenthesized_block
         // (e.g. `layout(DefaultLayout)`) — check structural context first.
@@ -577,9 +573,7 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         }
         // key_declaration covers: table keys, query/report dataitems, query/report columns,
         // xmlport table elements. Discriminate by the keyword child.
-        "key_declaration" => {
-            classify_key_declaration_name(node, parent, source)
-        }
+        "key_declaration" => classify_key_declaration_name(node, parent, source),
         // Enum value names
         "enum_value_declaration" => Some(token_types::ENUM_MEMBER),
         // Namespace declarations — distinct custom token from standard NAMESPACE (idx 11).
@@ -603,9 +597,7 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         }
         // Identifiers inside parenthesized blocks — classify by preceding sibling keyword.
         // Covers: pageView names, reportLayout names, xmlport element names, queryFilter names.
-        "parenthesized_block" => {
-            classify_parenthesized_block_name(node, parent, source)
-        }
+        "parenthesized_block" => classify_parenthesized_block_name(node, parent, source),
         "object_declaration" => {
             if is_object_name(node, parent) {
                 Some(token_types::NAMESPACE_DECL)
@@ -616,9 +608,7 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         // Usage sites: a `name` node appearing as a direct child of `primary_expression`
         // is a standalone identifier reference (variable, procedure call, builtin).
         // Resolve it by scanning the enclosing scope.
-        "primary_expression" if node.kind() == "name" => {
-            classify_name_in_expression(node, source)
-        }
+        "primary_expression" if node.kind() == "name" => classify_name_in_expression(node, source),
         _ => {
             if has_ancestor_kind(node, "enum_value_declaration") {
                 return Some(token_types::ENUM_MEMBER);
@@ -709,17 +699,18 @@ fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -
 
     // Look for the keyword child of the key_declaration
     let kw = {
-        let keyword_node = declaration
-            .child_by_field_name("keyword")
-            .or_else(|| {
-                // Fallback: find first keyword/property_keyword child by index
-                // to avoid tree-sitter cursor lifetime issues.
-                (0..declaration.child_count())
-                    .filter_map(|i| declaration.child(i))
-                    .find(|child| {
-                        matches!(child.kind(), "keyword" | "property_keyword" | "metadata_keyword")
-                    })
-            })?;
+        let keyword_node = declaration.child_by_field_name("keyword").or_else(|| {
+            // Fallback: find first keyword/property_keyword child by index
+            // to avoid tree-sitter cursor lifetime issues.
+            (0..declaration.child_count())
+                .filter_map(|i| declaration.child(i))
+                .find(|child| {
+                    matches!(
+                        child.kind(),
+                        "keyword" | "property_keyword" | "metadata_keyword"
+                    )
+                })
+        })?;
         keyword_node.utf8_text(source).ok()?.to_lowercase()
     };
 
@@ -949,7 +940,10 @@ fn object_has_procedure(obj_node: Node, text: &str, source: &[u8]) -> bool {
 
     for i in 0..body.child_count() {
         if let Some(child) = body.child(i) {
-            if matches!(child.kind(), "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration") {
+            if matches!(
+                child.kind(),
+                "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+            ) {
                 if let Some(name_node) = child.child_by_field_name("name") {
                     if let Some(proc_text) = name_node_text(name_node, source) {
                         if proc_text.eq_ignore_ascii_case(text) {
@@ -1066,13 +1060,10 @@ fn is_builtin_function(text: &str) -> bool {
     crate::language_data::is_builtin_function(text)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::AlParser;
-
-
 
     fn decoded_tokens(tokens: &[SemanticToken]) -> Vec<(u32, u32, u32, u32)> {
         let mut decoded = Vec::with_capacity(tokens.len());
@@ -1146,9 +1137,15 @@ mod tests {
             "Should have at least 1 string token ('Hello'), got {}",
             string_count
         );
-        let kw_control = tokens.iter().filter(|t| t.token_type == token_types::KEYWORD_CONTROL).count();
+        let kw_control = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::KEYWORD_CONTROL)
+            .count();
         assert!(kw_control > 0, "Should have KEYWORD_CONTROL tokens");
-        let kw_fn = tokens.iter().filter(|t| t.token_type == token_types::KEYWORD_FUNCTION).count();
+        let kw_fn = tokens
+            .iter()
+            .filter(|t| t.token_type == token_types::KEYWORD_FUNCTION)
+            .count();
         assert!(kw_fn > 0, "Should have KEYWORD_FUNCTION tokens");
     }
 
@@ -1256,13 +1253,19 @@ mod tests {
             .iter()
             .filter(|t| t.token_type == token_types::NUMBER)
             .count();
-        assert!(number_count > 0, "Should have number tokens (object ID 50100)");
+        assert!(
+            number_count > 0,
+            "Should have number tokens (object ID 50100)"
+        );
         // Verify control-flow and function-definition keywords emit granular types.
         let kw_control = tokens
             .iter()
             .filter(|t| t.token_type == token_types::KEYWORD_CONTROL)
             .count();
-        assert!(kw_control > 0, "Should have KEYWORD_CONTROL tokens (begin/end)");
+        assert!(
+            kw_control > 0,
+            "Should have KEYWORD_CONTROL tokens (begin/end)"
+        );
         let kw_fn = tokens
             .iter()
             .filter(|t| t.token_type == token_types::KEYWORD_FUNCTION)
@@ -1314,7 +1317,10 @@ mod tests {
             .iter()
             .filter(|t| t.token_type == token_types::LOCAL_VARIABLE)
             .count();
-        assert!(local_var_count > 0, "Should have local variable token for 'Counter'");
+        assert!(
+            local_var_count > 0,
+            "Should have local variable token for 'Counter'"
+        );
     }
 
     #[test]
@@ -1339,7 +1345,12 @@ mod tests {
         // given type. "My Table" appears as both object decl (NAMESPACE_DECL) and type ref
         // (BUILTIN_TYPE); verify the type-reference occurrence is BUILTIN_TYPE.
         assert_token_type_for_text(source, &tokens, r#""My Table""#, token_types::BUILTIN_TYPE);
-        assert_token_type_for_text(source, &tokens, r#""Another Table""#, token_types::BUILTIN_TYPE);
+        assert_token_type_for_text(
+            source,
+            &tokens,
+            r#""Another Table""#,
+            token_types::BUILTIN_TYPE,
+        );
     }
 
     #[test]
@@ -1355,7 +1366,12 @@ mod tests {
 
         // Object-level vars are GLOBAL_VARIABLE
         assert_token_type_for_text(source, &tokens, "FirstVar", token_types::GLOBAL_VARIABLE);
-        assert_token_type_for_text(source, &tokens, r#""Second Var""#, token_types::GLOBAL_VARIABLE);
+        assert_token_type_for_text(
+            source,
+            &tokens,
+            r#""Second Var""#,
+            token_types::GLOBAL_VARIABLE,
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1411,7 +1427,12 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "CustomerDataItem", token_types::QUERY_DATA_ITEM);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "CustomerDataItem",
+            token_types::QUERY_DATA_ITEM,
+        );
     }
 
     #[test]
@@ -1471,7 +1492,12 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "CustomerElem", token_types::XMLPORT_TABLE_ELEMENT);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "CustomerElem",
+            token_types::XMLPORT_TABLE_ELEMENT,
+        );
     }
 
     #[test]
@@ -1534,7 +1560,12 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "NameAttr", token_types::XMLPORT_FIELD_ATTRIBUTE);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "NameAttr",
+            token_types::XMLPORT_FIELD_ATTRIBUTE,
+        );
     }
 
     #[test]
@@ -1573,10 +1604,17 @@ codeunit 50100 Test
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
         // At minimum: must have some tokens (object number and object name)
-        assert!(!tokens.is_empty(), "Expected tokens from a namespace-prefixed codeunit file");
+        assert!(
+            !tokens.is_empty(),
+            "Expected tokens from a namespace-prefixed codeunit file"
+        );
         // Keywords are now deferred to tree-sitter highlights.scm; check for number token (50100).
         let has_number = tokens.iter().any(|t| t.token_type == token_types::NUMBER);
-        assert!(has_number, "Expected number token (object ID 50100) in namespace file, got {} tokens", tokens.len());
+        assert!(
+            has_number,
+            "Expected number token (object ID 50100) in namespace file, got {} tokens",
+            tokens.len()
+        );
     }
 
     #[test]
@@ -1591,7 +1629,12 @@ codeunit 50100 Test
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "IntegrationEvent", token_types::ATTRIBUTE_NAME);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "IntegrationEvent",
+            token_types::ATTRIBUTE_NAME,
+        );
     }
 
     #[test]
@@ -1699,9 +1742,14 @@ mod usage_site_tests {
         let mut col = 0u32;
         for t in tokens {
             line += t.delta_line;
-            col = if t.delta_line > 0 { t.delta_start } else { col + t.delta_start };
-            let text = lines.get(line as usize)
-                .and_then(|l| l.get(col as usize .. (col + t.length) as usize))
+            col = if t.delta_line > 0 {
+                t.delta_start
+            } else {
+                col + t.delta_start
+            };
+            let text = lines
+                .get(line as usize)
+                .and_then(|l| l.get(col as usize..(col + t.length) as usize))
                 .unwrap_or("?")
                 .to_string();
             decoded.push((line, col, t.length, t.token_type, text));
@@ -1711,14 +1759,16 @@ mod usage_site_tests {
 
     fn assert_usage_token(source: &str, tokens: &[SemanticToken], text: &str, expected_type: u32) {
         let entries = decoded_tokens_with_text(source, tokens);
-        let found = entries.iter().any(|(_, _, _, tt, t)| {
-            *tt == expected_type && t == text
-        });
+        let found = entries
+            .iter()
+            .any(|(_, _, _, tt, t)| *tt == expected_type && t == text);
         assert!(
             found,
             "Expected usage token {:?} with type {} but got:\n{}",
-            text, expected_type,
-            entries.iter()
+            text,
+            expected_type,
+            entries
+                .iter()
                 .filter(|(_, _, _, _, t)| t == text)
                 .map(|(l, c, _, tt, t)| format!("  line={} col={} type={} text={:?}", l, c, tt, t))
                 .collect::<Vec<_>>()
@@ -1816,8 +1866,8 @@ mod usage_site_tests {
 #[cfg(test)]
 mod write_only_var_tests {
     use super::*;
-    use crate::AlParser;
     use crate::tokens::token_modifiers;
+    use crate::AlParser;
 
     /// Decode tokens back to absolute positions, returning (line, col, modifiers, text).
     fn decode_with_text(source: &str, tokens: &[SemanticToken]) -> Vec<(u32, u32, u32, String)> {
@@ -1827,7 +1877,11 @@ mod write_only_var_tests {
         let mut col = 0u32;
         for t in tokens {
             line += t.delta_line;
-            col = if t.delta_line > 0 { t.delta_start } else { col + t.delta_start };
+            col = if t.delta_line > 0 {
+                t.delta_start
+            } else {
+                col + t.delta_start
+            };
             let text = lines
                 .get(line as usize)
                 .and_then(|l| l.get(col as usize..(col + t.length) as usize))

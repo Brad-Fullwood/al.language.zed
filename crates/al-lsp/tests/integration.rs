@@ -299,7 +299,10 @@ fn document_store_open_change_close_lifecycle() {
     );
 
     let updated = store.get_text(&uri).unwrap();
-    assert!(updated.contains("Greet"), "Should have replaced HelloWorld with Greet");
+    assert!(
+        updated.contains("Greet"),
+        "Should have replaced HelloWorld with Greet"
+    );
     assert!(!updated.contains("HelloWorld"));
     assert_eq!(store.get_version(&uri), Some(1));
 
@@ -435,7 +438,10 @@ fn symbol_index_search_and_lookup() {
 
     // Search by name
     let results = index.search("Customer", 10);
-    assert!(results.len() >= 2, "Should find Customer table and Customer Blocked enum");
+    assert!(
+        results.len() >= 2,
+        "Should find Customer table and Customer Blocked enum"
+    );
 
     // Exact name lookup
     let by_name = index.get_by_name("Customer");
@@ -505,9 +511,15 @@ fn document_symbols_from_codeunit() {
         .map(|c| c.name.as_str())
         .collect();
 
-    assert!(proc_names.contains(&"HelloWorld"), "Should contain HelloWorld");
+    assert!(
+        proc_names.contains(&"HelloWorld"),
+        "Should contain HelloWorld"
+    );
     assert!(proc_names.contains(&"Add"), "Should contain Add");
-    assert!(proc_names.contains(&"InternalHelper"), "Should contain InternalHelper");
+    assert!(
+        proc_names.contains(&"InternalHelper"),
+        "Should contain InternalHelper"
+    );
 }
 
 #[test]
@@ -554,20 +566,27 @@ fn semantic_tokens_cover_all_token_types() {
 
     assert!(!tokens.is_empty(), "Should produce semantic tokens");
 
-    // Check that we get a variety of token types
-    let has_keyword = tokens
-        .iter()
-        .any(|t| t.token_type == al_syntax::tokens::token_types::KEYWORD);
+    // Check that we get a variety of token types.
+    // Keywords are now deferred to tree-sitter highlights.scm; no KEYWORD semantic tokens.
     let has_string = tokens
         .iter()
         .any(|t| t.token_type == al_syntax::tokens::token_types::STRING);
     let has_number = tokens
         .iter()
         .any(|t| t.token_type == al_syntax::tokens::token_types::NUMBER);
+    let has_function = tokens
+        .iter()
+        .any(|t| t.token_type == al_syntax::tokens::token_types::FUNCTION);
 
-    assert!(has_keyword, "Should have keyword tokens");
-    assert!(has_string, "Should have string tokens (from 'Hello, World!')");
+    assert!(
+        has_string,
+        "Should have string tokens (from 'Hello, World!')"
+    );
     assert!(has_number, "Should have number tokens (from 50100)");
+    assert!(
+        has_function,
+        "Should have function tokens (HelloWorld procedure, Message builtin)"
+    );
 
     // Verify we get a reasonable number of distinct token types
     let mut seen_types = std::collections::HashSet::new();
@@ -689,10 +708,7 @@ fn formatting_page_idempotent() {
     let first = al_syntax::format_al(PAGE_AL, &opts);
     let second = al_syntax::format_al(&first, &opts);
 
-    assert_eq!(
-        first, second,
-        "Page formatting should be idempotent"
-    );
+    assert_eq!(first, second, "Page formatting should be idempotent");
 }
 
 #[test]
@@ -701,10 +717,7 @@ fn formatting_codeunit_idempotent() {
     let first = al_syntax::format_al(CODEUNIT_AL, &opts);
     let second = al_syntax::format_al(&first, &opts);
 
-    assert_eq!(
-        first, second,
-        "Codeunit formatting should be idempotent"
-    );
+    assert_eq!(first, second, "Codeunit formatting should be idempotent");
 }
 
 #[test]
@@ -1029,13 +1042,16 @@ fn hover_result_to_json(r: &al_core::queries::hover::HoverResult) -> serde_json:
 
 /// Helper: simulate the definition JSON produced by `dispatch_definition`.
 fn locations_to_json(locations: &[al_core::queries::Location]) -> serde_json::Value {
-    serde_json::json!(locations.iter().map(|l| serde_json::json!({
-        "uri": l.uri.as_str(),
-        "range": {
-            "start": { "line": l.range.start.line, "character": l.range.start.character },
-            "end": { "line": l.range.end.line, "character": l.range.end.character },
-        }
-    })).collect::<Vec<_>>())
+    serde_json::json!(locations
+        .iter()
+        .map(|l| serde_json::json!({
+            "uri": l.uri.as_str(),
+            "range": {
+                "start": { "line": l.range.start.line, "character": l.range.start.character },
+                "end": { "line": l.range.end.line, "character": l.range.end.character },
+            }
+        }))
+        .collect::<Vec<_>>())
 }
 
 // ---------------------------------------------------------------------------
@@ -1055,9 +1071,18 @@ fn json_schema_format_output_has_required_fields() {
         "changed": changed,
     });
 
-    assert!(json.get("formatted").is_some(), "format output must have 'formatted' field");
-    assert!(json["formatted"].is_string(), "'formatted' must be a string");
-    assert!(json.get("changed").is_some(), "format output must have 'changed' field");
+    assert!(
+        json.get("formatted").is_some(),
+        "format output must have 'formatted' field"
+    );
+    assert!(
+        json["formatted"].is_string(),
+        "'formatted' must be a string"
+    );
+    assert!(
+        json.get("changed").is_some(),
+        "format output must have 'changed' field"
+    );
     assert!(json["changed"].is_boolean(), "'changed' must be a boolean");
 }
 
@@ -1071,7 +1096,10 @@ fn json_schema_format_check_output_shape() {
 
     let json = serde_json::json!({ "changed": changed });
 
-    assert!(json.get("changed").is_some(), "format check output must have 'changed' field");
+    assert!(
+        json.get("changed").is_some(),
+        "format check output must have 'changed' field"
+    );
     assert!(json["changed"].is_boolean(), "'changed' must be a boolean");
 }
 
@@ -1084,7 +1112,10 @@ fn json_schema_format_changed_is_false_for_already_formatted_input() {
     let changed = formatted != formatted_content;
 
     let json = serde_json::json!({ "formatted": formatted, "changed": changed });
-    assert!(!json["changed"].as_bool().unwrap(), "well-formatted input should not change");
+    assert!(
+        !json["changed"].as_bool().unwrap(),
+        "well-formatted input should not change"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,7 +1128,8 @@ fn json_schema_lint_output_is_array() {
     let content = "codeunit 50100 Test\n{\n    procedure Foo()\n    begin\n    end;\n}\n";
     let result = al_core::syntax::AlParser::parse_quick(content);
     let diagnostics = al_core::syntax::lint(&result.tree, content);
-    let json_diags: Vec<serde_json::Value> = diagnostics.iter().map(lint_diag_to_json_test).collect();
+    let json_diags: Vec<serde_json::Value> =
+        diagnostics.iter().map(lint_diag_to_json_test).collect();
     let json = serde_json::json!(json_diags);
 
     assert!(json.is_array(), "lint output must be a JSON array");
@@ -1114,16 +1146,31 @@ fn json_schema_lint_diagnostic_has_required_fields() {
         let json = lint_diag_to_json_test(d);
         assert!(json.get("code").is_some(), "diagnostic must have 'code'");
         assert!(json["code"].is_string(), "'code' must be string");
-        assert!(json.get("message").is_some(), "diagnostic must have 'message'");
+        assert!(
+            json.get("message").is_some(),
+            "diagnostic must have 'message'"
+        );
         assert!(json["message"].is_string(), "'message' must be string");
-        assert!(json.get("severity").is_some(), "diagnostic must have 'severity'");
+        assert!(
+            json.get("severity").is_some(),
+            "diagnostic must have 'severity'"
+        );
         assert!(json["severity"].is_string(), "'severity' must be string");
         assert!(json.get("line").is_some(), "diagnostic must have 'line'");
         assert!(json["line"].is_number(), "'line' must be number");
-        assert!(json.get("column").is_some(), "diagnostic must have 'column'");
+        assert!(
+            json.get("column").is_some(),
+            "diagnostic must have 'column'"
+        );
         assert!(json["column"].is_number(), "'column' must be number");
-        assert!(json.get("endLine").is_some(), "diagnostic must have 'endLine'");
-        assert!(json.get("endColumn").is_some(), "diagnostic must have 'endColumn'");
+        assert!(
+            json.get("endLine").is_some(),
+            "diagnostic must have 'endLine'"
+        );
+        assert!(
+            json.get("endColumn").is_some(),
+            "diagnostic must have 'endColumn'"
+        );
     }
 }
 
@@ -1159,7 +1206,10 @@ fn json_schema_search_output_is_array() {
     let json = serde_json::json!(json_entries);
 
     assert!(json.is_array(), "search output must be a JSON array");
-    assert!(!json.as_array().unwrap().is_empty(), "search for 'Customer' should return results");
+    assert!(
+        !json.as_array().unwrap().is_empty(),
+        "search for 'Customer' should return results"
+    );
 }
 
 #[test]
@@ -1170,8 +1220,8 @@ fn json_schema_search_symbol_entry_has_required_fields() {
     assert!(!results.is_empty(), "should find Customer in test index");
 
     for entry in &results {
-        let json = serde_json::to_value(entry.as_ref())
-            .expect("SymbolEntry must serialize to JSON");
+        let json =
+            serde_json::to_value(entry.as_ref()).expect("SymbolEntry must serialize to JSON");
         // Basic structural check: must be an object
         assert!(json.is_object(), "each search result must be a JSON object");
     }
@@ -1187,7 +1237,10 @@ fn json_schema_search_empty_query_returns_all() {
         .filter_map(|e| serde_json::to_value(e.as_ref()).ok())
         .collect();
     // Should include all 3 entries from build_test_index
-    assert!(json_entries.len() >= 3, "empty search should return all indexed symbols");
+    assert!(
+        json_entries.len() >= 3,
+        "empty search should return all indexed symbols"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1206,14 +1259,23 @@ fn json_schema_hover_result_has_contents_and_range() {
     ws.documents.open(uri.clone(), SIMPLE_CODEUNIT.to_string());
 
     // Hover at (0, 0) — on "codeunit" keyword. May return None.
-    let pos = al_core::queries::Position { line: 0, character: 0 };
+    let pos = al_core::queries::Position {
+        line: 0,
+        character: 0,
+    };
     let result = al_core::queries::hover::hover(&ws, &uri, pos);
 
     if let Some(r) = result {
         let json = hover_result_to_json(&r);
-        assert!(json.get("contents").is_some(), "hover result must have 'contents'");
+        assert!(
+            json.get("contents").is_some(),
+            "hover result must have 'contents'"
+        );
         assert!(json["contents"].is_string(), "'contents' must be a string");
-        assert!(json.get("range").is_some(), "hover result must have 'range' key (may be null)");
+        assert!(
+            json.get("range").is_some(),
+            "hover result must have 'range' key (may be null)"
+        );
         // If range is not null, it must have start/end
         if !json["range"].is_null() {
             let rng = &json["range"];
@@ -1233,8 +1295,14 @@ fn json_schema_hover_result_serializes_to_object() {
     let result = HoverResult {
         contents: "```al\nprocedure HelloWorld()\n```".to_string(),
         range: Some(Range {
-            start: Position { line: 2, character: 4 },
-            end: Position { line: 2, character: 14 },
+            start: Position {
+                line: 2,
+                character: 4,
+            },
+            end: Position {
+                line: 2,
+                character: 14,
+            },
         }),
     };
 
@@ -1263,15 +1331,27 @@ fn json_schema_definition_output_is_array() {
         Location {
             uri: Url::parse("file:///test/MyTable.al").unwrap(),
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 20 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 20,
+                },
             },
         },
         Location {
             uri: Url::parse("file:///test/MyExt.al").unwrap(),
             range: Range {
-                start: Position { line: 5, character: 4 },
-                end: Position { line: 5, character: 14 },
+                start: Position {
+                    line: 5,
+                    character: 4,
+                },
+                end: Position {
+                    line: 5,
+                    character: 14,
+                },
             },
         },
     ];
@@ -1286,10 +1366,19 @@ fn json_schema_definition_output_is_array() {
     assert!(loc0.get("uri").is_some(), "location must have 'uri'");
     assert!(loc0["uri"].is_string(), "'uri' must be string");
     assert!(loc0.get("range").is_some(), "location must have 'range'");
-    assert!(loc0["range"].get("start").is_some(), "range must have 'start'");
+    assert!(
+        loc0["range"].get("start").is_some(),
+        "range must have 'start'"
+    );
     assert!(loc0["range"].get("end").is_some(), "range must have 'end'");
-    assert!(loc0["range"]["start"].get("line").is_some(), "start must have 'line'");
-    assert!(loc0["range"]["start"].get("character").is_some(), "start must have 'character'");
+    assert!(
+        loc0["range"]["start"].get("line").is_some(),
+        "start must have 'line'"
+    );
+    assert!(
+        loc0["range"]["start"].get("character").is_some(),
+        "start must have 'character'"
+    );
 }
 
 #[test]
@@ -1301,8 +1390,14 @@ fn json_schema_definition_location_line_numbers_match() {
     let locations = vec![Location {
         uri: Url::parse("file:///test/Proc.al").unwrap(),
         range: Range {
-            start: Position { line: 10, character: 4 },
-            end: Position { line: 10, character: 20 },
+            start: Position {
+                line: 10,
+                character: 4,
+            },
+            end: Position {
+                line: 10,
+                character: 20,
+            },
         },
     }];
 
@@ -1322,4 +1417,118 @@ fn json_schema_definition_empty_locations_serializes_to_empty_array() {
     let json = locations_to_json(&locations);
     assert!(json.is_array(), "empty locations must be a JSON array");
     assert_eq!(json.as_array().unwrap().len(), 0, "should be empty array");
+}
+
+// ---------------------------------------------------------------------------
+// suggest_event integration pipeline
+// ---------------------------------------------------------------------------
+
+#[test]
+fn suggest_event_integration_procedure_query() {
+    let ws = al_core::workspace::Workspace::new();
+
+    // Add a codeunit with a regular method and an integration event
+    ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+        kind: al_symbols::ObjectKind::Codeunit,
+        id: 80,
+        name: "Sales-Post".to_string(),
+        methods: vec![
+            al_symbols::MethodSymbol {
+                name: "PostSalesDoc".to_string(),
+                parameters: vec![al_symbols::ParameterSymbol {
+                    name: "SalesHeader".to_string(),
+                    type_name: "Record \"Sales Header\"".to_string(),
+                    is_var: true,
+                }],
+                return_type: None,
+                attributes: vec![],
+                is_local: false,
+            },
+            al_symbols::MethodSymbol {
+                name: "OnAfterPostSalesDoc".to_string(),
+                parameters: vec![al_symbols::ParameterSymbol {
+                    name: "SalesHeader".to_string(),
+                    type_name: "Record \"Sales Header\"".to_string(),
+                    is_var: true,
+                }],
+                return_type: None,
+                attributes: vec![al_symbols::AttributeSymbol {
+                    name: "IntegrationEvent".to_string(),
+                    arguments: vec!["false".into(), "false".into()],
+                }],
+                is_local: false,
+            },
+        ],
+        ..Default::default()
+    }]);
+
+    use al_core::queries::suggest_event::*;
+
+    // Test 1: Procedure query finds published events
+    let result = suggest_event(
+        &ws,
+        &EventQuery {
+            source: QuerySource::Procedure {
+                object: "Sales-Post".to_string(),
+                procedure: None,
+            },
+            filter_table: None,
+            filter_field: None,
+        },
+    );
+    assert!(
+        !result.integration_points.is_empty(),
+        "Should find OnAfterPostSalesDoc"
+    );
+    assert!(result
+        .integration_points
+        .iter()
+        .any(|ip| ip.event == "OnAfterPostSalesDoc"));
+
+    // Test 2: Table query finds var params
+    let result = suggest_event(
+        &ws,
+        &EventQuery {
+            source: QuerySource::Table {
+                table: "Sales Header".to_string(),
+            },
+            filter_table: None,
+            filter_field: None,
+        },
+    );
+    assert!(result.integration_points.iter().any(|ip| ip
+        .params
+        .iter()
+        .any(|p| p.is_var && p.type_name.contains("Sales Header"))));
+
+    // Test 3: Combined query (procedure + table filter)
+    let result = suggest_event(
+        &ws,
+        &EventQuery {
+            source: QuerySource::Procedure {
+                object: "Sales-Post".to_string(),
+                procedure: None,
+            },
+            filter_table: Some("Sales Header".to_string()),
+            filter_field: None,
+        },
+    );
+    assert!(result.integration_points.iter().all(|ip| ip
+        .params
+        .iter()
+        .any(|p| p.is_var && p.type_name.to_lowercase().contains("sales header"))));
+
+    // Test 4: Unknown object returns empty
+    let result = suggest_event(
+        &ws,
+        &EventQuery {
+            source: QuerySource::Procedure {
+                object: "NonExistent".to_string(),
+                procedure: None,
+            },
+            filter_table: None,
+            filter_field: None,
+        },
+    );
+    assert!(result.integration_points.is_empty());
 }

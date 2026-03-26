@@ -48,7 +48,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     // identifier (e.g., `Value: Integer` where `Value` is both a keyword and a variable name).
     // In that case, don't skip — let the hover resolve it as an identifier.
     if node.kind().ends_with("_keyword") || node.kind() == "keyword" || node.kind() == "operator" {
-        let in_name_context = node.parent().map_or(false, |p| p.kind() == "name_or_keyword");
+        let in_name_context = node.parent().is_some_and(|p| p.kind() == "name_or_keyword");
         if !in_name_context {
             return None;
         }
@@ -62,22 +62,35 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     // 0c. Field declaration name — show field number and type when cursor is on a field name
     //     inside a `field_declaration` node (e.g., field(1; "No."; Code[20]))
     if let Some(content) = hover_field_declaration(node, source) {
-        return Some(HoverResult { contents: content, range: Some(node_range) });
+        return Some(HoverResult {
+            contents: content,
+            range: Some(node_range),
+        });
     }
 
     // 0d. Enum value declaration — show value info when cursor is on a value name
     //     inside a value(N; Name) block in an enum definition
     if let Some(content) = hover_enum_value_declaration(node, source) {
-        return Some(HoverResult { contents: content, range: Some(node_range) });
+        return Some(HoverResult {
+            contents: content,
+            range: Some(node_range),
+        });
     }
 
     // Access path resolution (e.g., Rec.Name, Enum::Value)
     if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos) {
         tracing::debug!(receiver = %access.receiver, member = %access.member, "hover: access path found");
-        if let Some(receiver) =
-            resolution::resolve_expression_type(workspace, uri, &text, &tree, &access.receiver, lsp_pos)
-        {
-            if let Some(member) = resolution::resolve_member(workspace, uri, &receiver, &access.member) {
+        if let Some(receiver) = resolution::resolve_expression_type(
+            workspace,
+            uri,
+            &text,
+            &tree,
+            &access.receiver,
+            lsp_pos,
+        ) {
+            if let Some(member) =
+                resolution::resolve_member(workspace, uri, &receiver, &access.member)
+            {
                 let value = match member.kind {
                     ResolvedMemberKind::Variable { scope, .. } => {
                         let type_info = member.type_info.as_ref()?;
@@ -91,7 +104,11 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                             scope
                         )
                     }
-                    ResolvedMemberKind::Procedure { signature, documentation, .. } => {
+                    ResolvedMemberKind::Procedure {
+                        signature,
+                        documentation,
+                        ..
+                    } => {
                         let mut content = format!("```al\nprocedure {}\n```", signature);
                         if let Some(doc) = documentation {
                             content.push_str("\n\n");
@@ -99,13 +116,28 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                         }
                         content
                     }
-                    ResolvedMemberKind::BuiltinMethod { ref signature, ref documentation, .. } => {
-                        let overloads = resolution::resolve_builtin_overloads(workspace, &receiver, &access.member);
+                    ResolvedMemberKind::BuiltinMethod {
+                        ref signature,
+                        ref documentation,
+                        ..
+                    } => {
+                        let overloads = resolution::resolve_builtin_overloads(
+                            workspace,
+                            &receiver,
+                            &access.member,
+                        );
                         if overloads.len() > 1 {
                             let mut content = String::new();
                             for (i, overload) in overloads.iter().enumerate() {
-                                if let ResolvedMemberKind::BuiltinMethod { signature: ref sig, documentation: ref doc, .. } = overload.kind {
-                                    if i > 0 { content.push_str("\n\n---\n\n"); }
+                                if let ResolvedMemberKind::BuiltinMethod {
+                                    signature: ref sig,
+                                    documentation: ref doc,
+                                    ..
+                                } = overload.kind
+                                {
+                                    if i > 0 {
+                                        content.push_str("\n\n---\n\n");
+                                    }
                                     content.push_str(&format!("```al\n{}\n```", sig));
                                     if let Some(d) = doc {
                                         content.push_str("\n\n");
@@ -113,7 +145,11 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                                     }
                                 }
                             }
-                            content.push_str(&format!("\n\n*({} overload{})*", overloads.len(), if overloads.len() == 1 { "" } else { "s" }));
+                            content.push_str(&format!(
+                                "\n\n*({} overload{})*",
+                                overloads.len(),
+                                if overloads.len() == 1 { "" } else { "s" }
+                            ));
                             content
                         } else {
                             let mut content = format!("```al\n{}\n```", signature);
@@ -144,7 +180,10 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                         )
                     }
                 };
-                return Some(HoverResult { contents: value, range: Some(node_range) });
+                return Some(HoverResult {
+                    contents: value,
+                    range: Some(node_range),
+                });
             }
         }
     }
@@ -153,16 +192,19 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     if let Some(proc_info) = al_syntax::find_procedure_at(&tree, &text, lsp_pos) {
         if proc_info.name.eq_ignore_ascii_case(clean_name) {
             let content = format_procedure_hover(&proc_info);
-            return Some(HoverResult { contents: content, range: Some(node_range) });
+            return Some(HoverResult {
+                contents: content,
+                range: Some(node_range),
+            });
         }
 
         for param in &proc_info.parameters {
             if param.name.eq_ignore_ascii_case(clean_name) {
-                let content = format!(
-                    "```al\n{}\n```\n*(parameter)*",
-                    param
-                );
-                return Some(HoverResult { contents: content, range: Some(node_range) });
+                let content = format!("```al\n{}\n```\n*(parameter)*", param);
+                return Some(HoverResult {
+                    contents: content,
+                    range: Some(node_range),
+                });
             }
         }
     }
@@ -174,11 +216,19 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             if let Some(children) = &sym.children {
                 for child in children {
                     if child.name.eq_ignore_ascii_case(clean_name)
-                        && matches!(child.kind, tower_lsp::lsp_types::SymbolKind::FUNCTION | tower_lsp::lsp_types::SymbolKind::METHOD | tower_lsp::lsp_types::SymbolKind::EVENT)
+                        && matches!(
+                            child.kind,
+                            tower_lsp::lsp_types::SymbolKind::FUNCTION
+                                | tower_lsp::lsp_types::SymbolKind::METHOD
+                                | tower_lsp::lsp_types::SymbolKind::EVENT
+                        )
                     {
                         let detail = child.detail.as_deref().unwrap_or("()");
                         let content = format!("```al\nprocedure {}{}\n```", child.name, detail);
-                        return Some(HoverResult { contents: content, range: Some(node_range) });
+                        return Some(HoverResult {
+                            contents: content,
+                            range: Some(node_range),
+                        });
                     }
                 }
             }
@@ -191,14 +241,19 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         if let Some(decl) = resolver.resolve_type(clean_name, lsp_pos) {
             let label = super::scope_label(&decl.scope);
             let var_prefix = if decl.is_var { "var " } else { "" };
-            let subtype = decl.type_subtype.as_ref()
+            let subtype = decl
+                .type_subtype
+                .as_ref()
                 .map(|s| format!(" \"{}\"", s))
                 .unwrap_or_default();
             let content = format!(
                 "```al\n{}{}: {}{}\n```\n*({})*",
                 var_prefix, decl.name, decl.type_name, subtype, label
             );
-            return Some(HoverResult { contents: content, range: Some(node_range) });
+            return Some(HoverResult {
+                contents: content,
+                range: Some(node_range),
+            });
         }
     }
 
@@ -207,18 +262,25 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         let entries = workspace.symbols.get_by_name(clean_name);
         if !entries.is_empty() {
             // Prefer the first non-extension entry; fall back to the first entry.
-            let entry = entries.iter()
+            let entry = entries
+                .iter()
                 .find(|e| !e.kind.is_extension())
                 .or_else(|| entries.first())
                 .unwrap(); // safe: entries is non-empty
             let content = format_symbol_hover(entry);
-            return Some(HoverResult { contents: content, range: Some(node_range) });
+            return Some(HoverResult {
+                contents: content,
+                range: Some(node_range),
+            });
         }
     }
 
     // 4. Check built-in types
     {
-        let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+        let cache = workspace
+            .semantic_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
         if let Some(bt) = cache.get_type(clean_name) {
             let methods_list: Vec<String> = bt
                 .methods
@@ -232,7 +294,10 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                 format!("\n\n**Methods:**\n{}", methods_list.join("\n"))
             };
             let content = format!("```al\n{}\n```\n*(built-in type)*{}", bt.name, methods_str);
-            return Some(HoverResult { contents: content, range: Some(node_range) });
+            return Some(HoverResult {
+                contents: content,
+                range: Some(node_range),
+            });
         }
 
         // Search all types for a method with this name via SemanticCache (O(n) over types,
@@ -242,7 +307,8 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         let method_hits = cache.find_methods_by_name(clean_name);
         if !method_hits.is_empty() {
             // Group by type name so we can emit a single hover per type with all overloads
-            let mut by_type: std::collections::HashMap<&str, Vec<&al_semantic::BuiltinMethod>> = std::collections::HashMap::new();
+            let mut by_type: std::collections::HashMap<&str, Vec<&al_semantic::BuiltinMethod>> =
+                std::collections::HashMap::new();
             for (type_name, method) in &method_hits {
                 by_type.entry(type_name).or_default().push(method);
             }
@@ -250,7 +316,9 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             if let Some((&type_name, overloads)) = by_type.iter().next() {
                 let mut content = String::new();
                 for (i, method) in overloads.iter().enumerate() {
-                    if i > 0 { content.push_str("\n\n---\n\n"); }
+                    if i > 0 {
+                        content.push_str("\n\n---\n\n");
+                    }
                     let sig = format_builtin_method(method);
                     content.push_str(&format!("```al\n{}\n```", sig));
                     if !method.documentation.is_empty() {
@@ -259,11 +327,18 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                     }
                 }
                 if overloads.len() > 1 {
-                    content.push_str(&format!("\n\n*({} overloads on {})*", overloads.len(), type_name));
+                    content.push_str(&format!(
+                        "\n\n*({} overloads on {})*",
+                        overloads.len(),
+                        type_name
+                    ));
                 } else {
                     content.push_str(&format!("\n\n*({}.{})*", type_name, clean_name));
                 }
-                return Some(HoverResult { contents: content, range: Some(node_range) });
+                return Some(HoverResult {
+                    contents: content,
+                    range: Some(node_range),
+                });
             }
         }
     }
@@ -279,7 +354,10 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                 info.id.map_or(String::new(), |id| id.to_string()),
                 info.name
             );
-            return Some(HoverResult { contents: content, range: Some(node_range) });
+            return Some(HoverResult {
+                contents: content,
+                range: Some(node_range),
+            });
         }
     }
 
@@ -287,12 +365,18 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     // Must run BEFORE enum value lookup because some builtin names (e.g. "Message") also
     // appear as enum values in BC packages.
     if let Some(content) = hover_global_builtin(clean_name) {
-        return Some(HoverResult { contents: content, range: Some(node_range) });
+        return Some(HoverResult {
+            contents: content,
+            range: Some(node_range),
+        });
     }
 
     // 7. Enum value lookup — search symbol index for any enum that has a value named clean_name
     if let Some(content) = hover_enum_value(workspace, clean_name) {
-        return Some(HoverResult { contents: content, range: Some(node_range) });
+        return Some(HoverResult {
+            contents: content,
+            range: Some(node_range),
+        });
     }
 
     None
@@ -302,7 +386,11 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
 ///
 /// This is the single code path for all entry points (LSP and daemon).
 /// SemanticBridge already enforces a 30s internal timeout — no outer wrapper needed.
-pub async fn hover_full(workspace: &Workspace, uri: &Url, position: Position) -> Option<HoverResult> {
+pub async fn hover_full(
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Option<HoverResult> {
     if let Some(result) = hover(workspace, uri, position) {
         return Some(result);
     }
@@ -319,40 +407,54 @@ pub async fn hover_full(workspace: &Workspace, uri: &Url, position: Position) ->
             return None;
         }
     };
-    let mut contents = format!("```al\n{}\n```\n*({} — CodeAnalysis)*", info.name, info.kind);
+    let mut contents = format!(
+        "```al\n{}\n```\n*({} — CodeAnalysis)*",
+        info.name, info.kind
+    );
     if let Some(doc) = &info.documentation {
         contents.push_str("\n\n");
         contents.push_str(doc);
     }
-    Some(HoverResult { contents, range: None })
+    Some(HoverResult {
+        contents,
+        range: None,
+    })
 }
 
 fn format_procedure_hover(proc: &al_syntax::ProcedureInfo) -> String {
     let local = if proc.is_local { "local " } else { "" };
-    let params: Vec<String> = proc
-        .parameters
-        .iter()
-        .map(|p| p.to_string())
-        .collect();
+    let params: Vec<String> = proc.parameters.iter().map(|p| p.to_string()).collect();
     let params_str = params.join("; ");
     let return_str = proc
         .return_type
         .as_ref()
         .map(|r| format!(": {}", r))
         .unwrap_or_default();
-    format!("```al\n{}procedure {}({}){}\n```", local, proc.name, params_str, return_str)
+    format!(
+        "```al\n{}procedure {}({}){}\n```",
+        local, proc.name, params_str, return_str
+    )
 }
 
 fn format_symbol_hover(entry: &al_symbols::SymbolEntry) -> String {
     let mut lines = Vec::new();
-    let id_str = if entry.id != 0 { format!(" {}", entry.id) } else { String::new() };
-    lines.push(format!("```al\n{}{} \"{}\"\n```", entry.kind, id_str, entry.name));
+    let id_str = if entry.id != 0 {
+        format!(" {}", entry.id)
+    } else {
+        String::new()
+    };
+    lines.push(format!(
+        "```al\n{}{} \"{}\"\n```",
+        entry.kind, id_str, entry.name
+    ));
     lines.push(format!("*({} package)*", entry.package));
     if !entry.fields.is_empty() {
         lines.push(format!("\n**Fields:** {}", entry.fields.len()));
     }
     if !entry.methods.is_empty() {
-        let method_names: Vec<&str> = entry.methods.iter()
+        let method_names: Vec<&str> = entry
+            .methods
+            .iter()
             .filter(|m| !m.is_local)
             .take(8)
             .map(|m| m.name.as_str())
@@ -362,7 +464,12 @@ fn format_symbol_hover(entry: &al_symbols::SymbolEntry) -> String {
         }
     }
     if !entry.enum_values.is_empty() {
-        let values: Vec<&str> = entry.enum_values.iter().take(10).map(|v| v.name.as_str()).collect();
+        let values: Vec<&str> = entry
+            .enum_values
+            .iter()
+            .take(10)
+            .map(|v| v.name.as_str())
+            .collect();
         lines.push(format!("\n**Values:** {}", values.join(", ")));
     }
     lines.join("\n")
@@ -387,10 +494,12 @@ fn hover_enum_value_declaration(node: tree_sitter::Node<'_>, source: &[u8]) -> O
     };
 
     // Extract id and name from the enum_value_declaration
-    let ordinal = value_decl.child_by_field_name("id")
+    let ordinal = value_decl
+        .child_by_field_name("id")
         .and_then(|n| n.utf8_text(source).ok())
         .unwrap_or("?");
-    let name = value_decl.child_by_field_name("name")
+    let name = value_decl
+        .child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
         .unwrap_or("?")
         .trim_matches('"');
@@ -432,7 +541,10 @@ fn hover_field_declaration(node: tree_sitter::Node<'_>, source: &[u8]) -> Option
                 break current;
             }
             current = current.parent()?;
-            if matches!(current.kind(), "object_declaration" | "object_body" | "ERROR") {
+            if matches!(
+                current.kind(),
+                "object_declaration" | "object_body" | "ERROR"
+            ) {
                 return None;
             }
         }
@@ -466,7 +578,11 @@ fn hover_field_declaration(node: tree_sitter::Node<'_>, source: &[u8]) -> Option
 }
 
 /// Check if the node is the name field of an `attribute` node and return hover text.
-fn hover_attribute(node: tree_sitter::Node<'_>, clean_name: &str, node_range: &Range) -> Option<HoverResult> {
+fn hover_attribute(
+    node: tree_sitter::Node<'_>,
+    clean_name: &str,
+    node_range: &Range,
+) -> Option<HoverResult> {
     // The attribute grammar: attribute -> '[' identifier attribute_argument_list? ']'
     // The cursor lands on an identifier whose parent is the `attribute` node.
     let parent = node.parent()?;
@@ -481,7 +597,10 @@ fn hover_attribute(node: tree_sitter::Node<'_>, clean_name: &str, node_range: &R
 
     let description = attribute_description(clean_name);
     let content = format!("```al\n[{}]\n```\n\n{}", clean_name, description);
-    Some(HoverResult { contents: content, range: Some(*node_range) })
+    Some(HoverResult {
+        contents: content,
+        range: Some(*node_range),
+    })
 }
 
 /// Return a description for a known AL attribute, or a generic description.
@@ -522,10 +641,7 @@ fn hover_enum_value(workspace: &Workspace, clean_name: &str) -> Option<String> {
             if value.name.eq_ignore_ascii_case(&lower) {
                 return Some(format!(
                     "```al\n{}\n```\n*(enum value of {} \"{}\", ordinal {})*",
-                    value.name,
-                    entry.kind,
-                    entry.name,
-                    value.ordinal
+                    value.name, entry.kind, entry.name, value.ordinal
                 ));
             }
         }
@@ -557,7 +673,8 @@ mod tests {
         let proc = ProcedureInfo {
             name: "DoSomething".to_string(),
             range: tree_sitter::Range {
-                start_byte: 0, end_byte: 0,
+                start_byte: 0,
+                end_byte: 0,
                 start_point: tree_sitter::Point { row: 0, column: 0 },
                 end_point: tree_sitter::Point { row: 0, column: 0 },
             },
@@ -575,13 +692,22 @@ mod tests {
         let proc = ProcedureInfo {
             name: "Calculate".to_string(),
             range: tree_sitter::Range {
-                start_byte: 0, end_byte: 0,
+                start_byte: 0,
+                end_byte: 0,
                 start_point: tree_sitter::Point { row: 0, column: 0 },
                 end_point: tree_sitter::Point { row: 0, column: 0 },
             },
             parameters: vec![
-                al_syntax::ParameterInfo { name: "Input".to_string(), type_name: "Integer".to_string(), is_var: false },
-                al_syntax::ParameterInfo { name: "Result".to_string(), type_name: "Decimal".to_string(), is_var: true },
+                al_syntax::ParameterInfo {
+                    name: "Input".to_string(),
+                    type_name: "Integer".to_string(),
+                    is_var: false,
+                },
+                al_syntax::ParameterInfo {
+                    name: "Result".to_string(),
+                    type_name: "Decimal".to_string(),
+                    is_var: true,
+                },
             ],
             return_type: Some("Boolean".to_string()),
             is_local: true,
@@ -611,7 +737,10 @@ mod tests {
                 is_local: false,
             }],
             fields: vec![al_symbols::FieldSymbol {
-                id: 1, name: "No.".to_string(), type_name: "Code".to_string(), properties: vec![],
+                id: 1,
+                name: "No.".to_string(),
+                type_name: "Code".to_string(),
+                properties: vec![],
             }],
             controls: vec![],
             enum_values: vec![],
@@ -633,8 +762,16 @@ mod tests {
         let method = al_semantic::BuiltinMethod {
             name: "CopyStr".to_string(),
             parameters: vec![
-                al_semantic::MethodParameter { name: "String".to_string(), type_name: "Text".to_string(), is_var: false },
-                al_semantic::MethodParameter { name: "Position".to_string(), type_name: "Integer".to_string(), is_var: false },
+                al_semantic::MethodParameter {
+                    name: "String".to_string(),
+                    type_name: "Text".to_string(),
+                    is_var: false,
+                },
+                al_semantic::MethodParameter {
+                    name: "Position".to_string(),
+                    type_name: "Integer".to_string(),
+                    is_var: false,
+                },
             ],
             return_type: Some("Text".to_string()),
             documentation: "Copies a substring.".to_string(),
@@ -649,20 +786,30 @@ mod tests {
     fn hover_exit_keyword_returns_description() {
         let ws = crate::workspace::Workspace::new();
         let uri = url::Url::parse("file:///test/src/Test.al").unwrap();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+        ws.documents.open(
+            uri.clone(),
+            r#"codeunit 50100 "Test"
 {
     procedure Foo(): Boolean
     begin
         exit(true);
     end;
-}"#.to_string());
+}"#
+            .to_string(),
+        );
         // Position on "exit" — line 4, character 8
-        let pos = super::super::Position { line: 4, character: 8 };
+        let pos = super::super::Position {
+            line: 4,
+            character: 8,
+        };
         let result = hover(&ws, &uri, pos);
         assert!(result.is_some(), "exit keyword should return hover");
         let content = result.unwrap().contents;
         assert!(content.contains("exit"), "content should mention exit");
-        assert!(content.contains("Exits"), "content should describe exit semantics");
+        assert!(
+            content.contains("Exits"),
+            "content should describe exit semantics"
+        );
     }
 
     // --- attribute hover ---
@@ -671,39 +818,65 @@ mod tests {
     fn hover_integration_event_attribute_returns_description() {
         let ws = crate::workspace::Workspace::new();
         let uri = url::Url::parse("file:///test/src/Test.al").unwrap();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+        ws.documents.open(
+            uri.clone(),
+            r#"codeunit 50100 "Test"
 {
     [IntegrationEvent(false, false)]
     procedure OnSomething()
     begin
     end;
-}"#.to_string());
+}"#
+            .to_string(),
+        );
         // Position on "IntegrationEvent" — line 2, character 5
-        let pos = super::super::Position { line: 2, character: 5 };
+        let pos = super::super::Position {
+            line: 2,
+            character: 5,
+        };
         let result = hover(&ws, &uri, pos);
-        assert!(result.is_some(), "IntegrationEvent attribute should return hover");
+        assert!(
+            result.is_some(),
+            "IntegrationEvent attribute should return hover"
+        );
         let content = result.unwrap().contents;
-        assert!(content.contains("IntegrationEvent"), "content should contain attribute name");
-        assert!(content.contains("integration event"), "content should describe the attribute");
+        assert!(
+            content.contains("IntegrationEvent"),
+            "content should contain attribute name"
+        );
+        assert!(
+            content.contains("integration event"),
+            "content should describe the attribute"
+        );
     }
 
     #[test]
     fn hover_test_attribute_returns_description() {
         let ws = crate::workspace::Workspace::new();
         let uri = url::Url::parse("file:///test/src/Test.al").unwrap();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+        ws.documents.open(
+            uri.clone(),
+            r#"codeunit 50100 "Test"
 {
     [Test]
     procedure MyTest()
     begin
     end;
-}"#.to_string());
+}"#
+            .to_string(),
+        );
         // Position on "Test" inside the attribute — line 2, character 5
-        let pos = super::super::Position { line: 2, character: 5 };
+        let pos = super::super::Position {
+            line: 2,
+            character: 5,
+        };
         let result = hover(&ws, &uri, pos);
         assert!(result.is_some(), "Test attribute should return hover");
         let content = result.unwrap().contents;
-        assert!(content.contains("[Test]"), "content should show attribute syntax");
+        assert!(
+            content.contains("[Test]"),
+            "content should show attribute syntax"
+        );
         assert!(content.contains("test"), "content should mention testing");
     }
 
@@ -723,8 +896,13 @@ mod tests {
             extends: None,
             implements: vec![],
             namespace: String::new(),
-            methods: vec![], fields: vec![], controls: vec![],
-            enum_values: vec![], keys: vec![], properties: vec![], variables: vec![],
+            methods: vec![],
+            fields: vec![],
+            controls: vec![],
+            enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         let ext = al_symbols::SymbolEntry {
             kind: al_symbols::ObjectKind::TableExtension,
@@ -734,26 +912,41 @@ mod tests {
             extends: Some("Customer".to_string()),
             implements: vec![],
             namespace: String::new(),
-            methods: vec![], fields: vec![], controls: vec![],
-            enum_values: vec![], keys: vec![], properties: vec![], variables: vec![],
+            methods: vec![],
+            fields: vec![],
+            controls: vec![],
+            enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         // Insert extension first so it would be picked up by find_by_name's first-entry logic
         ws.symbols.add_entries(&[ext, base]);
 
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+        ws.documents.open(
+            uri.clone(),
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     var
         C: Record "Customer";
     begin
     end;
-}"#.to_string());
+}"#
+            .to_string(),
+        );
         // Position on "Customer" — line 4, character 24
-        let pos = super::super::Position { line: 4, character: 24 };
+        let pos = super::super::Position {
+            line: 4,
+            character: 24,
+        };
         let result = hover(&ws, &uri, pos);
         assert!(result.is_some(), "Customer should return hover");
         let content = result.unwrap().contents;
-        assert!(content.contains("Base Application"), "should prefer base object from Base Application, not the extension");
+        assert!(
+            content.contains("Base Application"),
+            "should prefer base object from Base Application, not the extension"
+        );
     }
 
     // --- global built-in functions ---
@@ -762,22 +955,34 @@ mod tests {
     fn hover_message_builtin_returns_description() {
         let ws = crate::workspace::Workspace::new();
         let uri = url::Url::parse("file:///test/src/Test.al").unwrap();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+        ws.documents.open(
+            uri.clone(),
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     begin
         Message('Hello');
     end;
-}"#.to_string());
+}"#
+            .to_string(),
+        );
         // Position on "Message" — line 4, character 8
-        let pos = super::super::Position { line: 4, character: 8 };
+        let pos = super::super::Position {
+            line: 4,
+            character: 8,
+        };
         let result = hover(&ws, &uri, pos);
         assert!(result.is_some(), "Message should return hover");
         let content = result.unwrap().contents;
-        assert!(content.contains("Message"), "content should contain function name");
+        assert!(
+            content.contains("Message"),
+            "content should contain function name"
+        );
         // Either from semantic cache (when loaded) or from global builtin fallback
         assert!(
-            content.contains("dialog") || content.contains("message") || content.contains("Message"),
+            content.contains("dialog")
+                || content.contains("message")
+                || content.contains("Message"),
             "content should describe Message"
         );
     }
@@ -786,19 +991,29 @@ mod tests {
     fn hover_error_builtin_returns_description() {
         let ws = crate::workspace::Workspace::new();
         let uri = url::Url::parse("file:///test/src/Test.al").unwrap();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+        ws.documents.open(
+            uri.clone(),
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     begin
         Error('Oops');
     end;
-}"#.to_string());
+}"#
+            .to_string(),
+        );
         // Position on "Error" — line 4, character 8
-        let pos = super::super::Position { line: 4, character: 8 };
+        let pos = super::super::Position {
+            line: 4,
+            character: 8,
+        };
         let result = hover(&ws, &uri, pos);
         assert!(result.is_some(), "Error should return hover");
         let content = result.unwrap().contents;
-        assert!(content.contains("Error"), "content should contain function name");
+        assert!(
+            content.contains("Error"),
+            "content should contain function name"
+        );
     }
 
     // --- enum value lookup ---
@@ -817,16 +1032,28 @@ mod tests {
             extends: None,
             implements: vec![],
             namespace: String::new(),
-            methods: vec![], fields: vec![], controls: vec![],
+            methods: vec![],
+            fields: vec![],
+            controls: vec![],
             enum_values: vec![
-                al_symbols::EnumValueSymbol { ordinal: 0, name: "Open".to_string() },
-                al_symbols::EnumValueSymbol { ordinal: 1, name: "Released".to_string() },
+                al_symbols::EnumValueSymbol {
+                    ordinal: 0,
+                    name: "Open".to_string(),
+                },
+                al_symbols::EnumValueSymbol {
+                    ordinal: 1,
+                    name: "Released".to_string(),
+                },
             ],
-            keys: vec![], properties: vec![], variables: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
         };
         ws.symbols.add_entries(&[enum_entry]);
 
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+        ws.documents.open(
+            uri.clone(),
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     var
@@ -834,7 +1061,9 @@ mod tests {
     begin
         Status := Status::Open;
     end;
-}"#.to_string());
+}"#
+            .to_string(),
+        );
         // Position on the standalone "Open" part — line 6, character 25
         // The access path resolver handles Enum::Value — this tests direct enum value hover
         // via the enum value lookup path (step 6)
@@ -843,8 +1072,14 @@ mod tests {
         let result = hover_enum_value(&ws, "Open");
         assert!(result.is_some(), "Open should be found as enum value");
         let content = result.unwrap();
-        assert!(content.contains("Open"), "content should contain the value name");
-        assert!(content.contains("Test Status"), "content should mention the enum");
+        assert!(
+            content.contains("Open"),
+            "content should contain the value name"
+        );
+        assert!(
+            content.contains("Test Status"),
+            "content should mention the enum"
+        );
         assert!(content.contains("ordinal"), "content should show ordinal");
     }
 
@@ -862,8 +1097,14 @@ mod tests {
     #[test]
     fn attribute_description_unknown_returns_generic() {
         let desc = attribute_description("SomeUnknownAttribute");
-        assert!(!desc.is_empty(), "unknown attribute should return non-empty description");
-        assert!(desc.contains("attribute"), "generic description should mention attribute");
+        assert!(
+            !desc.is_empty(),
+            "unknown attribute should return non-empty description"
+        );
+        assert!(
+            desc.contains("attribute"),
+            "generic description should mention attribute"
+        );
     }
 
     // --- hover_global_builtin ---
@@ -889,6 +1130,9 @@ mod tests {
     fn global_builtin_content_includes_signature_and_doc() {
         let result = hover_global_builtin("Message").unwrap();
         assert!(result.contains("Message("), "should include signature");
-        assert!(result.contains("global built-in"), "should mark as global built-in");
+        assert!(
+            result.contains("global built-in"),
+            "should mark as global built-in"
+        );
     }
 }

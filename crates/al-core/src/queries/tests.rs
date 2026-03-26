@@ -79,9 +79,7 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
                 }
             }
         }
-        if !did_visit && cursor.goto_first_child() {
-            did_visit = false;
-        } else if cursor.goto_next_sibling() {
+        if (!did_visit && cursor.goto_first_child()) || cursor.goto_next_sibling() {
             did_visit = false;
         } else if cursor.goto_parent() {
             did_visit = true;
@@ -102,7 +100,11 @@ pub fn collect_test_procedures(root: tree_sitter::Node, source: &[u8]) -> Vec<Te
     procs
 }
 
-fn collect_test_procs_recursive(root: tree_sitter::Node, source: &[u8], procs: &mut Vec<TestProcedure>) {
+fn collect_test_procs_recursive(
+    root: tree_sitter::Node,
+    source: &[u8],
+    procs: &mut Vec<TestProcedure>,
+) {
     let mut cursor = root.walk();
     let mut did_visit = false;
     loop {
@@ -175,7 +177,9 @@ fn has_test_attribute(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
 /// Return true if the attribute text is `[Test]` (case-insensitive, not TestPermissions etc.).
 pub fn is_test_attribute(text: &str) -> bool {
     let inner = text.trim().trim_start_matches('[').trim_end_matches(']');
-    inner.split(';').any(|part| part.trim().eq_ignore_ascii_case("test"))
+    inner
+        .split(';')
+        .any(|part| part.trim().eq_ignore_ascii_case("test"))
 }
 
 #[cfg(test)]
@@ -218,7 +222,12 @@ mod test_discovery {
         let bytes = source.as_bytes();
 
         let procs = collect_test_procedures(root, bytes);
-        assert_eq!(procs.len(), 2, "Expected 2 test procs, got: {:?}", procs.iter().map(|p| &p.name).collect::<Vec<_>>());
+        assert_eq!(
+            procs.len(),
+            2,
+            "Expected 2 test procs, got: {:?}",
+            procs.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
         assert_eq!(procs[0].name, "TestSomething");
         assert_eq!(procs[1].name, "TestAnotherThing");
     }

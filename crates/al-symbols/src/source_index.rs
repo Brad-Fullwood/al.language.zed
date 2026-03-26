@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
@@ -33,10 +34,16 @@ pub struct AppSourceIndex {
 impl AppSourceIndex {
     pub fn from_app_path(app_path: &Path) -> io::Result<Self> {
         let file = File::open(app_path)?;
-        let modified = file.metadata()?.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let modified = file
+            .metadata()?
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
         let mmap = unsafe { Mmap::map(&file)? };
         let zip_offset = crate::app_reader::find_zip_offset(&mmap).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "ZIP signature not found in .app")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ZIP signature not found in .app",
+            )
         })?;
 
         let mut archive = ZipArchive::new(Cursor::new(&mmap[zip_offset..]))?;
@@ -57,9 +64,7 @@ impl AppSourceIndex {
             }
 
             if let Some((kind, id, obj_name)) = parse_object_header(&buf) {
-                by_kind_id
-                    .entry((kind, id))
-                    .or_insert_with(|| name.clone());
+                by_kind_id.entry((kind, id)).or_insert_with(|| name.clone());
                 by_kind_name
                     .entry((kind, obj_name.to_lowercase()))
                     .or_insert_with(|| name.clone());
@@ -165,7 +170,7 @@ fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
                 i += 1;
             }
             let ident = &s[start..i];
-            if let Some(kind) = object_kind_from_keyword(ident) {
+            if let Ok(kind) = ObjectKind::from_str(ident) {
                 let mut j = i;
                 skip_ws_and_comments(b, &mut j);
                 let (id, next) = match parse_int(b, j) {
@@ -183,30 +188,6 @@ fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
         }
     }
     None
-}
-
-fn object_kind_from_keyword(s: &str) -> Option<ObjectKind> {
-    match s.to_ascii_lowercase().as_str() {
-        "table" => Some(ObjectKind::Table),
-        "tableextension" => Some(ObjectKind::TableExtension),
-        "page" => Some(ObjectKind::Page),
-        "pageextension" => Some(ObjectKind::PageExtension),
-        "codeunit" => Some(ObjectKind::Codeunit),
-        "report" => Some(ObjectKind::Report),
-        "reportextension" => Some(ObjectKind::ReportExtension),
-        "xmlport" => Some(ObjectKind::XmlPort),
-        "query" => Some(ObjectKind::Query),
-        "enum" => Some(ObjectKind::Enum),
-        "enumextension" => Some(ObjectKind::EnumExtension),
-        "interface" => Some(ObjectKind::Interface),
-        "permissionset" => Some(ObjectKind::PermissionSet),
-        "permissionsetextension" => Some(ObjectKind::PermissionSetExtension),
-        "profile" => Some(ObjectKind::Profile),
-        "pagecustomization" => Some(ObjectKind::PageCustomization),
-        "controladdin" => Some(ObjectKind::ControlAddIn),
-        "entitlement" => Some(ObjectKind::Entitlement),
-        _ => None,
-    }
 }
 
 fn skip_ws_and_comments(bytes: &[u8], i: &mut usize) {
