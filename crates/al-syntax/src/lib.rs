@@ -1,5 +1,6 @@
 //! AL syntax layer — tree-sitter parsing, AST navigation, formatting, lint.
 
+pub mod language_data;
 pub mod parser;
 pub mod navigation;
 pub mod formatting;
