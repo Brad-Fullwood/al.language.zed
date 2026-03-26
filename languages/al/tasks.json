@@ -114,5 +114,40 @@
     "command": "al",
     "args": ["impact", "$ZED_SYMBOL", "--json"],
     "tags": ["al-impact"]
+  },
+  {
+    "label": "AL: Run Test '$ZED_SYMBOL'",
+    "command": "al",
+    "args": ["test", "--procedure", "$ZED_SYMBOL", "--json"],
+    "tags": ["al-test"],
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Debug Test '$ZED_SYMBOL'",
+    "command": "al",
+    "args": ["debug", "test", "--procedure", "$ZED_SYMBOL"],
+    "tags": ["al-test"],
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Trace Event '$ZED_SYMBOL'",
+    "command": "al",
+    "args": ["trace", "$ZED_SYMBOL", "--json"],
+    "tags": ["al-event-publisher"],
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Find Subscribers for '$ZED_SYMBOL'",
+    "command": "al",
+    "args": ["subscribers", "$ZED_SYMBOL", "--json"],
+    "tags": ["al-event-publisher"],
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Show Event Source for '$ZED_SYMBOL'",
+    "command": "al",
+    "args": ["events", "$ZED_SYMBOL", "--json"],
+    "tags": ["al-event-subscriber"],
+    "reveal": "always"
   }
 ]
