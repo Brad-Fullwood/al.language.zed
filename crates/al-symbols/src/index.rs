@@ -170,24 +170,35 @@ pub struct SymbolIndex {
     pub fn load_runtime_enums(&self) {
         use crate::model::{EnumValueSymbol, SymbolEntry};
 
+        let runtime_enums: &[(&str, &[&str])] = &[
+            ("WebServiceActionResultCode", &["None", "Get", "Created", "Updated", "Deleted"]),
+            ("SecurityFilter", &["Validated", "Filtered", "Ignored", "Disallowed"]),
+            ("DataScope", &["Module", "Company", "User", "CompanyAndUser"]),
+            ("ErrorBehavior", &["ThrowError", "Collect"]),
+            ("TestPermissions", &["Disabled", "Restrictive", "NonRestrictive", "InheritFromTestCodounit"]),
+            ("TransactionModel", &["AutoCommit", "AutoRollback"]),
+            ("CommitBehavior", &["Ignore", "Error"]),
+            ("InherentPermissionsScope", &["Permissions", "Entitlements", "Both"]),
+        ];
+
         let mut entries = Vec::new();
-        for re in crate::language_data::runtime_enums() {
+        for (name, values) in runtime_enums {
             // Skip if already present in the index (from a package)
-            if !self.get_by_name(&re.name).is_empty() {
+            if !self.get_by_name(name).is_empty() {
                 continue;
             }
-            let enum_values: Vec<EnumValueSymbol> = re.values
+            let enum_values: Vec<EnumValueSymbol> = values
                 .iter()
                 .enumerate()
                 .map(|(i, v)| EnumValueSymbol {
                     ordinal: i as i32,
-                    name: v.clone(),
+                    name: v.to_string(),
                 })
                 .collect();
             entries.push(SymbolEntry {
                 kind: ObjectKind::Enum,
                 id: -1,
-                name: re.name.clone(),
+                name: name.to_string(),
                 extends: None,
                 implements: Vec::new(),
                 package: "Runtime".to_string(),

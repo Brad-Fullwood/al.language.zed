@@ -18,7 +18,6 @@ pub mod cache;
 pub mod composition;
 pub mod events;
 pub mod index;
-pub mod language_data;
 pub mod manifest;
 pub mod model;
 pub mod source_index;

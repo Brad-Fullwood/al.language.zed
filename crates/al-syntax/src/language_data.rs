@@ -4,7 +4,6 @@
 //! typed public accessor functions.  Callers should prefer the accessor
 //! functions over the statics directly.
 
-use std::collections::HashSet;
 use std::sync::LazyLock;
 
 // ── Structs ──────────────────────────────────────────────────────────────────
@@ -72,24 +71,12 @@ pub struct RuntimeEnum {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-/// Deserialized from JSON, then converted to HashSet-backed version for O(1) lookups.
-#[derive(serde::Deserialize)]
-struct TokenClassificationRaw {
-    keyword_control: Vec<String>,
-    keyword_object: Vec<String>,
-    keyword_object_extension: Vec<String>,
-    builtin_type: Vec<String>,
-    builtin_function: Vec<String>,
-}
-
-/// Node kind → semantic token type classification. Uses HashSet for O(1) lookups
-/// on the hot semantic token path (called once per AST leaf node).
 pub struct TokenClassification {
-    pub keyword_control: HashSet<String>,
-    pub keyword_object: HashSet<String>,
-    pub keyword_object_extension: HashSet<String>,
-    pub builtin_type: HashSet<String>,
-    pub builtin_function: HashSet<String>,
+    pub keyword_control: Vec<String>,
+    pub keyword_object: Vec<String>,
+    pub keyword_object_extension: Vec<String>,
+    pub builtin_type: Vec<String>,
+    pub builtin_function: Vec<String>,
 }
 
 // ── Private wrapper structs for JSON files with top-level object envelopes ───
@@ -160,17 +147,10 @@ static RUNTIME_ENUMS: LazyLock<Vec<RuntimeEnum>> = LazyLock::new(|| {
 });
 
 static TOKEN_CLASSIFICATION: LazyLock<TokenClassification> = LazyLock::new(|| {
-    let raw: TokenClassificationRaw = serde_json::from_str(include_str!(
+    serde_json::from_str(include_str!(
         "../../../tree-sitter-al/data/token_classification.json"
     ))
-    .expect("token_classification.json must be valid");
-    TokenClassification {
-        keyword_control: raw.keyword_control.into_iter().collect(),
-        keyword_object: raw.keyword_object.into_iter().collect(),
-        keyword_object_extension: raw.keyword_object_extension.into_iter().collect(),
-        builtin_type: raw.builtin_type.into_iter().collect(),
-        builtin_function: raw.builtin_function.into_iter().collect(),
-    }
+    .expect("token_classification.json must be valid")
 });
 
 // ── Public accessor functions ─────────────────────────────────────────────────
@@ -233,16 +213,23 @@ pub fn is_builtin_function(name: &str) -> bool {
 }
 
 pub fn is_control_keyword_node(node_kind: &str) -> bool {
-    token_classification().keyword_control.contains(node_kind)
+    token_classification()
+        .keyword_control
+        .iter()
+        .any(|k| k == node_kind)
 }
 
 pub fn is_object_keyword_node(node_kind: &str) -> bool {
     let tc = token_classification();
-    tc.keyword_object.contains(node_kind) || tc.keyword_object_extension.contains(node_kind)
+    tc.keyword_object.iter().any(|k| k == node_kind)
+        || tc.keyword_object_extension.iter().any(|k| k == node_kind)
 }
 
 pub fn is_type_keyword_node(node_kind: &str) -> bool {
-    token_classification().builtin_type.contains(node_kind)
+    token_classification()
+        .builtin_type
+        .iter()
+        .any(|k| k == node_kind)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
