@@ -255,10 +255,54 @@ impl zed::Extension for AlExtension {
         Ok(Some(init_options))
     }
 
-    // NOTE: language_server_workspace_configuration_schema and
-    // language_server_initialization_options_schema require extension API v0.8.0
-    // which is not yet published to crates.io. Zed stable rejects unreleased API
-    // versions. Re-enable when v0.8.0 publishes. Schema file: schemas/settings.json
+    fn language_server_workspace_configuration_schema(
+        &mut self,
+        _language_server_id: &zed::LanguageServerId,
+        _worktree: &zed::Worktree,
+    ) -> Option<serde_json::Value> {
+        let schema = include_str!("../schemas/settings.json");
+        serde_json::from_str(schema).ok()
+    }
+
+    fn language_server_initialization_options_schema(
+        &mut self,
+        _language_server_id: &zed::LanguageServerId,
+        _worktree: &zed::Worktree,
+    ) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspacePath": {
+                    "type": "string",
+                    "description": "Path to the AL project root (auto-detected from workspace)"
+                },
+                "alResourceConfigurationSettings": {
+                    "type": "object",
+                    "description": "AL language server configuration settings, merged with workspace configuration"
+                },
+                "setActiveWorkspace": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Set this workspace as active in the AL language server"
+                },
+                "dependencyParentWorkspacePath": {
+                    "type": ["string", "null"],
+                    "default": null,
+                    "description": "Path to the parent workspace for dependency resolution"
+                },
+                "expectedProjectReferenceDefinitions": {
+                    "type": "array",
+                    "default": [],
+                    "description": "Expected project reference definitions for multi-project workspaces"
+                },
+                "activeWorkspaceClosure": {
+                    "type": "object",
+                    "default": {},
+                    "description": "Active workspace closure for multi-project dependency resolution"
+                }
+            }
+        }))
+    }
 
     fn language_server_workspace_configuration(
         &mut self,
