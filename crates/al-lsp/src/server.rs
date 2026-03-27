@@ -790,7 +790,7 @@ impl LanguageServer for AlServer {
                 range: e.range,
                 command: Some(Command {
                     title: e.title,
-                    command: String::new(),
+                    command: "al.findReferences".to_string(),
                     arguments: None,
                 }),
                 data: None,

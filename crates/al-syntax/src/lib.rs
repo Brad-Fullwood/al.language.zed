@@ -12,6 +12,7 @@ pub mod context;
 pub mod complexity;
 pub mod sort;
 pub mod traversal;
+pub mod language_data;
 
 pub use parser::{AlParser, ParseResult, SyntaxError};
 pub use formatting::{format_al, format_range, FormatOptions, KeywordCasing, BlankLinesBetweenProcedures, BraceStyle};

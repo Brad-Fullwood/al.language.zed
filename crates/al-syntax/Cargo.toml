@@ -9,6 +9,8 @@ tree-sitter = "0.25"
 ropey = { workspace = true }
 tower-lsp = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [build-dependencies]
 cc = "1"

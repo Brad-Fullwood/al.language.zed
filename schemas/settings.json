@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AL Language Server Settings",
+  "description": "Configuration for the AL Language Server (al-lsp). These settings control analysis, diagnostics, completions, and other AL development features.",
+  "type": "object",
+  "properties": {
+    "al.enableCodeAnalysis": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable semantic code analysis via .NET CodeAnalysis bridge. Provides compiler-level diagnostics (permissions, event restrictions, type errors)."
+    },
+    "al.backgroundCodeAnalysis": {
+      "type": "boolean",
+      "default": true,
+      "description": "Run code analysis in the background continuously. Disable to only run on explicit compile."
+    },
+    "al.diagnosticsScope": {
+      "type": "string",
+      "enum": ["project", "openFiles"],
+      "default": "project",
+      "description": "Scope for diagnostics. 'project' lints all .al files; 'openFiles' only lints open tabs. Default: project (our lint is fast enough)."
+    },
+    "al.diagnosticsTrigger": {
+      "type": "string",
+      "enum": ["continuous", "onSave"],
+      "default": "continuous",
+      "description": "When to run diagnostics. 'continuous' runs on every change (debounced); 'onSave' only on file save."
+    },
+    "al.codeAnalyzers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": ["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"],
+      "description": "Which code analyzers to run. Standard: CodeCop, AppSourceCop, UICop, PerTenantCop. Add custom DLL paths for third-party analyzers like BusinessCentral.LinterCop."
+    },
+    "al.enableNativeLint": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable native AL lint rules (AL-L001 through AL-L024). These are fast, tree-sitter-based rules that run alongside CodeAnalysis."
+    },
+    "al.nativeLintRules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "default": {},
+      "description": "Per-rule enable/disable overrides. Key is rule code (e.g. 'AL-L001': false to disable). Rules not listed default to enabled."
+    },
+    "al.enableExternalRulesets": {
+      "type": "boolean",
+      "default": false,
+      "description": "Enable external rulesets (.ruleset.json files) for custom diagnostic severity overrides."
+    },
+    "al.ruleSetPath": {
+      "type": "string",
+      "default": null,
+      "description": "Path to a .ruleset.json file for custom diagnostic severity overrides."
+    },
+    "al.enableCodeActions": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable code actions (quick fixes, refactorings, source actions)."
+    },
+    "al.inlayHints.parameterNames": {
+      "type": "boolean",
+      "default": true,
+      "description": "Show parameter name hints at function call sites."
+    },
+    "al.inlayHints.returnTypes": {
+      "type": "boolean",
+      "default": false,
+      "description": "Show return type hints on procedure declarations."
+    },
+    "al.semanticFolding": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable semantic folding (fold based on AST structure, not just indentation)."
+    },
+    "al.packageCachePath": {
+      "type": "string",
+      "default": null,
+      "description": "Custom path for the symbol package cache. Default: <project>/.alpackages/"
+    },
+    "al.assemblyProbingPaths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Additional assembly probing paths for CodeAnalysis DLLs and custom analyzers."
+    },
+    "al.compilationOptions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": [],
+      "description": "Additional compilation options passed to alc."
+    },
+    "al.incrementalBuild": {
+      "type": "boolean",
+      "default": false,
+      "description": "Use incremental build when compiling."
+    },
+    "al.rootNamespace": {
+      "type": "string",
+      "default": null,
+      "description": "Default root namespace for scaffolding new objects."
+    },
+    "al.publisher": {
+      "type": "string",
+      "default": null,
+      "description": "Default publisher name for scaffolding."
+    },
+    "al.editorServicesPath": {
+      "type": "string",
+      "default": null,
+      "description": "Path to EditorServices.Host binary for debugging. If not set, auto-discovered."
+    },
+    "al.editorServicesLogLevel": {
+      "type": "string",
+      "enum": ["off", "error", "warning", "info", "debug", "trace"],
+      "default": "warning",
+      "description": "Log level for the EditorServices.Host DAP process."
+    },
+    "al.symbolsCountryRegion": {
+      "type": "string",
+      "default": null,
+      "description": "Country/region code for localized BC symbol packages (e.g. 'us', 'gb', 'au')."
+    },
+    "al.outputAnalyzerStatistics": {
+      "type": "boolean",
+      "default": false,
+      "description": "Output analyzer performance statistics in diagnostics."
+    }
+  }
+}

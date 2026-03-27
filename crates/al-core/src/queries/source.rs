@@ -264,7 +264,7 @@ fn find_procedure_recursive<'a>(
         let node = cursor.node();
         let kind = node.kind();
 
-        if kind == "method_declaration" || kind == "trigger_declaration" {
+        if kind == "procedure_declaration" || kind == "trigger_declaration" {
             // Find the method/trigger name child
             if let Some(name_node) = node.child_by_field_name("name") {
                 let node_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");

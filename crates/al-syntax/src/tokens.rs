@@ -691,6 +691,9 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
         "fieldelement" => Some(token_types::XMLPORT_FIELD_ELEMENT),
         "fieldattribute" => Some(token_types::XMLPORT_FIELD_ATTRIBUTE),
         "filter" => Some(token_types::QUERY_FILTER),
+        "dataitem" => Some(token_types::QUERY_DATA_ITEM),
+        "column" => Some(token_types::QUERY_COLUMN),
+        "tableelement" => Some(token_types::XMLPORT_TABLE_ELEMENT),
         _ => None,
     }
 }

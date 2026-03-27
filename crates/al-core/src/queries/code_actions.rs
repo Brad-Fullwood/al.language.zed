@@ -1005,39 +1005,27 @@ fn find_codeunit_at_point<'a>(
 
 /// Extract interface names from the object declaration node.
 ///
-/// tree-sitter-al parses `implements IFoo, IBar` as:
-///   keyword("implements") identifier("IFoo") , identifier("IBar")
-/// as direct children of `object_declaration` (no wrapper node).
+/// tree-sitter-al wraps each implemented interface in an `implements_clause`
+/// node containing `metadata_keyword("implements")` + `name(...)`.
 fn extract_interface_names(obj_node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
     let mut names = Vec::new();
-    let mut found_implements = false;
 
     for i in 0..obj_node.child_count() {
         let Some(child) = obj_node.child(i) else { continue };
 
-        if child.kind() == "keyword" {
-            if let Ok(t) = child.utf8_text(source) {
-                if t.eq_ignore_ascii_case("implements") {
-                    found_implements = true;
-                    continue;
-                }
-            }
-        }
-
-        if found_implements {
-            // Stop at the object body
-            if child.kind() == "object_body" {
-                break;
-            }
-            if child.kind() == "identifier" || child.kind() == "quoted_identifier" {
-                if let Ok(t) = child.utf8_text(source) {
-                    let name = t.trim().trim_matches('"');
-                    if !name.is_empty() {
-                        names.push(name.to_string());
+        if child.kind() == "implements_clause" {
+            // The name is the second child (after the metadata_keyword)
+            for j in 0..child.child_count() {
+                let Some(inner) = child.child(j) else { continue };
+                if inner.kind() == "name" || inner.kind() == "identifier" || inner.kind() == "quoted_identifier" {
+                    if let Ok(t) = inner.utf8_text(source) {
+                        let name = t.trim().trim_matches('"');
+                        if !name.is_empty() {
+                            names.push(name.to_string());
+                        }
                     }
                 }
             }
-            // Skip comma punctuation
         }
     }
 

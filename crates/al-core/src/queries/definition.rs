@@ -124,7 +124,7 @@ fn find_package_entry_for_type(
     subtype: Option<&str>,
 ) -> Option<std::sync::Arc<SymbolEntry>> {
     let obj_name = subtype.or({
-        if !matches!(type_name, "Record" | "Page" | "Codeunit" | "Report" | "Query" | "Xmlport" | "Enum") {
+        if al_syntax::language_data::object_type_by_keyword(type_name).is_none() {
             Some(type_name)
         } else {
             None

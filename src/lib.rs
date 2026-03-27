@@ -240,11 +240,7 @@ impl zed::Extension for AlExtension {
 
         let mut init_options = json!({
             "workspacePath": workspace_path,
-            "alResourceConfigurationSettings": user_config,
-            "setActiveWorkspace": true,
-            "dependencyParentWorkspacePath": null,
-            "expectedProjectReferenceDefinitions": [],
-            "activeWorkspaceClosure": {}
+            "al": user_config
         });
 
         // Allow full initializationOptions override

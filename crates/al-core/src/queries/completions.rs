@@ -62,38 +62,6 @@ impl serde::Serialize for CompletionKind {
     }
 }
 
-/// AL keywords for general completion.
-const AL_KEYWORDS: &[&str] = &[
-    "begin", "end", "var", "procedure", "trigger", "local", "internal", "protected",
-    "if", "then", "else", "case", "of", "for", "to", "downto", "do", "foreach", "in",
-    "while", "repeat", "until", "exit", "break", "with", "asserterror",
-    "true", "false", "not", "and", "or", "xor", "div", "mod",
-];
-
-/// AL type keywords for type position completions.
-const AL_TYPE_KEYWORDS: &[&str] = &[
-    "Integer", "Decimal", "Text", "Code", "Boolean", "Date", "Time", "DateTime",
-    "DateFormula", "Duration", "Guid", "BigInteger", "BigText", "Char", "Byte", "Blob",
-    "Option", "Record", "RecordId", "RecordRef", "Variant", "Dialog", "File",
-    "InStream", "OutStream", "List", "Dictionary", "Array",
-    "HttpClient", "HttpContent", "HttpHeaders", "HttpRequestMessage", "HttpResponseMessage",
-    "JsonArray", "JsonObject", "JsonToken", "JsonValue",
-    "XmlDocument", "XmlElement", "XmlNode", "XmlNodeList",
-    "TextBuilder", "Notification", "ErrorInfo", "SecretText", "FilterPageBuilder",
-    "Media", "MediaSet", "SessionSettings", "Label", "Enum", "Interface",
-    "Codeunit", "Page", "Report", "Query", "XmlPort", "Action", "TestPage", "TestRequestPage",
-];
-
-/// AL built-in trigger-context variables.
-const TRIGGER_VARIABLES: &[(&str, &str)] = &[
-    ("Rec", "Record — the current record"),
-    ("xRec", "Record — the previous record"),
-    ("CurrPage", "Page — the current page"),
-    ("CurrReport", "Report — the current report"),
-    ("CurrFieldNo", "Integer — the current field number"),
-    ("RequestOptionsPage", "Page — the request options page"),
-];
-
 use al_syntax::context::{CompletionContext, detect_context};
 
 /// Get completions at a position in a document.
@@ -137,9 +105,9 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             }
         }
         CompletionContext::TypePosition => {
-            for kw in AL_TYPE_KEYWORDS {
+            for entry in &al_syntax::language_data::keywords().r#type {
                 items.push(CompletionEntry {
-                    label: kw.to_string(),
+                    label: entry.keyword.clone(),
                     kind: CompletionKind::Keyword,
                     detail: None, documentation: None, insert_text: None, sort_text: None,
                 });
@@ -170,11 +138,11 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             }
         }
         CompletionContext::TriggerBody => {
-            for (name, detail) in TRIGGER_VARIABLES {
+            for var in al_syntax::language_data::implicit_variables() {
                 items.push(CompletionEntry {
-                    label: name.to_string(),
+                    label: var.name.clone(),
                     kind: CompletionKind::Variable,
-                    detail: Some(detail.to_string()),
+                    detail: Some(format!("{} — {}", var.r#type, var.description)),
                     documentation: None, insert_text: None, sort_text: None,
                 });
             }
@@ -258,9 +226,10 @@ fn add_default_completions(
     position: tower_lsp::lsp_types::Position,
     items: &mut Vec<CompletionEntry>,
 ) {
-    for kw in AL_KEYWORDS {
+    let kw_data = al_syntax::language_data::keywords();
+    for entry in kw_data.control.iter().chain(kw_data.operator.iter()) {
         items.push(CompletionEntry {
-            label: kw.to_string(),
+            label: entry.keyword.clone(),
             kind: CompletionKind::Keyword,
             detail: None, documentation: None, insert_text: None, sort_text: None,
         });

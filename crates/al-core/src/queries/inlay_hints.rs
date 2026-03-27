@@ -321,27 +321,8 @@ fn lookup_via_receiver(
 }
 
 fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
-    let names: &[&str] = match func_name.to_lowercase().as_str() {
-        "message" | "error" => &["Value"],
-        "confirm" => &["Question"],
-        "strmenu" => &["OptionString"],
-        "format" => &["Value"],
-        "strlen" | "maxstrlen" | "get" | "findset" | "findfirst" | "findlast"
-        | "getposition" | "count" | "isempty" | "reset" | "setrecfilter" => return Some(vec![]),
-        "copystr" => &["String", "Position", "Length"],
-        "selectstr" => &["Number", "CommaString"],
-        "strpos" => &["String", "SubString"],
-        "contains" | "startswith" | "endswith" => &["Value"],
-        "setrange" => &["FieldNo", "FromValue", "ToValue"],
-        "setfilter" => &["FieldNo", "String"],
-        "insert" | "modify" | "delete" => &["RunTrigger"],
-        "fieldno" => &["FieldName"],
-        "setposition" => &["Position"],
-        "read" | "write" => &["Value"],
-        "run" | "setrecord" | "getrecord" => &["Record"],
-        _ => return None,
-    };
-    Some(names.iter().map(|s| s.to_string()).collect())
+    let func = al_syntax::language_data::builtin_function_by_name(func_name)?;
+    Some(func.parameters.iter().map(|p| p.name.clone()).collect())
 }
 
 use super::parse_detail_params;
