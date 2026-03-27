@@ -4,6 +4,7 @@
 //! typed public accessor functions.  Callers should prefer the accessor
 //! functions over the statics directly.
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 // ── Structs ──────────────────────────────────────────────────────────────────
@@ -70,13 +71,23 @@ pub struct RuntimeEnum {
     pub values: Vec<String>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(serde::Deserialize)]
+struct TokenClassificationRaw {
+    keyword_control: Vec<String>,
+    keyword_object: Vec<String>,
+    keyword_object_extension: Vec<String>,
+    builtin_type: Vec<String>,
+    builtin_function: Vec<String>,
+}
+
+/// Node kind → semantic token type. Uses HashSet for O(1) lookups on the
+/// hot semantic token path (called per AST leaf node).
 pub struct TokenClassification {
-    pub keyword_control: Vec<String>,
-    pub keyword_object: Vec<String>,
-    pub keyword_object_extension: Vec<String>,
-    pub builtin_type: Vec<String>,
-    pub builtin_function: Vec<String>,
+    pub keyword_control: HashSet<String>,
+    pub keyword_object: HashSet<String>,
+    pub keyword_object_extension: HashSet<String>,
+    pub builtin_type: HashSet<String>,
+    pub builtin_function: HashSet<String>,
 }
 
 // ── Private wrapper structs for JSON files with top-level object envelopes ───
@@ -147,10 +158,17 @@ static RUNTIME_ENUMS: LazyLock<Vec<RuntimeEnum>> = LazyLock::new(|| {
 });
 
 static TOKEN_CLASSIFICATION: LazyLock<TokenClassification> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
+    let raw: TokenClassificationRaw = serde_json::from_str(include_str!(
         "../../../tree-sitter-al/data/token_classification.json"
     ))
-    .expect("token_classification.json must be valid")
+    .expect("token_classification.json must be valid");
+    TokenClassification {
+        keyword_control: raw.keyword_control.into_iter().collect(),
+        keyword_object: raw.keyword_object.into_iter().collect(),
+        keyword_object_extension: raw.keyword_object_extension.into_iter().collect(),
+        builtin_type: raw.builtin_type.into_iter().collect(),
+        builtin_function: raw.builtin_function.into_iter().collect(),
+    }
 });
 
 // ── Public accessor functions ─────────────────────────────────────────────────
@@ -199,13 +217,14 @@ pub fn object_type_by_keyword(kw: &str) -> Option<&'static ObjectType> {
 
 pub fn is_keyword(word: &str) -> bool {
     let kw = keywords();
-    let lower = word.to_lowercase();
+    let lower = word.to_ascii_lowercase();
+    // Keywords in the JSON are already lowercase — no need to lowercase them again
     kw.control
         .iter()
         .chain(kw.object.iter())
         .chain(kw.r#type.iter())
         .chain(kw.operator.iter())
-        .any(|k| k.keyword.to_lowercase() == lower)
+        .any(|k| k.keyword == lower)
 }
 
 pub fn is_builtin_function(name: &str) -> bool {
@@ -213,23 +232,16 @@ pub fn is_builtin_function(name: &str) -> bool {
 }
 
 pub fn is_control_keyword_node(node_kind: &str) -> bool {
-    token_classification()
-        .keyword_control
-        .iter()
-        .any(|k| k == node_kind)
+    token_classification().keyword_control.contains(node_kind)
 }
 
 pub fn is_object_keyword_node(node_kind: &str) -> bool {
     let tc = token_classification();
-    tc.keyword_object.iter().any(|k| k == node_kind)
-        || tc.keyword_object_extension.iter().any(|k| k == node_kind)
+    tc.keyword_object.contains(node_kind) || tc.keyword_object_extension.contains(node_kind)
 }
 
 pub fn is_type_keyword_node(node_kind: &str) -> bool {
-    token_classification()
-        .builtin_type
-        .iter()
-        .any(|k| k == node_kind)
+    token_classification().builtin_type.contains(node_kind)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
