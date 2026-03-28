@@ -14,8 +14,6 @@ pub enum CompletionContext {
     EnumAccess,
     /// In a type position (after `:` in a var declaration)
     TypePosition,
-    /// Inside a trigger body — add trigger-specific variables
-    TriggerBody,
     /// Default completion context
     Default,
 }

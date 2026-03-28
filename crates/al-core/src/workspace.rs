@@ -148,14 +148,28 @@ impl Workspace {
     /// Builds a workspace-enriched InsightGraph (symbol index + workspace file
     /// objects/procedures/subscribers), then builds the CallGraph and populates
     /// Tier 1 call edges. The enriched InsightGraph replaces the cached one.
+    ///
+    /// Uses double-checked locking to prevent the TOCTOU race where two concurrent
+    /// callers both see `None` and both build the graph. The write lock is acquired
+    /// before building, and re-checked inside the lock so at most one build runs.
     pub fn get_or_build_call_graph(&self) -> (Arc<InsightGraph>, std::sync::RwLockReadGuard<'_, Option<CallGraph>>) {
-        // Check if call graph already exists
+        // Fast path: call graph already exists — return it under a read lock.
         {
             let cg_guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
             if cg_guard.is_some() {
                 let insight = self.get_or_build_insight_graph();
                 return (insight, cg_guard);
             }
+        }
+
+        // Slow path: acquire the write lock, then re-check (double-checked locking).
+        // A concurrent caller may have built and stored the graph while we waited.
+        let mut write_guard = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
+        if write_guard.is_some() {
+            drop(write_guard);
+            let insight = self.get_or_build_insight_graph();
+            let guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
+            return (insight, guard);
         }
 
         // Build enriched InsightGraph: symbols + workspace nodes
@@ -178,9 +192,8 @@ impl Workspace {
             &self.file_index, &self.symbols, &insight, &mut cg,
         );
 
-        let mut guard = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
-        *guard = Some(cg);
-        drop(guard);
+        *write_guard = Some(cg);
+        drop(write_guard);
 
         let guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
         (insight, guard)

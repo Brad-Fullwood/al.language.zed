@@ -233,41 +233,9 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
 /// Classify a tree-sitter node kind to a semantic token type.
 /// Returns `None` for nodes that should not be highlighted or should recurse.
 fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
+    use crate::language_data::token_classification;
+
     match kind {
-        // Keywords (AL-specific keyword nodes from the external scanner)
-        "kw_begin" | "kw_end" | "kw_var" | "kw_if" | "kw_then" | "kw_else" | "kw_for"
-        | "kw_foreach" | "kw_while" | "kw_do" | "kw_repeat" | "kw_until" | "kw_case" | "kw_of"
-        | "kw_exit" | "kw_break" | "kw_continue" | "kw_with" | "kw_in" | "kw_to" | "kw_downto"
-        | "kw_asserterror" | "kw_local" | "kw_internal" | "kw_protected" | "kw_temporary"
-        | "kw_event" => Some(token_types::KEYWORD),
-
-        // Procedure/trigger/function keywords
-        "kw_procedure" | "kw_function" | "kw_trigger" => Some(token_types::KEYWORD),
-
-        // Object keywords — distinct from control keywords for visual separation
-        "kw_codeunit"
-        | "kw_table"
-        | "kw_page"
-        | "kw_report"
-        | "kw_query"
-        | "kw_xmlport"
-        | "kw_enum"
-        | "kw_interface"
-        | "kw_permissionset"
-        | "kw_profile"
-        | "kw_controladdin"
-        | "kw_tableextension"
-        | "kw_pageextension"
-        | "kw_reportextension"
-        | "kw_enumextension"
-        | "kw_permissionsetextension"
-        | "kw_pagecustomization"
-        | "kw_entitlement"
-        | "kw_profileextension"
-        | "kw_dotnet"
-        | "kw_dotnetassembly"
-        | "kw_dotnettypedeclaration" => Some(token_types::OBJECT_KEYWORD),
-
         // Generic keyword categories from external scanner.
         // control_keyword may appear as a structural name inside parenthesized_block
         // (e.g. `layout(DefaultLayout)`) — check structural context first.
@@ -282,76 +250,6 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         "keyword" => Some(token_types::KEYWORD),
         "object_keyword" => Some(token_types::OBJECT_KEYWORD),
         "metadata_keyword" => Some(token_types::KEYWORD),
-
-        // Built-in type keywords — distinguished from user-defined types
-        "kw_integer"
-        | "kw_decimal"
-        | "kw_text"
-        | "kw_code"
-        | "kw_boolean"
-        | "kw_date"
-        | "kw_time"
-        | "kw_datetime"
-        | "kw_dateformula"
-        | "kw_duration"
-        | "kw_guid"
-        | "kw_blob"
-        | "kw_biginteger"
-        | "kw_bigtext"
-        | "kw_char"
-        | "kw_byte"
-        | "kw_option"
-        | "kw_record"
-        | "kw_recordid"
-        | "kw_recordref"
-        | "kw_dialog"
-        | "kw_file"
-        | "kw_instream"
-        | "kw_outstream"
-        | "kw_variant"
-        | "kw_list"
-        | "kw_dictionary"
-        | "kw_array"
-        | "kw_httpclient"
-        | "kw_httpcontent"
-        | "kw_httpheaders"
-        | "kw_httprequestmessage"
-        | "kw_httpresponsemessage"
-        | "kw_jsonarray"
-        | "kw_jsonobject"
-        | "kw_jsontoken"
-        | "kw_jsonvalue"
-        | "kw_xmldocument"
-        | "kw_xmlelement"
-        | "kw_xmlnode"
-        | "kw_xmlnodelist"
-        | "kw_xmlattribute"
-        | "kw_xmlattributecollection"
-        | "kw_xmlcdata"
-        | "kw_xmlcomment"
-        | "kw_xmldeclaration"
-        | "kw_xmldocumenttype"
-        | "kw_xmlnamespacemanager"
-        | "kw_xmlnametable"
-        | "kw_xmlprocessinginstruction"
-        | "kw_xmlreadoptions"
-        | "kw_xmltext"
-        | "kw_xmlwriteoptions"
-        | "kw_textbuilder"
-        | "kw_textconst"
-        | "kw_media"
-        | "kw_mediaset"
-        | "kw_notification"
-        | "kw_errorinfo"
-        | "kw_secrettext"
-        | "kw_filterpagebuilder"
-        | "kw_datatransfer"
-        | "kw_sessionsettings"
-        | "kw_testpage"
-        | "kw_testrequestpage"
-        | "kw_fileupload"
-        | "kw_cookie" => Some(token_types::BUILTIN_TYPE),
-
         "type_keyword" => Some(token_types::BUILTIN_TYPE),
 
         // Property keywords
@@ -383,29 +281,33 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         "directive" => Some(token_types::PREPROCESSOR_KEYWORD),
         "inactive_code" => Some(token_types::EXCLUDED_CODE),
 
-        _ => None,
+        // All kw_* nodes are classified via the token_classification data.
+        // This covers control keywords, object keywords, and builtin type keywords
+        // without hardcoding individual node kinds.
+        _ => {
+            if !kind.starts_with("kw_") {
+                return None;
+            }
+            let tc = token_classification();
+            if tc.keyword_control.contains(kind) {
+                Some(token_types::KEYWORD)
+            } else if tc.keyword_object.contains(kind) || tc.keyword_object_extension.contains(kind) {
+                Some(token_types::OBJECT_KEYWORD)
+            } else if tc.builtin_type.contains(kind) {
+                Some(token_types::BUILTIN_TYPE)
+            } else {
+                // Fallback: unknown kw_* nodes that aren't in any classification set
+                // are treated as generic keywords.
+                Some(token_types::KEYWORD)
+            }
+        }
     }
 }
 
-/// Known implicit trigger variables — these behave like `self`/`this` in other languages.
-/// Loaded at compile time from the canonical list generated by al-gen.
-///
-/// The JSON is a simple `["Rec", "xRec", ...]` array. We parse it at init time
-/// without pulling in serde_json as a dependency.
-static BUILTIN_VARIABLES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-    let json = include_str!("../../../tree-sitter-al/data/implicit_variables.json");
-    json.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim().trim_end_matches(',');
-            trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')).map(String::from)
-        })
-        .collect()
-});
-
 fn is_trigger_variable(text: &str) -> bool {
-    BUILTIN_VARIABLES
+    crate::language_data::implicit_variables()
         .iter()
-        .any(|v| v.eq_ignore_ascii_case(text))
+        .any(|v| v.name.eq_ignore_ascii_case(text))
 }
 
 /// Classify identifiers and quoted names based on parent/ancestor context.

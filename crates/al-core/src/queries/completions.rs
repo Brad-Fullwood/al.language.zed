@@ -137,18 +137,20 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                 }
             }
         }
-        CompletionContext::TriggerBody => {
+        CompletionContext::Default => {
+            // Include implicit trigger variables (Rec, xRec, CurrPage, etc.) in the
+            // default context. A dedicated TriggerBody detection pass would be needed
+            // to offer these only inside trigger bodies, but default context is safe.
             for var in al_syntax::language_data::implicit_variables() {
                 items.push(CompletionEntry {
                     label: var.name.clone(),
                     kind: CompletionKind::Variable,
                     detail: Some(format!("{} — {}", var.r#type, var.description)),
-                    documentation: None, insert_text: None, sort_text: None,
+                    documentation: None,
+                    insert_text: None,
+                    sort_text: None,
                 });
             }
-            add_default_completions(workspace, uri, lsp_pos, &mut items);
-        }
-        CompletionContext::Default => {
             add_default_completions(workspace, uri, lsp_pos, &mut items);
         }
     }

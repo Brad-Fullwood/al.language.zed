@@ -210,17 +210,23 @@ impl SymbolIndex {
             .collect()
     }
 
-    /// Sorted, deduplicated list of known package names (original casing from first entry).
+    /// Sorted list of known package names (original casing from first entry).
+    ///
+    /// Keys in `by_package` are lowercased so each is unique — no dedup needed.
+    /// Sorted case-insensitively so output order is stable regardless of casing.
     pub fn package_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.by_package.keys().map(|k| {
-            // Return the original-case package name from the first entry
-            self.by_package[k]
-                .first()
-                .map(|e| e.package.clone())
-                .unwrap_or_else(|| k.clone())
-        }).collect();
-        names.sort();
-        names.dedup();
+        let mut names: Vec<String> = self
+            .by_package
+            .keys()
+            .map(|k| {
+                // Return the original-case package name from the first entry
+                self.by_package[k]
+                    .first()
+                    .map(|e| e.package.clone())
+                    .unwrap_or_else(|| k.clone())
+            })
+            .collect();
+        names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
         names
     }
 }

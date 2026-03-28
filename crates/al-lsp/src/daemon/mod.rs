@@ -124,9 +124,43 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     // Connection semaphore — limits concurrent active connections to avoid FD/memory exhaustion.
     let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
+    // Set up OS signal streams so the daemon's select loop can handle them inline.
+    // This avoids calling process::exit() from a spawned task, which would skip the
+    // SocketCleanup drop guard. Instead, we break out of the accept loop so Drop runs.
+    #[cfg(unix)]
+    let mut sigterm = {
+        use tokio::signal::unix::{SignalKind, signal};
+        signal(SignalKind::terminate()).ok()
+    };
+    #[cfg(unix)]
+    let mut sigint = {
+        use tokio::signal::unix::{SignalKind, signal};
+        signal(SignalKind::interrupt()).ok()
+    };
+
     // Accept connections — break when shutdown is signalled so Drop guards run.
     let mut accept_backoff = ACCEPT_BACKOFF_START;
     loop {
+        // Helper futures that resolve when a signal fires (or never, if registration failed).
+        #[cfg(unix)]
+        let sigterm_fut = async {
+            match sigterm.as_mut() {
+                Some(s) => { s.recv().await; },
+                None => std::future::pending::<()>().await,
+            }
+        };
+        #[cfg(unix)]
+        let sigint_fut = async {
+            match sigint.as_mut() {
+                Some(s) => { s.recv().await; },
+                None => std::future::pending::<()>().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let sigterm_fut = std::future::pending::<()>();
+        #[cfg(not(unix))]
+        let sigint_fut = std::future::pending::<()>();
+
         tokio::select! {
             accept_result = listener.accept() => {
                 match accept_result {
@@ -165,7 +199,16 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                 }
             }
             _ = shutdown_signal.notified() => {
-                tracing::info!("daemon: shutdown signal received, exiting");
+                tracing::info!("daemon: idle timeout — shutting down");
+                break;
+            }
+            // Graceful shutdown from OS signals: break so SocketCleanup drops before exit.
+            _ = sigterm_fut => {
+                tracing::info!("daemon: received SIGTERM — shutting down gracefully");
+                break;
+            }
+            _ = sigint_fut => {
+                tracing::info!("daemon: received SIGINT — shutting down gracefully");
                 break;
             }
         }
@@ -241,52 +284,60 @@ async fn handle_connection(
         // Update idle timer
         *last_activity.lock().await = Instant::now();
 
-        let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => {
-                let method = req.method.clone();
-                let req_id = req.id;
-
-                // Request deduplication: skip if identical method+params within 50ms.
-                // Only build the dedup key for eligible methods to avoid serialization cost.
-                let is_dup = if DEDUP_METHODS.contains(&req.method.as_str()) {
-                    let dedup_key = format!("{}:{}", req.method, req.params.as_ref().map(|p| p.to_string()).unwrap_or_default());
-                    let now = Instant::now();
-                    let dup = dedup_keys.iter().any(|(k, t)| k == &dedup_key && now.duration_since(*t).as_millis() < 50);
-                    // Ring buffer insert
-                    if dedup_write_idx < dedup_keys.len() {
-                        dedup_keys[dedup_write_idx] = (dedup_key, now);
-                    } else {
-                        dedup_keys.push((dedup_key, now));
-                    }
-                    dedup_write_idx = (dedup_write_idx + 1) % DEDUP_CACHE_SIZE;
-                    dup
-                } else {
-                    false
-                };
-
-                if is_dup {
-                    tracing::trace!(method = %method, id = req_id, "daemon: dedup skip");
-                    let empty_result = match method.as_str() {
-                        "completions" | "inlayHints" => serde_json::json!([]),
-                        _ => serde_json::Value::Null,
-                    };
-                    Response { id: req_id, result: Some(empty_result), error: None }
-                } else {
-                    let start = Instant::now();
-                    let resp = dispatch_request(&workspace, req, &shutdown).await;
-                    let elapsed = start.elapsed();
-                    tracing::debug!(method = %method, id = req_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
-                    resp
-                }
+        // JSON-RPC 2.0 §5: on parse error the response id MUST be null because
+        // the request id is unknown. The typed Response struct uses u64, so we
+        // write the parse-error case directly as raw JSON.
+        let req = match serde_json::from_str::<Request>(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                let safe_msg = e.to_string().replace('"', "'");
+                let raw = format!(
+                    r#"{{"id":null,"error":{{"code":{},"message":"Invalid JSON-RPC: {}"}}}}"#,
+                    error_codes::PARSE_ERROR,
+                    safe_msg,
+                );
+                writer.write_all(raw.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
+                writer.flush().await?;
+                continue;
             }
-            Err(e) => Response {
-                id: 0,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::PARSE_ERROR,
-                    message: format!("Invalid JSON-RPC: {}", e),
-                }),
-            },
+        };
+        let response = {
+            let method = req.method.clone();
+            let req_id = req.id;
+
+            // Request deduplication: skip if identical method+params within 50ms.
+            // Only build the dedup key for eligible methods to avoid serialization cost.
+            let is_dup = if DEDUP_METHODS.contains(&req.method.as_str()) {
+                let dedup_key = format!("{}:{}", req.method, req.params.as_ref().map(|p| p.to_string()).unwrap_or_default());
+                let now = Instant::now();
+                let dup = dedup_keys.iter().any(|(k, t)| k == &dedup_key && now.duration_since(*t).as_millis() < 50);
+                // Ring buffer insert
+                if dedup_write_idx < dedup_keys.len() {
+                    dedup_keys[dedup_write_idx] = (dedup_key, now);
+                } else {
+                    dedup_keys.push((dedup_key, now));
+                }
+                dedup_write_idx = (dedup_write_idx + 1) % DEDUP_CACHE_SIZE;
+                dup
+            } else {
+                false
+            };
+
+            if is_dup {
+                tracing::trace!(method = %method, id = req_id, "daemon: dedup skip");
+                let empty_result = match method.as_str() {
+                    "completions" | "inlayHints" => serde_json::json!([]),
+                    _ => serde_json::Value::Null,
+                };
+                Response { id: req_id, result: Some(empty_result), error: None }
+            } else {
+                let start = Instant::now();
+                let resp = dispatch_request(&workspace, req, &shutdown).await;
+                let elapsed = start.elapsed();
+                tracing::debug!(method = %method, id = req_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
+                resp
+            }
         };
 
         let mut json = serde_json::to_string(&response)?;
@@ -467,7 +518,7 @@ pub(crate) fn file_not_found(id: u64) -> Response {
         id,
         result: None,
         error: Some(RpcError {
-            code: error_codes::INVALID_PARAMS,
+            code: error_codes::FILE_NOT_FOUND,
             message: "File not found".to_string(),
         }),
     }

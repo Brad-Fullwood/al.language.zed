@@ -44,49 +44,48 @@ pub fn extract_document_symbols(tree: &Tree, text: &str) -> Vec<DocumentSymbol> 
     symbols
 }
 
-/// Static mapping: (grammar node kind, display name, LSP SymbolKind).
+/// Convert an LSP symbol kind string (as stored in object_types.json) to a
+/// tower_lsp SymbolKind value.
 ///
-/// Both `object_kind_display` and `object_kind_to_symbol_kind` derive from this table.
-/// To add a new AL object type, add a single entry here.
-static OBJECT_KIND_MAP: &[(&str, &str, SymbolKind)] = &[
-    ("kw_table",                  "table",                  SymbolKind::STRUCT),
-    ("kw_tableextension",         "tableextension",         SymbolKind::STRUCT),
-    ("kw_page",                   "page",                   SymbolKind::CLASS),
-    ("kw_pageextension",          "pageextension",          SymbolKind::CLASS),
-    ("kw_pagecustomization",      "pagecustomization",      SymbolKind::CLASS),
-    ("kw_codeunit",               "codeunit",               SymbolKind::MODULE),
-    ("kw_report",                 "report",                 SymbolKind::FILE),
-    ("kw_reportextension",        "reportextension",        SymbolKind::FILE),
-    ("kw_query",                  "query",                  SymbolKind::INTERFACE),
-    ("kw_xmlport",                "xmlport",                SymbolKind::INTERFACE),
-    ("kw_enum",                   "enum",                   SymbolKind::ENUM),
-    ("kw_enumextension",          "enumextension",          SymbolKind::ENUM),
-    ("kw_interface",              "interface",              SymbolKind::INTERFACE),
-    ("kw_permissionset",          "permissionset",          SymbolKind::NAMESPACE),
-    ("kw_permissionsetextension", "permissionsetextension", SymbolKind::NAMESPACE),
-    ("kw_profile",                "profile",                SymbolKind::NAMESPACE),
-    ("kw_profileextension",       "profileextension",       SymbolKind::NAMESPACE),
-    ("kw_controladdin",           "controladdin",           SymbolKind::CLASS),
-    ("kw_entitlement",            "entitlement",            SymbolKind::NAMESPACE),
-    ("kw_dotnet",                 "dotnet",                 SymbolKind::NAMESPACE),
-];
+/// This is LSP infrastructure mapping — not AL language knowledge.
+fn lsp_symbol_kind_from_str(s: &str) -> SymbolKind {
+    match s {
+        "File" => SymbolKind::FILE,
+        "Module" => SymbolKind::MODULE,
+        "Namespace" => SymbolKind::NAMESPACE,
+        "Class" => SymbolKind::CLASS,
+        "Struct" => SymbolKind::STRUCT,
+        "Interface" => SymbolKind::INTERFACE,
+        "Enum" => SymbolKind::ENUM,
+        _ => SymbolKind::OBJECT,
+    }
+}
 
-/// Map an AL object kind node to an LSP SymbolKind.
+/// Map an AL object kind node (e.g. "kw_table") to an LSP SymbolKind.
+///
+/// Uses language_data::object_types() so new AL object types are picked up
+/// without any code changes here.
 fn object_kind_to_symbol_kind(kind: &str) -> SymbolKind {
-    OBJECT_KIND_MAP
+    crate::language_data::object_types()
         .iter()
-        .find(|(k, _, _)| *k == kind)
-        .map(|(_, _, sym)| *sym)
+        .find(|ot| ot.node_kind == kind)
+        .map(|ot| lsp_symbol_kind_from_str(&ot.lsp_symbol_kind))
         .unwrap_or(SymbolKind::OBJECT)
 }
 
-/// Extract the object kind as a human-readable string.
-fn object_kind_display(kind: &str) -> &str {
-    OBJECT_KIND_MAP
+/// Extract the object kind as a human-readable (lowercase) string.
+///
+/// Uses language_data::object_types() so new AL object types are handled
+/// without any code changes here.
+fn object_kind_display(kind: &str) -> String {
+    crate::language_data::object_types()
         .iter()
-        .find(|(k, _, _)| *k == kind)
-        .map(|(_, display, _)| *display)
-        .unwrap_or(kind)
+        .find(|ot| ot.node_kind == kind)
+        .map(|ot| ot.keyword.clone())
+        .unwrap_or_else(|| {
+            // Strip the kw_ prefix for unknown kinds as a best-effort fallback.
+            kind.strip_prefix("kw_").unwrap_or(kind).to_string()
+        })
 }
 
 fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
@@ -120,10 +119,11 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         .and_then(|n| n.utf8_text(source).ok())
         .unwrap_or("");
 
+    let kind_display = object_kind_display(kind_str);
     let detail = if !id_text.is_empty() {
-        Some(format!("{} {}", object_kind_display(kind_str), id_text))
+        Some(format!("{} {}", kind_display, id_text))
     } else {
-        Some(object_kind_display(kind_str).to_string())
+        Some(kind_display)
     };
 
     let range = ts_range_to_lsp(&node.range(), source);

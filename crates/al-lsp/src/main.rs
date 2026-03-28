@@ -139,14 +139,18 @@ async fn main() {
         "al-lsp starting"
     );
 
-    // Lifecycle hardening: detect parent death and handle signals gracefully
+    let args: Vec<String> = env::args().collect();
+
+    // Lifecycle hardening: detect parent death and handle signals gracefully.
+    // In daemon mode, run_daemon handles signals internally (SIGTERM/SIGINT break
+    // the accept loop so SocketCleanup drops before exit). The global handlers here
+    // are only registered for LSP and DAP modes where there is no socket to clean up.
+    let is_daemon_mode = args.iter().any(|a| a == "daemon");
     #[cfg(unix)]
-    {
+    if !is_daemon_mode {
         spawn_parent_monitor();
         spawn_signal_handlers();
     }
-
-    let args: Vec<String> = env::args().collect();
 
     if args.iter().any(|a| a == "--dap") {
         // DAP mode — native BC debug (no EditorServices.Host dependency)

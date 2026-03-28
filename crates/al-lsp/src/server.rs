@@ -922,15 +922,19 @@ impl LanguageServer for AlServer {
                                         al_core::build::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
                                         al_core::build::DiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
                                     };
+                                    let start_line = d.line.saturating_sub(1);
+                                    let start_char = d.column.saturating_sub(1);
                                     let lsp_diag = Diagnostic {
                                         range: Range {
                                             start: Position {
-                                                line: d.line.saturating_sub(1),
-                                                character: d.column.saturating_sub(1),
+                                                line: start_line,
+                                                character: start_char,
                                             },
+                                            // alc only reports start position; extend to end of line
+                                            // so editors show a visible underline (u32::MAX → EOL).
                                             end: Position {
-                                                line: d.line.saturating_sub(1),
-                                                character: d.column.saturating_sub(1),
+                                                line: start_line,
+                                                character: u32::MAX,
                                             },
                                         },
                                         severity: Some(severity),
@@ -1022,11 +1026,11 @@ impl LanguageServer for AlServer {
 
 /// Create a test server instance (available only in tests).
 ///
-/// Uses `LspService::new` to get a real `Client` without starting I/O.
+/// Returns the `LspService` and `ClientSocket` directly so callers access the
+/// server via `service.inner()` — no second `AlServer` constructed and discarded.
 #[cfg(test)]
-pub(crate) fn test_server() -> std::sync::Arc<AlServer> {
-    let (service, _socket) = LspService::new(AlServer::new);
-    std::sync::Arc::new(AlServer::new(service.inner().client.clone()))
+pub(crate) fn test_server() -> (LspService<AlServer>, tower_lsp::ClientSocket) {
+    LspService::new(AlServer::new)
 }
 
 /// Run the LSP server on stdin/stdout.

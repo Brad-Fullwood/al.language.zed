@@ -1,6 +1,7 @@
 //! al-core: Central engine for AL language analysis.
 //!
-//! All state, queries, and orchestration live here. Only `al-lsp` imports this crate.
+//! All state, queries, and orchestration live here. `al-lsp`, `al-cli`, and `al-explorer`
+//! (via the daemon) all depend on this crate for business logic.
 //! Analysis libraries (al-syntax, al-symbols, al-semantic) are standalone dependencies.
 
 pub mod bc_client;

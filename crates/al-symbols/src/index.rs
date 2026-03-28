@@ -348,7 +348,7 @@ pub struct SymbolIndex {
         let key = name.to_lowercase();
         self.by_name
             .get(&key)
-            .map(|v| v.clone())
+            .map(|v| v.value().clone())
             .unwrap_or_default()
     }
 
@@ -365,7 +365,7 @@ pub struct SymbolIndex {
     pub fn get_by_id(&self, kind: ObjectKind, id: i32) -> Vec<Arc<SymbolEntry>> {
         self.by_kind_id
             .get(&(kind, id))
-            .map(|v| v.clone())
+            .map(|v| v.value().clone())
             .unwrap_or_default()
     }
 
@@ -373,7 +373,7 @@ pub struct SymbolIndex {
     pub fn get_by_kind(&self, kind: ObjectKind) -> Vec<Arc<SymbolEntry>> {
         self.by_kind
             .get(&kind)
-            .map(|v| v.clone())
+            .map(|v| v.value().clone())
             .unwrap_or_default()
     }
 
@@ -382,7 +382,7 @@ pub struct SymbolIndex {
         let target = base_name.to_lowercase();
         self.by_extends
             .get(&target)
-            .map(|v| v.clone())
+            .map(|v| v.value().clone())
             .unwrap_or_default()
     }
 
@@ -407,7 +407,9 @@ pub struct SymbolIndex {
 
     /// Get the `.app` file path for a package name.
     pub fn app_path(&self, package_name: &str) -> Option<std::path::PathBuf> {
-        self.app_paths.get(&package_name.to_lowercase()).map(|v| v.clone())
+        self.app_paths
+            .get(&package_name.to_lowercase())
+            .map(|v| v.value().clone())
     }
 
     /// Get a composed view with caching. Returns Arc for zero-copy sharing.

@@ -53,16 +53,27 @@ impl std::fmt::Display for VariableScope {
 
 /// Maps a tree-sitter object kind (e.g. "table", "page") to the corresponding
 /// AL type name used for builtin method lookup (e.g. "Record", "Page").
-pub fn object_kind_to_al_type(kind: &str) -> &str {
+///
+/// For table/tableextension the AL runtime type is `Record` (not `Table`).
+/// For all other object types the display_name from language_data is used,
+/// falling back to the raw kind string for types not yet in the data file.
+pub fn object_kind_to_al_type(kind: &str) -> String {
+    // Semantic overrides: these cannot be derived from display_name alone
+    // because the AL runtime type differs from the object keyword.
     match kind.to_ascii_lowercase().as_str() {
-        "table" | "tableextension" => "Record",
-        "page" | "pageextension" => "Page",
-        "report" | "reportextension" => "Report",
-        "codeunit" => "Codeunit",
-        "xmlport" => "Xmlport",
-        "query" => "Query",
-        _ => kind,
+        "table" | "tableextension" => return "Record".to_string(),
+        "page" | "pageextension" => return "Page".to_string(),
+        "report" | "reportextension" => return "Report".to_string(),
+        _ => {}
     }
+
+    // For all other known object types, use the display_name from language_data.
+    if let Some(ot) = crate::language_data::object_type_by_keyword(kind) {
+        return ot.display_name.clone();
+    }
+
+    // Unknown type — fall back to the raw kind; callers tolerate this.
+    kind.to_string()
 }
 
 /// Resolves variable types from the tree-sitter AST.
@@ -435,7 +446,7 @@ impl<'a> TypeResolver<'a> {
 
         result.push(VariableDecl {
             name: "this".to_string(),
-            type_name: object_kind_to_al_type(&obj.kind).to_string(),
+            type_name: object_kind_to_al_type(&obj.kind),
             type_subtype: Some(obj.name),
             is_var: false,
             scope: VariableScope::SelfImplicit,
@@ -468,35 +479,28 @@ impl<'a> TypeResolver<'a> {
     }
 
     /// Add trigger-implicit variables based on the object type.
+    ///
+    /// Rec/xRec are handled separately by `add_record_implicit_vars` (which is
+    /// also called outside trigger context for table-bound objects). The remaining
+    /// implicit variables (CurrPage, CurrReport, CurrFieldNo, etc.) come from the
+    /// canonical `implicit_variables.json` data file.
     fn add_trigger_implicit_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
         self.add_record_implicit_vars(root, result);
 
-        result.push(VariableDecl {
-            name: "CurrPage".to_string(),
-            type_name: "Page".to_string(),
-            type_subtype: None,
-            is_var: false,
-            scope: VariableScope::TriggerImplicit,
-            range: root.range(),
-        });
-
-        result.push(VariableDecl {
-            name: "CurrReport".to_string(),
-            type_name: "Report".to_string(),
-            type_subtype: None,
-            is_var: false,
-            scope: VariableScope::TriggerImplicit,
-            range: root.range(),
-        });
-
-        result.push(VariableDecl {
-            name: "CurrFieldNo".to_string(),
-            type_name: "Integer".to_string(),
-            type_subtype: None,
-            is_var: false,
-            scope: VariableScope::TriggerImplicit,
-            range: root.range(),
-        });
+        // Add all implicit variables except Rec/xRec (already added above).
+        for iv in crate::language_data::implicit_variables() {
+            if iv.name.eq_ignore_ascii_case("Rec") || iv.name.eq_ignore_ascii_case("xRec") {
+                continue;
+            }
+            result.push(VariableDecl {
+                name: iv.name.clone(),
+                type_name: iv.r#type.clone(),
+                type_subtype: None,
+                is_var: false,
+                scope: VariableScope::TriggerImplicit,
+                range: root.range(),
+            });
+        }
     }
 
     /// Find the source table name for table/page/report objects.

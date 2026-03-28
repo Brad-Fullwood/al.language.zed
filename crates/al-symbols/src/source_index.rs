@@ -165,7 +165,7 @@ fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
                 i += 1;
             }
             let ident = &s[start..i];
-            if let Some(kind) = object_kind_from_keyword(ident) {
+            if let Some(kind) = ident.parse::<ObjectKind>().ok() {
                 let mut j = i;
                 skip_ws_and_comments(b, &mut j);
                 let (id, next) = match parse_int(b, j) {
@@ -183,30 +183,6 @@ fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
         }
     }
     None
-}
-
-fn object_kind_from_keyword(s: &str) -> Option<ObjectKind> {
-    match s.to_ascii_lowercase().as_str() {
-        "table" => Some(ObjectKind::Table),
-        "tableextension" => Some(ObjectKind::TableExtension),
-        "page" => Some(ObjectKind::Page),
-        "pageextension" => Some(ObjectKind::PageExtension),
-        "codeunit" => Some(ObjectKind::Codeunit),
-        "report" => Some(ObjectKind::Report),
-        "reportextension" => Some(ObjectKind::ReportExtension),
-        "xmlport" => Some(ObjectKind::XmlPort),
-        "query" => Some(ObjectKind::Query),
-        "enum" => Some(ObjectKind::Enum),
-        "enumextension" => Some(ObjectKind::EnumExtension),
-        "interface" => Some(ObjectKind::Interface),
-        "permissionset" => Some(ObjectKind::PermissionSet),
-        "permissionsetextension" => Some(ObjectKind::PermissionSetExtension),
-        "profile" => Some(ObjectKind::Profile),
-        "pagecustomization" => Some(ObjectKind::PageCustomization),
-        "controladdin" => Some(ObjectKind::ControlAddIn),
-        "entitlement" => Some(ObjectKind::Entitlement),
-        _ => None,
-    }
 }
 
 fn skip_ws_and_comments(bytes: &[u8], i: &mut usize) {

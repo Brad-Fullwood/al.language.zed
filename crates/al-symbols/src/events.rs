@@ -64,8 +64,7 @@ pub fn get_events(index: &SymbolIndex, query: &str) -> EventResults {
     let mut subscribers = Vec::new();
 
     // Scan all objects for event attributes
-    for entry_ref in index.search("", usize::MAX) {
-        let entry = entry_ref;
+    for entry in index.all_entries() {
         for method in &entry.methods {
             for attr in &method.attributes {
                 match attr.name.as_str() {

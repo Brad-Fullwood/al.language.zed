@@ -5,6 +5,8 @@
 //! `SymbolReferenceJson` struct maps the raw JSON shape, then converts to
 //! a flat `Vec<SymbolEntry>`.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -332,21 +334,19 @@ pub struct SymbolPackage {
 }
 
 /// A composed object: base + merged extensions.
+/// Serialized via `serde_json::to_value` in daemon responses. `Arc<SymbolEntry>`
+/// fields are serializable because the workspace `serde` dependency enables the `rc` feature.
 #[derive(Debug, Clone, Serialize)]
 pub struct ComposedObject {
-    pub base: SymbolEntry,
-    pub extensions: Vec<SymbolEntry>,
+    pub base: Arc<SymbolEntry>,
+    pub extensions: Vec<Arc<SymbolEntry>>,
     /// Merged fields (base + all extension fields).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub all_fields: Vec<FieldSymbol>,
     /// Merged methods (base + all extension methods).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub all_methods: Vec<MethodSymbol>,
     /// Merged controls (base + all extension controls).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub all_controls: Vec<ControlSymbol>,
     /// Merged enum values (base + all extension values).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub all_enum_values: Vec<EnumValueSymbol>,
 }
 

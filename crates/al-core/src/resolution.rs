@@ -867,7 +867,7 @@ fn workspace_object_type(workspace: &Workspace, path: &Path) -> Option<ResolvedT
     let (file_text, tree) = workspace.file_index.get_cached_parse(path)?;
     let obj = al_syntax::find_object_declaration(&tree, &file_text)?;
     Some(ResolvedType {
-        type_name: al_syntax::object_kind_to_al_type(&obj.kind).to_string(),
+        type_name: al_syntax::object_kind_to_al_type(&obj.kind),
         type_subtype: Some(obj.name),
     })
 }

@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use memmap2::Mmap;
+
 use crate::model::SymbolEntry;
 use crate::source_index;
 use crate::source_index::{is_ident_char, is_ident_start, parse_quoted_ident};
@@ -67,25 +69,33 @@ pub fn find_member_range(path: &Path, member_name: &str, kind: MemberKind) -> Op
 }
 
 /// Check whether an `.app` file contains any `.al` source files.
+///
+/// Uses memory-mapped I/O to avoid reading the entire file into memory.
+/// Only examines zip entry names — no file content is read.
 pub fn app_has_source(app_path: &Path) -> bool {
-    let data = match fs::read(app_path) {
-        Ok(d) => d,
+    let file = match fs::File::open(app_path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mmap = match unsafe { Mmap::map(&file) } {
+        Ok(m) => m,
         Err(_) => return false,
     };
 
-    let zip_offset = match crate::app_reader::find_zip_offset(&data) {
+    let zip_offset = match crate::app_reader::find_zip_offset(&mmap) {
         Some(o) => o,
         None => return false,
     };
 
-    let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(&data[zip_offset..])) {
+    let mut archive = match zip::ZipArchive::new(std::io::Cursor::new(&mmap[zip_offset..])) {
         Ok(a) => a,
         Err(_) => return false,
     };
 
+    // Only inspect entry names — no content is decompressed
     for i in 0..archive.len() {
-        if let Ok(file) = archive.by_index(i) {
-            if file.name().to_lowercase().ends_with(".al") {
+        if let Ok(entry) = archive.by_index_raw(i) {
+            if entry.name().to_ascii_lowercase().ends_with(".al") {
                 return true;
             }
         }

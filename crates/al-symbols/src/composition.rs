@@ -22,13 +22,11 @@ pub fn get_composed(
         return None;
     }
 
-    // Find the base object
+    // Find the base object — take Arc directly to avoid cloning the full struct
     let candidates = index.get_by_name(name);
-    let base = candidates
-        .iter()
-        .find(|e| e.kind == kind)?;
+    let base: Arc<SymbolEntry> = candidates.into_iter().find(|e| e.kind == kind)?;
 
-    // Find all extensions
+    // Find all extensions — keep as Arc references
     let extensions = index.get_extensions_of(name);
     let relevant_extensions: Vec<Arc<SymbolEntry>> = extensions
         .into_iter()
@@ -38,24 +36,24 @@ pub fn get_composed(
         })
         .collect();
 
-    Some(compose(base, &relevant_extensions))
+    Some(compose(base, relevant_extensions))
 }
 
 /// Compose a base object with a set of extensions.
-fn compose(base: &SymbolEntry, extensions: &[Arc<SymbolEntry>]) -> ComposedObject {
+///
+/// Takes `Arc<SymbolEntry>` for both base and extensions so the composed
+/// struct can hold references without cloning the full symbol data.
+fn compose(base: Arc<SymbolEntry>, extensions: Vec<Arc<SymbolEntry>>) -> ComposedObject {
     let mut all_fields = base.fields.clone();
     let mut all_methods = base.methods.clone();
     let mut all_controls = base.controls.clone();
     let mut all_enum_values = base.enum_values.clone();
 
-    let mut ext_entries = Vec::new();
-
-    for ext in extensions {
+    for ext in &extensions {
         all_fields.extend(ext.fields.iter().cloned());
         all_methods.extend(ext.methods.iter().cloned());
         all_controls.extend(ext.controls.iter().cloned());
         all_enum_values.extend(ext.enum_values.iter().cloned());
-        ext_entries.push(ext.as_ref().clone());
     }
 
     // Sort fields by ID for consistent output
@@ -64,8 +62,8 @@ fn compose(base: &SymbolEntry, extensions: &[Arc<SymbolEntry>]) -> ComposedObjec
     all_enum_values.sort_by_key(|v| v.ordinal);
 
     ComposedObject {
-        base: base.clone(),
-        extensions: ext_entries,
+        base,
+        extensions,
         all_fields,
         all_methods,
         all_controls,

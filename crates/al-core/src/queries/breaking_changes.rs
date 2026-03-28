@@ -148,8 +148,6 @@ fn diff_object(
     }
 
     // Check removed enum values
-    let old_enums: std::collections::HashSet<String> =
-        old.enum_values.iter().map(|v| v.name.to_lowercase()).collect();
     let new_enums: std::collections::HashSet<String> =
         new.enum_values.iter().map(|v| v.name.to_lowercase()).collect();
 
@@ -167,9 +165,6 @@ fn diff_object(
             });
         }
     }
-
-    // Suppress unused variable warning
-    let _ = old_enums;
 }
 
 fn check_signature_change(
