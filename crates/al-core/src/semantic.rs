@@ -186,8 +186,16 @@ impl Default for SemanticCache {
 pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: &str) {
     let mut builtins_guard = workspace.builtins.write().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
     let mut cache_guard = workspace.semantic_cache.write().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
+    if !builtins_guard.is_empty() && !cache_guard.is_stale(version) {
+        return; // Another concurrent caller already populated with matching version — skip.
+    }
+    // Either builtins are empty or the toolchain version changed — (re)populate.
     if !builtins_guard.is_empty() {
-        return; // Another concurrent caller already populated — skip to avoid double-write.
+        tracing::info!(
+            old_version = %cache_guard.version(),
+            new_version = %version,
+            "Toolchain version changed — replacing stale builtins"
+        );
     }
     let cache = SemanticCache::build(&builtins, version.to_string());
     *builtins_guard = std::sync::Arc::new(builtins);

@@ -25,6 +25,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::{DapError, Result};
 
+/// Maximum number of pending debug events buffered before being consumed.
+const PENDING_EVENT_CAPACITY: usize = 64;
+
 /// Parse a DAP arg value that may be a `bool` or a `string` ("none"/"false" → false).
 /// `default` is returned for non-bool, non-string variants.
 fn parse_bool_or_string(v: &serde_json::Value, default: bool) -> bool {
@@ -140,30 +143,62 @@ impl BcDebugConfig {
         cfg
     }
 
+    /// Build the base URL prefix for on-prem: `{server}:{port}/{instance}`.
+    /// Uses the same pattern as `al-core::launch::BcServerConfig::dev_packages_url`.
+    fn onprem_base(&self) -> String {
+        let server = self.server.as_deref().unwrap_or("http://localhost");
+        let instance = self.server_instance.as_deref().unwrap_or("BC");
+        let host = format!("{}:{}", server.trim_end_matches('/'), self.port);
+        format!("{host}/{instance}")
+    }
+
     /// Get the base URL for the BC dev API.
     pub fn base_url(&self) -> String {
         if self.environment_type.eq_ignore_ascii_case("OnPrem") {
-            let server = self.server.as_deref().unwrap_or("http://localhost");
-            let instance = self.server_instance.as_deref().unwrap_or("BC");
-            format!("{server}/{instance}/dev")
+            // Fix #3: include port in on-prem URL
+            format!("{}/dev", self.onprem_base())
         } else {
-            // Cloud
+            // Fix #2: cloud URL must include tenant before environment name
+            let tenant = &self.tenant;
             let env = self.environment_name.as_deref().unwrap_or("sandbox");
-            format!("https://api.businesscentral.dynamics.com/v2.0/{env}/dev")
+            format!("https://api.businesscentral.dynamics.com/v2.0/{tenant}/{env}/dev")
         }
     }
 
     /// Get the SignalR hub URL for debugging.
     pub fn debug_hub_url(&self) -> String {
         if self.environment_type.eq_ignore_ascii_case("OnPrem") {
-            let server = self.server.as_deref().unwrap_or("http://localhost");
-            let instance = self.server_instance.as_deref().unwrap_or("BC");
-            format!("{server}/{instance}/dev/DebuggerHub")
+            // Fix #3: include port in on-prem URL
+            format!("{}/dev/DebuggerHub", self.onprem_base())
         } else {
+            // Fix #2: cloud URL must include tenant before environment name
+            let tenant = &self.tenant;
             let env = self.environment_name.as_deref().unwrap_or("sandbox");
-            format!("https://api.businesscentral.dynamics.com/v2.0/{env}/dev/DebuggerHub")
+            format!("https://api.businesscentral.dynamics.com/v2.0/{tenant}/{env}/dev/DebuggerHub")
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// BC Event types (public)
+// ---------------------------------------------------------------------------
+
+/// A BC server-push event, produced by `flush_pending_events` and `try_drain_push_events`.
+///
+/// These map to SignalR type-1 callback messages from the debug hub.
+#[derive(Debug, Clone)]
+pub enum BcEvent {
+    /// Execution stopped (breakpoint hit, step complete, or exception).
+    ///
+    /// `thread_id` is always 1 for AL (single-threaded).
+    /// `reason` is typically "breakpoint", "step", or "exception".
+    Break { reason: String, thread_id: i64 },
+    /// Debug session was detached.
+    Detached { terminate: bool },
+    /// Fatal debugger exception from the server.
+    FatalError { message: String },
+    /// Other unrecognised server callback — target name preserved for logging.
+    Other { target: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -266,15 +301,13 @@ struct SignalRMessage {
     // Type 6: ping
 }
 
-/// Maximum number of server-push events buffered between `invoke()` calls.
-const PENDING_EVENT_CAPACITY: usize = 64;
 
 /// Native BC debug session over SignalR.
 pub struct BcDebugSession {
     /// Send SignalR messages to the hub
     ws_tx: mpsc::Sender<String>,
-    /// Receive events/completions from the hub
-    event_rx: Mutex<mpsc::Receiver<SignalRMessage>>,
+    /// Receive events/completions from the hub (unbounded — never drops events)
+    event_rx: Mutex<mpsc::UnboundedReceiver<SignalRMessage>>,
     /// Invocation ID counter
     next_id: AtomicI64,
     /// SignalR connection ID — used in browser URL for debug context
@@ -283,6 +316,7 @@ pub struct BcDebugSession {
     is_stopped: Mutex<bool>,
     /// Server-push type-1 events that arrived while an `invoke()` was waiting
     /// for its own completion. Callers drain this buffer after each invoke.
+    /// Unbounded so that Break events are never silently dropped.
     pending_events: Mutex<VecDeque<SignalRMessage>>,
 }
 
@@ -370,7 +404,8 @@ impl BcDebugSession {
 
         // Set up message channels
         let (ws_tx, mut ws_rx) = mpsc::channel::<String>(32);
-        let (event_tx, event_rx) = mpsc::channel::<SignalRMessage>(64);
+        // Unbounded event channel — losing a Break event would leave the debugger silent.
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<SignalRMessage>();
 
         // Writer task: send messages from channel to WebSocket
         tokio::spawn(async move {
@@ -414,7 +449,7 @@ impl BcDebugSession {
                             }
                             debug!("SignalR recv: type={} target={:?} id={:?}",
                                 msg.type_, msg.target, msg.invocation_id);
-                            if event_tx.send(msg).await.is_err() {
+                            if event_tx.send(msg).is_err() {
                                 break;
                             }
                         }
@@ -480,14 +515,11 @@ impl BcDebugSession {
                     }
                     // Server-push event received while waiting for our completion.
                     // Buffer it so it isn't dropped; the caller drains via
-                    // `drain_pending_events()` after the invoke returns.
+                    // `flush_pending_events()` after the invoke returns.
+                    // No capacity limit — losing a Break event would leave the debugger silent.
                     if msg.type_ == 1 {
                         let mut buf = self.pending_events.lock().await;
-                        if buf.len() < PENDING_EVENT_CAPACITY {
-                            buf.push_back(msg);
-                        } else {
-                            warn!("pending_events buffer full — dropping server callback");
-                        }
+                        buf.push_back(msg);
                     }
                 }
                 Ok(None) => return Err(DapError::ConnectionFailed("SignalR channel closed".to_string())),
@@ -563,14 +595,47 @@ impl BcDebugSession {
     /// Call this after every `invoke()` to handle buffered callbacks (e.g.
     /// `Break`, `OnDetachedFromConnection`) that arrived while the invoke loop
     /// was consuming the event channel.
-    pub async fn flush_pending_events(&self) {
-        let events: Vec<SignalRMessage> = {
+    ///
+    /// Returns processed `BcEvent` values so callers can convert them to DAP events.
+    pub async fn flush_pending_events(&self) -> Vec<BcEvent> {
+        let raw: Vec<SignalRMessage> = {
             let mut buf = self.pending_events.lock().await;
             buf.drain(..).collect()
         };
-        for event in events {
-            self.handle_server_callback(&event).await;
+        let mut out = Vec::new();
+        for event in &raw {
+            self.handle_server_callback(event).await;
+            if let Some(bc_event) = signalr_to_bc_event(event) {
+                out.push(bc_event);
+            }
         }
+        out
+    }
+
+    /// Try to read any immediately available server-push events from the SignalR channel
+    /// without blocking. Used by the background event-forwarding task to check for BC
+    /// push events (e.g. Break) that arrive while no `invoke()` is in progress.
+    ///
+    /// Returns processed `BcEvent` values. May return an empty Vec if `invoke()` is
+    /// currently holding the `event_rx` lock or if no events are available.
+    pub async fn try_drain_push_events(&self) -> Vec<BcEvent> {
+        let mut out = Vec::new();
+        // Use try_lock so this never blocks waiting for invoke() to release event_rx.
+        let mut rx = match self.event_rx.try_lock() {
+            Ok(r) => r,
+            Err(_) => return out, // invoke() is running — events will be buffered in pending_events
+        };
+        // Drain all currently available messages (non-blocking)
+        while let Ok(msg) = rx.try_recv() {
+            if msg.type_ == 1 {
+                self.handle_server_callback(&msg).await;
+                if let Some(bc_event) = signalr_to_bc_event(&msg) {
+                    out.push(bc_event);
+                }
+            }
+            // type 3 completions without a pending invoke are unexpected — ignore
+        }
+        out
     }
 
     // ----- Public debug operations -----
@@ -687,6 +752,22 @@ impl BcDebugSession {
         Ok(())
     }
 
+    /// Get the current call stack.
+    ///
+    /// BC hub method: `GetStackTrace()` → `StackFrame[]`
+    ///
+    /// Each StackFrame has (at minimum):
+    ///   - `ApplicationObjectId` — BC object reference
+    ///   - `SourcePosition` — `{Line, Column}`
+    ///   - `DisplayName` — human-readable frame name
+    ///
+    /// TODO: Verify exact hub method name and signature from EditorServices.Protocol.dll.
+    ///       Current best guess based on EditorServices protocol reverse-engineering.
+    pub async fn get_call_stack(&self) -> Result<serde_json::Value> {
+        let result = self.invoke("GetStackTrace", vec![]).await?;
+        Ok(result.unwrap_or(serde_json::json!([])))
+    }
+
     /// Get variables for a frame.
     /// BC hub method: `GetVariables(int frameId)` → `LocalNode[]`
     pub async fn get_variables(&self, frame_id: i64) -> Result<serde_json::Value> {
@@ -745,5 +826,124 @@ impl BcDebugSession {
     /// Check if currently stopped at a breakpoint.
     pub async fn is_stopped(&self) -> bool {
         *self.is_stopped.lock().await
+    }
+}
+
+/// Convert a raw `SignalRMessage` (type-1 server callback) to a `BcEvent`.
+/// Returns `None` for messages that don't need to be forwarded to the DAP layer.
+fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
+    let target = msg.target.as_deref()?;
+    match target {
+        "Break" => {
+            // BC Break event indicates execution stopped.
+            // The message from BC doesn't always specify a reason; we infer from context.
+            // For simplicity, we report "breakpoint" as the reason. A more complete
+            // implementation could inspect the break flags to distinguish step/exception.
+            Some(BcEvent::Break {
+                reason: "breakpoint".to_string(),
+                thread_id: 1,
+            })
+        }
+        "OnDetachedFromConnection" => {
+            let terminate = msg.arguments.as_ref()
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Some(BcEvent::Detached { terminate })
+        }
+        "OnFatalDebuggerException" => {
+            let message = msg.arguments.as_ref()
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Some(BcEvent::FatalError { message })
+        }
+        "IsAlive" | "OnAttachedToConnection" => None, // handled internally
+        other => Some(BcEvent::Other { target: other.to_string() }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cloud_config(tenant: &str, env_name: &str) -> BcDebugConfig {
+        BcDebugConfig {
+            environment_type: "Sandbox".to_string(),
+            tenant: tenant.to_string(),
+            environment_name: Some(env_name.to_string()),
+            ..BcDebugConfig::default()
+        }
+    }
+
+    fn onprem_config(server: &str, instance: &str, port: u16) -> BcDebugConfig {
+        BcDebugConfig {
+            environment_type: "OnPrem".to_string(),
+            server: Some(server.to_string()),
+            server_instance: Some(instance.to_string()),
+            port,
+            ..BcDebugConfig::default()
+        }
+    }
+
+    #[test]
+    fn cloud_base_url_includes_tenant() {
+        // Fix #2: cloud URL must include tenant before environment name
+        let cfg = cloud_config("mytenant.onmicrosoft.com", "MySandbox");
+        let url = cfg.base_url();
+        assert!(
+            url.contains("mytenant.onmicrosoft.com"),
+            "cloud base_url should contain tenant: {url}"
+        );
+        assert!(
+            url.contains("MySandbox"),
+            "cloud base_url should contain env name: {url}"
+        );
+        assert_eq!(
+            url,
+            "https://api.businesscentral.dynamics.com/v2.0/mytenant.onmicrosoft.com/MySandbox/dev"
+        );
+    }
+
+    #[test]
+    fn cloud_hub_url_includes_tenant() {
+        let cfg = cloud_config("contoso.com", "Production");
+        let url = cfg.debug_hub_url();
+        assert_eq!(
+            url,
+            "https://api.businesscentral.dynamics.com/v2.0/contoso.com/Production/dev/DebuggerHub"
+        );
+    }
+
+    #[test]
+    fn onprem_base_url_includes_port() {
+        // Fix #3: on-prem URL must include port
+        let cfg = onprem_config("http://erp.example.com", "BC240", 7050);
+        let url = cfg.base_url();
+        assert!(
+            url.contains(":7050"),
+            "on-prem base_url should include custom port: {url}"
+        );
+        assert_eq!(url, "http://erp.example.com:7050/BC240/dev");
+    }
+
+    #[test]
+    fn onprem_hub_url_includes_port() {
+        let cfg = onprem_config("https://bc.corp.local", "PROD", 9090);
+        let url = cfg.debug_hub_url();
+        assert_eq!(url, "https://bc.corp.local:9090/PROD/dev/DebuggerHub");
+    }
+
+    #[test]
+    fn onprem_default_port_still_included() {
+        // Default port (7049) should still appear in the URL — always include port
+        let cfg = onprem_config("http://localhost", "BC", 7049);
+        let url = cfg.base_url();
+        assert!(url.contains(":7049"), "default port should be in URL: {url}");
     }
 }

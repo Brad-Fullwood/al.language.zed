@@ -220,6 +220,7 @@ fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std:
 /// Shared constructor: resolve env type + auth, then build a [`DapLaunchConfig`].
 ///
 /// Returns `None` if `environment_type_str` is absent or unrecognised.
+#[allow(clippy::too_many_arguments)]
 fn build_launch_config(
     name: String,
     environment_type_str: Option<&str>,

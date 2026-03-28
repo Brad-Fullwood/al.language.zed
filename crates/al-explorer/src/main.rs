@@ -482,6 +482,9 @@ struct App {
     pub event_chain: EventChainView,
     pub call_graph: CallGraphView,
     pub profiler: ProfilerView,
+
+    // Persistent daemon connection for open_selected_object
+    pub daemon_client: Option<DaemonClient>,
 }
 
 impl App {
@@ -508,6 +511,7 @@ impl App {
             event_chain: EventChainView::new(project_root.clone()),
             call_graph: CallGraphView::new(project_root),
             profiler: ProfilerView::new(),
+            daemon_client: None,
         }
     }
 
@@ -536,6 +540,12 @@ impl App {
             }
         }
 
+        if entries.is_empty() {
+            return Err("Daemon returned no symbols after 5 attempts. \
+                Run 'al-lsp daemon --project .' first, then relaunch al-explorer.".into());
+        }
+
+        self.daemon_client = Some(client);
         self.symbols.load(entries);
         self.packages = self.symbols.package_names();
 
@@ -710,25 +720,38 @@ impl App {
         if let Some(selected) = self.object_list_state.selected()
             && let Some(entry) = self.current_objects.get(selected) {
             // Ask the daemon for the workspace file path for this object.
-            let root = std::env::current_dir().unwrap_or_default();
-            if let Ok(mut client) = DaemonClient::connect(&root) {
+            // Reconnect if the persistent client has been dropped.
+            if self.daemon_client.is_none() {
+                let root = std::env::current_dir().unwrap_or_default();
+                self.daemon_client = DaemonClient::connect(&root).ok();
+            }
+            if let Some(client) = self.daemon_client.as_mut() {
                 let loc_result = client.request("location", Some(serde_json::json!({
                     "name": entry.name,
+                    "kind": format!("{:?}", entry.kind),
+                    "id": entry.id,
                 })));
-                if let Ok(val) = loc_result
-                    && let Some(path_str) = val.get("path").and_then(|v| v.as_str()) {
-                    let abs_path = std::path::Path::new(path_str);
-                    let line = if let Some(member) = &target_member {
-                        find_member_line_in_file(abs_path, &member.name)
-                            .map(|l| l + 1)
-                            .unwrap_or(1)
-                    } else {
-                        1
-                    };
-                    // ISSUE-078: use `zed <path>:<line>:<col>` CLI instead of
-                    // zed:// URL which is unreliable on Linux.
-                    let file_spec = format!("{}:{}:1", path_str, line);
-                    let _ = std::process::Command::new("zed").arg(&file_spec).spawn();
+                match loc_result {
+                    Ok(val) => {
+                        if let Some(path_str) = val.get("path").and_then(|v| v.as_str()) {
+                            let abs_path = std::path::Path::new(path_str);
+                            let line = if let Some(member) = &target_member {
+                                find_member_line_in_file(abs_path, &member.name)
+                                    .map(|l| l + 1)
+                                    .unwrap_or(1)
+                            } else {
+                                1
+                            };
+                            // ISSUE-078: use `zed <path>:<line>:<col>` CLI instead of
+                            // zed:// URL which is unreliable on Linux.
+                            let file_spec = format!("{}:{}:1", path_str, line);
+                            let _ = std::process::Command::new("zed").arg(&file_spec).spawn();
+                        }
+                    }
+                    Err(_) => {
+                        // Connection may have dropped; reset so next call reconnects.
+                        self.daemon_client = None;
+                    }
                 }
             }
             // No fallback for .app package symbols -- they have no workspace file.
@@ -766,7 +789,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cleanup = || -> io::Result<()> {
         disable_raw_mode()?;
         execute!(
-            io::stderr(),
+            io::stdout(),
             LeaveAlternateScreen,
             DisableMouseCapture
         )?;

@@ -194,7 +194,7 @@ fn resolve_key<'a>(token: &'a str, original_input: &str) -> Result<&'a str, ZedT
     }
 
     // Single character: pass directly.
-    if token.len() == 1 && token.chars().next().map_or(false, |c| c.is_ascii()) {
+    if token.len() == 1 && token.chars().next().is_some_and(|c| c.is_ascii()) {
         return Ok(token);
     }
 

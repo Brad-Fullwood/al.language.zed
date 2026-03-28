@@ -175,7 +175,8 @@ async fn test_regression_code_action_fix_has_valid_edit() {
 }"#;
     client.open_file("src/lint_fix.al", code).await;
 
-    let actions = client.code_actions("src/lint_fix.al", 0, 6).await;
+    // Request code actions at the empty begin..end block (line 3 = "    begin")
+    let actions = client.code_actions("src/lint_fix.al", 3, 5).await;
 
     // Find a quickfix action
     let quickfixes: Vec<&serde_json::Value> = actions.iter()
@@ -185,7 +186,12 @@ async fn test_regression_code_action_fix_has_valid_edit() {
         })
         .collect();
 
-    if !quickfixes.is_empty() {
+    assert!(
+        !quickfixes.is_empty(),
+        "Expected at least one quickfix code action for empty begin..end (AL-L001). Got actions: {:?}",
+        actions
+    );
+    {
         let fix = quickfixes[0];
         // Verify the fix has an edit with documentChanges or changes
         let has_edit = fix.get("edit").is_some();

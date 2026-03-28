@@ -201,7 +201,7 @@ impl zed::Extension for AlExtension {
             return Ok(zed::Command {
                 command: proxy_path,
                 args: proxy_args,
-                env: vec![("AL_LSP_DEBUG".to_string(), "1".to_string())],
+                env: vec![],
             });
         }
 
@@ -272,29 +272,9 @@ impl zed::Extension for AlExtension {
                     "type": "string",
                     "description": "Path to the AL project root (auto-detected from workspace)"
                 },
-                "alResourceConfigurationSettings": {
+                "al": {
                     "type": "object",
-                    "description": "AL language server configuration settings, merged with workspace configuration"
-                },
-                "setActiveWorkspace": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Set this workspace as active in the AL language server"
-                },
-                "dependencyParentWorkspacePath": {
-                    "type": ["string", "null"],
-                    "default": null,
-                    "description": "Path to the parent workspace for dependency resolution"
-                },
-                "expectedProjectReferenceDefinitions": {
-                    "type": "array",
-                    "default": [],
-                    "description": "Expected project reference definitions for multi-project workspaces"
-                },
-                "activeWorkspaceClosure": {
-                    "type": "object",
-                    "default": {},
-                    "description": "Active workspace closure for multi-project dependency resolution"
+                    "description": "AL language server settings (see workspace configuration schema for details)"
                 }
             }
         }))
@@ -345,57 +325,14 @@ impl zed::Extension for AlExtension {
     fn dap_locator_create_scenario(
         &mut self,
         _locator_name: String,
-        build_task: zed::TaskTemplate,
+        _build_task: zed::TaskTemplate,
         _resolved_label: String,
         _debug_adapter_name: String,
     ) -> Option<zed::DebugScenario> {
-        // Create debug scenarios for AL compile/package tasks
-        let label = &build_task.label;
-        let command = &build_task.command;
-
-        // Only create scenarios for AL-related build tasks
-        if command != "al" {
-            return None;
-        }
-
-        let args_str = build_task.args.join(" ");
-
-        if args_str.contains("compile") || args_str.contains("package") {
-            // Compile/package task → offer "Publish with Debugging"
-            Some(zed::DebugScenario {
-                label: format!("AL: Publish with Debugging ({})", label),
-                adapter: "al".to_string(),
-                build: Some(zed::BuildTaskDefinition::Template(
-                    zed::BuildTaskDefinitionTemplatePayload {
-                        locator_name: None,
-                        template: zed::BuildTaskTemplate {
-                            label: "AL: Compile".to_string(),
-                            command: "al".to_string(),
-                            args: vec!["compile".to_string()],
-                            env: Default::default(),
-                            cwd: None,
-                        },
-                    },
-                )),
-                config: json!({
-                    "type": "al",
-                    "request": "launch",
-                    "name": "Publish with Debugging",
-                    "environmentType": "OnPrem",
-                    "server": "http://bcserver",
-                    "serverInstance": "BC",
-                    "authentication": "UserPassword",
-                    "startupObjectId": 22,
-                    "breakOnError": "All",
-                    "launchBrowser": true,
-                    "tenant": "default"
-                })
-                .to_string(),
-                tcp_connection: None,
-            })
-        } else {
-            None
-        }
+        // Do not auto-generate debug scenarios — server/instance values are project-specific
+        // and cannot be guessed. Users should configure debug scenarios manually via
+        // `.zed/debug.json` with their BC server address and instance name.
+        None
     }
 }
 

@@ -20,7 +20,7 @@ use tokio::io::{self, BufReader};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use crate::bc_debug::{BcDebugConfig, BcDebugSession, publish_app};
+use crate::bc_debug::{BcDebugConfig, BcDebugSession, BcEvent, publish_app};
 use crate::framing::{read_dap_body, write_dap_frame};
 use crate::{DapError, Result};
 
@@ -103,10 +103,24 @@ where
     let session: Arc<Mutex<Option<BcDebugSession>>> = Arc::new(Mutex::new(None));
     let breakpoints: Arc<Mutex<HashMap<String, Vec<i64>>>> = Arc::new(Mutex::new(HashMap::new()));
 
+    // Channel for the BC-event forwarding task to send pre-serialized DAP event bytes
+    // to the main loop. The main loop drains this channel before processing each
+    // incoming DAP message, ensuring BC push events reach Zed promptly.
+    let (dap_event_tx, mut dap_event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
     let mut stdin = BufReader::new(io::stdin());
     let mut stdout = io::stdout();
 
     loop {
+        // Drain any BC push events (e.g. stopped, output) before blocking on stdin.
+        while let Ok(frame) = dap_event_rx.try_recv() {
+            use crate::framing::write_dap_frame;
+            if let Err(e) = write_dap_frame(&mut stdout, &frame).await {
+                warn!("Failed to write BC event to Zed: {e}");
+            }
+        }
+
         // Read DAP message from Zed
         let body = match read_dap_body(&mut stdin).await {
             Ok(b) => b,
@@ -160,14 +174,13 @@ where
             "launch" | "attach" => {
                 let config = BcDebugConfig::from_dap_args(&arguments);
 
-                // Send output: compiling
-                write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                    "category": "console",
-                    "output": "Compiling AL project...\r\n"
-                })))).await?;
-
                 // Compile if alc is available and this is a launch
                 if command == "launch" {
+                    // Fix #7: only emit "Compiling" for launch, not attach
+                    write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
+                        "category": "console",
+                        "output": "Compiling AL project...\r\n"
+                    })))).await?;
                     if let Some(alc) = alc_path {
                         match compile_project(alc, project_root).await {
                             Ok(output) => {
@@ -266,6 +279,69 @@ where
                         // Capture connection ID before moving session into mutex
                         let conn_id = debug_session.connection_id.clone();
                         *session.lock().await = Some(debug_session);
+
+                        // Fix #1: Spawn background task to forward BC push events to Zed.
+                        //
+                        // BC sends Break events via SignalR push at any time (not just in
+                        // response to our invocations). This task polls `try_drain_push_events()`
+                        // which uses try_lock() on event_rx — if an invoke() is running it skips,
+                        // knowing the event will be captured in pending_events and forwarded after
+                        // the invoke returns via flush_pending_events().
+                        {
+                            let session_clone = session.clone();
+                            let event_tx_clone = dap_event_tx.clone();
+                            tokio::spawn(async move {
+                                // Use a local seq counter for events emitted by this task.
+                                let bg_seq = AtomicI64::new(100_000_000);
+                                loop {
+                                    let guard = session_clone.lock().await;
+                                    let bc_events = match guard.as_ref() {
+                                        Some(s) => {
+                                            let events = s.try_drain_push_events().await;
+                                            // Also flush pending events buffered during invoke() calls
+                                            let pending = s.flush_pending_events().await;
+                                            let mut all = events;
+                                            all.extend(pending);
+                                            all
+                                        }
+                                        None => break, // session ended
+                                    };
+                                    drop(guard);
+
+                                    for bc_event in bc_events {
+                                        let dap_evt = match &bc_event {
+                                            BcEvent::Break { reason, thread_id } => {
+                                                make_event(&bg_seq, "stopped", Some(serde_json::json!({
+                                                    "reason": reason,
+                                                    "threadId": thread_id,
+                                                    "allThreadsStopped": true,
+                                                })))
+                                            }
+                                            BcEvent::Detached { terminate } => {
+                                                if *terminate {
+                                                    make_event(&bg_seq, "terminated", None)
+                                                } else {
+                                                    continue;
+                                                }
+                                            }
+                                            BcEvent::FatalError { message } => {
+                                                make_event(&bg_seq, "output", Some(serde_json::json!({
+                                                    "category": "stderr",
+                                                    "output": format!("Fatal debugger error: {message}\r\n"),
+                                                })))
+                                            }
+                                            BcEvent::Other { .. } => continue,
+                                        };
+                                        let Ok(body) = serde_json::to_vec(&dap_evt) else { continue };
+                                        if event_tx_clone.send(body).is_err() {
+                                            return; // receiver dropped — DAP server shut down
+                                        }
+                                    }
+
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                                }
+                            });
+                        }
 
                         write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
                             "category": "console",
@@ -400,27 +476,74 @@ where
             }
 
             "stackTrace" => {
-                // Simplified stack trace — full implementation needs GetStackTrace from SignalR
+                // Fix #5: call get_call_stack() and map BC StackFrame[] to DAP StackFrames.
+                let guard = session.lock().await;
+                let stack_frames = if let Some(ref s) = *guard {
+                    match s.get_call_stack().await {
+                        Ok(frames) => bc_stack_to_dap(frames),
+                        Err(e) => {
+                            debug!("get_call_stack failed: {e}");
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
+                drop(guard);
+                let total = stack_frames.len();
                 write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true,
                     Some(serde_json::json!({
-                        "stackFrames": [],
-                        "totalFrames": 0,
+                        "stackFrames": stack_frames,
+                        "totalFrames": total,
                     })), None)).await?;
             }
 
             "scopes" => {
+                // Fix #6: use result of get_globals() to build proper scope entries.
+                // variablesReference is encoded as (frame_id * 100 + scope_index) so the
+                // "variables" handler can decode which frame and scope to fetch.
                 let frame_id = arguments.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
                 let guard = session.lock().await;
+                let mut scopes = Vec::new();
                 if let Some(ref s) = *guard {
-                    let _ = s.get_globals(frame_id).await;
+                    // Locals scope (variablesReference = frame_id * 100 + 1)
+                    // Always include locals — GetVariables returns per-frame locals.
+                    let locals_ref = frame_id * 100 + 1;
+                    scopes.push(serde_json::json!({
+                        "name": "Locals",
+                        "variablesReference": locals_ref,
+                        "expensive": false,
+                    }));
+
+                    // Globals scope — only add if get_globals succeeds and returns data
+                    match s.get_globals(frame_id).await {
+                        Ok(globals) if !globals.as_array().map(|a| a.is_empty()).unwrap_or(true) => {
+                            let globals_ref = frame_id * 100 + 2;
+                            let count = globals.as_array().map(|a| a.len()).unwrap_or(0);
+                            scopes.push(serde_json::json!({
+                                "name": "Globals",
+                                "variablesReference": globals_ref,
+                                "expensive": true,
+                                "namedVariables": count,
+                            }));
+                        }
+                        Ok(_) => {
+                            // Empty globals — still add scope so Zed shows it
+                            let globals_ref = frame_id * 100 + 2;
+                            scopes.push(serde_json::json!({
+                                "name": "Globals",
+                                "variablesReference": globals_ref,
+                                "expensive": true,
+                            }));
+                        }
+                        Err(e) => {
+                            debug!("get_globals failed for frame {frame_id}: {e}");
+                        }
+                    }
                 }
+                drop(guard);
                 write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true,
-                    Some(serde_json::json!({
-                        "scopes": [
-                            {"name": "Globals", "variablesReference": 1, "expensive": false},
-                            {"name": "Locals", "variablesReference": 2, "expensive": false},
-                        ]
-                    })), None)).await?;
+                    Some(serde_json::json!({ "scopes": scopes })), None)).await?;
             }
 
             "variables" => {
@@ -617,4 +740,47 @@ fn try_spawn(cmd: &str, args: &[&str]) -> bool {
         .stderr(std::process::Stdio::null())
         .spawn()
         .is_ok()
+}
+
+/// Convert a BC `GetStackTrace` result (array of StackFrame objects) to DAP StackFrame objects.
+///
+/// BC StackFrame fields (from EditorServices.Protocol.dll reverse-engineering):
+///   - `ApplicationObjectId.ObjectType` / `ApplicationObjectId.ObjectNumber` — BC object ref
+///   - `SourcePosition.Line` / `SourcePosition.Column` — source location
+///   - `DisplayName` — human-readable frame name (procedure name, trigger name, etc.)
+///
+/// TODO: Map ApplicationObjectId back to a source file path using the workspace file index
+/// (currently not available here due to al-dap-client boundary rules; the source field
+/// will be omitted until a lookup callback is threaded through).
+fn bc_stack_to_dap(frames: serde_json::Value) -> Vec<serde_json::Value> {
+    let arr = match frames.as_array() {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+
+    arr.iter().enumerate().map(|(i, frame)| {
+        let display_name = frame.get("DisplayName")
+            .or_else(|| frame.get("displayName"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)")
+            .to_string();
+
+        let line = frame.get("SourcePosition")
+            .and_then(|sp| sp.get("Line").or_else(|| sp.get("line")))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        let col = frame.get("SourcePosition")
+            .and_then(|sp| sp.get("Column").or_else(|| sp.get("column")))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        serde_json::json!({
+            "id": i as i64,
+            "name": display_name,
+            "line": line,
+            "column": col,
+            // source omitted — would need workspace file index lookup
+        })
+    }).collect()
 }

@@ -358,6 +358,14 @@ async fn test_c03_hover_parameter() {
     let hover = client.hover("src/integration_c03.al", 10, 22).await;
     assert!(hover.is_some(), "hover on parameter A must return a result");
 
+    let hover_val = hover.unwrap();
+    let content = hover_content(&hover_val);
+    assert!(
+        content.map_or(false, |c| c.contains('A') || c.contains("Integer")),
+        "hover on parameter A must mention parameter name or type. Got: {:?}",
+        content
+    );
+
     client.shutdown().await;
 }
 
@@ -452,10 +460,12 @@ async fn test_d03_definition_parameter() {
     client.open_file("src/integration_d03.al", CODEUNIT_SIMPLE).await;
 
     // Line 12: "        exit(A + B);" — A is parameter on line 10
+    // Column 13: the 'A' character (8 spaces + "exit(" = 13 chars before A)
     let def = client.definition("src/integration_d03.al", 12, 13).await;
-    // Not asserting Some because some servers might not resolve built-in exits
-    // but we verify no crash
-    let _ = def;
+    assert!(
+        def.is_some(),
+        "goto definition of parameter A (used in exit(A + B)) must return its declaration site on line 10"
+    );
 
     client.shutdown().await;
 }
@@ -1020,8 +1030,13 @@ async fn test_j01_workspace_symbol_search_after_open() {
     client.open_file("src/integration_j01.al", CODEUNIT_SIMPLE).await;
 
     let symbols = client.workspace_symbol("Integration Test").await;
-    // Workspace may have already scanned (initialize polls until non-empty)
-    let _ = symbols;
+    // initialize() polls until workspace/symbol("") is non-empty, so the
+    // workspace has been scanned by the time we reach here.
+    assert!(
+        !symbols.is_empty(),
+        "workspace symbol search for 'Integration Test' must find the opened codeunit. Got: {:?}",
+        symbols
+    );
 
     client.shutdown().await;
 }
@@ -1033,8 +1048,13 @@ async fn test_j02_workspace_symbol_empty_query() {
     client.open_file("src/integration_j02.al", CODEUNIT_SIMPLE).await;
 
     let symbols = client.workspace_symbol("").await;
-    // Must not crash; initialize() waits until this returns non-empty
-    let _ = symbols;
+    // initialize() polls workspace/symbol("") until non-empty, guaranteeing
+    // the workspace has been scanned before the test body runs.
+    assert!(
+        !symbols.is_empty(),
+        "workspace symbol empty query must return at least one symbol (workspace was scanned during initialize). Got: {:?}",
+        symbols
+    );
 
     client.shutdown().await;
 }
@@ -1413,9 +1433,13 @@ async fn test_p04_cross_file_procedure_in_workspace_symbol() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_p04.al", CODEUNIT_SIMPLE).await;
 
-    let symbols = client.workspace_symbol("HelloWorld").await;
-    // Must find at least the procedure (workspace symbol may include procedures)
-    let _ = symbols;
+    // Search for the codeunit itself — workspace/symbol returns objects
+    let symbols = client.workspace_symbol("Integration Test").await;
+    assert!(
+        !symbols.is_empty(),
+        "workspace symbol for 'Integration Test' must find the opened codeunit. Got: {:?}",
+        symbols
+    );
 
     client.shutdown().await;
 }

@@ -26,10 +26,8 @@ pub fn walk_tree_until(root: Node, visitor: &mut impl FnMut(Node) -> bool) -> bo
     let mut cursor = root.walk();
     let mut did_visit = false;
     loop {
-        if !did_visit {
-            if !visitor(cursor.node()) {
-                return false;
-            }
+        if !did_visit && !visitor(cursor.node()) {
+            return false;
         }
         if !did_visit && cursor.goto_first_child() {
             did_visit = false;

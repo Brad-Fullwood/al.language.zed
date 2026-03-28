@@ -311,6 +311,7 @@ fn collect_coverage_from_tree(
                 continue;
             }
         }
+        #[allow(clippy::if_same_then_else)]
         if !did_visit && cursor.goto_first_child() {
             did_visit = false;
         } else if cursor.goto_next_sibling() {

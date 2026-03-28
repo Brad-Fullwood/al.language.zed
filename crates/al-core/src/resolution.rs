@@ -1040,7 +1040,7 @@ fn workspace_member(workspace: &Workspace, path: &Path, member_name: &str) -> Op
 ///
 /// Shared by `find_workspace_field` (needs name_part to compute column offsets) and
 /// `workspace_field_items` (needs both segments to build completion items).
-fn parse_field_line<'a>(trimmed: &'a str) -> Option<(&'a str, &'a str)> {
+fn parse_field_line(trimmed: &str) -> Option<(&str, &str)> {
     let inside = trimmed
         .strip_prefix("field(")?
         .split(')')

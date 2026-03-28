@@ -165,7 +165,7 @@ fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {
                 i += 1;
             }
             let ident = &s[start..i];
-            if let Some(kind) = ident.parse::<ObjectKind>().ok() {
+            if let Ok(kind) = ident.parse::<ObjectKind>() {
                 let mut j = i;
                 skip_ws_and_comments(b, &mut j);
                 let (id, next) = match parse_int(b, j) {

@@ -406,12 +406,26 @@ async fn test_completeness_d03_close_file_clears_diagnostics() {
     // Close the file
     client.close_file("src/close_diag.al").await;
 
-    // Give server a moment to process
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // Give server a moment to process and publish cleared diagnostics
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Server should still be responsive
     let symbols = client.workspace_symbol("").await;
     assert!(!symbols.is_empty(), "server should work after close");
+
+    // Drain any new diagnostics published after close
+    let diags2 = client.drain_diagnostics();
+    // After closing the file, the server should either publish an empty
+    // diagnostics array for the closed URI, or stop publishing for it.
+    // If the URI is present in the new batch, it must have empty diagnostics.
+    if let Some(closed_diags) = diags2.get(&uri) {
+        assert!(
+            closed_diags.is_empty(),
+            "diagnostics for closed file must be empty, got: {:?}",
+            closed_diags
+        );
+    }
+    // If the URI is absent, that is also acceptable (server stopped reporting)
 
     client.shutdown().await;
 }
@@ -835,8 +849,19 @@ async fn test_completeness_k01_large_file_hover_is_correct() {
 
     // Hover on Proc50's parameter — should correctly identify it
     // Proc50 starts at line 2 + 50*5 = 252, parameter at line 252
-    let hover = client.hover("src/large_file.al", 252, 25).await;
+    // Line: "    procedure Proc50(Param50: Integer): Text"
+    //        0123456789012345678901 (col 21 = 'P' of Param50)
+    //        "    procedure Proc50(" = 4 + 10 + 6 + 1 = 21 chars
+    let hover = client.hover("src/large_file.al", 252, 21).await;
     assert!(hover.is_some(), "hover should work in large file at procedure 50");
+
+    let hover_val = hover.unwrap();
+    let content = hover_content(&hover_val);
+    assert!(
+        content.map_or(false, |c| c.contains("Param50") || c.contains("Integer")),
+        "hover on Param50 should mention parameter name or type. Got: {:?}",
+        content
+    );
 
     // Document symbols should find all 100 procedures
     let symbols = client.document_symbols("src/large_file.al").await;

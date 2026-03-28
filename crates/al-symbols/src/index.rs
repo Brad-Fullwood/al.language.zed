@@ -456,6 +456,74 @@ pub struct SymbolIndex {
         crate::events::get_events(self, query)
     }
 
+    /// Remove all entries whose `package` field matches `package_name` (case-insensitive).
+    ///
+    /// Used to clear previously registered workspace entries before re-adding them,
+    /// preventing duplicates when the call graph is rebuilt.
+    pub fn remove_package_entries(&self, package_name: &str) {
+        let package_lower = package_name.to_lowercase();
+
+        // Collect sequence IDs of entries to remove and their Arc pointers.
+        let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
+            .all
+            .iter()
+            .filter_map(|entry| {
+                let (arc, _) = entry.value();
+                if arc.package.to_lowercase() == package_lower {
+                    Some((*entry.key(), Arc::clone(arc)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if to_remove.is_empty() {
+            return;
+        }
+
+        // Use Arc pointer equality to filter entries from the secondary maps.
+        let ptrs: std::collections::HashSet<*const SymbolEntry> = to_remove
+            .iter()
+            .map(|(_, arc)| Arc::as_ptr(arc))
+            .collect();
+
+        // Remove from `all`.
+        for (seq, _) in &to_remove {
+            self.all.remove(seq);
+        }
+
+        // Filter `by_name` Vecs.
+        self.by_name.retain(|_, vec| {
+            vec.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
+            !vec.is_empty()
+        });
+
+        // Filter `by_kind_id` Vecs.
+        self.by_kind_id.retain(|_, vec| {
+            vec.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
+            !vec.is_empty()
+        });
+
+        // Filter `by_kind` Vecs.
+        self.by_kind.retain(|_, vec| {
+            vec.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
+            !vec.is_empty()
+        });
+
+        // Filter `by_extends` Vecs.
+        self.by_extends.retain(|_, vec| {
+            vec.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
+            !vec.is_empty()
+        });
+
+        // Rebuild default_completions — it may reference removed entries.
+        let mut cache = self
+            .default_completions
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        cache.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
+    }
+
 }
 
 #[cfg(test)]

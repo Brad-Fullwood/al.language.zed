@@ -144,12 +144,49 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
             current = Vec::new();
         }
 
-        // Track brace depth
-        for ch in line.chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => depth -= 1,
-                _ => {}
+        // Track brace depth — skip over string literal contents so that
+        // braces inside strings (e.g. `Caption = '{'`) don't corrupt the counter.
+        {
+            let mut chars = line.chars().peekable();
+            while let Some(ch) = chars.next() {
+                match ch {
+                    // Single-quoted string: skip until closing `'`, handling `''` escape
+                    '\'' => {
+                        loop {
+                            match chars.next() {
+                                None => break,
+                                Some('\'') => {
+                                    // Doubled quote is an escape — peek to check
+                                    if chars.peek() == Some(&'\'') {
+                                        chars.next(); // consume the second `'`
+                                    } else {
+                                        break; // end of string
+                                    }
+                                }
+                                Some(_) => {}
+                            }
+                        }
+                    }
+                    // Double-quoted identifier: skip until closing `"`, handling `""` escape
+                    '"' => {
+                        loop {
+                            match chars.next() {
+                                None => break,
+                                Some('"') => {
+                                    if chars.peek() == Some(&'"') {
+                                        chars.next();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                Some(_) => {}
+                            }
+                        }
+                    }
+                    '{' => depth += 1,
+                    '}' => depth -= 1,
+                    _ => {}
+                }
             }
         }
 
@@ -326,5 +363,73 @@ mod tests {
         if let Some(r) = result {
             assert!(r.contains("procedure Foo"));
         }
+    }
+
+    /// #23 — Braces inside string literals must not corrupt the depth counter.
+    #[test]
+    fn sort_members_string_literal_brace_does_not_corrupt_depth() {
+        // The Caption property contains `{` and `}` inside a single-quoted string.
+        // Without the fix, depth would be thrown off and the procedure body would
+        // not be correctly identified as a complete member.
+        let input = r#"codeunit 50100 "My Codeunit"
+{
+    procedure Zebra()
+    begin
+        Message('Value: {0}', x);
+    end;
+
+    procedure Apple()
+    begin
+        Message('a');
+    end;
+}
+"#;
+        let result = sort_members(input).expect("should sort");
+        let apple_pos = result.find("procedure Apple").expect("Apple missing");
+        let zebra_pos = result.find("procedure Zebra").expect("Zebra missing");
+        assert!(apple_pos < zebra_pos, "Apple must come before Zebra after sort");
+    }
+
+    /// #23 — Double-quoted identifiers containing braces are also handled.
+    #[test]
+    fn sort_members_double_quoted_brace_does_not_corrupt_depth() {
+        let input = r#"codeunit 50100 "My Codeunit"
+{
+    procedure Zebra()
+    var
+        x: Record "Table {Name}";
+    begin
+    end;
+
+    procedure Apple()
+    begin
+    end;
+}
+"#;
+        let result = sort_members(input).expect("should sort");
+        let apple_pos = result.find("procedure Apple").expect("Apple missing");
+        let zebra_pos = result.find("procedure Zebra").expect("Zebra missing");
+        assert!(apple_pos < zebra_pos, "Apple must come before Zebra after sort");
+    }
+
+    /// #23 — Escaped single-quote inside string (`''`) is handled correctly.
+    #[test]
+    fn sort_members_escaped_single_quote_in_string() {
+        let input = r#"codeunit 50100 "My Codeunit"
+{
+    procedure Zebra()
+    begin
+        Message('It''s {not} a brace issue');
+    end;
+
+    procedure Apple()
+    begin
+    end;
+}
+"#;
+        let result = sort_members(input).expect("should sort");
+        let apple_pos = result.find("procedure Apple").expect("Apple missing");
+        let zebra_pos = result.find("procedure Zebra").expect("Zebra missing");
+        assert!(apple_pos < zebra_pos, "Apple must come before Zebra after sort");
     }
 }

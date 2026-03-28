@@ -1114,7 +1114,7 @@ fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDi
             // Scan property assignments (only at the top level of the page object, depth ~1)
             if ctx.brace_depth == 1 {
                 let no_ws: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
-                if no_ws.starts_with("apiversion=") || no_ws.starts_with("apiversion =") {
+                if no_ws.starts_with("apiversion=") {
                     ctx.has_api_version = true;
                     ctx.api_version_line = Some(line_num);
                 }

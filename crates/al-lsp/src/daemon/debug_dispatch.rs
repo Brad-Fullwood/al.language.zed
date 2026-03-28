@@ -11,6 +11,59 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
     Response::error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, msg)
 }
 
+/// Build a `BcDebugConfig` from a named (or default) configuration in the project's
+/// debug config file (`.zed/debug.json` or `.vscode/launch.json`).
+///
+/// Fix #4: `al debug start` sends `{"cmd":"start","config":name}` which does not
+/// include full DAP launch args. This function looks up the named config file entry
+/// and constructs the `BcDebugConfig` from it instead of from `params` directly.
+fn resolve_debug_config(
+    workspace: &Workspace,
+    params: &serde_json::Value,
+) -> Option<al_dap_client::bc_debug::BcDebugConfig> {
+    use al_core::launch::find_launch_config;
+    use al_dap_client::bc_debug::BcDebugConfig;
+
+    let project_root = workspace.project.try_read().ok()
+        .and_then(|g| g.as_ref().map(|p| p.root.clone()))?;
+
+    let debug_file = find_launch_config(&project_root)?;
+
+    let config_name = params.get("config").and_then(|v| v.as_str());
+
+    // Select the requested config by name, or fall back to the first one.
+    let bc_cfg = match config_name {
+        Some(name) => debug_file.configs.iter().find(|c| c.name == name)
+            .or_else(|| debug_file.configs.first()),
+        None => debug_file.configs.first(),
+    }?;
+
+    use al_core::launch::{AuthMethod, EnvironmentType};
+
+    let environment_type = match bc_cfg.environment_type {
+        EnvironmentType::OnPrem => "OnPrem".to_string(),
+        EnvironmentType::Sandbox => "Sandbox".to_string(),
+        EnvironmentType::Production => "Production".to_string(),
+    };
+    let authentication = match bc_cfg.authentication {
+        AuthMethod::Windows => "Windows".to_string(),
+        AuthMethod::UserPassword => "UserPassword".to_string(),
+        AuthMethod::AAD => "AAD".to_string(),
+    };
+
+    Some(BcDebugConfig {
+        server: bc_cfg.server.clone(),
+        server_instance: bc_cfg.server_instance.clone(),
+        port: bc_cfg.port.unwrap_or(7049),
+        tenant: bc_cfg.tenant.clone().unwrap_or_else(|| "default".to_string()),
+        environment_type,
+        environment_name: bc_cfg.environment_name.clone(),
+        authentication,
+        accept_invalid_certs: bc_cfg.accept_invalid_certs,
+        ..BcDebugConfig::default()
+    })
+}
+
 pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
     use al_core::native_debug::NativeDebugSession;
     use al_dap_client::bc_debug::BcDebugConfig;
@@ -27,7 +80,28 @@ pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serd
                 .get("accessToken")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let config = BcDebugConfig::from_dap_args(params);
+
+            // Fix #4: look up config from project debug file if a config name is given,
+            // or fall back to parsing full DAP args from params for backward compat.
+            let config = if params.get("config").is_some() || params.get("server").is_none() {
+                // Either a named config reference or no server specified — look up from file
+                match resolve_debug_config(workspace, params) {
+                    Some(c) => c,
+                    None => {
+                        return Response {
+                            id,
+                            result: None,
+                            error: Some(RpcError {
+                                code: error_codes::INVALID_PARAMS,
+                                message: "No debug configuration found in project (.zed/debug.json or .vscode/launch.json)".to_string(),
+                            }),
+                        };
+                    }
+                }
+            } else {
+                // Full DAP args provided — parse directly (legacy / direct invocation)
+                BcDebugConfig::from_dap_args(params)
+            };
 
             match NativeDebugSession::start(config, access_token).await {
                 Ok(session) => {

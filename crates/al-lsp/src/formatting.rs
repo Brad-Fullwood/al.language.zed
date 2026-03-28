@@ -37,7 +37,7 @@ pub(crate) fn handle_formatting(
             },
             end: Position {
                 line: line_count as u32,
-                character: last_line.len() as u32,
+                character: last_line.encode_utf16().count() as u32,
             },
         },
         new_text: formatted,

@@ -44,7 +44,7 @@ Transport differs (stdio LSP vs Unix socket JSON-RPC), business logic does not.
 
 **al-symbols** parses `.app` files (40-byte NAVX header + ZIP containing `SymbolReference.json`) and builds the symbol index. Symbols auto-downloaded from NuGet on first open, cached at `~/.cache/al-lsp/packages/`.
 
-**al-semantic** hosts the .NET CLR in-process via `netcorehost` for CodeAnalysis integration. All CLR calls are Mutex-serialized on a blocking thread with 2s timeout.
+**al-semantic** hosts the .NET CLR in-process via `netcorehost` for CodeAnalysis integration. All CLR calls are Mutex-serialized on a blocking thread with 30s timeout.
 
 **al-daemon-client** contains shared IPC types (socket path computation, JSON-RPC types, `DaemonClient`). Used by al-cli, al-explorer, and al-core.
 

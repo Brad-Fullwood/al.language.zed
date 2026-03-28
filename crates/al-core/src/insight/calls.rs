@@ -723,6 +723,10 @@ pub fn register_workspace_nodes(
         }
     }
 
+    // Clear any previously registered workspace entries before re-adding to prevent
+    // duplicates when the call graph is rebuilt.
+    symbols.remove_package_entries("workspace");
+
     // Add workspace objects to the SymbolIndex so queries can resolve params
     if !workspace_entries.is_empty() {
         symbols.add_entries_owned(workspace_entries);
@@ -1091,27 +1095,46 @@ fn extract_attribute_args(attr_text: &str) -> Vec<String> {
     }
 
     let inner = &attr_text[start..end];
-    // Split by comma, respecting nested parens and quotes
+    // Split by comma, respecting nested parens and quotes (single and double).
     let mut args = Vec::new();
     let mut current = String::new();
     let mut paren_depth = 0i32;
     let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = inner.chars().peekable();
 
-    for ch in inner.chars() {
+    while let Some(ch) = chars.next() {
         match ch {
-            '\'' => {
+            '\'' if !in_double => {
                 in_single = !in_single;
                 current.push(ch);
             }
-            '(' if !in_single => {
+            '"' if !in_single => {
+                if in_double {
+                    // Check for doubled-quote escape: "" inside double-quoted string
+                    if chars.peek() == Some(&'"') {
+                        // Escaped quote — consume the second `"` and keep in_double
+                        chars.next();
+                        current.push('"');
+                        current.push('"');
+                    } else {
+                        in_double = false;
+                        current.push(ch);
+                    }
+                } else {
+                    in_double = true;
+                    current.push(ch);
+                }
+            }
+            '(' if !in_single && !in_double => {
                 paren_depth += 1;
                 current.push(ch);
             }
-            ')' if !in_single => {
+            ')' if !in_single && !in_double => {
                 paren_depth -= 1;
                 current.push(ch);
             }
-            ',' if !in_single && paren_depth == 0 => {
+            ',' if !in_single && !in_double && paren_depth == 0 => {
                 args.push(current.trim().to_string());
                 current = String::new();
             }
@@ -1246,7 +1269,7 @@ fn tier1_threshold(
     let cutoff_idx = scores.len() * 8 / 10; // 80th percentile index
     let percentile_threshold = scores.get(cutoff_idx).copied().unwrap_or(5);
 
-    percentile_threshold.clamp(1, 5)
+    percentile_threshold.max(1)
 }
 
 /// Collect all procedure names from the AST (not just locally — recursively).

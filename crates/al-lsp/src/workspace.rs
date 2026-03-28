@@ -28,9 +28,15 @@ pub(crate) enum DownloadSource {
 /// Called from the background task spawned by the `initialized` notification handler
 /// (ISSUE-026 fix). Failures are logged but do not prevent the server from operating
 /// (graceful degradation).
-pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Client, root_uri: Option<Url>) {
+pub(crate) async fn initialize_workspace(
+    workspace: Arc<Workspace>,
+    client: Client,
+    root_uri: Option<Url>,
+) {
     // Signal that workspace initialization has begun
-    client.log_message(MessageType::INFO, "AL workspace: initializing...").await;
+    client
+        .log_message(MessageType::INFO, "AL workspace: initializing...")
+        .await;
 
     // 1. Discover toolchain
     match al_core::toolchain::find_toolchain() {
@@ -90,7 +96,9 @@ pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Clie
             // Load .alpackages / cached packages (disk cache for fast warm starts)
             if !project.packages.is_empty() {
                 let cache = al_core::symbols::cache::SymbolCache::default_location();
-                let loaded = workspace.symbols.load_packages_cached(&project.packages, &cache);
+                let loaded = workspace
+                    .symbols
+                    .load_packages_cached(&project.packages, &cache);
                 info!(
                     loaded = loaded.len(),
                     total_symbols = workspace.symbols.len(),
@@ -128,16 +136,19 @@ pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Clie
         }
     }
 
-    client.log_message(MessageType::INFO, "AL workspace: ready").await;
+    client
+        .log_message(MessageType::INFO, "AL workspace: ready")
+        .await;
 
     // Offer recommended settings on first open of an AL project.
-    // Only prompt once: sentinel file tracks whether we've already asked.
+    // Runs after workspace init but before diagnostics — same timing window
+    // as the symbol download prompt, which Zed reliably displays.
     if !settings_prompt_shown() && !zed_has_al_settings() {
-        mark_settings_prompt_shown(); // Record that we prompted (even if user declines)
         if let Ok(Some(action)) = client
             .show_message_request(
                 MessageType::INFO,
-                "Apply recommended AL development settings? (Updates ~/.config/zed/settings.json; existing comments will be reformatted)".to_string(),
+                "Apply recommended AL development settings? (Updates Zed settings.json)"
+                    .to_string(),
                 Some(vec![
                     MessageActionItem {
                         title: "Yes".to_string(),
@@ -152,8 +163,7 @@ pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Clie
             .await
         {
             if action.title == "Yes" {
-                let result = apply_recommended_settings().map_err(|e| e.to_string());
-                match result {
+                match apply_recommended_settings() {
                     Ok(()) => {
                         client
                             .show_message(
@@ -172,7 +182,11 @@ pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Clie
                     }
                 }
             }
+            // Mark as shown only after user explicitly responded (Yes or No).
+            mark_settings_prompt_shown();
         }
+        // If show_message_request returned Ok(None) or Err, do NOT mark —
+        // the prompt was dismissed/lost, so retry next time.
     }
 
     // Project-scoped diagnostics: lint ALL .al files at startup.
@@ -190,7 +204,11 @@ pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Clie
                 .map(|entry| entry.key().clone())
                 .collect();
             let file_count = file_paths.len();
-            for path in file_paths {
+            let config = workspace.config.read().await;
+            for (i, path) in file_paths.into_iter().enumerate() {
+                if i > 0 && i % 10 == 0 {
+                    tokio::task::yield_now().await;
+                }
                 if let Ok(uri) = url::Url::from_file_path(&path) {
                     if let Some(text_entry) = workspace.file_index.files.get(&path) {
                         let text = text_entry.value().clone();
@@ -198,11 +216,15 @@ pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Clie
                         let parse_result = al_core::syntax::AlParser::parse_quick(&text);
                         let mut lsp_diags = Vec::new();
                         for err in &parse_result.errors {
-                            lsp_diags.push(crate::diagnostics::syntax_error_to_diagnostic(err, source));
+                            lsp_diags
+                                .push(crate::diagnostics::syntax_error_to_diagnostic(err, source));
                         }
                         let lint_result = al_core::syntax::lint(&parse_result.tree, &text);
                         for lint in &lint_result {
-                            lsp_diags.push(crate::diagnostics::lint_to_diagnostic(lint, source));
+                            if config.is_lint_rule_enabled(&lint.code) {
+                                lsp_diags
+                                    .push(crate::diagnostics::lint_to_diagnostic(lint, source));
+                            }
                         }
                         if !lsp_diags.is_empty() {
                             client.publish_diagnostics(uri, lsp_diags, None).await;
@@ -210,7 +232,11 @@ pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Clie
                     }
                 }
             }
-            info!(file_count, "Published project-scoped diagnostics for all .al files");
+            drop(config);
+            info!(
+                file_count,
+                "Published project-scoped diagnostics for all .al files"
+            );
         }
     }
 }
@@ -220,9 +246,17 @@ pub(crate) async fn initialize_workspace(workspace: Arc<Workspace>, client: Clie
 /// Extracted from `AlServer::load_caches_from_disk` to be callable from the background init task.
 async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
     // SILENT: .unwrap_or_else recovers from RwLock poison by taking the inner value
-    if workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).is_empty() {
+    if workspace
+        .builtins
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_empty()
+    {
         if let Some(cached) = al_core::semantic_types::cache::read_builtins(version) {
-            info!(count = cached.len(), "Loaded built-in types from disk cache");
+            info!(
+                count = cached.len(),
+                "Loaded built-in types from disk cache"
+            );
             al_core::semantic::set_builtins(workspace, cached, version);
         }
     }
@@ -230,7 +264,9 @@ async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
         if let Some(cached) = al_core::semantic_types::cache::read_error_codes(version) {
             info!(count = cached.len(), "Loaded error codes from disk cache");
             for ec in cached {
-                workspace.error_codes.insert(ec.code.clone(), ec.message.clone());
+                workspace
+                    .error_codes
+                    .insert(ec.code.clone(), ec.message.clone());
             }
         }
     }
@@ -335,27 +371,32 @@ async fn download_symbols_from_server(
     let dest = project.root.join(".alpackages");
     // Wire auth messages to LSP showMessage so the user sees device code prompts
     let lsp = lsp_client.clone();
-    let message_sink: al_core::symbols::bc_server::MessageSink =
-        std::sync::Arc::new(move |msg| {
-            let c = lsp.clone();
-            let m = msg.to_string();
-            tokio::spawn(async move {
-                c.show_message(tower_lsp::lsp_types::MessageType::INFO, m).await;
-            });
+    let message_sink: al_core::symbols::bc_server::MessageSink = std::sync::Arc::new(move |msg| {
+        let c = lsp.clone();
+        let m = msg.to_string();
+        tokio::spawn(async move {
+            c.show_message(tower_lsp::lsp_types::MessageType::INFO, m)
+                .await;
         });
+    });
     let auth = match config.authentication {
         al_core::launch::AuthMethod::Windows => al_core::symbols::bc_server::AuthMethod::Windows,
-        al_core::launch::AuthMethod::UserPassword => al_core::symbols::bc_server::AuthMethod::UserPassword,
+        al_core::launch::AuthMethod::UserPassword => {
+            al_core::symbols::bc_server::AuthMethod::UserPassword
+        }
         al_core::launch::AuthMethod::AAD => al_core::symbols::bc_server::AuthMethod::AAD,
     };
     let insecure_tls = config.accept_invalid_certs;
-    let client = al_core::symbols::bc_server::BcServerClient::new(auth, config.tenant.clone(), message_sink, insecure_tls);
+    let client = al_core::symbols::bc_server::BcServerClient::new(
+        auth,
+        config.tenant.clone(),
+        message_sink,
+        insecure_tls,
+    );
     // al_core::project::AppDependency is re-exported from al-symbols — clone directly.
     let url_deps: Vec<(String, al_core::symbols::nuget::AppDependency)> = deps
         .iter()
-        .filter_map(|dep| {
-            config.dev_packages_url(dep).map(|url| (url, dep.clone()))
-        })
+        .filter_map(|dep| config.dev_packages_url(dep).map(|url| (url, dep.clone())))
         .collect();
     let results = client.download_all(&url_deps, &dest).await;
 
@@ -474,15 +515,19 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         .client
         .show_message(
             MessageType::INFO,
-            format!("Downloading {} symbol packages from {}...", deps.len(), source_name),
+            format!(
+                "Downloading {} symbol packages from {}...",
+                deps.len(),
+                source_name
+            ),
         )
         .await;
 
     let packages = match source {
-        DownloadSource::Server => download_symbols_from_server(&project, &deps, &server.client).await,
-        DownloadSource::NuGet => {
-            download_packages_nuget(&deps, &project.packages_dir).await
+        DownloadSource::Server => {
+            download_symbols_from_server(&project, &deps, &server.client).await
         }
+        DownloadSource::NuGet => download_packages_nuget(&deps, &project.packages_dir).await,
     };
 
     if packages.is_empty() {
@@ -498,7 +543,10 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
 
     // Reload symbol index (with cache for fast subsequent starts)
     let cache = al_core::symbols::cache::SymbolCache::default_location();
-    let loaded = server.workspace.symbols.load_packages_cached(&packages, &cache);
+    let loaded = server
+        .workspace
+        .symbols
+        .load_packages_cached(&packages, &cache);
     server.workspace.symbols.load_runtime_enums();
     // Invalidate insight graph -- packages changed (ISSUE-132 fix)
     server.workspace.invalidate_insight_graph();
@@ -535,11 +583,8 @@ pub(crate) fn handle_workspace_symbol(
     // Use al-core search to avoid duplicating the name-filter loop (ISSUE-057 fix:
     // reads from cached object_info, not re-parsing files on every request).
     const MAX_LSP_SYMBOLS: usize = 10_000;
-    let ws_results = al_core::queries::search::workspace_search(
-        &server.workspace,
-        query,
-        MAX_LSP_SYMBOLS,
-    );
+    let ws_results =
+        al_core::queries::search::workspace_search(&server.workspace, query, MAX_LSP_SYMBOLS);
 
     let mut results = Vec::new();
 
@@ -555,7 +600,10 @@ pub(crate) fn handle_workspace_symbol(
                     deprecated: None,
                     location: Location {
                         uri: file_uri,
-                        range: al_core::syntax::ts_range_to_lsp(&r.info.range, file_text_entry.value().as_bytes()),
+                        range: al_core::syntax::ts_range_to_lsp(
+                            &r.info.range,
+                            file_text_entry.value().as_bytes(),
+                        ),
                     },
                     container_name: Some(r.info.kind.clone()),
                 });
@@ -632,10 +680,12 @@ fn sentinel_path() -> Option<PathBuf> {
     Some(data_dir.join("al-lsp").join(".settings-prompt-shown"))
 }
 
-/// Check whether Zed's settings.json already has an `al-lsp` section.
+/// Check whether Zed's settings.json already has correct AL settings.
 ///
-/// If it does, the user has already configured AL-specific settings and we
-/// should not prompt again.
+/// Returns true only if both `lsp.al-lsp` exists AND
+/// `languages.AL.language_servers` contains "al-lsp". This prevents the
+/// prompt from being skipped when settings are present but broken (e.g.
+/// empty `language_servers: []`).
 fn zed_has_al_settings() -> bool {
     let Some(path) = zed_settings_path() else {
         return false;
@@ -643,27 +693,31 @@ fn zed_has_al_settings() -> bool {
     let Ok(content) = std::fs::read_to_string(&path) else {
         return false;
     };
-    // Fast string check before JSON parsing — avoid allocations for the common case.
     if !content.contains("al-lsp") {
         return false;
     }
-    // Parse and check for lsp.al-lsp key.
-    if let Ok(v) = strip_jsonc_comments_and_parse(&content) {
-        return v
-            .get("lsp")
-            .and_then(|lsp| lsp.get("al-lsp"))
-            .is_some();
-    }
-    false
+    let Ok(v) = strip_jsonc_comments_and_parse(&content) else {
+        return false;
+    };
+    // Check lsp.al-lsp exists
+    let has_lsp_section = v.get("lsp").and_then(|lsp| lsp.get("al-lsp")).is_some();
+    // Check languages.AL.language_servers contains "al-lsp"
+    let has_lang_server = v
+        .get("languages")
+        .and_then(|l| l.get("AL"))
+        .and_then(|al| al.get("language_servers"))
+        .and_then(|ls| ls.as_array())
+        .map(|arr| arr.iter().any(|v| v.as_str() == Some("al-lsp")))
+        .unwrap_or(false);
+    has_lsp_section && has_lang_server
 }
 
 /// Apply recommended AL settings to Zed's settings.json.
 ///
 /// Reads the current settings, merges recommended AL-specific settings,
 /// and writes back. Creates the file (and parent directories) if needed.
-pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Error>> {
-    let settings_path = zed_settings_path()
-        .ok_or("Cannot determine Zed settings path")?;
+pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let settings_path = zed_settings_path().ok_or("Cannot determine Zed settings path")?;
 
     // Read current settings (or empty object if file doesn't exist yet).
     let current: serde_json::Value = if settings_path.exists() {
@@ -714,7 +768,7 @@ fn zed_settings_path() -> Option<PathBuf> {
 /// Strip JSONC comments (`//` and `/* */`) and parse as JSON.
 fn strip_jsonc_comments_and_parse(
     input: &str,
-) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     let mut in_string = false;
@@ -784,10 +838,7 @@ fn strip_jsonc_comments_and_parse(
 ///
 /// Objects are merged recursively; all other value types are replaced by
 /// the override value.  Existing user settings are never removed.
-fn deep_merge(
-    base: &serde_json::Value,
-    overrides: &serde_json::Value,
-) -> serde_json::Value {
+fn deep_merge(base: &serde_json::Value, overrides: &serde_json::Value) -> serde_json::Value {
     match (base, overrides) {
         (serde_json::Value::Object(base_map), serde_json::Value::Object(override_map)) => {
             let mut merged = base_map.clone();

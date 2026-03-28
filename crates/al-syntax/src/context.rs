@@ -43,23 +43,73 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
             return CompletionContext::MemberAccess;
         }
 
-        // Check if we're in a type position: look for "name:" or "name :" pattern
-        // Exclude case labels like `Status::Posting:` where `::` indicates an enum scope
+        // Check if we're in a type position: look for "name:" or "name :" pattern.
+        //
+        // AL type annotation looks like:  `varname : TypeName`
+        // A case label looks like:        `Status::Posting:`   (enum value followed by `:`)
+        // An assignment looks like:       `x := ...`
+        //
+        // Strategy: scan the prefix backwards, find the last `:` that is not part
+        // of `::` or `:=`, then check whether that colon is a type-annotation colon
+        // (the identifier before it is NOT preceded by `::`) and whether there is
+        // a non-empty token after it (what is being typed).
         let before_cursor = prefix.trim();
-        if before_cursor.ends_with(':') && !before_cursor.ends_with(":=") && !before_cursor.contains("::") {
-            return CompletionContext::TypePosition;
+
+        // Find the last colon in `s` that is not part of `::` or `:=`.
+        // Returns the byte position, or None.
+        let find_type_colon = |s: &str| -> Option<usize> {
+            let b = s.as_bytes();
+            // Scan right-to-left
+            let mut idx = b.len();
+            while idx > 0 {
+                idx -= 1;
+                if b[idx] != b':' {
+                    continue;
+                }
+                // Skip if it's the second `:` of `::`
+                if idx > 0 && b[idx - 1] == b':' {
+                    idx -= 1; // skip over the first `:` of `::`
+                    continue;
+                }
+                // Skip if it's `:=`
+                if idx + 1 < b.len() && b[idx + 1] == b'=' {
+                    continue;
+                }
+                // This is a plain `:` — but we must verify it's a type-annotation
+                // colon, not a case-label colon.  A case-label colon follows an
+                // enum value, which itself is preceded by `::`:
+                //   `Status::Posting:`  — before the `:` is `Posting`, preceded by `::`
+                // Strip the identifier token that precedes this colon:
+                let before_colon = s[..idx].trim_end();
+                let token_before_trimmed = before_colon
+                    .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
+                    .trim_end();
+                if token_before_trimmed.ends_with("::") {
+                    // The identifier before this colon was itself an enum value — case label
+                    continue;
+                }
+                return Some(idx);
+            }
+            None
+        };
+
+        if before_cursor.ends_with(':') && !before_cursor.ends_with(":=") {
+            // Cursor is directly after a colon — check it's a type-annotation colon
+            let without_trailing = before_cursor.trim_end_matches(':').trim_end();
+            let token_before_trimmed = without_trailing
+                .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
+                .trim_end();
+            if !token_before_trimmed.ends_with("::") {
+                return CompletionContext::TypePosition;
+            }
         }
 
-        // Check if the line before has a var declaration pattern
-        // but exclude lines that contain := (assignment) or :: (enum scope / case label)
-        if !before_cursor.contains(":=") && !before_cursor.contains("::") {
-            if let Some(colon_pos) = before_cursor.rfind(':') {
-                let after_colon = before_cursor[colon_pos + 1..].trim();
-                // If there's a colon earlier on the line and we're typing the type
-                if !after_colon.is_empty() {
-                    // Likely typing a type name
-                    return CompletionContext::TypePosition;
-                }
+        // Check if the line has a var declaration pattern: `varname: <typing>`
+        // but exclude assignments (`:=`) and enum scopes (`::`) near the colon.
+        if let Some(colon_pos) = find_type_colon(before_cursor) {
+            let after_colon = before_cursor[colon_pos + 1..].trim();
+            if !after_colon.is_empty() {
+                return CompletionContext::TypePosition;
             }
         }
 
@@ -105,9 +155,49 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
     let mut paren_depth = 0i32;
     let mut comma_count = 0u32;
 
-    // Walk backwards from end
-    for i in (0..bytes.len()).rev() {
+    // Walk backwards from end.
+    // When we encounter a closing quote (`'` or `"`), skip backwards past the
+    // entire string literal (handling doubled-quote escapes) so that parens and
+    // commas inside strings are not counted.
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
         match bytes[i] {
+            // Single-quoted string — scan backwards to its opening `'`
+            b'\'' => {
+                // We are sitting on a `'`. Walk left past the string contents.
+                // A doubled `''` is an escape sequence inside the string.
+                loop {
+                    if i == 0 {
+                        break;
+                    }
+                    i -= 1;
+                    if bytes[i] == b'\'' {
+                        // Check if this is an escaped pair: the character before it is also `'`
+                        if i > 0 && bytes[i - 1] == b'\'' {
+                            i -= 1; // consume both halves of the escape, keep scanning
+                        } else {
+                            break; // found the opening `'`
+                        }
+                    }
+                }
+            }
+            // Double-quoted identifier — scan backwards to its opening `"`
+            b'"' => {
+                loop {
+                    if i == 0 {
+                        break;
+                    }
+                    i -= 1;
+                    if bytes[i] == b'"' {
+                        if i > 0 && bytes[i - 1] == b'"' {
+                            i -= 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
             b')' => paren_depth += 1,
             b'(' => {
                 if paren_depth > 0 {
@@ -311,5 +401,84 @@ mod tests {
         let ctx = detect_context(text, pos);
         // Should not panic, uses full line when col > line length
         let _ = ctx;
+    }
+
+    // -----------------------------------------------------------------------
+    // #24 — TypePosition detection must only look at the immediate token, not
+    // the whole line prefix.  A `::` earlier on the line (e.g. from a case
+    // label or assignment) must not suppress TypePosition for a later `x: I`.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_detect_context_type_position_after_enum_assign_on_same_line() {
+        // `Status := Status::Posting; x: I` — the `x: I` part is a type annotation
+        // even though `::` appears earlier in the line.
+        let text = "    Status := Status::Posting; x: I\n";
+        // cursor is after `x: I`, character index 35
+        let pos = Position { line: 0, character: 35 };
+        let ctx = detect_context(text, pos);
+        assert_eq!(
+            ctx,
+            CompletionContext::TypePosition,
+            "TypePosition should be detected even when '::' appears earlier on the line"
+        );
+    }
+
+    #[test]
+    fn test_detect_context_enum_token_not_type_position() {
+        // `Status::` — cursor directly after `::`, should be EnumAccess
+        let text = "    Status::\n";
+        let pos = Position { line: 0, character: 12 };
+        let ctx = detect_context(text, pos);
+        assert_eq!(ctx, CompletionContext::EnumAccess);
+    }
+
+    // -----------------------------------------------------------------------
+    // #25 — find_call_context must skip string literal contents when counting
+    // parens and commas.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_call_context_paren_inside_string_ignored() {
+        // The `(hi)` inside the string must not affect paren depth.
+        let result = find_call_context("Message('say (hi)', ");
+        assert_eq!(
+            result,
+            Some(("Message", 1)),
+            "paren inside string literal must not corrupt depth counter"
+        );
+    }
+
+    #[test]
+    fn test_find_call_context_comma_inside_string_ignored() {
+        // The comma inside the string must not be counted as a parameter separator.
+        let result = find_call_context("Proc('a, b', ");
+        assert_eq!(
+            result,
+            Some(("Proc", 1)),
+            "comma inside string literal must not be counted as a parameter separator"
+        );
+    }
+
+    #[test]
+    fn test_find_call_context_escaped_quote_in_string() {
+        // `'It''s (fine)'` — the `''` escape and the `(` inside must both be skipped.
+        let result = find_call_context("Proc('It''s (fine)', ");
+        assert_eq!(
+            result,
+            Some(("Proc", 1)),
+            "escaped quote and paren inside string must be skipped"
+        );
+    }
+
+    #[test]
+    fn test_find_call_context_double_quoted_identifier_with_paren() {
+        // Double-quoted identifier containing a `(` must be skipped.
+        let result = find_call_context("Proc(\"My (Param)\", ");
+        assert_eq!(
+            result,
+            Some(("Proc", 1)),
+            "paren inside double-quoted identifier must not corrupt depth counter"
+        );
     }
 }

@@ -178,6 +178,14 @@ async fn test_hover_on_parameter() {
     let hover = client.hover("src/test.al", 10, 18).await;
     assert!(hover.is_some(), "Should return hover info for parameter A");
 
+    let hover_val = hover.unwrap();
+    let content = hover_content(&hover_val);
+    assert!(
+        content.map_or(false, |c| c.contains('A') || c.contains("Integer")),
+        "Hover on parameter A should mention parameter name or type. Got: {:?}",
+        content
+    );
+
     client.shutdown().await;
 }
 

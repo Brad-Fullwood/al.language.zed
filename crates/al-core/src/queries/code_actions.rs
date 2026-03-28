@@ -1061,6 +1061,112 @@ fn find_stub_insertion_line(obj_node: tree_sitter::Node) -> u32 {
     obj_node.end_position().row as u32
 }
 
+/// Resolve known field names for the Record variable used in a `with` statement.
+///
+/// Looks up the variable declaration in the file's var sections, extracts the table name,
+/// then returns the table's field names from the symbol index.  Returns an empty Vec if
+/// the table cannot be resolved (field-name pass becomes a no-op).
+fn resolve_with_field_names(
+    workspace: &Workspace,
+    tree: &tree_sitter::Tree,
+    text: &str,
+    record_var: &str,
+) -> Vec<String> {
+    // Walk the entire file to find a var declaration for `record_var`.
+    let source = text.as_bytes();
+    let table_name = find_record_type_for_var(tree.root_node(), source, record_var);
+    let table_name = match table_name {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    // Look up the table in the symbol index and collect field names.
+    let entries = workspace.symbols.get_by_name(&table_name);
+    for entry in &entries {
+        if (entry.kind == al_symbols::ObjectKind::Table || entry.kind == al_symbols::ObjectKind::TableExtension)
+            && !entry.fields.is_empty()
+        {
+            return entry.fields.iter().map(|f| f.name.clone()).collect();
+        }
+    }
+
+    Vec::new()
+}
+
+/// Walk an AST to find the Record type name for a given variable name.
+///
+/// Searches `var_section` and `parameter_list` nodes across the whole file.
+fn find_record_type_for_var(root: tree_sitter::Node, source: &[u8], var_name: &str) -> Option<String> {
+    let var_lower = var_name.to_lowercase();
+    find_record_type_recursive(root, source, &var_lower)
+}
+
+fn find_record_type_recursive(node: tree_sitter::Node, source: &[u8], var_lower: &str) -> Option<String> {
+    let kind = node.kind();
+
+    if kind == "regular_variable_declaration" {
+        // Check if this is the variable we're looking for.
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if let Ok(name_text) = name_node.utf8_text(source) {
+                let name_clean = name_text.trim_matches('"').trim();
+                if name_clean.to_lowercase() == *var_lower {
+                    // Extract Record type
+                    if let Some(type_node) = node.child_by_field_name("type") {
+                        return extract_record_subtype(type_node, source);
+                    }
+                }
+            }
+        }
+    } else if kind == "parameter" {
+        if let Some(name_node) = node.child_by_field_name("name") {
+            if let Ok(name_text) = name_node.utf8_text(source) {
+                let name_clean = name_text.trim_matches('"').trim();
+                if name_clean.to_lowercase() == *var_lower {
+                    if let Some(type_node) = node.child_by_field_name("type") {
+                        return extract_record_subtype(type_node, source);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = find_record_type_recursive(child, source, var_lower) {
+            return Some(found);
+        }
+    }
+
+    None
+}
+
+/// Extract the table name from a `type_reference` node for `Record "TableName"`.
+fn extract_record_subtype(type_node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut found_record_kw = false;
+    let mut cursor = type_node.walk();
+    for child in type_node.children(&mut cursor) {
+        let kind = child.kind();
+        if !found_record_kw {
+            if kind.starts_with("kw_") || kind == "identifier" || kind == "name_or_keyword" {
+                if let Ok(text) = child.utf8_text(source) {
+                    if text.trim().to_lowercase() == "record" {
+                        found_record_kw = true;
+                    }
+                }
+            }
+        } else {
+            // Next token is the table name (possibly quoted)
+            if let Ok(text) = child.utf8_text(source) {
+                let trimmed = text.trim().trim_matches('"').trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Eliminate a `with` statement by qualifying field references with the record variable.
 /// Detects `with X do begin...end` and replaces with the body, prefixing unqualified
 /// identifiers with `X.` (AA0205 compliance).
@@ -1096,8 +1202,12 @@ fn source_action_eliminate_with(
 
     let indent = detect_indent(text, with_node.start_position().row as u32);
 
+    // Try to resolve field names for the record variable so the field-name pass can
+    // qualify occurrences inside `if`, `filter(...)`, etc. (issue #33).
+    let field_names = resolve_with_field_names(workspace, &tree, text, &record_var);
+
     // Qualify unqualified identifiers in the body with `record_var.`
-    let qualified_body = qualify_with_references(&body_text, &record_var, &indent);
+    let qualified_body = qualify_with_references(&body_text, &record_var, &indent, &field_names);
 
     let edit = TextEdit {
         range: Range {
@@ -1161,9 +1271,13 @@ fn extract_with_body(body_node: tree_sitter::Node, source: &[u8]) -> (String, bo
 }
 
 /// Qualify field references in with-body text by prepending the record variable.
-/// For each line, if it starts with an unqualified identifier assignment or method call,
-/// prepend `record_var.`.
-fn qualify_with_references(body: &str, record_var: &str, indent: &str) -> String {
+///
+/// Two-pass approach:
+/// 1. Structural: if a line starts with an unqualified identifier followed by `:=` or `(`,
+///    prepend `record_var.` to the whole line.
+/// 2. Field-name: for each known field name, substitute unqualified occurrences with
+///    `record_var.field` anywhere in the line (word-boundary, not already qualified).
+fn qualify_with_references(body: &str, record_var: &str, indent: &str, field_names: &[String]) -> String {
     let mut result = String::new();
 
     for line in body.lines() {
@@ -1173,70 +1287,153 @@ fn qualify_with_references(body: &str, record_var: &str, indent: &str) -> String
             continue;
         }
 
-        // Check if line starts with an assignment target or method call that should be qualified
-        // Pattern: identifier or "quoted id" followed by := or ( or .
-        let qualified_line = qualify_line(trimmed, record_var);
+        // Pass 1+2: structural qualification then field-name substitution
+        let qualified_line = qualify_line(trimmed, record_var, field_names);
         result.push_str(&format!("{}{}\n", indent, qualified_line));
     }
 
     result
 }
 
-/// Qualify a single line's leading identifier with the record variable.
-fn qualify_line(line: &str, record_var: &str) -> String {
+/// Qualify a single line's identifiers with the record variable.
+///
+/// Two-pass approach:
+/// 1. **Structural pass**: if the line starts with an unqualified identifier followed by
+///    `:=` or `(`, prepend `record_var.` to the whole line.  Keywords like `if`, `begin`,
+///    `end`, etc. are detected with word-boundary matching so field names that start with
+///    a keyword prefix (e.g. `EndDate`, `FormatText`) are still qualified correctly.
+/// 2. **Field-name pass**: for each known field name, substitute unqualified occurrences
+///    anywhere in the line with `record_var.field` (word-boundary, not already preceded
+///    by `.` or `:`).  This handles `if Field > 0`, `filter(Field = ...)`, etc.
+fn qualify_line(line: &str, record_var: &str, field_names: &[String]) -> String {
     let trimmed = line.trim();
 
-    // Skip lines that are already qualified (contain . before := or ()
-    // Skip keywords: if, then, else, begin, end, for, while, repeat, etc.
-    // Use whole-word matching to avoid false positives on field names like EndDate, FormatText, CaseNo.
+    // --- Pass 1: structural qualification ---
+
+    // Skip lines that start with AL keywords (whole-word match).
+    // Does NOT skip field names that begin with a keyword prefix (e.g. EndDate, IfFlag).
     let lower = trimmed.to_lowercase();
     let al_keywords = [
         "if", "then", "else", "begin", "end", "for", "while", "repeat", "until",
         "case", "exit", "error", "message", "//", "end;",
     ];
-    for kw in &al_keywords {
+    let starts_with_keyword = al_keywords.iter().any(|kw| {
         if let Some(rest) = lower.strip_prefix(kw) {
-            // Ensure this is a whole-word match: next char must be non-alphanumeric/non-underscore
-            let is_word_boundary = rest.is_empty()
-                || rest.starts_with(|c: char| !c.is_alphanumeric() && c != '_');
-            if is_word_boundary {
-                return trimmed.to_string();
-            }
+            rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric() && c != '_')
+        } else {
+            false
         }
-    }
+    });
 
-    // Check if it starts with a quoted identifier
-    if let Some(after_open) = trimmed.strip_prefix('"') {
+    let structurally_qualified = if starts_with_keyword {
+        // Cannot structurally qualify a keyword-led line — fall through to field-name pass.
+        trimmed.to_string()
+    } else if let Some(after_open) = trimmed.strip_prefix('"') {
+        // Quoted identifier at line start
         if let Some(end_quote) = after_open.find('"') {
             let after = after_open[end_quote + 1..].trim_start();
-            // If followed by := or ( it's a field/method reference to qualify
             if after.starts_with(":=") || after.starts_with('(') {
-                return format!("{}.{}", record_var, trimmed);
+                format!("{}.{}", record_var, trimmed)
+            } else {
+                trimmed.to_string()
+            }
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        // Plain identifier at line start
+        let first_word_end = trimmed
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(trimmed.len());
+        let first_word = &trimmed[..first_word_end];
+        if first_word.is_empty() {
+            trimmed.to_string()
+        } else {
+            let after_word = trimmed[first_word_end..].trim_start();
+            if after_word.starts_with('.') || after_word.starts_with("::") {
+                // Already qualified — leave as-is
+                trimmed.to_string()
+            } else if after_word.starts_with(":=") || after_word.starts_with('(') {
+                format!("{}.{}", record_var, trimmed)
+            } else {
+                trimmed.to_string()
             }
         }
-        return trimmed.to_string();
+    };
+
+    // --- Pass 2: field-name substitution ---
+    // For each known field name, replace unqualified occurrences in the line with
+    // `record_var.field`.  Skip occurrences already preceded by `.` or `:`.
+    if field_names.is_empty() {
+        return structurally_qualified;
     }
 
-    // Check if it starts with an identifier followed by := or (
-    let first_word_end = trimmed
-        .find(|c: char| !c.is_alphanumeric() && c != '_')
-        .unwrap_or(trimmed.len());
-    let first_word = &trimmed[..first_word_end];
-    if first_word.is_empty() {
-        return trimmed.to_string();
+    substitute_field_names(&structurally_qualified, record_var, field_names)
+}
+
+/// Replace all unqualified occurrences of known field names in `line` with
+/// `record_var.field_name`.  An occurrence is unqualified when the character
+/// immediately before it is NOT `.` or `:`.
+///
+/// Matching is case-insensitive; the replacement uses the original field name
+/// casing from `field_names`.
+fn substitute_field_names(line: &str, record_var: &str, field_names: &[String]) -> String {
+    let mut result = line.to_string();
+
+    // Sort longest-first to avoid shorter names shadowing longer ones.
+    let mut sorted: Vec<&String> = field_names.iter().collect();
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.len()));
+
+    for field in sorted {
+        if field.is_empty() {
+            continue;
+        }
+        let field_lower = field.to_lowercase();
+        let qualified = format!("{}.{}", record_var, field);
+
+        // Walk through the string finding word-boundary matches.
+        let mut output = String::with_capacity(result.len() + qualified.len());
+        let bytes = result.as_bytes();
+        let mut i = 0;
+
+        while i < bytes.len() {
+            // Try to match field_lower at position i (case-insensitive).
+            let remaining = &result[i..];
+            let remaining_lower = remaining.to_lowercase();
+            if remaining_lower.starts_with(field_lower.as_str()) {
+                let match_end = i + field.len();
+                // Word-boundary check: char before must not be `.`, `:`, alphanumeric, or `_`.
+                let prev_ok = if i == 0 {
+                    true
+                } else {
+                    // Get previous char
+                    let prev_char = result[..i].chars().next_back().unwrap_or(' ');
+                    prev_char != '.' && prev_char != ':' && !prev_char.is_alphanumeric() && prev_char != '_'
+                };
+                // Word-boundary check: char after must not be alphanumeric or `_`.
+                let next_ok = if match_end >= result.len() {
+                    true
+                } else {
+                    let next_char = result[match_end..].chars().next().unwrap_or(' ');
+                    !next_char.is_alphanumeric() && next_char != '_'
+                };
+
+                if prev_ok && next_ok {
+                    output.push_str(&qualified);
+                    i = match_end;
+                    continue;
+                }
+            }
+            // Push one character and advance.
+            let ch = result[i..].chars().next().unwrap();
+            output.push(ch);
+            i += ch.len_utf8();
+        }
+
+        result = output;
     }
 
-    let after_word = trimmed[first_word_end..].trim_start();
-    // Already qualified with a dot
-    if after_word.starts_with('.') {
-        return trimmed.to_string();
-    }
-    // Assignment or method call — qualify it
-    if after_word.starts_with(":=") || after_word.starts_with('(') {
-        return format!("{}.{}", record_var, trimmed);
-    }
-
-    trimmed.to_string()
+    result
 }
 
 /// Parse the file's namespace and using directives.
@@ -2043,12 +2240,14 @@ fn source_action_add_parens(
     }
 
     // Find where to insert "()" — right before the ';'
-    let semicolon_col = line.rfind(';')?;
+    // rfind returns a byte index; convert to UTF-16 code unit offset for LSP.
+    let semicolon_byte = line.rfind(';')?;
+    let semicolon_col = line[..semicolon_byte].encode_utf16().count() as u32;
 
     let edit = TextEdit {
         range: Range {
-            start: super::Position { line: line_idx as u32, character: semicolon_col as u32 },
-            end: super::Position { line: line_idx as u32, character: semicolon_col as u32 },
+            start: super::Position { line: line_idx as u32, character: semicolon_col },
+            end: super::Position { line: line_idx as u32, character: semicolon_col },
         },
         new_text: "()".to_string(),
     };
@@ -2147,18 +2346,20 @@ fn source_action_convert_event_subscriber(
         return None;
     }
 
-    // Compute character column offsets within the full line
+    // Compute character column offsets within the full line.
+    // All indices so far are byte offsets; convert to UTF-16 code units for LSP.
     let abs_start = args_start + start_off;
     let trimmed_prefix_len = rest[start_off..end_off].len() - rest[start_off..end_off].trim_start().len();
-    let quote_col = abs_start + trimmed_prefix_len;
+    let quote_byte = abs_start + trimmed_prefix_len;
+    let quote_end_byte = quote_byte + arg_text.len();
 
-    // The quoted string in the line
-    let quote_end_col = quote_col + arg_text.len();
+    let quote_col = line[..quote_byte].encode_utf16().count() as u32;
+    let quote_end_col = line[..quote_end_byte].encode_utf16().count() as u32;
 
     let edit = TextEdit {
         range: Range {
-            start: super::Position { line: line_idx as u32, character: quote_col as u32 },
-            end: super::Position { line: line_idx as u32, character: quote_end_col as u32 },
+            start: super::Position { line: line_idx as u32, character: quote_col },
+            end: super::Position { line: line_idx as u32, character: quote_end_col },
         },
         new_text: event_name.to_string(),
     };
@@ -2864,31 +3065,31 @@ codeunit 50100 "My Codeunit"
         // e.g. EndDate, FormatText, CaseNo must not be silently dropped by
         // the whole-word keyword guard.
         assert!(
-            qualify_line("EndDate := Today;", "Rec").starts_with("Rec."),
+            qualify_line("EndDate := Today;", "Rec", &[]).starts_with("Rec."),
             "EndDate starts with 'end' but is not a keyword — must be qualified"
         );
         assert!(
-            qualify_line("FormatText := 'X';", "Rec").starts_with("Rec."),
+            qualify_line("FormatText := 'X';", "Rec", &[]).starts_with("Rec."),
             "FormatText starts with 'for' but is not a keyword — must be qualified"
         );
         assert!(
-            qualify_line("CaseNo := 1;", "Rec").starts_with("Rec."),
+            qualify_line("CaseNo := 1;", "Rec", &[]).starts_with("Rec."),
             "CaseNo starts with 'case' but is not a keyword — must be qualified"
         );
         assert!(
-            qualify_line("IfFlag := true;", "Rec").starts_with("Rec."),
+            qualify_line("IfFlag := true;", "Rec", &[]).starts_with("Rec."),
             "IfFlag starts with 'if' but is not a keyword — must be qualified"
         );
         assert!(
-            qualify_line("MessageText := '';", "Rec").starts_with("Rec."),
+            qualify_line("MessageText := '';", "Rec", &[]).starts_with("Rec."),
             "MessageText starts with 'message' but is not a keyword — must be qualified"
         );
         assert!(
-            qualify_line("ExitCode := 0;", "Rec").starts_with("Rec."),
+            qualify_line("ExitCode := 0;", "Rec", &[]).starts_with("Rec."),
             "ExitCode starts with 'exit' but is not a keyword — must be qualified"
         );
         assert!(
-            qualify_line("ErrorText := '';", "Rec").starts_with("Rec."),
+            qualify_line("ErrorText := '';", "Rec", &[]).starts_with("Rec."),
             "ErrorText starts with 'error' but is not a keyword — must be qualified"
         );
     }
@@ -2896,20 +3097,20 @@ codeunit 50100 "My Codeunit"
     #[test]
     fn qualify_line_skips_al_keywords_exactly() {
         // Exact keyword lines must not be qualified.
-        assert_eq!(qualify_line("end;", "Rec"), "end;");
-        assert_eq!(qualify_line("begin", "Rec"), "begin");
-        assert_eq!(qualify_line("end", "Rec"), "end");
-        assert!(qualify_line("if x = 1 then", "Rec").starts_with("if"));
-        assert!(qualify_line("for i := 1 to 10 do", "Rec").starts_with("for"));
-        assert!(qualify_line("while x > 0 do", "Rec").starts_with("while"));
-        assert!(qualify_line("case x of", "Rec").starts_with("case"));
+        assert_eq!(qualify_line("end;", "Rec", &[]), "end;");
+        assert_eq!(qualify_line("begin", "Rec", &[]), "begin");
+        assert_eq!(qualify_line("end", "Rec", &[]), "end");
+        assert!(qualify_line("if x = 1 then", "Rec", &[]).starts_with("if"));
+        assert!(qualify_line("for i := 1 to 10 do", "Rec", &[]).starts_with("for"));
+        assert!(qualify_line("while x > 0 do", "Rec", &[]).starts_with("while"));
+        assert!(qualify_line("case x of", "Rec", &[]).starts_with("case"));
     }
 
     #[test]
     fn qualify_line_skips_already_qualified_references() {
         // Rec.Field := X should not become Rec2.Rec.Field := X
-        assert_eq!(qualify_line("Rec.Name := 'X';", "Rec2"), "Rec.Name := 'X';");
-        assert_eq!(qualify_line("Customer.\"No.\" := '100';", "Rec"), "Customer.\"No.\" := '100';");
+        assert_eq!(qualify_line("Rec.Name := 'X';", "Rec2", &[]), "Rec.Name := 'X';");
+        assert_eq!(qualify_line("Customer.\"No.\" := '100';", "Rec", &[]), "Customer.\"No.\" := '100';");
     }
 
     fn make_interface_entry(name: &str, methods: Vec<al_symbols::MethodSymbol>) -> SymbolEntry {
@@ -4020,8 +4221,9 @@ pub fn generate_lint_fix(
 ) -> Option<serde_json::Value> {
     let start_row = diag.range.start_point.row;
     let end_row = diag.range.end_point.row;
-    let start_col = diag.range.start_point.column;
-    let end_col = diag.range.end_point.column;
+    // tree-sitter columns are byte offsets; convert to UTF-16 for LSP character positions.
+    let start_col_byte = diag.range.start_point.column;
+    let end_col_byte = diag.range.end_point.column;
 
     match diag.code.as_str() {
         // AL-L001/L005/L006: Delete the entire line range (empty block, unused var, empty trigger).
@@ -4041,18 +4243,30 @@ pub fn generate_lint_fix(
         // AL-L016: Procedure name not PascalCase — capitalise the first letter.
         "AL-L016" => {
             if let Some(line) = lines.get(start_row) {
-                let chars: Vec<char> = line.chars().collect();
-                if start_col < chars.len() {
-                    let name_end_col = if start_row == end_row { end_col } else { chars.len() };
-                    let name: String = chars[start_col..name_end_col.min(chars.len())].iter().collect();
+                // Convert byte column offsets to UTF-16 for LSP positions.
+                let utf16_start = al_syntax::byte_col_to_utf16_col(line, start_col_byte) as usize;
+                let utf16_end = if start_row == end_row {
+                    al_syntax::byte_col_to_utf16_col(line, end_col_byte) as usize
+                } else {
+                    line.encode_utf16().count()
+                };
+                // Slice the name using byte offsets (safe for string operations).
+                let name_start_byte = start_col_byte.min(line.len());
+                let name_end_byte = if start_row == end_row {
+                    end_col_byte.min(line.len())
+                } else {
+                    line.len()
+                };
+                if name_start_byte < name_end_byte {
+                    let name = &line[name_start_byte..name_end_byte];
                     if let Some(first) = name.chars().next() {
                         let fixed_name = format!("{}{}", first.to_uppercase(), &name[first.len_utf8()..]);
                         return Some(serde_json::json!({
                             "code": diag.code,
                             "message": diag.message,
                             "range": {
-                                "start": { "line": start_row, "character": start_col },
-                                "end": { "line": end_row, "character": name_end_col }
+                                "start": { "line": start_row, "character": utf16_start },
+                                "end": { "line": end_row, "character": utf16_end }
                             },
                             "newText": fixed_name,
                         }));

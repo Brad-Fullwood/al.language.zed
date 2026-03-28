@@ -544,9 +544,13 @@ async fn test_goto_definition_cross_procedure_same_file() {
     // In Precheck, "this.PrecheckRecord" calls a local procedure
     // "PrecheckRecord" on line 11 (in repeat block)
     // The identifier "PrecheckRecord" should go to its declaration
-    let _def = client.definition("objects/codeunit.al", 11, 23).await;
+    let def = client.definition("objects/codeunit.al", 11, 23).await;
     // PrecheckRecord is a local procedure in the same file, should find it
     // (this depends on find_variable_references finding cross-procedure refs)
+    assert!(
+        def.is_some(),
+        "goto definition of PrecheckRecord (local procedure call) must return a location"
+    );
 
     client.shutdown().await;
 }

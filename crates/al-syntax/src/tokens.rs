@@ -109,12 +109,14 @@ pub mod token_types {
 }
 
 /// Semantic token modifier bit-flags and legend.
+///
+/// Each constant is a bitmask where bit N corresponds to legend index N.
+/// LSP `tokenModifiers` is a bitset — OR these together to combine modifiers.
 pub mod token_modifiers {
-    pub const DECLARATION: u32 = 0;
-    pub const READONLY: u32 = 1;
-    pub const DEPRECATED: u32 = 2;
-    pub const STATIC: u32 = 3;
-
+    pub const DECLARATION: u32 = 1 << 0;
+    pub const READONLY: u32 = 1 << 1;
+    pub const DEPRECATED: u32 = 1 << 2;
+    pub const STATIC: u32 = 1 << 3;
     pub const UNNECESSARY: u32 = 1 << 4;
 
     pub const LEGEND: &[&str] = &[
@@ -200,21 +202,36 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
 
         // For single-line tokens, emit directly
         if start.row == end.row {
-            let len = (end.column - start.column) as u32;
+            // tree-sitter columns are byte offsets; LSP requires UTF-16 code unit offsets.
+            let line_str = source
+                .split(|&b| b == b'\n')
+                .nth(start.row)
+                .and_then(|l| std::str::from_utf8(l).ok())
+                .unwrap_or("");
+            let utf16_col = crate::byte_col_to_utf16_col(line_str, start.column);
+            let utf16_end = crate::byte_col_to_utf16_col(line_str, end.column);
+            let len = utf16_end.saturating_sub(utf16_col);
             if len > 0 {
-                tokens.push((start.row as u32, start.column as u32, len, token_type));
+                tokens.push((start.row as u32, utf16_col, len, token_type));
             }
         } else {
             // Multi-line tokens (e.g., block comments, multi-line strings):
-            // emit the first line only with the full byte length as a rough approximation.
-            // LSP clients handle multi-line tokens by line.
+            // emit one entry per line, converting byte offsets to UTF-16 columns.
             if let Ok(text) = node.utf8_text(source) {
                 for (i, line) in text.lines().enumerate() {
                     let row = start.row + i;
-                    let col = if i == 0 { start.column } else { 0 };
-                    let len = line.len();
-                    if len > 0 {
-                        tokens.push((row as u32, col as u32, len as u32, token_type));
+                    // For the first line, the start column is a byte offset from tree-sitter.
+                    // For subsequent lines, col is 0 (start of line).
+                    let byte_col = if i == 0 { start.column } else { 0 };
+                    let source_line = source
+                        .split(|&b| b == b'\n')
+                        .nth(row)
+                        .and_then(|l| std::str::from_utf8(l).ok())
+                        .unwrap_or(line);
+                    let utf16_col = crate::byte_col_to_utf16_col(source_line, byte_col);
+                    let utf16_len = line.encode_utf16().count() as u32;
+                    if utf16_len > 0 {
+                        tokens.push((row as u32, utf16_col, utf16_len, token_type));
                     }
                 }
             }

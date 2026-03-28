@@ -508,7 +508,11 @@ fn collect_published_events(
             if *kind == object_kind && obj == &obj_lower {
                 let (event_type_str, params) =
                     resolve_event_details(insight, symbols, key);
-                let event_name = match insight.graph[*insight.index[key].first().unwrap()] {
+                let first_idx = match insight.index[key].first() {
+                    Some(idx) => *idx,
+                    None => continue,
+                };
+                let event_name = match insight.graph[first_idx] {
                     InsightNode::Event { ref name, .. } => name.clone(),
                     _ => continue,
                 };
