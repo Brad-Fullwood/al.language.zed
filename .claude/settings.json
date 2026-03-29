@@ -27,6 +27,15 @@
             "command": "bash -c 'CMD=\"$CLAUDE_BASH_COMMAND\"; if echo \"$CMD\" | grep -qE \"cargo (check|build|test|clippy)\" && ! echo \"$CMD\" | grep -qE \"exclude zed-al|\\-p (al-|zed-al.*wasm32)\"; then echo \"WARNING: Workspace cargo commands must exclude zed-al (add --exclude zed-al) unless targeting wasm32-wasip1\" >&2; exit 2; fi; exit 0'"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'CMD=\"$CLAUDE_BASH_COMMAND\"; if echo \"$CMD\" | grep -qE \"git\\s+push.*\\s(main|master)\"; then echo \"BLOCKED: Direct push to main/master. Use feature branches.\" >&2; exit 2; fi; exit 0'"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -45,6 +54,24 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/test-quality-gate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in *.rs) cargo clippy --workspace --exclude zed-al --message-format=short 2>&1 | head -20;; esac; exit 0'"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in */Cargo.toml) cargo machete 2>&1 | head -15;; esac; exit 0'"
           }
         ]
       }
