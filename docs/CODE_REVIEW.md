@@ -195,7 +195,25 @@ Returns LSP types directly, breaking the transport-agnostic pattern all other qu
 
 ### H12: Duplicate Daemon Connection in Explorer Views
 
-**al-explorer** — Multiple views independently manage daemon connections instead of sharing.
+**al-explorer/src/main.rs** — Four separate `Option<DaemonClient>` instances (EventChainView:117, CallGraphView:226, App:487, plus a fourth). Nearly identical `ensure_client()` methods copy-pasted.
+
+### H13: Hardcoded `ObjectKind` Enum in al-explorer
+
+**File:** `crates/al-explorer/src/types.rs:19-38`
+
+Hardcoded AL object type list. Comment says "mirrors al-symbols" to avoid compile-time dependency, but still violates the no-hardcoded-values rule. Will go stale when Microsoft adds new object types.
+
+### H14: Tests Silently Pass When Env Var Unset
+
+**Files:** `data_driven.rs:8`, `zed_simulation.rs:12`, `performance.rs:15`
+
+Tests return early with `eprintln!` when `AL_TEST_PROJECT_PATH` unset. CI shows "passed" while testing nothing. Should use `#[ignore]` to show "skipped".
+
+### H15: Explorer `init_workspace` Blocks UI Thread
+
+**File:** `crates/al-explorer/src/main.rs:526-529`
+
+Retry loop calls `std::thread::sleep(800ms)` on the ratatui main thread. Freezes terminal for up to 4 seconds during startup.
 
 ---
 
