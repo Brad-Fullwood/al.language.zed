@@ -10,7 +10,7 @@
 
 The codebase is well-architected with clear separation between transport (al-lsp) and business logic (al-core). The dependency hierarchy is sound and no violations were found. However, there are concrete bugs (UTF-16 position handling, stale line arrays in workspace edits), security issues (unbounded reads, process::exit bypassing Drop), and structural problems (blocking I/O in async contexts, hardcoded AL values surviving in al-syntax).
 
-**Total findings**: 10 Critical, 12 High, 8 Medium, 5 Low
+**Total findings**: 10 Critical, 19 High, 12 Medium, 5 Low
 
 ---
 
@@ -192,6 +192,30 @@ Returns LSP types directly, breaking the transport-agnostic pattern all other qu
 ### H11: Manual JSON in Daemon Dispatch
 
 **al-lsp/src/daemon/lsp_dispatch.rs** — LSP types manually reconstructed as JSON instead of using `serde_json::to_value()` on the existing `Serialize` impls.
+
+### H16: Dedup Cache Returns Empty Results for Valid Requests
+
+**File:** `crates/al-lsp/src/daemon/mod.rs:327-333`
+
+When a request is detected as duplicate (within 50ms), the daemon returns empty (`[]` for completions, `Null` for hover). User sees no hover info if client doesn't retry. Should queue duplicates and return the first request's actual result to all.
+
+### H17: DAP Step Commands Acknowledged But Not Executed
+
+**File:** `crates/al-dap-client/src/native_dap.rs:451-461`
+
+`next`, `stepIn`, `stepOut`, `pause` respond `success: true` but don't invoke the corresponding `BcDebugSession` hub methods. User clicks "step over" and nothing happens.
+
+### H18: DAP Shared `seq_counter` Between Concurrent Tasks
+
+**File:** `crates/al-lsp/src/dap/mod.rs:116`
+
+`AtomicI64` shared between `stdin_to_child` and `child_to_stdout` tasks. DAP spec requires monotonically increasing seq per direction; interleaving breaks this.
+
+### H19: Client-Side Unbounded Read in DaemonClient
+
+**File:** `crates/al-daemon-client/src/client.rs:140-149`
+
+`read_line()` into unbounded `String`, limit checked after. Server side correctly uses `read_bounded_line`, but client doesn't.
 
 ### H12: Duplicate Daemon Connection in Explorer Views
 
