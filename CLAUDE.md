@@ -124,11 +124,6 @@ match kind { "table" | "page" | "codeunit" => ... }  // if matching AL object ty
 
 If the extraction pipeline lacks what you need, **update the generator** at `tree-sitter-al/generator/tools/al-extract/` — do NOT create a hardcoded constant.
 
-### Known Existing Violations (to be fixed)
-
-- `crates/al-syntax/src/symbols.rs:430` — `PAGE_CONTROL_KEYWORDS` (use `language_data::page_controls()`)
-- `crates/al-syntax/src/formatting.rs:419` — `SINGLE_STMT_OPENERS` (use `language_data::keywords().control`)
-
 ### Hook Enforcement
 
 A PostToolUse hook in `.claude/settings.json` blocks any `.rs` file containing hardcoded AL value patterns. If you hit this block, you're doing it wrong — use `LanguageData` or the symbol index.
@@ -223,18 +218,6 @@ let entry = workspace.symbols.get(&key);
 some_async_operation().await;  // DEADLOCK: still holding DashMap shard lock
 drop(entry);
 ```
-
----
-
-## Known Bugs (from code review 2026-03-29)
-
-See `docs/CODE_REVIEW.md` for full details. Key bugs to be aware of:
-
-1. **UTF-16 position bug** — `al-syntax/src/navigation.rs:9` and `type_resolver.rs:181` pass `Position.character` (UTF-16) directly as byte offset to tree-sitter. Breaks on non-ASCII.
-2. **Stale line array in rename** — `al-cli/src/commands/lsp.rs:889` computes line offsets once then mutates content. Multi-edit rename corrupts files.
-3. **Blocking I/O in async** — `al-lsp/src/daemon/mod.rs:568` uses `std::fs::read_to_string` in async handler. Blocks tokio.
-4. **LSP types in al-core** — `al-core/src/file_index.rs:93` and `resolution.rs` use `tower_lsp::lsp_types` in core data structures.
-5. **process::exit in tokio tasks** — `al-lsp/src/main.rs:39,74` bypasses Drop destructors.
 
 ---
 
