@@ -38,6 +38,37 @@
             "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in *.rs) if grep -qE \"const\\s+(AL_BUILTIN_FUNCTIONS|AL_OBJECT_BODY_KEYWORDS|GLOBAL_BUILTINS|AL_KEYWORDS|BUILTIN_TYPES|AL_SYSTEM_FUNCTIONS|AL_DATA_TYPES|TRIGGER_NAMES|AL_RESERVED_WORDS)\" \"$FILE\" 2>/dev/null; then echo \"BLOCKED: Hardcoded AL language values detected in $FILE. Use LanguageData or al-symbols instead.\" >&2; exit 2; fi;; esac; exit 0'"
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/test-quality-gate.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-gate.sh",
+            "timeout": 300
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/review-gate.sh",
+            "timeout": 60
+          }
+        ]
       }
     ]
   }
