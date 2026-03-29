@@ -222,7 +222,25 @@ Returns LSP types directly, breaking the transport-agnostic pattern all other qu
 
 **al-lsp/src/server.rs** — No mechanism for requests to await workspace readiness. Early requests may return incomplete results.
 
-### M6: Inconsistent Idiom Usage
+### M6: `code_actions.rs` is a 4100-line God File
+
+**File:** `crates/al-core/src/queries/code_actions.rs`
+
+15+ distinct code action implementations in a single file. Should be split into a `code_actions/` directory with one file per action family.
+
+### M7: Full Workspace Scan on Every References/Rename Request
+
+**Files:** `crates/al-core/src/queries/references.rs:40-59`, `rename.rs:59-88`
+
+Both iterate every file in `workspace.file_index.files` per request. For 10K-file workspaces, this is expensive per keystroke. Should use reverse index to narrow search.
+
+### M8: Linear Builtin Scan in `signature.rs` When O(1) Index Exists
+
+**File:** `crates/al-core/src/queries/signature.rs:149-177`
+
+O(n*m) scan over all builtin types and methods. `SemanticCache::find_methods_by_name()` provides O(1) lookup and is already used by `hover.rs`.
+
+### M9: Inconsistent Idiom Usage
 
 Mixed `if let Some`, `.map_or(false, ...)`, `.is_some_and(...)` throughout codebase. Could standardize on `let-else` and `is_some_and`.
 
