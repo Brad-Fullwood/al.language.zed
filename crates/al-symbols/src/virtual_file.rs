@@ -21,10 +21,7 @@ pub fn cache_dir() -> PathBuf {
 /// Tries to extract source from the .app ZIP archive first.
 /// If no source is available, renders a complete outline from symbol metadata
 /// with full procedure signatures, fields, keys, enum values, and attributes.
-pub fn get_or_create(
-    entry: &SymbolEntry,
-    app_path: Option<&Path>,
-) -> std::io::Result<PathBuf> {
+pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::Result<PathBuf> {
     let cache_root = cache_dir();
     let pkg_dir = cache_root.join(sanitize_filename(&entry.package));
     let filename = format!("{} {} {}.al", entry.kind, entry.id, entry.name);
@@ -77,6 +74,11 @@ pub fn app_has_source(app_path: &Path) -> bool {
         Ok(f) => f,
         Err(_) => return false,
     };
+    // SAFETY: .app files are opened read-only. Concurrent modification is
+    // prevented by the staleness check at the call site (package version
+    // comparison via `modified` timestamp). On Linux, MAP_PRIVATE means a
+    // concurrent file replacement serves stale data rather than UB. On
+    // Windows, the file cannot be replaced while it is mapped.
     let mmap = match unsafe { Mmap::map(&file) } {
         Ok(m) => m,
         Err(_) => return false,
@@ -111,7 +113,13 @@ fn extract_source_from_app(app_path: &Path, entry: &SymbolEntry) -> Option<Strin
 
 fn sanitize_filename(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -144,7 +152,10 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
         if f.type_name.is_empty() {
             out.push_str(&format!("        field({}; {}) {{ }}\n", f.id, n));
         } else {
-            out.push_str(&format!("        field({}; {}; {}) {{ }}\n", f.id, n, f.type_name));
+            out.push_str(&format!(
+                "        field({}; {}; {}) {{ }}\n",
+                f.id, n, f.type_name
+            ));
         }
     }
 
@@ -158,13 +169,22 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
             out.push_str("]\n");
         }
 
-        let params: Vec<String> = m.parameters.iter().map(|p| {
-            let var_prefix = if p.is_var { "var " } else { "" };
-            format!("{}{}: {}", var_prefix, p.name, p.type_name)
-        }).collect();
+        let params: Vec<String> = m
+            .parameters
+            .iter()
+            .map(|p| {
+                let var_prefix = if p.is_var { "var " } else { "" };
+                format!("{}{}: {}", var_prefix, p.name, p.type_name)
+            })
+            .collect();
 
         let local = if m.is_local { "    local " } else { "    " };
-        out.push_str(&format!("{}procedure {}({})", local, m.name, params.join("; ")));
+        out.push_str(&format!(
+            "{}procedure {}({})",
+            local,
+            m.name,
+            params.join("; ")
+        ));
         if let Some(ref ret) = m.return_type {
             out.push_str(&format!(": {}", ret));
         }
@@ -178,7 +198,10 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
     // Object header
     if let Some(ref extends) = entry.extends {
         let ext = format_name(extends);
-        out.push_str(&format!("{} {} {} extends {}\n", kw, entry.id, name_str, ext));
+        out.push_str(&format!(
+            "{} {} {} extends {}\n",
+            kw, entry.id, name_str, ext
+        ));
     } else {
         out.push_str(&format!("{} {} {}\n", kw, entry.id, name_str));
     }
@@ -258,12 +281,11 @@ fn ensure_readonly_settings(cache_root: &Path) {
         let settings_path = settings_dir.join("settings.json");
         let _ = fs::create_dir_all(&settings_dir);
 
-        let mut settings: serde_json::Value =
-            if let Ok(text) = fs::read_to_string(&settings_path) {
-                serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
-            } else {
-                serde_json::json!({})
-            };
+        let mut settings: serde_json::Value = if let Ok(text) = fs::read_to_string(&settings_path) {
+            serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
 
         let list = settings
             .get_mut("read_only_files")
@@ -278,9 +300,8 @@ fn ensure_readonly_settings(cache_root: &Path) {
                 }
             }
             None => {
-                settings["read_only_files"] = serde_json::Value::Array(vec![
-                    serde_json::Value::String(pattern.to_string()),
-                ]);
+                settings["read_only_files"] =
+                    serde_json::Value::Array(vec![serde_json::Value::String(pattern.to_string())]);
             }
         }
 
@@ -304,11 +325,9 @@ fn find_member_range_in_text(
             MemberKind::Key => find_call_range(line, "key", 0, &needle),
             MemberKind::EnumValue => find_call_range(line, "value", 1, &needle),
             MemberKind::Control(ref k) => find_call_range(line, k, 0, &needle),
-            MemberKind::Unknown => {
-                find_procedure_range(line, &needle)
-                    .or_else(|| find_call_range(line, "field", 1, &needle))
-                    .or_else(|| find_call_range(line, "value", 1, &needle))
-            }
+            MemberKind::Unknown => find_procedure_range(line, &needle)
+                .or_else(|| find_call_range(line, "field", 1, &needle))
+                .or_else(|| find_call_range(line, "value", 1, &needle)),
         };
 
         if let Some((col_start, col_end)) = range {
@@ -351,7 +370,12 @@ fn find_procedure_range(line: &str, needle: &str) -> Option<(usize, usize)> {
     None
 }
 
-fn find_call_range(line: &str, keyword: &str, arg_index: usize, needle: &str) -> Option<(usize, usize)> {
+fn find_call_range(
+    line: &str,
+    keyword: &str,
+    arg_index: usize,
+    needle: &str,
+) -> Option<(usize, usize)> {
     let bytes = line.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -368,7 +392,9 @@ fn find_call_range(line: &str, keyword: &str, arg_index: usize, needle: &str) ->
                     j += 1;
                 }
                 if j < bytes.len() && bytes[j] == b'(' {
-                    if let Some((name, col_start, col_end)) = parse_call_arg(line, bytes, j + 1, arg_index) {
+                    if let Some((name, col_start, col_end)) =
+                        parse_call_arg(line, bytes, j + 1, arg_index)
+                    {
                         if name.to_lowercase() == needle {
                             return Some((col_start, col_end));
                         }
@@ -451,11 +477,7 @@ fn parse_call_arg(
     }
 }
 
-fn parse_name_token(
-    line: &str,
-    bytes: &[u8],
-    mut i: usize,
-) -> Option<(String, usize, usize)> {
+fn parse_name_token(line: &str, bytes: &[u8], mut i: usize) -> Option<(String, usize, usize)> {
     if i >= bytes.len() {
         return None;
     }
@@ -483,4 +505,3 @@ fn parse_name_token(
         Some((name, start_col, i))
     }
 }
-

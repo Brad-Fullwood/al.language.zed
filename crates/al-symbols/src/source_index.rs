@@ -33,10 +33,21 @@ pub struct AppSourceIndex {
 impl AppSourceIndex {
     pub fn from_app_path(app_path: &Path) -> io::Result<Self> {
         let file = File::open(app_path)?;
-        let modified = file.metadata()?.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let modified = file
+            .metadata()?
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        // SAFETY: .app files are opened read-only. Concurrent modification is
+        // prevented by the staleness check at the call site (package version
+        // comparison via `modified` timestamp). On Linux, MAP_PRIVATE means a
+        // concurrent file replacement serves stale data rather than UB. On
+        // Windows, the file cannot be replaced while it is mapped.
         let mmap = unsafe { Mmap::map(&file)? };
         let zip_offset = crate::app_reader::find_zip_offset(&mmap).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "ZIP signature not found in .app")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ZIP signature not found in .app",
+            )
         })?;
 
         let mut archive = ZipArchive::new(Cursor::new(&mmap[zip_offset..]))?;
@@ -57,9 +68,7 @@ impl AppSourceIndex {
             }
 
             if let Some((kind, id, obj_name)) = parse_object_header(&buf) {
-                by_kind_id
-                    .entry((kind, id))
-                    .or_insert_with(|| name.clone());
+                by_kind_id.entry((kind, id)).or_insert_with(|| name.clone());
                 by_kind_name
                     .entry((kind, obj_name.to_lowercase()))
                     .or_insert_with(|| name.clone());
