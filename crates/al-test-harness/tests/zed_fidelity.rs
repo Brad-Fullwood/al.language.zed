@@ -429,10 +429,12 @@ async fn zed_fidelity_diagnostic_items_have_required_fields() {
     let dir = test_project_dir();
     let mut client = LspClient::spawn(&dir).await.unwrap();
 
-    // Code with a TODO comment triggers AL-L007 diagnostic
+    // Custom lint rules have been removed so CODEUNIT_AL may produce no diagnostics.
+    // This test validates that any diagnostics that ARE published have the correct
+    // structure — it does not require diagnostics to be present.
     client.open_file("src/zed_diag_items.al", CODEUNIT_AL).await;
 
-    // Retry up to 5s for at least one diagnostic
+    // Collect any diagnostics published within 5s.
     let mut all_diags: Vec<serde_json::Value> = vec![];
     for _ in 0..10 {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -445,6 +447,7 @@ async fn zed_fidelity_diagnostic_items_have_required_fields() {
         }
     }
 
+    // Validate structure of each diagnostic received (loop is a no-op if empty).
     for diag in &all_diags {
         assert!(
             diag.get("range").is_some(),

@@ -873,11 +873,18 @@ fn recommended_al_settings() -> serde_json::Value {
             }
         },
         "languages": {
-            "AL": {
-                "semantic_tokens": "combined",
-                "language_servers": ["al-lsp"],
-                "debuggers": ["al"]
-            }
+          "AL": {
+            "document_symbols": "on",
+            "document_folding_ranges": "on",
+            "completions": {
+              "words": "fallback"
+            },
+            "debuggers": ["al"],
+            "language_servers": ["al-lsp"],
+            "semantic_tokens": "combined",
+            "colorize_brackets": true,
+            "inlay_hints": { "enabled": true },
+          },
         }
     })
 }

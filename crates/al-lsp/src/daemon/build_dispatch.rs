@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use al_core::workspace::Workspace;
 use al_daemon_client::jsonrpc::{error_codes, Response, RpcError};
 
-use super::{rpc_error, invalid_params, file_not_found, ensure_document, require_document_text, file_uri_from_params, lint_diag_to_json, generate_fix};
+use super::{rpc_error, invalid_params, file_not_found, ensure_document, require_document_text, file_uri_from_params, lint_diag_to_json};
 
 const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 const ERR_NO_PROJECT: &str = "No project loaded";
@@ -208,41 +208,11 @@ pub(super) fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::
         })
         .collect();
 
-    // Generate fix actions (simple text replacements based on lint codes)
-    let mut edits: Vec<serde_json::Value> = Vec::new();
-    let lines: Vec<&str> = text.lines().collect();
-    for diag in &filtered {
-        if let Some(fix) = generate_fix(diag, &lines) {
-            edits.push(fix);
-        }
-    }
+    // No custom lint rules are registered, so no fixes to generate.
+    let edits: Vec<serde_json::Value> = Vec::new();
 
-    if !dry_run && !edits.is_empty() {
-        // Apply the specific TextEdit patches via al-core's text-edit engine.
-        if let Ok(path) = uri.to_file_path() {
-            // Convert JSON edit descriptors to SimpleTextEdit structs.
-            let simple_edits: Vec<al_core::queries::code_actions::SimpleTextEdit> = edits
-                .iter()
-                .filter_map(|edit| {
-                    let range = edit.get("range")?;
-                    let start = range.get("start")?;
-                    let end_pos = range.get("end")?;
-                    Some(al_core::queries::code_actions::SimpleTextEdit {
-                        start_line: start.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                        start_char: start.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                        end_line: end_pos.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                        end_char: end_pos.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                        new_text: edit.get("newText").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    })
-                })
-                .collect();
-            let new_text = al_core::queries::code_actions::apply_text_edits(&text, &simple_edits);
-            if let Err(e) = std::fs::write(&path, &new_text) {
-                return rpc_error(id, -32000, &format!("Failed to write fixed file: {e}"));
-            }
-            workspace.documents.open(uri, new_text);
-        }
-    }
+    let _ = dry_run;
+    let _ = &text;
 
     Response {
         id,

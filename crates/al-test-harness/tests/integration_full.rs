@@ -216,7 +216,7 @@ async fn test_b01_open_file_triggers_diagnostics() {
     client.shutdown().await;
 }
 
-/// B-02: empty begin..end triggers AL-L001 lint diagnostic
+/// B-02: opening a file with an empty begin..end triggers diagnostics (custom lint rules removed)
 #[tokio::test]
 async fn test_b02_empty_begin_end_triggers_al_l001() {
     let code = r#"codeunit 50151 "Empty Proc"
@@ -227,28 +227,18 @@ async fn test_b02_empty_begin_end_triggers_al_l001() {
 }"#;
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+    // open_file waits for publishDiagnostics — server must process the file.
     client.open_file("src/integration_b02.al", code).await;
 
-    // Give the linter time to publish additional diagnostics
+    // Custom lint rules have been removed; AL-L001 is no longer emitted.
+    // Verify the server processed the file without crashing.
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    let diags = client.drain_diagnostics();
-
-    let codes: Vec<&str> = diags
-        .values()
-        .flat_map(|d| d.iter())
-        .filter_map(|d| d.get("code").and_then(|c| c.as_str()))
-        .collect();
-
-    assert!(
-        codes.iter().any(|c| *c == "AL-L001"),
-        "Expected AL-L001 for empty begin..end. Got codes: {:?}",
-        codes
-    );
+    let _diags = client.drain_diagnostics();
 
     client.shutdown().await;
 }
 
-/// B-03: TODO comment triggers AL-L007 lint diagnostic
+/// B-03: opening a file with a TODO comment triggers diagnostics (custom lint rules removed)
 #[tokio::test]
 async fn test_b03_todo_comment_triggers_al_l007() {
     // CODEUNIT_SIMPLE has no TODO; use a specific fixture
@@ -263,20 +253,11 @@ async fn test_b03_todo_comment_triggers_al_l007() {
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_b03.al", code).await;
+
+    // Custom lint rules have been removed; AL-L007 is no longer emitted.
+    // Verify the server processed the file without crashing.
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    let diags = client.drain_diagnostics();
-
-    let codes: Vec<&str> = diags
-        .values()
-        .flat_map(|d| d.iter())
-        .filter_map(|d| d.get("code").and_then(|c| c.as_str()))
-        .collect();
-
-    assert!(
-        codes.iter().any(|c| *c == "AL-L007"),
-        "Expected AL-L007 for TODO comment. Got codes: {:?}",
-        codes
-    );
+    let _diags = client.drain_diagnostics();
 
     client.shutdown().await;
 }
@@ -1334,9 +1315,11 @@ async fn test_o01_code_action_empty_begin_end() {
     client.open_file("src/integration_o01.al", code).await;
 
     let actions = client.code_actions("src/integration_o01.al", 3, 5).await;
-    // Empty begin..end should produce at least one code action (AL-L001 quickfix)
-    assert!(!actions.is_empty(),
-        "empty begin..end should produce code actions: {actions:?}");
+    // Empty begin..end may still produce code actions from other sources.
+    // With custom lint rules removed, AL-L001 quickfixes will not appear,
+    // but other code actions (e.g. refactoring) may still be present.
+    // Just verify the request does not crash and returns a valid response.
+    let _ = &actions; // response must be a valid (possibly empty) array
     // Every action must have a title
     for action in &actions {
         assert!(action.get("title").and_then(|t| t.as_str()).is_some(),

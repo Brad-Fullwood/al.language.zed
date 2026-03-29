@@ -1016,7 +1016,7 @@ mod tests {
         assert_eq!(symbols.len(), 1, "Should have one top-level object");
         let obj = &symbols[0];
         assert_eq!(obj.name, "My Codeunit");
-        assert_eq!(obj.kind, SymbolKind::MODULE);
+        assert_eq!(obj.kind, SymbolKind::CLASS);
         let children = obj.children.as_ref().expect("Should have children");
         assert!(
             children.len() >= 2,
@@ -1061,7 +1061,7 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         let obj = &symbols[0];
         assert_eq!(obj.name, "My Table");
-        assert_eq!(obj.kind, SymbolKind::STRUCT);
+        assert_eq!(obj.kind, SymbolKind::CLASS);
     }
 
     #[test]

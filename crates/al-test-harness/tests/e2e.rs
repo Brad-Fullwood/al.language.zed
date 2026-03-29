@@ -328,23 +328,28 @@ async fn test_diagnostics_published_on_open() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    // Code with a TODO comment (should trigger AL-L007)
+    // Open a file to trigger diagnostics publication.
+    // Custom lint rules have been removed, so AL-L007 will not appear,
+    // but the server must still publish a diagnostics notification.
     client.open_file("src/test.al", CODEUNIT_AL).await;
 
-    // Poll for diagnostics with retries — workspace init can be slow under load.
-    let mut has_diags = false;
+    // Poll for the diagnostics notification with retries.
+    // open_file already waits for publishDiagnostics, so a published (possibly
+    // empty) notification satisfies the intent of this test.
+    let mut has_notification = false;
     let mut last_diags = std::collections::HashMap::new();
     for _ in 0..20 {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         last_diags = client.drain_diagnostics();
-        if last_diags.values().any(|d| !d.is_empty()) {
-            has_diags = true;
+        // Accept any notification (including an empty diagnostics array).
+        if !last_diags.is_empty() {
+            has_notification = true;
             break;
         }
     }
     assert!(
-        has_diags,
-        "Should publish diagnostics (at least AL-L007 for TODO comment). Got: {:?}",
+        has_notification,
+        "Should publish a diagnostics notification. Got: {:?}",
         last_diags
     );
 

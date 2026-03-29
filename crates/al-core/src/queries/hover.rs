@@ -56,7 +56,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                         let mut content = format!("```al\nprocedure {}\n```", signature);
                         if let Some(doc) = documentation {
                             content.push_str("\n\n");
-                            content.push_str(&doc);
+                            content.push_str(&resolution::format_xml_doc(&doc));
                         }
                         content
                     }
@@ -113,7 +113,11 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     // 1. Check if we're on a procedure name or a local parameter
     if let Some(proc_info) = al_syntax::find_procedure_at(&tree, &text, lsp_pos) {
         if proc_info.name.eq_ignore_ascii_case(clean_name) {
-            let content = format_procedure_hover(&proc_info);
+            let mut content = format_procedure_hover(&proc_info);
+            if let Some(doc) = resolution::extract_doc_comment(&text, proc_info.range.start_point.row) {
+                content.push_str("\n\n");
+                content.push_str(&resolution::format_xml_doc(&doc));
+            }
             return Some(HoverResult { contents: content, range: Some(node_range) });
         }
 
@@ -148,6 +152,27 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     // 3. Check package symbols from SymbolIndex
     if let Some(entry) = workspace.symbols.find_by_name(clean_name) {
         let content = format_symbol_hover(&entry);
+        return Some(HoverResult { contents: content, range: Some(node_range) });
+    }
+
+    // 3b. Check built-in global functions (Message, Error, Confirm, etc.)
+    if let Some(builtin) = al_syntax::language_data::builtin_function_by_name(clean_name) {
+        let mut content = format!("```al\n{}\n```", builtin.signature);
+        if !builtin.description.is_empty() {
+            content.push_str("\n\n");
+            content.push_str(&builtin.description);
+        }
+        if !builtin.parameters.is_empty() {
+            content.push_str("\n\n**Parameters:**");
+            for param in &builtin.parameters {
+                let req = if param.required { "" } else { " *(optional)*" };
+                content.push_str(&format!("\n- `{}`: {} — {}{}", param.name, param.r#type, param.description, req));
+            }
+        }
+        if let Some(ret) = &builtin.return_type {
+            content.push_str(&format!("\n\n**Returns:** `{}`", ret));
+        }
+        content.push_str(&format!("\n\n*(built-in — {})*", builtin.category));
         return Some(HoverResult { contents: content, range: Some(node_range) });
     }
 
@@ -190,7 +215,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                     content.push_str(&format!("```al\n{}\n```", sig));
                     if !method.documentation.is_empty() {
                         content.push_str("\n\n");
-                        content.push_str(&resolution::strip_xml_tags(&method.documentation));
+                        content.push_str(&resolution::format_xml_doc(&method.documentation));
                     }
                 }
                 if overloads.len() > 1 {
@@ -245,7 +270,7 @@ pub async fn hover_full(workspace: &Workspace, uri: &Url, position: Position) ->
     let mut contents = format!("```al\n{}\n```\n*({} — CodeAnalysis)*", info.name, info.kind);
     if let Some(doc) = &info.documentation {
         contents.push_str("\n\n");
-        contents.push_str(doc);
+        contents.push_str(&resolution::format_xml_doc(doc));
     }
     Some(HoverResult { contents, range: None })
 }

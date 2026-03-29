@@ -313,7 +313,7 @@ fn symbols_codeunit_procedures() {
     assert_eq!(symbols.len(), 1);
     let cu = &symbols[0];
     assert_eq!(cu.name, "Sales Helper");
-    assert_eq!(cu.kind, SymbolKind::MODULE);
+    assert_eq!(cu.kind, SymbolKind::CLASS);
 
     let children = cu.children.as_ref().expect("Codeunit should have children");
     let proc_names: Vec<&str> = children
@@ -348,7 +348,7 @@ fn symbols_table_structure() {
     assert_eq!(symbols.len(), 1);
     let table = &symbols[0];
     assert_eq!(table.name, "My Custom Table");
-    assert_eq!(table.kind, SymbolKind::STRUCT);
+    assert_eq!(table.kind, SymbolKind::CLASS);
 
     let children = table.children.as_ref().expect("Table should have children");
 

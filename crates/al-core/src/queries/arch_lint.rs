@@ -57,15 +57,7 @@ impl ArchConfig {
     }
 
     pub fn builtin_rules() -> Vec<ArchRule> {
-        vec![
-            ArchRule {
-                id: "ARCH-001".to_string(),
-                description: "Table IDs must be in range 50000-99999 for custom objects".to_string(),
-                kind: ArchRuleKind::RequiredProperty,
-                pattern: "table".to_string(),
-                values: vec!["50000-99999".to_string()],
-            },
-        ]
+        vec![]
     }
 }
 

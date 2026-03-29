@@ -119,83 +119,28 @@ async fn test_regression_definition_on_unopened_file_returns_none() {
 // Compile-time guarantee: al-symbols is only in [dev-dependencies] now.
 
 // ===========================================================================
-// Regression: Duplicate match arms in generate_fix
+// Regression: Code actions return valid objects
 //
-// AL-L001, AL-L005, AL-L006 had identical match arm bodies.
-// Fixed by merging into `"AL-L001" | "AL-L005" | "AL-L006" => { ... }`.
-// Verify all three lint codes produce code action fixes.
+// Verify code actions have valid structure (titles, edits).
+// No custom lint rules are registered, so only source actions are expected.
 // ===========================================================================
 
 #[tokio::test]
-async fn test_regression_lint_fix_codes_all_produce_actions() {
+async fn test_regression_code_actions_have_titles() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // AL-L001: Empty begin..end
     let code = r#"codeunit 50100 "Lint Test"
 {
     procedure EmptyProc()
-    begin
-    end;
-
-    trigger OnRun()
     begin
     end;
 }"#;
     client.open_file("src/lint_test.al", code).await;
 
-    // Code actions on the empty begin..end block (lines 3-4)
     let actions = client.code_actions("src/lint_test.al", 3, 5).await;
-    // Should have at least one action (the quickfix for AL-L001)
-    // Verify actions are actual objects with titles
     for action in &actions {
         assert!(action.get("title").is_some(),
             "code action should have a title: {action}");
-    }
-
-    client.shutdown().await;
-}
-
-// ===========================================================================
-// Regression: Code actions should have real content (not just shape checks)
-//
-// Existing tests only checked `result.as_array()` — they didn't verify the
-// fix content. We verify the fix produces a TextEdit with valid range.
-// ===========================================================================
-
-#[tokio::test]
-async fn test_regression_code_action_fix_has_valid_edit() {
-    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-
-    // AL-L001: Empty begin..end should produce a "Remove empty block" action
-    let code = r#"codeunit 50100 "Lint Test"
-{
-    procedure EmptyProc()
-    begin
-    end;
-}"#;
-    client.open_file("src/lint_fix.al", code).await;
-
-    // Request code actions at the empty begin..end block (line 3 = "    begin")
-    let actions = client.code_actions("src/lint_fix.al", 3, 5).await;
-
-    // Find a quickfix action
-    let quickfixes: Vec<&serde_json::Value> = actions.iter()
-        .filter(|a| {
-            a.get("kind").and_then(|k| k.as_str()) == Some("quickfix")
-                || a.get("title").and_then(|t| t.as_str()).map(|t| t.contains("Remove") || t.contains("Delete")).unwrap_or(false)
-        })
-        .collect();
-
-    assert!(
-        !quickfixes.is_empty(),
-        "Expected at least one quickfix code action for empty begin..end (AL-L001). Got actions: {:?}",
-        actions
-    );
-    {
-        let fix = quickfixes[0];
-        // Verify the fix has an edit with documentChanges or changes
-        let has_edit = fix.get("edit").is_some();
-        assert!(has_edit, "quickfix should have an edit: {fix}");
     }
 
     client.shutdown().await;

@@ -164,7 +164,7 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
                 let doc = if method.documentation.is_empty() {
                     None
                 } else {
-                    Some(resolution::strip_xml_tags(&method.documentation))
+                    Some(resolution::format_xml_doc(&method.documentation))
                 };
                 signatures.push(SignatureInfo {
                     label: format!("{}.{}({}){}", bt.name, method.name, params_str.join("; "), return_str),

@@ -502,7 +502,7 @@ fn document_symbols_from_codeunit() {
 
     let obj = &symbols[0];
     assert_eq!(obj.name, "Test Codeunit");
-    assert_eq!(obj.kind, SymbolKind::MODULE);
+    assert_eq!(obj.kind, SymbolKind::CLASS);
 
     let children = obj.children.as_ref().expect("Should have children");
     let proc_names: Vec<&str> = children

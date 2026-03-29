@@ -721,10 +721,11 @@ async fn test_diagnostics_lint_empty_begin_end() {
         .filter_map(|d| d.get("code").and_then(|c| c.as_str()))
         .collect();
 
-    // AL-L001: Empty begin..end block
+    // Custom lint rules have been removed; AL-L001 is no longer emitted.
+    // Verify no AL-L001 code appears (rules are inactive, not just silent).
     assert!(
-        all_codes.iter().any(|c| *c == "AL-L001"),
-        "Should detect AL-L001 (empty begin..end). Got codes: {:?}",
+        !all_codes.iter().any(|c| *c == "AL-L001"),
+        "AL-L001 should not appear with custom lint rules removed. Got codes: {:?}",
         all_codes
     );
 

@@ -600,16 +600,6 @@ pub(crate) fn lint_diag_to_json(d: &al_core::syntax::LintDiagnostic) -> serde_js
     })
 }
 
-/// Generate a text-edit fix for a lint diagnostic.
-///
-/// Thin wrapper around `al_core::queries::code_actions::generate_lint_fix` kept
-/// here so the `pub(crate)` visibility doesn't need to change in call sites.
-pub(crate) fn generate_fix(
-    diag: &al_core::syntax::LintDiagnostic,
-    lines: &[&str],
-) -> Option<serde_json::Value> {
-    al_core::queries::code_actions::generate_lint_fix(diag, lines)
-}
 
 // ---------------------------------------------------------------------------
 // Workspace initialization (daemon mode — no LSP Client)
