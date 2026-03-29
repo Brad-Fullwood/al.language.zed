@@ -12,11 +12,10 @@ set -euo pipefail
 # Read hook input from stdin
 INPUT=$(cat)
 
-# Get the session transcript summary from the hook context
-STOP_REASON=$(echo "$INPUT" | jq -r '.stop_reason // "end_turn"' 2>/dev/null)
-
-# Only gate on normal completions, not errors or interruptions
-if [ "$STOP_REASON" != "end_turn" ] && [ "$STOP_REASON" != "tool_use" ]; then
+# CRITICAL: Prevent infinite loop. If we already blocked once and Claude
+# is continuing due to our feedback, don't block again — let it finish
+# after attempting the fix.
+if [ "$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
   exit 0
 fi
 

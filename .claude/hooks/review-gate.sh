@@ -13,6 +13,11 @@ set -euo pipefail
 
 INPUT=$(cat)
 
+# CRITICAL: Prevent infinite loop when Claude is already continuing from a block
+if [ "$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
+  exit 0
+fi
+
 cd "$CLAUDE_PROJECT_DIR" 2>/dev/null || exit 0
 
 # Check if there are code changes
