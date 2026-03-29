@@ -11,16 +11,16 @@
 //! 5. Zed sends continue/step → we call ContinueAsync on SignalR
 //! 6. Zed sends variables/evaluate → we call GetVariablesAsync/GetWatchNodeAsync
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
-use std::collections::HashMap;
 
 use tokio::io::{self, BufReader};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use crate::bc_debug::{BcDebugConfig, BcDebugSession, BcEvent, publish_app};
+use crate::bc_debug::{publish_app, BcDebugConfig, BcDebugSession, BcEvent};
 use crate::framing::{read_dap_body, write_dap_frame};
 use crate::{DapError, Result};
 
@@ -106,8 +106,7 @@ where
     // Channel for the BC-event forwarding task to send pre-serialized DAP event bytes
     // to the main loop. The main loop drains this channel before processing each
     // incoming DAP message, ensuring BC push events reach Zed promptly.
-    let (dap_event_tx, mut dap_event_rx) =
-        tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (dap_event_tx, mut dap_event_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
 
     let mut stdin = BufReader::new(io::stdin());
     let mut stdout = io::stdout();
@@ -139,27 +138,41 @@ where
             }
         };
 
-        let command = msg.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let command = msg
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let request_seq = msg.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
-        let arguments = msg.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+        let arguments = msg
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
 
         debug!("DAP request: {command} (seq={request_seq})");
 
         match command.as_str() {
             "initialize" => {
                 // Respond with our capabilities
-                let resp = make_response(&seq, request_seq, &command, true, Some(serde_json::json!({
-                    "supportsConfigurationDoneRequest": true,
-                    "supportsFunctionBreakpoints": false,
-                    "supportsConditionalBreakpoints": true,
-                    "supportsEvaluateForHovers": true,
-                    "supportsStepBack": false,
-                    "supportsSetVariable": false,
-                    "supportsCompletionsRequest": false,
-                    "supportsTerminateRequest": true,
-                    "supportsDelayedStackTraceLoading": true,
-                    "supportsRestartRequest": false,
-                })), None);
+                let resp = make_response(
+                    &seq,
+                    request_seq,
+                    &command,
+                    true,
+                    Some(serde_json::json!({
+                        "supportsConfigurationDoneRequest": true,
+                        "supportsFunctionBreakpoints": false,
+                        "supportsConditionalBreakpoints": true,
+                        "supportsEvaluateForHovers": true,
+                        "supportsStepBack": false,
+                        "supportsSetVariable": false,
+                        "supportsCompletionsRequest": false,
+                        "supportsTerminateRequest": true,
+                        "supportsDelayedStackTraceLoading": true,
+                        "supportsRestartRequest": false,
+                    })),
+                    None,
+                );
                 write_dap(&mut stdout, &resp).await?;
 
                 // Send initialized event
@@ -168,7 +181,11 @@ where
             }
 
             "configurationDone" => {
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true, None, None)).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_response(&seq, request_seq, &command, true, None, None),
+                )
+                .await?;
             }
 
             "launch" | "attach" => {
@@ -177,31 +194,73 @@ where
                 // Compile if alc is available and this is a launch
                 if command == "launch" {
                     // Fix #7: only emit "Compiling" for launch, not attach
-                    write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                        "category": "console",
-                        "output": "Compiling AL project...\r\n"
-                    })))).await?;
+                    write_dap(
+                        &mut stdout,
+                        &make_event(
+                            &seq,
+                            "output",
+                            Some(serde_json::json!({
+                                "category": "console",
+                                "output": "Compiling AL project...\r\n"
+                            })),
+                        ),
+                    )
+                    .await?;
                     if let Some(alc) = alc_path {
                         match compile_project(alc, project_root).await {
                             Ok(output) => {
                                 if !output.is_empty() {
-                                    write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                                        "category": "console",
-                                        "output": format!("{output}\r\n")
-                                    })))).await?;
+                                    write_dap(
+                                        &mut stdout,
+                                        &make_event(
+                                            &seq,
+                                            "output",
+                                            Some(serde_json::json!({
+                                                "category": "console",
+                                                "output": format!("{output}\r\n")
+                                            })),
+                                        ),
+                                    )
+                                    .await?;
                                 }
-                                write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                                    "category": "console",
-                                    "output": "Compilation succeeded.\r\n"
-                                })))).await?;
+                                write_dap(
+                                    &mut stdout,
+                                    &make_event(
+                                        &seq,
+                                        "output",
+                                        Some(serde_json::json!({
+                                            "category": "console",
+                                            "output": "Compilation succeeded.\r\n"
+                                        })),
+                                    ),
+                                )
+                                .await?;
                             }
                             Err(e) => {
-                                write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                                    "category": "stderr",
-                                    "output": format!("Compilation failed: {e}\r\n")
-                                })))).await?;
-                                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, false, None,
-                                    Some(format!("Compilation failed: {e}")))).await?;
+                                write_dap(
+                                    &mut stdout,
+                                    &make_event(
+                                        &seq,
+                                        "output",
+                                        Some(serde_json::json!({
+                                            "category": "stderr",
+                                            "output": format!("Compilation failed: {e}\r\n")
+                                        })),
+                                    ),
+                                )
+                                .await?;
+                                write_dap(
+                                    &mut stdout,
+                                    &make_response(
+                                        &seq,
+                                        request_seq,
+                                        &command,
+                                        false,
+                                        None,
+                                        Some(format!("Compilation failed: {e}")),
+                                    ),
+                                )
+                                .await?;
                                 continue;
                             }
                         }
@@ -209,26 +268,52 @@ where
                 }
 
                 // Acquire token
-                write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                    "category": "console",
-                    "output": format!("Authenticating to tenant {}...\r\n", config.tenant)
-                })))).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_event(
+                        &seq,
+                        "output",
+                        Some(serde_json::json!({
+                            "category": "console",
+                            "output": format!("Authenticating to tenant {}...\r\n", config.tenant)
+                        })),
+                    ),
+                )
+                .await?;
 
                 let token = match acquire_token(config.tenant.clone()).await {
                     Ok(t) => t,
                     Err(e) => {
-                        write_dap(&mut stdout, &make_response(&seq, request_seq, &command, false, None,
-                            Some(format!("Authentication failed: {e}")))).await?;
+                        write_dap(
+                            &mut stdout,
+                            &make_response(
+                                &seq,
+                                request_seq,
+                                &command,
+                                false,
+                                None,
+                                Some(format!("Authentication failed: {e}")),
+                            ),
+                        )
+                        .await?;
                         continue;
                     }
                 };
 
                 // Publish .app if launching
                 if command == "launch" {
-                    write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                        "category": "console",
-                        "output": "Publishing package...\r\n"
-                    })))).await?;
+                    write_dap(
+                        &mut stdout,
+                        &make_event(
+                            &seq,
+                            "output",
+                            Some(serde_json::json!({
+                                "category": "console",
+                                "output": "Publishing package...\r\n"
+                            })),
+                        ),
+                    )
+                    .await?;
 
                     // Find the .app file
                     let app_path = find_app_file(project_root).await;
@@ -240,37 +325,81 @@ where
 
                         match publish_app(&http, &config, &token, &app_path).await {
                             Ok(()) => {
-                                write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                                    "category": "console",
-                                    "output": "Package published successfully.\r\n"
-                                })))).await?;
+                                write_dap(
+                                    &mut stdout,
+                                    &make_event(
+                                        &seq,
+                                        "output",
+                                        Some(serde_json::json!({
+                                            "category": "console",
+                                            "output": "Package published successfully.\r\n"
+                                        })),
+                                    ),
+                                )
+                                .await?;
                             }
                             Err(e) => {
-                                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, false, None,
-                                    Some(format!("Publish failed: {e}")))).await?;
+                                write_dap(
+                                    &mut stdout,
+                                    &make_response(
+                                        &seq,
+                                        request_seq,
+                                        &command,
+                                        false,
+                                        None,
+                                        Some(format!("Publish failed: {e}")),
+                                    ),
+                                )
+                                .await?;
                                 continue;
                             }
                         }
                     } else {
-                        write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                            "category": "stderr",
-                            "output": "Warning: No .app file found. Skipping publish.\r\n"
-                        })))).await?;
+                        write_dap(
+                            &mut stdout,
+                            &make_event(
+                                &seq,
+                                "output",
+                                Some(serde_json::json!({
+                                    "category": "stderr",
+                                    "output": "Warning: No .app file found. Skipping publish.\r\n"
+                                })),
+                            ),
+                        )
+                        .await?;
                     }
                 }
 
                 // Connect to debug hub
-                write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                    "category": "console",
-                    "output": "Connecting to debug hub...\r\n"
-                })))).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_event(
+                        &seq,
+                        "output",
+                        Some(serde_json::json!({
+                            "category": "console",
+                            "output": "Connecting to debug hub...\r\n"
+                        })),
+                    ),
+                )
+                .await?;
 
                 match BcDebugSession::connect(&config, &token).await {
                     Ok(debug_session) => {
                         // Attach to debug session
                         if let Err(e) = debug_session.attach(&config).await {
-                            write_dap(&mut stdout, &make_response(&seq, request_seq, &command, false, None,
-                                Some(format!("Attach failed: {e}")))).await?;
+                            write_dap(
+                                &mut stdout,
+                                &make_response(
+                                    &seq,
+                                    request_seq,
+                                    &command,
+                                    false,
+                                    None,
+                                    Some(format!("Attach failed: {e}")),
+                                ),
+                            )
+                            .await?;
                             continue;
                         }
 
@@ -310,13 +439,15 @@ where
 
                                     for bc_event in bc_events {
                                         let dap_evt = match &bc_event {
-                                            BcEvent::Break { reason, thread_id } => {
-                                                make_event(&bg_seq, "stopped", Some(serde_json::json!({
+                                            BcEvent::Break { reason, thread_id } => make_event(
+                                                &bg_seq,
+                                                "stopped",
+                                                Some(serde_json::json!({
                                                     "reason": reason,
                                                     "threadId": thread_id,
                                                     "allThreadsStopped": true,
-                                                })))
-                                            }
+                                                })),
+                                            ),
                                             BcEvent::Detached { terminate } => {
                                                 if *terminate {
                                                     make_event(&bg_seq, "terminated", None)
@@ -324,35 +455,53 @@ where
                                                     continue;
                                                 }
                                             }
-                                            BcEvent::FatalError { message } => {
-                                                make_event(&bg_seq, "output", Some(serde_json::json!({
+                                            BcEvent::FatalError { message } => make_event(
+                                                &bg_seq,
+                                                "output",
+                                                Some(serde_json::json!({
                                                     "category": "stderr",
                                                     "output": format!("Fatal debugger error: {message}\r\n"),
-                                                })))
-                                            }
+                                                })),
+                                            ),
                                             BcEvent::Other { .. } => continue,
                                         };
-                                        let Ok(body) = serde_json::to_vec(&dap_evt) else { continue };
+                                        let Ok(body) = serde_json::to_vec(&dap_evt) else {
+                                            continue;
+                                        };
                                         if event_tx_clone.send(body).is_err() {
                                             return; // receiver dropped — DAP server shut down
                                         }
                                     }
 
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(50))
+                                        .await;
                                 }
                             });
                         }
 
-                        write_dap(&mut stdout, &make_event(&seq, "output", Some(serde_json::json!({
-                            "category": "console",
-                            "output": "Debug session started.\r\n"
-                        })))).await?;
+                        write_dap(
+                            &mut stdout,
+                            &make_event(
+                                &seq,
+                                "output",
+                                Some(serde_json::json!({
+                                    "category": "console",
+                                    "output": "Debug session started.\r\n"
+                                })),
+                            ),
+                        )
+                        .await?;
 
-                        write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true, None, None)).await?;
+                        write_dap(
+                            &mut stdout,
+                            &make_response(&seq, request_seq, &command, true, None, None),
+                        )
+                        .await?;
 
                         // Open browser with debug context params (must match SignalR ConnectionId)
                         if config.launch_browser {
-                            let web_url = if config.environment_type.eq_ignore_ascii_case("OnPrem") {
+                            let web_url = if config.environment_type.eq_ignore_ascii_case("OnPrem")
+                            {
                                 let server = config.server.as_deref().unwrap_or("http://localhost");
                                 let instance = config.server_instance.as_deref().unwrap_or("BC");
                                 format!("{server}/{instance}/?page={}&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
@@ -364,23 +513,49 @@ where
                             };
 
                             // Send the URL as an event for Zed to handle
-                            write_dap(&mut stdout, &make_event(&seq, "al/openUri", Some(serde_json::json!({
-                                "uri": web_url
-                            })))).await?;
+                            write_dap(
+                                &mut stdout,
+                                &make_event(
+                                    &seq,
+                                    "al/openUri",
+                                    Some(serde_json::json!({
+                                        "uri": web_url
+                                    })),
+                                ),
+                            )
+                            .await?;
 
                             let _ = open_browser(&web_url);
                         }
                     }
                     Err(e) => {
-                        write_dap(&mut stdout, &make_response(&seq, request_seq, &command, false, None,
-                            Some(format!("Debug hub connection failed: {e}")))).await?;
+                        write_dap(
+                            &mut stdout,
+                            &make_response(
+                                &seq,
+                                request_seq,
+                                &command,
+                                false,
+                                None,
+                                Some(format!("Debug hub connection failed: {e}")),
+                            ),
+                        )
+                        .await?;
                     }
                 }
             }
 
             "setBreakpoints" => {
-                let source_path = arguments.get("source").and_then(|s| s.get("path")).and_then(|v| v.as_str()).unwrap_or("");
-                let bp_requests = arguments.get("breakpoints").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let source_path = arguments
+                    .get("source")
+                    .and_then(|s| s.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let bp_requests = arguments
+                    .get("breakpoints")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
 
                 let guard = session.lock().await;
                 let mut result_bps = Vec::new();
@@ -403,12 +578,16 @@ where
                         let mut new_ids = Vec::new();
                         for bp in &bp_requests {
                             let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
-                            let condition = bp.get("condition").and_then(|v| v.as_str()).unwrap_or("");
+                            let condition =
+                                bp.get("condition").and_then(|v| v.as_str()).unwrap_or("");
 
                             match s.add_breakpoint(obj_type, obj_id, line, 0, condition).await {
                                 Ok(result) => {
-                                    let bp_id = result.get("Id").or(result.get("id"))
-                                        .and_then(|v| v.as_i64()).unwrap_or(0);
+                                    let bp_id = result
+                                        .get("Id")
+                                        .or(result.get("id"))
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
                                     new_ids.push(bp_id);
                                     result_bps.push(serde_json::json!({
                                         "id": bp_id,
@@ -444,20 +623,80 @@ where
                     }
                 }
 
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true,
-                    Some(serde_json::json!({"breakpoints": result_bps})), None)).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_response(
+                        &seq,
+                        request_seq,
+                        &command,
+                        true,
+                        Some(serde_json::json!({"breakpoints": result_bps})),
+                        None,
+                    ),
+                )
+                .await?;
             }
 
             "next" => {
-                // Step over — not a direct hub method; stepping is done by BC internally
-                // when you respond to a Break with appropriate options
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true, None, None)).await?;
+                // Step over: BC BreakpointExitReason = 1 via SetBreakpointResponse.
+                let guard = session.lock().await;
+                if let Some(ref s) = *guard {
+                    let _ = s.step_over().await;
+                }
+                write_dap(
+                    &mut stdout,
+                    &make_response(&seq, request_seq, &command, true, None, None),
+                )
+                .await?;
             }
 
-            "stepIn" | "stepOut" | "pause" => {
-                // BC handles stepping through the Break/SetBreakpointResponse cycle.
-                // These are acknowledged but the actual stepping is managed by the hub.
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true, None, None)).await?;
+            "stepIn" => {
+                // Step into: BC BreakpointExitReason = 2 via SetBreakpointResponse.
+                let guard = session.lock().await;
+                if let Some(ref s) = *guard {
+                    let _ = s.step_in().await;
+                }
+                write_dap(
+                    &mut stdout,
+                    &make_response(&seq, request_seq, &command, true, None, None),
+                )
+                .await?;
+            }
+
+            "stepOut" => {
+                // Step out: BC BreakpointExitReason = 3 via SetBreakpointResponse.
+                let guard = session.lock().await;
+                if let Some(ref s) = *guard {
+                    let _ = s.step_out().await;
+                }
+                write_dap(
+                    &mut stdout,
+                    &make_response(&seq, request_seq, &command, true, None, None),
+                )
+                .await?;
+            }
+
+            "pause" => {
+                // BC's SignalR debug hub does not expose a "pause while running" method.
+                // The BC debugger only pauses at breakpoints or on error; there is no
+                // equivalent of a SIGSTOP that the client can trigger mid-execution.
+                // Respond with failure so Zed shows the user a clear error instead of
+                // silently doing nothing.
+                write_dap(
+                    &mut stdout,
+                    &make_response(
+                        &seq,
+                        request_seq,
+                        &command,
+                        false,
+                        None,
+                        Some(
+                            "pause is not supported by the BC debug hub; set a breakpoint instead"
+                                .to_string(),
+                        ),
+                    ),
+                )
+                .await?;
             }
 
             "continue" => {
@@ -466,13 +705,33 @@ where
                     // BC uses SetBreakpointResponse to continue; pass empty response for now
                     let _ = s.continue_execution(serde_json::json!({})).await;
                 }
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true,
-                    Some(serde_json::json!({"allThreadsContinued": true})), None)).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_response(
+                        &seq,
+                        request_seq,
+                        &command,
+                        true,
+                        Some(serde_json::json!({"allThreadsContinued": true})),
+                        None,
+                    ),
+                )
+                .await?;
             }
 
             "threads" => {
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true,
-                    Some(serde_json::json!({"threads": [{"id": 1, "name": "AL Thread"}]})), None)).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_response(
+                        &seq,
+                        request_seq,
+                        &command,
+                        true,
+                        Some(serde_json::json!({"threads": [{"id": 1, "name": "AL Thread"}]})),
+                        None,
+                    ),
+                )
+                .await?;
             }
 
             "stackTrace" => {
@@ -491,18 +750,31 @@ where
                 };
                 drop(guard);
                 let total = stack_frames.len();
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true,
-                    Some(serde_json::json!({
-                        "stackFrames": stack_frames,
-                        "totalFrames": total,
-                    })), None)).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_response(
+                        &seq,
+                        request_seq,
+                        &command,
+                        true,
+                        Some(serde_json::json!({
+                            "stackFrames": stack_frames,
+                            "totalFrames": total,
+                        })),
+                        None,
+                    ),
+                )
+                .await?;
             }
 
             "scopes" => {
                 // Fix #6: use result of get_globals() to build proper scope entries.
                 // variablesReference is encoded as (frame_id * 100 + scope_index) so the
                 // "variables" handler can decode which frame and scope to fetch.
-                let frame_id = arguments.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
+                let frame_id = arguments
+                    .get("frameId")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 let guard = session.lock().await;
                 let mut scopes = Vec::new();
                 if let Some(ref s) = *guard {
@@ -517,7 +789,9 @@ where
 
                     // Globals scope — only add if get_globals succeeds and returns data
                     match s.get_globals(frame_id).await {
-                        Ok(globals) if !globals.as_array().map(|a| a.is_empty()).unwrap_or(true) => {
+                        Ok(globals)
+                            if !globals.as_array().map(|a| a.is_empty()).unwrap_or(true) =>
+                        {
                             let globals_ref = frame_id * 100 + 2;
                             let count = globals.as_array().map(|a| a.len()).unwrap_or(0);
                             scopes.push(serde_json::json!({
@@ -542,12 +816,25 @@ where
                     }
                 }
                 drop(guard);
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true,
-                    Some(serde_json::json!({ "scopes": scopes })), None)).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_response(
+                        &seq,
+                        request_seq,
+                        &command,
+                        true,
+                        Some(serde_json::json!({ "scopes": scopes })),
+                        None,
+                    ),
+                )
+                .await?;
             }
 
             "variables" => {
-                let vars_ref = arguments.get("variablesReference").and_then(|v| v.as_i64()).unwrap_or(0);
+                let vars_ref = arguments
+                    .get("variablesReference")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 let guard = session.lock().await;
                 let variables = if let Some(ref s) = *guard {
                     match s.get_variables(vars_ref).await {
@@ -557,24 +844,56 @@ where
                 } else {
                     serde_json::json!([])
                 };
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true,
-                    Some(serde_json::json!({"variables": variables})), None)).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_response(
+                        &seq,
+                        request_seq,
+                        &command,
+                        true,
+                        Some(serde_json::json!({"variables": variables})),
+                        None,
+                    ),
+                )
+                .await?;
             }
 
             "evaluate" => {
-                let expression = arguments.get("expression").and_then(|v| v.as_str()).unwrap_or("");
-                let frame_id = arguments.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
+                let expression = arguments
+                    .get("expression")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let frame_id = arguments
+                    .get("frameId")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 let guard = session.lock().await;
                 let result = if let Some(ref s) = *guard {
-                    s.evaluate(frame_id, expression).await.unwrap_or(serde_json::Value::Null)
+                    s.evaluate(frame_id, expression)
+                        .await
+                        .unwrap_or(serde_json::Value::Null)
                 } else {
                     serde_json::Value::Null
                 };
                 // LocalNode has value, name, type fields
-                let display = result.get("value").or(result.get("Value"))
-                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true,
-                    Some(serde_json::json!({"result": display, "variablesReference": 0})), None)).await?;
+                let display = result
+                    .get("value")
+                    .or(result.get("Value"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                write_dap(
+                    &mut stdout,
+                    &make_response(
+                        &seq,
+                        request_seq,
+                        &command,
+                        true,
+                        Some(serde_json::json!({"result": display, "variablesReference": 0})),
+                        None,
+                    ),
+                )
+                .await?;
             }
 
             "disconnect" | "terminate" => {
@@ -583,7 +902,11 @@ where
                     let _ = s.stop_debugging().await;
                 }
                 *guard = None;
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, true, None, None)).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_response(&seq, request_seq, &command, true, None, None),
+                )
+                .await?;
 
                 // Send terminated event
                 write_dap(&mut stdout, &make_event(&seq, "terminated", None)).await?;
@@ -592,8 +915,18 @@ where
 
             _ => {
                 // Unknown command — respond with error
-                write_dap(&mut stdout, &make_response(&seq, request_seq, &command, false, None,
-                    Some(format!("Unsupported command: {command}")))).await?;
+                write_dap(
+                    &mut stdout,
+                    &make_response(
+                        &seq,
+                        request_seq,
+                        &command,
+                        false,
+                        None,
+                        Some(format!("Unsupported command: {command}")),
+                    ),
+                )
+                .await?;
             }
         }
     }
@@ -631,11 +964,7 @@ fn make_response(
     resp
 }
 
-fn make_event(
-    seq: &AtomicI64,
-    event: &str,
-    body: Option<serde_json::Value>,
-) -> serde_json::Value {
+fn make_event(seq: &AtomicI64, event: &str, body: Option<serde_json::Value>) -> serde_json::Value {
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let mut evt = serde_json::json!({
         "seq": s,
@@ -686,7 +1015,9 @@ async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
 
-    let output = cmd.output().await
+    let output = cmd
+        .output()
+        .await
         .map_err(|e| DapError::CompilationFailed(format!("Failed to run alc: {e}")))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -716,13 +1047,21 @@ async fn find_app_file(project_root: &str) -> Option<std::path::PathBuf> {
 fn open_browser(url: &str) -> bool {
     let ok = {
         #[cfg(target_os = "linux")]
-        { try_spawn("xdg-open", &[url]) }
+        {
+            try_spawn("xdg-open", &[url])
+        }
         #[cfg(target_os = "macos")]
-        { try_spawn("open", &[url]) }
+        {
+            try_spawn("open", &[url])
+        }
         #[cfg(target_os = "windows")]
-        { try_spawn("cmd", &["/c", "start", url]) }
+        {
+            try_spawn("cmd", &["/c", "start", url])
+        }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        { false }
+        {
+            false
+        }
     };
 
     if !ok {
@@ -758,29 +1097,35 @@ fn bc_stack_to_dap(frames: serde_json::Value) -> Vec<serde_json::Value> {
         None => return Vec::new(),
     };
 
-    arr.iter().enumerate().map(|(i, frame)| {
-        let display_name = frame.get("DisplayName")
-            .or_else(|| frame.get("displayName"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("(unknown)")
-            .to_string();
+    arr.iter()
+        .enumerate()
+        .map(|(i, frame)| {
+            let display_name = frame
+                .get("DisplayName")
+                .or_else(|| frame.get("displayName"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("(unknown)")
+                .to_string();
 
-        let line = frame.get("SourcePosition")
-            .and_then(|sp| sp.get("Line").or_else(|| sp.get("line")))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+            let line = frame
+                .get("SourcePosition")
+                .and_then(|sp| sp.get("Line").or_else(|| sp.get("line")))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
 
-        let col = frame.get("SourcePosition")
-            .and_then(|sp| sp.get("Column").or_else(|| sp.get("column")))
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+            let col = frame
+                .get("SourcePosition")
+                .and_then(|sp| sp.get("Column").or_else(|| sp.get("column")))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
 
-        serde_json::json!({
-            "id": i as i64,
-            "name": display_name,
-            "line": line,
-            "column": col,
-            // source omitted — would need workspace file index lookup
+            serde_json::json!({
+                "id": i as i64,
+                "name": display_name,
+                "line": line,
+                "column": col,
+                // source omitted — would need workspace file index lookup
+            })
         })
-    }).collect()
+        .collect()
 }
