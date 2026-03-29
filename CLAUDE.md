@@ -300,6 +300,47 @@ When you modify files in tree-sitter-al:
 
 ---
 
+## Enforcement System
+
+This project uses automated hooks to enforce quality. You cannot bypass these.
+
+### Stop Gate (runs when you finish)
+
+When you've changed Rust files and try to finish, the stop hook validates:
+1. **Compilation** — `cargo check --workspace --exclude zed-al` must pass
+2. **Clippy** — `cargo clippy --workspace --exclude zed-al -- -D warnings` must pass
+3. **Formatting** — `cargo fmt --all -- --check` must pass
+
+If any check fails, you'll be blocked and must fix the issues before finishing.
+
+### Review Gate (runs when you finish)
+
+After the stop gate passes, the review gate checks:
+1. **No hardcoded AL values** in changed files
+2. **Tests exist** for significant code changes (>20 lines of source without test changes triggers a warning)
+3. **No business logic in al-lsp** (tree-sitter operations in transport layer are flagged)
+4. **No LSP types in al-core** query return types
+5. **No new `.unwrap()` calls** in non-test code
+
+### Test Quality Gate (runs when you write test files)
+
+When you write or edit test files (`*/tests/*.rs`), the hook checks that you have both:
+- **Positive tests** — verify correct behavior
+- **Negative tests** — verify error handling (`.is_err()`, `.is_none()`, `#[should_panic]`, etc.)
+
+Happy-path-only test files are blocked. Name negative tests clearly: `test_*_invalid_*`, `test_*_missing_*`, `test_*_error_*`.
+
+### Enforced Workflows
+
+Use `/fix-issue` or `/implement` to get a structured workflow that enforces:
+1. Understand the problem first (read code, identify root cause)
+2. Write a failing test BEFORE implementing the fix
+3. Implement the minimal fix
+4. Verify with positive AND negative tests
+5. Provide a proof-of-work summary
+
+---
+
 ## Commit Standards
 
 - Every commit must compile (`cargo check`) and pass tests (`cargo test`)
