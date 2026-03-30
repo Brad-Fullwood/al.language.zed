@@ -236,9 +236,10 @@ async fn test_edit_b01_diagnostics_appear_after_introducing_error() {
 
 #[tokio::test]
 async fn test_edit_b02_diagnostics_clear_after_fixing_error() {
-    // Custom lint rules have been removed; AL-L001 is no longer emitted.
-    // This test now verifies that the server processes both the initial open
-    // and the subsequent edit without crashing, and that no AL-L001 codes appear.
+    // AL-L001 (empty begin..end) is an active lint rule.
+    // This test verifies that:
+    //   1. AL-L001 IS emitted when an empty begin..end block is opened, and
+    //   2. AL-L001 disappears after editing the file to non-empty code.
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     client.open_file("src/edit_test.al", EMPTY_BEGIN_END).await;
@@ -247,26 +248,27 @@ async fn test_edit_b02_diagnostics_clear_after_fixing_error() {
     let initial_codes: Vec<&str> = diags.get(&uri)
         .map(|d| d.iter().filter_map(|v| v.get("code").and_then(|c| c.as_str())).collect())
         .unwrap_or_default();
-    assert!(!initial_codes.contains(&"AL-L001"),
-        "AL-L001 should not appear with custom lint rules removed: got {initial_codes:?}");
+    assert!(initial_codes.contains(&"AL-L001"),
+        "AL-L001 should appear for empty begin..end block: got {initial_codes:?}");
 
-    // Edit to valid code — server must process without error.
+    // Edit to code with a non-empty begin..end — AL-L001 should clear.
     client.change_file("src/edit_test.al", INITIAL_CODEUNIT).await;
     let diags = client.drain_diagnostics();
     let fixed_codes: Vec<&str> = diags.get(&uri)
         .map(|d| d.iter().filter_map(|v| v.get("code").and_then(|c| c.as_str())).collect())
         .unwrap_or_default();
     assert!(!fixed_codes.contains(&"AL-L001"),
-        "AL-L001 should not appear after edit either: got {fixed_codes:?}");
+        "AL-L001 should not appear after fixing the empty begin..end: got {fixed_codes:?}");
 
     client.shutdown().await;
 }
 
 #[tokio::test]
 async fn test_edit_b03_lint_diagnostics_update_on_edit() {
-    // Custom lint rules have been removed; AL-L007 is no longer emitted.
-    // This test verifies that edits are processed correctly and no stale AL-L007
-    // codes appear, regardless of whether TODO comments are present.
+    // AL-L007 (TODO/FIXME comment) is an active lint rule.
+    // This test verifies that:
+    //   1. AL-L007 IS emitted when a TODO comment is present, and
+    //   2. AL-L007 disappears after editing the file to remove the TODO.
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let with_todo = r#"codeunit 50100 "Edit Test"
@@ -282,17 +284,17 @@ async fn test_edit_b03_lint_diagnostics_update_on_edit() {
     let codes: Vec<&str> = diags.get(&uri)
         .map(|d| d.iter().filter_map(|v| v.get("code").and_then(|c| c.as_str())).collect())
         .unwrap_or_default();
-    assert!(!codes.contains(&"AL-L007"),
-        "AL-L007 should not appear with custom lint rules removed: got {codes:?}");
+    assert!(codes.contains(&"AL-L007"),
+        "AL-L007 should appear for TODO comment: got {codes:?}");
 
-    // Edit: remove the TODO — server must still process the change without error.
+    // Edit: remove the TODO — AL-L007 should clear after the update.
     client.change_file("src/edit_test.al", INITIAL_CODEUNIT).await;
     let diags = client.drain_diagnostics();
     let codes: Vec<&str> = diags.get(&uri)
         .map(|d| d.iter().filter_map(|v| v.get("code").and_then(|c| c.as_str())).collect())
         .unwrap_or_default();
     assert!(!codes.contains(&"AL-L007"),
-        "AL-L007 should not appear after edit: got {codes:?}");
+        "AL-L007 should not appear after removing the TODO comment: got {codes:?}");
 
     client.shutdown().await;
 }
