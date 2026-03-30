@@ -391,7 +391,9 @@ fn syntax_error_to_lsp_diagnostic_conversion() {
 
 #[test]
 fn lint_diagnostics_convert_to_lsp() {
-    // Code with a TODO comment -> AL-L007
+    // Native lint rules have been removed — lint() always returns empty.
+    // Verify that lint_to_diagnostic() still compiles and that lint() returns empty
+    // for code that previously triggered AL-L007.
     let code = r#"codeunit 50100 Test
 {
     // TODO: fix this
@@ -406,26 +408,18 @@ fn lint_diagnostics_convert_to_lsp() {
     let lints = al_syntax::lint(&result.tree, code);
 
     assert!(
-        lints.iter().any(|l| l.code == "AL-L007"),
-        "Should detect TODO comment: {:?}",
+        lints.is_empty(),
+        "lint() must return empty Vec (rules removed): {:?}",
         lints
     );
 
-    // Convert to LSP diagnostics
+    // lint_to_diagnostic() must remain callable for the empty slice.
     let src_bytes = code.as_bytes();
     let diagnostics: Vec<Diagnostic> = lints
         .iter()
         .map(|l| al_lsp::diagnostics::lint_to_diagnostic(l, src_bytes))
         .collect();
-
-    let todo_diag = diagnostics
-        .iter()
-        .find(|d| d.code == Some(NumberOrString::String("AL-L007".to_string())));
-    assert!(todo_diag.is_some(), "Should have an AL-L007 diagnostic");
-
-    let td = todo_diag.unwrap();
-    assert_eq!(td.severity, Some(DiagnosticSeverity::INFORMATION));
-    assert_eq!(td.source, Some("al-lint".to_string()));
+    assert!(diagnostics.is_empty(), "no lint diagnostics expected");
 }
 
 // ---------------------------------------------------------------------------
@@ -740,22 +734,21 @@ fn formatting_produces_valid_parseable_output() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn lint_detects_todo_in_codeunit() {
+fn lint_returns_empty_for_codeunit() {
+    // Native lint rules have been removed — lint() always returns empty.
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
     let lints = al_syntax::lint(&result.tree, CODEUNIT_AL);
-
-    let todo_lints: Vec<&al_syntax::LintDiagnostic> =
-        lints.iter().filter(|l| l.code == "AL-L007").collect();
-
     assert!(
-        !todo_lints.is_empty(),
-        "Should detect TODO comment in codeunit"
+        lints.is_empty(),
+        "lint() must return empty Vec (rules removed): {:?}",
+        lints
     );
 }
 
 #[test]
-fn lint_detects_pascal_case_violation() {
+fn lint_returns_empty_for_naming_violation() {
+    // Native lint rules have been removed — procedure naming is checked by the .NET bridge.
     let code = r#"codeunit 50100 Test
 {
     procedure badName()
@@ -767,16 +760,16 @@ fn lint_detects_pascal_case_violation() {
     let mut parser = make_parser();
     let result = parser.parse(code);
     let lints = al_syntax::lint(&result.tree, code);
-
     assert!(
-        lints.iter().any(|l| l.code == "AL-L016"),
-        "Should detect non-PascalCase procedure name: {:?}",
+        lints.is_empty(),
+        "lint() must return empty Vec (naming rule removed): {:?}",
         lints
     );
 }
 
 #[test]
-fn lint_no_false_positives_on_clean_code() {
+fn lint_returns_empty_for_clean_code() {
+    // Native lint rules have been removed — lint() returns empty for all input.
     let code = r#"codeunit 50100 "Clean Code"
 {
     procedure ProcessData()
@@ -794,15 +787,10 @@ fn lint_no_false_positives_on_clean_code() {
     let mut parser = make_parser();
     let result = parser.parse(code);
     let lints = al_syntax::lint(&result.tree, code);
-
-    // Should not have empty block or naming violations
     assert!(
-        !lints.iter().any(|l| l.code == "AL-L001"),
-        "Clean code should not trigger empty begin..end lint"
-    );
-    assert!(
-        !lints.iter().any(|l| l.code == "AL-L016"),
-        "PascalCase procedure name should not trigger naming lint"
+        lints.is_empty(),
+        "lint() must return empty Vec: {:?}",
+        lints
     );
 }
 

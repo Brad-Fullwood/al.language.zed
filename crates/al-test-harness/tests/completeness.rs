@@ -454,12 +454,13 @@ async fn test_completeness_d03_close_file_clears_diagnostics() {
 }"#;
     client.open_file("src/close_diag.al", code).await;
 
-    // Should have diagnostics (AL-L001)
+    // The server should publish a diagnostics notification on open
+    // (even if the array is empty — native lint rules have been removed).
     let diags1 = client.drain_diagnostics();
     let uri = client.file_uri("src/close_diag.al");
     assert!(
         diags1.contains_key(&uri),
-        "should have diagnostics after open"
+        "server should publish diagnostics notification after open"
     );
 
     // Close the file
@@ -947,13 +948,10 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
     let sig = client.signature_help("src/cap_test.al", 6, 20).await;
     // May or may not resolve
 
-    // codeAction
-    let acts = client.code_actions("src/cap_test.al", 12, 14).await;
-    // Should have at least AL-L001 for empty begin..end
-    assert!(
-        !acts.is_empty(),
-        "codeAction capability must work on empty begin..end"
-    );
+    // codeAction — native lint rules have been removed so AL-L001 quickfixes will
+    // not appear, but the capability must respond without crashing.
+    let _acts = client.code_actions("src/cap_test.al", 12, 14).await;
+    // May or may not return actions depending on context — just verify no crash.
 
     // inlayHint
     let hints = client.inlay_hints("src/cap_test.al", 0, 15).await;

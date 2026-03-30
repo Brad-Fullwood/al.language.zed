@@ -6,7 +6,7 @@
 use al_syntax::tokens::token_types;
 use al_syntax::{
     extract_document_symbols, extract_folding_ranges, extract_semantic_tokens, format_al, lint,
-    AlParser, FormatOptions, LintSeverity,
+    AlParser, FormatOptions,
 };
 use tower_lsp::lsp_types::{FoldingRangeKind, SymbolKind};
 
@@ -712,38 +712,35 @@ end;
 // ---------------------------------------------------------------------------
 
 #[test]
-fn lint_codeunit_detects_todo() {
+fn lint_returns_empty_for_any_code() {
+    // Native lint rules have been removed — all diagnostics come from the .NET bridge.
+    // Verify lint() returns empty regardless of input.
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
     let diagnostics = lint(&result.tree, CODEUNIT_CODE);
-
-    let todo_diags: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L007").collect();
-
     assert!(
-        !todo_diags.is_empty(),
-        "Should detect TODO comment in codeunit"
+        diagnostics.is_empty(),
+        "lint() must return empty Vec (rules removed): {:?}",
+        diagnostics
     );
-    assert_eq!(todo_diags[0].severity, LintSeverity::Info);
 }
 
 #[test]
-fn lint_table_detects_empty_trigger() {
+fn lint_returns_empty_for_table() {
+    // Native lint rules have been removed — all diagnostics come from the .NET bridge.
     let mut parser = make_parser();
     let result = parser.parse(TABLE_CODE);
     let diagnostics = lint(&result.tree, TABLE_CODE);
-
-    let empty_trigger: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L006").collect();
-
     assert!(
-        !empty_trigger.is_empty(),
-        "Should detect empty OnModify trigger in table: {:?}",
+        diagnostics.is_empty(),
+        "lint() must return empty Vec for table code: {:?}",
         diagnostics
     );
-    assert_eq!(empty_trigger[0].severity, LintSeverity::Hint);
 }
 
 #[test]
-fn lint_naming_violations() {
+fn lint_returns_empty_for_naming_violations() {
+    // Native lint rules have been removed — procedure naming is checked by the .NET bridge.
     let code = r#"codeunit 50100 Test
 {
     procedure goodName()
@@ -755,25 +752,19 @@ fn lint_naming_violations() {
     begin
     end;
 }"#;
-
     let mut parser = make_parser();
     let result = parser.parse(code);
     let diagnostics = lint(&result.tree, code);
-
-    let naming_diags: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L016").collect();
-
-    // `goodName` should trigger L016 (starts with lowercase)
-    // `AnotherBadName` should NOT trigger L016 (starts with uppercase)
-    assert_eq!(
-        naming_diags.len(),
-        1,
-        "Should detect exactly 1 naming violation (goodName), got: {:?}",
-        naming_diags
+    assert!(
+        diagnostics.is_empty(),
+        "lint() must return empty Vec (naming rules removed): {:?}",
+        diagnostics
     );
 }
 
 #[test]
-fn lint_empty_begin_end() {
+fn lint_returns_empty_for_empty_begin_end() {
+    // Native lint rules have been removed — empty begin..end is caught by the .NET bridge.
     let code = r#"codeunit 50100 Test
 {
     procedure EmptyProc()
@@ -785,21 +776,19 @@ fn lint_empty_begin_end() {
         Message('hi');
     end;
 }"#;
-
     let mut parser = make_parser();
     let result = parser.parse(code);
     let diagnostics = lint(&result.tree, code);
-
-    let empty_block: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L001").collect();
-
     assert!(
-        !empty_block.is_empty(),
-        "Should detect empty begin..end in EmptyProc"
+        diagnostics.is_empty(),
+        "lint() must return empty Vec (empty-block rule removed): {:?}",
+        diagnostics
     );
 }
 
 #[test]
-fn lint_deep_nesting() {
+fn lint_returns_empty_for_deep_nesting() {
+    // Native lint rules have been removed — deep nesting is caught by the .NET bridge.
     let code = r#"codeunit 50100 Test
 {
     procedure DeepNest()
@@ -813,56 +802,28 @@ fn lint_deep_nesting() {
                                 Message('too deep');
     end;
 }"#;
-
     let mut parser = make_parser();
     let result = parser.parse(code);
     let diagnostics = lint(&result.tree, code);
-
-    let nesting_diags: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L004").collect();
-
     assert!(
-        !nesting_diags.is_empty(),
-        "Should detect excessive nesting depth"
+        diagnostics.is_empty(),
+        "lint() must return empty Vec (nesting rule removed): {:?}",
+        diagnostics
     );
 }
 
 #[test]
-fn lint_config_custom_thresholds() {
-    // Generate a procedure with exactly 15 lines
-    let mut lines = vec![
-        "codeunit 50100 Test".to_string(),
-        "{".to_string(),
-        "    procedure MediumProc()".to_string(),
-        "    begin".to_string(),
-    ];
-    for i in 0..10 {
-        lines.push(format!("        x := {};", i));
-    }
-    lines.push("    end;".to_string());
-    lines.push("}".to_string());
-    let code = lines.join("\n");
-
+fn lint_config_default_constructs() {
+    // LintConfig is now a unit struct placeholder — verify it constructs and
+    // that lint_with_config still returns empty.
+    let config = al_syntax::lint::LintConfig::default();
     let mut parser = make_parser();
-    let result = parser.parse(&code);
-
-    // With default config (100 lines), should NOT trigger
-    let diags_default = lint(&result.tree, &code);
+    let result = parser.parse(CODEUNIT_CODE);
+    let diags = al_syntax::lint::lint_with_config(&result.tree, CODEUNIT_CODE, &config);
     assert!(
-        !diags_default.iter().any(|d| d.code == "AL-L002"),
-        "15-line procedure should not trigger AL-L002 with default 100-line limit"
-    );
-
-    // With strict config (10 lines), should trigger
-    let strict_config = al_syntax::lint::LintConfig {
-        max_procedure_lines: 10,
-        max_if_depth: 3,
-        max_parameters: 3,
-    };
-    let diags_strict = al_syntax::lint::lint_with_config(&result.tree, &code, &strict_config);
-    assert!(
-        diags_strict.iter().any(|d| d.code == "AL-L002"),
-        "15-line procedure should trigger AL-L002 with 10-line limit: {:?}",
-        diags_strict
+        diags.is_empty(),
+        "lint_with_config() must return empty Vec: {:?}",
+        diags
     );
 }
 
