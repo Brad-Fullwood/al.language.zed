@@ -34,6 +34,11 @@ The project enforces strict dependency rules:
 - **Impact:** These `From` impls give al-core a compile-time dependency on `tower_lsp::lsp_types`. Should be in al-lsp.
 - **Fix:** Move to al-lsp as extension traits or free functions.
 
+### ARCH-C05: al-syntax — Depends on `tower-lsp` (LSP types in leaf crate)
+- **File:** `crates/al-syntax/Cargo.toml:10` + 7 source files
+- **Impact:** `al-syntax` is a leaf parsing crate that declares `tower-lsp` as a runtime dependency. LSP types (`FoldingRange`, `DocumentSymbol`, `TextEdit`, `Range`, `Position`) are used in public return types across `folding.rs`, `symbols.rs`, `navigation.rs`, `formatting.rs`, `lib.rs`, `type_resolver.rs`, `context.rs`. This makes `al-syntax` unusable in non-LSP contexts (CLI batch formatter, WASM, HTTP API) without pulling in the entire tower-lsp stack. The CLAUDE.md review gate flags "No LSP types in al-core query return types" — the same principle applies one level lower to al-syntax.
+- **Fix:** Define neutral types in `al-syntax`. Move `ts_range_to_lsp` to `al-core` or `al-lsp`. Remove `tower-lsp` from `al-syntax/Cargo.toml`.
+
 ## MEDIUM
 
 ### ARCH-M01: al-lsp — `dispatch_inlay_hints` constructs `tower_lsp::lsp_types::Range` in daemon code
@@ -55,6 +60,15 @@ The project enforces strict dependency rules:
 - **File:** `src/lib.rs:87-99, 114-117` vs `src/platform.rs`
 - **Impact:** `Platform::bin_dir()` returns `"darwin"` but asset name uses `"macos"`. Binary name duplicated. Divergence risk.
 - **Fix:** Use `Platform`-derived values everywhere.
+
+### ARCH-M05: al-lsp — Business logic in `initialize_workspace` parse/lint loop
+- **File:** `crates/al-lsp/src/workspace.rs:208-234`
+- **Impact:** Inline parse + lint loop calls `AlParser::parse_quick` and `lint` directly, filters by rule config, and publishes diagnostics per-file. This is business logic (parse, lint, filter, accumulate) in the transport layer. The parallel path for individual files already exists as `diagnostics::compute_diagnostics`.
+- **Fix:** Move to an `al-core` query (e.g., `al_core::queries::bulk_fix::lint_all_files`).
+
+### ARCH-M06: al-lsp — Dev-dependencies import al-syntax and al-symbols directly
+- **File:** `crates/al-lsp/Cargo.toml:29-30`, `tests/integration.rs`
+- **Impact:** Test-only but undermines the architectural contract. Integration tests bypass al-core entirely, importing `al-syntax` and `al-symbols` directly. Better placed in `al-core`'s test suite.
 
 ## Confirmed Clean
 

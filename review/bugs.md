@@ -104,6 +104,16 @@
 - **Impact:** Stack overflow risk on deeply nested AL. Violates CLAUDE.md rule.
 - **Fix:** Convert to iterative stack-based traversal.
 
+### BUG-H15a: al-syntax — `collect_var_symbols_recursive` is recursive (stack overflow risk)
+- **File:** `crates/al-syntax/src/symbols.rs:889-934`
+- **Impact:** Recursive traversal through tree-sitter nodes. Violates CLAUDE.md iterative traversal rule. Stack overflow on deeply nested AL with many variable sections.
+- **Fix:** Convert to iterative with explicit `Vec<Node>` stack.
+
+### BUG-H15b: al-core — `collect_tokens` in duplicates.rs is recursive (stack overflow risk)
+- **File:** `crates/al-core/src/queries/duplicates.rs:190-220`
+- **Impact:** Same pattern as `tokens.rs`. Recursive DFS over every token in procedure bodies for duplicate detection. Runs across potentially large procedure bodies in the entire workspace.
+- **Fix:** Convert to iterative with explicit `Vec<Node>` stack.
+
 ### BUG-H15: al-symbols — Decompression-bomb check fires after 512MB already written to disk
 - **File:** `crates/al-symbols/src/nuget.rs:372-382`
 - **Impact:** File left on disk after limit triggered. No cleanup.

@@ -7,6 +7,11 @@
 - **Impact:** After a panic during an FFI call, `e.into_inner()` recovers the poisoned Mutex value. The CLR bridge may have unfreed buffers or be in an intermediate state. Subsequent calls risk use-after-free across FFI boundary.
 - **Fix:** Return `SemanticError::HostInit("Bridge state corrupt after panic")` instead of recovering.
 
+### CONC-C02: al-lsp — DashMap `Ref` held across `.await` — confirmed deadlock
+- **File:** `crates/al-lsp/src/workspace.rs:213-232`
+- **Impact:** `workspace.file_index.files.get(&path)` returns a `dashmap::mapref::one::Ref` holding a shard RwLock. The guard lives until line 232 but there's an `.await` at line 230 (`client.publish_diagnostics(...).await`). When tokio suspends the task, the shard lock remains held. Any other task calling `file_index.add_file()` on the same shard will block indefinitely. This is the exact anti-pattern documented in CLAUDE.md's DashMap section.
+- **Fix:** Add `drop(text_entry);` immediately after `let text = text_entry.value().clone();` on line 214.
+
 ## HIGH
 
 ### CONC-H01: al-semantic — `timeout` does not cancel `spawn_blocking`; lock stays held

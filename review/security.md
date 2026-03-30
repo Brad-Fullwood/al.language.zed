@@ -27,6 +27,16 @@
 - **Impact:** User-configured path from `LspSettings` passed directly as `zed::Command`. No validation for existence, absolute path, or directory traversal.
 - **Fix:** Validate path is absolute and exists before accepting.
 
+### SEC-H06: al-symbols — NuGet `.nupkg` download has no size limit before buffering into RAM
+- **File:** `crates/al-symbols/src/nuget.rs:279`
+- **Impact:** `client.get(&nupkg_url).send().await?.bytes().await?` collects entire response into memory unconditionally. A malicious or misconfigured NuGet feed could serve a multi-GB response, causing OOM. The `.app` extraction that follows enforces a 512 MB limit, but the download itself has no guard.
+- **Fix:** Check `Content-Length` upfront, reject responses above 200 MB.
+
+### SEC-H07: al-symbols — BC server package download has no size limit
+- **File:** `crates/al-symbols/src/bc_server.rs:117-128`
+- **Impact:** Same as SEC-H06. `response.bytes().await?` with no upper bound. This code path is hit when `acceptInvalidCerts` is `true`, making MITM more realistic.
+- **Fix:** Check `Content-Length` before `.bytes()`, cap at 200 MB.
+
 ## MEDIUM
 
 ### SEC-M01: al-symbols — Zip-slip protection doesn't check NUL bytes
@@ -63,3 +73,23 @@
 - **File:** `crates/al-symbols/src/bc_server.rs:75-82`
 - **Impact:** `reqwest::Client::default()` fallback may not support HTTPS. Credentials sent over plaintext.
 - **Fix:** Return error instead of silently downgrading.
+
+### SEC-M08: al-semantic — `.NET bridge `from_raw_parts` with unbounded response length
+- **File:** `crates/al-semantic/src/host.rs:160-164`
+- **Impact:** `response_len` from C# bridge is not bound-checked. A buggy bridge could return `c_int::MAX` (2 GB), causing OOM panic instead of graceful error. Not externally exploitable (bridge DLL is trusted code) but a robustness gap.
+- **Fix:** Add sanity cap (e.g., 64 MB) before `from_raw_parts`.
+
+### SEC-M09: al-lsp — Daemon accepts arbitrary file paths outside workspace
+- **File:** `crates/al-lsp/src/daemon/mod.rs:635-651`
+- **Impact:** `file_uri_from_params` accepts absolute paths without workspace confinement. Any same-user process connecting to the Unix socket could read arbitrary files through lint/format/hover handlers. Local privilege confusion threat model.
+- **Fix:** Add workspace-confinement check: reject paths not under the project root.
+
+### SEC-M10: al-core — `acceptInvalidCerts` silently disables TLS with no warning
+- **Files:** `crates/al-core/src/launch.rs:139,174` + multiple callsites
+- **Impact:** Setting read from user JSON files (`.zed/debug.json`, `.vscode/launch.json`) with no warning logged. Credentials transmitted over potentially intercepted TLS session.
+- **Fix:** Emit `tracing::warn!` when the dangerous client is constructed.
+
+### SEC-M11: al-dap-client — Unnecessary `unsafe` in `from_utf8_unchecked`
+- **File:** `crates/al-dap-client/src/json_util.rs:100`
+- **Impact:** Safety invariant holds (input is valid UTF-8 from prior `String` operations) but the `unsafe` is unnecessary. `String::from_utf8(result).unwrap_or_else(...)` would be safe at negligible cost.
+- **Fix:** Replace with `String::from_utf8(result).expect("stripped only ASCII bytes")`.

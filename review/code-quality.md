@@ -48,6 +48,26 @@
 - **File:** `crates/al-symbols/src/virtual_file.rs:163-188`
 - **Impact:** Raw strings like `"procedure"`, `"field"`, `"key"`, `"var"` in output formatter. Lower severity than language intelligence hardcoding, but inconsistent.
 
+### CQ-M09: al-core — `Box<dyn Error>` used in library code instead of typed errors
+- **Files:** `crates/al-core/src/launch.rs:218,235`, `crates/al-lsp/src/daemon/mod.rs:53,274`
+- **Impact:** `parse_zed_debug_file()`, `parse_vscode_launch_file()` return `Box<dyn std::error::Error>`. `al-core` already has `AlError` with `From<std::io::Error>` and `From<serde_json::Error>`. `run_daemon()` returns `Box<dyn Error>` which is not `Send`-safe across async boundaries.
+- **Fix:** Return `AlError` / typed error.
+
+### CQ-M10: al-core — `Result<T, String>` in public library APIs
+- **Files:** `crates/al-core/src/queries/arch_lint.rs:55`, `crates/al-core/src/scaffold.rs:141`, `crates/al-core/src/queries/profiler_hints.rs`
+- **Impact:** Makes it impossible for callers to distinguish error cases programmatically. `from_json` is a public constructor — should return `Result<Self, serde_json::Error>` or `AlError`.
+- **Fix:** Use typed errors.
+
+### CQ-M11: al-core — Per-token heap allocation in duplicate detection hot path
+- **File:** `crates/al-core/src/queries/duplicates.rs:200-210,252-258`
+- **Impact:** `tokens.push("$ID".to_string())` allocates for every identifier token in every procedure body. The `bigrams` function also allocates a `format!("{}|{}", ...)` for every bigram. Hot path called across entire workspace.
+- **Fix:** Use `Vec<&'static str>` or `enum NormToken { Id, Str, Num, Kw(&'a str) }`.
+
+### CQ-M12: al-core — Repeated double-`.map()` on same `Option<&_>` in search.rs
+- **Files:** `crates/al-core/src/insight/search.rs:306-307,354-355,375-376`
+- **Impact:** Works because `Option<&T>` is `Copy`, but intent unclear. Appears 6+ times.
+- **Fix:** Destructure once: `let (name, object) = info.map(|i| (i.name.clone(), i.object.clone())).unwrap_or_default();`
+
 ## LOW
 
 ### CQ-L01: al-cli — Inconsistent return type: `std::process::ExitCode` vs `ExitCode`

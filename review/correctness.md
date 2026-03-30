@@ -12,6 +12,16 @@
 - **Impact:** Core type resolution path for completions and hover. Every call path through `variables_at` or `resolve_type` affected when source has non-ASCII characters.
 - **Fix:** Same as CORR-C01.
 
+### CORR-C03: al-core — `source_action_make_local` uses UTF-16 character as byte column
+- **File:** `crates/al-core/src/queries/code_actions.rs:1501`
+- **Impact:** `range.start.character as usize` passed directly as byte column to `tree_sitter::Point`. Wrong node for non-ASCII source. Irony: `source_action_if_to_case` at lines 570-573 in the same file correctly converts via `utf16_col_to_byte_offset`.
+- **Fix:** Use `utf16_col_to_byte_offset` before constructing Point.
+
+### CORR-C04: al-core — `implement_interface_stubs` has same UTF-16-as-bytes bug
+- **File:** `crates/al-core/src/queries/code_actions.rs:838`
+- **Impact:** `range.start.character as usize` passed directly to `find_codeunit_at_point`. Same class as CORR-C03.
+- **Fix:** Same — convert via `utf16_col_to_byte_offset`.
+
 ## HIGH
 
 ### CORR-H01: al-core — `inlay_hints.rs` uses tree-sitter byte column as LSP character
@@ -33,6 +43,21 @@
 - **File:** `crates/al-syntax/src/symbols.rs:459-469`
 - **Impact:** Same class as CORR-H03. New keywords fall through to `SymbolKind::NAMESPACE` silently.
 - **Fix:** Add `lsp_symbol_kind` field to `page_controls.json` or document the fallback behavior.
+
+### CORR-H05a: al-syntax — Hardcoded `SINGLE_STMT_OPENERS` in formatting.rs
+- **File:** `crates/al-syntax/src/formatting.rs:421-427`
+- **Impact:** Encodes AL control-flow keywords (`if/then`, `for/do`, `while/do`, `with/do`, `foreach/do`) directly. Duplicates `tree-sitter-al/data/single_stmt_openers.json`. Will go stale when Microsoft adds new single-statement openers (as happened with `foreach`).
+- **Fix:** Load from `LanguageData::single_stmt_openers()`.
+
+### CORR-H05b: al-core — Hardcoded `permission_for_kind` match in permissions.rs
+- **File:** `crates/al-core/src/permissions.rs:135-145`
+- **Impact:** Hardcodes which object types are permissionable (`table→RIMD`, `page→X`, etc.). New permissionable types silently missed — generated permission sets will be incomplete.
+- **Fix:** Add `permission_type`/`permission_value` fields to `object_types.json`, query via `LanguageData`.
+
+### CORR-H05c: al-core — Incomplete `al_keywords` array in code_actions.rs
+- **File:** `crates/al-core/src/queries/code_actions.rs:1319-1322`
+- **Impact:** Local array of 14 AL keywords used to skip keyword-led lines. Missing `namespace`, `using`, `with`, `foreach`, `do`, `trigger`, `procedure`, `var`, etc. Mixes keywords with comment syntax (`//`) and compound tokens (`end;`).
+- **Fix:** Use `al_syntax::language_data::is_keyword()`. Keep `//` and `end;` as explicit prefix checks.
 
 ### CORR-H05: al-core — `xliff.rs` hardcoded AL object type list
 - **File:** `crates/al-core/src/xliff.rs:189-206`

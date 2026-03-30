@@ -14,6 +14,16 @@ All items violate the CLAUDE.md rule: "NEVER unwrap() in non-test code" or "NEVE
 - **Impact:** If server crashes, `notify()` returns `Err("writer closed")` and `unwrap()` panics. Every test gets a cryptic panic instead of a clear "server died" message.
 - **Fix:** Return `Result` from these methods or use `expect("server connection lost")`.
 
+### ERR-C03: al-dap-client — `DapClient::spawn` panics on piped stdio unavailability
+- **File:** `crates/al-dap-client/src/client.rs:47-48`
+- **Impact:** `child.stdin.take().expect("child stdin")` in a `pub fn spawn() -> Result` function. If pipe creation fails, process panics instead of returning `Err`. `DapError::SpawnFailed` variant already exists for this.
+- **Fix:** `.ok_or_else(|| DapError::SpawnFailed("child stdin not available".to_string()))?`
+
+### ERR-C04: al-core — `unreachable!()` in production library code `results_to_diagnostics`
+- **File:** `crates/al-core/src/queries/test_diagnostics.rs:106`
+- **Impact:** `TestStatus::Pass => unreachable!()` in a public query function called from LSP handlers. `TestStatus` is a public enum deserialized from JSON — future refactoring or deserialization edge cases could reach this arm. A panic here kills the LSP server.
+- **Fix:** Replace with `TestStatus::Pass => continue` or defensive `tracing::warn!` + `continue`.
+
 ## HIGH
 
 ### ERR-H01: al-symbols — `getrandom().expect()` panics in library code

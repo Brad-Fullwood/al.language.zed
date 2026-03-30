@@ -37,6 +37,35 @@
 - **Impact:** `trim_end_matches('\n')` misses `\r`. `tail()` uses `content.lines()` which handles both. Inconsistent behavior in same module.
 - **Fix:** `line.trim_end_matches(|c| c == '\n' || c == '\r')`.
 
+### TQ-H08: al-core — `queries/references.rs` has zero unit tests
+- **File:** `crates/al-core/src/queries/references.rs`
+- **Impact:** "Find All References" — iterates workspace `file_index`, re-parses every .al file, applies case-insensitive name matching. Cross-file iteration, `include_declaration` filtering, and URI-to-path conversion all untested. Every other comparable query module has test suites.
+- **Fix:** Add tests for: empty on unopened doc, include_declaration=true/false, cross-file refs, unknown identifier returns empty Vec.
+
+### TQ-H09: al-core — `queries/folding.rs` has zero unit tests
+- **File:** `crates/al-core/src/queries/folding.rs`
+- **Impact:** The al-core wrapper is untested despite `al-syntax` having tests for the underlying function. Also returns LSP types directly (architecture violation).
+- **Fix:** Add tests for: returns `None` for unopened URI, non-empty ranges for codeunit with procedures.
+
+### TQ-H10: al-core — `hover()` itself untested; only formatting helpers tested
+- **File:** `crates/al-core/src/queries/hover.rs`
+- **Impact:** 4 tests exist but cover only private formatting helpers. The public `hover()` function (access_path_at, type resolution, symbol index, fallbacks) has zero direct coverage.
+- **Fix:** Add tests for: `None` for unopened doc, `None` for cursor on whitespace, `Some` for known local variable.
+
+### TQ-H11: al-core — `signature_help()` itself untested; only parameter parsing helper tested
+- **File:** `crates/al-core/src/queries/signature.rs`
+- **Impact:** 4 tests cover only `parse_parameters_from_detail`. The public function is untested.
+- **Fix:** Add tests for: `None` for unopened doc, `None` for cursor outside call, `Some` with correct active parameter index.
+
+### TQ-H12: al-core — Insight modules have zero negative tests (4 modules)
+- **Files:** `crates/al-core/src/insight/analysis.rs` (13 positive, 0 negative), `insight/graph.rs` (14 positive, 0 negative), `insight/calls.rs` (10 positive, ~1 negative), `insight/index.rs`
+- **Impact:** Violates CLAUDE.md Test Quality Gate which requires both positive and negative tests.
+- **Fix:** Add per module: `table_impact()` on nonexistent object, `get_node()` for unknown key, call graph traversal for dangling reference.
+
+### TQ-H13: al-core — Query modules have zero negative tests (4 modules)
+- **Files:** `queries/dead_code.rs` (7 tests, 0 negative), `queries/duplicates.rs` (5 tests, 0 negative), `queries/sql_patterns.rs` (5 tests, 0 negative), `queries/obsolescence.rs` (3 tests, 0 negative)
+- **Impact:** Each needs at least one "clean input produces empty result" assertion to satisfy the Test Quality Gate.
+
 ## MEDIUM
 
 ### TQ-M01: al-test-harness — `test_workspace_symbol_search` has zero assertions
@@ -73,6 +102,25 @@
 - **File:** `crates/al-semantic/src/cache.rs:95-141`
 - **Impact:** Tests write to real `~/.cache/al-lsp/semantic/` with fixed version strings. Panic before cleanup leaks files. Parallel test races possible.
 - **Fix:** Use `tempfile::TempDir` or unique version strings.
+
+### TQ-M08: al-lsp — `integration.rs` has 45 tests, all happy-path; zero negative tests
+- **File:** `crates/al-lsp/tests/integration.rs`
+- **Impact:** No `is_err()` or `is_none()` assertions. Dispatch error paths never exercised.
+- **Fix:** Add tests for: `dispatch_format` on unparseable input, `dispatch_hover` with out-of-range position, `dispatch_definition` on unknown URI.
+
+### TQ-M09: al-syntax — `context.rs` has 24 tests but no UTF-16 edge cases
+- **File:** `crates/al-syntax/src/context.rs`
+- **Impact:** `resolution.rs` has a dedicated UTF-16 test (`receiver_chain_before_non_ascii_prefix`) that caught a real bug, but `context.rs` has no equivalent.
+- **Fix:** Add tests for: `detect_context` with non-ASCII before member-access dot, cursor inside string literal.
+
+### TQ-M10: al-syntax — `formatting.rs` has only 1 negative test out of 15
+- **File:** `crates/al-syntax/src/formatting.rs`
+- **Impact:** CLAUDE.md Formatter Lessons document tricky edge-case bugs found in production. Untested: empty input, comment-only file, deeply nested if/else (5+ levels), non-ASCII procedure names, split end/else case.
+
+### TQ-M11: al-syntax — `traversal.rs` has zero tests
+- **File:** `crates/al-syntax/src/traversal.rs`
+- **Impact:** `walk_tree_until` has a non-trivial early-termination contract (returns `false` on early stop, `true` on complete). This return value is never tested.
+- **Fix:** Add tests for: always-false visitor returns false, always-true returns true, stop-at-second-node visits exactly 2 nodes.
 
 ## LOW
 

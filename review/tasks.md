@@ -24,11 +24,11 @@ Each task is a discrete, independently fixable unit of work. Priority order: CRI
 - **What:** `scopes` encodes as `frame_id * 100 + scope_index` but `variables` passes the raw value. Decode before dispatching to `get_variables` vs `get_globals`.
 - **Details:** [bugs.md → BUG-H01](bugs.md#bug-h01-al-dap-client--variables-handler-doesnt-decode-framescope-encoding)
 
-### T-004: Fix UTF-16/byte position conversion in al-syntax navigation
-- **Crate:** al-syntax
-- **Files:** `crates/al-syntax/src/navigation.rs`, `crates/al-syntax/src/type_resolver.rs`
-- **What:** `find_node_at_position` and `find_enclosing_procedure` pass `position.character` (UTF-16) directly as tree-sitter byte column. Use `utf16_col_to_byte_offset` before constructing `tree_sitter::Point`.
-- **Details:** [correctness.md → CORR-C01, CORR-C02](correctness.md#critical)
+### T-004: Fix UTF-16/byte position conversion in al-syntax navigation and al-core code_actions
+- **Crate:** al-syntax, al-core
+- **Files:** `crates/al-syntax/src/navigation.rs`, `crates/al-syntax/src/type_resolver.rs`, `crates/al-core/src/queries/code_actions.rs:838,1501`
+- **What:** `find_node_at_position`, `find_enclosing_procedure`, `implement_interface_stubs`, and `source_action_make_local` pass `position.character` (UTF-16) directly as tree-sitter byte column. Use `utf16_col_to_byte_offset` before constructing `tree_sitter::Point`. Note: `source_action_if_to_case` at lines 570-573 in the same file already does this correctly.
+- **Details:** [correctness.md → CORR-C01, CORR-C02, CORR-C03, CORR-C04](correctness.md#critical)
 
 ### T-005: Fix al-cli `apply_workspace_edit` stale offset computation
 - **Crate:** al-cli
@@ -53,6 +53,24 @@ Each task is a discrete, independently fixable unit of work. Priority order: CRI
 - **File:** `src/lib.rs`
 - **What:** `fs::metadata(&binary_path)` uses relative paths that resolve against WASM CWD, not extension work dir. Use absolute paths or rely on `zed::download_file` return value.
 - **Details:** [bugs.md → BUG-C06](bugs.md#bug-c06-zed-al--relative-paths-used-for-binary-cache-check-in-wasm)
+
+### T-008a: Fix DashMap deadlock in al-lsp workspace initialization
+- **Crate:** al-lsp
+- **File:** `crates/al-lsp/src/workspace.rs:213-232`
+- **What:** DashMap `Ref` guard held across `.await` at line 230. Add `drop(text_entry);` after cloning value on line 214. One-line fix prevents confirmed deadlock.
+- **Details:** [concurrency.md → CONC-C02](concurrency.md#conc-c02-al-lsp--dashmap-ref-held-across-await--confirmed-deadlock)
+
+### T-008b: Fix DapClient::spawn expect panics
+- **Crate:** al-dap-client
+- **File:** `crates/al-dap-client/src/client.rs:47-48`
+- **What:** Replace `expect("child stdin/stdout")` with `ok_or_else(|| DapError::SpawnFailed(...))` in pub library function that returns Result.
+- **Details:** [error-handling.md → ERR-C03](error-handling.md#err-c03-al-dap-client--dapclientspawn-panics-on-piped-stdio-unavailability)
+
+### T-008c: Fix `unreachable!()` in test_diagnostics.rs
+- **Crate:** al-core
+- **File:** `crates/al-core/src/queries/test_diagnostics.rs:106`
+- **What:** Replace `TestStatus::Pass => unreachable!()` with `continue` or defensive log. Production library code must not panic.
+- **Details:** [error-handling.md → ERR-C04](error-handling.md#err-c04-al-core--unreachable-in-production-library-code-results_to_diagnostics)
 
 ### T-009: Fix al-semantic Mutex poisoning — don't recover corrupt CLR state
 - **Crate:** al-semantic
@@ -88,15 +106,15 @@ Each task is a discrete, independently fixable unit of work. Priority order: CRI
 
 ### T-013: Convert al-syntax recursive traversals to iterative
 - **Crate:** al-syntax
-- **Files:** `crates/al-syntax/src/tokens.rs`, `crates/al-syntax/src/complexity.rs`
-- **What:** Convert `collect_tokens`, `collect_procedure_complexity`, `count_cyclomatic_decisions`, `compute_cognitive` to iterative traversal with explicit `Vec<Node>` stack.
-- **Details:** [bugs.md → BUG-H09, BUG-H10](bugs.md#bug-h09-al-syntax--collect_tokens-is-recursive-stack-overflow-risk)
+- **Files:** `crates/al-syntax/src/tokens.rs`, `crates/al-syntax/src/complexity.rs`, `crates/al-syntax/src/symbols.rs`
+- **What:** Convert `collect_tokens`, `collect_procedure_complexity`, `count_cyclomatic_decisions`, `compute_cognitive`, and `collect_var_symbols_recursive` to iterative traversal with explicit `Vec<Node>` stack.
+- **Details:** [bugs.md → BUG-H09, BUG-H10, BUG-H15a](bugs.md#bug-h09-al-syntax--collect_tokens-is-recursive-stack-overflow-risk)
 
-### T-014: Convert al-core `find_procedure_in_node` to iterative
+### T-014: Convert al-core recursive traversals to iterative
 - **Crate:** al-core
-- **File:** `crates/al-core/src/insight/calls.rs`
-- **What:** Convert recursive tree traversal to iterative with explicit stack.
-- **Details:** [bugs.md → BUG-H14](bugs.md#bug-h14-al-core--callsrs-uses-recursive-traversal)
+- **Files:** `crates/al-core/src/insight/calls.rs`, `crates/al-core/src/queries/duplicates.rs`
+- **What:** Convert `collect_procedure_names_from_node` and `collect_tokens` to iterative with explicit stack.
+- **Details:** [bugs.md → BUG-H14, BUG-H15b](bugs.md#bug-h14-al-core--callsrs-uses-recursive-traversal)
 
 ### T-015: Convert al-symbols namespace recursion to iterative
 - **Crate:** al-symbols
@@ -141,6 +159,24 @@ Each task is a discrete, independently fixable unit of work. Priority order: CRI
 - **File:** `crates/al-core/src/xliff.rs`
 - **What:** Replace hardcoded `object_types` array with `al_syntax::find_object_declaration` or `LanguageData`.
 - **Details:** [correctness.md → CORR-H05](correctness.md#corr-h05-al-core--xliffrs-hardcoded-al-object-type-list)
+
+### T-020a: Replace hardcoded `SINGLE_STMT_OPENERS` with LanguageData
+- **Crate:** al-syntax
+- **File:** `crates/al-syntax/src/formatting.rs`
+- **What:** Replace const array of `(if/then, for/do, ...)` tuples with `LanguageData::single_stmt_openers()`.
+- **Details:** [correctness.md → CORR-H05a](correctness.md#corr-h05a-al-syntax--hardcoded-single_stmt_openers-in-formattingrs)
+
+### T-020b: Replace hardcoded `permission_for_kind` match with LanguageData
+- **Crate:** al-core
+- **File:** `crates/al-core/src/permissions.rs`
+- **What:** Add `permission_type`/`permission_value` fields to `object_types.json`, query via `LanguageData` instead of hardcoded match.
+- **Details:** [correctness.md → CORR-H05b](correctness.md#corr-h05b-al-core--hardcoded-permission_for_kind-match-in-permissionsrs)
+
+### T-020c: Replace hardcoded `al_keywords` array in code_actions.rs
+- **Crate:** al-core
+- **File:** `crates/al-core/src/queries/code_actions.rs`
+- **What:** Use `al_syntax::language_data::is_keyword()` instead of incomplete local array. Keep `//` and `end;` as explicit prefix checks.
+- **Details:** [correctness.md → CORR-H05c](correctness.md#corr-h05c-al-core--incomplete-al_keywords-array-in-code_actionsrs)
 
 ---
 
@@ -229,6 +265,12 @@ Each task is a discrete, independently fixable unit of work. Priority order: CRI
 - **File:** `crates/al-daemon-client/src/socket.rs`, `client.rs`
 - **What:** (1) Don't fall back to `/tmp` for socket path — use `/run/user/<uid>` or require `XDG_RUNTIME_DIR`. (2) Create `al-lsp/` subdirectory before bind. (3) Fix zombie child process on daemon spawn.
 - **Details:** [security.md → SEC-H01](security.md#sec-h01), [bugs.md → BUG-H16, BUG-H17](bugs.md#bug-h16)
+
+### T-032a: Fix unbounded RAM downloads in NuGet and BC server paths
+- **Crate:** al-symbols
+- **Files:** `crates/al-symbols/src/nuget.rs:279`, `crates/al-symbols/src/bc_server.rs:117-128`
+- **What:** Add `Content-Length` check before `.bytes().await?`. Reject responses above 200 MB (matching `.app` limit). Prevents OOM from malicious feeds.
+- **Details:** [security.md → SEC-H06, SEC-H07](security.md#sec-h06-al-symbols--nuget-nupkg-download-has-no-size-limit-before-buffering-into-ram)
 
 ### T-033: Fix al-symbols OAuth token directory permissions and HTML escaping
 - **Crate:** al-symbols
@@ -347,6 +389,40 @@ Each task is a discrete, independently fixable unit of work. Priority order: CRI
 - **Files:** `crates/al-zed-test/tests/live_test.rs`, `src/lsp_log.rs`
 - **What:** (1) Add `#[ignore]` to all `live_test.rs` tests — they require running Zed. (2) Replace early-return guards with `#[ignore]`. (3) Rename `wait_for_regex` to `wait_for_substring` or implement actual regex. (4) Fix `\r\n` handling inconsistency.
 - **Details:** [test-quality.md → TQ-H02, TQ-H05, TQ-H07, TQ-L01](test-quality.md)
+
+---
+
+## MEDIUM — Test Coverage Gaps
+
+### T-059: Add unit tests for `references.rs` and `folding.rs`
+- **Crate:** al-core
+- **Files:** `crates/al-core/src/queries/references.rs`, `crates/al-core/src/queries/folding.rs`
+- **What:** Both public query functions have zero tests. Add positive and negative tests for each.
+- **Details:** [test-quality.md → TQ-H08, TQ-H09](test-quality.md#tq-h08-al-core--queriesreferencesrs-has-zero-unit-tests)
+
+### T-060: Add tests for public `hover()` and `signature_help()` functions
+- **Crate:** al-core
+- **Files:** `crates/al-core/src/queries/hover.rs`, `crates/al-core/src/queries/signature.rs`
+- **What:** Existing tests only cover private formatting helpers. Add direct tests for the public functions.
+- **Details:** [test-quality.md → TQ-H10, TQ-H11](test-quality.md#tq-h10-al-core--hover-itself-untested-only-formatting-helpers-tested)
+
+### T-061: Add negative tests to insight and query modules (8 modules)
+- **Crate:** al-core
+- **Files:** `insight/analysis.rs`, `insight/graph.rs`, `insight/calls.rs`, `insight/index.rs`, `queries/dead_code.rs`, `queries/duplicates.rs`, `queries/sql_patterns.rs`, `queries/obsolescence.rs`
+- **What:** All modules have positive tests only. Add "empty/unknown input returns empty result" assertions to satisfy Test Quality Gate.
+- **Details:** [test-quality.md → TQ-H12, TQ-H13](test-quality.md#tq-h12-al-core--insight-modules-have-zero-negative-tests-4-modules)
+
+### T-062: Add negative tests to al-lsp integration tests
+- **Crate:** al-lsp
+- **File:** `crates/al-lsp/tests/integration.rs`
+- **What:** 45 tests, all happy-path. Add dispatch error path tests (unparseable input, out-of-range position, unknown URI).
+- **Details:** [test-quality.md → TQ-M08](test-quality.md#tq-m08-al-lsp--integrationrs-has-45-tests-all-happy-path-zero-negative-tests)
+
+### T-063: Add UTF-16 edge case and negative tests to al-syntax modules
+- **Crate:** al-syntax
+- **Files:** `crates/al-syntax/src/context.rs`, `crates/al-syntax/src/formatting.rs`, `crates/al-syntax/src/traversal.rs`
+- **What:** context.rs needs non-ASCII/UTF-16 tests; formatting.rs needs edge cases (empty input, comment-only, deep nesting); traversal.rs has zero tests.
+- **Details:** [test-quality.md → TQ-M09, TQ-M10, TQ-M11](test-quality.md#tq-m09-al-syntax--contextrs-has-24-tests-but-no-utf-16-edge-cases)
 
 ---
 
