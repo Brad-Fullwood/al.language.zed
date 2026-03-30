@@ -2,8 +2,9 @@
 #
 # Usage:
 #   make install   — first-time setup: build everything + symlink into PATH + Zed
-#   make build     — rebuild everything (all Rust crates + .NET bridges)
-#   make rust      — rebuild all Rust crates
+#   make build     — rebuild everything (all Rust crates + WASM extension + .NET bridges)
+#   make rust      — rebuild all Rust crates (native, excludes zed-al)
+#   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip1)
 #   make bridges   — rebuild just .NET bridges
 #   make clean     — clean all build artifacts
 
@@ -17,11 +18,12 @@ ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 
 # .NET bridge projects (quoted for paths with spaces)
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
+WASM_BIN := $(ROOT)/target/wasm32-wasip1/release/zed_al.wasm
 
-.PHONY: build install rust bridges clean
+.PHONY: build install rust wasm bridges clean
 
 # ── Default: rebuild everything ──────────────────────────────────
-build: rust bridges
+build: rust wasm bridges
 	@echo ""
 	@echo "Build complete. Restart the LSP in Zed to pick up changes."
 
@@ -50,7 +52,7 @@ install: build
 	@if [ ! -L "$(ZED_EXT_DIR)/al" ] && [ ! -d "$(ZED_EXT_DIR)/al" ]; then \
 		ln -sf "$(ROOT)" "$(ZED_EXT_DIR)/al"; \
 		echo "Dev extension symlinked into Zed."; \
-		echo "NOTE: Run 'zed: install dev extension' once from the command palette to build extension.wasm."; \
+		echo "NOTE: Run 'zed: install dev extension' once from the command palette to activate the extension."; \
 	else \
 		echo "Dev extension already installed in Zed (OK)"; \
 	fi
@@ -61,6 +63,12 @@ install: build
 rust:
 	@echo "=== Building all Rust crates ==="
 	cargo build --workspace --exclude zed-al
+
+# ── Build WASM extension ─────────────────────────────────────────
+wasm:
+	@echo "=== Building WASM extension (zed-al) ==="
+	cargo build -p zed-al --target wasm32-wasip1 --release
+	@echo "  zed-al: $(WASM_BIN)"
 
 # ── Build .NET bridges ───────────────────────────────────────────
 bridges:
