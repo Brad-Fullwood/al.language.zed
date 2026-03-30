@@ -50,7 +50,7 @@ RUST_LOG=debug cargo test -p al-test-harness --test e2e # with logging
 
 ## Gotchas
 
-- `initialize()` polls `workspace/symbol` in a 30s loop (200ms intervals) waiting for symbol index readiness
+- `initialize()` polls `workspace/symbol` waiting for symbol index readiness — timeout defaults to 60s, configurable via `AL_TEST_INIT_TIMEOUT` env var (seconds)
 - `open_file()` / `change_file()` block until `publishDiagnostics` arrives (5s timeout)
 - Query errors return `None`/empty vec — intentional test ergonomics
 - Binary discovery: `target/debug/al-lsp` → `target/release/al-lsp` → `PATH`

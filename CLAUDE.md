@@ -240,7 +240,7 @@ drop(entry);
 Spawns the real `al-lsp` binary over stdio. Test fixture: `crates/al-test-harness/data/test_al_project/`.
 
 ```rust
-let client = LspClient::spawn(project_root).await;  // full handshake, polls workspace/symbol 30s
+let client = LspClient::spawn(project_root).await;  // full handshake, polls workspace/symbol (60s default, AL_TEST_INIT_TIMEOUT to override)
 client.open_file("src/MyCodeunit.al").await;          // waits for publishDiagnostics (5s)
 ```
 

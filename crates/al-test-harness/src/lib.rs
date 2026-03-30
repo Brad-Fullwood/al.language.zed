@@ -254,7 +254,15 @@ impl LspClient {
         // Wait for workspace initialization by polling workspace/symbol.
         // The server loads packages asynchronously; completions/hover won't work
         // until symbols are available. We probe until we get results or timeout.
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+        //
+        // Timeout is configurable via `AL_TEST_INIT_TIMEOUT` (seconds). Defaults to
+        // 60s — large AL projects with many .app dependencies can take >30s to index.
+        let init_timeout_secs = std::env::var("AL_TEST_INIT_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60);
+        let deadline =
+            tokio::time::Instant::now() + tokio::time::Duration::from_secs(init_timeout_secs);
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
             if tokio::time::Instant::now() >= deadline {
