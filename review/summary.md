@@ -11,25 +11,25 @@
 
 | Severity | Count |
 |----------|-------|
-| CRITICAL | 22 |
-| HIGH     | 67 |
-| MEDIUM   | 62 |
+| CRITICAL | 21 |
+| HIGH     | 60 |
+| MEDIUM   | 65 |
 | LOW      | 27 |
-| **Total** | **178** |
+| **Total** | **173** |
 
 ## Totals by Category
 
 | Category | Count | New in 2nd pass |
 |----------|-------|-----------------|
-| Bugs | 37 | +2 (recursive traversals) |
-| Security | 17 | +5 (unbounded downloads, daemon confinement, TLS, unsafe, bridge) |
-| Error Handling | 16 | +2 (DapClient spawn, unreachable) |
-| Performance | 16 | — |
-| Concurrency | 9 | +1 (DashMap deadlock) |
+| Bugs | 36 | +2 (recursive traversals) |
+| Security | 18 | +6 (unbounded downloads, daemon confinement, TLS, unsafe, bridge) |
+| Error Handling | 15 | +2 (DapClient spawn, unreachable) |
+| Performance | 12 | — |
+| Concurrency | 10 | +1 (DashMap deadlock) |
 | Correctness (UTF-16, protocol) | 25 | +5 (code_actions UTF-16, hardcoded values) |
-| Architecture | 15 | +3 (al-syntax tower-lsp, workspace logic, dev-deps) |
-| Code Quality | 22 | +4 (Box dyn Error, Result String, alloc, double-map) |
-| Test Quality | 25 | +10 (references, folding, hover, signature, negatives) |
+| Architecture | 11 | +3 (al-syntax tower-lsp, workspace logic, dev-deps) |
+| Code Quality | 19 | +4 (Box dyn Error, Result String, alloc, double-map) |
+| Test Quality | 29 | +10 (references, folding, hover, signature, negatives) |
 
 ## Totals by Crate
 
