@@ -827,7 +827,7 @@ impl LanguageServer for AlServer {
         let lenses: Vec<CodeLens> = entries
             .into_iter()
             .map(|e| CodeLens {
-                range: e.range,
+                range: e.range.into(),
                 command: Some(Command {
                     title: e.title,
                     command: "al.findReferences".to_string(),

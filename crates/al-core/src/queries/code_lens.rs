@@ -2,14 +2,16 @@
 
 use std::collections::HashSet;
 
-use tower_lsp::lsp_types::{Range, SymbolKind};
 use url::Url;
 
+use super::Range;
 use crate::workspace::Workspace;
 
 /// A transport-agnostic CodeLens entry.
 pub struct CodeLensEntry {
+    /// The range covering the declaration name (used to position the lens).
     pub range: Range,
+    /// Human-readable label, e.g. "3 references".
     pub title: String,
 }
 
@@ -29,22 +31,22 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
         // Top-level symbols (objects) — recurse into children
         if let Some(children) = &sym.children {
             for child in children {
-                if is_referenceable(child.kind) {
+                if super::is_procedure_symbol(child.kind) {
                     let count = count_references_by_name(workspace, uri, &child.name);
                     let title = reference_label(count);
                     lenses.push(CodeLensEntry {
-                        range: child.selection_range,
+                        range: child.selection_range.into(),
                         title,
                     });
                 }
             }
         }
         // Also include top-level referenceable symbols (rare in AL, but complete)
-        if is_referenceable(sym.kind) {
+        if super::is_procedure_symbol(sym.kind) {
             let count = count_references_by_name(workspace, uri, &sym.name);
             let title = reference_label(count);
             lenses.push(CodeLensEntry {
-                range: sym.selection_range,
+                range: sym.selection_range.into(),
                 title,
             });
         }
@@ -59,17 +61,6 @@ fn reference_label(count: usize) -> String {
     } else {
         format!("{} references", count)
     }
-}
-
-fn is_referenceable(kind: SymbolKind) -> bool {
-    matches!(
-        kind,
-        SymbolKind::FUNCTION
-            | SymbolKind::METHOD
-            | SymbolKind::EVENT
-            | SymbolKind::FIELD
-            | SymbolKind::VARIABLE
-    )
 }
 
 /// Count workspace-wide references to `name`, deduplicating by (uri, line, col).
@@ -118,4 +109,119 @@ fn count_references_by_name(workspace: &Workspace, current_uri: &Url, name: &str
     }
 
     seen.len()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::Workspace;
+
+    fn workspace_with_doc(uri: &Url, content: &str) -> Workspace {
+        let ws = Workspace::new();
+        ws.documents.open(uri.clone(), content.to_string());
+        ws
+    }
+
+    // Positive test: procedures in a codeunit produce CodeLens entries.
+    #[test]
+    fn test_code_lens_finds_procedures() {
+        let uri = Url::parse("file:///test.al").unwrap();
+        let src = r#"
+codeunit 50100 MyCodeunit
+{
+    procedure DoSomething()
+    begin
+    end;
+
+    procedure AlsoThis()
+    begin
+    end;
+}
+"#;
+        let ws = workspace_with_doc(&uri, src);
+        let lenses = code_lens(&ws, &uri);
+
+        // Must find both procedures
+        assert!(
+            lenses.len() >= 2,
+            "expected at least 2 lenses, got {}",
+            lenses.len()
+        );
+
+        let titles: Vec<&str> = lenses.iter().map(|l| l.title.as_str()).collect();
+        // All lenses must have a "reference" label (either "N references" or "1 reference")
+        for title in &titles {
+            assert!(
+                title.contains("reference"),
+                "unexpected lens title: {}",
+                title
+            );
+        }
+    }
+
+    // Positive test: a procedure that is called shows the correct reference count.
+    #[test]
+    fn test_code_lens_with_references() {
+        let uri = Url::parse("file:///test.al").unwrap();
+        let src = r#"
+codeunit 50100 MyCodeunit
+{
+    procedure Greet()
+    begin
+        Greet();
+        Greet();
+    end;
+}
+"#;
+        let ws = workspace_with_doc(&uri, src);
+        let lenses = code_lens(&ws, &uri);
+
+        // Should find at least one lens for Greet
+        assert!(
+            !lenses.is_empty(),
+            "expected at least one lens for Greet procedure"
+        );
+
+        // The lens for Greet should reflect that the name appears multiple times
+        let greet_lens = lenses.iter().find(|l| l.title.contains("reference"));
+        assert!(greet_lens.is_some(), "no reference lens found for Greet");
+
+        // Count must be > 0 (the calls within the body are references)
+        assert_ne!(
+            greet_lens.unwrap().title,
+            "0 references",
+            "reference count must not be zero"
+        );
+    }
+
+    // Negative test: empty file returns empty vec (no panic).
+    #[test]
+    fn test_code_lens_empty_file() {
+        let uri = Url::parse("file:///empty.al").unwrap();
+        let ws = workspace_with_doc(&uri, "");
+        let lenses = code_lens(&ws, &uri);
+        assert!(lenses.is_empty(), "empty file should produce no lenses");
+    }
+
+    // Negative test: URI with no document in the store returns empty vec.
+    #[test]
+    fn test_code_lens_unknown_uri() {
+        let uri = Url::parse("file:///does_not_exist.al").unwrap();
+        let ws = Workspace::new(); // no documents registered
+        let lenses = code_lens(&ws, &uri);
+        assert!(lenses.is_empty(), "unknown URI should produce no lenses");
+    }
+
+    // Negative test: reference_label handles zero and plural correctly.
+    #[test]
+    fn test_reference_label_values() {
+        assert_eq!(reference_label(0), "0 references");
+        assert_eq!(reference_label(1), "1 reference");
+        assert_eq!(reference_label(2), "2 references");
+        assert_eq!(reference_label(100), "100 references");
+    }
 }
