@@ -34,7 +34,10 @@
 //! - Hints on a procedure's signature line, not body line
 
 use serde::Serialize;
+use url::Url;
 
+use crate::queries::code_lens::CodeLensEntry;
+use crate::queries::Range;
 use crate::workspace::Workspace;
 use al_syntax::AlParser;
 
@@ -292,6 +295,138 @@ fn collect_procs(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         collect_procs(child, source, file_path, object_name, qualified, fallback);
+    }
+}
+
+/// Build `CodeLensEntry` items for an open document from a set of active profiler hints.
+///
+/// For each procedure declaration in the document, this looks up whether an active
+/// `ProfilerHint` matches (by file path + procedure name). When a match is found a lens
+/// like `"⏱ 42ms · 3 calls"` is attached to the procedure's declaration line.
+///
+/// Returns an empty `Vec` when `active_hints` is empty, or when the `uri` cannot be
+/// resolved to a file path.
+pub fn profiler_code_lenses(
+    active_hints: &[ProfilerHint],
+    uri: &Url,
+    text: &str,
+    tree: &tree_sitter::Tree,
+) -> Vec<CodeLensEntry> {
+    if active_hints.is_empty() {
+        return vec![];
+    }
+
+    let file_path = match uri.to_file_path() {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => return vec![],
+    };
+
+    // Build a lookup: procedure_name_lc → hint (first match per name, file-scoped).
+    // Only include hints whose resolved `file` matches this document.
+    let mut by_proc: std::collections::HashMap<String, &ProfilerHint> =
+        std::collections::HashMap::new();
+    for hint in active_hints {
+        if let Some(ref hint_file) = hint.file {
+            if hint_file == &file_path {
+                by_proc.entry(hint.procedure.to_lowercase()).or_insert(hint);
+            }
+        }
+    }
+
+    if by_proc.is_empty() {
+        return vec![];
+    }
+
+    let source = text.as_bytes();
+    let mut lenses = Vec::new();
+    collect_profiler_lenses(tree.root_node(), source, &by_proc, &mut lenses);
+    lenses
+}
+
+/// Walk the tree iteratively, emitting a `CodeLensEntry` for every
+/// `procedure_declaration` or `trigger_declaration` that has a matching hint.
+fn collect_profiler_lenses(
+    root: tree_sitter::Node,
+    source: &[u8],
+    by_proc: &std::collections::HashMap<String, &ProfilerHint>,
+    lenses: &mut Vec<CodeLensEntry>,
+) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name_text) = name_node.utf8_text(source) {
+                    let name_clean = name_text.trim_matches('"').trim();
+                    let name_lc = name_clean.to_lowercase();
+                    if let Some(hint) = by_proc.get(&name_lc) {
+                        let start_row = name_node.start_position().row as u32;
+                        let start_col = name_node.start_position().column as u32;
+                        let end_col = name_node.end_position().column as u32;
+                        let range = Range {
+                            start: crate::queries::Position {
+                                line: start_row,
+                                character: start_col,
+                            },
+                            end: crate::queries::Position {
+                                line: start_row,
+                                character: end_col,
+                            },
+                        };
+                        lenses.push(CodeLensEntry {
+                            range,
+                            title: profiler_lens_title(hint),
+                        });
+                    }
+                }
+            }
+            // Do not recurse into procedure bodies — no nested procedures in AL.
+            continue;
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+/// Format the human-readable label for a profiler CodeLens.
+///
+/// E.g. `"⏱ 42ms · 3 calls"` or `"⏱ 1ms · 1 call"`.
+fn profiler_lens_title(hint: &ProfilerHint) -> String {
+    let ms = hint.self_time_ms.round() as u64;
+    let calls = hint.hit_count;
+    let call_word = if calls == 1 { "call" } else { "calls" };
+    format!("⏱ {ms}ms · {calls} {call_word}")
+}
+
+/// Load profiler hints from a `.alcpuprofile` file on disk and activate them
+/// on the workspace's profiler session.
+///
+/// Returns the number of hints mapped to source locations.
+pub fn load_profile_file(workspace: &Workspace, profile_path: &str) -> Result<usize, String> {
+    let data = std::fs::read(profile_path)
+        .map_err(|e| format!("Cannot read profile file '{profile_path}': {e}"))?;
+    let json =
+        String::from_utf8(data).map_err(|e| format!("Profile file is not valid UTF-8: {e}"))?;
+
+    let mut hints = parse_profile(&json)?;
+    resolve_source_locations(workspace, &mut hints);
+    let mapped = hints.iter().filter(|h| h.file.is_some()).count();
+
+    let session = ProfilerSession::new(profile_path.to_string(), hints);
+    *workspace
+        .profiler_session
+        .write()
+        .unwrap_or_else(|e| e.into_inner()) = Some(session);
+
+    Ok(mapped)
+}
+
+/// Clear the active profiler session from the workspace.
+pub fn clear_profile(workspace: &Workspace) {
+    if let Ok(mut guard) = workspace.profiler_session.write() {
+        *guard = None;
     }
 }
 
@@ -635,5 +770,146 @@ mod tests {
         session.clear();
         assert!(!session.is_active());
         assert!(session.hints.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // profiler_code_lenses tests
+    // ---------------------------------------------------------------------------
+
+    fn make_hint_with_file(procedure: &str, file: &str, ms: f64, hits: u64) -> ProfilerHint {
+        ProfilerHint {
+            procedure: procedure.to_string(),
+            object: String::new(),
+            self_time_ms: ms,
+            total_time_ms: ms,
+            hit_count: hits,
+            file: Some(file.to_string()),
+            line: None,
+        }
+    }
+
+    #[test]
+    fn profiler_code_lenses_returns_lens_for_matching_procedure() {
+        let uri = Url::parse("file:///src/MyCU.al").unwrap();
+        let file_path = uri.to_file_path().unwrap().to_string_lossy().to_string();
+        let hint = make_hint_with_file("ProcessRecord", &file_path, 42.0, 3);
+
+        let parsed = AlParser::parse_quick(CODEUNIT_AL);
+        let lenses = profiler_code_lenses(&[hint], &uri, CODEUNIT_AL, &parsed.tree);
+
+        assert_eq!(lenses.len(), 1, "one lens expected for ProcessRecord");
+        assert!(
+            lenses[0].title.contains("42ms"),
+            "lens should include timing: {}",
+            lenses[0].title
+        );
+        assert!(
+            lenses[0].title.contains("3 calls"),
+            "lens should include call count: {}",
+            lenses[0].title
+        );
+    }
+
+    #[test]
+    fn profiler_code_lenses_case_insensitive_match() {
+        let uri = Url::parse("file:///src/MyCU.al").unwrap();
+        let file_path = uri.to_file_path().unwrap().to_string_lossy().to_string();
+        // Profiler may emit uppercase
+        let hint = make_hint_with_file("PROCESSRECORD", &file_path, 10.0, 5);
+
+        let parsed = AlParser::parse_quick(CODEUNIT_AL);
+        let lenses = profiler_code_lenses(&[hint], &uri, CODEUNIT_AL, &parsed.tree);
+
+        assert_eq!(
+            lenses.len(),
+            1,
+            "case-insensitive match should produce a lens"
+        );
+    }
+
+    #[test]
+    fn profiler_code_lenses_empty_hints_returns_empty() {
+        let uri = Url::parse("file:///src/MyCU.al").unwrap();
+        let parsed = AlParser::parse_quick(CODEUNIT_AL);
+        let lenses = profiler_code_lenses(&[], &uri, CODEUNIT_AL, &parsed.tree);
+        assert!(
+            lenses.is_empty(),
+            "empty hints slice should produce no lenses"
+        );
+    }
+
+    #[test]
+    fn profiler_code_lenses_hint_for_different_file_is_ignored() {
+        let uri = Url::parse("file:///src/MyCU.al").unwrap();
+        // Hint points to a different file
+        let hint = make_hint_with_file("ProcessRecord", "/src/OtherCU.al", 99.0, 7);
+
+        let parsed = AlParser::parse_quick(CODEUNIT_AL);
+        let lenses = profiler_code_lenses(&[hint], &uri, CODEUNIT_AL, &parsed.tree);
+        assert!(
+            lenses.is_empty(),
+            "hint from different file should produce no lenses"
+        );
+    }
+
+    #[test]
+    fn profiler_lens_title_plural() {
+        let hint = make_hint_with_file("P", "/f", 100.0, 5);
+        assert_eq!(profiler_lens_title(&hint), "⏱ 100ms · 5 calls");
+    }
+
+    #[test]
+    fn profiler_lens_title_singular() {
+        let hint = make_hint_with_file("P", "/f", 1.0, 1);
+        assert_eq!(profiler_lens_title(&hint), "⏱ 1ms · 1 call");
+    }
+
+    #[test]
+    fn profiler_lens_title_rounds_ms() {
+        let hint = make_hint_with_file("P", "/f", 3.7, 2);
+        assert_eq!(profiler_lens_title(&hint), "⏱ 4ms · 2 calls");
+    }
+
+    // ---------------------------------------------------------------------------
+    // load_profile_file / clear_profile tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn load_profile_file_invalid_path_returns_error() {
+        let ws = Workspace::new();
+        let result = load_profile_file(&ws, "/nonexistent/path.alcpuprofile");
+        assert!(
+            result.is_err(),
+            "nonexistent file should return Err, got Ok"
+        );
+    }
+
+    #[test]
+    fn clear_profile_removes_session() {
+        let ws = Workspace::new();
+        // Install a session manually
+        *ws.profiler_session
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ProfilerSession::new(
+            "/fake.alcpuprofile".to_string(),
+            vec![make_hint_with_file("P", "/f", 1.0, 1)],
+        ));
+
+        // Must be active before clearing
+        assert!(ws
+            .profiler_session
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_active());
+
+        clear_profile(&ws);
+
+        // Must be gone after clearing
+        assert!(
+            ws.profiler_session.read().unwrap().is_none(),
+            "session should be None after clear_profile"
+        );
     }
 }

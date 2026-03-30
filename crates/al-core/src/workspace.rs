@@ -88,6 +88,13 @@ pub struct Workspace {
     pub insight_graph: std::sync::RwLock<Option<Arc<InsightGraph>>>,
     /// Cached call graph. Built lazily after insight graph; invalidated with it.
     pub call_graph: std::sync::RwLock<Option<CallGraph>>,
+    /// Active profiler session loaded from a `.alcpuprofile` file.
+    ///
+    /// When a profile is loaded the hints are stored here so that `code_lens`
+    /// can add timing/hit-count lenses alongside the reference-count lenses.
+    /// `None` means no profile is active.
+    pub profiler_session:
+        std::sync::RwLock<Option<crate::queries::profiler_hints::ProfilerSession>>,
 }
 
 impl Workspace {
@@ -110,6 +117,7 @@ impl Workspace {
             notify_sink: std::sync::OnceLock::new(),
             insight_graph: std::sync::RwLock::new(None),
             call_graph: std::sync::RwLock::new(None),
+            profiler_session: std::sync::RwLock::new(None),
         }
     }
 

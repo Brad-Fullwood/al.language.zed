@@ -17,8 +17,12 @@ pub struct CodeLensEntry {
 
 /// Return CodeLens entries for all referenceable symbols in the document.
 ///
-/// For each procedure, trigger, event, field, or variable declaration the lens
-/// shows the number of references found across the whole workspace.
+/// Produces two kinds of lenses:
+/// - **Reference lenses** — show how many times each procedure/trigger/event
+///   is referenced across the workspace (e.g. `"3 references"`).
+/// - **Profiler lenses** — shown only when a `.alcpuprofile` is loaded into the
+///   workspace; display self-time and hit count for the procedure
+///   (e.g. `"⏱ 42ms · 3 calls"`).
 pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
         return vec![];
@@ -51,6 +55,21 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
             });
         }
     }
+
+    // Append profiler lenses when a profile session is active.
+    let profiler_lenses = {
+        let guard = workspace
+            .profiler_session
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(session) if session.is_active() => {
+                super::profiler_hints::profiler_code_lenses(&session.hints, uri, &text, &tree)
+            }
+            _ => vec![],
+        }
+    };
+    lenses.extend(profiler_lenses);
 
     lenses
 }
@@ -223,5 +242,138 @@ codeunit 50100 MyCodeunit
         assert_eq!(reference_label(1), "1 reference");
         assert_eq!(reference_label(2), "2 references");
         assert_eq!(reference_label(100), "100 references");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Profiler CodeLens integration tests
+    // ---------------------------------------------------------------------------
+
+    use crate::queries::profiler_hints::{ProfilerHint, ProfilerSession};
+
+    fn workspace_with_doc_and_profile(
+        uri: &Url,
+        content: &str,
+        hints: Vec<ProfilerHint>,
+    ) -> Workspace {
+        let ws = workspace_with_doc(uri, content);
+        let file_path = uri.to_file_path().unwrap().to_string_lossy().to_string();
+        // Attach file info so profiler_code_lenses can match by path.
+        let hints_with_file: Vec<ProfilerHint> = hints
+            .into_iter()
+            .map(|mut h| {
+                h.file = Some(file_path.clone());
+                h
+            })
+            .collect();
+        *ws.profiler_session
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) =
+            Some(ProfilerSession::new(file_path, hints_with_file));
+        ws
+    }
+
+    const PROF_SRC: &str = r#"codeunit 50100 MyCodeunit
+{
+    procedure SlowProc()
+    begin
+    end;
+
+    procedure FastProc()
+    begin
+    end;
+}
+"#;
+
+    // Positive test: profiler lenses appear alongside reference lenses.
+    #[test]
+    fn test_profiler_lenses_added_when_session_active() {
+        let uri = Url::parse("file:///test.al").unwrap();
+        let hint = ProfilerHint {
+            procedure: "SlowProc".to_string(),
+            object: "MyCodeunit".to_string(),
+            self_time_ms: 42.0,
+            total_time_ms: 42.0,
+            hit_count: 3,
+            file: None, // will be filled in by helper
+            line: None,
+        };
+        let ws = workspace_with_doc_and_profile(&uri, PROF_SRC, vec![hint]);
+        let lenses = code_lens(&ws, &uri);
+
+        // Must have at least 2 reference lenses (one per procedure)
+        // plus 1 profiler lens for SlowProc.
+        let prof_lenses: Vec<&CodeLensEntry> =
+            lenses.iter().filter(|l| l.title.contains('⏱')).collect();
+        assert_eq!(
+            prof_lenses.len(),
+            1,
+            "expected 1 profiler lens, got {}: {:?}",
+            prof_lenses.len(),
+            lenses.iter().map(|l| &l.title).collect::<Vec<_>>()
+        );
+        assert_eq!(prof_lenses[0].title, "⏱ 42ms · 3 calls");
+    }
+
+    // Positive test: correct pluralisation for 1 call.
+    #[test]
+    fn test_profiler_lens_single_call_label() {
+        let uri = Url::parse("file:///test.al").unwrap();
+        let hint = ProfilerHint {
+            procedure: "SlowProc".to_string(),
+            object: "MyCodeunit".to_string(),
+            self_time_ms: 7.0,
+            total_time_ms: 7.0,
+            hit_count: 1,
+            file: None,
+            line: None,
+        };
+        let ws = workspace_with_doc_and_profile(&uri, PROF_SRC, vec![hint]);
+        let lenses = code_lens(&ws, &uri);
+        let prof_lenses: Vec<&CodeLensEntry> =
+            lenses.iter().filter(|l| l.title.contains('⏱')).collect();
+        assert_eq!(prof_lenses.len(), 1);
+        assert_eq!(prof_lenses[0].title, "⏱ 7ms · 1 call");
+    }
+
+    // Negative test: no profiler session → no profiler lenses.
+    #[test]
+    fn test_no_profiler_lenses_without_session() {
+        let uri = Url::parse("file:///test.al").unwrap();
+        let ws = workspace_with_doc(&uri, PROF_SRC);
+        // No profiler session attached.
+        let lenses = code_lens(&ws, &uri);
+        let prof_lenses: Vec<&CodeLensEntry> =
+            lenses.iter().filter(|l| l.title.contains('⏱')).collect();
+        assert!(
+            prof_lenses.is_empty(),
+            "no profiler session should produce no profiler lenses"
+        );
+    }
+
+    // Negative test: profiler hint for a procedure not in this file → no lens.
+    #[test]
+    fn test_profiler_lens_unmatched_procedure() {
+        let uri = Url::parse("file:///test.al").unwrap();
+        let file_path = uri.to_file_path().unwrap().to_string_lossy().to_string();
+        let hint = ProfilerHint {
+            procedure: "NonExistentProc".to_string(),
+            object: "MyCodeunit".to_string(),
+            self_time_ms: 5.0,
+            total_time_ms: 5.0,
+            hit_count: 2,
+            file: Some(file_path.clone()),
+            line: None,
+        };
+        let ws = workspace_with_doc(&uri, PROF_SRC);
+        *ws.profiler_session
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ProfilerSession::new(file_path, vec![hint]));
+        let lenses = code_lens(&ws, &uri);
+        let prof_lenses: Vec<&CodeLensEntry> =
+            lenses.iter().filter(|l| l.title.contains('⏱')).collect();
+        assert!(
+            prof_lenses.is_empty(),
+            "unmatched procedure should produce no profiler lens"
+        );
     }
 }
