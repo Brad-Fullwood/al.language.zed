@@ -23,8 +23,9 @@ tree-sitter-al is a **git submodule** with its own repository. Changes require a
 - `tree-sitter-al/src/` — GENERATED (parser.c, etc.) — regenerate instead
 - `tree-sitter-al/bindings/` — GENERATED — regenerate instead
 - `tree-sitter-al/node_modules/` — dependencies
+- `languages/al/highlights.scm` — GENERATED from `tree-sitter-al/queries/highlights.scm` (copy after regeneration)
 
-If your change touches `src/` or `bindings/`, STOP. You're editing generated output.
+If your change touches `src/`, `bindings/`, or `languages/al/highlights.scm`, STOP. You're editing generated output.
 
 ## Step 2: Make the Change
 
@@ -89,10 +90,39 @@ git commit -m "chore: update tree-sitter-al submodule"
 
 This records the new submodule commit hash in the parent repository.
 
+## Step 8: Sync Zed Language Files
+
+After pushing the submodule, copy the generated queries to the extension's language directory:
+
+```bash
+cp tree-sitter-al/queries/highlights.scm languages/al/highlights.scm
+```
+
+Then update the grammar rev in `extension.toml` to match the pushed commit:
+
+```bash
+NEW_REV=$(cd tree-sitter-al && git rev-parse HEAD)
+sed -i "s/rev = \".*\"/rev = \"$NEW_REV\"/" extension.toml
+```
+
+## Step 9: Clean Zed Grammar Cache
+
+Zed caches compiled grammar WASMs. After updating the rev, clean the cache:
+
+```bash
+rm -rf ~/.local/share/zed/extensions/installed/al/grammars/al
+rm -f ~/.local/share/zed/extensions/installed/al/grammars/al.wasm
+```
+
+Then reinstall the dev extension in Zed: `Ctrl+Shift+P` → "zed: install dev extension"
+
 ## Common Mistakes to Avoid
 
 1. **Editing `src/parser.c` directly** — it gets overwritten on next `tree-sitter generate`
-2. **Forgetting `git push` inside the submodule** — the parent ref points to a commit that doesn't exist on the remote
-3. **Committing only in the parent** — the submodule changes won't be available to other clones
-4. **Not running `tree-sitter test`** — grammar regressions are hard to debug later
-5. **Not checking Rust builds** — `al-syntax` binds to the generated parser; grammar changes can break it
+2. **Editing `languages/al/highlights.scm` directly** — it's a copy of the generated output; edit the generator template or `queries/highlights.scm` instead
+3. **Forgetting `git push` inside the submodule** — the parent ref points to a commit that doesn't exist on the remote
+4. **Forgetting to update `extension.toml` rev** — Zed fetches the grammar from GitHub at the rev specified here
+5. **Not cleaning Zed grammar cache** — Zed caches compiled WASMs; stale cache means old highlights
+6. **Committing only in the parent** — the submodule changes won't be available to other clones
+7. **Not running `tree-sitter test`** — grammar regressions are hard to debug later
+8. **Not checking Rust builds** — `al-syntax` binds to the generated parser; grammar changes can break it
