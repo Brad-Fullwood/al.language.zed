@@ -35,12 +35,18 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
     if let Ok(path) = std::env::var("AL_EDITOR_SERVICES_PATH") {
         let p = PathBuf::from(&path);
         if p.is_file() {
-            info!("Found EditorServices.Host via $AL_EDITOR_SERVICES_PATH: {}", p.display());
+            info!(
+                "Found EditorServices.Host via $AL_EDITOR_SERVICES_PATH: {}",
+                p.display()
+            );
             return Ok(p);
         }
         let in_dir = p.join(HOST_BINARY);
         if in_dir.is_file() {
-            info!("Found EditorServices.Host via $AL_EDITOR_SERVICES_PATH: {}", in_dir.display());
+            info!(
+                "Found EditorServices.Host via $AL_EDITOR_SERVICES_PATH: {}",
+                in_dir.display()
+            );
             return Ok(in_dir);
         }
     }
@@ -48,7 +54,10 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
     // Strategy 2: next to alc.dll
     let alongside_alc = toolchain.dotnet_root.join(HOST_BINARY);
     if alongside_alc.is_file() {
-        info!("Found EditorServices.Host next to ALTool: {}", alongside_alc.display());
+        info!(
+            "Found EditorServices.Host next to ALTool: {}",
+            alongside_alc.display()
+        );
         return Ok(alongside_alc);
     }
 
@@ -64,7 +73,10 @@ pub fn find_editor_services(toolchain: &AlToolchain) -> Result<PathBuf, DapError
 
     // Strategy 4: VS Code / Cursor AL extension installations
     if let Some(path) = find_in_vscode_extensions() {
-        info!("Found EditorServices.Host in IDE extension: {}", path.display());
+        info!(
+            "Found EditorServices.Host in IDE extension: {}",
+            path.display()
+        );
         return Ok(path);
     }
 

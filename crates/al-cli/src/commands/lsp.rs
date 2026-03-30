@@ -54,7 +54,9 @@ pub fn cmd_clear_cache(json: bool) -> ExitCode {
 
 fn fetch_setup_result(json: bool) -> Result<serde_json::Value, ExitCode> {
     let mut client = connect(None).map_err(|e| report_error(&e, json))?;
-    client.request("setup", None).map_err(|e| report_error(&e, json))
+    client
+        .request("setup", None)
+        .map_err(|e| report_error(&e, json))
 }
 
 pub fn cmd_setup(json: bool) -> ExitCode {
@@ -65,12 +67,21 @@ pub fn cmd_setup(json: bool) -> ExitCode {
     if json {
         print_json(&result);
     } else {
-        let altool = result.get("altoolInstalled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let altool = result
+            .get("altoolInstalled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let dotnet = result.get("dotnetVersion").and_then(|v| v.as_str());
         let tc = result.get("toolchain");
         if altool {
-            let version = tc.and_then(|t| t.get("version")).and_then(|v| v.as_str()).unwrap_or("unknown");
-            let alc = tc.and_then(|t| t.get("alc")).and_then(|v| v.as_str()).unwrap_or("?");
+            let version = tc
+                .and_then(|t| t.get("version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let alc = tc
+                .and_then(|t| t.get("alc"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             println!("[OK] ALTool v{version}");
             println!("     alc: {alc}");
         } else {
@@ -96,7 +107,13 @@ pub fn cmd_doctor(json: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let checks = [
-        ("ALTool", result.get("altoolInstalled").and_then(|v| v.as_bool()).unwrap_or(false)),
+        (
+            "ALTool",
+            result
+                .get("altoolInstalled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        ),
         (".NET SDK", result.get("dotnetVersion").is_some()),
         ("Project", result.get("project").is_some()),
     ];
@@ -108,9 +125,18 @@ pub fn cmd_doctor(json: bool) -> ExitCode {
             any_failed = true;
         }
     }
-    let symbols = result.get("indexedSymbols").and_then(|v| v.as_u64()).unwrap_or(0);
-    let files = result.get("workspaceFiles").and_then(|v| v.as_u64()).unwrap_or(0);
-    println!("[OK] {} symbols indexed, {} workspace files", symbols, files);
+    let symbols = result
+        .get("indexedSymbols")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let files = result
+        .get("workspaceFiles")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    println!(
+        "[OK] {} symbols indexed, {} workspace files",
+        symbols, files
+    );
     if any_failed {
         ExitCode::FAILURE
     } else {
@@ -157,16 +183,9 @@ pub fn cmd_download_symbols(
                         }
                     }
                 }
-                eprintln!(
-                    "\n{downloaded} downloaded, {failed} failed (source: {source_name})"
-                );
+                eprintln!("\n{downloaded} downloaded, {failed} failed (source: {source_name})");
             }
-            if result
-                .get("failed")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-                > 0
-            {
+            if result.get("failed").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
                 ExitCode::FAILURE
             } else {
                 ExitCode::SUCCESS
@@ -248,10 +267,8 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
                     if let Some(params) = e.get("parameters").and_then(|v| v.as_array()) {
                         for p in params {
                             let pname = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let ptype =
-                                p.get("type_name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let is_var =
-                                p.get("is_var").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let ptype = p.get("type_name").and_then(|v| v.as_str()).unwrap_or("?");
+                            let is_var = p.get("is_var").and_then(|v| v.as_bool()).unwrap_or(false);
                             let var_prefix = if is_var { "var " } else { "" };
                             println!("  {var_prefix}{pname}: {ptype}");
                         }
@@ -284,12 +301,18 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
                 for s in subs {
                     let obj = s.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
                     let method = s.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
-                    let target_type =
-                        s.get("targetObjectType").and_then(|v| v.as_str()).unwrap_or("?");
-                    let target_name =
-                        s.get("targetObjectName").and_then(|v| v.as_str()).unwrap_or("?");
-                    let target_event =
-                        s.get("targetEventName").and_then(|v| v.as_str()).unwrap_or("?");
+                    let target_type = s
+                        .get("targetObjectType")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let target_name = s
+                        .get("targetObjectName")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let target_event = s
+                        .get("targetEventName")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
                     println!("{obj}.{method} → {target_type}::{target_name}.{target_event}");
                 }
                 eprintln!("\n{} subscribers", subs.len());
@@ -369,11 +392,7 @@ pub fn cmd_packages(json: bool) -> ExitCode {
                         name, publisher, version, count
                     );
                 }
-                eprintln!(
-                    "\n{} packages, {} total objects",
-                    pkgs.len(),
-                    total_objects
-                );
+                eprintln!("\n{} packages, {} total objects", pkgs.len(), total_objects);
             }
             ExitCode::SUCCESS
         }
@@ -385,7 +404,10 @@ pub fn cmd_deps(json: bool) -> ExitCode {
     run_command("deps", None, json, None, |result| {
         if let Some(proj) = result.get("project") {
             let name = proj.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let publisher = proj.get("publisher").and_then(|v| v.as_str()).unwrap_or("?");
+            let publisher = proj
+                .get("publisher")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let version = proj.get("version").and_then(|v| v.as_str()).unwrap_or("?");
             println!("Project: {name} by {publisher} v{version}");
         }
@@ -404,12 +426,7 @@ pub fn cmd_deps(json: bool) -> ExitCode {
     })
 }
 
-pub fn cmd_lint(
-    file: Option<&str>,
-    all: bool,
-    analyzers: Option<&str>,
-    json: bool,
-) -> ExitCode {
+pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -436,8 +453,10 @@ pub fn cmd_lint(
                 let mut total = 0usize;
                 if let Some(files) = result.as_array() {
                     for file_result in files {
-                        let fname =
-                            file_result.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                        let fname = file_result
+                            .get("file")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
                         if let Some(diags) =
                             file_result.get("diagnostics").and_then(|v| v.as_array())
                         {
@@ -447,11 +466,7 @@ pub fn cmd_lint(
                             total += diags.len();
                         }
                     }
-                    eprintln!(
-                        "\n{} diagnostics across {} files",
-                        total,
-                        files.len()
-                    );
+                    eprintln!("\n{} diagnostics across {} files", total, files.len());
                 }
                 total > 0
             } else {
@@ -476,13 +491,7 @@ pub fn cmd_lint(
     }
 }
 
-pub fn cmd_format(
-    file: Option<&str>,
-    check: bool,
-    stdin: bool,
-    all: bool,
-    json: bool,
-) -> ExitCode {
+pub fn cmd_format(file: Option<&str>, check: bool, stdin: bool, all: bool, json: bool) -> ExitCode {
     if stdin {
         return cmd_format_stdin(check, json);
     }
@@ -557,7 +566,10 @@ fn cmd_format_stdin(check: bool, json: bool) -> ExitCode {
                     ExitCode::SUCCESS
                 }
             } else {
-                let formatted = result.get("formatted").and_then(|v| v.as_str()).unwrap_or("");
+                let formatted = result
+                    .get("formatted")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if json {
                     print_json(&serde_json::json!({ "formatted": formatted }));
                 } else {
@@ -620,7 +632,11 @@ fn cmd_format_all(check: bool, json: bool) -> ExitCode {
         eprintln!(
             "\n{total} files, {changed_count} {}{}",
             if check { "would change" } else { "formatted" },
-            if error_count > 0 { format!(", {error_count} error(s)") } else { String::new() }
+            if error_count > 0 {
+                format!(", {error_count} error(s)")
+            } else {
+                String::new()
+            }
         );
     }
     if (check && changed_count > 0) || error_count > 0 {
@@ -654,7 +670,10 @@ pub fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
             } else if json {
                 print_json(&result);
             } else {
-                let contents = result.get("contents").and_then(|v| v.as_str()).unwrap_or("");
+                let contents = result
+                    .get("contents")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let display = contents
                     .replace("```al\n", "")
                     .replace("```\n", "")
@@ -713,7 +732,7 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
             .and_then(|r| r.get("start"))
             .and_then(|s| s.get("line"))
             .and_then(|v| v.as_u64())
-            .map(|l| l + 1)  // convert 0-based to 1-based
+            .map(|l| l + 1) // convert 0-based to 1-based
             .unwrap_or(0);
         let col = loc
             .get("range")
@@ -737,7 +756,10 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
             } else if let Some(s) = location_str(result) {
                 println!("{s}");
             } else {
-                println!("{}", serde_json::to_string_pretty(result).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(result).unwrap_or_default()
+                );
             }
         }
         "references" => {
@@ -749,13 +771,19 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
                 }
                 eprintln!("\n{} reference(s)", locations.len());
             } else {
-                println!("{}", serde_json::to_string_pretty(result).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(result).unwrap_or_default()
+                );
             }
         }
         _ => {
             // Generic fallback: pretty-print with a label.
             println!("Result:");
-            println!("{}", serde_json::to_string_pretty(result).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(result).unwrap_or_default()
+            );
         }
     }
 }
@@ -897,7 +925,11 @@ fn apply_workspace_edit(
         ) -> Result<usize, String> {
             if line as usize >= lines.len() {
                 // Position is past EOF — clamp to end of content.
-                return Ok(lines.iter().map(|l| l.len() + 1).sum::<usize>().saturating_sub(1));
+                return Ok(lines
+                    .iter()
+                    .map(|l| l.len() + 1)
+                    .sum::<usize>()
+                    .saturating_sub(1));
             }
             // Byte offset of the start of the target line.
             let line_start: usize = lines[..line as usize]
@@ -925,18 +957,26 @@ fn apply_workspace_edit(
                 let range = e.get("range").ok_or("missing range")?;
                 let start = range.get("start").ok_or("missing start")?;
                 let end = range.get("end").ok_or("missing end")?;
-                let sl = start.get("line").and_then(|v| v.as_u64()).ok_or("missing start.line")?;
+                let sl = start
+                    .get("line")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("missing start.line")?;
                 let sc = start
                     .get("character")
                     .and_then(|v| v.as_u64())
                     .ok_or("missing start.character")?;
-                let el = end.get("line").and_then(|v| v.as_u64()).ok_or("missing end.line")?;
+                let el = end
+                    .get("line")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("missing end.line")?;
                 let ec = end
                     .get("character")
                     .and_then(|v| v.as_u64())
                     .ok_or("missing end.character")?;
-                let new_text =
-                    e.get("newText").and_then(|v| v.as_str()).ok_or("missing newText")?;
+                let new_text = e
+                    .get("newText")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing newText")?;
                 Ok((sl, sc, el, ec, new_text))
             })
             .collect::<Result<_, &str>>()
@@ -949,7 +989,10 @@ fn apply_workspace_edit(
         for (sl, sc, el, ec, new_text) in parsed_edits {
             let start_byte = lsp_pos_to_byte_offset(&lines, sl, sc)?;
             let end_byte = lsp_pos_to_byte_offset(&lines, el, ec)?;
-            if start_byte > new_content.len() || end_byte > new_content.len() || start_byte > end_byte {
+            if start_byte > new_content.len()
+                || end_byte > new_content.len()
+                || start_byte > end_byte
+            {
                 return Err(format!(
                     "Edit range out of bounds in {uri}: {sl}:{sc}-{el}:{ec}"
                 ));
@@ -983,13 +1026,7 @@ pub fn cmd_rules(json: bool) -> ExitCode {
     })
 }
 
-pub fn cmd_permissions(
-    format: &str,
-    name: &str,
-    id: i64,
-    role_id: &str,
-    json: bool,
-) -> ExitCode {
+pub fn cmd_permissions(format: &str, name: &str, id: i64, role_id: &str, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -1072,15 +1109,16 @@ pub fn cmd_parse(file: &str, json: bool) -> ExitCode {
                 print_json(&result);
             } else {
                 let errors = result.get("errors").and_then(|v| v.as_u64()).unwrap_or(0);
-                let nodes = result.get("nodeCount").and_then(|v| v.as_u64()).unwrap_or(0);
+                let nodes = result
+                    .get("nodeCount")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let time = result
                     .get("parseTimeMs")
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.0);
                 println!("{file}: {nodes} nodes, {errors} errors, {time:.1}ms");
-                if let Some(parse_errors) =
-                    result.get("parseErrors").and_then(|v| v.as_array())
-                {
+                if let Some(parse_errors) = result.get("parseErrors").and_then(|v| v.as_array()) {
                     for e in parse_errors {
                         let line = e.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
                         let col = e.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1136,12 +1174,7 @@ pub fn cmd_hints(
     }
 }
 
-pub fn cmd_fix(
-    file: Option<&str>,
-    dry_run: bool,
-    rule: Option<&str>,
-    json: bool,
-) -> ExitCode {
+pub fn cmd_fix(file: Option<&str>, dry_run: bool, rule: Option<&str>, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -1205,23 +1238,18 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
             } else {
                 match cmd {
                     "status" => {
-                        if let Some(tenants) =
-                            result.get("tenants").and_then(|v| v.as_array())
-                        {
+                        if let Some(tenants) = result.get("tenants").and_then(|v| v.as_array()) {
                             if tenants.is_empty() {
                                 eprintln!("No tenants configured in this project.");
                             }
                             for t in tenants {
-                                let id =
-                                    t.get("tenant").and_then(|v| v.as_str()).unwrap_or("?");
+                                let id = t.get("tenant").and_then(|v| v.as_str()).unwrap_or("?");
                                 let authed = t
                                     .get("authenticated")
                                     .and_then(|v| v.as_bool())
                                     .unwrap_or(false);
-                                let expired = t
-                                    .get("expired")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(true);
+                                let expired =
+                                    t.get("expired").and_then(|v| v.as_bool()).unwrap_or(true);
                                 let status = if authed && !expired {
                                     "authenticated"
                                 } else if authed && expired {
@@ -1234,22 +1262,16 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
                         }
                     }
                     "clear" => {
-                        let cleared = result
-                            .get("cleared")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
+                        let cleared = result.get("cleared").and_then(|v| v.as_u64()).unwrap_or(0);
                         eprintln!("Cleared {cleared} cached token(s).");
                     }
                     _ => {
-                        let status =
-                            result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                         let tenant_id =
                             result.get("tenant").and_then(|v| v.as_str()).unwrap_or("?");
                         eprintln!("Status: {status}");
                         eprintln!("Tenant: {tenant_id}");
-                        if let Some(msgs) =
-                            result.get("messages").and_then(|v| v.as_array())
-                        {
+                        if let Some(msgs) = result.get("messages").and_then(|v| v.as_array()) {
                             for msg in msgs {
                                 if let Some(s) = msg.as_str() {
                                     if !s.is_empty() {
@@ -1271,9 +1293,7 @@ pub fn cmd_init_debug(json: bool) -> ExitCode {
     let debug_path = std::path::Path::new(".zed/debug.json");
     if debug_path.exists() {
         if json {
-            print_json(
-                &serde_json::json!({"status": "exists", "path": ".zed/debug.json"}),
-            );
+            print_json(&serde_json::json!({"status": "exists", "path": ".zed/debug.json"}));
         } else {
             eprintln!(".zed/debug.json already exists — not overwriting");
         }
@@ -1457,8 +1477,13 @@ pub fn cmd_metrics(
                 if let Some(files) = result.as_array() {
                     let mut total_hotspots = 0usize;
                     for file_result in files {
-                        let fname = file_result.get("file").and_then(|v| v.as_str()).unwrap_or("?");
-                        if let Some(hotspots) = file_result.get("hotspots").and_then(|v| v.as_array()) {
+                        let fname = file_result
+                            .get("file")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        if let Some(hotspots) =
+                            file_result.get("hotspots").and_then(|v| v.as_array())
+                        {
                             if !hotspots.is_empty() {
                                 for h in hotspots {
                                     print_complexity_entry(Some(fname), h);
@@ -1494,34 +1519,47 @@ pub fn cmd_metrics(
 fn print_complexity_entry(file: Option<&str>, entry: &serde_json::Value) {
     let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
     let line = entry.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-    let cyclomatic = entry.get("cyclomatic").and_then(|v| v.as_u64()).unwrap_or(0);
+    let cyclomatic = entry
+        .get("cyclomatic")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let cognitive = entry.get("cognitive").and_then(|v| v.as_u64()).unwrap_or(0);
-    let loc_prefix = if let Some(f) = file { format!("{f}:{line}: ") } else { format!("{line}: ") };
+    let loc_prefix = if let Some(f) = file {
+        format!("{f}:{line}: ")
+    } else {
+        format!("{line}: ")
+    };
     println!("{loc_prefix}{name}  cyclomatic={cyclomatic}  cognitive={cognitive}");
 }
 
 pub fn cmd_sql_scan(json: bool) -> ExitCode {
-    run_command("sqlPatterns", Some(serde_json::json!({})), json, None, |result| {
-        let violations = result.as_array().cloned().unwrap_or_default();
-        if violations.is_empty() {
-            eprintln!("No SQL anti-patterns found");
-        } else {
-            for v in &violations {
-                let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
-                let object = v.get("object").and_then(|o| o.as_str()).unwrap_or("?");
-                let procedure = v.get("procedure").and_then(|p| p.as_str()).unwrap_or("?");
-                let line = v.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
-                let message = v.get("message").and_then(|m| m.as_str()).unwrap_or("?");
-                let file_path = v.get("file").and_then(|f| f.as_str()).unwrap_or("");
-                if file_path.is_empty() {
-                    println!("{object}::{procedure}:{line}: [{kind}] {message}");
-                } else {
-                    println!("{file_path}:{line}: [{kind}] {object}::{procedure}: {message}");
+    run_command(
+        "sqlPatterns",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let violations = result.as_array().cloned().unwrap_or_default();
+            if violations.is_empty() {
+                eprintln!("No SQL anti-patterns found");
+            } else {
+                for v in &violations {
+                    let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
+                    let object = v.get("object").and_then(|o| o.as_str()).unwrap_or("?");
+                    let procedure = v.get("procedure").and_then(|p| p.as_str()).unwrap_or("?");
+                    let line = v.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
+                    let message = v.get("message").and_then(|m| m.as_str()).unwrap_or("?");
+                    let file_path = v.get("file").and_then(|f| f.as_str()).unwrap_or("");
+                    if file_path.is_empty() {
+                        println!("{object}::{procedure}:{line}: [{kind}] {message}");
+                    } else {
+                        println!("{file_path}:{line}: [{kind}] {object}::{procedure}: {message}");
+                    }
                 }
+                eprintln!("\n{} SQL anti-pattern(s) found", violations.len());
             }
-            eprintln!("\n{} SQL anti-pattern(s) found", violations.len());
-        }
-    })
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1533,13 +1571,22 @@ pub fn cmd_add_application_area(value: &str, dry_run: bool, json: bool) -> ExitC
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request("fix.applicationArea", Some(serde_json::json!({ "value": value, "dryRun": dry_run }))) {
+    match client.request(
+        "fix.applicationArea",
+        Some(serde_json::json!({ "value": value, "dryRun": dry_run })),
+    ) {
         Ok(result) => {
             if json {
                 print_json(&result);
             } else {
-                let files = result.get("filesModified").and_then(|v| v.as_u64()).unwrap_or(0);
-                let changes = result.get("totalChanges").and_then(|v| v.as_u64()).unwrap_or(0);
+                let files = result
+                    .get("filesModified")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let changes = result
+                    .get("totalChanges")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 if dry_run {
                     println!("Dry run: would modify {files} file(s) with {changes} change(s)");
                 } else {
@@ -1566,8 +1613,14 @@ pub fn cmd_add_tooltips(from_table: Option<&str>, dry_run: bool, json: bool) -> 
             if json {
                 print_json(&result);
             } else {
-                let files = result.get("filesModified").and_then(|v| v.as_u64()).unwrap_or(0);
-                let changes = result.get("totalChanges").and_then(|v| v.as_u64()).unwrap_or(0);
+                let files = result
+                    .get("filesModified")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let changes = result
+                    .get("totalChanges")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 if dry_run {
                     println!("Dry run: would modify {files} file(s) with {changes} tooltip(s)");
                 } else {
@@ -1585,13 +1638,22 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request("fix.dataClassification", Some(serde_json::json!({ "value": value, "dryRun": dry_run }))) {
+    match client.request(
+        "fix.dataClassification",
+        Some(serde_json::json!({ "value": value, "dryRun": dry_run })),
+    ) {
         Ok(result) => {
             if json {
                 print_json(&result);
             } else {
-                let files = result.get("filesModified").and_then(|v| v.as_u64()).unwrap_or(0);
-                let changes = result.get("totalChanges").and_then(|v| v.as_u64()).unwrap_or(0);
+                let files = result
+                    .get("filesModified")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let changes = result
+                    .get("totalChanges")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 if dry_run {
                     println!("Dry run: would modify {files} file(s) with {changes} field(s)");
                 } else {
@@ -1609,29 +1671,51 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
 // ---------------------------------------------------------------------------
 
 pub fn cmd_tests_discover(json: bool) -> ExitCode {
-    run_command("tests.discover", Some(serde_json::json!({})), json, None, |result| {
-        let tests = result.as_array().cloned().unwrap_or_default();
-        if tests.is_empty() {
-            eprintln!("No test codeunits found");
-        } else {
-            for t in &tests {
-                let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                let count = t.get("tests").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                println!("  Codeunit {id} \"{name}\" -- {count} test(s)");
+    run_command(
+        "tests.discover",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let tests = result.as_array().cloned().unwrap_or_default();
+            if tests.is_empty() {
+                eprintln!("No test codeunits found");
+            } else {
+                for t in &tests {
+                    let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let count = t
+                        .get("tests")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    println!("  Codeunit {id} \"{name}\" -- {count} test(s)");
+                }
+                eprintln!("\n{} test codeunit(s) found", tests.len());
             }
-            eprintln!("\n{} test codeunit(s) found", tests.len());
-        }
-    })
+        },
+    )
 }
 
 pub fn cmd_tests_coverage(json: bool) -> ExitCode {
-    run_command("tests.coverage", Some(serde_json::json!({})), json, None, |result| {
-        let covered = result.get("coveredProcedures").and_then(|v| v.as_u64()).unwrap_or(0);
-        let total = result.get("totalProcedures").and_then(|v| v.as_u64()).unwrap_or(0);
-        let pct = if total > 0 { covered * 100 / total } else { 0 };
-        println!("Test coverage: {covered}/{total} procedures ({pct}%)");
-    })
+    run_command(
+        "tests.coverage",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let covered = result
+                .get("coveredProcedures")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let total = result
+                .get("totalProcedures")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let pct = if total > 0 { covered * 100 / total } else { 0 };
+            println!("Test coverage: {covered}/{total} procedures ({pct}%)");
+        },
+    )
 }
 
 /// `al test-run <codeunit> [--name <name>] [--method <method>] [--config <config>]`
@@ -1705,7 +1789,15 @@ pub fn cmd_test_run(
 // WP16: Code generation command
 // ---------------------------------------------------------------------------
 
-pub fn cmd_generate(kind: &str, id: i64, name: &str, table: Option<&str>, page_type: Option<&str>, subject: Option<&str>, json: bool) -> ExitCode {
+pub fn cmd_generate(
+    kind: &str,
+    id: i64,
+    name: &str,
+    table: Option<&str>,
+    page_type: Option<&str>,
+    subject: Option<&str>,
+    json: bool,
+) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -1739,56 +1831,77 @@ pub fn cmd_generate(kind: &str, id: i64, name: &str, table: Option<&str>, page_t
 // ---------------------------------------------------------------------------
 
 pub fn cmd_obsolete(json: bool) -> ExitCode {
-    run_command("obsolete", Some(serde_json::json!({})), json, None, |result| {
-        let entries = result.as_array().cloned().unwrap_or_default();
-        if entries.is_empty() {
-            println!("No obsolete symbols found.");
-        } else {
-            for e in &entries {
-                let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                let object = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                let symbol = e.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
-                let reason = e.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-                let state = e.get("state").and_then(|v| v.as_str()).unwrap_or("");
-                println!("{kind} {object}::{symbol} [{state}]: {reason}");
+    run_command(
+        "obsolete",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let entries = result.as_array().cloned().unwrap_or_default();
+            if entries.is_empty() {
+                println!("No obsolete symbols found.");
+            } else {
+                for e in &entries {
+                    let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                    let object = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                    let symbol = e.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
+                    let reason = e.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+                    let state = e.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                    println!("{kind} {object}::{symbol} [{state}]: {reason}");
+                }
+                eprintln!("\n{} obsolete symbol(s)", entries.len());
             }
-            eprintln!("\n{} obsolete symbol(s)", entries.len());
-        }
-    })
+        },
+    )
 }
 
 pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
-    run_command("audit.dataClassification", Some(serde_json::json!({})), json, None, |result| {
-        let entries = result.as_array().cloned().unwrap_or_default();
-        if entries.is_empty() {
-            println!("All table fields have DataClassification set.");
-        } else {
-            for e in &entries {
-                let table = e.get("table").and_then(|v| v.as_str()).unwrap_or("?");
-                let field = e.get("field").and_then(|v| v.as_str()).unwrap_or("?");
-                let dc = e.get("dataClassification").and_then(|v| v.as_str()).unwrap_or("missing");
-                println!("{table}.{field}: {dc}");
+    run_command(
+        "audit.dataClassification",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let entries = result.as_array().cloned().unwrap_or_default();
+            if entries.is_empty() {
+                println!("All table fields have DataClassification set.");
+            } else {
+                for e in &entries {
+                    let table = e.get("table").and_then(|v| v.as_str()).unwrap_or("?");
+                    let field = e.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+                    let dc = e
+                        .get("dataClassification")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("missing");
+                    println!("{table}.{field}: {dc}");
+                }
+                eprintln!("\n{} field(s) missing DataClassification", entries.len());
             }
-            eprintln!("\n{} field(s) missing DataClassification", entries.len());
-        }
-    })
+        },
+    )
 }
 
 pub fn cmd_permission_audit(json: bool) -> ExitCode {
-    run_command("permissions.audit", Some(serde_json::json!({})), json, None, |result| {
-        let entries = result.as_array().cloned().unwrap_or_default();
-        if entries.is_empty() {
-            println!("All objects covered by permission sets.");
-        } else {
-            for e in &entries {
-                let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let covered = e.get("covered").and_then(|v| v.as_bool()).unwrap_or(false);
-                let status = if covered { "covered" } else { "MISSING" };
-                println!("{kind} \"{name}\": {status}");
+    run_command(
+        "permissions.audit",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let entries = result.as_array().cloned().unwrap_or_default();
+            if entries.is_empty() {
+                println!("All objects covered by permission sets.");
+            } else {
+                for e in &entries {
+                    let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                    let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let covered = e.get("covered").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let status = if covered { "covered" } else { "MISSING" };
+                    println!("{kind} \"{name}\": {status}");
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
@@ -1797,12 +1910,17 @@ pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
     let include_dot = format == "dot";
-    match client.request("deps.graph", Some(serde_json::json!({ "format": format, "dot": include_dot }))) {
+    match client.request(
+        "deps.graph",
+        Some(serde_json::json!({ "format": format, "dot": include_dot })),
+    ) {
         Ok(result) => {
             if json || !include_dot {
                 print_json(&result);
             } else {
-                let dot = result.get("content").and_then(|v| v.as_str())
+                let dot = result
+                    .get("content")
+                    .and_then(|v| v.as_str())
                     .or_else(|| result.get("dot").and_then(|v| v.as_str()))
                     .unwrap_or("");
                 print!("{dot}");
@@ -1814,41 +1932,55 @@ pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
 }
 
 pub fn cmd_breaking_changes(json: bool) -> ExitCode {
-    run_command("breaking", Some(serde_json::json!({})), json, None, |result| {
-        let changes = result.as_array().cloned().unwrap_or_default();
-        if changes.is_empty() {
-            println!("No breaking changes detected.");
-        } else {
-            for c in &changes {
-                let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("[{kind}] \"{object}\": {description}");
+    run_command(
+        "breaking",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let changes = result.as_array().cloned().unwrap_or_default();
+            if changes.is_empty() {
+                println!("No breaking changes detected.");
+            } else {
+                for c in &changes {
+                    let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                    let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                    let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("[{kind}] \"{object}\": {description}");
+                }
+                eprintln!("\n{} breaking change(s)", changes.len());
             }
-            eprintln!("\n{} breaking change(s)", changes.len());
-        }
-    })
+        },
+    )
 }
 
 pub fn cmd_arch_lint(json: bool) -> ExitCode {
-    run_command("arch.lint", Some(serde_json::json!({})), json, None, |result| {
-        let violations = result.as_array().cloned().unwrap_or_default();
-        if violations.is_empty() {
-            println!("No architecture violations found.");
-        } else {
-            for v in &violations {
-                let rule = v.get("ruleId").and_then(|v| v.as_str()).unwrap_or("?");
-                let object = v.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                let message = v.get("message").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("[{rule}] {object}: {message}");
+    run_command(
+        "arch.lint",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let violations = result.as_array().cloned().unwrap_or_default();
+            if violations.is_empty() {
+                println!("No architecture violations found.");
+            } else {
+                for v in &violations {
+                    let rule = v.get("ruleId").and_then(|v| v.as_str()).unwrap_or("?");
+                    let object = v.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                    let message = v.get("message").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("[{rule}] {object}: {message}");
+                }
+                eprintln!("\n{} architecture violation(s)", violations.len());
             }
-            eprintln!("\n{} architecture violation(s)", violations.len());
-        }
-    })
+        },
+    )
 }
 
 fn format_block_location(loc: Option<&serde_json::Value>) -> String {
-    let Some(loc) = loc else { return "?".to_string() };
+    let Some(loc) = loc else {
+        return "?".to_string();
+    };
     let file = loc.get("file").and_then(|v| v.as_str()).unwrap_or("?");
     let proc = loc.get("procedure").and_then(|v| v.as_str()).unwrap_or("?");
     let line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -1860,10 +1992,13 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request("duplicates", Some(serde_json::json!({
-        "minTokens": min_tokens,
-        "minSimilarity": min_similarity,
-    }))) {
+    match client.request(
+        "duplicates",
+        Some(serde_json::json!({
+            "minTokens": min_tokens,
+            "minSimilarity": min_similarity,
+        })),
+    ) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -1888,24 +2023,33 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
 }
 
 pub fn cmd_upgrade_report(json: bool) -> ExitCode {
-    run_command("upgrade", Some(serde_json::json!({})), json, None, |result| {
-        let issues = result.as_array().cloned().unwrap_or_default();
-        if issues.is_empty() {
-            println!("No upgrade issues found.");
-        } else {
-            for i in &issues {
-                let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                let hint = i.get("migrationHint").and_then(|v| v.as_str()).unwrap_or("");
-                println!("[{kind}] \"{object}\": {description}");
-                if !hint.is_empty() {
-                    println!("  Migration: {hint}");
+    run_command(
+        "upgrade",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let issues = result.as_array().cloned().unwrap_or_default();
+            if issues.is_empty() {
+                println!("No upgrade issues found.");
+            } else {
+                for i in &issues {
+                    let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                    let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+                    let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                    let hint = i
+                        .get("migrationHint")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    println!("[{kind}] \"{object}\": {description}");
+                    if !hint.is_empty() {
+                        println!("  Migration: {hint}");
+                    }
                 }
+                eprintln!("\n{} upgrade issue(s)", issues.len());
             }
-            eprintln!("\n{} upgrade issue(s)", issues.len());
-        }
-    })
+        },
+    )
 }
 
 pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
@@ -1913,10 +2057,14 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let hotspot_values: Vec<serde_json::Value> = hotspots.iter()
+    let hotspot_values: Vec<serde_json::Value> = hotspots
+        .iter()
         .map(|h| serde_json::json!({ "name": h }))
         .collect();
-    match client.request("profiler.hints", Some(serde_json::json!({ "hotspots": hotspot_values }))) {
+    match client.request(
+        "profiler.hints",
+        Some(serde_json::json!({ "hotspots": hotspot_values })),
+    ) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -1940,7 +2088,12 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
     }
 }
 
-pub fn cmd_sort_members(file: Option<&str>, all: bool, dry_run: bool, json: bool) -> std::process::ExitCode {
+pub fn cmd_sort_members(
+    file: Option<&str>,
+    all: bool,
+    dry_run: bool,
+    json: bool,
+) -> std::process::ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -1956,7 +2109,10 @@ pub fn cmd_sort_members(file: Option<&str>, all: bool, dry_run: bool, json: bool
             if json {
                 print_json(&result);
             } else {
-                let changed = result.get("changed").and_then(|v| v.as_bool()).unwrap_or(false);
+                let changed = result
+                    .get("changed")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 if changed {
                     println!("Members sorted.");
                 } else {
@@ -1974,12 +2130,19 @@ pub fn cmd_organize_files(dry_run: bool, json: bool) -> std::process::ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    match client.request("organizeFiles", Some(serde_json::json!({ "dryRun": dry_run }))) {
+    match client.request(
+        "organizeFiles",
+        Some(serde_json::json!({ "dryRun": dry_run })),
+    ) {
         Ok(result) => {
             if json {
                 print_json(&result);
             } else {
-                let files = result.get("files").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let files = result
+                    .get("files")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 if files.is_empty() {
                     println!("All files already correctly named.");
                 } else {
@@ -1987,7 +2150,13 @@ pub fn cmd_organize_files(dry_run: bool, json: bool) -> std::process::ExitCode {
                         let from = f.get("from").and_then(|v| v.as_str()).unwrap_or("?");
                         let to = f.get("to").and_then(|v| v.as_str()).unwrap_or("?");
                         let renamed = f.get("renamed").and_then(|v| v.as_bool()).unwrap_or(false);
-                        let status = if dry_run { "[dry-run]" } else if renamed { "[renamed]" } else { "[failed]" };
+                        let status = if dry_run {
+                            "[dry-run]"
+                        } else if renamed {
+                            "[renamed]"
+                        } else {
+                            "[failed]"
+                        };
                         println!("{status} {from} -> {to}");
                     }
                 }
@@ -1999,10 +2168,16 @@ pub fn cmd_organize_files(dry_run: bool, json: bool) -> std::process::ExitCode {
 }
 
 pub fn cmd_diag(json: bool) -> ExitCode {
-    run_command("diag", Some(serde_json::json!({"cmd": "summary"})), json, None, |result| {
-        println!("Workspace Diagnostics:");
-        for (key, value) in result.as_object().into_iter().flat_map(|o| o.iter()) {
-            println!("  {}: {}", key, value);
-        }
-    })
+    run_command(
+        "diag",
+        Some(serde_json::json!({"cmd": "summary"})),
+        json,
+        None,
+        |result| {
+            println!("Workspace Diagnostics:");
+            for (key, value) in result.as_object().into_iter().flat_map(|o| o.iter()) {
+                println!("  {}: {}", key, value);
+            }
+        },
+    )
 }

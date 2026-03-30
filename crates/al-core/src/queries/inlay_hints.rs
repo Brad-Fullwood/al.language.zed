@@ -6,33 +6,55 @@
 //! Also provides return type hints for procedure declarations when
 //! `al.inlayhints.returnTypes` is enabled.
 
-use tower_lsp::lsp_types::{self, DocumentSymbol, InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
+use tower_lsp::lsp_types::{
+    self, DocumentSymbol, InlayHint, InlayHintKind, InlayHintLabel, Position, Range,
+};
 use url::Url;
 
 use crate::workspace::Workspace;
 
 /// Get inlay hints for a range within a document.
-pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: lsp_types::Range) -> Option<Vec<InlayHint>> {
+pub fn inlay_hints(
+    workspace: &Workspace,
+    uri: &Url,
+    range: lsp_types::Range,
+) -> Option<Vec<InlayHint>> {
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
     let root = tree.root_node();
     let source = text.as_bytes();
     let mut hints = Vec::new();
 
     let (param_hints, return_hints) = match workspace.config.try_read() {
-        Ok(config) => (config.inlay_hints.parameter_names, config.inlay_hints.return_types),
+        Ok(config) => (
+            config.inlay_hints.parameter_names,
+            config.inlay_hints.return_types,
+        ),
         Err(_) => (true, false), // defaults if lock is held
     };
 
     if param_hints {
         let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
-        collect_inlay_hints(root, source, &text, &tree, workspace, &doc_symbols, &range, &mut hints);
+        collect_inlay_hints(
+            root,
+            source,
+            &text,
+            &tree,
+            workspace,
+            &doc_symbols,
+            &range,
+            &mut hints,
+        );
     }
 
     if return_hints {
         collect_return_type_hints(root, source, &range, &mut hints);
     }
 
-    if hints.is_empty() { None } else { Some(hints) }
+    if hints.is_empty() {
+        None
+    } else {
+        Some(hints)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -48,7 +70,9 @@ fn collect_inlay_hints(
 ) {
     let node_start = node.start_position().row as u32;
     let node_end = node.end_position().row as u32;
-    if node_end < range.start.line || node_start > range.end.line { return; }
+    if node_end < range.start.line || node_start > range.end.line {
+        return;
+    }
 
     if node.kind() == "argument_list" || node.kind() == "call_arguments" {
         if let Some(parent) = node.parent() {
@@ -60,8 +84,14 @@ fn collect_inlay_hints(
                 };
                 let arg_types = infer_argument_types(node, source, text, tree, position);
                 let param_names = lookup_parameter_names(
-                    workspace, doc_symbols, &func_name, receiver_name.as_deref(),
-                    text, tree, position, &arg_types,
+                    workspace,
+                    doc_symbols,
+                    &func_name,
+                    receiver_name.as_deref(),
+                    text,
+                    tree,
+                    position,
+                    &arg_types,
                 );
                 if !param_names.is_empty() {
                     add_parameter_hints(node, source, &param_names, hints);
@@ -72,18 +102,36 @@ fn collect_inlay_hints(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_inlay_hints(child, source, text, tree, workspace, doc_symbols, range, hints);
+        collect_inlay_hints(
+            child,
+            source,
+            text,
+            tree,
+            workspace,
+            doc_symbols,
+            range,
+            hints,
+        );
     }
 }
 
 #[derive(Debug, Clone)]
-struct InferredType { base: String, subtype: Option<String> }
+struct InferredType {
+    base: String,
+    subtype: Option<String>,
+}
 
-struct OverloadCandidate { names: Vec<String>, types: Vec<String> }
+struct OverloadCandidate {
+    names: Vec<String>,
+    types: Vec<String>,
+}
 
 fn infer_argument_type(
-    node: tree_sitter::Node<'_>, source: &[u8], text: &str,
-    tree: &tree_sitter::Tree, position: Position,
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+    text: &str,
+    tree: &tree_sitter::Tree,
+    position: Position,
 ) -> Option<InferredType> {
     // Non-UTF8 node text means invalid expression — skip
     let expr = node.utf8_text(source).unwrap_or("");
@@ -92,42 +140,76 @@ fn infer_argument_type(
     if let Some(idx) = expr.find("::") {
         let base = expr[..idx].trim().trim_matches('"');
         if !base.is_empty() {
-            return Some(InferredType { base: base.to_string(), subtype: None });
+            return Some(InferredType {
+                base: base.to_string(),
+                subtype: None,
+            });
         }
     }
     if expr.starts_with('\'') {
-        return Some(InferredType { base: "Text".to_string(), subtype: None });
+        return Some(InferredType {
+            base: "Text".to_string(),
+            subtype: None,
+        });
     }
-    if !expr.is_empty() && expr.bytes().next().is_some_and(|b| b.is_ascii_digit() || b == b'-') {
+    if !expr.is_empty()
+        && expr
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_digit() || b == b'-')
+    {
         let numeric_part = expr.trim_start_matches('-');
-        if numeric_part.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
-            let base = if expr.contains('.') { "Decimal" } else { "Integer" };
-            return Some(InferredType { base: base.to_string(), subtype: None });
+        if numeric_part
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'.')
+        {
+            let base = if expr.contains('.') {
+                "Decimal"
+            } else {
+                "Integer"
+            };
+            return Some(InferredType {
+                base: base.to_string(),
+                subtype: None,
+            });
         }
     }
     if expr.eq_ignore_ascii_case("true") || expr.eq_ignore_ascii_case("false") {
-        return Some(InferredType { base: "Boolean".to_string(), subtype: None });
+        return Some(InferredType {
+            base: "Boolean".to_string(),
+            subtype: None,
+        });
     }
     let var_name = expr.trim_matches('"');
     let resolver = al_syntax::TypeResolver::new(tree, text);
     if let Some(decl) = resolver.resolve_type(var_name, position) {
-        return Some(InferredType { base: decl.type_name, subtype: decl.type_subtype });
+        return Some(InferredType {
+            base: decl.type_name,
+            subtype: decl.type_subtype,
+        });
     }
     None
 }
 
 fn infer_argument_types(
-    arg_list: tree_sitter::Node<'_>, source: &[u8], text: &str,
-    tree: &tree_sitter::Tree, position: Position,
+    arg_list: tree_sitter::Node<'_>,
+    source: &[u8],
+    text: &str,
+    tree: &tree_sitter::Tree,
+    position: Position,
 ) -> Vec<Option<InferredType>> {
-    let expr_parent = arg_list.children(&mut arg_list.walk())
+    let expr_parent = arg_list
+        .children(&mut arg_list.walk())
         .find(|c| c.kind() == "expression_list")
         .unwrap_or(arg_list);
     let mut cursor = expr_parent.walk();
     let mut types = Vec::new();
     for child in expr_parent.children(&mut cursor) {
         let kind = child.kind();
-        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon" { continue; }
+        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon"
+        {
+            continue;
+        }
         types.push(infer_argument_type(child, source, text, tree, position));
     }
     types
@@ -148,16 +230,22 @@ fn parse_type_string(type_str: &str) -> (&str, Option<&str>) {
 fn score_overload(candidate: &OverloadCandidate, arg_types: &[Option<InferredType>]) -> u32 {
     let arg_count = arg_types.len();
     let mut score = 0u32;
-    if candidate.types.len() == arg_count { score += 1000; }
-    else if candidate.types.len() > arg_count { score += 100; }
+    if candidate.types.len() == arg_count {
+        score += 1000;
+    } else if candidate.types.len() > arg_count {
+        score += 100;
+    }
     for (i, arg_type) in arg_types.iter().enumerate() {
         if let Some(param_type_str) = candidate.types.get(i) {
             if let Some(inferred) = arg_type {
                 let (param_base, param_subtype) = parse_type_string(param_type_str);
                 if param_base.eq_ignore_ascii_case(&inferred.base) {
                     score += 50;
-                    if let (Some(p_sub), Some(a_sub)) = (param_subtype, inferred.subtype.as_deref()) {
-                        if p_sub.eq_ignore_ascii_case(a_sub) { score += 25; }
+                    if let (Some(p_sub), Some(a_sub)) = (param_subtype, inferred.subtype.as_deref())
+                    {
+                        if p_sub.eq_ignore_ascii_case(a_sub) {
+                            score += 25;
+                        }
                     }
                 }
             }
@@ -166,21 +254,38 @@ fn score_overload(candidate: &OverloadCandidate, arg_types: &[Option<InferredTyp
     score
 }
 
-fn select_best_overload(candidates: &[OverloadCandidate], arg_types: &[Option<InferredType>]) -> Option<Vec<String>> {
-    candidates.iter().max_by_key(|c| score_overload(c, arg_types)).map(|c| c.names.clone())
+fn select_best_overload(
+    candidates: &[OverloadCandidate],
+    arg_types: &[Option<InferredType>],
+) -> Option<Vec<String>> {
+    candidates
+        .iter()
+        .max_by_key(|c| score_overload(c, arg_types))
+        .map(|c| c.names.clone())
 }
 
-fn extract_call_info(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(String, Option<String>)> {
+fn extract_call_info(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+) -> Option<(String, Option<String>)> {
     match node.kind() {
         "member_call_suffix" | "scope_call_suffix" => {
             let member = node.child_by_field_name("member")?;
-            let method_name = member.utf8_text(source).unwrap_or("").trim_matches('"').to_string();
+            let method_name = member
+                .utf8_text(source)
+                .unwrap_or("")
+                .trim_matches('"')
+                .to_string();
             let receiver = extract_receiver_before(node, source);
             Some((method_name, receiver))
         }
         "call_suffix" => {
             if let Some(prev) = node.prev_sibling() {
-                let name = prev.utf8_text(source).unwrap_or("").trim_matches('"').to_string();
+                let name = prev
+                    .utf8_text(source)
+                    .unwrap_or("")
+                    .trim_matches('"')
+                    .to_string();
                 return Some((name, None));
             }
             None
@@ -202,10 +307,21 @@ fn extract_call_info(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(Stri
 fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
     let prev = suffix_node.prev_sibling()?;
     match prev.kind() {
-        "primary_expression" => Some(prev.utf8_text(source).unwrap_or("").trim_matches('"').to_string()),
+        "primary_expression" => Some(
+            prev.utf8_text(source)
+                .unwrap_or("")
+                .trim_matches('"')
+                .to_string(),
+        ),
         "member_suffix" | "member_call_suffix" => {
             let member = prev.child_by_field_name("member")?;
-            Some(member.utf8_text(source).unwrap_or("").trim_matches('"').to_string())
+            Some(
+                member
+                    .utf8_text(source)
+                    .unwrap_or("")
+                    .trim_matches('"')
+                    .to_string(),
+            )
         }
         _ => None,
     }
@@ -226,81 +342,114 @@ fn lookup_parameter_names(
     // 1. Local procedures
     let candidates = overload_candidates_from_symbols(doc_symbols, func_name);
     if !candidates.is_empty() {
-        if let Some(best) = select_best_overload(&candidates, arg_types) { return best; }
+        if let Some(best) = select_best_overload(&candidates, arg_types) {
+            return best;
+        }
     }
 
     // 2. Receiver type resolution
     if let Some(recv) = receiver_name {
-        if let Some(names) = lookup_via_receiver(workspace, func_name, recv, text, tree, position, arg_types) {
+        if let Some(names) =
+            lookup_via_receiver(workspace, func_name, recv, text, tree, position, arg_types)
+        {
             return names;
         }
     }
 
     // 3. Package symbols
     let symbols = workspace.symbols.get_by_name(func_name);
-    let candidates: Vec<OverloadCandidate> = symbols.iter()
+    let candidates: Vec<OverloadCandidate> = symbols
+        .iter()
         .flat_map(|e| e.methods.iter())
         .filter(|m| m.name.eq_ignore_ascii_case(func_name))
         .map(|m| OverloadCandidate {
             names: m.parameters.iter().map(|p| p.name.clone()).collect(),
             types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
-        }).collect();
-    if let Some(best) = select_best_overload(&candidates, arg_types) { return best; }
+        })
+        .collect();
+    if let Some(best) = select_best_overload(&candidates, arg_types) {
+        return best;
+    }
 
     // 4. Builtins
     let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
-    let candidates: Vec<OverloadCandidate> = builtins.iter()
+    let candidates: Vec<OverloadCandidate> = builtins
+        .iter()
         .flat_map(|bt| bt.methods.iter())
         .filter(|m| m.name.eq_ignore_ascii_case(func_name))
         .map(|m| OverloadCandidate {
             names: m.parameters.iter().map(|p| p.name.clone()).collect(),
             types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
-        }).collect();
+        })
+        .collect();
     drop(builtins); // release read lock before returning
-    if let Some(best) = select_best_overload(&candidates, arg_types) { return best; }
+    if let Some(best) = select_best_overload(&candidates, arg_types) {
+        return best;
+    }
 
     // 5. Embedded builtins
-    if let Some(names) = lookup_embedded_builtin(func_name) { return names; }
+    if let Some(names) = lookup_embedded_builtin(func_name) {
+        return names;
+    }
 
     Vec::new()
 }
 
 fn lookup_via_receiver(
-    workspace: &Workspace, func_name: &str, receiver_name: &str,
-    text: &str, tree: &tree_sitter::Tree, position: Position,
+    workspace: &Workspace,
+    func_name: &str,
+    receiver_name: &str,
+    text: &str,
+    tree: &tree_sitter::Tree,
+    position: Position,
     arg_types: &[Option<InferredType>],
 ) -> Option<Vec<String>> {
     let resolver = al_syntax::TypeResolver::new(tree, text);
     let decl = resolver.resolve_type(receiver_name, position)?;
 
     // Builtins filtered by receiver type — use semantic_cache for O(1) type lookup
-    let cache = workspace.semantic_cache.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    let cache = workspace
+        .semantic_cache
+        .read()
+        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
     let type_names: Vec<&str> = {
         let mut names = vec![decl.type_name.as_str()];
-        if let Some(sub) = decl.type_subtype.as_deref() { names.push(sub); }
+        if let Some(sub) = decl.type_subtype.as_deref() {
+            names.push(sub);
+        }
         names
     };
-    let candidates: Vec<OverloadCandidate> = type_names.iter()
+    let candidates: Vec<OverloadCandidate> = type_names
+        .iter()
         .filter_map(|tn| cache.get_type(tn))
         .flat_map(|bt| bt.methods.iter())
         .filter(|m| m.name.eq_ignore_ascii_case(func_name))
         .map(|m| OverloadCandidate {
             names: m.parameters.iter().map(|p| p.name.clone()).collect(),
             types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
-        }).collect();
+        })
+        .collect();
     drop(cache); // release read lock before continuing
-    if let Some(best) = select_best_overload(&candidates, arg_types) { return Some(best); }
+    if let Some(best) = select_best_overload(&candidates, arg_types) {
+        return Some(best);
+    }
 
     // Package symbols by resolved subtype
     if let Some(subtype) = &decl.type_subtype {
-        let candidates: Vec<OverloadCandidate> = workspace.symbols.get_by_name(subtype).iter()
+        let candidates: Vec<OverloadCandidate> = workspace
+            .symbols
+            .get_by_name(subtype)
+            .iter()
             .flat_map(|e| e.methods.iter())
             .filter(|m| m.name.eq_ignore_ascii_case(func_name))
             .map(|m| OverloadCandidate {
                 names: m.parameters.iter().map(|p| p.name.clone()).collect(),
                 types: m.parameters.iter().map(|p| p.type_name.clone()).collect(),
-            }).collect();
-        if let Some(best) = select_best_overload(&candidates, arg_types) { return Some(best); }
+            })
+            .collect();
+        if let Some(best) = select_best_overload(&candidates, arg_types) {
+            return Some(best);
+        }
     }
 
     // Workspace objects by resolved subtype
@@ -312,7 +461,9 @@ fn lookup_via_receiver(
             if let Some((content, file_tree)) = workspace.file_index.get_cached_parse(&file_path) {
                 let target_symbols = al_syntax::extract_document_symbols(&file_tree, &content);
                 let candidates = overload_candidates_from_symbols(&target_symbols, func_name);
-                if let Some(best) = select_best_overload(&candidates, arg_types) { return Some(best); }
+                if let Some(best) = select_best_overload(&candidates, arg_types) {
+                    return Some(best);
+                }
             }
         }
     }
@@ -369,10 +520,15 @@ fn collect_return_type_hints(
 ) {
     let node_start = node.start_position().row as u32;
     let node_end = node.end_position().row as u32;
-    if node_end < range.start.line || node_start > range.end.line { return; }
+    if node_end < range.start.line || node_start > range.end.line {
+        return;
+    }
 
     let kind = node.kind();
-    if kind == "procedure_declaration" || kind == "trigger_declaration" || kind == "event_procedure_declaration" {
+    if kind == "procedure_declaration"
+        || kind == "trigger_declaration"
+        || kind == "event_procedure_declaration"
+    {
         if let Some(rt_node) = node.child_by_field_name("return_type") {
             if let Ok(rt_text) = rt_node.utf8_text(source) {
                 let rt_text = rt_text.trim();
@@ -423,15 +579,21 @@ fn add_parameter_hints(
     param_names: &[String],
     hints: &mut Vec<InlayHint>,
 ) {
-    let expr_parent = arg_list.children(&mut arg_list.walk())
+    let expr_parent = arg_list
+        .children(&mut arg_list.walk())
         .find(|c| c.kind() == "expression_list")
         .unwrap_or(arg_list);
     let mut cursor = expr_parent.walk();
     let mut arg_idx = 0;
     for child in expr_parent.children(&mut cursor) {
         let kind = child.kind();
-        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon" { continue; }
-        if arg_idx >= param_names.len() { break; }
+        if !child.is_named() || kind == "comma" || kind == "(" || kind == ")" || kind == "semicolon"
+        {
+            continue;
+        }
+        if arg_idx >= param_names.len() {
+            break;
+        }
         hints.push(InlayHint {
             position: Position {
                 line: child.start_position().row as u32,
@@ -456,8 +618,14 @@ mod tests {
 
     fn full_range() -> Range {
         Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 999, character: 0 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 999,
+                character: 0,
+            },
         }
     }
 
@@ -480,7 +648,11 @@ mod tests {
         let mut hints = Vec::new();
         collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
 
-        assert_eq!(hints.len(), 1, "Expected one return type hint, got: {hints:?}");
+        assert_eq!(
+            hints.len(),
+            1,
+            "Expected one return type hint, got: {hints:?}"
+        );
         let h = &hints[0];
         assert_eq!(h.kind, Some(InlayHintKind::TYPE));
         match &h.label {
@@ -502,7 +674,10 @@ mod tests {
         let mut hints = Vec::new();
         collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
 
-        assert!(hints.is_empty(), "Void procedure should not get return type hint");
+        assert!(
+            hints.is_empty(),
+            "Void procedure should not get return type hint"
+        );
     }
 
     #[test]
@@ -520,7 +695,9 @@ mod tests {
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
-            InlayHintLabel::String(s) => assert!(s.contains("Record"), "Expected Record in hint: {s}"),
+            InlayHintLabel::String(s) => {
+                assert!(s.contains("Record"), "Expected Record in hint: {s}")
+            }
             _ => panic!("Unexpected label type"),
         }
     }
@@ -546,7 +723,11 @@ mod tests {
         let mut hints = Vec::new();
         collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
 
-        assert_eq!(hints.len(), 2, "Expected 2 hints (Integer + Text), got: {hints:?}");
+        assert_eq!(
+            hints.len(),
+            2,
+            "Expected 2 hints (Integer + Text), got: {hints:?}"
+        );
     }
 
     #[test]
@@ -566,11 +747,21 @@ mod tests {
         let mut hints = Vec::new();
         // Only the first few lines — First() is at line 2, Second() is at line 7
         let narrow_range = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 3, character: 0 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 3,
+                character: 0,
+            },
         };
         collect_return_type_hints(tree.root_node(), source, &narrow_range, &mut hints);
 
-        assert_eq!(hints.len(), 1, "Expected only First() hint in narrow range, got: {hints:?}");
+        assert_eq!(
+            hints.len(),
+            1,
+            "Expected only First() hint in narrow range, got: {hints:?}"
+        );
     }
 }

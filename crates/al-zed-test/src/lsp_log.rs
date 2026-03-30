@@ -145,7 +145,10 @@ pub async fn since_offset(byte_offset: u64) -> Result<Vec<String>, ZedTestError>
     let mut line = String::new();
     loop {
         line.clear();
-        let n = reader.read_line(&mut line).await.map_err(ZedTestError::Io)?;
+        let n = reader
+            .read_line(&mut line)
+            .await
+            .map_err(ZedTestError::Io)?;
         if n == 0 {
             break;
         }
@@ -168,9 +171,7 @@ pub async fn current_offset() -> Result<u64, ZedTestError> {
         return Ok(0);
     }
 
-    let meta = tokio::fs::metadata(&path)
-        .await
-        .map_err(ZedTestError::Io)?;
+    let meta = tokio::fs::metadata(&path).await.map_err(ZedTestError::Io)?;
 
     Ok(meta.len())
 }

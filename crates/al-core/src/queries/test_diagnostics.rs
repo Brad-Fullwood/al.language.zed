@@ -102,10 +102,7 @@ pub fn results_to_diagnostics(
                         .unwrap_or_else(|| "Test failed".to_string());
                     (DiagnosticSeverity::Error, msg)
                 }
-                TestStatus::Skip => (
-                    DiagnosticSeverity::Warning,
-                    "Test was skipped".to_string(),
-                ),
+                TestStatus::Skip => (DiagnosticSeverity::Warning, "Test was skipped".to_string()),
                 TestStatus::Pass => unreachable!(),
             };
 
@@ -163,8 +160,11 @@ pub fn unrun_test_hints(workspace: &Workspace) -> Vec<TestDiagnostic> {
 ///
 /// Groups `TestDiagnostic` entries by their `file` field. Useful for the LSP
 /// layer when building `publishDiagnostics` notifications.
-pub fn group_by_file(diagnostics: Vec<TestDiagnostic>) -> std::collections::HashMap<String, Vec<TestDiagnostic>> {
-    let mut map: std::collections::HashMap<String, Vec<TestDiagnostic>> = std::collections::HashMap::new();
+pub fn group_by_file(
+    diagnostics: Vec<TestDiagnostic>,
+) -> std::collections::HashMap<String, Vec<TestDiagnostic>> {
+    let mut map: std::collections::HashMap<String, Vec<TestDiagnostic>> =
+        std::collections::HashMap::new();
     for d in diagnostics {
         map.entry(d.file.clone()).or_default().push(d);
     }
@@ -214,9 +214,18 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let total = method_results.len();
-        let passed = method_results.iter().filter(|m| m.status == TestStatus::Pass).count();
-        let failed = method_results.iter().filter(|m| m.status == TestStatus::Fail).count();
-        let skipped = method_results.iter().filter(|m| m.status == TestStatus::Skip).count();
+        let passed = method_results
+            .iter()
+            .filter(|m| m.status == TestStatus::Pass)
+            .count();
+        let failed = method_results
+            .iter()
+            .filter(|m| m.status == TestStatus::Fail)
+            .count();
+        let skipped = method_results
+            .iter()
+            .filter(|m| m.status == TestStatus::Skip)
+            .count();
         TestCodeunitResult {
             name: name.to_string(),
             id,

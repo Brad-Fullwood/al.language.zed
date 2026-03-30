@@ -45,7 +45,9 @@ pub fn test_project_dir() -> PathBuf {
 /// project root cannot be found.  Used by `zed_simulation`, `data_driven`, and
 /// `performance` test files.
 pub fn test_project_from_env() -> Option<PathBuf> {
-    let path = std::env::var("AL_TEST_PROJECT_PATH").ok().map(PathBuf::from)?;
+    let path = std::env::var("AL_TEST_PROJECT_PATH")
+        .ok()
+        .map(PathBuf::from)?;
     if path.join("app.json").exists() {
         Some(path)
     } else {
@@ -260,7 +262,9 @@ impl LspClient {
                 break;
             }
             // Use empty query to check if any workspace symbols are loaded
-            let probe = self.request("workspace/symbol", serde_json::json!({ "query": "" })).await;
+            let probe = self
+                .request("workspace/symbol", serde_json::json!({ "query": "" }))
+                .await;
             if let Ok(val) = probe {
                 if let Some(arr) = val.as_array() {
                     if !arr.is_empty() {
@@ -293,7 +297,8 @@ impl LspClient {
         });
 
         self.notify("textDocument/didOpen", params).await.unwrap();
-        self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5)).await;
+        self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5))
+            .await;
     }
 
     /// Send a text change to an already-open file (simulates Zed keystroke).
@@ -317,7 +322,8 @@ impl LspClient {
         });
 
         self.notify("textDocument/didChange", params).await.unwrap();
-        self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5)).await;
+        self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5))
+            .await;
     }
 
     /// Wait for `textDocument/publishDiagnostics` for `uri`, up to `timeout`.
@@ -382,19 +388,33 @@ impl LspClient {
             "settings": settings
         });
 
-        self.notify("workspace/didChangeConfiguration", params).await.unwrap();
+        self.notify("workspace/didChangeConfiguration", params)
+            .await
+            .unwrap();
     }
 
     /// Prepare rename — check if a position is renamable and get the range.
-    pub async fn prepare_rename(&mut self, relative_path: &str, line: u32, character: u32) -> Option<Value> {
+    pub async fn prepare_rename(
+        &mut self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+    ) -> Option<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
             "textDocument": { "uri": uri },
             "position": { "line": line, "character": character }
         });
 
-        let result = self.request("textDocument/prepareRename", params).await.ok()?;
-        if result.is_null() { None } else { Some(result) }
+        let result = self
+            .request("textDocument/prepareRename", params)
+            .await
+            .ok()?;
+        if result.is_null() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     /// Get hover info at a position.
@@ -407,7 +427,11 @@ impl LspClient {
 
         match self.request("textDocument/hover", params).await {
             Ok(result) => {
-                if result.is_null() { None } else { Some(result) }
+                if result.is_null() {
+                    None
+                } else {
+                    Some(result)
+                }
             }
             Err(e) => {
                 tracing::warn!(uri = %uri, line, character, error = %e, "hover request failed");
@@ -417,7 +441,12 @@ impl LspClient {
     }
 
     /// Get completions at a position.
-    pub async fn completion(&mut self, relative_path: &str, line: u32, character: u32) -> Vec<Value> {
+    pub async fn completion(
+        &mut self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+    ) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
             "textDocument": { "uri": uri },
@@ -439,7 +468,12 @@ impl LspClient {
     }
 
     /// Go to definition.
-    pub async fn definition(&mut self, relative_path: &str, line: u32, character: u32) -> Option<Value> {
+    pub async fn definition(
+        &mut self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+    ) -> Option<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
             "textDocument": { "uri": uri },
@@ -447,11 +481,20 @@ impl LspClient {
         });
 
         let result = self.request("textDocument/definition", params).await.ok()?; // test helper: LSP errors are non-fatal
-        if result.is_null() { None } else { Some(result) }
+        if result.is_null() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     /// Find references.
-    pub async fn references(&mut self, relative_path: &str, line: u32, character: u32) -> Vec<Value> {
+    pub async fn references(
+        &mut self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+    ) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
             "textDocument": { "uri": uri },
@@ -481,8 +524,15 @@ impl LspClient {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
 
-        let result = self.request("textDocument/semanticTokens/full", params).await.ok()?; // test helper: LSP errors are non-fatal
-        if result.is_null() { None } else { Some(result) }
+        let result = self
+            .request("textDocument/semanticTokens/full", params)
+            .await
+            .ok()?; // test helper: LSP errors are non-fatal
+        if result.is_null() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     /// Get folding ranges.
@@ -511,19 +561,36 @@ impl LspClient {
     }
 
     /// Get signature help.
-    pub async fn signature_help(&mut self, relative_path: &str, line: u32, character: u32) -> Option<Value> {
+    pub async fn signature_help(
+        &mut self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+    ) -> Option<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
             "textDocument": { "uri": uri },
             "position": { "line": line, "character": character }
         });
 
-        let result = self.request("textDocument/signatureHelp", params).await.ok()?; // test helper: LSP errors are non-fatal
-        if result.is_null() { None } else { Some(result) }
+        let result = self
+            .request("textDocument/signatureHelp", params)
+            .await
+            .ok()?; // test helper: LSP errors are non-fatal
+        if result.is_null() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     /// Get code actions.
-    pub async fn code_actions(&mut self, relative_path: &str, start_line: u32, end_line: u32) -> Vec<Value> {
+    pub async fn code_actions(
+        &mut self,
+        relative_path: &str,
+        start_line: u32,
+        end_line: u32,
+    ) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
             "textDocument": { "uri": uri },
@@ -541,7 +608,12 @@ impl LspClient {
     }
 
     /// Get inlay hints.
-    pub async fn inlay_hints(&mut self, relative_path: &str, start_line: u32, end_line: u32) -> Vec<Value> {
+    pub async fn inlay_hints(
+        &mut self,
+        relative_path: &str,
+        start_line: u32,
+        end_line: u32,
+    ) -> Vec<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
             "textDocument": { "uri": uri },
@@ -558,7 +630,13 @@ impl LspClient {
     }
 
     /// Rename symbol.
-    pub async fn rename(&mut self, relative_path: &str, line: u32, character: u32, new_name: &str) -> Option<Value> {
+    pub async fn rename(
+        &mut self,
+        relative_path: &str,
+        line: u32,
+        character: u32,
+        new_name: &str,
+    ) -> Option<Value> {
         let uri = self.file_uri(relative_path);
         let params = serde_json::json!({
             "textDocument": { "uri": uri },
@@ -567,7 +645,11 @@ impl LspClient {
         });
 
         let result = self.request("textDocument/rename", params).await.ok()?; // test helper: LSP errors are non-fatal
-        if result.is_null() { None } else { Some(result) }
+        if result.is_null() {
+            None
+        } else {
+            Some(result)
+        }
     }
 
     /// Workspace symbol search.
@@ -596,7 +678,10 @@ impl LspClient {
         for (method, params) in self.drain_notifications() {
             if method == "textDocument/publishDiagnostics" {
                 let uri = params["uri"].as_str().unwrap_or("").to_string();
-                let diags = params["diagnostics"].as_array().cloned().unwrap_or_default();
+                let diags = params["diagnostics"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
                 result.insert(uri, diags);
             }
         }
@@ -613,11 +698,8 @@ impl LspClient {
         match &mut self.lifecycle {
             Lifecycle::Stdio(child) => {
                 // Wait with timeout to avoid hanging if the server doesn't exit
-                let _ = tokio::time::timeout(
-                    tokio::time::Duration::from_secs(3),
-                    child.wait(),
-                )
-                .await;
+                let _ =
+                    tokio::time::timeout(tokio::time::Duration::from_secs(3), child.wait()).await;
                 // Kill if still running
                 let _ = child.kill().await;
             }
@@ -651,7 +733,11 @@ impl LspClient {
         format!("file://{}", encoded)
     }
 
-    async fn request(&mut self, method: &str, params: Value) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
         let msg = serde_json::json!({
@@ -667,13 +753,10 @@ impl LspClient {
         let writer = self.writer.as_mut().ok_or("writer closed")?;
         send_message(writer, &msg).await?;
 
-        let response = tokio::time::timeout(
-            tokio::time::Duration::from_secs(10),
-            rx,
-        )
-        .await
-        .map_err(|_| format!("timeout waiting for response to {method} (id={id})"))?
-        .map_err(|_| "channel closed")?;
+        let response = tokio::time::timeout(tokio::time::Duration::from_secs(10), rx)
+            .await
+            .map_err(|_| format!("timeout waiting for response to {method} (id={id})"))?
+            .map_err(|_| "channel closed")?;
 
         if let Some(error) = response.get("error") {
             return Err(format!("LSP error: {}", error).into());
@@ -682,7 +765,11 @@ impl LspClient {
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
 
-    async fn notify(&mut self, method: &str, params: Value) -> Result<(), Box<dyn std::error::Error>> {
+    async fn notify(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let msg = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,

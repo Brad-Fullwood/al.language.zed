@@ -150,7 +150,11 @@ pub async fn publish(
     let server_display = server_config.display_name();
     info!(server = %server_display, incremental = config.incremental, "Starting publish");
 
-    let method = if config.incremental { "rad" } else { "standard" };
+    let method = if config.incremental {
+        "rad"
+    } else {
+        "standard"
+    };
     let mut steps: Vec<PublishStep> = Vec::new();
 
     // 2. Compile
@@ -167,7 +171,10 @@ pub async fn publish(
         } else {
             Some(format!(
                 "{} compilation error(s)",
-                diagnostics.iter().filter(|d| matches!(d.severity, crate::build::DiagnosticSeverity::Error)).count()
+                diagnostics
+                    .iter()
+                    .filter(|d| matches!(d.severity, crate::build::DiagnosticSeverity::Error))
+                    .count()
             ))
         },
     });
@@ -218,7 +225,9 @@ pub async fn publish(
                 }
             }
             None => {
-                warn!("Cannot use RAD: app.json has no 'id' field, falling back to standard publish");
+                warn!(
+                    "Cannot use RAD: app.json has no 'id' field, falling back to standard publish"
+                );
                 do_standard_publish(&bc_client, &app_path, &mut steps).await
             }
         }
@@ -267,10 +276,7 @@ async fn do_standard_publish(
             steps.push(PublishStep {
                 phase: PublishPhase::Upload,
                 success,
-                message: resp
-                    .status
-                    .clone()
-                    .or_else(|| Some("Uploaded".to_string())),
+                message: resp.status.clone().or_else(|| Some("Uploaded".to_string())),
             });
             (resp.app_id, resp.version, success)
         }
@@ -316,7 +322,9 @@ fn resolve_server_config(
             .configs
             .into_iter()
             .find(|c| c.name == name)
-            .ok_or_else(|| PublishError::ConfigNotFound { name: name.to_string() }),
+            .ok_or_else(|| PublishError::ConfigNotFound {
+                name: name.to_string(),
+            }),
         None => debug_config
             .configs
             .into_iter()

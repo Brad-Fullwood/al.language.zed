@@ -192,7 +192,10 @@ impl NuGetClient {
         dest: &Path,
     ) -> Vec<Result<PathBuf, NuGetError>> {
         let refs = resolve_dependencies(deps);
-        let futures: Vec<_> = refs.iter().map(|pkg_ref| self.download(pkg_ref, dest)).collect();
+        let futures: Vec<_> = refs
+            .iter()
+            .map(|pkg_ref| self.download(pkg_ref, dest))
+            .collect();
         futures::future::join_all(futures).await
     }
 }
@@ -242,7 +245,9 @@ async fn download(
                 (*v).clone()
             } else {
                 // Fall back to latest available
-                let latest = version_index.versions.last()
+                let latest = version_index
+                    .versions
+                    .last()
                     .ok_or_else(|| NuGetError::NoVersions(pkg.id.clone()))?;
                 info!(
                     requested = %requested,
@@ -254,8 +259,11 @@ async fn download(
         }
     } else {
         // Use latest
-        version_index.versions.last()
-            .ok_or_else(|| NuGetError::NoVersions(pkg.id.clone()))?.clone()
+        version_index
+            .versions
+            .last()
+            .ok_or_else(|| NuGetError::NoVersions(pkg.id.clone()))?
+            .clone()
     };
 
     // 4. Download .nupkg
@@ -342,10 +350,7 @@ fn extract_app_from_nupkg(
         if name.to_lowercase().ends_with(".app") {
             // Extract the bare filename, stripping both Unix and Windows path
             // separators to prevent ZIP-slip attacks.
-            let raw_filename = name
-                .rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(&name);
+            let raw_filename = name.rsplit(['/', '\\']).next().unwrap_or(&name);
 
             // Reject filenames that are empty, traverse directories, or contain
             // embedded separators that survived splitting.

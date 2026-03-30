@@ -15,7 +15,10 @@ use super::{connect, print_json, project_root, report_error, run_command};
 /// Both `compile` and `package` return the same response shape:
 /// `{ success, appPath?, diagnostics?, output? }`.
 fn print_build_result(result: &Value, json: bool) -> ExitCode {
-    let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    let success = result
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if json {
         print_json(result);
     } else {
@@ -35,7 +38,10 @@ fn print_build_result(result: &Value, json: bool) -> ExitCode {
             .unwrap_or(0);
         if let Some(diags) = result.get("diagnostics").and_then(|v| v.as_array()) {
             for d in diags {
-                let severity = d.get("severity").and_then(|v| v.as_str()).unwrap_or("error");
+                let severity = d
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("error");
                 let file = d.get("file").and_then(|v| v.as_str()).unwrap_or("?");
                 let line = d.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
                 let col = d.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -53,7 +59,11 @@ fn print_build_result(result: &Value, json: bool) -> ExitCode {
             }
         }
     }
-    if success { ExitCode::SUCCESS } else { ExitCode::FAILURE }
+    if success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,19 +96,24 @@ pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
     match subcmd {
         XlfCommands::Generate { project } => {
             let proj_root = project_root(project.as_deref());
-            let params =
-                serde_json::json!({ "project": proj_root.to_string_lossy().as_ref() });
-            run_command("xlf.generate", Some(params), json, project.as_deref(), |result| {
-                let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                let units = result.get("units").and_then(|v| v.as_u64()).unwrap_or(0);
-                if path.is_empty() || path == "null" {
-                    eprintln!(
+            let params = serde_json::json!({ "project": proj_root.to_string_lossy().as_ref() });
+            run_command(
+                "xlf.generate",
+                Some(params),
+                json,
+                project.as_deref(),
+                |result| {
+                    let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    let units = result.get("units").and_then(|v| v.as_u64()).unwrap_or(0);
+                    if path.is_empty() || path == "null" {
+                        eprintln!(
                         "No translatable texts found (check features.TranslationFile in app.json)"
                     );
-                } else {
-                    println!("Generated: {path}  ({units} units)");
-                }
-            })
+                    } else {
+                        println!("Generated: {path}  ({units} units)");
+                    }
+                },
+            )
         }
         XlfCommands::Refresh { xlf, generated } => {
             let abs_xlf = canonicalize_xlf_path(xlf);
@@ -122,8 +137,10 @@ pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
                     .and_then(|v| v.as_array())
                     .map(|a| a.len())
                     .unwrap_or(0);
-                let preserved =
-                    result.get("preserved").and_then(|v| v.as_u64()).unwrap_or(0);
+                let preserved = result
+                    .get("preserved")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 println!(
                     "Refresh complete: +{added} new, ~{changed} changed, -{removed} removed, {preserved} preserved"
                 );
@@ -150,12 +167,9 @@ pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
             run_command("xlf.suggest", Some(params), json, None, |result| {
                 let count = result.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
                 println!("{count} suggestion(s):");
-                if let Some(suggestions) =
-                    result.get("suggestions").and_then(|v| v.as_array())
-                {
+                if let Some(suggestions) = result.get("suggestions").and_then(|v| v.as_array()) {
                     for s in suggestions {
-                        let unit_id =
-                            s.get("unit_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let unit_id = s.get("unit_id").and_then(|v| v.as_str()).unwrap_or("");
                         let src = s.get("source").and_then(|v| v.as_str()).unwrap_or("");
                         let translation = s
                             .get("suggested_translation")

@@ -224,12 +224,21 @@ fn query_procedure(
         }
 
         // Also collect events directly published by this object.
-        collect_published_events(&insight, &workspace.symbols, object_kind, object_name, &mut points);
+        collect_published_events(
+            &insight,
+            &workspace.symbols,
+            object_kind,
+            object_name,
+            &mut points,
+        );
     }
 
     points = dedup_points(points);
     points = apply_filters(points, filter_table, filter_field);
-    SuggestEventResult { integration_points: points, partial }
+    SuggestEventResult {
+        integration_points: points,
+        partial,
+    }
 }
 
 fn query_table(
@@ -296,7 +305,10 @@ fn query_table(
 
     points = dedup_points(points);
     points = apply_filters(points, None, filter_field);
-    SuggestEventResult { integration_points: points, partial: false }
+    SuggestEventResult {
+        integration_points: points,
+        partial: false,
+    }
 }
 
 fn query_event(
@@ -352,7 +364,11 @@ fn query_event(
                     continue;
                 }
                 let sub_hop = match &insight.graph[petgraph::graph::NodeIndex::new(sub_id.0)] {
-                    InsightNode::Subscriber { object_name: obj, name, .. } => TraceHop {
+                    InsightNode::Subscriber {
+                        object_name: obj,
+                        name,
+                        ..
+                    } => TraceHop {
                         object: obj.clone(),
                         procedure: name.clone(),
                         edge_kind: "event_subscription".to_string(),
@@ -378,7 +394,10 @@ fn query_event(
 
     points = dedup_points(points);
     points = apply_filters(points, filter_table, filter_field);
-    SuggestEventResult { integration_points: points, partial }
+    SuggestEventResult {
+        integration_points: points,
+        partial,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -408,7 +427,12 @@ fn trace_from_node(
     let node = &insight.graph[node_idx];
 
     match node {
-        InsightNode::Event { object_kind, object_name, name, event_type } => {
+        InsightNode::Event {
+            object_kind,
+            object_name,
+            name,
+            event_type,
+        } => {
             // Collect this event as an integration point.
             let event_type_str = match event_type {
                 EventNodeType::Integration => "integration",
@@ -416,7 +440,8 @@ fn trace_from_node(
             }
             .to_string();
 
-            let params = lookup_event_params(symbols, *object_kind, &object_name.to_lowercase(), name);
+            let params =
+                lookup_event_params(symbols, *object_kind, &object_name.to_lowercase(), name);
             let example = format_example(*object_kind, object_name, name);
 
             points.push(IntegrationPoint {
@@ -434,7 +459,11 @@ fn trace_from_node(
                     continue;
                 }
                 let sub_hop = match &insight.graph[petgraph::graph::NodeIndex::new(sub_id.0)] {
-                    InsightNode::Subscriber { object_name: obj, name: sub_name, .. } => TraceHop {
+                    InsightNode::Subscriber {
+                        object_name: obj,
+                        name: sub_name,
+                        ..
+                    } => TraceHop {
                         object: obj.clone(),
                         procedure: sub_name.clone(),
                         edge_kind: "event_subscription".to_string(),
@@ -445,13 +474,26 @@ fn trace_from_node(
                 let mut new_path = path.clone();
                 new_path.push(sub_hop);
                 trace_from_node(
-                    sub_id, insight, cg, symbols, points, visited, partial, new_path, depth + 1, max_depth,
+                    sub_id,
+                    insight,
+                    cg,
+                    symbols,
+                    points,
+                    visited,
+                    partial,
+                    new_path,
+                    depth + 1,
+                    max_depth,
                 );
             }
         }
 
-        InsightNode::Procedure { object_name, name, .. }
-        | InsightNode::Subscriber { object_name, name, .. } => {
+        InsightNode::Procedure {
+            object_name, name, ..
+        }
+        | InsightNode::Subscriber {
+            object_name, name, ..
+        } => {
             // Check resolution state; mark partial if unresolved.
             if cg.resolution_state(node_id) == EdgeResolutionState::Unresolved {
                 *partial = true;
@@ -506,8 +548,7 @@ fn collect_published_events(
     for (key, _) in insight.index.iter() {
         if let NodeKey::Event(kind, obj, _event_lower) = key {
             if *kind == object_kind && obj == &obj_lower {
-                let (event_type_str, params) =
-                    resolve_event_details(insight, symbols, key);
+                let (event_type_str, params) = resolve_event_details(insight, symbols, key);
                 let first_idx = match insight.index[key].first() {
                     Some(idx) => *idx,
                     None => continue,
@@ -538,18 +579,19 @@ fn resolve_event_details(
 ) -> (String, Vec<ParamInfo>) {
     if let NodeKey::Event(kind, obj_lower, event_lower) = event_key {
         // Get event type from graph node.
-        let event_type_str = if let Some(&idx) = insight.index.get(event_key).and_then(|v| v.first()) {
-            match &insight.graph[idx] {
-                InsightNode::Event { event_type, .. } => match event_type {
-                    EventNodeType::Integration => "integration",
-                    EventNodeType::Business => "business",
+        let event_type_str =
+            if let Some(&idx) = insight.index.get(event_key).and_then(|v| v.first()) {
+                match &insight.graph[idx] {
+                    InsightNode::Event { event_type, .. } => match event_type {
+                        EventNodeType::Integration => "integration",
+                        EventNodeType::Business => "business",
+                    }
+                    .to_string(),
+                    _ => "integration".to_string(),
                 }
-                .to_string(),
-                _ => "integration".to_string(),
-            }
-        } else {
-            "integration".to_string()
-        };
+            } else {
+                "integration".to_string()
+            };
 
         let params = lookup_event_params(symbols, *kind, obj_lower, event_lower);
         (event_type_str, params)
@@ -617,9 +659,10 @@ fn apply_filters(
         .into_iter()
         .filter(|p| {
             if let Some(ref tbl) = table_lower {
-                let has_table_var = p.params.iter().any(|param| {
-                    param.is_var && is_record_of_table(&param.type_name, tbl)
-                });
+                let has_table_var = p
+                    .params
+                    .iter()
+                    .any(|param| param.is_var && is_record_of_table(&param.type_name, tbl));
                 if !has_table_var {
                     return false;
                 }
@@ -642,12 +685,13 @@ fn apply_filters(
 fn is_record_of_table(type_name: &str, table_lower: &str) -> bool {
     let tn = type_name.to_lowercase();
     // Must start with "record"
-    let rest = if let Some(r) = tn.strip_prefix("record") { r.trim() } else { return false; };
+    let rest = if let Some(r) = tn.strip_prefix("record") {
+        r.trim()
+    } else {
+        return false;
+    };
     // Strip surrounding quotes.
-    let clean = rest
-        .trim_matches('"')
-        .trim_matches('\'')
-        .trim();
+    let clean = rest.trim_matches('"').trim_matches('\'').trim();
     clean == table_lower
 }
 
@@ -755,7 +799,11 @@ mod tests {
             !result.integration_points.is_empty(),
             "Should find at least one integration point"
         );
-        let events: Vec<&str> = result.integration_points.iter().map(|p| p.event.as_str()).collect();
+        let events: Vec<&str> = result
+            .integration_points
+            .iter()
+            .map(|p| p.event.as_str())
+            .collect();
         assert!(
             events.contains(&"OnBeforePostSalesDoc"),
             "Should find OnBeforePostSalesDoc, got: {events:?}"
@@ -779,7 +827,10 @@ mod tests {
                     vec![param("SalesHeader", "Record \"Sales Header\"", true)],
                 ),
                 // No Sales Header param → should be excluded
-                integration_event_with_params("OnAfterPost", vec![param("Result", "Boolean", false)]),
+                integration_event_with_params(
+                    "OnAfterPost",
+                    vec![param("Result", "Boolean", false)],
+                ),
             ],
         )]);
 
@@ -875,9 +926,15 @@ mod tests {
 
     #[test]
     fn is_record_of_table_matches_various_formats() {
-        assert!(is_record_of_table("Record \"Sales Header\"", "sales header"));
+        assert!(is_record_of_table(
+            "Record \"Sales Header\"",
+            "sales header"
+        ));
         assert!(is_record_of_table("Record Customer", "customer"));
-        assert!(is_record_of_table("record \"Sales Header\"", "sales header"));
+        assert!(is_record_of_table(
+            "record \"Sales Header\"",
+            "sales header"
+        ));
         assert!(!is_record_of_table("Record \"Sales Header\"", "sales line"));
         assert!(!is_record_of_table("Boolean", "sales header"));
         assert!(!is_record_of_table("", "sales header"));
@@ -916,10 +973,16 @@ mod tests {
     #[test]
     fn format_example_produces_event_subscriber_attribute() {
         let example = format_example(ObjectKind::Codeunit, "Sales-Post", "OnAfterPost");
-        assert!(example.contains("EventSubscriber"), "Should contain EventSubscriber");
+        assert!(
+            example.contains("EventSubscriber"),
+            "Should contain EventSubscriber"
+        );
         assert!(example.contains("Sales-Post"), "Should contain object name");
         assert!(example.contains("OnAfterPost"), "Should contain event name");
-        assert!(example.contains("ObjectType::Codeunit"), "Should contain ObjectType");
+        assert!(
+            example.contains("ObjectType::Codeunit"),
+            "Should contain ObjectType"
+        );
     }
 
     // -----------------------------------------------------------------------

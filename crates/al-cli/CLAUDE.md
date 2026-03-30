@@ -2,6 +2,15 @@
 
 Binary name: `al` (not `al-cli`). Zero business logic — every command is a thin wrapper that calls `DaemonClient::request(method, params)`.
 
+## Quick Reference
+
+```sh
+cargo test -p al-cli                        # integration tests
+cargo test -p al-cli --test integration     # CLI integration tests
+cargo build -p al-cli                       # build the `al` binary
+cargo run -p al-cli -- --help               # see all subcommands
+```
+
 ## Modules
 
 | File | Purpose |

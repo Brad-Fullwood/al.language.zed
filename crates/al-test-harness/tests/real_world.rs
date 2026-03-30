@@ -328,7 +328,11 @@ async fn test_real_table_parses_and_has_tokens() {
     let tokens = client.semantic_tokens("objects/table.al").await;
     assert!(tokens.is_some(), "Table should produce semantic tokens");
     let data = semantic_token_data(&tokens.unwrap());
-    assert!(data.len() > 20, "Complex table should produce many tokens, got {}", data.len());
+    assert!(
+        data.len() > 20,
+        "Complex table should produce many tokens, got {}",
+        data.len()
+    );
 
     client.shutdown().await;
 }
@@ -343,7 +347,11 @@ async fn test_real_codeunit_parses_and_has_tokens() {
     let tokens = client.semantic_tokens("objects/codeunit.al").await;
     assert!(tokens.is_some(), "Codeunit should produce semantic tokens");
     let data = semantic_token_data(&tokens.unwrap());
-    assert!(data.len() > 30, "Complex codeunit should produce many tokens, got {}", data.len());
+    assert!(
+        data.len() > 30,
+        "Complex codeunit should produce many tokens, got {}",
+        data.len()
+    );
 
     client.shutdown().await;
 }
@@ -366,7 +374,9 @@ async fn test_real_permissionset_parses() {
     let project_dir = test_project_dir();
     let mut client = LspClient::spawn(&project_dir).await.unwrap();
 
-    client.open_file("objects/permset.al", PERMISSIONSET_AL).await;
+    client
+        .open_file("objects/permset.al", PERMISSIONSET_AL)
+        .await;
 
     // Should at least produce document symbols
     let symbols = client.document_symbols("objects/permset.al").await;
@@ -403,17 +413,23 @@ async fn test_table_document_symbols() {
 
     // Should find procedures
     assert!(
-        names.iter().any(|n| *n == "SetJournalData" || n.contains("SetJournalData")),
+        names
+            .iter()
+            .any(|n| *n == "SetJournalData" || n.contains("SetJournalData")),
         "Should find SetJournalData procedure. Got: {:?}",
         names
     );
     assert!(
-        names.iter().any(|n| *n == "GetJournalData" || n.contains("GetJournalData")),
+        names
+            .iter()
+            .any(|n| *n == "GetJournalData" || n.contains("GetJournalData")),
         "Should find GetJournalData procedure. Got: {:?}",
         names
     );
     assert!(
-        names.iter().any(|n| *n == "SetErrorMessage" || n.contains("SetErrorMessage")),
+        names
+            .iter()
+            .any(|n| *n == "SetErrorMessage" || n.contains("SetErrorMessage")),
         "Should find SetErrorMessage procedure. Got: {:?}",
         names
     );
@@ -432,8 +448,16 @@ async fn test_codeunit_document_symbols() {
     let names = symbol_names(&symbols);
 
     // Should find all procedures
-    for expected in &["Precheck", "PrecheckRecord", "SchedulePost", "GetItemJournalFromStaging",
-                       "TryCheckItemJnlLine", "ApplyStagingFilter", "BuildFilterFieldMap", "GetSupportedFilterNames"] {
+    for expected in &[
+        "Precheck",
+        "PrecheckRecord",
+        "SchedulePost",
+        "GetItemJournalFromStaging",
+        "TryCheckItemJnlLine",
+        "ApplyStagingFilter",
+        "BuildFilterFieldMap",
+        "GetSupportedFilterNames",
+    ] {
         assert!(
             names.iter().any(|n| n == expected),
             "Should find procedure {}. Got: {:?}",
@@ -477,7 +501,10 @@ async fn test_hover_on_procedure_in_codeunit() {
 
     // "Precheck" procedure name on line 5 (0-indexed)
     let hover = client.hover("objects/codeunit.al", 5, 14).await;
-    assert!(hover.is_some(), "Should return hover for Precheck procedure");
+    assert!(
+        hover.is_some(),
+        "Should return hover for Precheck procedure"
+    );
 
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
@@ -499,12 +526,16 @@ async fn test_hover_on_local_procedure() {
 
     // "PrecheckRecord" local procedure - line 15 (0-indexed)
     let hover = client.hover("objects/codeunit.al", 15, 25).await;
-    assert!(hover.is_some(), "Should return hover for local procedure PrecheckRecord");
+    assert!(
+        hover.is_some(),
+        "Should return hover for local procedure PrecheckRecord"
+    );
 
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("local") || c.contains("PrecheckRecord")),
+        content.map_or(false, |c| c.contains("local")
+            || c.contains("PrecheckRecord")),
         "Hover should mention local or PrecheckRecord. Got: {:?}",
         content
     );
@@ -657,7 +688,9 @@ async fn test_completion_at_type_position() {
     let labels = completion_labels(&completions);
     // Should have type keywords like Integer, Text, Record, etc.
     assert!(
-        labels.iter().any(|l| l.eq_ignore_ascii_case("Integer") || l.eq_ignore_ascii_case("Text") || l.eq_ignore_ascii_case("Boolean")),
+        labels.iter().any(|l| l.eq_ignore_ascii_case("Integer")
+            || l.eq_ignore_ascii_case("Text")
+            || l.eq_ignore_ascii_case("Boolean")),
         "Should have type completions. Got: {:?}",
         labels
     );
@@ -757,7 +790,10 @@ end;
     client.open_file("objects/test.al", code).await;
 
     let edits = client.format("objects/test.al").await;
-    assert!(!edits.is_empty(), "Should produce formatting edits for unindented code");
+    assert!(
+        !edits.is_empty(),
+        "Should produce formatting edits for unindented code"
+    );
 
     client.shutdown().await;
 }
@@ -828,7 +864,9 @@ async fn test_rename_parameter_in_codeunit() {
 
     // Rename "Staging" parameter in Precheck procedure
     // Line 5: procedure Precheck(var Staging: Record "Item Journal Staging")
-    let edit = client.rename("objects/codeunit.al", 5, 27, "StagingRec").await;
+    let edit = client
+        .rename("objects/codeunit.al", 5, 27, "StagingRec")
+        .await;
     assert!(
         edit.is_some(),
         "Should produce rename edit for Staging parameter"
@@ -1074,7 +1112,10 @@ async fn test_large_file_performance() {
     );
 
     let tokens = client.semantic_tokens("objects/large.al").await;
-    assert!(tokens.is_some(), "Should produce semantic tokens for large file");
+    assert!(
+        tokens.is_some(),
+        "Should produce semantic tokens for large file"
+    );
 
     let ranges = client.folding_ranges("objects/large.al").await;
     assert!(ranges.len() >= 50, "Should have fold for each procedure");

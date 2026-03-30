@@ -5,8 +5,8 @@
 
 use al_syntax::tokens::token_types;
 use al_syntax::{
-    extract_document_symbols, extract_folding_ranges, extract_semantic_tokens, format_al,
-    lint, AlParser, FormatOptions, LintSeverity,
+    extract_document_symbols, extract_folding_ranges, extract_semantic_tokens, format_al, lint,
+    AlParser, FormatOptions, LintSeverity,
 };
 use tower_lsp::lsp_types::{FoldingRangeKind, SymbolKind};
 
@@ -333,7 +333,9 @@ fn symbols_codeunit_procedures() {
         proc_names
     );
     assert!(
-        proc_names.iter().any(|n| n.contains("OnBeforePostSalesDoc")),
+        proc_names
+            .iter()
+            .any(|n| n.contains("OnBeforePostSalesDoc")),
         "Should have OnBeforePostSalesDoc, got: {:?}",
         proc_names
     );
@@ -537,10 +539,7 @@ fn folding_table_includes_field_sections() {
     let result = parser.parse(TABLE_CODE);
     let ranges = extract_folding_ranges(&result.tree, TABLE_CODE);
 
-    assert!(
-        !ranges.is_empty(),
-        "Table should have folding ranges"
-    );
+    assert!(!ranges.is_empty(), "Table should have folding ranges");
 
     // Should have folds for: object body, fields section, keys section, triggers
     let region_count = ranges
@@ -561,10 +560,7 @@ fn folding_enum_has_value_folds() {
     let result = parser.parse(ENUM_CODE);
     let ranges = extract_folding_ranges(&result.tree, ENUM_CODE);
 
-    assert!(
-        !ranges.is_empty(),
-        "Enum should have folding ranges"
-    );
+    assert!(!ranges.is_empty(), "Enum should have folding ranges");
 }
 
 // ---------------------------------------------------------------------------
@@ -721,10 +717,7 @@ fn lint_codeunit_detects_todo() {
     let result = parser.parse(CODEUNIT_CODE);
     let diagnostics = lint(&result.tree, CODEUNIT_CODE);
 
-    let todo_diags: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.code == "AL-L007")
-        .collect();
+    let todo_diags: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L007").collect();
 
     assert!(
         !todo_diags.is_empty(),
@@ -739,10 +732,7 @@ fn lint_table_detects_empty_trigger() {
     let result = parser.parse(TABLE_CODE);
     let diagnostics = lint(&result.tree, TABLE_CODE);
 
-    let empty_trigger: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.code == "AL-L006")
-        .collect();
+    let empty_trigger: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L006").collect();
 
     assert!(
         !empty_trigger.is_empty(),
@@ -770,10 +760,7 @@ fn lint_naming_violations() {
     let result = parser.parse(code);
     let diagnostics = lint(&result.tree, code);
 
-    let naming_diags: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.code == "AL-L016")
-        .collect();
+    let naming_diags: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L016").collect();
 
     // `goodName` should trigger L016 (starts with lowercase)
     // `AnotherBadName` should NOT trigger L016 (starts with uppercase)
@@ -803,10 +790,7 @@ fn lint_empty_begin_end() {
     let result = parser.parse(code);
     let diagnostics = lint(&result.tree, code);
 
-    let empty_block: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.code == "AL-L001")
-        .collect();
+    let empty_block: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L001").collect();
 
     assert!(
         !empty_block.is_empty(),
@@ -834,10 +818,7 @@ fn lint_deep_nesting() {
     let result = parser.parse(code);
     let diagnostics = lint(&result.tree, code);
 
-    let nesting_diags: Vec<_> = diagnostics
-        .iter()
-        .filter(|d| d.code == "AL-L004")
-        .collect();
+    let nesting_diags: Vec<_> = diagnostics.iter().filter(|d| d.code == "AL-L004").collect();
 
     assert!(
         !nesting_diags.is_empty(),
@@ -907,8 +888,16 @@ fn find_object_in_all_fixtures() {
         assert!(obj.is_some(), "Should find {} declaration", expected_kind);
         let obj = obj.unwrap();
         assert_eq!(obj.kind, *expected_kind, "Object kind mismatch");
-        assert_eq!(obj.id, *expected_id, "Object id mismatch for {}", expected_kind);
-        assert_eq!(obj.name, *expected_name, "Object name mismatch for {}", expected_kind);
+        assert_eq!(
+            obj.id, *expected_id,
+            "Object id mismatch for {}",
+            expected_kind
+        );
+        assert_eq!(
+            obj.name, *expected_name,
+            "Object name mismatch for {}",
+            expected_kind
+        );
     }
 }
 
@@ -924,14 +913,14 @@ fn find_procedure_at_position() {
     };
 
     let proc_info = al_syntax::find_procedure_at(&result.tree, CODEUNIT_CODE, pos);
-    assert!(
-        proc_info.is_some(),
-        "Should find procedure at line 10"
-    );
+    assert!(proc_info.is_some(), "Should find procedure at line 10");
 
     let proc = proc_info.unwrap();
     assert_eq!(proc.name, "ProcessOrders");
-    assert!(!proc.parameters.is_empty(), "ProcessOrders should have parameters");
+    assert!(
+        !proc.parameters.is_empty(),
+        "ProcessOrders should have parameters"
+    );
     assert_eq!(proc.return_type.as_deref(), Some("Boolean"));
     assert!(!proc.is_local);
 }

@@ -113,7 +113,11 @@ fn build_toolchain(dir: &Path) -> Result<AlToolchain, DiscoveryError> {
 
     let aldoc = {
         let p = dir.join(ALDOC_DLL);
-        if p.is_file() { Some(p) } else { None }
+        if p.is_file() {
+            Some(p)
+        } else {
+            None
+        }
     };
 
     let code_analysis = dir.join(CODE_ANALYSIS_DLL);
@@ -170,8 +174,7 @@ fn extract_version_from_path(dir: &Path) -> String {
             let s = s.to_string_lossy();
             if s.chars().next().is_some_and(|c| c.is_ascii_digit()) && s.contains('.') {
                 let parts: Vec<&str> = s.split('.').collect();
-                if parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
-                {
+                if parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
                     return s.to_string();
                 }
             }

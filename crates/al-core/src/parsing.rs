@@ -13,7 +13,10 @@ use crate::documents::DocumentStore;
 /// tree without re-parsing. Otherwise parses the document and caches the result.
 ///
 /// Returns `Arc<String>` to avoid deep-copying the document on every LSP request.
-pub fn get_or_parse(documents: &DocumentStore, uri: &Url) -> Option<(Arc<String>, tree_sitter::Tree)> {
+pub fn get_or_parse(
+    documents: &DocumentStore,
+    uri: &Url,
+) -> Option<(Arc<String>, tree_sitter::Tree)> {
     let text = documents.get_text_arc(uri);
     if text.is_none() {
         tracing::warn!(uri = %uri, "get_or_parse: document not in store (not opened?)");
@@ -95,10 +98,13 @@ mod tests {
         assert!(store.get_cached_tree(&uri).is_some());
 
         // Change document
-        store.apply_changes(&uri, &[crate::documents::TextChange {
-            range: None,
-            text: "codeunit 50100 B { }".to_string(),
-        }]);
+        store.apply_changes(
+            &uri,
+            &[crate::documents::TextChange {
+                range: None,
+                text: "codeunit 50100 B { }".to_string(),
+            }],
+        );
 
         // Cache should be invalidated
         assert!(store.get_cached_tree(&uri).is_none());

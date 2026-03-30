@@ -54,7 +54,11 @@ use url::Url;
 pub fn node_clean_name<'a>(node: tree_sitter::Node<'_>, source: &'a [u8]) -> Option<&'a str> {
     let text = node.utf8_text(source).ok()?;
     let clean = text.trim_matches('"');
-    if clean.is_empty() { None } else { Some(clean) }
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,8 +310,14 @@ mod query_types_tests {
                 url::Url::parse("file:///test.al").unwrap(),
                 vec![TextEdit {
                     range: Range {
-                        start: Position { line: 0, character: 5 },
-                        end: Position { line: 0, character: 10 },
+                        start: Position {
+                            line: 0,
+                            character: 5,
+                        },
+                        end: Position {
+                            line: 0,
+                            character: 10,
+                        },
                     },
                     new_text: "replaced".to_string(),
                 }],

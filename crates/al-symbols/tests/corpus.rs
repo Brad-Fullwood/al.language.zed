@@ -7,8 +7,7 @@
 use std::io::{Cursor, Write};
 
 use al_symbols::{
-    read_app_bytes, read_app_file, get_composed, get_events,
-    EventType, ObjectKind, SymbolIndex,
+    get_composed, get_events, read_app_bytes, read_app_file, EventType, ObjectKind, SymbolIndex,
 };
 use zip::write::SimpleFileOptions;
 
@@ -24,18 +23,18 @@ fn build_test_app(manifest_xml: &str, symbol_json: &str) -> Vec<u8> {
     let mut data = Vec::new();
 
     // NAVX header (40 bytes)
-    data.extend_from_slice(b"NAVX");              // magic (4 bytes)
-    data.extend_from_slice(&1u32.to_le_bytes());   // version (4 bytes)
-    data.extend_from_slice(&40u32.to_le_bytes());  // header size (4 bytes)
-    data.extend_from_slice(&[0u8; 28]);            // padding to 40 bytes
+    data.extend_from_slice(b"NAVX"); // magic (4 bytes)
+    data.extend_from_slice(&1u32.to_le_bytes()); // version (4 bytes)
+    data.extend_from_slice(&40u32.to_le_bytes()); // header size (4 bytes)
+    data.extend_from_slice(&[0u8; 28]); // padding to 40 bytes
 
     // Create ZIP in memory
     let mut zip_buf = Vec::new();
     {
         let cursor = Cursor::new(&mut zip_buf);
         let mut zip = zip::ZipWriter::new(cursor);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         zip.start_file("NavxManifest.xml", options).unwrap();
         zip.write_all(manifest_xml.as_bytes()).unwrap();
@@ -404,10 +403,7 @@ fn test_load_real_app_structure() {
     assert_eq!(customer.fields.len(), 5);
     assert_eq!(customer.methods.len(), 1);
     assert_eq!(customer.methods[0].name, "GetBalance");
-    assert_eq!(
-        customer.methods[0].return_type.as_deref(),
-        Some("Decimal")
-    );
+    assert_eq!(customer.methods[0].return_type.as_deref(), Some("Decimal"));
 
     // Verify field details
     let no_field = customer.fields.iter().find(|f| f.name == "No.").unwrap();
@@ -620,8 +616,16 @@ fn test_index_load_packages_from_files() {
     let base_path = dir.path().join("base.app");
     let ext_path = dir.path().join("extension.app");
 
-    std::fs::write(&base_path, build_test_app(base_app_manifest(), base_app_symbols())).unwrap();
-    std::fs::write(&ext_path, build_test_app(extension_app_manifest(), extension_app_symbols())).unwrap();
+    std::fs::write(
+        &base_path,
+        build_test_app(base_app_manifest(), base_app_symbols()),
+    )
+    .unwrap();
+    std::fs::write(
+        &ext_path,
+        build_test_app(extension_app_manifest(), extension_app_symbols()),
+    )
+    .unwrap();
 
     let index = SymbolIndex::new();
     let packages = index.load_packages(&[&base_path, &ext_path]);
@@ -642,11 +646,18 @@ fn test_index_load_packages_from_files() {
 #[test]
 fn test_composition_with_real_data() {
     let index = SymbolIndex::new();
-    index.load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols())).unwrap();
-    index.load_package_bytes(&build_test_app(extension_app_manifest(), extension_app_symbols())).unwrap();
+    index
+        .load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols()))
+        .unwrap();
+    index
+        .load_package_bytes(&build_test_app(
+            extension_app_manifest(),
+            extension_app_symbols(),
+        ))
+        .unwrap();
 
-    let composed = get_composed(&index, ObjectKind::Table, "Customer")
-        .expect("Should compose Customer table");
+    let composed =
+        get_composed(&index, ObjectKind::Table, "Customer").expect("Should compose Customer table");
 
     // Base object check
     assert_eq!(composed.base.name, "Customer");
@@ -672,31 +683,50 @@ fn test_composition_with_real_data() {
 
     // Verify base fields are present
     assert!(
-        composed.all_fields.iter().any(|f| f.name == "No." && f.id == 1),
+        composed
+            .all_fields
+            .iter()
+            .any(|f| f.name == "No." && f.id == 1),
         "Should contain base field No."
     );
     assert!(
-        composed.all_fields.iter().any(|f| f.name == "Name" && f.id == 2),
+        composed
+            .all_fields
+            .iter()
+            .any(|f| f.name == "Name" && f.id == 2),
         "Should contain base field Name"
     );
     assert!(
-        composed.all_fields.iter().any(|f| f.name == "Balance (LCY)" && f.id == 59),
+        composed
+            .all_fields
+            .iter()
+            .any(|f| f.name == "Balance (LCY)" && f.id == 59),
         "Should contain base field Balance (LCY)"
     );
 
     // Verify extension fields are merged in
     assert!(
-        composed.all_fields.iter().any(|f| f.name == "My Custom Field" && f.id == 50100),
+        composed
+            .all_fields
+            .iter()
+            .any(|f| f.name == "My Custom Field" && f.id == 50100),
         "Should contain extension field My Custom Field"
     );
     assert!(
-        composed.all_fields.iter().any(|f| f.name == "External ID" && f.id == 50101),
+        composed
+            .all_fields
+            .iter()
+            .any(|f| f.name == "External ID" && f.id == 50101),
         "Should contain extension field External ID"
     );
 
     // Merged methods: 1 base (GetBalance) + 1 extension (CalcCustomValue) = 2
     assert_eq!(composed.all_methods.len(), 2);
-    let method_names: Vec<&str> = composed.all_methods.iter().map(|m| m.name.as_str()).collect();
+    let method_names: Vec<&str> = composed
+        .all_methods
+        .iter()
+        .map(|m| m.name.as_str())
+        .collect();
     assert!(method_names.contains(&"GetBalance"));
     assert!(method_names.contains(&"CalcCustomValue"));
 }
@@ -708,8 +738,15 @@ fn test_composition_with_real_data() {
 #[test]
 fn test_page_composition_with_real_data() {
     let index = SymbolIndex::new();
-    index.load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols())).unwrap();
-    index.load_package_bytes(&build_test_app(extension_app_manifest(), extension_app_symbols())).unwrap();
+    index
+        .load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols()))
+        .unwrap();
+    index
+        .load_package_bytes(&build_test_app(
+            extension_app_manifest(),
+            extension_app_symbols(),
+        ))
+        .unwrap();
 
     let composed = get_composed(&index, ObjectKind::Page, "Customer Card")
         .expect("Should compose Customer Card page");
@@ -723,7 +760,10 @@ fn test_page_composition_with_real_data() {
 
     // Verify extension control
     assert!(
-        composed.all_controls.iter().any(|c| c.name == "My Custom Field"),
+        composed
+            .all_controls
+            .iter()
+            .any(|c| c.name == "My Custom Field"),
         "Should contain extension control"
     );
 }
@@ -735,8 +775,15 @@ fn test_page_composition_with_real_data() {
 #[test]
 fn test_enum_composition_with_real_data() {
     let index = SymbolIndex::new();
-    index.load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols())).unwrap();
-    index.load_package_bytes(&build_test_app(extension_app_manifest(), extension_app_symbols())).unwrap();
+    index
+        .load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols()))
+        .unwrap();
+    index
+        .load_package_bytes(&build_test_app(
+            extension_app_manifest(),
+            extension_app_symbols(),
+        ))
+        .unwrap();
 
     let composed = get_composed(&index, ObjectKind::Enum, "Sales Document Type")
         .expect("Should compose Sales Document Type enum");
@@ -753,18 +800,33 @@ fn test_enum_composition_with_real_data() {
     }
 
     // Verify base values present
-    assert!(composed.all_enum_values.iter().any(|v| v.name == "Quote" && v.ordinal == 0));
-    assert!(composed.all_enum_values.iter().any(|v| v.name == "Order" && v.ordinal == 1));
-    assert!(composed.all_enum_values.iter().any(|v| v.name == "Return Order" && v.ordinal == 5));
+    assert!(composed
+        .all_enum_values
+        .iter()
+        .any(|v| v.name == "Quote" && v.ordinal == 0));
+    assert!(composed
+        .all_enum_values
+        .iter()
+        .any(|v| v.name == "Order" && v.ordinal == 1));
+    assert!(composed
+        .all_enum_values
+        .iter()
+        .any(|v| v.name == "Return Order" && v.ordinal == 5));
 
     // Verify extension value merged
     assert!(
-        composed.all_enum_values.iter().any(|v| v.name == "Custom Document" && v.ordinal == 50100),
+        composed
+            .all_enum_values
+            .iter()
+            .any(|v| v.name == "Custom Document" && v.ordinal == 50100),
         "Should contain extension enum value 'Custom Document'"
     );
 
     // Extension value should be last (highest ordinal)
-    assert_eq!(composed.all_enum_values.last().unwrap().name, "Custom Document");
+    assert_eq!(
+        composed.all_enum_values.last().unwrap().name,
+        "Custom Document"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -774,17 +836,29 @@ fn test_enum_composition_with_real_data() {
 #[test]
 fn test_event_discovery_with_real_data() {
     let index = SymbolIndex::new();
-    index.load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols())).unwrap();
-    index.load_package_bytes(&build_test_app(extension_app_manifest(), extension_app_symbols())).unwrap();
+    index
+        .load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols()))
+        .unwrap();
+    index
+        .load_package_bytes(&build_test_app(
+            extension_app_manifest(),
+            extension_app_symbols(),
+        ))
+        .unwrap();
 
     // Search for all events
     let all_events = get_events(&index, "");
     // Publishers: OnBeforePostSalesDoc (integration) + OnAfterPostSalesDoc (integration)
     //             + OnBeforePostPurchDoc (business) = 3
     assert_eq!(
-        all_events.publishers.len(), 3,
+        all_events.publishers.len(),
+        3,
         "Should find 3 event publishers, found: {:?}",
-        all_events.publishers.iter().map(|p| &p.method.name).collect::<Vec<_>>()
+        all_events
+            .publishers
+            .iter()
+            .map(|p| &p.method.name)
+            .collect::<Vec<_>>()
     );
     // Subscribers: HandleOnBeforePost = 1
     assert_eq!(all_events.subscribers.len(), 1);
@@ -976,8 +1050,12 @@ fn test_full_pipeline() {
 
     // 2. Write to temp files
     let dir = tempfile::tempdir().unwrap();
-    let base_path = dir.path().join("Microsoft_Base Application_24.0.16410.0.app");
-    let ext_path = dir.path().join("Contoso Ltd._Contoso Extension_2.5.0.0.app");
+    let base_path = dir
+        .path()
+        .join("Microsoft_Base Application_24.0.16410.0.app");
+    let ext_path = dir
+        .path()
+        .join("Contoso Ltd._Contoso Extension_2.5.0.0.app");
     std::fs::write(&base_path, &base_data).unwrap();
     std::fs::write(&ext_path, &ext_data).unwrap();
 
@@ -991,7 +1069,9 @@ fn test_full_pipeline() {
     assert!(!customer_results.is_empty());
 
     // 5. Compose
-    let composed = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+    let composed = index
+        .get_composed_cached(ObjectKind::Table, "Customer")
+        .unwrap();
     assert_eq!(composed.all_fields.len(), 7);
     assert_eq!(composed.all_methods.len(), 2);
 
@@ -1020,7 +1100,9 @@ fn test_full_pipeline() {
 #[test]
 fn test_composition_standalone_table() {
     let index = SymbolIndex::new();
-    index.load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols())).unwrap();
+    index
+        .load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols()))
+        .unwrap();
 
     // Sales Header has no extensions
     let composed = get_composed(&index, ObjectKind::Table, "Sales Header")
@@ -1037,7 +1119,9 @@ fn test_composition_standalone_table() {
 #[test]
 fn test_composition_nonexistent_object() {
     let index = SymbolIndex::new();
-    index.load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols())).unwrap();
+    index
+        .load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols()))
+        .unwrap();
 
     assert!(get_composed(&index, ObjectKind::Table, "Nonexistent").is_none());
     assert!(get_composed(&index, ObjectKind::Codeunit, "Customer").is_none());
@@ -1050,7 +1134,9 @@ fn test_composition_nonexistent_object() {
 #[test]
 fn test_codeunit_method_parameters() {
     let index = SymbolIndex::new();
-    index.load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols())).unwrap();
+    index
+        .load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols()))
+        .unwrap();
 
     let sales_post = index.get_by_name("Sales-Post");
     assert_eq!(sales_post.len(), 1);
@@ -1086,16 +1172,35 @@ fn test_codeunit_method_parameters() {
 #[test]
 fn test_search_across_packages() {
     let index = SymbolIndex::new();
-    index.load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols())).unwrap();
-    index.load_package_bytes(&build_test_app(extension_app_manifest(), extension_app_symbols())).unwrap();
+    index
+        .load_package_bytes(&build_test_app(base_app_manifest(), base_app_symbols()))
+        .unwrap();
+    index
+        .load_package_bytes(&build_test_app(
+            extension_app_manifest(),
+            extension_app_symbols(),
+        ))
+        .unwrap();
 
     // "Post" should match Sales-Post, Sales-Post (Yes/No), Purch.-Post, and
     // also "Customer Posting Group" field is on Customer but search is by object name
     let results = index.search("Post", 20);
     let names: Vec<&str> = results.iter().map(|r| r.name.as_str()).collect();
-    assert!(names.contains(&"Sales-Post"), "Should find Sales-Post in {:?}", names);
-    assert!(names.contains(&"Sales-Post (Yes/No)"), "Should find Sales-Post (Yes/No) in {:?}", names);
-    assert!(names.contains(&"Purch.-Post"), "Should find Purch.-Post in {:?}", names);
+    assert!(
+        names.contains(&"Sales-Post"),
+        "Should find Sales-Post in {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"Sales-Post (Yes/No)"),
+        "Should find Sales-Post (Yes/No) in {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"Purch.-Post"),
+        "Should find Purch.-Post in {:?}",
+        names
+    );
 
     // Empty query returns everything (up to limit)
     let all = index.search("", 100);
@@ -1114,7 +1219,12 @@ fn test_search_across_packages() {
 #[test]
 fn test_get_by_kind_extensions() {
     let index = SymbolIndex::new();
-    index.load_package_bytes(&build_test_app(extension_app_manifest(), extension_app_symbols())).unwrap();
+    index
+        .load_package_bytes(&build_test_app(
+            extension_app_manifest(),
+            extension_app_symbols(),
+        ))
+        .unwrap();
 
     let table_exts = index.get_by_kind(ObjectKind::TableExtension);
     assert_eq!(table_exts.len(), 1);
@@ -1164,7 +1274,10 @@ fn test_option_params_create_synthetic_enums() {
 
     // The Option-typed parameter "TextEncoding" should create a synthetic enum
     let results = index.get_by_name("TextEncoding");
-    assert!(!results.is_empty(), "TextEncoding should be indexed as synthetic enum");
+    assert!(
+        !results.is_empty(),
+        "TextEncoding should be indexed as synthetic enum"
+    );
     let entry = &results[0];
     assert_eq!(entry.kind, ObjectKind::Enum);
     assert_eq!(entry.enum_values.len(), 4);
@@ -1238,11 +1351,26 @@ fn test_option_params_no_cross_object_collision() {
         .flat_map(|e| e.enum_values.iter().map(|v| v.name.as_str()))
         .collect();
 
-    assert!(all_members.contains(&"Open"), "Open must be present from Codeunit A");
-    assert!(all_members.contains(&"Released"), "Released must be present from Codeunit A");
-    assert!(all_members.contains(&"Pending"), "Pending must be present from Codeunit B");
-    assert!(all_members.contains(&"Approved"), "Approved must be present from Codeunit B");
-    assert!(all_members.contains(&"Rejected"), "Rejected must be present from Codeunit B");
+    assert!(
+        all_members.contains(&"Open"),
+        "Open must be present from Codeunit A"
+    );
+    assert!(
+        all_members.contains(&"Released"),
+        "Released must be present from Codeunit A"
+    );
+    assert!(
+        all_members.contains(&"Pending"),
+        "Pending must be present from Codeunit B"
+    );
+    assert!(
+        all_members.contains(&"Approved"),
+        "Approved must be present from Codeunit B"
+    );
+    assert!(
+        all_members.contains(&"Rejected"),
+        "Rejected must be present from Codeunit B"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1255,7 +1383,10 @@ fn test_runtime_enums_loaded() {
     index.load_runtime_enums();
 
     let results = index.get_by_name("WebServiceActionResultCode");
-    assert!(!results.is_empty(), "WebServiceActionResultCode should be in index");
+    assert!(
+        !results.is_empty(),
+        "WebServiceActionResultCode should be in index"
+    );
     let entry = &results[0];
     assert_eq!(entry.kind, ObjectKind::Enum);
     assert!(entry.enum_values.iter().any(|v| v.name == "Updated"));

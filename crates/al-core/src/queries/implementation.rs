@@ -12,11 +12,7 @@ use crate::workspace::Workspace;
 /// Sources searched:
 /// 1. Symbol index (from .app packages) — codeunits with `implements` populated.
 /// 2. Workspace source files — scanned via cached parse trees for `implements_clause` nodes.
-pub fn find_implementations(
-    workspace: &Workspace,
-    uri: &Url,
-    position: Position,
-) -> Vec<Location> {
+pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position) -> Vec<Location> {
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
         return Vec::new();
@@ -33,11 +29,22 @@ pub fn find_implementations(
     let mut locations: Vec<Location> = Vec::new();
 
     // 1. Search symbol index (from .app packages)
-    let codeunits = workspace.symbols.get_by_kind(al_symbols::model::ObjectKind::Codeunit);
+    let codeunits = workspace
+        .symbols
+        .get_by_kind(al_symbols::model::ObjectKind::Codeunit);
     for entry in &codeunits {
-        if entry.implements.iter().any(|iface| iface.to_lowercase() == interface_lower) {
-            if let Some((file_uri, range)) = super::get_or_create_virtual_file(workspace, entry, None) {
-                locations.push(Location { uri: file_uri, range: range.into() });
+        if entry
+            .implements
+            .iter()
+            .any(|iface| iface.to_lowercase() == interface_lower)
+        {
+            if let Some((file_uri, range)) =
+                super::get_or_create_virtual_file(workspace, entry, None)
+            {
+                locations.push(Location {
+                    uri: file_uri,
+                    range: range.into(),
+                });
             }
         }
     }
@@ -52,9 +59,14 @@ pub fn find_implementations(
         let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
             continue;
         };
-        if let Some(range) = find_codeunit_implementing_interface(&file_tree, &file_text, &interface_lower) {
+        if let Some(range) =
+            find_codeunit_implementing_interface(&file_tree, &file_text, &interface_lower)
+        {
             if let Ok(file_uri) = Url::from_file_path(&file_path) {
-                locations.push(Location { uri: file_uri, range });
+                locations.push(Location {
+                    uri: file_uri,
+                    range,
+                });
             }
         }
     }
@@ -109,13 +121,17 @@ fn find_implements_clause_match(
     interface_lower: &str,
 ) -> bool {
     for i in 0..obj_node.child_count() {
-        let Some(child) = obj_node.child(i) else { continue };
+        let Some(child) = obj_node.child(i) else {
+            continue;
+        };
         if child.kind() != "implements_clause" {
             continue;
         }
         // Walk the children of the clause looking for a matching interface name token.
         for j in 0..child.child_count() {
-            let Some(token) = child.child(j) else { continue };
+            let Some(token) = child.child(j) else {
+                continue;
+            };
             if let Ok(t) = token.utf8_text(source) {
                 if t.trim_matches('"').to_lowercase() == interface_lower {
                     return true;
@@ -161,7 +177,11 @@ mod tests {
         let interface_lower = "ifoo";
         let matches: Vec<_> = codeunits
             .iter()
-            .filter(|e| e.implements.iter().any(|i| i.to_lowercase() == interface_lower))
+            .filter(|e| {
+                e.implements
+                    .iter()
+                    .any(|i| i.to_lowercase() == interface_lower)
+            })
             .collect();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].name, "MyImpl");
@@ -177,9 +197,17 @@ mod tests {
         let interface_lower = "ibar";
         let matches: Vec<_> = codeunits
             .iter()
-            .filter(|e| e.implements.iter().any(|i| i.to_lowercase() == interface_lower))
+            .filter(|e| {
+                e.implements
+                    .iter()
+                    .any(|i| i.to_lowercase() == interface_lower)
+            })
             .collect();
-        assert_eq!(matches.len(), 1, "Case-insensitive match should find the codeunit");
+        assert_eq!(
+            matches.len(),
+            1,
+            "Case-insensitive match should find the codeunit"
+        );
     }
 
     #[test]
@@ -192,8 +220,15 @@ mod tests {
         let interface_lower = "iunknown";
         let matches: Vec<_> = codeunits
             .iter()
-            .filter(|e| e.implements.iter().any(|i| i.to_lowercase() == interface_lower))
+            .filter(|e| {
+                e.implements
+                    .iter()
+                    .any(|i| i.to_lowercase() == interface_lower)
+            })
             .collect();
-        assert!(matches.is_empty(), "Should find no implementations for an unknown interface");
+        assert!(
+            matches.is_empty(),
+            "Should find no implementations for an unknown interface"
+        );
     }
 }

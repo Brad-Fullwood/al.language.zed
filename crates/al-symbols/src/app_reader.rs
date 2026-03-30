@@ -67,8 +67,7 @@ pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
     }
 
     // 2. Scan for ZIP PK signature after magic bytes
-    let zip_offset = find_zip_offset(data)
-        .ok_or(AppReaderError::NoZipSignature)?;
+    let zip_offset = find_zip_offset(data).ok_or(AppReaderError::NoZipSignature)?;
 
     let zip_data = &data[zip_offset..];
 
@@ -106,7 +105,8 @@ pub fn read_app_file(path: &std::path::Path) -> Result<SymbolPackage, AppReaderE
 pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
     // The standard NAVX header is 40 bytes. Check there first (common case O(1)).
     const STANDARD_HEADER: usize = 40;
-    if data.len() > STANDARD_HEADER + 3 && &data[STANDARD_HEADER..STANDARD_HEADER + 4] == ZIP_MAGIC {
+    if data.len() > STANDARD_HEADER + 3 && &data[STANDARD_HEADER..STANDARD_HEADER + 4] == ZIP_MAGIC
+    {
         return Some(STANDARD_HEADER);
     }
     // Fall back to scanning from byte 4 for non-standard headers.
@@ -120,8 +120,8 @@ pub(crate) fn find_zip_offset(data: &[u8]) -> Option<usize> {
 
 /// Extract and parse NavxManifest.xml from the ZIP archive.
 fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest, AppReaderError> {
-    let manifest_name = find_file_in_archive(archive, "NavxManifest.xml")
-        .ok_or(AppReaderError::NoManifest)?;
+    let manifest_name =
+        find_file_in_archive(archive, "NavxManifest.xml").ok_or(AppReaderError::NoManifest)?;
 
     let file = archive.by_name(&manifest_name)?;
     let mut xml_bytes = Vec::new();
@@ -175,10 +175,7 @@ fn has_only_json_padding(bytes: &[u8]) -> bool {
 }
 
 /// Find a file in the archive by name (case-insensitive, ignoring path prefixes).
-fn find_file_in_archive(
-    archive: &mut ZipArchive<Cursor<&[u8]>>,
-    target: &str,
-) -> Option<String> {
+fn find_file_in_archive(archive: &mut ZipArchive<Cursor<&[u8]>>, target: &str) -> Option<String> {
     let target_lower = target.to_lowercase();
     for i in 0..archive.len() {
         if let Ok(file) = archive.by_index(i) {
@@ -200,10 +197,7 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     /// Create a synthetic .app file for testing.
-    fn make_test_app(
-        manifest_xml: &str,
-        symbol_json: &str,
-    ) -> Vec<u8> {
+    fn make_test_app(manifest_xml: &str, symbol_json: &str) -> Vec<u8> {
         let mut data = Vec::new();
 
         // NAVX header (40 bytes)
@@ -216,8 +210,8 @@ mod tests {
         {
             let cursor = Cursor::new(&mut zip_buf);
             let mut zip = zip::ZipWriter::new(cursor);
-            let options = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
             zip.start_file("NavxManifest.xml", options).unwrap();
             zip.write_all(manifest_xml.as_bytes()).unwrap();
@@ -239,7 +233,8 @@ mod tests {
        Name="Test App"
        Publisher="Test Publisher"
        Version="1.0.0.0" />
-</Package>"#.to_string()
+</Package>"#
+            .to_string()
     }
 
     fn test_symbols() -> String {
@@ -268,7 +263,8 @@ mod tests {
             ]
         }
     ]
-}"#.to_string()
+}"#
+        .to_string()
     }
 
     #[test]
@@ -327,8 +323,8 @@ mod tests {
         {
             let cursor = Cursor::new(&mut zip_buf);
             let mut zip = zip::ZipWriter::new(cursor);
-            let options = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
             zip.start_file("NavxManifest.xml", options).unwrap();
             zip.write_all(manifest.as_bytes()).unwrap();
             zip.start_file("SymbolReference.json", options).unwrap();

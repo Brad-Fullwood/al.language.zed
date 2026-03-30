@@ -1,23 +1,22 @@
 mod types;
-use types::{ObjectKind, SymbolEntry, SymbolIndex};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
+        MouseEventKind,
+    },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Frame, Terminal,
 };
-use std::{
-    error::Error,
-    io,
-    sync::Arc,
-};
+use std::{error::Error, io, sync::Arc};
+use types::{ObjectKind, SymbolEntry, SymbolIndex};
 
 use al_daemon_client::DaemonClient;
 
@@ -70,7 +69,6 @@ struct DetailTarget {
     #[allow(dead_code)]
     kind: DetailTargetKind,
 }
-
 
 // ---------------------------------------------------------------------------
 // Event chain view
@@ -129,7 +127,9 @@ impl EventChainView {
             return;
         }
         self.ensure_client();
-        let Some(client) = self.client.as_mut() else { return; };
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
         let params = serde_json::json!({ "event": self.query.trim(), "depth": 10 });
         match client.request("trace", Some(params)) {
             Ok(val) => {
@@ -138,16 +138,36 @@ impl EventChainView {
                     for item in arr {
                         self.rows.push(TraceRow {
                             depth: item.get("depth").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                            edge_type: item.get("edgeType").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            node_type: item.get("nodeType").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            name: item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                            object: item.get("object").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            edge_type: item
+                                .get("edgeType")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            node_type: item
+                                .get("nodeType")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            name: item
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            object: item
+                                .get("object")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
                         });
                     }
                     if self.rows.is_empty() {
                         self.status = format!("No event chain found for '{}'", self.query.trim());
                     } else {
-                        self.status = format!("{} steps in event chain for '{}'", self.rows.len(), self.query.trim());
+                        self.status = format!(
+                            "{} steps in event chain for '{}'",
+                            self.rows.len(),
+                            self.query.trim()
+                        );
                         self.list_state.select(Some(0));
                     }
                 } else {
@@ -163,18 +183,34 @@ impl EventChainView {
     }
 
     fn next_row(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.rows.is_empty() {
+            return;
+        }
         let i = match self.list_state.selected() {
-            Some(i) => if i >= self.rows.len().saturating_sub(1) { 0 } else { i + 1 },
+            Some(i) => {
+                if i >= self.rows.len().saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
+            }
             None => 0,
         };
         self.list_state.select(Some(i));
     }
 
     fn prev_row(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.rows.is_empty() {
+            return;
+        }
         let i = match self.list_state.selected() {
-            Some(i) => if i == 0 { self.rows.len().saturating_sub(1) } else { i - 1 },
+            Some(i) => {
+                if i == 0 {
+                    self.rows.len().saturating_sub(1)
+                } else {
+                    i - 1
+                }
+            }
             None => 0,
         };
         self.list_state.select(Some(i));
@@ -238,12 +274,17 @@ impl CallGraphView {
             return;
         }
         self.ensure_client();
-        let Some(client) = self.client.as_mut() else { return; };
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
         let params = serde_json::json!({ "symbol": self.query.trim() });
         match client.request("impact", Some(params)) {
             Ok(val) => {
                 self.rows.clear();
-                let symbol = val.get("symbol").and_then(|v| v.as_str()).unwrap_or(self.query.trim());
+                let symbol = val
+                    .get("symbol")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(self.query.trim());
                 self.rows.push(CallRow {
                     label: format!("Impact analysis for: {symbol}"),
                     kind: CallRowKind::Header,
@@ -260,8 +301,10 @@ impl CallGraphView {
                             kind: CallRowKind::Header,
                         });
                         for entry in impacted {
-                            let display = entry.as_str().map(|s| s.to_string())
-                                .unwrap_or_else(|| serde_json::to_string(entry).unwrap_or_default());
+                            let display =
+                                entry.as_str().map(|s| s.to_string()).unwrap_or_else(|| {
+                                    serde_json::to_string(entry).unwrap_or_default()
+                                });
                             self.rows.push(CallRow {
                                 label: format!("    {display}"),
                                 kind: CallRowKind::Entry,
@@ -282,18 +325,34 @@ impl CallGraphView {
     }
 
     fn next_row(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.rows.is_empty() {
+            return;
+        }
         let i = match self.list_state.selected() {
-            Some(i) => if i >= self.rows.len().saturating_sub(1) { 0 } else { i + 1 },
+            Some(i) => {
+                if i >= self.rows.len().saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
+            }
             None => 0,
         };
         self.list_state.select(Some(i));
     }
 
     fn prev_row(&mut self) {
-        if self.rows.is_empty() { return; }
+        if self.rows.is_empty() {
+            return;
+        }
         let i = match self.list_state.selected() {
-            Some(i) => if i == 0 { self.rows.len().saturating_sub(1) } else { i - 1 },
+            Some(i) => {
+                if i == 0 {
+                    self.rows.len().saturating_sub(1)
+                } else {
+                    i - 1
+                }
+            }
             None => 0,
         };
         self.list_state.select(Some(i));
@@ -355,7 +414,11 @@ impl ProfilerView {
             }
         };
         // Strip UTF-8 BOM if present
-        let data = if data.starts_with(&[0xEF, 0xBB, 0xBF]) { &data[3..] } else { &data[..] };
+        let data = if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            &data[3..]
+        } else {
+            &data[..]
+        };
 
         let json: serde_json::Value = match serde_json::from_slice(data) {
             Ok(v) => v,
@@ -366,7 +429,10 @@ impl ProfilerView {
         };
 
         // Compute session duration
-        let start = json.get("startTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let start = json
+            .get("startTime")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         let end = json.get("endTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
         // Chrome profiles use microseconds
         self.duration_ms = (end - start) / 1000.0;
@@ -387,17 +453,22 @@ impl ProfilerView {
                 continue;
             }
             let call_frame = node.get("callFrame").unwrap_or(&serde_json::Value::Null);
-            let function_name = call_frame.get("functionName")
+            let function_name = call_frame
+                .get("functionName")
                 .and_then(|v| v.as_str())
                 .unwrap_or("(unknown)")
                 .to_string();
-            let url = call_frame.get("url")
+            let url = call_frame
+                .get("url")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
             // Skip internal/empty nodes
-            if function_name == "(root)" || function_name == "(idle)" || function_name == "(garbage collector)" {
+            if function_name == "(root)"
+                || function_name == "(idle)"
+                || function_name == "(garbage collector)"
+            {
                 continue;
             }
 
@@ -413,14 +484,21 @@ impl ProfilerView {
         }
 
         // Sort descending by self_time_ms
-        rows.sort_by(|a, b| b.self_time_ms.partial_cmp(&a.self_time_ms).unwrap_or(std::cmp::Ordering::Equal));
+        rows.sort_by(|a, b| {
+            b.self_time_ms
+                .partial_cmp(&a.self_time_ms)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let count = rows.len();
         self.hotspots = rows;
         self.status = if count == 0 {
             "No hotspots found in profile (all hitCount=0?)".to_string()
         } else {
-            format!("{count} hotspots loaded — duration {:.1}ms", self.duration_ms)
+            format!(
+                "{count} hotspots loaded — duration {:.1}ms",
+                self.duration_ms
+            )
         };
         if !self.hotspots.is_empty() {
             self.list_state.select(Some(0));
@@ -429,18 +507,34 @@ impl ProfilerView {
     }
 
     fn next_row(&mut self) {
-        if self.hotspots.is_empty() { return; }
+        if self.hotspots.is_empty() {
+            return;
+        }
         let i = match self.list_state.selected() {
-            Some(i) => if i >= self.hotspots.len().saturating_sub(1) { 0 } else { i + 1 },
+            Some(i) => {
+                if i >= self.hotspots.len().saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
+            }
             None => 0,
         };
         self.list_state.select(Some(i));
     }
 
     fn prev_row(&mut self) {
-        if self.hotspots.is_empty() { return; }
+        if self.hotspots.is_empty() {
+            return;
+        }
         let i = match self.list_state.selected() {
-            Some(i) => if i == 0 { self.hotspots.len().saturating_sub(1) } else { i - 1 },
+            Some(i) => {
+                if i == 0 {
+                    self.hotspots.len().saturating_sub(1)
+                } else {
+                    i - 1
+                }
+            }
             None => 0,
         };
         self.list_state.select(Some(i));
@@ -489,7 +583,8 @@ struct App {
 
 impl App {
     fn new() -> App {
-        let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let project_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         App {
             view_mode: ViewMode::ObjectBrowser,
             active_pane: ActivePane::Search,
@@ -527,10 +622,15 @@ impl App {
             if attempt > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(800));
             }
-            let result = client.request("search", Some(serde_json::json!({
-                "query": "",
-                "limit": 100_000
-            }))).map_err(|e| format!("search request failed: {e}"))?;
+            let result = client
+                .request(
+                    "search",
+                    Some(serde_json::json!({
+                        "query": "",
+                        "limit": 100_000
+                    })),
+                )
+                .map_err(|e| format!("search request failed: {e}"))?;
 
             let parsed: Vec<types::SymbolEntry> = serde_json::from_value(result)
                 .map_err(|e| format!("Failed to deserialize symbol entries from daemon: {e}"))?;
@@ -542,7 +642,8 @@ impl App {
 
         if entries.is_empty() {
             return Err("Daemon returned no symbols after 5 attempts. \
-                Run 'al-lsp daemon --project .' first, then relaunch al-explorer.".into());
+                Run 'al-lsp daemon --project .' first, then relaunch al-explorer."
+                .into());
         }
 
         self.daemon_client = Some(client);
@@ -558,74 +659,80 @@ impl App {
 
     fn update_objects_list(&mut self, reset_selection: bool) {
         if let Some(selected) = self.package_list_state.selected()
-            && let Some(pkg_name) = self.packages.get(selected) {
-                let results = if self.global_search && !self.search_query.is_empty() {
-                    self.symbols.search(&self.search_query, 5000)
-                } else {
-                    self.symbols.search_in_package(pkg_name)
-                };
+            && let Some(pkg_name) = self.packages.get(selected)
+        {
+            let results = if self.global_search && !self.search_query.is_empty() {
+                self.symbols.search(&self.search_query, 5000)
+            } else {
+                self.symbols.search_in_package(pkg_name)
+            };
 
-                let query = self.search_query.to_lowercase();
+            let query = self.search_query.to_lowercase();
 
-                let mut filtered = Vec::new();
-                let mut kinds_set = std::collections::HashSet::new();
+            let mut filtered = Vec::new();
+            let mut kinds_set = std::collections::HashSet::new();
 
-                for r in results {
-                    let matches_search = query.is_empty()
-                        || r.name.to_lowercase().contains(&query)
-                        || r.id.to_string().contains(&query);
+            for r in results {
+                let matches_search = query.is_empty()
+                    || r.name.to_lowercase().contains(&query)
+                    || r.id.to_string().contains(&query);
 
-                    if matches_search {
-                        kinds_set.insert(r.kind);
-                        filtered.push(r);
-                    }
+                if matches_search {
+                    kinds_set.insert(r.kind);
+                    filtered.push(r);
                 }
+            }
 
-                let mut kinds: Vec<_> = kinds_set.into_iter().collect();
-                kinds.sort_by_key(|k| format!("{:?}", k));
+            let mut kinds: Vec<_> = kinds_set.into_iter().collect();
+            kinds.sort_by_key(|k| format!("{:?}", k));
 
-                let current_kind = self.kinds.get(self.active_kind_index).copied();
-                self.kinds = kinds;
+            let current_kind = self.kinds.get(self.active_kind_index).copied();
+            self.kinds = kinds;
 
-                if let Some(k) = current_kind {
-                    if let Some(new_idx) = self.kinds.iter().position(|&x| x == k) {
-                        self.active_kind_index = new_idx;
-                    } else {
-                        self.active_kind_index = 0;
-                    }
+            if let Some(k) = current_kind {
+                if let Some(new_idx) = self.kinds.iter().position(|&x| x == k) {
+                    self.active_kind_index = new_idx;
                 } else {
                     self.active_kind_index = 0;
                 }
+            } else {
+                self.active_kind_index = 0;
+            }
 
-                let mut final_objects = Vec::new();
-                if let Some(k) = self.kinds.get(self.active_kind_index) {
-                    final_objects = filtered.into_iter().filter(|r| r.kind == *k).collect();
-                    final_objects.sort_by_key(|e| e.id);
-                }
+            let mut final_objects = Vec::new();
+            if let Some(k) = self.kinds.get(self.active_kind_index) {
+                final_objects = filtered.into_iter().filter(|r| r.kind == *k).collect();
+                final_objects.sort_by_key(|e| e.id);
+            }
 
-                self.current_objects = final_objects;
+            self.current_objects = final_objects;
 
-                if !self.current_objects.is_empty() {
-                    if reset_selection {
-                        self.object_list_state.select(Some(0));
-                        self.details_list_state.select(Some(0));
-                    } else {
-                        let current = self.object_list_state.selected().unwrap_or(0);
-                        let safe_idx = std::cmp::min(current, self.current_objects.len().saturating_sub(1));
-                        self.object_list_state.select(Some(safe_idx));
-                        self.details_list_state.select(Some(0));
-                    }
+            if !self.current_objects.is_empty() {
+                if reset_selection {
+                    self.object_list_state.select(Some(0));
+                    self.details_list_state.select(Some(0));
                 } else {
-                    self.object_list_state.select(None);
-                    self.details_list_state.select(None);
+                    let current = self.object_list_state.selected().unwrap_or(0);
+                    let safe_idx =
+                        std::cmp::min(current, self.current_objects.len().saturating_sub(1));
+                    self.object_list_state.select(Some(safe_idx));
+                    self.details_list_state.select(Some(0));
                 }
+            } else {
+                self.object_list_state.select(None);
+                self.details_list_state.select(None);
+            }
         }
     }
 
     fn next_package(&mut self) {
         let i = match self.package_list_state.selected() {
             Some(i) => {
-                if i >= self.packages.len().saturating_sub(1) { 0 } else { i + 1 }
+                if i >= self.packages.len().saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
             }
             None => 0,
         };
@@ -636,7 +743,11 @@ impl App {
     fn previous_package(&mut self) {
         let i = match self.package_list_state.selected() {
             Some(i) => {
-                if i == 0 { self.packages.len().saturating_sub(1) } else { i - 1 }
+                if i == 0 {
+                    self.packages.len().saturating_sub(1)
+                } else {
+                    i - 1
+                }
             }
             None => 0,
         };
@@ -645,13 +756,17 @@ impl App {
     }
 
     fn next_kind(&mut self) {
-        if self.kinds.is_empty() { return; }
+        if self.kinds.is_empty() {
+            return;
+        }
         self.active_kind_index = (self.active_kind_index + 1) % self.kinds.len();
         self.update_objects_list(true);
     }
 
     fn previous_kind(&mut self) {
-        if self.kinds.is_empty() { return; }
+        if self.kinds.is_empty() {
+            return;
+        }
         if self.active_kind_index == 0 {
             self.active_kind_index = self.kinds.len() - 1;
         } else {
@@ -663,7 +778,11 @@ impl App {
     fn next_object(&mut self) {
         let i = match self.object_list_state.selected() {
             Some(i) => {
-                if i >= self.current_objects.len().saturating_sub(1) { 0 } else { i + 1 }
+                if i >= self.current_objects.len().saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
             }
             None => 0,
         };
@@ -676,7 +795,11 @@ impl App {
     fn previous_object(&mut self) {
         let i = match self.object_list_state.selected() {
             Some(i) => {
-                if i == 0 { self.current_objects.len().saturating_sub(1) } else { i - 1 }
+                if i == 0 {
+                    self.current_objects.len().saturating_sub(1)
+                } else {
+                    i - 1
+                }
             }
             None => 0,
         };
@@ -689,7 +812,11 @@ impl App {
     fn next_detail(&mut self) {
         let i = match self.details_list_state.selected() {
             Some(i) => {
-                if i >= self.details_items.len().saturating_sub(1) { 0 } else { i + 1 }
+                if i >= self.details_items.len().saturating_sub(1) {
+                    0
+                } else {
+                    i + 1
+                }
             }
             None => 0,
         };
@@ -701,7 +828,11 @@ impl App {
     fn previous_detail(&mut self) {
         let i = match self.details_list_state.selected() {
             Some(i) => {
-                if i == 0 { self.details_items.len().saturating_sub(1) } else { i - 1 }
+                if i == 0 {
+                    self.details_items.len().saturating_sub(1)
+                } else {
+                    i - 1
+                }
             }
             None => 0,
         };
@@ -718,7 +849,8 @@ impl App {
             .and_then(|(m, _)| m.clone());
 
         if let Some(selected) = self.object_list_state.selected()
-            && let Some(entry) = self.current_objects.get(selected) {
+            && let Some(entry) = self.current_objects.get(selected)
+        {
             // Ask the daemon for the workspace file path for this object.
             // Reconnect if the persistent client has been dropped.
             if self.daemon_client.is_none() {
@@ -726,11 +858,14 @@ impl App {
                 self.daemon_client = DaemonClient::connect(&root).ok();
             }
             if let Some(client) = self.daemon_client.as_mut() {
-                let loc_result = client.request("location", Some(serde_json::json!({
-                    "name": entry.name,
-                    "kind": format!("{:?}", entry.kind),
-                    "id": entry.id,
-                })));
+                let loc_result = client.request(
+                    "location",
+                    Some(serde_json::json!({
+                        "name": entry.name,
+                        "kind": format!("{:?}", entry.kind),
+                        "id": entry.id,
+                    })),
+                );
                 match loc_result {
                     Ok(val) => {
                         if let Some(path_str) = val.get("path").and_then(|v| v.as_str()) {
@@ -788,11 +923,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // do so leaves the terminal in raw mode + alternate screen.
     let cleanup = || -> io::Result<()> {
         disable_raw_mode()?;
-        execute!(
-            io::stdout(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
+        execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
         Ok(())
     };
 
@@ -818,7 +949,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_app<B: Backend<Error = io::Error>>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
+fn run_app<B: Backend<Error = io::Error>>(
+    terminal: &mut Terminal<B>,
+    mut app: App,
+) -> io::Result<()> {
     loop {
         terminal.draw(|f| ui(f, &mut app))?;
 
@@ -827,7 +961,9 @@ fn run_app<B: Backend<Error = io::Error>>(terminal: &mut Terminal<B>, mut app: A
             match evt {
                 Event::Key(key) => {
                     // Global quit
-                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         return Ok(());
                     }
 
@@ -885,76 +1021,68 @@ fn handle_object_browser_key(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 
     match app.active_pane {
-        ActivePane::Search => {
-            match key.code {
-                KeyCode::Esc => {
-                    app.search_query.clear();
-                    app.update_objects_list(true);
-                }
-                KeyCode::Backspace => {
-                    app.search_query.pop();
-                    app.update_objects_list(true);
-                }
-                KeyCode::Char(c) => {
-                    app.search_query.push(c);
-                    app.update_objects_list(true);
-                }
-                KeyCode::Down | KeyCode::Enter => {
-                    app.active_pane = ActivePane::Packages;
-                }
-                KeyCode::Right => {
-                    app.active_pane = ActivePane::Objects;
-                }
-                _ => {}
+        ActivePane::Search => match key.code {
+            KeyCode::Esc => {
+                app.search_query.clear();
+                app.update_objects_list(true);
             }
-        }
-        ActivePane::Packages => {
-            match key.code {
-                KeyCode::Down | KeyCode::Char('j') => app.next_package(),
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if let Some(0) = app.package_list_state.selected() {
-                        app.active_pane = ActivePane::Search;
-                    } else {
-                        app.previous_package();
-                    }
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    app.active_pane = ActivePane::Objects;
-                }
-                _ => {}
+            KeyCode::Backspace => {
+                app.search_query.pop();
+                app.update_objects_list(true);
             }
-        }
-        ActivePane::Objects => {
-            match key.code {
-                KeyCode::Down | KeyCode::Char('j') => app.next_object(),
-                KeyCode::Up | KeyCode::Char('k') => app.previous_object(),
-                KeyCode::Left | KeyCode::Char('h') => {
-                    app.active_pane = ActivePane::Packages;
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    app.active_pane = ActivePane::Details;
-                }
-                KeyCode::Enter => {
-                    app.details_list_state.select(None);
-                    app.open_selected_object();
-                }
-                KeyCode::Esc => {
+            KeyCode::Char(c) => {
+                app.search_query.push(c);
+                app.update_objects_list(true);
+            }
+            KeyCode::Down | KeyCode::Enter => {
+                app.active_pane = ActivePane::Packages;
+            }
+            KeyCode::Right => {
+                app.active_pane = ActivePane::Objects;
+            }
+            _ => {}
+        },
+        ActivePane::Packages => match key.code {
+            KeyCode::Down | KeyCode::Char('j') => app.next_package(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(0) = app.package_list_state.selected() {
                     app.active_pane = ActivePane::Search;
+                } else {
+                    app.previous_package();
                 }
-                _ => {}
             }
-        }
-        ActivePane::Details => {
-            match key.code {
-                KeyCode::Down | KeyCode::Char('j') => app.next_detail(),
-                KeyCode::Up | KeyCode::Char('k') => app.previous_detail(),
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
-                    app.active_pane = ActivePane::Objects;
-                }
-                KeyCode::Enter => app.open_selected_object(),
-                _ => {}
+            KeyCode::Right | KeyCode::Char('l') => {
+                app.active_pane = ActivePane::Objects;
             }
-        }
+            _ => {}
+        },
+        ActivePane::Objects => match key.code {
+            KeyCode::Down | KeyCode::Char('j') => app.next_object(),
+            KeyCode::Up | KeyCode::Char('k') => app.previous_object(),
+            KeyCode::Left | KeyCode::Char('h') => {
+                app.active_pane = ActivePane::Packages;
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                app.active_pane = ActivePane::Details;
+            }
+            KeyCode::Enter => {
+                app.details_list_state.select(None);
+                app.open_selected_object();
+            }
+            KeyCode::Esc => {
+                app.active_pane = ActivePane::Search;
+            }
+            _ => {}
+        },
+        ActivePane::Details => match key.code {
+            KeyCode::Down | KeyCode::Char('j') => app.next_detail(),
+            KeyCode::Up | KeyCode::Char('k') => app.previous_detail(),
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
+                app.active_pane = ActivePane::Objects;
+            }
+            KeyCode::Enter => app.open_selected_object(),
+            _ => {}
+        },
     }
 }
 
@@ -963,8 +1091,14 @@ fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEvent) {
     if view.input_focused {
         match key.code {
             KeyCode::Char(c) => view.query.push(c),
-            KeyCode::Backspace => { view.query.pop(); }
-            KeyCode::Esc => { view.query.clear(); view.rows.clear(); view.status = "Cleared".to_string(); }
+            KeyCode::Backspace => {
+                view.query.pop();
+            }
+            KeyCode::Esc => {
+                view.query.clear();
+                view.rows.clear();
+                view.status = "Cleared".to_string();
+            }
             KeyCode::Enter => {
                 view.run_trace();
                 if !view.rows.is_empty() {
@@ -1000,8 +1134,14 @@ fn handle_call_graph_key(app: &mut App, key: crossterm::event::KeyEvent) {
     if view.input_focused {
         match key.code {
             KeyCode::Char(c) => view.query.push(c),
-            KeyCode::Backspace => { view.query.pop(); }
-            KeyCode::Esc => { view.query.clear(); view.rows.clear(); view.status = "Cleared".to_string(); }
+            KeyCode::Backspace => {
+                view.query.pop();
+            }
+            KeyCode::Esc => {
+                view.query.clear();
+                view.rows.clear();
+                view.status = "Cleared".to_string();
+            }
             KeyCode::Enter => {
                 view.run_query();
                 if !view.rows.is_empty() {
@@ -1036,7 +1176,9 @@ fn handle_profiler_key(app: &mut App, key: crossterm::event::KeyEvent) {
     if view.input_focused {
         match key.code {
             KeyCode::Char(c) => view.file_path.push(c),
-            KeyCode::Backspace => { view.file_path.pop(); }
+            KeyCode::Backspace => {
+                view.file_path.pop();
+            }
             KeyCode::Esc => {
                 view.file_path.clear();
                 view.hotspots.clear();
@@ -1068,7 +1210,12 @@ fn handle_profiler_key(app: &mut App, key: crossterm::event::KeyEvent) {
 fn handle_object_browser_mouse(app: &mut App, mouse_event: crossterm::event::MouseEvent) {
     if let Ok((width, height)) = crossterm::terminal::size() {
         // Account for the mode bar at the top (1 line)
-        let content_area = Rect { x: 0, y: 1, width, height: height.saturating_sub(1) };
+        let content_area = Rect {
+            x: 0,
+            y: 1,
+            width,
+            height: height.saturating_sub(1),
+        };
         let layout = compute_layout(content_area);
         let (col, row) = (mouse_event.column, mouse_event.row);
 
@@ -1089,7 +1236,11 @@ fn handle_object_browser_mouse(app: &mut App, mouse_event: crossterm::event::Mou
         let tabs_inner = inner_area(types_area);
         let arrow_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
             .split(tabs_inner);
 
         match mouse_event.kind {
@@ -1246,13 +1397,22 @@ fn render_mode_bar(f: &mut Frame, area: Rect, mode: ViewMode) {
         (" F4: Profiler ", ViewMode::Profiler),
     ];
 
-    let spans: Vec<Span> = tabs.iter().map(|(label, tab_mode)| {
-        if *tab_mode == mode {
-            Span::styled(*label, Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD))
-        } else {
-            Span::styled(*label, Style::default().fg(Color::DarkGray))
-        }
-    }).collect();
+    let spans: Vec<Span> = tabs
+        .iter()
+        .map(|(label, tab_mode)| {
+            if *tab_mode == mode {
+                Span::styled(
+                    *label,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(*label, Style::default().fg(Color::DarkGray))
+            }
+        })
+        .collect();
 
     let quit_hint = Span::styled("  Ctrl+C: Quit", Style::default().fg(Color::DarkGray));
     let mut all_spans = spans;
@@ -1268,7 +1428,9 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     // 1. Search Bar (Left Top)
     // ==========================================
     let search_style = if app.active_pane == ActivePane::Search {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -1286,42 +1448,63 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
         .constraints([Constraint::Min(0), Constraint::Length(5)].as_ref())
         .split(search_inner);
 
-    let cursor = if app.active_pane == ActivePane::Search { "█" } else { "" };
+    let cursor = if app.active_pane == ActivePane::Search {
+        "█"
+    } else {
+        ""
+    };
     let search_text_str = format!("{}{}", app.search_query, cursor);
 
-    let search_text = Paragraph::new(search_text_str)
-        .style(Style::default().fg(Color::White));
+    let search_text = Paragraph::new(search_text_str).style(Style::default().fg(Color::White));
     f.render_widget(search_text, search_chunks[0]);
 
     let filter_icon = if app.global_search { "[ALL]" } else { "[PKG]" };
-    let icon_p = Paragraph::new(filter_icon)
-        .alignment(ratatui::layout::Alignment::Right);
+    let icon_p = Paragraph::new(filter_icon).alignment(ratatui::layout::Alignment::Right);
     f.render_widget(icon_p, search_chunks[1]);
 
     // ==========================================
     // 2. Packages List (Left Bottom)
     // ==========================================
     let pkg_style = if app.active_pane == ActivePane::Packages {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let packages: Vec<ListItem> = app.packages.iter()
+    let packages: Vec<ListItem> = app
+        .packages
+        .iter()
         .map(|i| ListItem::new(Line::from(vec![Span::raw(i.clone())])))
         .collect();
 
     let packages_list = List::new(packages)
-        .block(Block::default().borders(Borders::ALL).title(" Packages ").border_style(pkg_style))
-        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Packages ")
+                .border_style(pkg_style),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol(">> ");
-    f.render_stateful_widget(packages_list, layout.left_column[1], &mut app.package_list_state);
+    f.render_stateful_widget(
+        packages_list,
+        layout.left_column[1],
+        &mut app.package_list_state,
+    );
 
     // ==========================================
     // 3. Types Tabs (Middle Top)
     // ==========================================
     let obj_style = if app.active_pane == ActivePane::Objects {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -1338,19 +1521,43 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
         let total = app.kinds.len();
         let idx = app.active_kind_index;
 
-        let prev_idx = if idx == 0 { total.saturating_sub(1) } else { idx - 1 };
-        let next_idx = if idx == total.saturating_sub(1) { 0 } else { idx + 1 };
+        let prev_idx = if idx == 0 {
+            total.saturating_sub(1)
+        } else {
+            idx - 1
+        };
+        let next_idx = if idx == total.saturating_sub(1) {
+            0
+        } else {
+            idx + 1
+        };
 
         let arrow_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
             .split(tabs_inner_area);
 
         let left_arrow = if total > 1 { "<" } else { " " };
         let right_arrow = if total > 1 { ">" } else { " " };
-        let arrow_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
-        f.render_widget(Paragraph::new(left_arrow).alignment(ratatui::layout::Alignment::Center).style(arrow_style), arrow_chunks[0]);
-        f.render_widget(Paragraph::new(right_arrow).alignment(ratatui::layout::Alignment::Center).style(arrow_style), arrow_chunks[2]);
+        let arrow_style = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM);
+        f.render_widget(
+            Paragraph::new(left_arrow)
+                .alignment(ratatui::layout::Alignment::Center)
+                .style(arrow_style),
+            arrow_chunks[0],
+        );
+        f.render_widget(
+            Paragraph::new(right_arrow)
+                .alignment(ratatui::layout::Alignment::Center)
+                .style(arrow_style),
+            arrow_chunks[2],
+        );
 
         let middle_width = arrow_chunks[1].width as usize;
         if middle_width > 0 {
@@ -1359,7 +1566,11 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
             let left_width = side_total / 2;
             let right_width = side_total.saturating_sub(left_width);
 
-            let prev_label = if total > 1 { format!("{:?}", app.kinds[prev_idx]) } else { "".to_string() };
+            let prev_label = if total > 1 {
+                format!("{:?}", app.kinds[prev_idx])
+            } else {
+                "".to_string()
+            };
             let next_label = if total > 1 {
                 let display_idx = if total == 2 { prev_idx } else { next_idx };
                 format!("{:?}", app.kinds[display_idx])
@@ -1369,16 +1580,37 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
             let active_label = format!("{:?}", app.kinds[idx]);
 
             let left_text = pad_center(truncate_with_ellipsis(&prev_label, left_width), left_width);
-            let right_text = pad_center(truncate_with_ellipsis(&next_label, right_width), right_width);
-            let center_text = pad_center(truncate_with_ellipsis(&active_label, center_width), center_width);
+            let right_text = pad_center(
+                truncate_with_ellipsis(&next_label, right_width),
+                right_width,
+            );
+            let center_text = pad_center(
+                truncate_with_ellipsis(&active_label, center_width),
+                center_width,
+            );
 
             let spans = vec![
-                Span::styled(left_text, Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)),
-                Span::styled(center_text, Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled(right_text, Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)),
+                Span::styled(
+                    left_text,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    center_text,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    right_text,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ),
             ];
-            let p = Paragraph::new(Line::from(spans))
-                .alignment(ratatui::layout::Alignment::Left);
+            let p = Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Left);
             f.render_widget(p, arrow_chunks[1]);
         }
     }
@@ -1386,7 +1618,9 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     // ==========================================
     // 4. Objects List (Middle Bottom)
     // ==========================================
-    let objects: Vec<ListItem> = app.current_objects.iter()
+    let objects: Vec<ListItem> = app
+        .current_objects
+        .iter()
         .map(|entry| {
             let display = format!("{} {}", entry.id, entry.name);
             ListItem::new(Line::from(vec![Span::raw(display)]))
@@ -1394,16 +1628,31 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
 
     let objects_list = List::new(objects)
-        .block(Block::default().borders(Borders::ALL).border_style(obj_style))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(obj_style),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol(">> ");
-    f.render_stateful_widget(objects_list, layout.middle_column[1], &mut app.object_list_state);
+    f.render_stateful_widget(
+        objects_list,
+        layout.middle_column[1],
+        &mut app.object_list_state,
+    );
 
     // ==========================================
     // 5. Details Pane (Right Full Column)
     // ==========================================
     let detail_style = if app.active_pane == ActivePane::Details {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -1411,131 +1660,280 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     app.details_items.clear();
 
     if let Some(selected) = app.object_list_state.selected()
-        && let Some(entry) = app.current_objects.get(selected) {
-        app.details_items.push((None, Line::from(vec![
-                Span::styled(format!("{:?} ", entry.kind), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        && let Some(entry) = app.current_objects.get(selected)
+    {
+        app.details_items.push((
+            None,
+            Line::from(vec![
+                Span::styled(
+                    format!("{:?} ", entry.kind),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(entry.id.to_string(), Style::default().fg(Color::Cyan)),
                 Span::raw(" ".to_string()),
-                Span::styled(entry.name.clone(), Style::default().add_modifier(Modifier::BOLD)),
-            ])));
+                Span::styled(
+                    entry.name.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        ));
 
-            if let Some(extends) = &entry.extends {
-                app.details_items.push((None, Line::from(vec![Span::styled("Extends: ".to_string(), Style::default().add_modifier(Modifier::BOLD)), Span::raw(extends.clone())])));
-            }
+        if let Some(extends) = &entry.extends {
+            app.details_items.push((
+                None,
+                Line::from(vec![
+                    Span::styled(
+                        "Extends: ".to_string(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(extends.clone()),
+                ]),
+            ));
+        }
 
-            app.details_items.push((None, Line::from(vec![Span::styled("Package: ".to_string(), Style::default().add_modifier(Modifier::BOLD)), Span::raw(entry.package.clone())])));
+        app.details_items.push((
+            None,
+            Line::from(vec![
+                Span::styled(
+                    "Package: ".to_string(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(entry.package.clone()),
+            ]),
+        ));
 
-            if !entry.properties.is_empty() {
-                app.details_items.push((None, Line::from("".to_string())));
-                app.details_items.push((None, Line::from(Span::styled("Properties:".to_string(), Style::default().add_modifier(Modifier::BOLD)))));
-                for p in entry.properties.iter() {
-                    app.details_items.push((None, Line::from(vec![
+        if !entry.properties.is_empty() {
+            app.details_items.push((None, Line::from("".to_string())));
+            app.details_items.push((
+                None,
+                Line::from(Span::styled(
+                    "Properties:".to_string(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+            ));
+            for p in entry.properties.iter() {
+                app.details_items.push((
+                    None,
+                    Line::from(vec![
                         Span::raw("    ".to_string()),
-                        Span::styled(format!("{:<20}", p.name), Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!("{:<20}", p.name),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                         Span::raw(" = ".to_string()),
                         Span::raw(p.value.clone()),
-                    ])));
-                }
+                    ]),
+                ));
             }
+        }
 
-            if !entry.keys.is_empty() {
-                app.details_items.push((None, Line::from("".to_string())));
-                app.details_items.push((None, Line::from(Span::styled(format!("Keys ({}):", entry.keys.len()), Style::default().add_modifier(Modifier::BOLD)))));
-                for k in entry.keys.iter() {
-                    let fields = k.field_names.join(", ");
-                    app.details_items.push((Some(DetailTarget { name: k.name.clone(), kind: DetailTargetKind::Key }), Line::from(vec![
+        if !entry.keys.is_empty() {
+            app.details_items.push((None, Line::from("".to_string())));
+            app.details_items.push((
+                None,
+                Line::from(Span::styled(
+                    format!("Keys ({}):", entry.keys.len()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+            ));
+            for k in entry.keys.iter() {
+                let fields = k.field_names.join(", ");
+                app.details_items.push((
+                    Some(DetailTarget {
+                        name: k.name.clone(),
+                        kind: DetailTargetKind::Key,
+                    }),
+                    Line::from(vec![
                         Span::raw("    ".to_string()),
                         Span::styled(format!("{:<20}", k.name), Style::default().fg(Color::Cyan)),
                         Span::raw(format!(" ({})", fields)),
-                    ])));
-                }
+                    ]),
+                ));
             }
+        }
 
-            if !entry.fields.is_empty() {
-                app.details_items.push((None, Line::from("".to_string())));
-                app.details_items.push((None, Line::from(Span::styled(format!("Fields ({}):", entry.fields.len()), Style::default().add_modifier(Modifier::BOLD)))));
-                for f in entry.fields.iter() {
-                    app.details_items.push((Some(DetailTarget { name: f.name.clone(), kind: DetailTargetKind::Field }), Line::from(vec![
-                        Span::styled(format!("    {:<4} ", f.id), Style::default().fg(Color::DarkGray)),
+        if !entry.fields.is_empty() {
+            app.details_items.push((None, Line::from("".to_string())));
+            app.details_items.push((
+                None,
+                Line::from(Span::styled(
+                    format!("Fields ({}):", entry.fields.len()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+            ));
+            for f in entry.fields.iter() {
+                app.details_items.push((
+                    Some(DetailTarget {
+                        name: f.name.clone(),
+                        kind: DetailTargetKind::Field,
+                    }),
+                    Line::from(vec![
+                        Span::styled(
+                            format!("    {:<4} ", f.id),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                         Span::styled(format!("{:<30}", f.name), Style::default().fg(Color::White)),
-                        Span::styled(format!(" : {}", f.type_name), Style::default().fg(Color::Cyan)),
-                    ])));
-                }
+                        Span::styled(
+                            format!(" : {}", f.type_name),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                    ]),
+                ));
             }
+        }
 
-            if !entry.controls.is_empty() {
-                app.details_items.push((None, Line::from("".to_string())));
-                app.details_items.push((None, Line::from(Span::styled(format!("Controls/Actions ({}):", entry.controls.len()), Style::default().add_modifier(Modifier::BOLD)))));
-                for c in entry.controls.iter() {
-                    app.details_items.push((Some(DetailTarget { name: c.name.clone(), kind: DetailTargetKind::Control(c.kind.clone()) }), Line::from(vec![
+        if !entry.controls.is_empty() {
+            app.details_items.push((None, Line::from("".to_string())));
+            app.details_items.push((
+                None,
+                Line::from(Span::styled(
+                    format!("Controls/Actions ({}):", entry.controls.len()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+            ));
+            for c in entry.controls.iter() {
+                app.details_items.push((
+                    Some(DetailTarget {
+                        name: c.name.clone(),
+                        kind: DetailTargetKind::Control(c.kind.clone()),
+                    }),
+                    Line::from(vec![
                         Span::raw("    ".to_string()),
-                        Span::styled(format!("{:<15}", c.kind), Style::default().fg(Color::Magenta)),
+                        Span::styled(
+                            format!("{:<15}", c.kind),
+                            Style::default().fg(Color::Magenta),
+                        ),
                         Span::raw(format!(" {}", c.name)),
-                    ])));
-                }
+                    ]),
+                ));
             }
+        }
 
-            if !entry.enum_values.is_empty() {
-                app.details_items.push((None, Line::from("".to_string())));
-                app.details_items.push((None, Line::from(Span::styled(format!("Values ({}):", entry.enum_values.len()), Style::default().add_modifier(Modifier::BOLD)))));
-                for v in entry.enum_values.iter() {
-                    app.details_items.push((Some(DetailTarget { name: v.name.clone(), kind: DetailTargetKind::EnumValue }), Line::from(vec![
-                        Span::styled(format!("    {:<4} ", v.ordinal), Style::default().fg(Color::DarkGray)),
+        if !entry.enum_values.is_empty() {
+            app.details_items.push((None, Line::from("".to_string())));
+            app.details_items.push((
+                None,
+                Line::from(Span::styled(
+                    format!("Values ({}):", entry.enum_values.len()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+            ));
+            for v in entry.enum_values.iter() {
+                app.details_items.push((
+                    Some(DetailTarget {
+                        name: v.name.clone(),
+                        kind: DetailTargetKind::EnumValue,
+                    }),
+                    Line::from(vec![
+                        Span::styled(
+                            format!("    {:<4} ", v.ordinal),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                         Span::raw(v.name.clone()),
-                    ])));
-                }
+                    ]),
+                ));
             }
+        }
 
-            if !entry.methods.is_empty() {
-                app.details_items.push((None, Line::from("".to_string())));
-                app.details_items.push((None, Line::from(Span::styled(format!("Procedures ({}):", entry.methods.len()), Style::default().add_modifier(Modifier::BOLD)))));
-                for m in entry.methods.iter() {
-                    let mut spans = vec![Span::raw("    ".to_string())];
-                    if m.is_local {
-                        spans.push(Span::styled("local ", Style::default().fg(Color::DarkGray)));
-                    } else {
-                        spans.push(Span::raw("      ".to_string()));
-                    }
-                    spans.push(Span::styled(m.name.clone(), Style::default().fg(Color::Green)));
-                    spans.push(Span::raw("(".to_string()));
-
-                    let params = m.parameters.iter().map(|p| p.name.to_string()).collect::<Vec<_>>().join(", ");
-                    spans.push(Span::raw(params));
-
-                    spans.push(Span::raw(")".to_string()));
-
-                    if let Some(ret) = &m.return_type {
-                        spans.push(Span::styled(format!(" : {}", ret), Style::default().fg(Color::Cyan)));
-                    }
-
-                    app.details_items.push((Some(DetailTarget { name: m.name.clone(), kind: DetailTargetKind::Procedure }), Line::from(spans)));
+        if !entry.methods.is_empty() {
+            app.details_items.push((None, Line::from("".to_string())));
+            app.details_items.push((
+                None,
+                Line::from(Span::styled(
+                    format!("Procedures ({}):", entry.methods.len()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+            ));
+            for m in entry.methods.iter() {
+                let mut spans = vec![Span::raw("    ".to_string())];
+                if m.is_local {
+                    spans.push(Span::styled("local ", Style::default().fg(Color::DarkGray)));
+                } else {
+                    spans.push(Span::raw("      ".to_string()));
                 }
+                spans.push(Span::styled(
+                    m.name.clone(),
+                    Style::default().fg(Color::Green),
+                ));
+                spans.push(Span::raw("(".to_string()));
+
+                let params = m
+                    .parameters
+                    .iter()
+                    .map(|p| p.name.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                spans.push(Span::raw(params));
+
+                spans.push(Span::raw(")".to_string()));
+
+                if let Some(ret) = &m.return_type {
+                    spans.push(Span::styled(
+                        format!(" : {}", ret),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                }
+
+                app.details_items.push((
+                    Some(DetailTarget {
+                        name: m.name.clone(),
+                        kind: DetailTargetKind::Procedure,
+                    }),
+                    Line::from(spans),
+                ));
+            }
         }
     }
 
     if app.details_items.is_empty() {
-        app.details_items.push((None, Line::from("No object selected".to_string())));
+        app.details_items
+            .push((None, Line::from("No object selected".to_string())));
     }
 
-    let list_items: Vec<ListItem> = app.details_items.iter().map(|(_, line)| ListItem::new(line.clone())).collect();
+    let list_items: Vec<ListItem> = app
+        .details_items
+        .iter()
+        .map(|(_, line)| ListItem::new(line.clone()))
+        .collect();
 
     let details_list = List::new(list_items)
-        .block(Block::default().borders(Borders::ALL).title(" Details (Scroll/Click) ").border_style(detail_style))
-        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Details (Scroll/Click) ")
+                .border_style(detail_style),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        );
 
-    f.render_stateful_widget(details_list, layout.main_columns[2], &mut app.details_list_state);
+    f.render_stateful_widget(
+        details_list,
+        layout.main_columns[2],
+        &mut app.details_list_state,
+    );
 }
 
 fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
     // Split: search input (3 lines) + results list + status bar (1 line)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     // Search input
     let input_style = if view.input_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -1554,42 +1952,50 @@ fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
 
     // Results list
     let list_style = if !view.input_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let items: Vec<ListItem> = view.rows.iter().map(|row| {
-        let indent = "  ".repeat(row.depth);
-        let (prefix_style, name_style) = match row.node_type.as_str() {
-            "event" => (
-                Style::default().fg(Color::Magenta),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ),
-            "subscriber" => (
-                Style::default().fg(Color::Cyan),
-                Style::default().fg(Color::Green),
-            ),
-            _ => (
-                Style::default().fg(Color::DarkGray),
-                Style::default().fg(Color::White),
-            ),
-        };
-        let edge_label = match row.edge_type.as_str() {
-            "origin" => "EVENT",
-            "subscribes_to" => "SUBS",
-            "publishes" => "PUB",
-            other => other,
-        };
-        let line = Line::from(vec![
-            Span::raw(indent),
-            Span::styled(format!("[{edge_label:<6}] "), prefix_style),
-            Span::styled(row.object.clone(), Style::default().fg(Color::DarkGray)),
-            Span::raw("."),
-            Span::styled(row.name.clone(), name_style),
-        ]);
-        ListItem::new(line)
-    }).collect();
+    let items: Vec<ListItem> = view
+        .rows
+        .iter()
+        .map(|row| {
+            let indent = "  ".repeat(row.depth);
+            let (prefix_style, name_style) = match row.node_type.as_str() {
+                "event" => (
+                    Style::default().fg(Color::Magenta),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                "subscriber" => (
+                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(Color::Green),
+                ),
+                _ => (
+                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::White),
+                ),
+            };
+            let edge_label = match row.edge_type.as_str() {
+                "origin" => "EVENT",
+                "subscribes_to" => "SUBS",
+                "publishes" => "PUB",
+                other => other,
+            };
+            let line = Line::from(vec![
+                Span::raw(indent),
+                Span::styled(format!("[{edge_label:<6}] "), prefix_style),
+                Span::styled(row.object.clone(), Style::default().fg(Color::DarkGray)),
+                Span::raw("."),
+                Span::styled(row.name.clone(), name_style),
+            ]);
+            ListItem::new(line)
+        })
+        .collect();
 
     let title = if view.rows.is_empty() {
         " Event Chain (no results) "
@@ -1598,8 +2004,18 @@ fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
     };
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title).border_style(list_style))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(list_style),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol(">> ");
     f.render_stateful_widget(list, chunks[1], &mut view.list_state);
 
@@ -1613,12 +2029,18 @@ fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
 fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphView) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     // Search input
     let input_style = if view.input_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -1637,18 +2059,26 @@ fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphView) {
 
     // Results list
     let list_style = if !view.input_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let items: Vec<ListItem> = view.rows.iter().map(|row| {
-        let style = match row.kind {
-            CallRowKind::Header => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            CallRowKind::Entry => Style::default().fg(Color::White),
-        };
-        ListItem::new(Line::from(Span::styled(row.label.clone(), style)))
-    }).collect();
+    let items: Vec<ListItem> = view
+        .rows
+        .iter()
+        .map(|row| {
+            let style = match row.kind {
+                CallRowKind::Header => Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+                CallRowKind::Entry => Style::default().fg(Color::White),
+            };
+            ListItem::new(Line::from(Span::styled(row.label.clone(), style)))
+        })
+        .collect();
 
     let title = if view.rows.is_empty() {
         " Call Graph / Impact (no results) "
@@ -1657,8 +2087,18 @@ fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphView) {
     };
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title).border_style(list_style))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(list_style),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol(">> ");
     f.render_stateful_widget(list, chunks[1], &mut view.list_state);
 
@@ -1672,12 +2112,18 @@ fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphView) {
 fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     // File path input
     let input_style = if view.input_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -1696,7 +2142,9 @@ fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView) {
 
     // Hotspot table
     let list_style = if !view.input_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -1708,11 +2156,16 @@ fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView) {
         )))]
     } else {
         // Header row
-        let header_text = format!("{:<40} {:<30} {:>10} {:>10} {:>8}",
-            "Procedure", "Object/File", "Self(ms)", "Total(ms)", "Hits");
-        let mut rows: Vec<ListItem> = vec![ListItem::new(Line::from(
-            Span::styled(header_text, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ))];
+        let header_text = format!(
+            "{:<40} {:<30} {:>10} {:>10} {:>8}",
+            "Procedure", "Object/File", "Self(ms)", "Total(ms)", "Hits"
+        );
+        let mut rows: Vec<ListItem> = vec![ListItem::new(Line::from(Span::styled(
+            header_text,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )))];
 
         for h in &view.hotspots {
             let procedure = truncate_with_ellipsis(&h.procedure, 39);
@@ -1751,8 +2204,18 @@ fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView) {
     };
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title).border_style(list_style))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(list_style),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol(">> ");
     f.render_stateful_widget(list, chunks[1], &mut view.list_state);
 
@@ -1801,4 +2264,3 @@ fn find_member_line_in_file(path: &std::path::Path, member_name: &str) -> Option
     }
     None
 }
-

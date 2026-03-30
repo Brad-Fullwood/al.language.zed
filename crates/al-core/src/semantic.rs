@@ -15,9 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use al_semantic::{BuiltinMethod, BuiltinType, SemanticBridge};
 use tokio::sync::RwLockReadGuard;
 
-
 use crate::workspace::Workspace;
-
 
 // ---------------------------------------------------------------------------
 // SemanticCache — in-memory builtin type index
@@ -101,7 +99,10 @@ impl SemanticCache {
             return None;
         };
         let lower = method_name.to_lowercase();
-        let method = bt.methods.iter().find(|m| m.name.eq_ignore_ascii_case(&lower));
+        let method = bt
+            .methods
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(&lower));
         if method.is_some() {
             self.hits.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -184,8 +185,14 @@ impl Default for SemanticCache {
 /// can observe one written without the other. A double-check on `builtins_guard`
 /// prevents a second concurrent caller from overwriting a just-written value.
 pub fn set_builtins(workspace: &Workspace, builtins: Vec<BuiltinType>, version: &str) {
-    let mut builtins_guard = workspace.builtins.write().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
-    let mut cache_guard = workspace.semantic_cache.write().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
+    let mut builtins_guard = workspace
+        .builtins
+        .write()
+        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
+    let mut cache_guard = workspace
+        .semantic_cache
+        .write()
+        .unwrap_or_else(|e| e.into_inner()); // SILENT: recover from RwLock poison
     if !builtins_guard.is_empty() && !cache_guard.is_stale(version) {
         return; // Another concurrent caller already populated with matching version — skip.
     }
@@ -226,10 +233,8 @@ async fn init_bridge_inner(
 
     // Release the write lock (caller already dropped it) before blocking CLR init
     // to avoid starving the async executor.
-    let bridge_result = tokio::task::spawn_blocking(move || {
-        SemanticBridge::new(&ca_path, &version)
-    })
-    .await;
+    let bridge_result =
+        tokio::task::spawn_blocking(move || SemanticBridge::new(&ca_path, &version)).await;
 
     // Re-acquire write lock and insert.
     let mut write_guard = workspace.semantic.write().await;
@@ -271,7 +276,10 @@ pub async fn get_or_init_bridge(
 
     // Check restart limit
     if workspace.bridge_restart_count.load(Ordering::Relaxed) > MAX_RESTARTS {
-        tracing::warn!("Bridge restart limit ({}) reached, not re-initializing", MAX_RESTARTS);
+        tracing::warn!(
+            "Bridge restart limit ({}) reached, not re-initializing",
+            MAX_RESTARTS
+        );
         return None;
     }
 
@@ -338,7 +346,10 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
     }
 
     // All early-return checks passed — now consume a restart slot.
-    let count = workspace.bridge_restart_count.fetch_add(1, Ordering::Relaxed) + 1;
+    let count = workspace
+        .bridge_restart_count
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
     if count > MAX_RESTARTS {
         return Err(AlError::BridgeRestartLimitExceeded {
             attempts: count,
@@ -561,13 +572,17 @@ mod tests {
         *ws.toolchain.write().await = Some(dummy_toolchain);
 
         // Seed the counter to the limit so the very next real attempt is rejected.
-        ws.bridge_restart_count.store(MAX_RESTARTS, Ordering::Relaxed);
+        ws.bridge_restart_count
+            .store(MAX_RESTARTS, Ordering::Relaxed);
 
         // Next restart attempt should be rejected due to limit
         let result = restart_bridge(&ws).await;
         assert!(result.is_err());
         assert!(
-            matches!(result.unwrap_err(), AlError::BridgeRestartLimitExceeded { .. }),
+            matches!(
+                result.unwrap_err(),
+                AlError::BridgeRestartLimitExceeded { .. }
+            ),
             "Should be BridgeRestartLimitExceeded"
         );
     }
@@ -592,7 +607,8 @@ mod tests {
         let ws = Workspace::new();
 
         // Exhaust restart limit (counter > MAX_RESTARTS)
-        ws.bridge_restart_count.store(MAX_RESTARTS + 1, Ordering::Relaxed);
+        ws.bridge_restart_count
+            .store(MAX_RESTARTS + 1, Ordering::Relaxed);
 
         // get_or_init should return None when limit exceeded
         let result = get_or_init_bridge(&ws).await;

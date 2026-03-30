@@ -101,7 +101,10 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         let mut found_range = None;
         let mut obj_cursor = node.walk();
         for c in node.children(&mut obj_cursor) {
-            if matches!(c.kind(), "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword") {
+            if matches!(
+                c.kind(),
+                "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
+            ) {
                 if let Ok(n) = c.utf8_text(source) {
                     let trimmed = n.trim_matches('"').trim();
                     if !trimmed.is_empty() {
@@ -428,10 +431,29 @@ fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<Document
 /// Page control keywords that appear as metadata_keyword nodes in the grammar.
 /// These produce a pattern: metadata_keyword + parenthesized_block + braced_block
 const PAGE_CONTROL_KEYWORDS: &[&str] = &[
-    "area", "group", "repeater", "field", "part", "action", "separator",
-    "cuegroup", "grid", "fixed", "usercontrol", "label", "dataitem",
-    "column", "filter", "addfirst", "addlast", "addafter", "addbefore",
-    "modify", "moveafter", "movebefore", "actionref",
+    "area",
+    "group",
+    "repeater",
+    "field",
+    "part",
+    "action",
+    "separator",
+    "cuegroup",
+    "grid",
+    "fixed",
+    "usercontrol",
+    "label",
+    "dataitem",
+    "column",
+    "filter",
+    "addfirst",
+    "addlast",
+    "addafter",
+    "addbefore",
+    "modify",
+    "moveafter",
+    "movebefore",
+    "actionref",
 ];
 
 fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
@@ -453,7 +475,9 @@ fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
 /// Uses next_sibling() for zero-allocation look-ahead instead of collecting all children.
 fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
     let mut cursor = body.walk();
-    if !cursor.goto_first_child() { return; }
+    if !cursor.goto_first_child() {
+        return;
+    }
 
     loop {
         let child = cursor.node();
@@ -494,7 +518,9 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
                 if let Some(sym) = try_extract_page_control(child, source) {
                     // Skip siblings consumed by the page control (paren + braced_block)
                     loop {
-                        if !cursor.goto_next_sibling() { break; }
+                        if !cursor.goto_next_sibling() {
+                            break;
+                        }
                         if cursor.node().kind() == "braced_block" {
                             // consumed the body — advance past it
                             break;
@@ -508,7 +534,9 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
             }
             _ => {}
         }
-        if !cursor.goto_next_sibling() { break; }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
     }
 }
 
@@ -519,9 +547,15 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
 ///   `control_keyword("trigger")` + `identifier("OnPreDataItem")` + `parenthesized_block("()")`
 ///
 /// This function walks the block's children looking for that pattern.
-fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
+fn extract_triggers_from_braced_block(
+    block: Node,
+    source: &[u8],
+    symbols: &mut Vec<DocumentSymbol>,
+) {
     let mut cursor = block.walk();
-    if !cursor.goto_first_child() { return; }
+    if !cursor.goto_first_child() {
+        return;
+    }
 
     loop {
         let child = cursor.node();
@@ -533,7 +567,10 @@ fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut 
                     let trigger_kw_range = child.range();
                     if let Some(name_node) = child.next_sibling() {
                         let name_kind = name_node.kind();
-                        if matches!(name_kind, "identifier" | "name" | "name_or_keyword" | "keyword") {
+                        if matches!(
+                            name_kind,
+                            "identifier" | "name" | "name_or_keyword" | "keyword"
+                        ) {
                             if let Ok(name_text) = name_node.utf8_text(source) {
                                 let name = name_text.trim_matches('"').to_string();
                                 if !name.is_empty() {
@@ -546,7 +583,8 @@ fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut 
                                         },
                                         source,
                                     );
-                                    let selection_range = crate::ts_range_to_lsp(&name_node.range(), source);
+                                    let selection_range =
+                                        crate::ts_range_to_lsp(&name_node.range(), source);
                                     symbols.push(DocumentSymbol {
                                         name,
                                         detail: Some("trigger".to_string()),
@@ -564,7 +602,9 @@ fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut 
                 }
             }
         }
-        if !cursor.goto_next_sibling() { break; }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
     }
 }
 
@@ -573,7 +613,10 @@ fn extract_triggers_from_braced_block(block: Node, source: &[u8], symbols: &mut 
 fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kw_text = kw_node.utf8_text(source).ok()?;
 
-    if !PAGE_CONTROL_KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(kw_text)) {
+    if !PAGE_CONTROL_KEYWORDS
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(kw_text))
+    {
         return None;
     }
 
@@ -584,7 +627,10 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
     while let Some(sib) = sibling {
         match sib.kind() {
             "parenthesized_block" if paren_node.is_none() => paren_node = Some(sib),
-            "braced_block" => { body_node = Some(sib); break; }
+            "braced_block" => {
+                body_node = Some(sib);
+                break;
+            }
             "semicolon" => {}
             _ => break,
         }
@@ -633,7 +679,11 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
         deprecated: None,
         range,
         selection_range,
-        children: if nested.is_empty() { None } else { Some(nested) },
+        children: if nested.is_empty() {
+            None
+        } else {
+            Some(nested)
+        },
     })
 }
 
@@ -651,7 +701,8 @@ fn extract_control_name(paren: Node, source: &[u8]) -> String {
         }
     }
     // Fallback: show the full paren text without parens
-    paren.utf8_text(source)
+    paren
+        .utf8_text(source)
         .map(|t| t.trim_matches(|c| c == '(' || c == ')').trim().to_string())
         .unwrap_or_default()
 }
@@ -727,7 +778,10 @@ fn extract_key_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
 fn is_dataitem_key_declaration(node: Node, source: &[u8]) -> bool {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if matches!(child.kind(), "keyword" | "metadata_keyword" | "control_keyword") {
+        if matches!(
+            child.kind(),
+            "keyword" | "metadata_keyword" | "control_keyword"
+        ) {
             return child
                 .utf8_text(source)
                 .map(|t| t.eq_ignore_ascii_case("dataitem"))
@@ -818,7 +872,11 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
         deprecated: None,
         range,
         selection_range,
-        children: if children.is_empty() { None } else { Some(children) },
+        children: if children.is_empty() {
+            None
+        } else {
+            Some(children)
+        },
     })
 }
 

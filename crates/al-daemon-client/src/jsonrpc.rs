@@ -29,7 +29,11 @@ pub struct Response {
 impl Response {
     /// Successful response with a JSON result value.
     pub fn ok(id: u64, result: serde_json::Value) -> Self {
-        Self { id, result: Some(result), error: None }
+        Self {
+            id,
+            result: Some(result),
+            error: None,
+        }
     }
 
     /// Error response.
@@ -37,7 +41,10 @@ impl Response {
         Self {
             id,
             result: None,
-            error: Some(RpcError { code, message: message.into() }),
+            error: Some(RpcError {
+                code,
+                message: message.into(),
+            }),
         }
     }
 }
@@ -72,7 +79,11 @@ mod tests {
 
     #[test]
     fn request_serialization_omits_null_params() {
-        let req = Request { id: 1, method: "ping".to_string(), params: None };
+        let req = Request {
+            id: 1,
+            method: "ping".to_string(),
+            params: None,
+        };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("params"));
     }
@@ -102,7 +113,10 @@ mod tests {
 
     #[test]
     fn rpc_error_display() {
-        let err = RpcError { code: -32601, message: "Method not found".to_string() };
+        let err = RpcError {
+            code: -32601,
+            message: "Method not found".to_string(),
+        };
         assert_eq!(err.to_string(), "RPC error -32601: Method not found");
     }
 }

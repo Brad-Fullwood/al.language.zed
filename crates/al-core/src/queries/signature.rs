@@ -42,14 +42,20 @@ fn build_signature_from_method(
     method: &al_symbols::MethodSymbol,
     active_param: u32,
 ) -> SignatureHelpResult {
-    let params: Vec<SignatureParameterInfo> = method.parameters.iter().map(|p| {
-        SignatureParameterInfo {
+    let params: Vec<SignatureParameterInfo> = method
+        .parameters
+        .iter()
+        .map(|p| SignatureParameterInfo {
             label: p.to_string(),
             documentation: None,
-        }
-    }).collect();
+        })
+        .collect();
     let params_str: Vec<String> = method.parameters.iter().map(|p| p.to_string()).collect();
-    let return_str = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
+    let return_str = method
+        .return_type
+        .as_ref()
+        .map(|r| format!(": {}", r))
+        .unwrap_or_default();
     SignatureHelpResult {
         signatures: vec![SignatureInfo {
             label: format!("{}({}){}", method.name, params_str.join("; "), return_str),
@@ -77,7 +83,11 @@ fn parse_parameters_from_detail(detail: &str) -> Vec<SignatureParameterInfo> {
 }
 
 /// Get signature help at a position (inside a function call).
-pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> Option<SignatureHelpResult> {
+pub fn signature_help(
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Option<SignatureHelpResult> {
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let text = workspace.documents.get_text_arc(uri)?;
 
@@ -131,7 +141,16 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
     }
 
     // Receiver type resolution for cross-file workspace procedures
-    if let Some(sig) = resolve_receiver_signature(workspace, uri, &text, &tree, prefix, func_name, active_param, lsp_pos) {
+    if let Some(sig) = resolve_receiver_signature(
+        workspace,
+        uri,
+        &text,
+        &tree,
+        prefix,
+        func_name,
+        active_param,
+        lsp_pos,
+    ) {
         return Some(sig);
     }
 
@@ -151,23 +170,34 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
     for bt in builtins.iter() {
         for method in &bt.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
-                let params: Vec<SignatureParameterInfo> = method.parameters.iter().map(|p| {
-                    SignatureParameterInfo {
+                let params: Vec<SignatureParameterInfo> = method
+                    .parameters
+                    .iter()
+                    .map(|p| SignatureParameterInfo {
                         label: p.to_string(),
                         documentation: None,
-                    }
-                }).collect();
-                let params_str: Vec<String> = method.parameters.iter().map(|p| {
-                    p.to_string()
-                }).collect();
-                let return_str = method.return_type.as_ref().map(|r| format!(": {}", r)).unwrap_or_default();
+                    })
+                    .collect();
+                let params_str: Vec<String> =
+                    method.parameters.iter().map(|p| p.to_string()).collect();
+                let return_str = method
+                    .return_type
+                    .as_ref()
+                    .map(|r| format!(": {}", r))
+                    .unwrap_or_default();
                 let doc = if method.documentation.is_empty() {
                     None
                 } else {
                     Some(resolution::format_xml_doc(&method.documentation))
                 };
                 signatures.push(SignatureInfo {
-                    label: format!("{}.{}({}){}", bt.name, method.name, params_str.join("; "), return_str),
+                    label: format!(
+                        "{}.{}({}){}",
+                        bt.name,
+                        method.name,
+                        params_str.join("; "),
+                        return_str
+                    ),
                     documentation: doc,
                     parameters: params,
                     active_parameter: Some(active_param),
@@ -176,7 +206,8 @@ pub fn signature_help(workspace: &Workspace, uri: &Url, position: Position) -> O
         }
     }
     if !signatures.is_empty() {
-        let active_sig = signatures.iter()
+        let active_sig = signatures
+            .iter()
             .position(|s| s.parameters.len() as u32 > active_param)
             .unwrap_or(0) as u32;
         return Some(SignatureHelpResult {
@@ -205,7 +236,9 @@ fn resolve_receiver_signature(
     let dot_pos = before_paren.rfind('.')?;
     let receiver_text = before_paren[..dot_pos].trim();
     let receiver_name = al_syntax::extract_last_identifier(receiver_text);
-    if receiver_name.is_empty() { return None; }
+    if receiver_name.is_empty() {
+        return None;
+    }
 
     let resolver = al_syntax::TypeResolver::new(tree, text);
     let decl = resolver.resolve_type(receiver_name, position)?;
@@ -267,7 +300,12 @@ mod tests {
         let detail = "(var SalesHeader: Record; Preview: Boolean): Boolean";
         let params = parse_parameters_from_detail(detail);
 
-        assert_eq!(params.len(), 2, "expected 2 parameters, got {}", params.len());
+        assert_eq!(
+            params.len(),
+            2,
+            "expected 2 parameters, got {}",
+            params.len()
+        );
         assert_eq!(params[0].label, "var SalesHeader: Record");
         assert_eq!(params[1].label, "Preview: Boolean");
     }
@@ -275,8 +313,11 @@ mod tests {
     #[test]
     fn test_parse_parameters_from_detail_no_params() {
         let params = parse_parameters_from_detail("(): Boolean");
-        assert!(params.is_empty(), "expected empty params for no-arg proc, got {:?}",
-            params.iter().map(|p| &p.label).collect::<Vec<_>>());
+        assert!(
+            params.is_empty(),
+            "expected empty params for no-arg proc, got {:?}",
+            params.iter().map(|p| &p.label).collect::<Vec<_>>()
+        );
     }
 
     #[test]

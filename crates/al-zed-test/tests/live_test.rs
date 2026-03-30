@@ -48,7 +48,10 @@ async fn test_screenshot() {
         Err(e) => println!("Screenshot failed: {e}"),
     }
     assert!(screenshot.is_ok(), "Should capture screenshot");
-    assert!(screenshot.unwrap().len() > 1000, "Screenshot should be non-trivial");
+    assert!(
+        screenshot.unwrap().len() > 1000,
+        "Screenshot should be non-trivial"
+    );
 }
 
 #[tokio::test]
@@ -75,7 +78,10 @@ async fn test_clipboard_roundtrip() {
     zed.set_clipboard(test_str).expect("set clipboard");
     let read_back = zed.clipboard().expect("read clipboard");
     println!("Clipboard roundtrip: wrote '{test_str}', read '{read_back}'");
-    assert_eq!(read_back, test_str, "Clipboard roundtrip should preserve content");
+    assert_eq!(
+        read_back, test_str,
+        "Clipboard roundtrip should preserve content"
+    );
 }
 
 #[tokio::test]

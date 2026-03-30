@@ -16,7 +16,9 @@ use std::str::FromStr;
 // ---------------------------------------------------------------------------
 
 /// The kind of an AL object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 pub enum ObjectKind {
     #[default]
     Table,
@@ -404,7 +406,6 @@ pub(crate) struct SymbolReferenceJson {
     pub namespaces: Vec<SymbolReferenceJson>,
 }
 
-
 /// Raw JSON shape of a single object in SymbolReference.json.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ObjectJson {
@@ -552,7 +553,12 @@ pub(crate) struct VariableJson {
 pub(crate) struct ControlJson {
     #[serde(alias = "Name", default)]
     pub name: String,
-    #[serde(alias = "Kind", alias = "ControlKind", default, deserialize_with = "deserialize_string_or_int")]
+    #[serde(
+        alias = "Kind",
+        alias = "ControlKind",
+        default,
+        deserialize_with = "deserialize_string_or_int"
+    )]
     pub kind: String,
     #[serde(alias = "Controls", alias = "Children", default)]
     pub children: Vec<ControlJson>,
@@ -631,7 +637,10 @@ impl SymbolReferenceJson {
             (ObjectKind::EnumExtension, self.enum_extensions),
             (ObjectKind::Interface, self.interfaces),
             (ObjectKind::PermissionSet, self.permission_sets),
-            (ObjectKind::PermissionSetExtension, self.permission_set_extensions),
+            (
+                ObjectKind::PermissionSetExtension,
+                self.permission_set_extensions,
+            ),
             (ObjectKind::Profile, self.profiles),
             (ObjectKind::PageCustomization, self.page_customizations),
             (ObjectKind::ControlAddIn, self.control_add_ins),
@@ -674,9 +683,7 @@ impl SymbolReferenceJson {
                 }
                 for field in &obj.fields {
                     if let Some(td) = &field.type_definition {
-                        if td.name.eq_ignore_ascii_case("Option")
-                            && !td.option_members.is_empty()
-                        {
+                        if td.name.eq_ignore_ascii_case("Option") && !td.option_members.is_empty() {
                             let key = (*kind, obj.name.clone(), field.name.clone());
                             let existing = option_enums.entry(key).or_default();
                             if td.option_members.len() > existing.len() {
@@ -747,10 +754,25 @@ impl ObjectJson {
             package: package.to_string(),
             methods: self.methods.into_iter().map(|m| m.into_method()).collect(),
             fields: self.fields.into_iter().map(|f| f.into_field()).collect(),
-            controls: self.controls.into_iter().map(|c| c.into_control()).collect(),
-            enum_values: self.enum_values.into_iter().map(|v| v.into_value()).collect(),
+            controls: self
+                .controls
+                .into_iter()
+                .map(|c| c.into_control())
+                .collect(),
+            enum_values: self
+                .enum_values
+                .into_iter()
+                .map(|v| v.into_value())
+                .collect(),
             keys: self.keys.into_iter().map(|k| k.into_key()).collect(),
-            properties: self.properties.into_iter().map(|p| PropertyValue { name: p.name, value: p.value }).collect(),
+            properties: self
+                .properties
+                .into_iter()
+                .map(|p| PropertyValue {
+                    name: p.name,
+                    value: p.value,
+                })
+                .collect(),
             variables: self.variables.into_iter().map(|v| v.into_var()).collect(),
             implements: self.implements,
             namespace: String::new(),
@@ -762,12 +784,14 @@ impl MethodJson {
     fn into_method(self) -> MethodSymbol {
         MethodSymbol {
             name: self.name,
-            parameters: self.parameters.into_iter().map(|p| p.into_param()).collect(),
-            return_type: self.return_type.map(|r| {
-                match &r.subtype {
-                    Some(sub) if !sub.name.is_empty() => format!("{} \"{}\"", r.name, sub.name),
-                    _ => r.name,
-                }
+            parameters: self
+                .parameters
+                .into_iter()
+                .map(|p| p.into_param())
+                .collect(),
+            return_type: self.return_type.map(|r| match &r.subtype {
+                Some(sub) if !sub.name.is_empty() => format!("{} \"{}\"", r.name, sub.name),
+                _ => r.name,
             }),
             attributes: self.attributes.into_iter().map(|a| a.into_attr()).collect(),
             is_local: self.is_local,
@@ -779,7 +803,10 @@ impl ParameterJson {
     fn into_param(self) -> ParameterSymbol {
         ParameterSymbol {
             name: self.name,
-            type_name: self.type_definition.map(|t| t.full_type()).unwrap_or_default(),
+            type_name: self
+                .type_definition
+                .map(|t| t.full_type())
+                .unwrap_or_default(),
             is_var: self.is_var,
         }
     }
@@ -799,8 +826,18 @@ impl FieldJson {
         FieldSymbol {
             id: self.id,
             name: self.name,
-            type_name: self.type_definition.map(|t| t.full_type()).unwrap_or_default(),
-            properties: self.properties.into_iter().map(|p| PropertyValue { name: p.name, value: p.value }).collect(),
+            type_name: self
+                .type_definition
+                .map(|t| t.full_type())
+                .unwrap_or_default(),
+            properties: self
+                .properties
+                .into_iter()
+                .map(|p| PropertyValue {
+                    name: p.name,
+                    value: p.value,
+                })
+                .collect(),
         }
     }
 }
@@ -810,7 +847,14 @@ impl KeyJson {
         KeySymbol {
             name: self.name,
             field_names: self.field_names,
-            properties: self.properties.into_iter().map(|p| PropertyValue { name: p.name, value: p.value }).collect(),
+            properties: self
+                .properties
+                .into_iter()
+                .map(|p| PropertyValue {
+                    name: p.name,
+                    value: p.value,
+                })
+                .collect(),
         }
     }
 }
@@ -819,7 +863,10 @@ impl VariableJson {
     fn into_var(self) -> VariableSymbol {
         VariableSymbol {
             name: self.name,
-            type_name: self.type_definition.map(|t| t.full_type()).unwrap_or_default(),
+            type_name: self
+                .type_definition
+                .map(|t| t.full_type())
+                .unwrap_or_default(),
             is_protected: self.protected,
         }
     }
@@ -830,7 +877,11 @@ impl ControlJson {
         ControlSymbol {
             name: self.name,
             kind: self.kind,
-            children: self.children.into_iter().map(|c| c.into_control()).collect(),
+            children: self
+                .children
+                .into_iter()
+                .map(|c| c.into_control())
+                .collect(),
         }
     }
 }
@@ -925,7 +976,10 @@ mod tests {
         assert_eq!(entries.len(), 5);
 
         // Table
-        let table = entries.iter().find(|e| e.kind == ObjectKind::Table).unwrap();
+        let table = entries
+            .iter()
+            .find(|e| e.kind == ObjectKind::Table)
+            .unwrap();
         assert_eq!(table.id, 50100);
         assert_eq!(table.name, "My Table");
         assert_eq!(table.fields.len(), 2);
@@ -940,7 +994,10 @@ mod tests {
         assert_eq!(page.controls[0].children.len(), 1);
 
         // Codeunit with attributes
-        let cu = entries.iter().find(|e| e.kind == ObjectKind::Codeunit).unwrap();
+        let cu = entries
+            .iter()
+            .find(|e| e.kind == ObjectKind::Codeunit)
+            .unwrap();
         assert_eq!(cu.methods[0].attributes.len(), 1);
         assert_eq!(cu.methods[0].attributes[0].name, "IntegrationEvent");
         assert_eq!(cu.methods[0].attributes[0].arguments.len(), 2);
@@ -950,7 +1007,10 @@ mod tests {
         assert_eq!(en.enum_values.len(), 2);
 
         // Table extension
-        let ext = entries.iter().find(|e| e.kind == ObjectKind::TableExtension).unwrap();
+        let ext = entries
+            .iter()
+            .find(|e| e.kind == ObjectKind::TableExtension)
+            .unwrap();
         assert_eq!(ext.extends.as_deref(), Some("My Table"));
         assert_eq!(ext.fields.len(), 1);
     }
@@ -965,8 +1025,14 @@ mod tests {
 
     #[test]
     fn object_kind_extension_relationships() {
-        assert_eq!(ObjectKind::Table.extension_kind(), Some(ObjectKind::TableExtension));
-        assert_eq!(ObjectKind::TableExtension.base_kind(), Some(ObjectKind::Table));
+        assert_eq!(
+            ObjectKind::Table.extension_kind(),
+            Some(ObjectKind::TableExtension)
+        );
+        assert_eq!(
+            ObjectKind::TableExtension.base_kind(),
+            Some(ObjectKind::Table)
+        );
         assert!(ObjectKind::Codeunit.extension_kind().is_none());
         assert!(ObjectKind::TableExtension.is_extension());
         assert!(!ObjectKind::Table.is_extension());
@@ -978,7 +1044,10 @@ mod tests {
         assert_eq!(ObjectKind::Codeunit.to_string(), "Codeunit");
         assert_eq!(ObjectKind::PageExtension.to_string(), "PageExtension");
         assert_eq!(ObjectKind::XmlPort.to_string(), "XmlPort");
-        assert_eq!(ObjectKind::PermissionSetExtension.to_string(), "PermissionSetExtension");
+        assert_eq!(
+            ObjectKind::PermissionSetExtension.to_string(),
+            "PermissionSetExtension"
+        );
         assert_eq!(ObjectKind::Entitlement.to_string(), "Entitlement");
     }
 
@@ -1012,14 +1081,25 @@ mod tests {
         let method = MethodSymbol {
             name: "DoSomething".to_string(),
             parameters: vec![
-                ParameterSymbol { name: "Input".to_string(), type_name: "Text".to_string(), is_var: false },
-                ParameterSymbol { name: "Output".to_string(), type_name: "Integer".to_string(), is_var: true },
+                ParameterSymbol {
+                    name: "Input".to_string(),
+                    type_name: "Text".to_string(),
+                    is_var: false,
+                },
+                ParameterSymbol {
+                    name: "Output".to_string(),
+                    type_name: "Integer".to_string(),
+                    is_var: true,
+                },
             ],
             return_type: Some("Boolean".to_string()),
             attributes: vec![],
             is_local: false,
         };
-        assert_eq!(format!("{}", method), "DoSomething(Input: Text; var Output: Integer): Boolean");
+        assert_eq!(
+            format!("{}", method),
+            "DoSomething(Input: Text; var Output: Integer): Boolean"
+        );
     }
 
     #[test]
@@ -1036,10 +1116,18 @@ mod tests {
 
     #[test]
     fn test_parameter_symbol_display() {
-        let param = ParameterSymbol { name: "X".to_string(), type_name: "Decimal".to_string(), is_var: false };
+        let param = ParameterSymbol {
+            name: "X".to_string(),
+            type_name: "Decimal".to_string(),
+            is_var: false,
+        };
         assert_eq!(format!("{}", param), "X: Decimal");
 
-        let var_param = ParameterSymbol { name: "Y".to_string(), type_name: "Record".to_string(), is_var: true };
+        let var_param = ParameterSymbol {
+            name: "Y".to_string(),
+            type_name: "Record".to_string(),
+            is_var: true,
+        };
         assert_eq!(format!("{}", var_param), "var Y: Record");
     }
 
@@ -1051,7 +1139,10 @@ mod tests {
             (ObjectKind::Page, ObjectKind::PageExtension),
             (ObjectKind::Report, ObjectKind::ReportExtension),
             (ObjectKind::Enum, ObjectKind::EnumExtension),
-            (ObjectKind::PermissionSet, ObjectKind::PermissionSetExtension),
+            (
+                ObjectKind::PermissionSet,
+                ObjectKind::PermissionSetExtension,
+            ),
         ];
         for (base, ext) in &ext_pairs {
             assert_eq!(base.extension_kind(), Some(*ext));
@@ -1074,7 +1165,11 @@ mod tests {
             ObjectKind::Entitlement,
         ];
         for kind in &no_ext {
-            assert!(kind.extension_kind().is_none(), "{} should have no extension kind", kind);
+            assert!(
+                kind.extension_kind().is_none(),
+                "{} should have no extension kind",
+                kind
+            );
             assert!(!kind.is_extension());
         }
     }
@@ -1100,8 +1195,12 @@ mod tests {
         let sr: SymbolReferenceJson = serde_json::from_str(json).unwrap();
         let entries = sr.into_entries("Nested");
         assert_eq!(entries.len(), 2);
-        assert!(entries.iter().any(|e| e.name == "NestedTable" && e.kind == ObjectKind::Table));
-        assert!(entries.iter().any(|e| e.name == "DeeplyNested" && e.kind == ObjectKind::Codeunit));
+        assert!(entries
+            .iter()
+            .any(|e| e.name == "NestedTable" && e.kind == ObjectKind::Table));
+        assert!(entries
+            .iter()
+            .any(|e| e.name == "DeeplyNested" && e.kind == ObjectKind::Codeunit));
     }
 
     #[test]
@@ -1131,8 +1230,14 @@ mod tests {
             fields: vec![],
             controls: vec![],
             enum_values: vec![
-                EnumValueSymbol { ordinal: 0, name: "None".to_string() },
-                EnumValueSymbol { ordinal: 1, name: "Active".to_string() },
+                EnumValueSymbol {
+                    ordinal: 0,
+                    name: "None".to_string(),
+                },
+                EnumValueSymbol {
+                    ordinal: 1,
+                    name: "Active".to_string(),
+                },
             ],
             keys: vec![],
             properties: vec![],

@@ -13,7 +13,10 @@ fn main() {
 
     // Only compile if the bridge project exists (skip in CI without .NET)
     if !csproj.is_file() {
-        println!("cargo:warning=Bridge project not found at {}, skipping .NET build", csproj.display());
+        println!(
+            "cargo:warning=Bridge project not found at {}, skipping .NET build",
+            csproj.display()
+        );
         return;
     }
 
@@ -21,20 +24,17 @@ fn main() {
     let output_dir = out_dir.join("bridge");
 
     let status = Command::new("dotnet")
-        .args([
-            "build",
-            "-c", "Release",
-            "--nologo",
-            "-v", "q",
-            "-o",
-        ])
+        .args(["build", "-c", "Release", "--nologo", "-v", "q", "-o"])
         .arg(&output_dir)
         .arg(&csproj)
         .status();
 
     match status {
         Ok(s) if s.success() => {
-            println!("cargo:warning=Bridge DLL compiled to {}", output_dir.display());
+            println!(
+                "cargo:warning=Bridge DLL compiled to {}",
+                output_dir.display()
+            );
         }
         Ok(s) => {
             println!("cargo:warning=dotnet build exited with {s}, bridge DLL may not be available");

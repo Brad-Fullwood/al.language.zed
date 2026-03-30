@@ -167,10 +167,25 @@ impl<'a> TypeResolver<'a> {
             line = position.line,
             character = position.character,
             total = result.len(),
-            locals = result.iter().filter(|v| v.scope == VariableScope::Local).count(),
-            params = result.iter().filter(|v| v.scope == VariableScope::Parameter).count(),
-            globals = result.iter().filter(|v| v.scope == VariableScope::Global).count(),
-            implicit = result.iter().filter(|v| matches!(v.scope, VariableScope::TriggerImplicit | VariableScope::SelfImplicit)).count(),
+            locals = result
+                .iter()
+                .filter(|v| v.scope == VariableScope::Local)
+                .count(),
+            params = result
+                .iter()
+                .filter(|v| v.scope == VariableScope::Parameter)
+                .count(),
+            globals = result
+                .iter()
+                .filter(|v| v.scope == VariableScope::Global)
+                .count(),
+            implicit = result
+                .iter()
+                .filter(|v| matches!(
+                    v.scope,
+                    VariableScope::TriggerImplicit | VariableScope::SelfImplicit
+                ))
+                .count(),
             "variables_at: collected"
         );
         result
@@ -199,11 +214,7 @@ impl<'a> TypeResolver<'a> {
                     .child_by_field_name("name")
                     .and_then(|n| n.utf8_text(self.source).ok())
                     .unwrap_or("(unknown)");
-                debug!(
-                    kind,
-                    name = proc_name,
-                    "find_enclosing_procedure: found"
-                );
+                debug!(kind, name = proc_name, "find_enclosing_procedure: found");
                 return Some(current);
             }
             current = current.parent()?;
@@ -215,7 +226,12 @@ impl<'a> TypeResolver<'a> {
         let mut cursor = proc_node.walk();
         for child in proc_node.children(&mut cursor) {
             if child.kind() == "var_section" {
-                self.collect_var_section_decls(child, "variable_declaration", VariableScope::Local, result);
+                self.collect_var_section_decls(
+                    child,
+                    "variable_declaration",
+                    VariableScope::Local,
+                    result,
+                );
             }
         }
     }
@@ -1191,7 +1207,10 @@ mod tests {
         let resolver = TypeResolver::new(&tree, &text);
 
         // Position inside the action trigger body (line 18, "ProcessReport.SetAction")
-        let pos = Position { line: 18, character: 20 };
+        let pos = Position {
+            line: 18,
+            character: 20,
+        };
 
         let all_vars = resolver.variables_at(pos);
         let names: Vec<&str> = all_vars.iter().map(|v| v.name.as_str()).collect();

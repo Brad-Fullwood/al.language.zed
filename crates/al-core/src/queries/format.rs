@@ -188,7 +188,10 @@ mod tests {
         let json = r#"{"blankLinesBetweenProcedures": "one"}"#;
         let cfg = AlFormatConfig::from_json(json).unwrap();
         let opts = cfg.to_format_options();
-        assert!(matches!(opts.blank_lines_between_procedures, BlankLinesBetweenProcedures::One));
+        assert!(matches!(
+            opts.blank_lines_between_procedures,
+            BlankLinesBetweenProcedures::One
+        ));
     }
 
     #[test]
@@ -196,7 +199,10 @@ mod tests {
         let json = r#"{"blankLinesBetweenProcedures": "two"}"#;
         let cfg = AlFormatConfig::from_json(json).unwrap();
         let opts = cfg.to_format_options();
-        assert!(matches!(opts.blank_lines_between_procedures, BlankLinesBetweenProcedures::Two));
+        assert!(matches!(
+            opts.blank_lines_between_procedures,
+            BlankLinesBetweenProcedures::Two
+        ));
     }
 
     #[test]

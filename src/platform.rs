@@ -30,7 +30,10 @@ impl Platform {
     pub fn extensions_base(&self, home: &str) -> String {
         match self {
             Platform::Linux => format!("{}/.local/share/zed/extensions/installed", home),
-            Platform::MacOS => format!("{}/Library/Application Support/Zed/extensions/installed", home),
+            Platform::MacOS => format!(
+                "{}/Library/Application Support/Zed/extensions/installed",
+                home
+            ),
             Platform::Windows => {
                 // On Windows, HOME might be set but we should use APPDATA if available
                 // For now, use a Windows-style path
@@ -52,7 +55,10 @@ pub fn detect_platform(env_map: &HashMap<String, String>) -> Platform {
         let ostype_lower = ostype.to_lowercase();
         if ostype_lower.starts_with("darwin") {
             return Platform::MacOS;
-        } else if ostype_lower.starts_with("msys") || ostype_lower.starts_with("cygwin") || ostype_lower.starts_with("win") {
+        } else if ostype_lower.starts_with("msys")
+            || ostype_lower.starts_with("cygwin")
+            || ostype_lower.starts_with("win")
+        {
             return Platform::Windows;
         } else if ostype_lower.starts_with("linux") {
             return Platform::Linux;

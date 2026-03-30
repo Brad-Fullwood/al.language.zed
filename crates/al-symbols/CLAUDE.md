@@ -2,6 +2,14 @@
 
 **Leaf crate** — must NOT depend on al-syntax, al-semantic, or al-core.
 
+## Quick Reference
+
+```sh
+cargo test -p al-symbols                    # all tests (~68 inline + 2 integration)
+cargo test -p al-symbols --test corpus      # .app file corpus tests
+cargo test -p al-symbols --test perf_audit  # performance benchmarks
+```
+
 ## Key Exports (lib.rs)
 
 - `SymbolIndex` — DashMap-backed symbol lookup by name/kind

@@ -55,10 +55,7 @@ impl DapMessage {
     /// Parse a DAP message from raw JSON bytes.
     pub fn parse(data: &[u8]) -> Result<Self, serde_json::Error> {
         let value: serde_json::Value = serde_json::from_slice(data)?;
-        let type_ = value
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let type_ = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         match type_ {
             "request" => Ok(DapMessage::Request(serde_json::from_value(value)?)),

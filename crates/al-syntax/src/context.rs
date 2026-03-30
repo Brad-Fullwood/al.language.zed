@@ -183,21 +183,19 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
                 }
             }
             // Double-quoted identifier — scan backwards to its opening `"`
-            b'"' => {
-                loop {
-                    if i == 0 {
+            b'"' => loop {
+                if i == 0 {
+                    break;
+                }
+                i -= 1;
+                if bytes[i] == b'"' {
+                    if i > 0 && bytes[i - 1] == b'"' {
+                        i -= 1;
+                    } else {
                         break;
                     }
-                    i -= 1;
-                    if bytes[i] == b'"' {
-                        if i > 0 && bytes[i - 1] == b'"' {
-                            i -= 1;
-                        } else {
-                            break;
-                        }
-                    }
                 }
-            }
+            },
             b')' => paren_depth += 1,
             b'(' => {
                 if paren_depth > 0 {
@@ -228,7 +226,11 @@ pub fn find_call_context(prefix: &str) -> Option<(&str, u32)> {
 /// Extract the trailing identifier from a string.
 fn extract_trailing_identifier(s: &str) -> Option<&str> {
     let result = extract_last_identifier(s);
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 #[cfg(test)]
@@ -238,35 +240,50 @@ mod tests {
     #[test]
     fn test_detect_context_member_access() {
         let text = "Rec.\n";
-        let pos = Position { line: 0, character: 4 };
+        let pos = Position {
+            line: 0,
+            character: 4,
+        };
         assert_eq!(detect_context(text, pos), CompletionContext::MemberAccess);
     }
 
     #[test]
     fn test_detect_context_enum_access() {
         let text = "MyEnum::\n";
-        let pos = Position { line: 0, character: 8 };
+        let pos = Position {
+            line: 0,
+            character: 8,
+        };
         assert_eq!(detect_context(text, pos), CompletionContext::EnumAccess);
     }
 
     #[test]
     fn test_detect_context_type_position() {
         let text = "x:\n";
-        let pos = Position { line: 0, character: 2 };
+        let pos = Position {
+            line: 0,
+            character: 2,
+        };
         assert_eq!(detect_context(text, pos), CompletionContext::TypePosition);
     }
 
     #[test]
     fn test_detect_context_not_type_after_assign() {
         let text = "x:=\n";
-        let pos = Position { line: 0, character: 3 };
+        let pos = Position {
+            line: 0,
+            character: 3,
+        };
         assert_eq!(detect_context(text, pos), CompletionContext::Default);
     }
 
     #[test]
     fn test_detect_context_default() {
         let text = "Message\n";
-        let pos = Position { line: 0, character: 7 };
+        let pos = Position {
+            line: 0,
+            character: 7,
+        };
         assert_eq!(detect_context(text, pos), CompletionContext::Default);
     }
 
@@ -311,7 +328,10 @@ mod tests {
 
     #[test]
     fn test_detect_context_empty() {
-        let pos = Position { line: 0, character: 0 };
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
         let ctx = detect_context("", pos);
         // Should not panic, returns Default for empty text
         assert_eq!(ctx, CompletionContext::Default);
@@ -319,7 +339,10 @@ mod tests {
 
     #[test]
     fn test_detect_context_line_out_of_range() {
-        let pos = Position { line: 999, character: 0 };
+        let pos = Position {
+            line: 999,
+            character: 0,
+        };
         let ctx = detect_context("hello", pos);
         assert_eq!(ctx, CompletionContext::Default);
     }
@@ -368,7 +391,10 @@ mod tests {
     #[test]
     fn test_detect_context_type_position_with_space() {
         let text = "    MyVar : \n";
-        let pos = Position { line: 0, character: 12 };
+        let pos = Position {
+            line: 0,
+            character: 12,
+        };
         let ctx = detect_context(text, pos);
         assert_eq!(ctx, CompletionContext::TypePosition);
     }
@@ -377,10 +403,16 @@ mod tests {
     fn test_detect_context_case_label_not_type_position() {
         // "Status::Posting:" — the trailing : is a case separator, not a type annotation
         let text = "            Status::Posting:\n";
-        let pos = Position { line: 0, character: 27 };
+        let pos = Position {
+            line: 0,
+            character: 27,
+        };
         let ctx = detect_context(text, pos);
-        assert_ne!(ctx, CompletionContext::TypePosition,
-            "Case label with :: should not be TypePosition");
+        assert_ne!(
+            ctx,
+            CompletionContext::TypePosition,
+            "Case label with :: should not be TypePosition"
+        );
         assert_eq!(ctx, CompletionContext::Default);
     }
 
@@ -388,16 +420,25 @@ mod tests {
     fn test_detect_context_case_label_expression_not_type() {
         // After case label separator, typing expression should not be TypePosition
         let text = "            Status::Posting: DoSom\n";
-        let pos = Position { line: 0, character: 33 };
+        let pos = Position {
+            line: 0,
+            character: 33,
+        };
         let ctx = detect_context(text, pos);
-        assert_ne!(ctx, CompletionContext::TypePosition,
-            "Expression after case label should not be TypePosition");
+        assert_ne!(
+            ctx,
+            CompletionContext::TypePosition,
+            "Expression after case label should not be TypePosition"
+        );
     }
 
     #[test]
     fn test_detect_context_col_beyond_line_length() {
         let text = "short\n";
-        let pos = Position { line: 0, character: 999 };
+        let pos = Position {
+            line: 0,
+            character: 999,
+        };
         let ctx = detect_context(text, pos);
         // Should not panic, uses full line when col > line length
         let _ = ctx;
@@ -415,7 +456,10 @@ mod tests {
         // even though `::` appears earlier in the line.
         let text = "    Status := Status::Posting; x: I\n";
         // cursor is after `x: I`, character index 35
-        let pos = Position { line: 0, character: 35 };
+        let pos = Position {
+            line: 0,
+            character: 35,
+        };
         let ctx = detect_context(text, pos);
         assert_eq!(
             ctx,
@@ -428,7 +472,10 @@ mod tests {
     fn test_detect_context_enum_token_not_type_position() {
         // `Status::` — cursor directly after `::`, should be EnumAccess
         let text = "    Status::\n";
-        let pos = Position { line: 0, character: 12 };
+        let pos = Position {
+            line: 0,
+            character: 12,
+        };
         let ctx = detect_context(text, pos);
         assert_eq!(ctx, CompletionContext::EnumAccess);
     }

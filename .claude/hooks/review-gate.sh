@@ -31,11 +31,11 @@ fi
 
 ISSUES=""
 
-# 1. Check for hardcoded AL values (broader pattern than the PostToolUse hook)
+# 1. Check for hardcoded AL values in NEW diff lines only (broader pattern than the PostToolUse hook)
 for f in $ALL_CHANGED; do
   if [ -f "$f" ]; then
-    # Check for &[&str] arrays containing AL-like tokens
-    if grep -nE 'const\s+\w+\s*:\s*&\[&str\]\s*=' "$f" 2>/dev/null | grep -qiE '(begin|end|procedure|trigger|record|page|codeunit|report|table|field|action|var|local)'; then
+    # Only check added lines in the diff, not the full file (avoids false positives from reformatting)
+    if git diff HEAD -- "$f" 2>/dev/null | grep '^+' | grep -v '^+++' | grep -E 'const\s+\w+\s*:\s*&\[&str\]\s*=' | grep -qiE '(begin|end|procedure|trigger|record|page|codeunit|report|table|field|action|var|local)'; then
       ISSUES="${ISSUES}\n- HARDCODED AL VALUES in $f — use LanguageData or al-symbols instead of const &[&str] arrays"
     fi
   fi
@@ -86,10 +86,14 @@ for f in $ALL_CHANGED; do
     case "$f" in
       */tests/*|*_test.rs|*test_*) continue ;;  # skip test files
     esac
-    # Count new unwrap() calls in the diff
-    NEW_UNWRAPS=$(git diff HEAD -- "$f" 2>/dev/null | grep '^+' | grep -c '\.unwrap()' || echo "0")
-    if [ "$NEW_UNWRAPS" -gt 0 ]; then
-      ISSUES="${ISSUES}\n- UNWRAP IN PRODUCTION CODE: $f adds $NEW_UNWRAPS new .unwrap() call(s). Use proper error handling (?, .ok(), match, etc.)."
+    # Count NET new unwrap() occurrences (added minus removed) to ignore reformatting.
+    # Use grep -o to count each .unwrap() occurrence, not just lines (a single long line
+    # reformatted into multiple short lines would otherwise show as net-new).
+    ADDED_UNWRAPS=$(git diff HEAD -- "$f" 2>/dev/null | grep '^+' | grep -v '^+++' | grep -o '\.unwrap()' | wc -l) || ADDED_UNWRAPS=0
+    REMOVED_UNWRAPS=$(git diff HEAD -- "$f" 2>/dev/null | grep '^-' | grep -v '^---' | grep -o '\.unwrap()' | wc -l) || REMOVED_UNWRAPS=0
+    NET_UNWRAPS=$((ADDED_UNWRAPS - REMOVED_UNWRAPS))
+    if [ "$NET_UNWRAPS" -gt 0 ]; then
+      ISSUES="${ISSUES}\n- UNWRAP IN PRODUCTION CODE: $f adds $NET_UNWRAPS net new .unwrap() call(s). Use proper error handling (?, .ok(), match, etc.)."
     fi
   fi
 done

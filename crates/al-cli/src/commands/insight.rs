@@ -112,10 +112,7 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
                 if unused.is_empty() {
                     println!("No dead code found.");
                 } else {
-                    println!(
-                        "{:<12} {:<30} {:<30} REASON",
-                        "KIND", "NAME", "OBJECT"
-                    );
+                    println!("{:<12} {:<30} {:<30} REASON", "KIND", "NAME", "OBJECT");
                     println!("{}", "-".repeat(85));
                     for item in unused {
                         let kind = item.get("k").and_then(|v| v.as_str()).unwrap_or("?");
@@ -139,10 +136,7 @@ pub fn cmd_impact(symbol: &str, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
 
-    match client.request(
-        "impact",
-        Some(serde_json::json!({ "symbol": symbol })),
-    ) {
+    match client.request("impact", Some(serde_json::json!({ "symbol": symbol }))) {
         Ok(result) => {
             if json {
                 print_json(&result);
@@ -160,25 +154,18 @@ pub fn cmd_impact(symbol: &str, json: bool) -> ExitCode {
                     println!("No consumers found for '{sym}'.");
                 } else {
                     println!("Impact analysis for '{sym}':\n");
-                    println!(
-                        "{:<15} {:<30} {:<15} DETAIL",
-                        "KIND", "NAME", "TYPE"
-                    );
+                    println!("{:<15} {:<30} {:<15} DETAIL", "KIND", "NAME", "TYPE");
                     println!("{}", "-".repeat(75));
                     for entry in impacted {
                         let kind = entry.get("k").and_then(|v| v.as_str()).unwrap_or("?");
                         let name = entry.get("n").and_then(|v| v.as_str()).unwrap_or("?");
-                        let impact_type =
-                            entry.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                        let impact_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("?");
                         let detail = entry
                             .get("proc")
                             .and_then(|v| v.as_str())
                             .or_else(|| entry.get("field").and_then(|v| v.as_str()))
                             .unwrap_or("");
-                        println!(
-                            "{:<15} {:<30} {:<15} {}",
-                            kind, name, impact_type, detail
-                        );
+                        println!("{:<15} {:<30} {:<15} {}", kind, name, impact_type, detail);
                     }
                     eprintln!("\n{} consumers", impacted.len());
                 }
@@ -210,7 +197,9 @@ pub fn cmd_suggest_event(
     } else if let Some(ref obj) = object {
         let mut src = serde_json::json!({ "type": "procedure", "object": obj });
         if let Some(ref proc_name) = procedure {
-            src.as_object_mut().unwrap().insert("procedure".to_string(), serde_json::json!(proc_name));
+            src.as_object_mut()
+                .unwrap()
+                .insert("procedure".to_string(), serde_json::json!(proc_name));
         }
         src
     } else if let Some(ref tbl) = table {
@@ -224,11 +213,17 @@ pub fn cmd_suggest_event(
     // If --table is provided alongside --object, it becomes a filter
     if object.is_some() {
         if let Some(ref tbl) = table {
-            query.as_object_mut().unwrap().insert("filterTable".to_string(), serde_json::json!(tbl));
+            query
+                .as_object_mut()
+                .unwrap()
+                .insert("filterTable".to_string(), serde_json::json!(tbl));
         }
     }
     if let Some(ref f) = field {
-        query.as_object_mut().unwrap().insert("filterField".to_string(), serde_json::json!(f));
+        query
+            .as_object_mut()
+            .unwrap()
+            .insert("filterField".to_string(), serde_json::json!(f));
     }
 
     let mut client = match connect(None) {
@@ -246,7 +241,10 @@ pub fn cmd_suggest_event(
                     .and_then(|v| v.as_array())
                     .map(|v| &v[..])
                     .unwrap_or(&[]);
-                let partial = result.get("partial").and_then(|v| v.as_bool()).unwrap_or(false);
+                let partial = result
+                    .get("partial")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 if points.is_empty() {
                     println!("No integration points found.");
@@ -262,15 +260,25 @@ pub fn cmd_suggest_event(
 
                         // Show var params
                         if let Some(params) = ip.get("params").and_then(|v| v.as_array()) {
-                            let var_params: Vec<_> = params.iter()
-                                .filter(|p| p.get("isVar").and_then(|v| v.as_bool()).unwrap_or(false))
+                            let var_params: Vec<_> = params
+                                .iter()
+                                .filter(|p| {
+                                    p.get("isVar").and_then(|v| v.as_bool()).unwrap_or(false)
+                                })
                                 .collect();
                             if !var_params.is_empty() {
-                                let param_strs: Vec<String> = var_params.iter().map(|p| {
-                                    let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let typ = p.get("typeName").and_then(|v| v.as_str()).unwrap_or("?");
-                                    format!("var {name}: {typ}")
-                                }).collect();
+                                let param_strs: Vec<String> = var_params
+                                    .iter()
+                                    .map(|p| {
+                                        let name =
+                                            p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                        let typ = p
+                                            .get("typeName")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("?");
+                                        format!("var {name}: {typ}")
+                                    })
+                                    .collect();
                                 println!("   Var params: {}", param_strs.join(", "));
                             }
                         }

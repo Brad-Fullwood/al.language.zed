@@ -55,21 +55,31 @@ impl DependencyGraph {
     /// Export the graph in DOT format for Graphviz.
     pub fn to_dot(&self) -> String {
         let mut s = String::from("digraph AL_Dependencies {\n  rankdir=LR;\n  node [shape=box];\n");
-        s.push_str(&format!("  \"{}\" [style=filled, fillcolor=lightblue];\n", self.root_app.name));
+        s.push_str(&format!(
+            "  \"{}\" [style=filled, fillcolor=lightblue];\n",
+            self.root_app.name
+        ));
 
         for node in &self.nodes {
-            s.push_str(&format!("  \"{}\" [label=\"{}\\n{}\"];\n",
-                node.name, node.name, node.version));
+            s.push_str(&format!(
+                "  \"{}\" [label=\"{}\\n{}\"];\n",
+                node.name, node.name, node.version
+            ));
         }
 
         for edge in &self.edges {
-            s.push_str(&format!("  \"{}\" -> \"{}\" [label=\"{}\"];\n",
-                edge.from, edge.to, edge.required_version));
+            s.push_str(&format!(
+                "  \"{}\" -> \"{}\" [label=\"{}\"];\n",
+                edge.from, edge.to, edge.required_version
+            ));
         }
 
         if !self.conflicts.is_empty() {
             for conflict in &self.conflicts {
-                s.push_str(&format!("  \"{}\" [style=filled, fillcolor=red];\n", conflict.name));
+                s.push_str(&format!(
+                    "  \"{}\" [style=filled, fillcolor=red];\n",
+                    conflict.name
+                ));
             }
         }
 
@@ -82,10 +92,7 @@ impl DependencyGraph {
 ///
 /// `app_json` is the raw content of the workspace's app.json.
 /// `packages` is a list of (name, publisher, version, dependencies_json).
-pub fn build_dependency_graph(
-    app_json: &str,
-    packages: &[PackageEntry],
-) -> DependencyGraph {
+pub fn build_dependency_graph(app_json: &str, packages: &[PackageEntry]) -> DependencyGraph {
     // Parse root app info from app.json
     let root_app = parse_root_app(app_json);
     let root_deps = parse_deps_from_app_json(app_json);
@@ -96,7 +103,12 @@ pub fn build_dependency_graph(
     // Add package nodes — key is composite (name|publisher|version) to prevent
     // collisions when multiple versions or publishers share the same package name.
     for (name, publisher, version, _) in packages {
-        let key = format!("{}|{}|{}", name.to_lowercase(), publisher.to_lowercase(), version);
+        let key = format!(
+            "{}|{}|{}",
+            name.to_lowercase(),
+            publisher.to_lowercase(),
+            version
+        );
         nodes.entry(key).or_insert_with(|| DepNode {
             app_id: String::new(),
             name: name.clone(),
@@ -162,7 +174,12 @@ fn parse_root_app(app_json: &str) -> DepNode {
     let publisher = extract_json_string(app_json, "publisher").unwrap_or_default();
     let version = extract_json_string(app_json, "version").unwrap_or_else(|| "0.0.0.0".to_string());
     let app_id = extract_json_string(app_json, "id").unwrap_or_default();
-    DepNode { app_id, name, publisher, version }
+    DepNode {
+        app_id,
+        name,
+        publisher,
+        version,
+    }
 }
 
 fn parse_deps_from_app_json(app_json: &str) -> Vec<(String, String, String)> {
@@ -179,7 +196,9 @@ fn parse_deps_from_app_json(app_json: &str) -> Vec<(String, String, String)> {
                 match ch {
                     '{' => {
                         depth += 1;
-                        if depth == 1 { obj_start = Some(i); }
+                        if depth == 1 {
+                            obj_start = Some(i);
+                        }
                     }
                     '}' => {
                         depth -= 1;
@@ -187,8 +206,10 @@ fn parse_deps_from_app_json(app_json: &str) -> Vec<(String, String, String)> {
                             if let Some(start) = obj_start {
                                 let obj_str = &arr[start..=i];
                                 let name = extract_json_string(obj_str, "name").unwrap_or_default();
-                                let publisher = extract_json_string(obj_str, "publisher").unwrap_or_default();
-                                let version = extract_json_string(obj_str, "version").unwrap_or_default();
+                                let publisher =
+                                    extract_json_string(obj_str, "publisher").unwrap_or_default();
+                                let version =
+                                    extract_json_string(obj_str, "version").unwrap_or_default();
                                 if !name.is_empty() {
                                     deps.push((name, publisher, version));
                                 }
@@ -208,7 +229,9 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
     let pattern = format!("\"{}\"", key);
     let pos = json.find(&pattern)?;
     let after = json[pos + pattern.len()..].trim_start_matches([' ', ':']);
-    if !after.starts_with('"') { return None; }
+    if !after.starts_with('"') {
+        return None;
+    }
     let inner = &after[1..];
     let end = inner.find('"')?;
     Some(inner[..end].to_string())
@@ -225,7 +248,10 @@ fn find_transitive_deps(
     let mut name_to_keys: HashMap<String, Vec<String>> = HashMap::new();
     for key in nodes.keys() {
         if let Some(name_lower) = key.split('|').next() {
-            name_to_keys.entry(name_lower.to_string()).or_default().push(key.clone());
+            name_to_keys
+                .entry(name_lower.to_string())
+                .or_default()
+                .push(key.clone());
         }
     }
 
@@ -313,14 +339,21 @@ mod tests {
     ]
 }"#;
 
-        let packages = vec![
-            ("Base Application".to_string(), "Microsoft".to_string(), "24.0.0.0".to_string(), vec![]),
-        ];
+        let packages = vec![(
+            "Base Application".to_string(),
+            "Microsoft".to_string(),
+            "24.0.0.0".to_string(),
+            vec![],
+        )];
 
         let graph = build_dependency_graph(app_json, &packages);
         assert_eq!(graph.root_app.name, "My App");
         assert!(!graph.nodes.is_empty());
-        assert!(graph.missing.is_empty(), "No missing deps: {:?}", graph.missing);
+        assert!(
+            graph.missing.is_empty(),
+            "No missing deps: {:?}",
+            graph.missing
+        );
     }
 
     #[test]
@@ -335,7 +368,10 @@ mod tests {
 }"#;
 
         let graph = build_dependency_graph(app_json, &[]);
-        assert!(!graph.missing.is_empty(), "Should detect missing dependency");
+        assert!(
+            !graph.missing.is_empty(),
+            "Should detect missing dependency"
+        );
     }
 
     #[test]
@@ -343,7 +379,10 @@ mod tests {
         let app_json = r#"{"name":"TestApp","publisher":"Me","version":"1.0.0.0"}"#;
         let graph = build_dependency_graph(app_json, &[]);
         let dot = graph.to_dot();
-        assert!(dot.contains("TestApp"), "DOT output should contain root app name");
+        assert!(
+            dot.contains("TestApp"),
+            "DOT output should contain root app name"
+        );
     }
 
     #[test]
@@ -363,12 +402,26 @@ mod tests {
 }"#;
 
         let packages = vec![
-            ("Shared Lib".to_string(), "VendorA".to_string(), "1.0.0.0".to_string(), vec![]),
-            ("Shared Lib".to_string(), "VendorB".to_string(), "1.0.0.0".to_string(), vec![]),
+            (
+                "Shared Lib".to_string(),
+                "VendorA".to_string(),
+                "1.0.0.0".to_string(),
+                vec![],
+            ),
+            (
+                "Shared Lib".to_string(),
+                "VendorB".to_string(),
+                "1.0.0.0".to_string(),
+                vec![],
+            ),
         ];
 
         let graph = build_dependency_graph(app_json, &packages);
-        assert_eq!(graph.nodes.len(), 2, "Both packages should be present as separate nodes");
+        assert_eq!(
+            graph.nodes.len(),
+            2,
+            "Both packages should be present as separate nodes"
+        );
     }
 
     #[test]
@@ -382,11 +435,25 @@ mod tests {
 }"#;
 
         let packages = vec![
-            ("My Lib".to_string(), "VendorA".to_string(), "1.0.0.0".to_string(), vec![]),
-            ("My Lib".to_string(), "VendorA".to_string(), "2.0.0.0".to_string(), vec![]),
+            (
+                "My Lib".to_string(),
+                "VendorA".to_string(),
+                "1.0.0.0".to_string(),
+                vec![],
+            ),
+            (
+                "My Lib".to_string(),
+                "VendorA".to_string(),
+                "2.0.0.0".to_string(),
+                vec![],
+            ),
         ];
 
         let graph = build_dependency_graph(app_json, &packages);
-        assert_eq!(graph.nodes.len(), 2, "Both versions should be present as separate nodes");
+        assert_eq!(
+            graph.nodes.len(),
+            2,
+            "Both versions should be present as separate nodes"
+        );
     }
 }

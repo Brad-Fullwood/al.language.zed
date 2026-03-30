@@ -114,10 +114,8 @@ struct PageControlsFile {
 // ── LazyLock statics ─────────────────────────────────────────────────────────
 
 static KEYWORDS: LazyLock<Keywords> = LazyLock::new(|| {
-    serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/keywords.json"
-    ))
-    .expect("keywords.json must be valid")
+    serde_json::from_str(include_str!("../../../tree-sitter-al/data/keywords.json"))
+        .expect("keywords.json must be valid")
 });
 
 static BUILTIN_FUNCTIONS: LazyLock<Vec<BuiltinFunction>> = LazyLock::new(|| {

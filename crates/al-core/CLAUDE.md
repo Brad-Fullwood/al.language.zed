@@ -2,6 +2,14 @@
 
 ALL LSP features live here as query functions. Largest crate in the workspace.
 
+## Quick Reference
+
+```sh
+cargo test -p al-core                    # run all tests (~489 inline)
+cargo test -p al-core -- test_name       # single test
+cargo clippy -p al-core -- -D warnings   # lint
+```
+
 ## Workspace (workspace.rs)
 
 Central state object passed to every query:

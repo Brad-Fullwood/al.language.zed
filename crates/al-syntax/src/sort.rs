@@ -51,7 +51,11 @@ pub fn sort_members(text: &str) -> Option<String> {
     let mut other: Vec<Vec<&str>> = Vec::new();
 
     for member in members {
-        let first = member.iter().find(|l| !l.trim().is_empty()).copied().unwrap_or("");
+        let first = member
+            .iter()
+            .find(|l| !l.trim().is_empty())
+            .copied()
+            .unwrap_or("");
         let trimmed = first.trim().to_lowercase();
 
         if trimmed == "var" || trimmed.starts_with("var ") || trimmed.starts_with("var\t") {
@@ -168,21 +172,19 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
                         }
                     }
                     // Double-quoted identifier: skip until closing `"`, handling `""` escape
-                    '"' => {
-                        loop {
-                            match chars.next() {
-                                None => break,
-                                Some('"') => {
-                                    if chars.peek() == Some(&'"') {
-                                        chars.next();
-                                    } else {
-                                        break;
-                                    }
+                    '"' => loop {
+                        match chars.next() {
+                            None => break,
+                            Some('"') => {
+                                if chars.peek() == Some(&'"') {
+                                    chars.next();
+                                } else {
+                                    break;
                                 }
-                                Some(_) => {}
                             }
+                            Some(_) => {}
                         }
-                    }
+                    },
                     '{' => depth += 1,
                     '}' => depth -= 1,
                     _ => {}
@@ -308,8 +310,12 @@ mod tests {
 }
 "#;
         let result = sort_members(input).expect("should sort");
-        let trigger_pos = result.find("    trigger OnInsert").expect("should have trigger");
-        let proc_pos = result.find("    procedure MyProc").expect("should have procedure");
+        let trigger_pos = result
+            .find("    trigger OnInsert")
+            .expect("should have trigger");
+        let proc_pos = result
+            .find("    procedure MyProc")
+            .expect("should have procedure");
         assert!(trigger_pos < proc_pos, "triggers must precede procedures");
     }
 
@@ -387,7 +393,10 @@ mod tests {
         let result = sort_members(input).expect("should sort");
         let apple_pos = result.find("procedure Apple").expect("Apple missing");
         let zebra_pos = result.find("procedure Zebra").expect("Zebra missing");
-        assert!(apple_pos < zebra_pos, "Apple must come before Zebra after sort");
+        assert!(
+            apple_pos < zebra_pos,
+            "Apple must come before Zebra after sort"
+        );
     }
 
     /// #23 — Double-quoted identifiers containing braces are also handled.
@@ -409,7 +418,10 @@ mod tests {
         let result = sort_members(input).expect("should sort");
         let apple_pos = result.find("procedure Apple").expect("Apple missing");
         let zebra_pos = result.find("procedure Zebra").expect("Zebra missing");
-        assert!(apple_pos < zebra_pos, "Apple must come before Zebra after sort");
+        assert!(
+            apple_pos < zebra_pos,
+            "Apple must come before Zebra after sort"
+        );
     }
 
     /// #23 — Escaped single-quote inside string (`''`) is handled correctly.
@@ -430,6 +442,9 @@ mod tests {
         let result = sort_members(input).expect("should sort");
         let apple_pos = result.find("procedure Apple").expect("Apple missing");
         let zebra_pos = result.find("procedure Zebra").expect("Zebra missing");
-        assert!(apple_pos < zebra_pos, "Apple must come before Zebra after sort");
+        assert!(
+            apple_pos < zebra_pos,
+            "Apple must come before Zebra after sort"
+        );
     }
 }

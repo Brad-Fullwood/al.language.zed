@@ -17,10 +17,16 @@ pub fn prepare_rename(
 
     let node = al_syntax::find_node_at_position(&tree, lsp_pos)?;
     let clean_name = super::node_clean_name(node, text.as_bytes())?;
-    if !matches!(node.kind(), "identifier" | "quoted_identifier" | "name" | "name_or_keyword") {
+    if !matches!(
+        node.kind(),
+        "identifier" | "quoted_identifier" | "name" | "name_or_keyword"
+    ) {
         return None;
     }
-    Some((al_syntax::ts_range_to_lsp(&node.range(), text.as_bytes()).into(), clean_name.to_string()))
+    Some((
+        al_syntax::ts_range_to_lsp(&node.range(), text.as_bytes()).into(),
+        clean_name.to_string(),
+    ))
 }
 
 /// Rename the symbol at the given position to `new_name`.
@@ -124,7 +130,10 @@ mod tests {
     fn prepare_rename_on_identifier() {
         let ws = Workspace::new();
         let uri = test_uri();
-        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     var
@@ -132,8 +141,12 @@ mod tests {
     begin
         MyVar := 42;
     end;
-}"#);
-        let pos = Position { line: 6, character: 8 }; // "MyVar" in assignment
+}"#,
+        );
+        let pos = Position {
+            line: 6,
+            character: 8,
+        }; // "MyVar" in assignment
         let result = prepare_rename(&ws, &uri, pos);
         assert!(result.is_some(), "should find renameable identifier");
         let (range, name) = result.unwrap();
@@ -145,13 +158,20 @@ mod tests {
     fn prepare_rename_on_non_identifier_returns_none() {
         let ws = Workspace::new();
         let uri = test_uri();
-        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     begin
     end;
-}"#);
-        let pos = Position { line: 3, character: 4 }; // "begin" keyword
+}"#,
+        );
+        let pos = Position {
+            line: 3,
+            character: 4,
+        }; // "begin" keyword
         let result = prepare_rename(&ws, &uri, pos);
         assert!(result.is_none(), "keywords should not be renameable");
     }
@@ -162,7 +182,10 @@ mod tests {
     fn rename_variable_in_single_file() {
         let ws = Workspace::new();
         let uri = test_uri();
-        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     var
@@ -170,15 +193,23 @@ mod tests {
     begin
         MyVar := 42;
     end;
-}"#);
-        let pos = Position { line: 6, character: 8 };
+}"#,
+        );
+        let pos = Position {
+            line: 6,
+            character: 8,
+        };
         let result = rename(&ws, &uri, pos, "NewVar");
         assert!(result.is_some(), "should produce rename edits");
         let edit = result.unwrap();
         assert!(!edit.changes.is_empty(), "should have changes");
         let (edit_uri, edits) = &edit.changes[0];
         assert_eq!(edit_uri, &uri);
-        assert!(edits.len() >= 2, "should rename both declaration and usage, got {}", edits.len());
+        assert!(
+            edits.len() >= 2,
+            "should rename both declaration and usage, got {}",
+            edits.len()
+        );
         for e in edits {
             assert_eq!(e.new_text, "NewVar");
         }
@@ -190,7 +221,10 @@ mod tests {
         let uri = test_uri();
         // Position on something with no textual references
         open_doc(&ws, &uri, "codeunit 50100 \"X\" { }");
-        let pos = Position { line: 0, character: 0 };
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
         let result = rename(&ws, &uri, pos, "Y");
         // Should be None — no variable refs for "codeunit" keyword
         // (or Some if tree-sitter finds refs)
@@ -224,9 +258,6 @@ mod tests {
     #[test]
     fn make_rename_text_detects_quotes_from_text() {
         // When node_kind is empty but text is quoted
-        assert_eq!(
-            make_rename_text("", "\"Quoted\"", "Renamed"),
-            "\"Renamed\""
-        );
+        assert_eq!(make_rename_text("", "\"Quoted\"", "Renamed"), "\"Renamed\"");
     }
 }

@@ -226,7 +226,10 @@ fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::err
         .filter_map(convert_zed_config)
         .collect();
 
-    Ok(DebugConfigFile { path: path.to_path_buf(), configs })
+    Ok(DebugConfigFile {
+        path: path.to_path_buf(),
+        configs,
+    })
 }
 
 fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::error::Error>> {
@@ -241,16 +244,24 @@ fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std:
         .filter_map(convert_vscode_config)
         .collect();
 
-    Ok(DebugConfigFile { path: path.to_path_buf(), configs })
+    Ok(DebugConfigFile {
+        path: path.to_path_buf(),
+        configs,
+    })
 }
 
 fn convert_zed_config(raw: ZedDebugConfigJson) -> Option<BcServerConfig> {
     let env_type = parse_environment_type(raw.environment_type.as_deref()?)?;
     let auth = parse_auth_method(raw.authentication.as_deref(), &env_type);
     Some(BcServerConfig {
-        name: raw.label, environment_type: env_type, server: raw.server,
-        server_instance: raw.server_instance, port: raw.port,
-        environment_name: raw.environment_name, tenant: raw.tenant, authentication: auth,
+        name: raw.label,
+        environment_type: env_type,
+        server: raw.server,
+        server_instance: raw.server_instance,
+        port: raw.port,
+        environment_name: raw.environment_name,
+        tenant: raw.tenant,
+        authentication: auth,
         accept_invalid_certs: raw.accept_invalid_certs,
     })
 }
@@ -259,9 +270,14 @@ fn convert_vscode_config(raw: VsCodeLaunchConfigJson) -> Option<BcServerConfig> 
     let env_type = parse_environment_type(raw.environment_type.as_deref()?)?;
     let auth = parse_auth_method(raw.authentication.as_deref(), &env_type);
     Some(BcServerConfig {
-        name: raw.name, environment_type: env_type, server: raw.server,
-        server_instance: raw.server_instance, port: raw.port,
-        environment_name: raw.environment_name, tenant: raw.tenant, authentication: auth,
+        name: raw.name,
+        environment_type: env_type,
+        server: raw.server,
+        server_instance: raw.server_instance,
+        port: raw.port,
+        environment_name: raw.environment_name,
+        tenant: raw.tenant,
+        authentication: auth,
         accept_invalid_certs: raw.accept_invalid_certs,
     })
 }
@@ -271,7 +287,10 @@ fn parse_environment_type(s: &str) -> Option<EnvironmentType> {
         "OnPrem" => Some(EnvironmentType::OnPrem),
         "Sandbox" => Some(EnvironmentType::Sandbox),
         "Production" => Some(EnvironmentType::Production),
-        other => { warn!(environment_type = %other, "Unknown environment type"); None }
+        other => {
+            warn!(environment_type = %other, "Unknown environment type");
+            None
+        }
     }
 }
 
@@ -282,7 +301,9 @@ fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> AuthMethod 
         Some("AAD") | Some("MicrosoftEntraID") => AuthMethod::AAD,
         None if *env_type == EnvironmentType::OnPrem => AuthMethod::Windows,
         None => AuthMethod::AAD,
-        Some(other) => { warn!(auth = %other, "Unknown auth method, defaulting to AAD"); AuthMethod::AAD }
+        Some(other) => {
+            warn!(auth = %other, "Unknown auth method, defaulting to AAD");
+            AuthMethod::AAD
+        }
     }
 }
-

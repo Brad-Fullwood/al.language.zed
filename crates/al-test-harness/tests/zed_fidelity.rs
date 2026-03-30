@@ -230,7 +230,10 @@ async fn zed_fidelity_completion_no_snippet_required() {
         // We don't assert format == 1 strictly because some items may be snippets,
         // but we verify every item has a usable label fallback.
         let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("");
-        assert!(!label.is_empty(), "Completion item label must not be empty even if insertTextFormat={format}");
+        assert!(
+            !label.is_empty(),
+            "Completion item label must not be empty even if insertTextFormat={format}"
+        );
     }
 
     client.shutdown().await;
@@ -414,7 +417,10 @@ async fn zed_fidelity_diagnostics_shape() {
             "publishDiagnostics must include 'uri'. Got: {params}"
         );
         assert!(
-            params.get("diagnostics").and_then(|v| v.as_array()).is_some(),
+            params
+                .get("diagnostics")
+                .and_then(|v| v.as_array())
+                .is_some(),
             "publishDiagnostics must include 'diagnostics' array. Got: {params}"
         );
     }
@@ -577,7 +583,9 @@ async fn zed_fidelity_hover_includes_range() {
     let dir = test_project_dir();
     let mut client = LspClient::spawn(&dir).await.unwrap();
 
-    client.open_file("src/zed_hover_range.al", CODEUNIT_AL).await;
+    client
+        .open_file("src/zed_hover_range.al", CODEUNIT_AL)
+        .await;
 
     let hover = client.hover("src/zed_hover_range.al", 2, 18).await;
     assert!(hover.is_some(), "Zed fidelity: hover must succeed");
@@ -752,7 +760,10 @@ async fn zed_fidelity_definition_response_shape() {
                 "Definition location must have string 'uri'. Got: {loc}"
             );
             let range = loc.get("range");
-            assert!(range.is_some(), "Definition location must have 'range'. Got: {loc}");
+            assert!(
+                range.is_some(),
+                "Definition location must have 'range'. Got: {loc}"
+            );
         };
 
         if let Some(arr) = result.as_array() {

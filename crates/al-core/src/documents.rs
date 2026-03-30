@@ -82,7 +82,9 @@ impl DocumentStore {
     /// Cloning the returned `Arc` is a pointer copy -- no string allocation.
     /// Use this on hot query paths to avoid deep-copying large file content.
     pub fn get_text_arc(&self, uri: &Url) -> Option<std::sync::Arc<String>> {
-        self.docs.get(uri).map(|d| std::sync::Arc::clone(&d.text_cache))
+        self.docs
+            .get(uri)
+            .map(|d| std::sync::Arc::clone(&d.text_cache))
     }
 
     pub fn get_version(&self, uri: &Url) -> Option<i32> {
@@ -107,7 +109,8 @@ impl DocumentStore {
         if let Some(mut doc) = self.docs.get_mut(uri) {
             for change in changes {
                 if let Some(range) = change.range {
-                    let start = position_to_offset(&doc.text, range.start_line, range.start_character);
+                    let start =
+                        position_to_offset(&doc.text, range.start_line, range.start_character);
                     let end = position_to_offset(&doc.text, range.end_line, range.end_character);
                     if let (Some(start), Some(end)) = (start, end) {
                         doc.text.remove(start..end);
@@ -187,7 +190,13 @@ mod tests {
         let store = DocumentStore::new();
         let uri = test_uri("replace");
         store.open(uri.clone(), "old content".to_string());
-        store.apply_changes(&uri, &[TextChange { range: None, text: "new content".to_string() }]);
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: None,
+                text: "new content".to_string(),
+            }],
+        );
         assert_eq!(store.get_text(&uri), Some("new content".to_string()));
     }
 
@@ -196,10 +205,18 @@ mod tests {
         let store = DocumentStore::new();
         let uri = test_uri("incr");
         store.open(uri.clone(), "hello world".to_string());
-        store.apply_changes(&uri, &[TextChange {
-            range: Some(TextRange { start_line: 0, start_character: 6, end_line: 0, end_character: 11 }),
-            text: "AL".to_string(),
-        }]);
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: Some(TextRange {
+                    start_line: 0,
+                    start_character: 6,
+                    end_line: 0,
+                    end_character: 11,
+                }),
+                text: "AL".to_string(),
+            }],
+        );
         assert_eq!(store.get_text(&uri), Some("hello AL".to_string()));
     }
 
@@ -209,7 +226,13 @@ mod tests {
         let uri = test_uri("ver");
         store.open(uri.clone(), "v0".to_string());
         assert_eq!(store.get_version(&uri), Some(0));
-        store.apply_changes(&uri, &[TextChange { range: None, text: "v1".to_string() }]);
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: None,
+                text: "v1".to_string(),
+            }],
+        );
         assert_eq!(store.get_version(&uri), Some(1));
     }
 
@@ -231,7 +254,13 @@ mod tests {
         let tree = parser.parse("content", None).unwrap();
         store.cache_tree(&uri, 0, tree);
         assert!(store.get_cached_tree(&uri).is_some());
-        store.apply_changes(&uri, &[TextChange { range: None, text: "changed".to_string() }]);
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: None,
+                text: "changed".to_string(),
+            }],
+        );
         assert!(store.get_cached_tree(&uri).is_none());
     }
 
@@ -259,7 +288,13 @@ mod tests {
         let uri = test_uri("arc_change");
         store.open(uri.clone(), "original".to_string());
         let arc1 = store.get_text_arc(&uri).unwrap();
-        store.apply_changes(&uri, &[TextChange { range: None, text: "updated".to_string() }]);
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: None,
+                text: "updated".to_string(),
+            }],
+        );
         let arc2 = store.get_text_arc(&uri).unwrap();
         assert_eq!(arc1.as_str(), "original");
         assert_eq!(arc2.as_str(), "updated");
@@ -271,29 +306,73 @@ mod tests {
         let uri = test_uri("multi");
         store.open(uri.clone(), "line one\nline two\nline three\n".to_string());
 
-        store.apply_changes(&uri, &[TextChange {
-            range: Some(TextRange { start_line: 0, start_character: 5, end_line: 0, end_character: 8 }),
-            text: "1".to_string(),
-        }]);
-        assert_eq!(store.get_text(&uri), Some("line 1\nline two\nline three\n".to_string()));
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: Some(TextRange {
+                    start_line: 0,
+                    start_character: 5,
+                    end_line: 0,
+                    end_character: 8,
+                }),
+                text: "1".to_string(),
+            }],
+        );
+        assert_eq!(
+            store.get_text(&uri),
+            Some("line 1\nline two\nline three\n".to_string())
+        );
 
-        store.apply_changes(&uri, &[TextChange {
-            range: Some(TextRange { start_line: 1, start_character: 5, end_line: 1, end_character: 8 }),
-            text: "2".to_string(),
-        }]);
-        assert_eq!(store.get_text(&uri), Some("line 1\nline 2\nline three\n".to_string()));
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: Some(TextRange {
+                    start_line: 1,
+                    start_character: 5,
+                    end_line: 1,
+                    end_character: 8,
+                }),
+                text: "2".to_string(),
+            }],
+        );
+        assert_eq!(
+            store.get_text(&uri),
+            Some("line 1\nline 2\nline three\n".to_string())
+        );
 
-        store.apply_changes(&uri, &[TextChange {
-            range: Some(TextRange { start_line: 0, start_character: 6, end_line: 1, end_character: 6 }),
-            text: "".to_string(),
-        }]);
-        assert_eq!(store.get_text(&uri), Some("line 1\nline three\n".to_string()));
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: Some(TextRange {
+                    start_line: 0,
+                    start_character: 6,
+                    end_line: 1,
+                    end_character: 6,
+                }),
+                text: "".to_string(),
+            }],
+        );
+        assert_eq!(
+            store.get_text(&uri),
+            Some("line 1\nline three\n".to_string())
+        );
 
-        store.apply_changes(&uri, &[TextChange {
-            range: Some(TextRange { start_line: 0, start_character: 0, end_line: 0, end_character: 0 }),
-            text: "// ".to_string(),
-        }]);
-        assert_eq!(store.get_text(&uri), Some("// line 1\nline three\n".to_string()));
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: Some(TextRange {
+                    start_line: 0,
+                    start_character: 0,
+                    end_line: 0,
+                    end_character: 0,
+                }),
+                text: "// ".to_string(),
+            }],
+        );
+        assert_eq!(
+            store.get_text(&uri),
+            Some("// line 1\nline three\n".to_string())
+        );
 
         assert_eq!(store.get_version(&uri), Some(4));
     }

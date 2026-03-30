@@ -296,7 +296,9 @@ pub enum ZedTestError {
     Json(#[from] serde_json::Error),
 
     /// `tesseract` is not installed or failed to run.
-    #[error("OCR error: {0} — install tesseract with: sudo pacman -S tesseract tesseract-data-eng")]
+    #[error(
+        "OCR error: {0} — install tesseract with: sudo pacman -S tesseract tesseract-data-eng"
+    )]
     OcrError(String),
 }
 

@@ -44,9 +44,11 @@ fn collect_app_paths() -> Vec<PathBuf> {
                             .unwrap()
                             .to_string_lossy()
                             .starts_with(name.split('_').next().unwrap_or(""))
-                            && existing.file_name().unwrap().to_string_lossy().contains(
-                                name.split('_').nth(1).unwrap_or(""),
-                            )
+                            && existing
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .contains(name.split('_').nth(1).unwrap_or(""))
                     }) {
                         paths.push(p);
                     }
@@ -111,7 +113,10 @@ fn perf_audit_index_build() {
     let build_time = t0.elapsed();
     let total_objects: usize = all_pkgs.iter().map(|p| p.objects.len()).sum();
 
-    eprintln!("\n  Full build: {:?} ({} objects)", build_time, total_objects);
+    eprintln!(
+        "\n  Full build: {:?} ({} objects)",
+        build_time, total_objects
+    );
     eprintln!("  Index entries: {}", index.len());
 
     // --- Phase 2: Memory Estimation ---
@@ -180,7 +185,10 @@ fn perf_audit_index_build() {
     eprintln!("  Keys:        {:>7}", total_keys);
     eprintln!("  Properties:  {:>7}", total_properties);
     eprintln!("  Variables:   {:>7}", total_variables);
-    eprintln!("  String data: {:>7}", format_bytes(total_string_bytes as u64));
+    eprintln!(
+        "  String data: {:>7}",
+        format_bytes(total_string_bytes as u64)
+    );
 
     // Rough memory estimate: each SymbolEntry is ~200 bytes + strings + sub-elements
     // Arc overhead: 16 bytes per arc. DashMap entry overhead: ~64 bytes.
@@ -189,8 +197,11 @@ fn perf_audit_index_build() {
     let est_method_bytes = total_methods * 120;
     let est_field_bytes = total_fields * 80;
     let est_control_bytes = total_controls * 60;
-    let est_total = est_entry_overhead + est_method_bytes + est_field_bytes
-        + est_control_bytes + total_string_bytes;
+    let est_total = est_entry_overhead
+        + est_method_bytes
+        + est_field_bytes
+        + est_control_bytes
+        + total_string_bytes;
     eprintln!(
         "  Estimated index memory: ~{}",
         format_bytes(est_total as u64)
@@ -200,7 +211,14 @@ fn perf_audit_index_build() {
     eprintln!("\n--- Phase 3: Query Latency ---");
 
     // search() — substring search
-    let queries = ["Customer", "Sales", "Post", "Gen. Journal", "Vendor", "Item"];
+    let queries = [
+        "Customer",
+        "Sales",
+        "Post",
+        "Gen. Journal",
+        "Vendor",
+        "Item",
+    ];
     eprintln!("\n  search(query, limit=100):");
     for q in &queries {
         let t0 = Instant::now();
@@ -215,12 +233,23 @@ fn perf_audit_index_build() {
         let t0 = Instant::now();
         let results = index.search("", limit);
         let dur = t0.elapsed();
-        eprintln!("    {:>8.2?}  {:>5} results  limit={}", dur, results.len(), limit);
+        eprintln!(
+            "    {:>8.2?}  {:>5} results  limit={}",
+            dur,
+            results.len(),
+            limit
+        );
     }
 
     // get_by_name() — exact name lookup
     eprintln!("\n  get_by_name():");
-    let name_queries = ["Customer", "Sales Header", "Gen. Journal Line", "G/L Entry", "Item"];
+    let name_queries = [
+        "Customer",
+        "Sales Header",
+        "Gen. Journal Line",
+        "G/L Entry",
+        "Item",
+    ];
     for q in &name_queries {
         let t0 = Instant::now();
         let results = index.get_by_name(q);
@@ -231,11 +260,11 @@ fn perf_audit_index_build() {
     // get_by_id() — kind+id lookup
     eprintln!("\n  get_by_id():");
     let id_queries = [
-        (ObjectKind::Table, 18),      // Customer
-        (ObjectKind::Table, 36),      // Sales Header
-        (ObjectKind::Codeunit, 80),   // Sales-Post
-        (ObjectKind::Page, 22),       // Customer List
-        (ObjectKind::Table, 9999),    // Nonexistent
+        (ObjectKind::Table, 18),    // Customer
+        (ObjectKind::Table, 36),    // Sales Header
+        (ObjectKind::Codeunit, 80), // Sales-Post
+        (ObjectKind::Page, 22),     // Customer List
+        (ObjectKind::Table, 9999),  // Nonexistent
     ];
     for (kind, id) in &id_queries {
         let t0 = Instant::now();
@@ -298,7 +327,12 @@ fn perf_audit_index_build() {
         let t0 = Instant::now();
         let results = index.get_extensions_of(q);
         let dur = t0.elapsed();
-        eprintln!("    {:>8.2?}  {:>3} extensions  \"{}\"", dur, results.len(), q);
+        eprintln!(
+            "    {:>8.2?}  {:>3} extensions  \"{}\"",
+            dur,
+            results.len(),
+            q
+        );
     }
 
     // get_by_kind() — kind scan
@@ -314,7 +348,12 @@ fn perf_audit_index_build() {
         let t0 = Instant::now();
         let results = index.get_by_kind(*kind);
         let dur = t0.elapsed();
-        eprintln!("    {:>8.2?}  {:>5} objects  {:?}", dur, results.len(), kind);
+        eprintln!(
+            "    {:>8.2?}  {:>5} objects  {:?}",
+            dur,
+            results.len(),
+            kind
+        );
     }
 
     // --- Phase 4: Bottleneck Analysis ---
@@ -349,7 +388,11 @@ fn perf_audit_index_build() {
 }
 
 fn count_controls(control: &al_symbols::ControlSymbol) -> usize {
-    1 + control.children.iter().map(|c| count_controls(c)).sum::<usize>()
+    1 + control
+        .children
+        .iter()
+        .map(|c| count_controls(c))
+        .sum::<usize>()
 }
 
 fn format_bytes(bytes: u64) -> String {

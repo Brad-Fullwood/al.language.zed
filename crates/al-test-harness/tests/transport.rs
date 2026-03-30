@@ -137,7 +137,10 @@ async fn test_adversarial_read_loop_invalid_json_body_is_skipped() {
         .await
         .expect("read_loop timed out after invalid JSON — loop may have exited");
 
-    assert!(received.is_some(), "read_loop must continue after invalid JSON body");
+    assert!(
+        received.is_some(),
+        "read_loop must continue after invalid JSON body"
+    );
     let (method, _) = received.unwrap();
     assert_eq!(method, "test/alive");
 }
@@ -169,7 +172,10 @@ async fn test_adversarial_read_loop_unknown_response_id_is_dropped() {
         .await
         .expect("read_loop hung after receiving response for unknown ID");
 
-    assert!(received.is_some(), "notification must be delivered after stale response ID");
+    assert!(
+        received.is_some(),
+        "notification must be delivered after stale response ID"
+    );
     let (method, _) = received.unwrap();
     assert_eq!(method, "test/still-alive");
 }
@@ -270,7 +276,10 @@ async fn test_adversarial_read_loop_notification_no_params_defaults_to_null() {
 
     let (method, params) = received.unwrap();
     assert_eq!(method, "test/no-params");
-    assert!(params.is_null(), "missing params must default to JSON null, got: {params:?}");
+    assert!(
+        params.is_null(),
+        "missing params must default to JSON null, got: {params:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -301,8 +310,14 @@ async fn test_adversarial_read_loop_float_id_response_is_silently_dropped() {
     write_lsp_message(&mut server_write, notif).await;
 
     // Wait for the notification (proves the loop processed both messages)
-    let received = timeout(Duration::from_secs(2), notif_rx.recv()).await.ok().flatten();
-    assert!(received.is_some(), "loop must continue after float-id response");
+    let received = timeout(Duration::from_secs(2), notif_rx.recv())
+        .await
+        .ok()
+        .flatten();
+    assert!(
+        received.is_some(),
+        "loop must continue after float-id response"
+    );
 
     // The oneshot should NOT have been resolved — proving the float id was dropped
     let resolved = rx.try_recv();
@@ -635,7 +650,11 @@ async fn test_adversarial_read_loop_content_length_trailing_whitespace_is_tolera
 fn make_dispatch_pair(
     reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
 ) -> (
-    std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<i64, tokio::sync::oneshot::Sender<serde_json::Value>>>>,
+    std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<i64, tokio::sync::oneshot::Sender<serde_json::Value>>,
+        >,
+    >,
     tokio::sync::mpsc::UnboundedReceiver<(String, serde_json::Value)>,
 ) {
     use std::collections::HashMap;

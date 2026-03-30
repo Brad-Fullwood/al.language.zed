@@ -62,7 +62,7 @@ impl serde::Serialize for CompletionKind {
     }
 }
 
-use al_syntax::context::{CompletionContext, detect_context};
+use al_syntax::context::{detect_context, CompletionContext};
 
 /// Get completions at a position in a document.
 pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
@@ -77,27 +77,41 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
 
     match context {
         CompletionContext::MemberAccess => {
-            if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) {
-                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, lsp_pos) {
+            if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri)
+            {
+                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, lsp_pos)
+                {
                     if let Some(receiver) = resolution::resolve_expression_type(
-                        workspace, uri, &file_text, &tree, &receiver_expr, lsp_pos,
+                        workspace,
+                        uri,
+                        &file_text,
+                        &tree,
+                        &receiver_expr,
+                        lsp_pos,
                     ) {
-                        let lsp_items = resolution::completion_items_for_receiver(workspace, &receiver);
+                        let lsp_items =
+                            resolution::completion_items_for_receiver(workspace, &receiver);
                         items.extend(lsp_items.into_iter().map(from_lsp_completion));
                     }
                 }
             }
         }
         CompletionContext::EnumAccess => {
-            if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) {
-                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, lsp_pos) {
+            if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri)
+            {
+                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, lsp_pos)
+                {
                     let enum_type = resolution::resolve_expression_type(
-                        workspace, uri, &file_text, &tree, &receiver_expr, lsp_pos,
-                    ).unwrap_or_else(|| {
-                        resolution::ResolvedType {
-                            type_name: receiver_expr.clone(),
-                            type_subtype: Some(receiver_expr.clone()),
-                        }
+                        workspace,
+                        uri,
+                        &file_text,
+                        &tree,
+                        &receiver_expr,
+                        lsp_pos,
+                    )
+                    .unwrap_or_else(|| resolution::ResolvedType {
+                        type_name: receiver_expr.clone(),
+                        type_subtype: Some(receiver_expr.clone()),
                     });
                     let lsp_items = resolution::enum_completion_items(workspace, &enum_type);
                     items.extend(lsp_items.into_iter().map(from_lsp_completion));
@@ -109,7 +123,10 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                 items.push(CompletionEntry {
                     label: entry.keyword.clone(),
                     kind: CompletionKind::Keyword,
-                    detail: None, documentation: None, insert_text: None, sort_text: None,
+                    detail: None,
+                    documentation: None,
+                    insert_text: None,
+                    sort_text: None,
                 });
             }
             // Single pass over `all` — collect up to 50 per kind without 4 separate Vec clones
@@ -128,7 +145,9 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                             label: format!("\"{}\"", arc.name),
                             kind: CompletionKind::Class,
                             detail: Some(format!("{} {}", arc.kind, arc.id)),
-                            documentation: None, insert_text: None, sort_text: None,
+                            documentation: None,
+                            insert_text: None,
+                            sort_text: None,
                         });
                     }
                 }
@@ -165,7 +184,11 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
 ///
 /// This is the single code path for all entry points (LSP and daemon).
 /// SemanticBridge already enforces a 30s internal timeout — no outer wrapper needed.
-pub async fn completions_full(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
+pub async fn completions_full(
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Vec<CompletionEntry> {
     let items = completions(workspace, uri, position);
     if !items.is_empty() {
         return items;
@@ -173,15 +196,23 @@ pub async fn completions_full(workspace: &Workspace, uri: &Url, position: Positi
 
     // Bridge fallback: only for member access context
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
-    let Some(text) = workspace.documents.get_text(uri) else { return items; };
+    let Some(text) = workspace.documents.get_text(uri) else {
+        return items;
+    };
     let ctx = al_syntax::context::detect_context(&text, lsp_pos);
     if !matches!(ctx, al_syntax::context::CompletionContext::MemberAccess) {
         return items;
     }
 
-    let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await else { return items; };
-    let Some(bridge) = guard.as_ref() else { return items; };
-    let Ok(path) = uri.to_file_path() else { return items; };
+    let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await else {
+        return items;
+    };
+    let Some(bridge) = guard.as_ref() else {
+        return items;
+    };
+    let Ok(path) = uri.to_file_path() else {
+        return items;
+    };
     let pos = (position.line + 1, position.character + 1);
     let bridge_items = match bridge.completions_at(&path, pos).await {
         Ok(v) => v,
@@ -208,7 +239,10 @@ pub async fn completions_full(workspace: &Workspace, uri: &Url, position: Positi
         }
     }
 
-    tracing::debug!(count = bridge_items.len(), "completions_full: bridge results");
+    tracing::debug!(
+        count = bridge_items.len(),
+        "completions_full: bridge results"
+    );
     bridge_items
         .into_iter()
         .map(|item| CompletionEntry {
@@ -233,7 +267,10 @@ fn add_default_completions(
         items.push(CompletionEntry {
             label: entry.keyword.clone(),
             kind: CompletionKind::Keyword,
-            detail: None, documentation: None, insert_text: None, sort_text: None,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
         });
     }
 
@@ -242,13 +279,14 @@ fn add_default_completions(
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
-                    if super::is_procedure_symbol(child.kind)
-                    {
+                    if super::is_procedure_symbol(child.kind) {
                         items.push(CompletionEntry {
                             label: child.name.clone(),
                             kind: CompletionKind::Function,
                             detail: child.detail.clone(),
-                            documentation: None, insert_text: None, sort_text: None,
+                            documentation: None,
+                            insert_text: None,
+                            sort_text: None,
                         });
                     }
                 }
@@ -258,7 +296,9 @@ fn add_default_completions(
         let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &file_text);
         let vars = resolver.variables_at(position);
         for var in &vars {
-            let subtype = var.type_subtype.as_ref()
+            let subtype = var
+                .type_subtype
+                .as_ref()
                 .map(|s| format!(" \"{}\"", s))
                 .unwrap_or_default();
             let label = super::scope_label(&var.scope);
@@ -277,17 +317,25 @@ fn add_default_completions(
     let index_results = workspace.symbols.get_default_completions();
     for entry in &index_results {
         let kind = match entry.kind {
-            al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension => CompletionKind::Struct,
+            al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension => {
+                CompletionKind::Struct
+            }
             al_symbols::ObjectKind::Codeunit => CompletionKind::Module,
-            al_symbols::ObjectKind::Page | al_symbols::ObjectKind::PageExtension => CompletionKind::Class,
-            al_symbols::ObjectKind::Enum | al_symbols::ObjectKind::EnumExtension => CompletionKind::Enum,
+            al_symbols::ObjectKind::Page | al_symbols::ObjectKind::PageExtension => {
+                CompletionKind::Class
+            }
+            al_symbols::ObjectKind::Enum | al_symbols::ObjectKind::EnumExtension => {
+                CompletionKind::Enum
+            }
             _ => CompletionKind::Reference,
         };
         items.push(CompletionEntry {
             label: entry.name.clone(),
             kind,
             detail: Some(format!("{} {}", entry.kind, entry.id)),
-            documentation: None, insert_text: None, sort_text: None,
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
         });
     }
 
@@ -297,7 +345,9 @@ fn add_default_completions(
             label: bt.name.clone(),
             kind: CompletionKind::Class,
             detail: Some("built-in type".to_string()),
-            documentation: None, insert_text: None, sort_text: None,
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
         });
     }
     drop(builtins); // release read lock promptly
@@ -306,16 +356,28 @@ fn add_default_completions(
 fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
     // Sort so that non-keyword items precede keywords before dedup, ensuring
     // a workspace procedure with the same name as a keyword is not shadowed.
-    items.sort_by_key(|item| if item.kind == CompletionKind::Keyword { 1u8 } else { 0u8 });
+    items.sort_by_key(|item| {
+        if item.kind == CompletionKind::Keyword {
+            1u8
+        } else {
+            0u8
+        }
+    });
     let mut seen = std::collections::HashSet::new();
     items.retain(|item| seen.insert(item.label.to_lowercase()));
 
     for item in items.iter_mut() {
-        if item.sort_text.is_some() { continue; }
+        if item.sort_text.is_some() {
+            continue;
+        }
         let label_lower = item.label.to_lowercase();
         let is_callable = matches!(item.kind, CompletionKind::Function | CompletionKind::Method);
         if is_callable {
-            let pc = item.detail.as_deref().map(|d| super::parse_detail_params(d).len()).unwrap_or(0);
+            let pc = item
+                .detail
+                .as_deref()
+                .map(|d| super::parse_detail_params(d).len())
+                .unwrap_or(0);
             item.sort_text = Some(format!("1_{pc:02}_{label_lower}"));
         } else {
             item.sort_text = Some(format!("1_{label_lower}"));
@@ -325,7 +387,9 @@ fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
     // sort_text is now populated for every item, so the fallback
     // to a redundant label lowercase comparison is unnecessary.
     items.sort_by(|a, b| {
-        a.sort_text.as_deref().unwrap_or("")
+        a.sort_text
+            .as_deref()
+            .unwrap_or("")
             .cmp(b.sort_text.as_deref().unwrap_or(""))
     });
 }
@@ -387,10 +451,22 @@ mod tests {
         assert_eq!(super::super::parse_detail_params("()").len(), 0);
         assert_eq!(super::super::parse_detail_params("").len(), 0);
         assert_eq!(super::super::parse_detail_params("(A: Text)").len(), 1);
-        assert_eq!(super::super::parse_detail_params("(A: Text; B: Integer)").len(), 2);
-        assert_eq!(super::super::parse_detail_params("(A: Text; B: Integer; C: Boolean)").len(), 3);
-        assert_eq!(super::super::parse_detail_params("(A: List of [Text]; B: Integer)").len(), 2);
-        assert_eq!(super::super::parse_detail_params("(A: Text): Boolean").len(), 1);
+        assert_eq!(
+            super::super::parse_detail_params("(A: Text; B: Integer)").len(),
+            2
+        );
+        assert_eq!(
+            super::super::parse_detail_params("(A: Text; B: Integer; C: Boolean)").len(),
+            3
+        );
+        assert_eq!(
+            super::super::parse_detail_params("(A: List of [Text]; B: Integer)").len(),
+            2
+        );
+        assert_eq!(
+            super::super::parse_detail_params("(A: Text): Boolean").len(),
+            1
+        );
     }
 
     // --- Failure path tests ---
@@ -399,9 +475,15 @@ mod tests {
     fn completions_empty_for_unopened_document() {
         let ws = Workspace::new();
         let uri = test_uri();
-        let pos = Position { line: 0, character: 0 };
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
         let result = completions(&ws, &uri, pos);
-        assert!(result.is_empty(), "unopened document should return empty completions");
+        assert!(
+            result.is_empty(),
+            "unopened document should return empty completions"
+        );
     }
 
     #[test]
@@ -409,7 +491,10 @@ mod tests {
         let ws = Workspace::new();
         let uri = test_uri();
         ws.documents.open(uri.clone(), String::new());
-        let pos = Position { line: 0, character: 0 };
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
         let result = completions(&ws, &uri, pos);
         // Empty file — may return keywords but should not panic
         let _ = result;
@@ -419,8 +504,12 @@ mod tests {
     fn completions_on_malformed_al() {
         let ws = Workspace::new();
         let uri = test_uri();
-        ws.documents.open(uri.clone(), "{{{{not valid al code}}}}".to_string());
-        let pos = Position { line: 0, character: 5 };
+        ws.documents
+            .open(uri.clone(), "{{{{not valid al code}}}}".to_string());
+        let pos = Position {
+            line: 0,
+            character: 5,
+        };
         let result = completions(&ws, &uri, pos);
         // Should not panic on malformed code
         let _ = result;
@@ -430,9 +519,13 @@ mod tests {
     fn completions_at_line_beyond_file() {
         let ws = Workspace::new();
         let uri = test_uri();
-        ws.documents.open(uri.clone(), "codeunit 50100 \"X\" { }".to_string());
+        ws.documents
+            .open(uri.clone(), "codeunit 50100 \"X\" { }".to_string());
         // Line 100 doesn't exist — should return empty, not panic
-        let pos = Position { line: 100, character: 0 };
+        let pos = Position {
+            line: 100,
+            character: 0,
+        };
         let result = completions(&ws, &uri, pos);
         let _ = result; // just ensure no panic
     }
@@ -441,25 +534,41 @@ mod tests {
     fn completions_include_keywords_in_begin_block() {
         let ws = Workspace::new();
         let uri = test_uri();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+        ws.documents.open(
+            uri.clone(),
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     begin
 
     end;
-}"#.to_string());
-        let pos = Position { line: 4, character: 8 }; // inside begin block
+}"#
+            .to_string(),
+        );
+        let pos = Position {
+            line: 4,
+            character: 8,
+        }; // inside begin block
         let result = completions(&ws, &uri, pos);
         let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
-        assert!(labels.contains(&"if"), "should include 'if' keyword, got: {:?}", labels);
-        assert!(labels.contains(&"repeat"), "should include 'repeat' keyword");
+        assert!(
+            labels.contains(&"if"),
+            "should include 'if' keyword, got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"repeat"),
+            "should include 'repeat' keyword"
+        );
     }
 
     #[test]
     fn completions_include_local_procedures() {
         let ws = Workspace::new();
         let uri = test_uri();
-        ws.documents.open(uri.clone(), r#"codeunit 50100 "Test"
+        ws.documents.open(
+            uri.clone(),
+            r#"codeunit 50100 "Test"
 {
     procedure Helper()
     begin
@@ -469,10 +578,19 @@ mod tests {
     begin
 
     end;
-}"#.to_string());
-        let pos = Position { line: 8, character: 8 };
+}"#
+            .to_string(),
+        );
+        let pos = Position {
+            line: 8,
+            character: 8,
+        };
         let result = completions(&ws, &uri, pos);
         let labels: Vec<&str> = result.iter().map(|c| c.label.as_str()).collect();
-        assert!(labels.contains(&"Helper"), "should include local procedure 'Helper', got: {:?}", labels);
+        assert!(
+            labels.contains(&"Helper"),
+            "should include local procedure 'Helper', got: {:?}",
+            labels
+        );
     }
 }

@@ -66,7 +66,12 @@ impl BcServerClient {
     /// `insecure_tls` disables TLS certificate validation. Only set to `true` for
     /// on-prem BC servers using self-signed certificates. Defaults to `false` for
     /// cloud connections.
-    pub fn new(auth: AuthMethod, tenant: Option<String>, message_sink: MessageSink, insecure_tls: bool) -> Self {
+    pub fn new(
+        auth: AuthMethod,
+        tenant: Option<String>,
+        message_sink: MessageSink,
+        insecure_tls: bool,
+    ) -> Self {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(insecure_tls)
             .timeout(std::time::Duration::from_secs(300)) // 5 min for large packages

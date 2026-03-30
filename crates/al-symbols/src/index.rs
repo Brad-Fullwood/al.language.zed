@@ -40,15 +40,15 @@ pub struct SymbolIndex {
     /// Pre-computed slice of the first DEFAULT_COMPLETIONS_CAP entries for O(1)
     /// default completion responses. Populated by add_entries/add_entries_owned.
     default_completions: std::sync::RwLock<Vec<Arc<SymbolEntry>>>,
-    }
+}
 
-    impl Default for SymbolIndex {
+impl Default for SymbolIndex {
     fn default() -> Self {
         Self::new()
     }
-    }
+}
 
-    impl SymbolIndex {
+impl SymbolIndex {
     /// Create an empty index.
     pub fn new() -> Self {
         Self {
@@ -67,12 +67,20 @@ pub struct SymbolIndex {
 
     /// Store a cached source path mapping.
     pub fn cache_source_path(&self, package: String, kind: ObjectKind, id: i32, path: String) {
-        self.source_path_cache.insert((package.to_lowercase(), kind, id), path);
+        self.source_path_cache
+            .insert((package.to_lowercase(), kind, id), path);
     }
 
     /// Retrieve a cached source path mapping.
-    pub fn get_cached_source_path(&self, package: &str, kind: ObjectKind, id: i32) -> Option<String> {
-        self.source_path_cache.get(&(package.to_lowercase(), kind, id)).map(|s| s.value().clone())
+    pub fn get_cached_source_path(
+        &self,
+        package: &str,
+        kind: ObjectKind,
+        id: i32,
+    ) -> Option<String> {
+        self.source_path_cache
+            .get(&(package.to_lowercase(), kind, id))
+            .map(|s| s.value().clone())
     }
 
     /// Check if a package has been indexed for source paths.
@@ -86,26 +94,30 @@ pub struct SymbolIndex {
     pub fn load_packages(&self, paths: &[impl AsRef<Path> + Sync]) -> Vec<SymbolPackage> {
         use rayon::prelude::*;
 
-        let results: Vec<_> = paths.par_iter().filter_map(|path| {
-            let path = path.as_ref();
-            match app_reader::read_app_file(path) {
-                Ok(mut pkg) => {
-                    debug!(
-                        name = %pkg.name,
-                        objects = pkg.objects.len(),
-                        "Loaded package"
-                    );
-                    self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
-                    // Use add_entries_owned to move objects into Arc without cloning.
-                    self.add_entries_owned(std::mem::take(&mut pkg.objects));
-                    Some(pkg)
+        let results: Vec<_> = paths
+            .par_iter()
+            .filter_map(|path| {
+                let path = path.as_ref();
+                match app_reader::read_app_file(path) {
+                    Ok(mut pkg) => {
+                        debug!(
+                            name = %pkg.name,
+                            objects = pkg.objects.len(),
+                            "Loaded package"
+                        );
+                        self.app_paths
+                            .insert(pkg.name.to_lowercase(), path.to_path_buf());
+                        // Use add_entries_owned to move objects into Arc without cloning.
+                        self.add_entries_owned(std::mem::take(&mut pkg.objects));
+                        Some(pkg)
+                    }
+                    Err(e) => {
+                        warn!(path = %path.display(), error = %e, "Failed to load .app file");
+                        None
+                    }
                 }
-                Err(e) => {
-                    warn!(path = %path.display(), error = %e, "Failed to load .app file");
-                    None
-                }
-            }
-        }).collect();
+            })
+            .collect();
 
         results
     }
@@ -122,44 +134,52 @@ pub struct SymbolIndex {
     ) -> Vec<SymbolPackage> {
         use rayon::prelude::*;
 
-        let results: Vec<_> = paths.par_iter().filter_map(|path| {
-            let path = path.as_ref();
+        let results: Vec<_> = paths
+            .par_iter()
+            .filter_map(|path| {
+                let path = path.as_ref();
 
-            // Try cache first
-            if let Some(mut pkg) = cache.load(path) {
-                self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
-                self.add_entries_owned(std::mem::take(&mut pkg.objects));
-                return Some(pkg);
-            }
-
-            // Cache miss — parse from .app file
-            match app_reader::read_app_file(path) {
-                Ok(mut pkg) => {
-                    debug!(
-                        name = %pkg.name,
-                        objects = pkg.objects.len(),
-                        "Loaded package (cache miss)"
-                    );
-                    // Save to cache for next time (before taking ownership of objects)
-                    if let Err(e) = cache.save(path, &pkg) {
-                        warn!(path = %path.display(), error = %e, "Failed to save to cache");
-                    }
-                    self.app_paths.insert(pkg.name.to_lowercase(), path.to_path_buf());
+                // Try cache first
+                if let Some(mut pkg) = cache.load(path) {
+                    self.app_paths
+                        .insert(pkg.name.to_lowercase(), path.to_path_buf());
                     self.add_entries_owned(std::mem::take(&mut pkg.objects));
-                    Some(pkg)
+                    return Some(pkg);
                 }
-                Err(e) => {
-                    warn!(path = %path.display(), error = %e, "Failed to load .app file");
-                    None
+
+                // Cache miss — parse from .app file
+                match app_reader::read_app_file(path) {
+                    Ok(mut pkg) => {
+                        debug!(
+                            name = %pkg.name,
+                            objects = pkg.objects.len(),
+                            "Loaded package (cache miss)"
+                        );
+                        // Save to cache for next time (before taking ownership of objects)
+                        if let Err(e) = cache.save(path, &pkg) {
+                            warn!(path = %path.display(), error = %e, "Failed to save to cache");
+                        }
+                        self.app_paths
+                            .insert(pkg.name.to_lowercase(), path.to_path_buf());
+                        self.add_entries_owned(std::mem::take(&mut pkg.objects));
+                        Some(pkg)
+                    }
+                    Err(e) => {
+                        warn!(path = %path.display(), error = %e, "Failed to load .app file");
+                        None
+                    }
                 }
-            }
-        }).collect();
+            })
+            .collect();
 
         results
     }
 
     /// Load a package from raw bytes (useful for in-memory / test scenarios).
-    pub fn load_package_bytes(&self, data: &[u8]) -> Result<SymbolPackage, app_reader::AppReaderError> {
+    pub fn load_package_bytes(
+        &self,
+        data: &[u8],
+    ) -> Result<SymbolPackage, app_reader::AppReaderError> {
         let pkg = app_reader::read_app_bytes(data)?;
         self.add_entries(&pkg.objects);
         Ok(pkg)
@@ -263,7 +283,8 @@ pub struct SymbolIndex {
     /// to skip acquiring the write lock when the cache is already full.
     fn update_default_completions(&self, new_arcs: &[Arc<SymbolEntry>]) {
         // Fast path: cache already full — skip write lock entirely.
-        if self.default_completions
+        if self
+            .default_completions
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .len()
@@ -392,7 +413,13 @@ pub struct SymbolIndex {
     /// symbols is the intent — it makes the purpose explicit and avoids the
     /// internal limit check overhead.
     pub fn all_entries(&self) -> Vec<Arc<SymbolEntry>> {
-        self.all.iter().map(|e| { let (arc, _) = e.value(); Arc::clone(arc) }).collect()
+        self.all
+            .iter()
+            .map(|e| {
+                let (arc, _) = e.value();
+                Arc::clone(arc)
+            })
+            .collect()
     }
 
     /// Total number of indexed entries.
@@ -482,10 +509,8 @@ pub struct SymbolIndex {
         }
 
         // Use Arc pointer equality to filter entries from the secondary maps.
-        let ptrs: std::collections::HashSet<*const SymbolEntry> = to_remove
-            .iter()
-            .map(|(_, arc)| Arc::as_ptr(arc))
-            .collect();
+        let ptrs: std::collections::HashSet<*const SymbolEntry> =
+            to_remove.iter().map(|(_, arc)| Arc::as_ptr(arc)).collect();
 
         // Remove from `all`.
         for (seq, _) in &to_remove {
@@ -523,7 +548,6 @@ pub struct SymbolIndex {
             .unwrap_or_else(|e| e.into_inner());
         cache.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
     }
-
 }
 
 #[cfg(test)]
@@ -672,23 +696,19 @@ mod tests {
     fn index_with_methods_and_fields() {
         let index = SymbolIndex::new();
         let mut entry = make_entry(ObjectKind::Table, 50100, "My Table");
-        entry.fields = vec![
-            FieldSymbol {
-                id: 1,
-                name: "No.".to_string(),
-                type_name: "Code".to_string(),
-                properties: vec![],
-            },
-        ];
-        entry.methods = vec![
-            MethodSymbol {
-                name: "DoWork".to_string(),
-                parameters: Vec::new(),
-                return_type: Some("Boolean".to_string()),
-                attributes: Vec::new(),
-                is_local: false,
-            },
-        ];
+        entry.fields = vec![FieldSymbol {
+            id: 1,
+            name: "No.".to_string(),
+            type_name: "Code".to_string(),
+            properties: vec![],
+        }];
+        entry.methods = vec![MethodSymbol {
+            name: "DoWork".to_string(),
+            parameters: Vec::new(),
+            return_type: Some("Boolean".to_string()),
+            attributes: Vec::new(),
+            is_local: false,
+        }];
         index.add_entries(&[entry]);
 
         let results = index.get_by_name("My Table");

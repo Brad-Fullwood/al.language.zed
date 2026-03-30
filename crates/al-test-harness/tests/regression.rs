@@ -36,7 +36,10 @@ async fn test_regression_inlay_hints_no_panic() {
     // The test passing without a timeout/EOF proves the daemon didn't panic.
     // Verify server is still responsive after hints request
     let symbols = client.document_symbols("src/hints_test.al").await;
-    assert!(!symbols.is_empty(), "server should still work after inlay hints");
+    assert!(
+        !symbols.is_empty(),
+        "server should still work after inlay hints"
+    );
 
     client.shutdown().await;
 }
@@ -83,7 +86,10 @@ async fn test_regression_hover_on_unopened_file_returns_error() {
 
     // Server should still be responsive
     let symbols = client.workspace_symbol("").await;
-    assert!(!symbols.is_empty(), "server should still work after hover on unopened file");
+    assert!(
+        !symbols.is_empty(),
+        "server should still work after hover on unopened file"
+    );
 
     client.shutdown().await;
 }
@@ -93,7 +99,10 @@ async fn test_regression_format_on_unopened_file_returns_empty() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let edits = client.format("src/nonexistent_file.al").await;
-    assert!(edits.is_empty(), "format on unopened file should return empty");
+    assert!(
+        edits.is_empty(),
+        "format on unopened file should return empty"
+    );
 
     client.shutdown().await;
 }
@@ -103,7 +112,10 @@ async fn test_regression_definition_on_unopened_file_returns_none() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
     let def = client.definition("src/nonexistent_file.al", 0, 0).await;
-    assert!(def.is_none(), "definition on unopened file should return None");
+    assert!(
+        def.is_none(),
+        "definition on unopened file should return None"
+    );
 
     client.shutdown().await;
 }
@@ -139,8 +151,10 @@ async fn test_regression_code_actions_have_titles() {
 
     let actions = client.code_actions("src/lint_test.al", 3, 5).await;
     for action in &actions {
-        assert!(action.get("title").is_some(),
-            "code action should have a title: {action}");
+        assert!(
+            action.get("title").is_some(),
+            "code action should have a title: {action}"
+        );
     }
 
     client.shutdown().await;
@@ -176,27 +190,35 @@ async fn test_regression_inlay_hints_show_parameter_names() {
     // Should have parameter name hints for the Calculate(10, 20) call
     if !hints.is_empty() {
         // Verify at least one hint has a label
-        let has_label = hints.iter().any(|h| {
-            h.get("label").is_some()
-        });
+        let has_label = hints.iter().any(|h| h.get("label").is_some());
         assert!(has_label, "inlay hints should have labels: {hints:?}");
 
         // Check that hint labels reference parameter names
-        let labels: Vec<String> = hints.iter()
+        let labels: Vec<String> = hints
+            .iter()
             .filter_map(|h| {
                 if let Some(s) = h.get("label").and_then(|l| l.as_str()) {
                     Some(s.to_string())
                 } else if let Some(arr) = h.get("label").and_then(|l| l.as_array()) {
-                    Some(arr.iter().filter_map(|p| p.get("value").and_then(|v| v.as_str())).collect::<Vec<_>>().join(""))
+                    Some(
+                        arr.iter()
+                            .filter_map(|p| p.get("value").and_then(|v| v.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    )
                 } else {
                     None
                 }
             })
             .collect();
 
-        let has_param_name = labels.iter().any(|l| l.contains("Width") || l.contains("Height"));
-        assert!(has_param_name,
-            "inlay hints should reference parameter names (Width/Height): {labels:?}");
+        let has_param_name = labels
+            .iter()
+            .any(|l| l.contains("Width") || l.contains("Height"));
+        assert!(
+            has_param_name,
+            "inlay hints should reference parameter names (Width/Height): {labels:?}"
+        );
     }
 
     client.shutdown().await;
@@ -231,11 +253,16 @@ async fn test_regression_utf16_position_after_multibyte() {
     // When ISSUE-024 is fixed, change this assertion to assert!(hover.is_some()).
     let hover = client.hover("src/utf16_test.al", 4, 1).await;
     if hover.is_none() {
-        eprintln!("KNOWN BUG (ISSUE-024): hover on Ø identifier returns None — UTF-16 position bug");
+        eprintln!(
+            "KNOWN BUG (ISSUE-024): hover on Ø identifier returns None — UTF-16 position bug"
+        );
     }
     // At minimum, it should not crash
     let symbols = client.document_symbols("src/utf16_test.al").await;
-    assert!(!symbols.is_empty(), "server should not crash on UTF-16 edge case");
+    assert!(
+        !symbols.is_empty(),
+        "server should not crash on UTF-16 edge case"
+    );
 
     client.shutdown().await;
 }
@@ -265,8 +292,10 @@ async fn test_regression_prepare_rename_returns_range() {
     let result = client.prepare_rename("src/rename_test.al", 4, 10).await;
     if let Some(range) = result {
         // Should return a range covering the identifier
-        assert!(range.get("start").is_some() || range.get("range").is_some(),
-            "prepareRename should return a range or range+placeholder: {range}");
+        assert!(
+            range.get("start").is_some() || range.get("range").is_some(),
+            "prepareRename should return a range or range+placeholder: {range}"
+        );
     }
     // If None, the server doesn't support prepareRename for this position — acceptable
 

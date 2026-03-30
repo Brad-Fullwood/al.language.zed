@@ -1,10 +1,10 @@
 //! AlServer state and LSP lifecycle.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use al_core::workspace::Workspace;
 use al_core::syntax::AlParser;
-use tokio::sync::{RwLock, Mutex, Notify};
+use al_core::workspace::Workspace;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::sync::{Mutex, Notify, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
@@ -54,13 +54,16 @@ impl AlServer {
         // Register a notify sink so al-core can surface bridge failures to the user.
         // The closure spawns a task to fire-and-forget the async show_message call.
         let sink_client = client.clone();
-        let _ = workspace.notify_sink.set(std::sync::Arc::new(move |msg: &str| {
-            let c = sink_client.clone();
-            let m = msg.to_owned();
-            tokio::spawn(async move {
-                c.show_message(tower_lsp::lsp_types::MessageType::WARNING, m).await;
-            });
-        }));
+        let _ = workspace
+            .notify_sink
+            .set(std::sync::Arc::new(move |msg: &str| {
+                let c = sink_client.clone();
+                let m = msg.to_owned();
+                tokio::spawn(async move {
+                    c.show_message(tower_lsp::lsp_types::MessageType::WARNING, m)
+                        .await;
+                });
+            }));
 
         Self {
             client,
@@ -92,10 +95,10 @@ impl AlServer {
         if self.workspace_ready.load(Ordering::Acquire) {
             return; // Already initialized
         }
-        if tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            notified,
-        ).await.is_err() {
+        if tokio::time::timeout(std::time::Duration::from_secs(30), notified)
+            .await
+            .is_err()
+        {
             tracing::warn!("await_ready: timed out after 30s waiting for workspace initialization");
         }
     }
@@ -107,10 +110,14 @@ impl AlServer {
 
         // Cache the tree so publish_diagnostics can reuse it
         let version = self.workspace.documents.get_version(uri).unwrap_or(0);
-        self.workspace.documents.cache_tree(uri, version, result.tree.clone());
+        self.workspace
+            .documents
+            .cache_tree(uri, version, result.tree.clone());
 
         if let Ok(path) = uri.to_file_path() {
-            self.workspace.file_index.add_file(path.clone(), text.to_string());
+            self.workspace
+                .file_index
+                .add_file(path.clone(), text.to_string());
             // Invalidate only the composed view for the object in this file (ISSUE-146).
             // add_file already updated object_info, so we can read the name immediately.
             invalidate_composed_for_file(&self.workspace, &path);
@@ -121,7 +128,13 @@ impl AlServer {
 
     /// Ensure builtins are loaded. Tries disk cache first, then bridge.
     pub(crate) async fn ensure_builtins_loaded(&self) {
-        if !self.workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).is_empty() {
+        if !self
+            .workspace
+            .builtins
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
             return;
         }
 
@@ -137,7 +150,10 @@ impl AlServer {
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load built-in types via bridge");
                         self.client
-                            .show_message(MessageType::WARNING, format!("Failed to load AL built-in types: {error}"))
+                            .show_message(
+                                MessageType::WARNING,
+                                format!("Failed to load AL built-in types: {error}"),
+                            )
                             .await;
                     }
                 }
@@ -157,13 +173,18 @@ impl AlServer {
                     Ok(codes) => {
                         tracing::info!(count = codes.len(), "Loaded error codes via bridge");
                         for ec in codes {
-                            self.workspace.error_codes.insert(ec.code.clone(), ec.message.clone());
+                            self.workspace
+                                .error_codes
+                                .insert(ec.code.clone(), ec.message.clone());
                         }
                     }
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load error codes via bridge");
                         self.client
-                            .show_message(MessageType::WARNING, format!("Failed to load AL error codes: {error}"))
+                            .show_message(
+                                MessageType::WARNING,
+                                format!("Failed to load AL error codes: {error}"),
+                            )
                             .await;
                     }
                 }
@@ -173,7 +194,10 @@ impl AlServer {
 
     /// Look up an error code description for diagnostic enrichment.
     pub(crate) fn error_code_description(&self, code: &str) -> Option<String> {
-        self.workspace.error_codes.get(code).map(|v| v.value().clone())
+        self.workspace
+            .error_codes
+            .get(code)
+            .map(|v| v.value().clone())
     }
 
     /// Get the semantic bridge, initializing it lazily if needed.
@@ -181,7 +205,8 @@ impl AlServer {
     /// Delegates to `al_core::semantic::get_or_init_bridge`.
     pub(crate) async fn get_or_init_bridge(
         &self,
-    ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<al_core::semantic_types::SemanticBridge>>> {
+    ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<al_core::semantic_types::SemanticBridge>>>
+    {
         al_core::semantic::get_or_init_bridge(&self.workspace).await
     }
 
@@ -236,10 +261,7 @@ impl AlServer {
 /// Zed sends settings nested under an "al" key; other clients may send flat objects.
 /// Used by both `initialize` and `did_change_configuration` to normalise the input.
 fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
-    value
-        .get("al")
-        .cloned()
-        .unwrap_or(value)
+    value.get("al").cloned().unwrap_or(value)
 }
 
 /// Invalidate the composed symbol cache for the object declared in `path`.
@@ -348,12 +370,14 @@ impl LanguageServer for AlServer {
                 // Pull diagnostics: Zed fetches fresh diagnostics on demand (tab switch, save).
                 // workspace_diagnostics is false because we only support per-document pull;
                 // a workspace/diagnostic handler is not yet implemented.
-                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(DiagnosticOptions {
-                    identifier: Some("al-lsp".to_string()),
-                    inter_file_dependencies: true,
-                    workspace_diagnostics: false,
-                    work_done_progress_options: WorkDoneProgressOptions::default(),
-                })),
+                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
+                    DiagnosticOptions {
+                        identifier: Some("al-lsp".to_string()),
+                        inter_file_dependencies: true,
+                        workspace_diagnostics: false,
+                        work_done_progress_options: WorkDoneProgressOptions::default(),
+                    },
+                )),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec![
                         "al.downloadSymbols".to_string(),
@@ -381,7 +405,11 @@ impl LanguageServer for AlServer {
     async fn initialized(&self, _: InitializedParams) {
         // ISSUE-073: guard against double-init when Zed sends `initialized` more than once
         // (e.g., when opening multiple worktrees or after a crash-restart cycle).
-        if self.init_done.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if self
+            .init_done
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             tracing::warn!("initialized: received duplicate `initialized` notification — ignoring");
             return;
         }
@@ -431,7 +459,9 @@ impl LanguageServer for AlServer {
         let text = params.text_document.text.clone();
         tracing::info!(uri = %uri, len = text.len(), "did_open");
 
-        self.workspace.documents.open(uri.clone(), params.text_document.text);
+        self.workspace
+            .documents
+            .open(uri.clone(), params.text_document.text);
         self.update_workspace_index(&uri, &text);
 
         diagnostics::publish_diagnostics(self, &uri, &text).await;
@@ -442,8 +472,10 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, change_count = params.content_changes.len(), "did_change");
 
         // Convert LSP types → al-core types at the boundary
-        let changes: Vec<al_core::documents::TextChange> = params.content_changes.iter().map(|c| {
-            al_core::documents::TextChange {
+        let changes: Vec<al_core::documents::TextChange> = params
+            .content_changes
+            .iter()
+            .map(|c| al_core::documents::TextChange {
                 range: c.range.map(|r| al_core::documents::TextRange {
                     start_line: r.start.line,
                     start_character: r.start.character,
@@ -451,8 +483,8 @@ impl LanguageServer for AlServer {
                     end_character: r.end.character,
                 }),
                 text: c.text.clone(),
-            }
-        }).collect();
+            })
+            .collect();
         self.workspace.documents.apply_changes(&uri, &changes);
 
         if let Some(text) = self.workspace.documents.get_text(&uri) {
@@ -546,10 +578,13 @@ impl LanguageServer for AlServer {
         let start = std::time::Instant::now();
         let result = completions::handle_completion(self, uri, position).await;
         let elapsed = start.elapsed();
-        let count = result.as_ref().map(|r| match r {
-            CompletionResponse::Array(v) => v.len(),
-            CompletionResponse::List(l) => l.items.len(),
-        }).unwrap_or(0);
+        let count = result
+            .as_ref()
+            .map(|r| match r {
+                CompletionResponse::Array(v) => v.len(),
+                CompletionResponse::List(l) => l.items.len(),
+            })
+            .unwrap_or(0);
         tracing::debug!(uri = %uri, line = position.line, col = position.character, count, elapsed_us = elapsed.as_micros() as u64, "completion");
         Ok(result)
     }
@@ -612,7 +647,10 @@ impl LanguageServer for AlServer {
         Ok(result)
     }
 
-    async fn range_formatting(&self, params: DocumentRangeFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+    async fn range_formatting(
+        &self,
+        params: DocumentRangeFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
         let result = formatting::handle_range_formatting(self, uri, params.range, &params.options);
@@ -621,7 +659,6 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, edits = count, elapsed_us = elapsed.as_micros() as u64, "range_formatting");
         Ok(result)
     }
-
 
     // -- Folding ranges --
 
@@ -647,10 +684,13 @@ impl LanguageServer for AlServer {
         let start = std::time::Instant::now();
         let result = handlers::handle_semantic_tokens(self, uri);
         let elapsed = start.elapsed();
-        let count = result.as_ref().map(|r| match r {
-            SemanticTokensResult::Tokens(t) => t.data.len(),
-            SemanticTokensResult::Partial(t) => t.data.len(),
-        }).unwrap_or(0);
+        let count = result
+            .as_ref()
+            .map(|r| match r {
+                SemanticTokensResult::Tokens(t) => t.data.len(),
+                SemanticTokensResult::Partial(t) => t.data.len(),
+            })
+            .unwrap_or(0);
         tracing::debug!(uri = %uri, tokens = count, elapsed_us = elapsed.as_micros() as u64, "semantic_tokens_full");
         Ok(result)
     }
@@ -801,7 +841,10 @@ impl LanguageServer for AlServer {
 
     // -- Execute command --
 
-    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
         tracing::info!(command = %params.command, "execute_command");
 
         let start = std::time::Instant::now();
@@ -826,7 +869,10 @@ impl LanguageServer for AlServer {
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to clear symbol cache");
                         self.client
-                            .show_message(MessageType::WARNING, format!("Failed to clear cache: {e}"))
+                            .show_message(
+                                MessageType::WARNING,
+                                format!("Failed to clear cache: {e}"),
+                            )
                             .await;
                     }
                 }
@@ -836,26 +882,41 @@ impl LanguageServer for AlServer {
                 // Formatting is now handled as a CodeAction with WorkspaceEdit directly in handlers.rs.
                 // This command is kept for backward compatibility or direct calls.
                 // SILENT: .ok() on from_value — invalid argument from client is not user-affecting
-                if let Some(uri) = params.arguments.first().and_then(|v| serde_json::from_value::<Url>(v.clone()).ok()) {
-                    if let Some(edits) = formatting::handle_formatting(self, &uri, &FormattingOptions {
-                        tab_size: 4,
-                        insert_spaces: true,
-                        ..Default::default()
-                    }) {
+                if let Some(uri) = params
+                    .arguments
+                    .first()
+                    .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok())
+                {
+                    if let Some(edits) = formatting::handle_formatting(
+                        self,
+                        &uri,
+                        &FormattingOptions {
+                            tab_size: 4,
+                            insert_spaces: true,
+                            ..Default::default()
+                        },
+                    ) {
                         let mut changes = std::collections::HashMap::new();
                         changes.insert(uri.clone(), edits);
                         // SILENT: apply_edit failure is logged by tower-lsp internally
-                        self.client.apply_edit(WorkspaceEdit {
-                            changes: Some(changes),
-                            ..Default::default()
-                        }).await.ok();
+                        self.client
+                            .apply_edit(WorkspaceEdit {
+                                changes: Some(changes),
+                                ..Default::default()
+                            })
+                            .await
+                            .ok();
                     }
                 }
                 Ok(None)
             }
             "al.lintFile" => {
                 // SILENT: .ok() on from_value — invalid argument from client is not user-affecting
-                if let Some(uri) = params.arguments.first().and_then(|v| serde_json::from_value::<Url>(v.clone()).ok()) {
+                if let Some(uri) = params
+                    .arguments
+                    .first()
+                    .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok())
+                {
                     if let Some(text) = self.workspace.documents.get_text(&uri) {
                         diagnostics::publish_diagnostics(self, &uri, &text).await;
                     }
@@ -868,7 +929,12 @@ impl LanguageServer for AlServer {
                 let indexed_symbols = self.workspace.symbols.len();
                 let workspace_files = self.workspace.file_index.len();
                 let workspace_objects = self.workspace.file_index.objects.len();
-                let builtins = self.workspace.builtins.read().unwrap_or_else(|e| e.into_inner()).len(); // SILENT: recover from RwLock poison
+                let builtins = self
+                    .workspace
+                    .builtins
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .len(); // SILENT: recover from RwLock poison
 
                 Ok(Some(serde_json::json!({
                     "version": env!("CARGO_PKG_VERSION"),
@@ -914,13 +980,21 @@ impl LanguageServer for AlServer {
                         match al_core::build::compile_project(&tc, &root, None).await {
                             Ok(result) => {
                                 // Group compile diagnostics by file and publish per-file.
-                                let mut by_file: std::collections::HashMap<String, Vec<Diagnostic>> =
-                                    std::collections::HashMap::new();
+                                let mut by_file: std::collections::HashMap<
+                                    String,
+                                    Vec<Diagnostic>,
+                                > = std::collections::HashMap::new();
                                 for d in &result.diagnostics {
                                     let severity = match d.severity {
-                                        al_core::build::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                                        al_core::build::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                                        al_core::build::DiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
+                                        al_core::build::DiagnosticSeverity::Error => {
+                                            DiagnosticSeverity::ERROR
+                                        }
+                                        al_core::build::DiagnosticSeverity::Warning => {
+                                            DiagnosticSeverity::WARNING
+                                        }
+                                        al_core::build::DiagnosticSeverity::Info => {
+                                            DiagnosticSeverity::INFORMATION
+                                        }
                                     };
                                     let start_line = d.line.saturating_sub(1);
                                     let start_char = d.column.saturating_sub(1);
@@ -943,16 +1017,11 @@ impl LanguageServer for AlServer {
                                         message: d.message.clone(),
                                         ..Default::default()
                                     };
-                                    by_file
-                                        .entry(d.file.clone())
-                                        .or_default()
-                                        .push(lsp_diag);
+                                    by_file.entry(d.file.clone()).or_default().push(lsp_diag);
                                 }
                                 for (file, diags) in by_file {
                                     if let Ok(uri) = Url::from_file_path(&file) {
-                                        self.client
-                                            .publish_diagnostics(uri, diags, None)
-                                            .await;
+                                        self.client.publish_diagnostics(uri, diags, None).await;
                                     }
                                 }
                                 if result.success {
@@ -991,8 +1060,8 @@ impl LanguageServer for AlServer {
                 Ok(None)
             }
             "al.applyRecommendedSettings" => {
-                let result = crate::workspace::apply_recommended_settings()
-                    .map_err(|e| e.to_string());
+                let result =
+                    crate::workspace::apply_recommended_settings().map_err(|e| e.to_string());
                 match result {
                     Ok(()) => {
                         self.client

@@ -49,12 +49,10 @@ async fn main() -> Result<(), ZedTestError> {
     // Update this path to point to any .al file in your test project.
     // The file must belong to a project that al-lsp knows about (has app.json).
     // -------------------------------------------------------------------------
-    let test_file = Path::new(
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/al-test-harness/data/test_al_project/src/HelloWorld.al"
-        )
-    );
+    let test_file = Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/al-test-harness/data/test_al_project/src/HelloWorld.al"
+    ));
 
     println!("Opening file: {}", test_file.display());
     zed.open_file(test_file).await?;
@@ -147,7 +145,11 @@ async fn main() -> Result<(), ZedTestError> {
         Ok(text) => {
             println!("OCR output ({} chars):", text.len());
             // Print first 500 chars to avoid flooding output.
-            let preview = if text.len() > 500 { &text[..500] } else { &text };
+            let preview = if text.len() > 500 {
+                &text[..500]
+            } else {
+                &text
+            };
             println!("{preview}");
         }
         Err(ZedTestError::OcrError(msg)) => {

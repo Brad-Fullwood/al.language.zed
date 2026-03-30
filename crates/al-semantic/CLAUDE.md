@@ -4,6 +4,13 @@
 
 Hosts .NET CLR in-process via `netcorehost` for Microsoft.Dynamics.Nav.CodeAnalysis.
 
+## Quick Reference
+
+```sh
+cargo test -p al-semantic                   # all tests (~17 inline, requires .NET SDK)
+cargo check -p al-semantic                  # compile check (works without .NET SDK)
+```
+
 ## Key Constraint
 
 All CLR calls are **Mutex-serialized on a blocking thread with 30s timeout**. Never call DotNetHost methods from multiple threads directly.

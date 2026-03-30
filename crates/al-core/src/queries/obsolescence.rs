@@ -77,8 +77,16 @@ pub fn obsolescence_timeline(workspace: &Workspace) -> Vec<ObsoleteEntry> {
         for method in &sym.methods {
             for attr in &method.attributes {
                 if attr.name.eq_ignore_ascii_case("Obsolete") {
-                    let reason = attr.arguments.first().cloned().map(|s| s.trim_matches('\'').trim_matches('"').to_string());
-                    let tag = attr.arguments.get(1).cloned().map(|s| s.trim_matches('\'').trim_matches('"').to_string());
+                    let reason = attr
+                        .arguments
+                        .first()
+                        .cloned()
+                        .map(|s| s.trim_matches('\'').trim_matches('"').to_string());
+                    let tag = attr
+                        .arguments
+                        .get(1)
+                        .cloned()
+                        .map(|s| s.trim_matches('\'').trim_matches('"').to_string());
                     results.push(ObsoleteEntry {
                         object: sym.name.clone(),
                         symbol: method.name.clone(),
@@ -130,7 +138,15 @@ fn scan_file_for_obsolete(
     }
 
     // Check for procedure-level Obsolete attributes
-    scan_procedures_for_obsolete(file_path, file_text, root, source, &obj_info.name, all_files, results);
+    scan_procedures_for_obsolete(
+        file_path,
+        file_text,
+        root,
+        source,
+        &obj_info.name,
+        all_files,
+        results,
+    );
 }
 
 fn scan_procedures_for_obsolete(
@@ -142,7 +158,10 @@ fn scan_procedures_for_obsolete(
     all_files: &[(&str, &str, &tree_sitter::Tree)],
     results: &mut Vec<ObsoleteEntry>,
 ) {
-    if matches!(node.kind(), "procedure_declaration" | "event_procedure_declaration") {
+    if matches!(
+        node.kind(),
+        "procedure_declaration" | "event_procedure_declaration"
+    ) {
         if let Some(obs) = extract_obsolete_from_preceding_attr(node, source) {
             let name = node
                 .child_by_field_name("name")
@@ -171,7 +190,15 @@ fn scan_procedures_for_obsolete(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        scan_procedures_for_obsolete(file_path, _file_text, child, source, object_name, all_files, results);
+        scan_procedures_for_obsolete(
+            file_path,
+            _file_text,
+            child,
+            source,
+            object_name,
+            all_files,
+            results,
+        );
     }
 }
 
@@ -246,10 +273,13 @@ fn extract_property_value(text: &str, prop_name: &str) -> Option<String> {
         // Skip "= " and extract quoted value
         let after = after.trim_start_matches([' ', '=', ':']);
         let after = after.trim_start_matches('\'').trim_start_matches('"');
-        let end = after.find(['\'', '"', ';', '\n'])
+        let end = after
+            .find(['\'', '"', ';', '\n'])
             .unwrap_or(after.len().min(200));
         let val = after[..end].trim().to_string();
-        if !val.is_empty() { return Some(val); }
+        if !val.is_empty() {
+            return Some(val);
+        }
     }
     None
 }
@@ -258,8 +288,10 @@ fn extract_attr_arg(text: &str, idx: usize) -> Option<String> {
     // Find content between ( and )
     let start = text.find('(')?;
     let end = text.rfind(')')?;
-    if start >= end { return None; }
-    let inner = &text[start+1..end];
+    if start >= end {
+        return None;
+    }
+    let inner = &text[start + 1..end];
 
     // Split by comma, respecting quotes
     let mut args = Vec::new();
@@ -268,22 +300,30 @@ fn extract_attr_arg(text: &str, idx: usize) -> Option<String> {
     let mut qc = '\'';
     for ch in inner.chars() {
         match ch {
-            '\'' | '"' if !in_q => { in_q = true; qc = ch; }
-            c if c == qc && in_q => { in_q = false; }
-            ',' if !in_q => { args.push(current.trim().to_string()); current = String::new(); }
+            '\'' | '"' if !in_q => {
+                in_q = true;
+                qc = ch;
+            }
+            c if c == qc && in_q => {
+                in_q = false;
+            }
+            ',' if !in_q => {
+                args.push(current.trim().to_string());
+                current = String::new();
+            }
             _ => current.push(ch),
         }
     }
-    if !current.trim().is_empty() { args.push(current.trim().to_string()); }
+    if !current.trim().is_empty() {
+        args.push(current.trim().to_string());
+    }
 
-    args.get(idx).map(|s| s.trim_matches('\'').trim_matches('"').to_string())
+    args.get(idx)
+        .map(|s| s.trim_matches('\'').trim_matches('"').to_string())
         .filter(|s| !s.is_empty())
 }
 
-fn count_references_in_files(
-    all_files: &[(&str, &str, &tree_sitter::Tree)],
-    name: &str,
-) -> u32 {
+fn count_references_in_files(all_files: &[(&str, &str, &tree_sitter::Tree)], name: &str) -> u32 {
     all_files
         .iter()
         .map(|(_, text, tree)| al_syntax::find_call_references(tree, text, name) as u32)
@@ -299,7 +339,8 @@ mod tests {
     fn workspace_with(files: Vec<(&str, &str)>) -> Workspace {
         let ws = Workspace::new();
         for (name, content) in files {
-            ws.file_index.add_file(PathBuf::from(name), content.to_string());
+            ws.file_index
+                .add_file(PathBuf::from(name), content.to_string());
         }
         ws
     }
@@ -324,7 +365,8 @@ mod tests {
         let entries = obsolescence_timeline(&ws);
         assert!(
             entries.iter().any(|e| e.symbol == "OldProc"),
-            "Should find OldProc as obsolete: {:?}", entries
+            "Should find OldProc as obsolete: {:?}",
+            entries
         );
     }
 
@@ -343,7 +385,8 @@ mod tests {
         let entries = obsolescence_timeline(&ws);
         assert!(
             !entries.iter().any(|e| e.symbol == "ActiveProc"),
-            "ActiveProc should not be flagged: {:?}", entries
+            "ActiveProc should not be flagged: {:?}",
+            entries
         );
     }
 

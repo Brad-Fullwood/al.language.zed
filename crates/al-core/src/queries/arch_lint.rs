@@ -4,8 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use al_syntax::AlParser;
 use crate::workspace::Workspace;
+use al_syntax::AlParser;
 
 /// An architectural lint violation.
 #[derive(Debug, Clone, Serialize)]
@@ -76,11 +76,27 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
 
         let obj_kind_lower = obj_info.kind.to_lowercase();
         for rule in &config.rules {
-            apply_rule(&file_path, text, &parsed.tree, &obj_info, &obj_kind_lower, rule, &mut violations);
+            apply_rule(
+                &file_path,
+                text,
+                &parsed.tree,
+                &obj_info,
+                &obj_kind_lower,
+                rule,
+                &mut violations,
+            );
         }
 
         for rule in &ArchConfig::builtin_rules() {
-            apply_rule(&file_path, text, &parsed.tree, &obj_info, &obj_kind_lower, rule, &mut violations);
+            apply_rule(
+                &file_path,
+                text,
+                &parsed.tree,
+                &obj_info,
+                &obj_kind_lower,
+                rule,
+                &mut violations,
+            );
         }
     }
 
@@ -108,11 +124,18 @@ fn apply_rule(
         ArchRuleKind::NamingConvention => {
             if let Some(name_pattern) = rule.values.first() {
                 if name_pattern.contains("[A-Z]")
-                    && !obj_info.name.chars().next().is_some_and(|c| c.is_uppercase())
+                    && !obj_info
+                        .name
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_uppercase())
                 {
                     violations.push(ArchViolation {
                         rule_id: rule.id.clone(),
-                        message: format!("{}: '{}' does not start with uppercase", rule.description, obj_info.name),
+                        message: format!(
+                            "{}: '{}' does not start with uppercase",
+                            rule.description, obj_info.name
+                        ),
                         object: obj_info.name.clone(),
                         file: Some(file_path.to_string()),
                         line: Some(1),
@@ -126,7 +149,10 @@ fn apply_rule(
                 if text_lower.contains(&forbidden.to_lowercase()) {
                     violations.push(ArchViolation {
                         rule_id: rule.id.clone(),
-                        message: format!("{}: '{}' contains forbidden pattern '{}'", rule.description, obj_info.name, forbidden),
+                        message: format!(
+                            "{}: '{}' contains forbidden pattern '{}'",
+                            rule.description, obj_info.name, forbidden
+                        ),
                         object: obj_info.name.clone(),
                         file: Some(file_path.to_string()),
                         line: Some(1),
@@ -138,11 +164,14 @@ fn apply_rule(
             if let (Some(id), Some(range)) = (obj_info.id, rule.values.first()) {
                 if let Some(dash) = range.find('-') {
                     let lo: u32 = range[..dash].parse().unwrap_or(0);
-                    let hi: u32 = range[dash+1..].parse().unwrap_or(u32::MAX);
+                    let hi: u32 = range[dash + 1..].parse().unwrap_or(u32::MAX);
                     if !(lo..=hi).contains(&(id as u32)) {
                         violations.push(ArchViolation {
                             rule_id: rule.id.clone(),
-                            message: format!("{}: ID {} outside allowed range {}", rule.description, id, range),
+                            message: format!(
+                                "{}: ID {} outside allowed range {}",
+                                rule.description, id, range
+                            ),
                             object: obj_info.name.clone(),
                             file: Some(file_path.to_string()),
                             line: Some(1),
@@ -152,13 +181,20 @@ fn apply_rule(
             }
         }
         ArchRuleKind::MaxComplexity => {
-            let max: u32 = rule.values.first().and_then(|v| v.parse().ok()).unwrap_or(10);
+            let max: u32 = rule
+                .values
+                .first()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10);
             let metrics = al_syntax::complexity::compute_complexity(tree, text);
             for m in &metrics {
                 if m.cyclomatic > max {
                     violations.push(ArchViolation {
                         rule_id: rule.id.clone(),
-                        message: format!("{}: '{}' complexity {} > {}", rule.description, m.name, m.cyclomatic, max),
+                        message: format!(
+                            "{}: '{}' complexity {} > {}",
+                            rule.description, m.name, m.cyclomatic, max
+                        ),
                         object: obj_info.name.clone(),
                         file: Some(file_path.to_string()),
                         line: Some(m.line),
@@ -178,7 +214,8 @@ mod tests {
     fn workspace_with(files: Vec<(&str, &str)>) -> Workspace {
         let ws = Workspace::new();
         for (name, content) in files {
-            ws.file_index.add_file(PathBuf::from(name), content.to_string());
+            ws.file_index
+                .add_file(PathBuf::from(name), content.to_string());
         }
         ws
     }
@@ -207,7 +244,11 @@ mod tests {
         };
 
         let v = arch_lint(&ws, &config);
-        assert!(v.iter().any(|x| x.rule_id == "ARCH-TEST-001"), "Should detect Sleep: {:?}", v);
+        assert!(
+            v.iter().any(|x| x.rule_id == "ARCH-TEST-001"),
+            "Should detect Sleep: {:?}",
+            v
+        );
     }
 
     #[test]

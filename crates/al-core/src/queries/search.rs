@@ -25,8 +25,11 @@ pub struct WorkspaceSearchResult {
 fn ascii_contains_ci(haystack: &str, query_lower: &str) -> bool {
     let q = query_lower.as_bytes();
     let h = haystack.as_bytes();
-    if q.len() > h.len() { return false; }
-    h.windows(q.len()).any(|w| w.iter().zip(q).all(|(a, b)| a.to_ascii_lowercase() == *b))
+    if q.len() > h.len() {
+        return false;
+    }
+    h.windows(q.len())
+        .any(|w| w.iter().zip(q).all(|(a, b)| a.to_ascii_lowercase() == *b))
 }
 
 /// Search workspace .al file objects whose name contains `query` (case-insensitive).

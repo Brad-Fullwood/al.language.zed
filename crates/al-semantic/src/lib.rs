@@ -108,7 +108,9 @@ pub struct MethodParameter {
 
 impl std::fmt::Display for MethodParameter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_var { write!(f, "var ")?; }
+        if self.is_var {
+            write!(f, "var ")?;
+        }
         write!(f, "{}: {}", self.name, self.type_name)
     }
 }
@@ -196,8 +198,7 @@ impl SemanticBridge {
     fn parse_response<T: serde::de::DeserializeOwned>(
         value: serde_json::Value,
     ) -> Result<T, SemanticError> {
-        serde_json::from_value(value)
-            .map_err(|e| SemanticError::SerializationError(e.to_string()))
+        serde_json::from_value(value).map_err(|e| SemanticError::SerializationError(e.to_string()))
     }
 
     /// Internal: call with timeout on a blocking thread.
@@ -215,13 +216,16 @@ impl SemanticBridge {
 
         // Run the .NET call on a blocking thread to avoid blocking the tokio runtime.
         // Lock is acquired inside spawn_blocking so the critical section is sync.
-        let result = tokio::time::timeout(DEFAULT_TIMEOUT, tokio::task::spawn_blocking(move || {
-            let guard = host.lock().unwrap_or_else(|e| {
-                tracing::warn!("SemanticBridge Mutex was poisoned — recovering inner value");
-                e.into_inner()
-            });
-            guard.call(&method, params)
-        }))
+        let result = tokio::time::timeout(
+            DEFAULT_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                let guard = host.lock().unwrap_or_else(|e| {
+                    tracing::warn!("SemanticBridge Mutex was poisoned — recovering inner value");
+                    e.into_inner()
+                });
+                guard.call(&method, params)
+            }),
+        )
         .await;
 
         match result {
@@ -343,7 +347,6 @@ impl SemanticBridge {
         let _ = self.call("ping", serde_json::Value::Null).await?;
         Ok(())
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -588,4 +591,3 @@ mod tests {
         assert!(json["analyzers"].as_array().unwrap().is_empty());
     }
 }
-

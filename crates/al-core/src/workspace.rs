@@ -152,7 +152,12 @@ impl Workspace {
     /// Uses double-checked locking to prevent the TOCTOU race where two concurrent
     /// callers both see `None` and both build the graph. The write lock is acquired
     /// before building, and re-checked inside the lock so at most one build runs.
-    pub fn get_or_build_call_graph(&self) -> (Arc<InsightGraph>, std::sync::RwLockReadGuard<'_, Option<CallGraph>>) {
+    pub fn get_or_build_call_graph(
+        &self,
+    ) -> (
+        Arc<InsightGraph>,
+        std::sync::RwLockReadGuard<'_, Option<CallGraph>>,
+    ) {
         // Fast path: call graph already exists — return it under a read lock.
         {
             let cg_guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
@@ -177,7 +182,9 @@ impl Workspace {
         graph.build_from_index(&self.symbols);
         // Register workspace objects, procedures, events, and subscribers
         crate::insight::calls::register_workspace_nodes(
-            &self.file_index, &self.symbols, &mut graph,
+            &self.file_index,
+            &self.symbols,
+            &mut graph,
         );
         let insight = Arc::new(graph);
 
@@ -189,7 +196,10 @@ impl Workspace {
         // Build CallGraph and populate Tier 1 call edges
         let mut cg = CallGraph::build_from_insight(&insight);
         crate::insight::calls::populate_workspace_call_edges(
-            &self.file_index, &self.symbols, &insight, &mut cg,
+            &self.file_index,
+            &self.symbols,
+            &insight,
+            &mut cg,
         );
 
         *write_guard = Some(cg);
@@ -206,14 +216,8 @@ impl Workspace {
         let workspace_files = self.file_index.files.len();
         let procedure_index_entries = self.file_index.procedures.len();
         let error_code_count = self.error_codes.len();
-        let builtin_count = self.builtins
-            .read()
-            .map(|b| b.len())
-            .unwrap_or(0);
-        let package_count = self.package_info
-            .read()
-            .map(|p| p.len())
-            .unwrap_or(0);
+        let builtin_count = self.builtins.read().map(|b| b.len()).unwrap_or(0);
+        let package_count = self.package_info.read().map(|p| p.len()).unwrap_or(0);
 
         WorkspaceMemoryStats {
             symbol_count,
@@ -294,10 +298,16 @@ pub async fn initialize_core_workspace(
 
             // Load symbol packages (with disk cache for fast warm starts).
             let cache = crate::symbols::cache::SymbolCache::default_location();
-            let loaded = workspace.symbols.load_packages_cached(&project.packages, &cache);
+            let loaded = workspace
+                .symbols
+                .load_packages_cached(&project.packages, &cache);
             total_symbols = loaded.iter().map(|p| p.objects.len()).sum();
             package_count = loaded.len();
-            tracing::info!(packages = package_count, symbols = total_symbols, "workspace: loaded symbol packages");
+            tracing::info!(
+                packages = package_count,
+                symbols = total_symbols,
+                "workspace: loaded symbol packages"
+            );
 
             // Load runtime enum definitions (compiler built-ins not in any package).
             workspace.symbols.load_runtime_enums();
@@ -315,7 +325,10 @@ pub async fn initialize_core_workspace(
                     object_count: p.objects.len(),
                 })
                 .collect();
-            *workspace.package_info.write().unwrap_or_else(|e| e.into_inner()) = pkg_info; // SILENT: recover from RwLock poison
+            *workspace
+                .package_info
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = pkg_info; // SILENT: recover from RwLock poison
 
             // Scan workspace .al files.
             file_count = workspace.file_index.scan(&project.root);
@@ -351,7 +364,12 @@ pub async fn initialize_core_workspace(
         }
     };
 
-    CoreInitResult { file_count, package_count, total_symbols, has_toolchain }
+    CoreInitResult {
+        file_count,
+        package_count,
+        total_symbols,
+        has_toolchain,
+    }
 }
 
 impl Default for Workspace {

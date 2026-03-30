@@ -77,16 +77,25 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
         .spawn()
         .map_err(|e| DapError::SpawnFailed(format!("{e}")))?;
 
-    let child_stdin = child.stdin.take().ok_or_else(|| DapError::SpawnFailed("child stdin not available".to_string()))?;
-    let child_stdout = child.stdout.take().ok_or_else(|| DapError::SpawnFailed("child stdout not available".to_string()))?;
+    let child_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| DapError::SpawnFailed("child stdin not available".to_string()))?;
+    let child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| DapError::SpawnFailed("child stdout not available".to_string()))?;
 
     // DAP protocol capture log — writes all messages to a file for reverse-engineering
-    let capture_log: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> = std::env::var("AL_DAP_CAPTURE").ok().map(|path| {
-        let file = std::fs::OpenOptions::new()
-            .create(true).append(true).open(&path)
-            .expect("Failed to open DAP capture log");
-        std::sync::Arc::new(std::sync::Mutex::new(file))
-    });
+    let capture_log: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> =
+        std::env::var("AL_DAP_CAPTURE").ok().map(|path| {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .expect("Failed to open DAP capture log");
+            std::sync::Arc::new(std::sync::Mutex::new(file))
+        });
 
     // Capture EditorServices stderr to the DAP log if enabled
     if let Some(child_stderr) = child.stderr.take() {
@@ -222,9 +231,8 @@ async fn patch_outgoing(
                 if !output.is_empty() {
                     let _ = send_output_event(output_writer, seq_counter, &output).await;
                 }
-                let _ =
-                    send_output_event(output_writer, seq_counter, "Compilation succeeded.\r\n")
-                        .await;
+                let _ = send_output_event(output_writer, seq_counter, "Compilation succeeded.\r\n")
+                    .await;
             }
             Err(DapError::CompilationFailed(msg)) => {
                 let _ = send_output_event(

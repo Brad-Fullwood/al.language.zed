@@ -5,6 +5,14 @@
       "env": {
         "RUST_LOG": "warn"
       }
+    },
+    "docs-rs": {
+      "command": "npx",
+      "args": ["-y", "@nuskey8/docs-rs-mcp@latest"]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
     }
   }
 }

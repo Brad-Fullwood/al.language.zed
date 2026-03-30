@@ -6,7 +6,10 @@ use std::path::PathBuf;
 use al_core::workspace::Workspace;
 use al_daemon_client::jsonrpc::{error_codes, Response, RpcError};
 
-use super::{rpc_error, invalid_params, file_not_found, ensure_document, require_document_text, file_uri_from_params, lint_diag_to_json};
+use super::{
+    ensure_document, file_not_found, file_uri_from_params, invalid_params, lint_diag_to_json,
+    require_document_text, rpc_error,
+};
 
 const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 const ERR_NO_PROJECT: &str = "No project loaded";
@@ -29,10 +32,7 @@ struct BcServerParams {
 ///
 /// `output_subdir` is the subdirectory appended to the default data-local path when
 /// `outputDir` is not provided by the caller (e.g. `"snapshots"` or `"profiles"`).
-fn parse_bc_server_params(
-    params: &serde_json::Value,
-    output_subdir: &str,
-) -> BcServerParams {
+fn parse_bc_server_params(params: &serde_json::Value, output_subdir: &str) -> BcServerParams {
     let server_url = params
         .get("serverUrl")
         .and_then(|v| v.as_str())
@@ -65,14 +65,25 @@ fn parse_bc_server_params(
         .get("acceptInvalidCerts")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    BcServerParams { server_url, company, output_dir, username, password, accept_invalid_certs }
+    BcServerParams {
+        server_url,
+        company,
+        output_dir,
+        username,
+        password,
+        accept_invalid_certs,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Analysis dispatchers (lint, format, fix, rules, parse, source)
 // ---------------------------------------------------------------------------
 
-pub(super) fn dispatch_lint(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_lint(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if all {
@@ -85,17 +96,19 @@ pub(super) fn dispatch_lint(workspace: &Workspace, id: u64, params: &serde_json:
             };
             let diagnostics = al_core::syntax::lint(&tree, &content);
             if !diagnostics.is_empty() {
-                let diags: Vec<serde_json::Value> = diagnostics
-                    .iter()
-                    .map(lint_diag_to_json)
-                    .collect();
+                let diags: Vec<serde_json::Value> =
+                    diagnostics.iter().map(lint_diag_to_json).collect();
                 results.push(serde_json::json!({
                     "file": path.display().to_string(),
                     "diagnostics": diags,
                 }));
             }
         }
-        return Response { id, result: Some(serde_json::json!(results)), error: None };
+        return Response {
+            id,
+            result: Some(serde_json::json!(results)),
+            error: None,
+        };
     }
 
     let Some(uri) = file_uri_from_params(params) else {
@@ -120,11 +133,22 @@ pub(super) fn dispatch_lint(workspace: &Workspace, id: u64, params: &serde_json:
     }
 
     let diags: Vec<serde_json::Value> = diagnostics.iter().map(lint_diag_to_json).collect();
-    Response { id, result: Some(serde_json::json!(diags)), error: None }
+    Response {
+        id,
+        result: Some(serde_json::json!(diags)),
+        error: None,
+    }
 }
 
-pub(super) fn dispatch_format(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let check = params.get("check").and_then(|v| v.as_bool()).unwrap_or(false);
+pub(super) fn dispatch_format(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let check = params
+        .get("check")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // Accept direct content or file path
     let content = if let Some(text) = params.get("content").and_then(|v| v.as_str()) {
@@ -164,7 +188,11 @@ pub(super) fn dispatch_format(workspace: &Workspace, id: u64, params: &serde_jso
             if let Ok(path) = uri.to_file_path() {
                 if changed {
                     if let Err(e) = std::fs::write(&path, &formatted) {
-                        return rpc_error(id, -32000, &format!("Failed to write formatted file: {e}"));
+                        return rpc_error(
+                            id,
+                            -32000,
+                            &format!("Failed to write formatted file: {e}"),
+                        );
                     }
                     // Update document store
                     workspace.documents.open(uri, formatted.clone());
@@ -183,7 +211,10 @@ pub(super) fn dispatch_format(workspace: &Workspace, id: u64, params: &serde_jso
 }
 
 pub(super) fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+    let dry_run = params
+        .get("dryRun")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let rule_filter = params.get("rule").and_then(|v| v.as_str());
 
     let Some(uri) = file_uri_from_params(params) else {
@@ -239,10 +270,18 @@ pub(super) fn dispatch_rules(id: u64) -> Response {
             })
         })
         .collect();
-    Response { id, result: Some(serde_json::json!(value)), error: None }
+    Response {
+        id,
+        result: Some(serde_json::json!(value)),
+        error: None,
+    }
 }
 
-pub(super) fn dispatch_parse(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_parse(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let Some(uri) = file_uri_from_params(params) else {
         return invalid_params(id);
     };
@@ -276,7 +315,11 @@ pub(super) fn dispatch_parse(workspace: &Workspace, id: u64, params: &serde_json
 
 /// Return the absolute file path (and line 1) for a workspace object by name.
 /// Used by al-explorer to open objects in Zed via the `zed://file/path:line:col` URL scheme.
-pub(super) fn dispatch_location(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_location(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n,
         None => return invalid_params(id),
@@ -301,7 +344,11 @@ pub(super) fn dispatch_location(workspace: &Workspace, id: u64, params: &serde_j
     }
 }
 
-pub(super) fn dispatch_source(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_source(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n,
         None => return invalid_params(id),
@@ -315,7 +362,13 @@ pub(super) fn dispatch_source(workspace: &Workspace, id: u64, params: &serde_jso
     let proc_filter = params.get("proc").and_then(|v| v.as_str());
     let trigger_filter = params.get("trigger").and_then(|v| v.as_str());
 
-    match al_core::queries::source::source(workspace, name, kind_filter, proc_filter, trigger_filter) {
+    match al_core::queries::source::source(
+        workspace,
+        name,
+        kind_filter,
+        proc_filter,
+        trigger_filter,
+    ) {
         Some(result) => Response {
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
@@ -336,7 +389,11 @@ pub(super) fn dispatch_source(workspace: &Workspace, id: u64, params: &serde_jso
 // Permission set generation
 // ---------------------------------------------------------------------------
 
-pub(super) fn dispatch_permissions(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_permissions(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let entries = al_core::permissions::collect_permissions(workspace);
     let format = params
         .get("format")
@@ -347,10 +404,7 @@ pub(super) fn dispatch_permissions(workspace: &Workspace, id: u64, params: &serd
         .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or("Generated Permissions");
-    let perm_id = params
-        .get("id")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(50100);
+    let perm_id = params.get("id").and_then(|v| v.as_i64()).unwrap_or(50100);
     let role_id = params
         .get("roleId")
         .and_then(|v| v.as_str())
@@ -447,9 +501,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
         let guard = al_core::semantic::get_or_init_bridge(workspace)
             .await
             .ok_or("Failed to initialize semantic bridge")?;
-        let bridge = guard
-            .as_ref()
-            .ok_or("Semantic bridge unavailable")?;
+        let bridge = guard.as_ref().ok_or("Semantic bridge unavailable")?;
         let compile_result = bridge
             .compile(&project_root, None, None)
             .await
@@ -462,8 +514,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
             .map(|p| p.display().to_string())
             .or_else(|| {
                 if compile_result.success {
-                    al_core::build::find_app_file(&project_root)
-                        .map(|p| p.display().to_string())
+                    al_core::build::find_app_file(&project_root).map(|p| p.display().to_string())
                 } else {
                     None
                 }
@@ -482,9 +533,14 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
             })).collect::<Vec<_>>(),
             "appPath": app_path,
         }))
-    }.await;
+    }
+    .await;
     match result {
-        Ok(value) => Response { id, result: Some(value), error: None },
+        Ok(value) => Response {
+            id,
+            result: Some(value),
+            error: None,
+        },
         Err(msg) => Response {
             id,
             result: None,
@@ -650,7 +706,8 @@ pub(super) fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Respo
 }
 
 pub(super) fn dispatch_error_codes(workspace: &Workspace, id: u64) -> Response {
-    let value: Vec<serde_json::Value> = workspace.error_codes
+    let value: Vec<serde_json::Value> = workspace
+        .error_codes
         .iter()
         .map(|entry| {
             serde_json::json!({
@@ -659,13 +716,23 @@ pub(super) fn dispatch_error_codes(workspace: &Workspace, id: u64) -> Response {
             })
         })
         .collect();
-    Response { id, result: Some(serde_json::json!(value)), error: None }
+    Response {
+        id,
+        result: Some(serde_json::json!(value)),
+        error: None,
+    }
 }
 
 pub(super) fn dispatch_builtin_types(workspace: &Workspace, id: u64) -> Response {
     let builtins = match workspace.builtins.read() {
         Ok(guard) => guard,
-        Err(_) => return Response { id, result: Some(serde_json::json!([])), error: None },
+        Err(_) => {
+            return Response {
+                id,
+                result: Some(serde_json::json!([])),
+                error: None,
+            }
+        }
     };
     let value: Vec<serde_json::Value> = builtins
         .iter()
@@ -685,7 +752,11 @@ pub(super) fn dispatch_builtin_types(workspace: &Workspace, id: u64) -> Response
             })
         })
         .collect();
-    Response { id, result: Some(serde_json::json!(value)), error: None }
+    Response {
+        id,
+        result: Some(serde_json::json!(value)),
+        error: None,
+    }
 }
 
 pub(super) fn dispatch_setup(workspace: &Workspace, id: u64) -> Response {
@@ -717,8 +788,15 @@ pub(super) fn dispatch_clear_cache(id: u64) -> Response {
     }
 }
 
-pub(super) async fn dispatch_authenticate(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let cmd = params.get("cmd").and_then(|v| v.as_str()).unwrap_or("login");
+pub(super) async fn dispatch_authenticate(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let cmd = params
+        .get("cmd")
+        .and_then(|v| v.as_str())
+        .unwrap_or("login");
 
     match cmd {
         "status" => {
@@ -727,10 +805,14 @@ pub(super) async fn dispatch_authenticate(workspace: &Workspace, id: u64, params
             let mut statuses = Vec::new();
             for tenant in &tenants {
                 let cache_path = al_core::symbols::oauth::token_cache_path(tenant);
-                let cached = std::fs::read_to_string(&cache_path).ok()
+                let cached = std::fs::read_to_string(&cache_path)
+                    .ok()
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
                 if let Some(cached) = cached {
-                    let expires_at = cached.get("expires_at").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let expires_at = cached
+                        .get("expires_at")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs())
@@ -760,7 +842,9 @@ pub(super) async fn dispatch_authenticate(workspace: &Workspace, id: u64, params
             let mut cleared = 0;
             for tenant in &tenants {
                 if let Some(filter) = tenant_filter {
-                    if tenant != filter { continue; }
+                    if tenant != filter {
+                        continue;
+                    }
                 }
                 let cache_path = al_core::symbols::oauth::token_cache_path(tenant);
                 if std::fs::remove_file(&cache_path).is_ok() {
@@ -774,7 +858,9 @@ pub(super) async fn dispatch_authenticate(workspace: &Workspace, id: u64, params
             }
         }
         _ => {
-            let tenant = params.get("tenant").and_then(|v| v.as_str())
+            let tenant = params
+                .get("tenant")
+                .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .or_else(|| get_project_tenants(workspace).into_iter().next());
 
@@ -798,7 +884,9 @@ pub(super) async fn dispatch_authenticate(workspace: &Workspace, id: u64, params
                     guard.push(msg.to_string());
                 }
                 tracing::info!("{msg}");
-            }).await {
+            })
+            .await
+            {
                 Ok(_token) => {
                     let msgs = messages.lock().unwrap_or_else(|e| e.into_inner());
                     Response {
@@ -811,16 +899,14 @@ pub(super) async fn dispatch_authenticate(workspace: &Workspace, id: u64, params
                         error: None,
                     }
                 }
-                Err(e) => {
-                    Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INTERNAL_ERROR,
-                            message: format!("Authentication failed: {e}"),
-                        }),
-                    }
-                }
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("Authentication failed: {e}"),
+                    }),
+                },
             }
         }
     }
@@ -842,8 +928,15 @@ pub(super) fn get_project_tenants(workspace: &Workspace) -> Vec<String> {
     tenants
 }
 
-pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let source = params.get("source").and_then(|v| v.as_str()).unwrap_or("nuget");
+pub(super) fn dispatch_download_symbols(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let source = params
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("nuget");
 
     let project = match workspace.project.try_read() {
         Ok(guard) => guard,
@@ -900,20 +993,25 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
                 }
                 let cfg = &project_configs[0];
                 let auth = match cfg.authentication {
-                    al_core::launch::AuthMethod::Windows => al_core::symbols::bc_server::AuthMethod::Windows,
-                    al_core::launch::AuthMethod::UserPassword => al_core::symbols::bc_server::AuthMethod::UserPassword,
-                    al_core::launch::AuthMethod::AAD => al_core::symbols::bc_server::AuthMethod::AAD,
+                    al_core::launch::AuthMethod::Windows => {
+                        al_core::symbols::bc_server::AuthMethod::Windows
+                    }
+                    al_core::launch::AuthMethod::UserPassword => {
+                        al_core::symbols::bc_server::AuthMethod::UserPassword
+                    }
+                    al_core::launch::AuthMethod::AAD => {
+                        al_core::symbols::bc_server::AuthMethod::AAD
+                    }
                 };
                 let client = al_core::symbols::bc_server::BcServerClient::new(
-                    auth, cfg.tenant.clone(),
+                    auth,
+                    cfg.tenant.clone(),
                     std::sync::Arc::new(|msg| tracing::info!("{msg}")),
                     cfg.accept_invalid_certs,
                 );
                 let url_deps: Vec<(String, al_core::symbols::nuget::AppDependency)> = all_deps
                     .iter()
-                    .filter_map(|dep| {
-                        cfg.dev_packages_url(dep).map(|url| (url, dep.clone()))
-                    })
+                    .filter_map(|dep| cfg.dev_packages_url(dep).map(|url| (url, dep.clone())))
                     .collect();
                 let bc_results = client.download_all(&url_deps, &dest).await;
                 bc_results
@@ -933,7 +1031,8 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
                     })
                     .collect()
             } else {
-                let nuget_feeds = crate::workspace::map_nuget_feeds(&al_core::project::nuget_feeds());
+                let nuget_feeds =
+                    crate::workspace::map_nuget_feeds(&al_core::project::nuget_feeds());
                 let client = al_core::symbols::nuget::NuGetClient::new(nuget_feeds);
                 let nuget_results = client.download_all(&all_deps, &dest).await;
                 nuget_results
@@ -956,8 +1055,14 @@ pub(super) fn dispatch_download_symbols(workspace: &Workspace, id: u64, params: 
         })
     });
 
-    let success = result.iter().filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("ok")).count();
-    let failed = result.iter().filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("error")).count();
+    let success = result
+        .iter()
+        .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("ok"))
+        .count();
+    let failed = result
+        .iter()
+        .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("error"))
+        .count();
 
     Response {
         id,
@@ -984,7 +1089,8 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                 result: None,
                 error: Some(RpcError {
                     code: error_codes::INVALID_PARAMS,
-                    message: "Missing 'cmd' parameter (expected: start, list, download)".to_string(),
+                    message: "Missing 'cmd' parameter (expected: start, list, download)"
+                        .to_string(),
                 }),
             };
         }
@@ -1129,27 +1235,25 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
     };
 
     match cmd {
-        "start" => {
-            match al_core::profiling::start_profiling(&config).await {
-                Ok(session_id) => Response {
-                    id,
-                    result: Some(serde_json::json!({
-                        "cmd": "start",
-                        "sessionId": session_id,
-                        "status": "profiling",
-                    })),
-                    error: None,
-                },
-                Err(e) => Response {
-                    id,
-                    result: None,
-                    error: Some(RpcError {
-                        code: error_codes::INTERNAL_ERROR,
-                        message: format!("profiling start failed: {e}"),
-                    }),
-                },
-            }
-        }
+        "start" => match al_core::profiling::start_profiling(&config).await {
+            Ok(session_id) => Response {
+                id,
+                result: Some(serde_json::json!({
+                    "cmd": "start",
+                    "sessionId": session_id,
+                    "status": "profiling",
+                })),
+                error: None,
+            },
+            Err(e) => Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("profiling start failed: {e}"),
+                }),
+            },
+        },
 
         "stop" => {
             let session_id = params
@@ -1205,10 +1309,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                     }),
                 };
             }
-            let top_n = params
-                .get("topN")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(20) as usize;
+            let top_n = params.get("topN").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             let top_n = top_n.min(1000);
 
             match al_core::profiling::analyze_profile_file(&profile_path, top_n).await {
@@ -1255,13 +1356,21 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
 // XLIFF / Translation dispatchers
 // ---------------------------------------------------------------------------
 
-pub(super) async fn dispatch_xlf_generate(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) async fn dispatch_xlf_generate(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     // Use the loaded workspace project root by default; only accept an explicit
     // "project" override if it is an absolute path (prevents path traversal).
     let project_root = if let Some(p) = params.get("project").and_then(|v| v.as_str()) {
         let pb = std::path::PathBuf::from(p);
         if !pb.is_absolute() {
-            return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "'project' must be an absolute path");
+            return rpc_error(
+                id,
+                al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+                "'project' must be an absolute path",
+            );
         }
         pb
     } else {
@@ -1292,13 +1401,27 @@ pub(super) async fn dispatch_xlf_generate(workspace: &Workspace, id: u64, params
     }
 }
 
-pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) async fn dispatch_xlf_refresh(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let xlf_path = match params.get("xlf").and_then(|v| v.as_str()) {
         Some(p) => std::path::PathBuf::from(p),
-        None => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
+        None => {
+            return rpc_error(
+                id,
+                al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+                "Missing 'xlf' param",
+            )
+        }
     };
     if !xlf_path.is_absolute() {
-        return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
+        return rpc_error(
+            id,
+            al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+            "'xlf' must be an absolute path",
+        );
     }
 
     // Find the generated .g.xlf
@@ -1306,9 +1429,11 @@ pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params:
         std::path::PathBuf::from(g)
     } else {
         // Auto-detect: look in the same Translations/ directory for *.g.xlf
-        xlf_path.parent()
+        xlf_path
+            .parent()
             .and_then(|dir| {
-                std::fs::read_dir(dir).ok()?
+                std::fs::read_dir(dir)
+                    .ok()?
                     .filter_map(|e| e.ok())
                     .find(|e| {
                         let name = e.file_name();
@@ -1322,11 +1447,23 @@ pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params:
 
     let gen_content = match std::fs::read_to_string(&generated_path) {
         Ok(c) => c,
-        Err(e) => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {}: {e}", generated_path.display())),
+        Err(e) => {
+            return rpc_error(
+                id,
+                al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+                &format!("Cannot read {}: {e}", generated_path.display()),
+            )
+        }
     };
     let lang_content = match std::fs::read_to_string(&xlf_path) {
         Ok(c) => c,
-        Err(e) => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {}: {e}", xlf_path.display())),
+        Err(e) => {
+            return rpc_error(
+                id,
+                al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+                &format!("Cannot read {}: {e}", xlf_path.display()),
+            )
+        }
     };
 
     let gen_units_map = al_core::xliff::parse_xliff(&gen_content);
@@ -1337,14 +1474,19 @@ pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params:
 
     // Write updated units back to the language xlf
     // We need the app name for the XLIFF header
-    let app_name = xlf_path.file_stem()
+    let app_name = xlf_path
+        .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("App")
         .trim_end_matches(".g")
         .to_string();
     let new_xlf = al_core::xliff::generate_xliff(&app_name, "en-US", "en-US", &updated_units);
     if let Err(e) = std::fs::write(&xlf_path, new_xlf) {
-        return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot write {}: {e}", xlf_path.display()));
+        return rpc_error(
+            id,
+            al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+            &format!("Cannot write {}: {e}", xlf_path.display()),
+        );
     }
 
     let _ = workspace; // workspace used for future workspace-aware refresh
@@ -1358,27 +1500,46 @@ pub(super) async fn dispatch_xlf_refresh(workspace: &Workspace, id: u64, params:
 pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> Response {
     let xlf_path = match params.get("xlf").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
+        None => {
+            return rpc_error(
+                id,
+                al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+                "Missing 'xlf' param",
+            )
+        }
     };
     if !std::path::Path::new(xlf_path).is_absolute() {
-        return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
+        return rpc_error(
+            id,
+            al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+            "'xlf' must be an absolute path",
+        );
     }
     let xlf_content = match std::fs::read_to_string(xlf_path) {
         Ok(c) => c,
-        Err(e) => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {xlf_path}: {e}")),
+        Err(e) => {
+            return rpc_error(
+                id,
+                al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+                &format!("Cannot read {xlf_path}: {e}"),
+            )
+        }
     };
     let units_map = al_core::xliff::parse_xliff(&xlf_content);
     let all_units: Vec<al_core::xliff::TranslationUnit> = units_map.into_values().collect();
     let untranslated = al_core::xliff::find_untranslated(&all_units);
-    let items: Vec<serde_json::Value> = untranslated.iter().map(|u| {
-        serde_json::json!({
-            "id": u.id,
-            "source": u.source,
-            "objectType": u.object_type,
-            "objectId": u.object_id,
-            "objectName": u.object_name,
+    let items: Vec<serde_json::Value> = untranslated
+        .iter()
+        .map(|u| {
+            serde_json::json!({
+                "id": u.id,
+                "source": u.source,
+                "objectType": u.object_type,
+                "objectId": u.object_id,
+                "objectName": u.object_name,
+            })
         })
-    }).collect();
+        .collect();
     let count = items.len();
     Response {
         id,
@@ -1387,18 +1548,38 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
     }
 }
 
-pub(super) async fn dispatch_xlf_suggest(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) async fn dispatch_xlf_suggest(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let xlf_path = match params.get("xlf").and_then(|v| v.as_str()) {
         Some(p) => p,
-        None => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "Missing 'xlf' param"),
+        None => {
+            return rpc_error(
+                id,
+                al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+                "Missing 'xlf' param",
+            )
+        }
     };
     if !std::path::Path::new(xlf_path).is_absolute() {
-        return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, "'xlf' must be an absolute path");
+        return rpc_error(
+            id,
+            al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+            "'xlf' must be an absolute path",
+        );
     }
 
     let xlf_content = match std::fs::read_to_string(xlf_path) {
         Ok(c) => c,
-        Err(e) => return rpc_error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, &format!("Cannot read {xlf_path}: {e}")),
+        Err(e) => {
+            return rpc_error(
+                id,
+                al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+                &format!("Cannot read {xlf_path}: {e}"),
+            )
+        }
     };
 
     let units_map = al_core::xliff::parse_xliff(&xlf_content);
@@ -1420,14 +1601,24 @@ pub(super) async fn dispatch_xlf_suggest(workspace: &Workspace, id: u64, params:
 // Bulk fix dispatchers (T1603-T1605)
 // ---------------------------------------------------------------------------
 
-pub(super) fn dispatch_fix_application_area(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_fix_application_area(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let project_root = match super::require_project_root(workspace, id) {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    let value = params.get("value").and_then(|v| v.as_str()).unwrap_or("All");
-    let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+    let value = params
+        .get("value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("All");
+    let dry_run = params
+        .get("dryRun")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     match al_core::queries::bulk_fix::add_application_area(&project_root, value, dry_run) {
         Ok(result) => Response {
@@ -1439,28 +1630,44 @@ pub(super) fn dispatch_fix_application_area(workspace: &Workspace, id: u64, para
     }
 }
 
-pub(super) fn dispatch_fix_tooltips(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_fix_tooltips(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let project_root = match super::require_project_root(workspace, id) {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+    let dry_run = params
+        .get("dryRun")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // Build tooltip map: field_name -> tooltip from symbol data
-    let table_name = params.get("fromTable").and_then(|v| v.as_str()).unwrap_or("");
+    let table_name = params
+        .get("fromTable")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let tooltips: Vec<(String, String)> = if !table_name.is_empty() {
-        workspace.symbols
+        workspace
+            .symbols
             .get_by_name(table_name)
             .into_iter()
             .filter(|e| e.kind == al_core::symbols::ObjectKind::Table)
             .flat_map(|e| {
-                e.fields.iter().filter_map(|f| {
-                    let tooltip = f.properties.iter()
-                        .find(|p| p.name.eq_ignore_ascii_case("ToolTip"))
-                        .map(|p| p.value.clone())?;
-                    Some((f.name.clone(), tooltip))
-                }).collect::<Vec<_>>()
+                e.fields
+                    .iter()
+                    .filter_map(|f| {
+                        let tooltip = f
+                            .properties
+                            .iter()
+                            .find(|p| p.name.eq_ignore_ascii_case("ToolTip"))
+                            .map(|p| p.value.clone())?;
+                        Some((f.name.clone(), tooltip))
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
     } else {
@@ -1477,14 +1684,24 @@ pub(super) fn dispatch_fix_tooltips(workspace: &Workspace, id: u64, params: &ser
     }
 }
 
-pub(super) fn dispatch_fix_data_classification(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_fix_data_classification(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let project_root = match super::require_project_root(workspace, id) {
         Ok(r) => r,
         Err(e) => return e,
     };
 
-    let value = params.get("value").and_then(|v| v.as_str()).unwrap_or("CustomerContent");
-    let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+    let value = params
+        .get("value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("CustomerContent");
+    let dry_run = params
+        .get("dryRun")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     match al_core::queries::bulk_fix::add_data_classification(&project_root, value, dry_run) {
         Ok(result) => Response {
@@ -1500,7 +1717,11 @@ pub(super) fn dispatch_fix_data_classification(workspace: &Workspace, id: u64, p
 // Metrics: cyclomatic/cognitive complexity per procedure (T1802)
 // ---------------------------------------------------------------------------
 
-pub(super) fn dispatch_metrics(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_metrics(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
     let threshold_cyclomatic = params
         .get("thresholdCyclomatic")
@@ -1523,7 +1744,9 @@ pub(super) fn dispatch_metrics(workspace: &Workspace, id: u64, params: &serde_js
             if !metrics.is_empty() {
                 let hotspots: Vec<serde_json::Value> = metrics
                     .iter()
-                    .filter(|m| m.cyclomatic >= threshold_cyclomatic || m.cognitive >= threshold_cognitive)
+                    .filter(|m| {
+                        m.cyclomatic >= threshold_cyclomatic || m.cognitive >= threshold_cognitive
+                    })
                     .map(procedure_complexity_to_json)
                     .collect();
                 all_results.push(serde_json::json!({
@@ -1572,7 +1795,9 @@ pub(super) fn dispatch_metrics(workspace: &Workspace, id: u64, params: &serde_js
     }
 }
 
-fn procedure_complexity_to_json(m: &al_core::syntax::complexity::ProcedureComplexity) -> serde_json::Value {
+fn procedure_complexity_to_json(
+    m: &al_core::syntax::complexity::ProcedureComplexity,
+) -> serde_json::Value {
     serde_json::json!({
         "name": m.name,
         "line": m.line,
@@ -1588,13 +1813,21 @@ fn procedure_complexity_to_json(m: &al_core::syntax::complexity::ProcedureComple
 pub(super) fn dispatch_tests_discover(workspace: &Workspace, id: u64) -> Response {
     let tests = al_core::queries::tests::discover_tests(workspace);
     let value = serde_json::to_value(&tests).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
 pub(super) fn dispatch_tests_coverage(workspace: &Workspace, id: u64) -> Response {
     let report = al_core::queries::test_coverage::test_coverage(workspace);
     let value = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
 /// T1502: Execute tests via BC REST API + T1503: Return results as diagnostics.
@@ -1610,13 +1843,23 @@ pub(super) fn dispatch_tests_coverage(workspace: &Workspace, id: u64) -> Respons
 /// Response includes:
 /// - `result`: `TestCodeunitResult` JSON
 /// - `diagnostics`: array of `TestDiagnostic` for failed/skipped tests (T1503)
-pub(super) async fn dispatch_tests_run(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) async fn dispatch_tests_run(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     use al_core::launch::find_launch_config;
-    use al_core::test_runner::TestRunnerClient;
     use al_core::queries::test_diagnostics::results_to_diagnostics;
+    use al_core::test_runner::TestRunnerClient;
 
     // -- Resolve project root from workspace -----------------------------------
-    let project_root = match workspace.project.read().await.as_ref().map(|p| p.root.clone()) {
+    let project_root = match workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|p| p.root.clone())
+    {
         Some(root) => root,
         None => {
             return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
@@ -1627,7 +1870,11 @@ pub(super) async fn dispatch_tests_run(workspace: &Workspace, id: u64, params: &
     let codeunit_id = match params.get("codeunit").and_then(|v| v.as_i64()) {
         Some(n) => n as i32,
         None => {
-            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'codeunit' parameter (i64 codeunit ID)");
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Missing 'codeunit' parameter (i64 codeunit ID)",
+            );
         }
     };
     let codeunit_name = params
@@ -1641,7 +1888,10 @@ pub(super) async fn dispatch_tests_run(workspace: &Workspace, id: u64, params: &
     } else {
         codeunit_name
     };
-    let method = params.get("method").and_then(|v| v.as_str()).map(String::from);
+    let method = params
+        .get("method")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let config_name = params.get("config").and_then(|v| v.as_str());
 
     // -- Find launch config ----------------------------------------------------
@@ -1657,7 +1907,10 @@ pub(super) async fn dispatch_tests_run(workspace: &Workspace, id: u64, params: &
     };
 
     let server_config = if let Some(name) = config_name {
-        launch_cfg.configs.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+        launch_cfg
+            .configs
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
     } else {
         launch_cfg.configs.first()
     };
@@ -1665,7 +1918,11 @@ pub(super) async fn dispatch_tests_run(workspace: &Workspace, id: u64, params: &
     let server_config = match server_config {
         Some(c) => c,
         None => {
-            return rpc_error(id, error_codes::INTERNAL_ERROR, "No BC server config found in launch config");
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                "No BC server config found in launch config",
+            );
         }
     };
 
@@ -1706,28 +1963,53 @@ pub(super) async fn dispatch_tests_run(workspace: &Workspace, id: u64, params: &
 // WP16: Object wizards / code generation
 // ---------------------------------------------------------------------------
 
-pub(super) fn dispatch_generate(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let kind = params.get("kind").and_then(|v| v.as_str()).unwrap_or("page");
+pub(super) fn dispatch_generate(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let kind = params
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("page");
     let object_id = params.get("id").and_then(|v| v.as_i64()).unwrap_or(50100) as i32;
     let table_name = params.get("table").and_then(|v| v.as_str()).unwrap_or("");
 
     // Resolve the source table symbol from the workspace symbol index.
     let table_entry = if !table_name.is_empty() {
-        workspace.symbols.search(table_name, 10)
+        workspace
+            .symbols
+            .search(table_name, 10)
             .into_iter()
-            .find(|e| e.kind == al_core::symbols::ObjectKind::Table && e.name.eq_ignore_ascii_case(table_name))
+            .find(|e| {
+                e.kind == al_core::symbols::ObjectKind::Table
+                    && e.name.eq_ignore_ascii_case(table_name)
+            })
     } else {
         None
     };
 
     match kind {
         "page" => {
-            let page_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("NewPage").to_string();
-            let page_type_str = params.get("pageType").and_then(|v| v.as_str()).unwrap_or("List");
-            let page_type = page_type_str.parse::<al_core::generators::PageType>().unwrap_or_default();
+            let page_name = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("NewPage")
+                .to_string();
+            let page_type_str = params
+                .get("pageType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("List");
+            let page_type = page_type_str
+                .parse::<al_core::generators::PageType>()
+                .unwrap_or_default();
 
             let Some(source) = table_entry else {
-                return rpc_error(id, error_codes::INVALID_PARAMS, &format!("Table '{}' not found in symbol index", table_name));
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    &format!("Table '{}' not found in symbol index", table_name),
+                );
             };
             let config = al_core::generators::GeneratePageConfig {
                 object_id,
@@ -1736,12 +2018,24 @@ pub(super) fn dispatch_generate(workspace: &Workspace, id: u64, params: &serde_j
                 source_table: (*source).clone(),
             };
             let code = al_core::generators::generate_page(&config);
-            Response { id, result: Some(serde_json::json!({ "code": code, "kind": "page" })), error: None }
+            Response {
+                id,
+                result: Some(serde_json::json!({ "code": code, "kind": "page" })),
+                error: None,
+            }
         }
         "report" => {
-            let report_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("NewReport").to_string();
+            let report_name = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("NewReport")
+                .to_string();
             let Some(source) = table_entry else {
-                return rpc_error(id, error_codes::INVALID_PARAMS, &format!("Table '{}' not found in symbol index", table_name));
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    &format!("Table '{}' not found in symbol index", table_name),
+                );
             };
             let config = al_core::generators::GenerateReportConfig {
                 object_id,
@@ -1749,10 +2043,18 @@ pub(super) fn dispatch_generate(workspace: &Workspace, id: u64, params: &serde_j
                 source_table: (*source).clone(),
             };
             let code = al_core::generators::generate_report(&config);
-            Response { id, result: Some(serde_json::json!({ "code": code, "kind": "report" })), error: None }
+            Response {
+                id,
+                result: Some(serde_json::json!({ "code": code, "kind": "report" })),
+                error: None,
+            }
         }
         "test" => {
-            let test_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("NewTests").to_string();
+            let test_name = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("NewTests")
+                .to_string();
             let subject = table_entry.map(|e| (*e).clone());
             let config = al_core::generators::GenerateTestConfig {
                 object_id,
@@ -1760,7 +2062,11 @@ pub(super) fn dispatch_generate(workspace: &Workspace, id: u64, params: &serde_j
                 subject,
             };
             let code = al_core::generators::generate_test(&config);
-            Response { id, result: Some(serde_json::json!({ "code": code, "kind": "test" })), error: None }
+            Response {
+                id,
+                result: Some(serde_json::json!({ "code": code, "kind": "test" })),
+                error: None,
+            }
         }
         other => Response {
             id,
@@ -1780,23 +2086,42 @@ pub(super) fn dispatch_generate(workspace: &Workspace, id: u64, params: &serde_j
 pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
     let entries = al_core::queries::obsolescence::obsolescence_timeline(workspace);
     let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
 pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64) -> Response {
     let entries = al_core::queries::audit::data_classification_audit(workspace);
     let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
 pub(super) fn dispatch_permission_set_audit(workspace: &Workspace, id: u64) -> Response {
     let entries = al_core::queries::audit::permission_set_audit(workspace);
     let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
-pub(super) fn dispatch_deps_graph(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("json");
+pub(super) fn dispatch_deps_graph(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let format = params
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("json");
 
     // Read app.json from project root
     let app_json = workspace
@@ -1817,25 +2142,43 @@ pub(super) fn dispatch_deps_graph(workspace: &Workspace, id: u64, params: &serde
 
     if format == "dot" {
         let dot = graph.to_dot();
-        Response { id, result: Some(serde_json::json!({ "format": "dot", "content": dot })), error: None }
+        Response {
+            id,
+            result: Some(serde_json::json!({ "format": "dot", "content": dot })),
+            error: None,
+        }
     } else {
         let value = serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null);
-        Response { id, result: Some(value), error: None }
+        Response {
+            id,
+            result: Some(value),
+            error: None,
+        }
     }
 }
 
-pub(super) fn dispatch_breaking_changes(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_breaking_changes(
+    workspace: &Workspace,
+    id: u64,
+    _params: &serde_json::Value,
+) -> Response {
     // Compare baseline (empty) against current workspace symbols to find
     // all changes relative to a clean slate.  Callers can pass baseline
     // symbols in params.baselineSymbols in a future iteration.
-    let current: Vec<al_core::symbols::SymbolEntry> = workspace.symbols.all_entries()
+    let current: Vec<al_core::symbols::SymbolEntry> = workspace
+        .symbols
+        .all_entries()
         .into_iter()
         .map(|a| (*a).clone())
         .collect();
     let baseline: Vec<al_core::symbols::SymbolEntry> = Vec::new();
     let changes = al_core::queries::breaking_changes::analyze_breaking_changes(&baseline, &current);
     let value = serde_json::to_value(&changes).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
 pub(super) fn dispatch_arch_lint(workspace: &Workspace, id: u64) -> Response {
@@ -1850,39 +2193,80 @@ pub(super) fn dispatch_arch_lint(workspace: &Workspace, id: u64) -> Response {
         .unwrap_or_default();
     let violations = al_core::queries::arch_lint::arch_lint(workspace, &config);
     let value = serde_json::to_value(&violations).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
-pub(super) fn dispatch_find_duplicates(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let min_tokens = params.get("minTokens").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-    let min_similarity = params.get("minSimilarity").and_then(|v| v.as_f64()).unwrap_or(0.8) as f32;
-    let duplicates = al_core::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity);
+pub(super) fn dispatch_find_duplicates(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let min_tokens = params
+        .get("minTokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20) as usize;
+    let min_similarity = params
+        .get("minSimilarity")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.8) as f32;
+    let duplicates =
+        al_core::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity);
     let value = serde_json::to_value(&duplicates).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
-pub(super) fn dispatch_upgrade_report(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_upgrade_report(
+    workspace: &Workspace,
+    id: u64,
+    _params: &serde_json::Value,
+) -> Response {
     // Use empty baseline to find all symbols that are new/changed relative
     // to a fresh install.  In practice callers supply a previous .app snapshot.
-    let current: Vec<al_core::symbols::SymbolEntry> = workspace.symbols.all_entries()
+    let current: Vec<al_core::symbols::SymbolEntry> = workspace
+        .symbols
+        .all_entries()
         .into_iter()
         .map(|a| (*a).clone())
         .collect();
     let baseline: Vec<al_core::symbols::SymbolEntry> = Vec::new();
     let issues = al_core::queries::upgrade::upgrade_report(&baseline, &current);
     let value = serde_json::to_value(&issues).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
-pub(super) fn dispatch_sql_patterns(workspace: &Workspace, id: u64, _params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_sql_patterns(
+    workspace: &Workspace,
+    id: u64,
+    _params: &serde_json::Value,
+) -> Response {
     let findings = al_core::queries::sql_patterns::detect_sql_patterns(workspace);
     let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }
 
 /// Sort members (variables, triggers, procedures) in canonical order.
 /// Params: `file` (URI) or `content` (raw text). If `file` specified, writes back.
-pub(super) fn dispatch_sort_members(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) fn dispatch_sort_members(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     let content = if let Some(text) = params.get("content").and_then(|v| v.as_str()) {
         text.to_string()
     } else if let Some(uri) = file_uri_from_params(params) {
@@ -1902,7 +2286,10 @@ pub(super) fn dispatch_sort_members(workspace: &Workspace, id: u64, params: &ser
     let changed = sorted != content;
 
     // Write back if file was specified and not a dry run
-    let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+    let dry_run = params
+        .get("dryRun")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if changed && !dry_run {
         if let Some(uri) = file_uri_from_params(params) {
             if let Ok(path) = uri.to_file_path() {
@@ -1921,8 +2308,15 @@ pub(super) fn dispatch_sort_members(workspace: &Workspace, id: u64, params: &ser
 
 /// Rename .al files to match `<Type><Id>.<Name>.al` convention.
 /// Scans the workspace root; returns list of `{from, to, renamed}` entries.
-pub(super) fn dispatch_organize_files(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let dry_run = params.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false);
+pub(super) fn dispatch_organize_files(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let dry_run = params
+        .get("dryRun")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let root: std::path::PathBuf = match super::require_project_root(workspace, id) {
         Ok(r) => r,
@@ -2002,12 +2396,21 @@ fn sanitize_filename(name: &str) -> String {
         .collect()
 }
 
-pub(super) fn dispatch_profiler_hints(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let hotspots = params.get("hotspots")
+pub(super) fn dispatch_profiler_hints(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let hotspots = params
+        .get("hotspots")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
     let hints = al_core::queries::profiler_hints::profiler_hints(workspace, &hotspots);
     let value = serde_json::to_value(&hints).unwrap_or(serde_json::Value::Null);
-    Response { id, result: Some(value), error: None }
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+    }
 }

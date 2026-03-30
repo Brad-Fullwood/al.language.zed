@@ -158,7 +158,9 @@ impl NativeDebugSession {
 
     /// Continue execution after a breakpoint (BreakpointExitReason=0).
     pub async fn continue_exec(&mut self) -> Result<DebugState> {
-        self.session.continue_execution(serde_json::json!(0)).await?;
+        self.session
+            .continue_execution(serde_json::json!(0))
+            .await?;
         // Return running state immediately — next state() call will show updated position
         Ok(DebugState {
             status: SessionStatus::Running,
@@ -213,7 +215,6 @@ impl NativeDebugSession {
         info!("Native debug session stopped");
         Ok(())
     }
-
 }
 
 /// Build a `BreakpointInfo` from the common fields, normalising empty conditions to `None`.
@@ -222,7 +223,11 @@ fn make_bp_info(file: &str, line: u32, condition: &str, id: i64, verified: bool)
         id,
         file: file.to_string(),
         line,
-        condition: if condition.is_empty() { None } else { Some(condition.to_string()) },
+        condition: if condition.is_empty() {
+            None
+        } else {
+            Some(condition.to_string())
+        },
         verified,
     }
 }

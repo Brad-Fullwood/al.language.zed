@@ -187,9 +187,9 @@ fn collect_normal_fields(fields: &[FieldSymbol]) -> Vec<&FieldSymbol> {
 }
 
 fn is_flow_field(f: &FieldSymbol) -> bool {
-    f.properties
-        .iter()
-        .any(|p| p.name.eq_ignore_ascii_case("FieldClass") && p.value.eq_ignore_ascii_case("FlowField"))
+    f.properties.iter().any(|p| {
+        p.name.eq_ignore_ascii_case("FieldClass") && p.value.eq_ignore_ascii_case("FlowField")
+    })
 }
 
 fn generate_field_controls(fields: &[&FieldSymbol]) -> String {
@@ -229,11 +229,7 @@ fn generate_report_columns(fields: &[&FieldSymbol]) -> String {
 }
 
 fn generate_test_stubs(subject: &SymbolEntry) -> String {
-    let public_methods: Vec<_> = subject
-        .methods
-        .iter()
-        .filter(|m| !m.is_local)
-        .collect();
+    let public_methods: Vec<_> = subject.methods.iter().filter(|m| !m.is_local).collect();
 
     if public_methods.is_empty() {
         return default_test_stub();
@@ -436,7 +432,10 @@ mod tests {
                 value: "FlowField".to_string(),
             }],
         };
-        let table = make_table("Customer", vec![make_field(1, "No.", "Code[20]"), flow_field]);
+        let table = make_table(
+            "Customer",
+            vec![make_field(1, "No.", "Code[20]"), flow_field],
+        );
         let config = GeneratePageConfig {
             object_id: 50100,
             page_name: "Customer List".to_string(),
@@ -451,8 +450,14 @@ mod tests {
 
     #[test]
     fn page_type_fromstr() {
-        assert!(matches!("list".parse::<PageType>().unwrap(), PageType::List));
-        assert!(matches!("card".parse::<PageType>().unwrap(), PageType::Card));
+        assert!(matches!(
+            "list".parse::<PageType>().unwrap(),
+            PageType::List
+        ));
+        assert!(matches!(
+            "card".parse::<PageType>().unwrap(),
+            PageType::Card
+        ));
         assert!(matches!(
             "document".parse::<PageType>().unwrap(),
             PageType::Document

@@ -150,7 +150,11 @@ impl CallGraph {
             if *edge_ref.weight() == InsightEdge::SubscribesTo {
                 let from = NodeId::from(edge_ref.source());
                 let to = NodeId::from(edge_ref.target());
-                cg.insert_edge(CallEdge { from, to, kind: EdgeKind::EventSubscription });
+                cg.insert_edge(CallEdge {
+                    from,
+                    to,
+                    kind: EdgeKind::EventSubscription,
+                });
             }
         }
 
@@ -162,19 +166,31 @@ impl CallGraph {
     /// `from` and `to` are `NodeId`s obtained from [`node_id_for`].
     /// Duplicate edges are silently ignored.
     pub fn add_direct_call(&mut self, from: NodeId, to: NodeId) {
-        let edge = CallEdge { from, to, kind: EdgeKind::DirectCall };
+        let edge = CallEdge {
+            from,
+            to,
+            kind: EdgeKind::DirectCall,
+        };
         self.insert_edge(edge);
     }
 
     /// Add a trigger-invocation edge (trigger calls procedure).
     pub fn add_trigger_invocation(&mut self, from: NodeId, to: NodeId) {
-        let edge = CallEdge { from, to, kind: EdgeKind::TriggerInvocation };
+        let edge = CallEdge {
+            from,
+            to,
+            kind: EdgeKind::TriggerInvocation,
+        };
         self.insert_edge(edge);
     }
 
     /// Add a record-trigger edge (procedure triggers table event via Insert/Modify/Delete/Validate).
     pub fn add_trigger(&mut self, from: NodeId, to: NodeId) {
-        let edge = CallEdge { from, to, kind: EdgeKind::RecordTrigger };
+        let edge = CallEdge {
+            from,
+            to,
+            kind: EdgeKind::RecordTrigger,
+        };
         self.insert_edge(edge);
     }
 
@@ -262,7 +278,10 @@ impl CallGraph {
     ///
     /// Defaults to `Unresolved` if no state has been recorded.
     pub fn resolution_state(&self, node: NodeId) -> EdgeResolutionState {
-        self.resolution.get(&node).copied().unwrap_or(EdgeResolutionState::Unresolved)
+        self.resolution
+            .get(&node)
+            .copied()
+            .unwrap_or(EdgeResolutionState::Unresolved)
     }
 
     /// Set the edge resolution state for a node.
@@ -286,7 +305,10 @@ impl CallGraph {
             return;
         }
 
-        self.outgoing.entry(edge.from).or_default().push(edge.clone());
+        self.outgoing
+            .entry(edge.from)
+            .or_default()
+            .push(edge.clone());
         self.incoming.entry(edge.to).or_default().push(edge);
     }
 }
@@ -429,7 +451,12 @@ mod tests {
             make_codeunit(
                 2,
                 "Subscriber",
-                vec![event_subscriber("HandleOnPost", "Codeunit", "Publisher", "OnPost")],
+                vec![event_subscriber(
+                    "HandleOnPost",
+                    "Codeunit",
+                    "Publisher",
+                    "OnPost",
+                )],
             ),
         ]);
 
@@ -450,7 +477,12 @@ mod tests {
             make_codeunit(
                 2,
                 "Subscriber",
-                vec![event_subscriber("HandleOnPost", "Codeunit", "Publisher", "OnPost")],
+                vec![event_subscriber(
+                    "HandleOnPost",
+                    "Codeunit",
+                    "Publisher",
+                    "OnPost",
+                )],
             ),
         ]);
 
@@ -479,12 +511,22 @@ mod tests {
             make_codeunit(
                 2,
                 "SubA",
-                vec![event_subscriber("HandlePost", "Codeunit", "Publisher", "OnPost")],
+                vec![event_subscriber(
+                    "HandlePost",
+                    "Codeunit",
+                    "Publisher",
+                    "OnPost",
+                )],
             ),
             make_codeunit(
                 3,
                 "SubB",
-                vec![event_subscriber("AlsoHandle", "Codeunit", "Publisher", "OnPost")],
+                vec![event_subscriber(
+                    "AlsoHandle",
+                    "Codeunit",
+                    "Publisher",
+                    "OnPost",
+                )],
             ),
         ]);
 
@@ -611,7 +653,12 @@ mod tests {
             make_codeunit(
                 2,
                 "Sub",
-                vec![event_subscriber("Handle", "Codeunit", "Publisher", "OnPost")],
+                vec![event_subscriber(
+                    "Handle",
+                    "Codeunit",
+                    "Publisher",
+                    "OnPost",
+                )],
             ),
         ]);
 
@@ -673,8 +720,11 @@ mod tests {
         let mut cg = CallGraph::build_from_insight(&graph);
 
         let proc_key = NodeKey::Procedure(ObjectKind::Codeunit, "postcu".into(), "dopost".into());
-        let event_key =
-            NodeKey::Event(ObjectKind::Codeunit, "events".into(), "onbeforeinsertevent".into());
+        let event_key = NodeKey::Event(
+            ObjectKind::Codeunit,
+            "events".into(),
+            "onbeforeinsertevent".into(),
+        );
         let proc_id = CallGraph::node_id_for(&graph, &proc_key).unwrap();
         let event_id = CallGraph::node_id_for(&graph, &event_key).unwrap();
 
@@ -690,7 +740,11 @@ mod tests {
         index.add_entries(&[make_codeunit(
             1,
             "MyCU",
-            vec![regular_method("A"), regular_method("B"), regular_method("C")],
+            vec![
+                regular_method("A"),
+                regular_method("B"),
+                regular_method("C"),
+            ],
         )]);
         let mut graph = InsightGraph::new();
         graph.build_from_index(&index);

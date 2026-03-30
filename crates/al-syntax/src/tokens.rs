@@ -308,7 +308,8 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
             let tc = token_classification();
             if tc.keyword_control.contains(kind) {
                 Some(token_types::KEYWORD)
-            } else if tc.keyword_object.contains(kind) || tc.keyword_object_extension.contains(kind) {
+            } else if tc.keyword_object.contains(kind) || tc.keyword_object_extension.contains(kind)
+            {
                 Some(token_types::OBJECT_KEYWORD)
             } else if tc.builtin_type.contains(kind) {
                 Some(token_types::BUILTIN_TYPE)
@@ -430,9 +431,7 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         }
         // key_declaration covers: table keys, query/report dataitems, query/report columns,
         // xmlport table elements. Discriminate by the keyword child.
-        "key_declaration" => {
-            classify_key_declaration_name(node, parent, source)
-        }
+        "key_declaration" => classify_key_declaration_name(node, parent, source),
         // Enum value names
         "enum_value_declaration" => Some(token_types::ENUM_MEMBER),
         // Namespace declarations — distinct custom token from standard NAMESPACE (idx 11).
@@ -456,9 +455,7 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
         }
         // Identifiers inside parenthesized blocks — classify by preceding sibling keyword.
         // Covers: pageView names, reportLayout names, xmlport element names, queryFilter names.
-        "parenthesized_block" => {
-            classify_parenthesized_block_name(node, parent, source)
-        }
+        "parenthesized_block" => classify_parenthesized_block_name(node, parent, source),
         "object_declaration" => {
             if is_object_name(node, parent) {
                 Some(token_types::TYPE)
@@ -553,17 +550,18 @@ fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -
 
     // Look for the keyword child of the key_declaration
     let kw = {
-        let keyword_node = declaration
-            .child_by_field_name("keyword")
-            .or_else(|| {
-                // Fallback: find first keyword/property_keyword child by index
-                // to avoid tree-sitter cursor lifetime issues.
-                (0..declaration.child_count())
-                    .filter_map(|i| declaration.child(i))
-                    .find(|child| {
-                        matches!(child.kind(), "keyword" | "property_keyword" | "metadata_keyword")
-                    })
-            })?;
+        let keyword_node = declaration.child_by_field_name("keyword").or_else(|| {
+            // Fallback: find first keyword/property_keyword child by index
+            // to avoid tree-sitter cursor lifetime issues.
+            (0..declaration.child_count())
+                .filter_map(|i| declaration.child(i))
+                .find(|child| {
+                    matches!(
+                        child.kind(),
+                        "keyword" | "property_keyword" | "metadata_keyword"
+                    )
+                })
+        })?;
         keyword_node.utf8_text(source).ok()?.to_lowercase()
     };
 
@@ -616,7 +614,6 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
         _ => None,
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -847,7 +844,10 @@ mod tests {
             .iter()
             .filter(|t| t.token_type == token_types::BUILTIN_TYPE)
             .count();
-        assert!(builtin_type_count > 0, "Should have builtin type tokens for 'Integer'");
+        assert!(
+            builtin_type_count > 0,
+            "Should have builtin type tokens for 'Integer'"
+        );
     }
 
     #[test]
@@ -884,7 +884,12 @@ mod tests {
 
         // Object-level vars are GLOBAL_VARIABLE
         assert_token_type_for_text(source, &tokens, "FirstVar", token_types::GLOBAL_VARIABLE);
-        assert_token_type_for_text(source, &tokens, r#""Second Var""#, token_types::GLOBAL_VARIABLE);
+        assert_token_type_for_text(
+            source,
+            &tokens,
+            r#""Second Var""#,
+            token_types::GLOBAL_VARIABLE,
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -940,7 +945,12 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "CustomerDataItem", token_types::QUERY_DATA_ITEM);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "CustomerDataItem",
+            token_types::QUERY_DATA_ITEM,
+        );
     }
 
     #[test]
@@ -1000,7 +1010,12 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "CustomerElem", token_types::XMLPORT_TABLE_ELEMENT);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "CustomerElem",
+            token_types::XMLPORT_TABLE_ELEMENT,
+        );
     }
 
     #[test]
@@ -1063,7 +1078,12 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "NameAttr", token_types::XMLPORT_FIELD_ATTRIBUTE);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "NameAttr",
+            token_types::XMLPORT_FIELD_ATTRIBUTE,
+        );
     }
 
     #[test]
@@ -1102,12 +1122,19 @@ codeunit 50100 Test
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
         // At minimum: must have some tokens (codeunit keyword and object name)
-        assert!(!tokens.is_empty(), "Expected tokens from a namespace-prefixed codeunit file");
-        // There must be at least one keyword-class token for the codeunit keyword
-        let has_any_kw = tokens.iter().any(|t|
-            t.token_type == token_types::KEYWORD || t.token_type == token_types::OBJECT_KEYWORD
+        assert!(
+            !tokens.is_empty(),
+            "Expected tokens from a namespace-prefixed codeunit file"
         );
-        assert!(has_any_kw, "Expected at least one keyword token in namespace file, got {} tokens", tokens.len());
+        // There must be at least one keyword-class token for the codeunit keyword
+        let has_any_kw = tokens.iter().any(|t| {
+            t.token_type == token_types::KEYWORD || t.token_type == token_types::OBJECT_KEYWORD
+        });
+        assert!(
+            has_any_kw,
+            "Expected at least one keyword token in namespace file, got {} tokens",
+            tokens.len()
+        );
     }
 
     #[test]
@@ -1122,7 +1149,12 @@ codeunit 50100 Test
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(src, &tokens, "IntegrationEvent", token_types::ATTRIBUTE_NAME);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "IntegrationEvent",
+            token_types::ATTRIBUTE_NAME,
+        );
     }
 
     #[test]
@@ -1163,11 +1195,6 @@ codeunit 50100 Test
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let tokens = extract_semantic_tokens(&result.tree, src);
-        assert_token_type_for_text(
-            src,
-            &tokens,
-            r#""Item Journal Staging""#,
-            token_types::TYPE,
-        );
+        assert_token_type_for_text(src, &tokens, r#""Item Journal Staging""#, token_types::TYPE);
     }
 }

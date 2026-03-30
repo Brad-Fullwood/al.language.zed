@@ -2,6 +2,15 @@
 
 Programmatic control of a running Zed IDE instance on Linux/Wayland/Hyprland. Used by AI agents to test the zed-al WASM extension end-to-end — things the LSP harness cannot cover.
 
+## Quick Reference
+
+```sh
+cargo test -p al-zed-test --test live_test  # live Zed tests (requires running Zed instance)
+cargo build -p al-zed-test                  # compile check only
+```
+
+**Requires:** Running Zed IDE, Hyprland, and external tools (`hyprctl`, `wtype`, `grim`, `wl-copy`, `wl-paste`).
+
 ## Key Types
 
 - `ZedTest` — primary entry point, constructed via `ZedTest::connect()`

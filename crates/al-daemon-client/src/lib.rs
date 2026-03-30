@@ -4,10 +4,10 @@
 //! and a synchronous Unix socket client with auto-start and retry logic.
 //! Used by al-cli, al-explorer, and al-lsp.
 
-pub mod socket;
-pub mod jsonrpc;
 pub mod client;
+pub mod jsonrpc;
+pub mod socket;
 
 // Convenience re-exports
-pub use socket::socket_path;
 pub use client::DaemonClient;
+pub use socket::socket_path;

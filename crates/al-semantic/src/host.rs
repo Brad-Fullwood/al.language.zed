@@ -69,10 +69,7 @@ impl DotNetHost {
         let type_name = pdcstr!("AlBridge.Bridge, AlBridge");
 
         let init_fn: InitFn = *fn_loader
-            .get_function_with_unmanaged_callers_only::<InitFn>(
-                type_name,
-                pdcstr!("Init"),
-            )
+            .get_function_with_unmanaged_callers_only::<InitFn>(type_name, pdcstr!("Init"))
             .map_err(|e| SemanticError::HostInit(format!("Failed to get Init: {e}")))?;
 
         let handle_request_fn: HandleRequestFn = *fn_loader
@@ -143,15 +140,13 @@ impl DotNetHost {
 
         let mut response_len: c_int = 0;
         let response_ptr = unsafe {
-            (self.handle_request_fn)(
-                request_bytes.as_ptr(),
-                request_len,
-                &mut response_len,
-            )
+            (self.handle_request_fn)(request_bytes.as_ptr(), request_len, &mut response_len)
         };
 
         if response_ptr.is_null() {
-            return Err(SemanticError::HostInit("HandleRequest returned null".into()));
+            return Err(SemanticError::HostInit(
+                "HandleRequest returned null".into(),
+            ));
         }
 
         if response_len < 0 {
@@ -169,10 +164,9 @@ impl DotNetHost {
             bytes
         };
 
-        let response: serde_json::Value = serde_json::from_slice(&response_bytes)
-            .map_err(|e| SemanticError::SerializationError(format!(
-                "Failed to parse bridge response: {e}"
-            )))?;
+        let response: serde_json::Value = serde_json::from_slice(&response_bytes).map_err(|e| {
+            SemanticError::SerializationError(format!("Failed to parse bridge response: {e}"))
+        })?;
 
         // Check for error in response
         if let Some(error) = response.get("error") {
@@ -186,7 +180,10 @@ impl DotNetHost {
         }
 
         // Extract the result field
-        Ok(response.get("result").cloned().unwrap_or(serde_json::Value::Null))
+        Ok(response
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
     }
 }
 
@@ -250,7 +247,9 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
 
     // Strategy 4: Compile from source (development mode)
     if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
-        let bridge_proj = PathBuf::from(manifest_dir).join("bridge").join("AlBridge.csproj");
+        let bridge_proj = PathBuf::from(manifest_dir)
+            .join("bridge")
+            .join("AlBridge.csproj");
         if bridge_proj.is_file() {
             debug!(project = %bridge_proj.display(), "Compiling bridge DLL from source");
             return compile_bridge_from_source(&bridge_proj);
@@ -292,9 +291,7 @@ fn compile_bridge_from_source(csproj: &Path) -> Result<(PathBuf, PathBuf), Seman
 }
 
 /// Convert a Path to a PdCString for netcorehost.
-fn path_to_pdcstring(
-    path: &Path,
-) -> Result<netcorehost::pdcstring::PdCString, SemanticError> {
+fn path_to_pdcstring(path: &Path) -> Result<netcorehost::pdcstring::PdCString, SemanticError> {
     netcorehost::pdcstring::PdCString::from_os_str(path.as_os_str())
         .map_err(|e| SemanticError::HostInit(format!("Invalid path for .NET: {e}")))
 }
@@ -321,5 +318,4 @@ mod tests {
             }
         }
     }
-
 }

@@ -134,10 +134,16 @@ impl BcDebugConfig {
         if let Some(s) = args.get("schemaUpdateMode").and_then(|v| v.as_str()) {
             cfg.schema_update_mode = s.to_string();
         }
-        if let Some(s) = args.get("dependencyPublishingOption").and_then(|v| v.as_str()) {
+        if let Some(s) = args
+            .get("dependencyPublishingOption")
+            .and_then(|v| v.as_str())
+        {
             cfg.dependency_publishing_option = s.to_string();
         }
-        if let Some(b) = args.get("validateServerCertificate").and_then(|v| v.as_bool()) {
+        if let Some(b) = args
+            .get("validateServerCertificate")
+            .and_then(|v| v.as_bool())
+        {
             cfg.accept_invalid_certs = !b;
         }
         cfg
@@ -220,10 +226,12 @@ pub async fn publish_app(
 
     info!("Publishing package to {url}");
 
-    let app_bytes = tokio::fs::read(app_path).await
+    let app_bytes = tokio::fs::read(app_path)
+        .await
         .map_err(|e| DapError::PublishFailed(format!("Failed to read .app file: {e}")))?;
 
-    let file_name = app_path.file_name()
+    let file_name = app_path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("app.app")
         .to_string();
@@ -272,7 +280,9 @@ pub async fn get_metadata(
         .map_err(|e| DapError::ConnectionFailed(format!("Metadata request failed: {e}")))?;
 
     if resp.status().is_success() {
-        resp.json().await.map_err(|e| DapError::ConnectionFailed(format!("Bad metadata response: {e}")))
+        resp.json()
+            .await
+            .map_err(|e| DapError::ConnectionFailed(format!("Bad metadata response: {e}")))
     } else {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -301,7 +311,6 @@ struct SignalRMessage {
     // Type 6: ping
 }
 
-
 /// Native BC debug session over SignalR.
 pub struct BcDebugSession {
     /// Send SignalR messages to the hub
@@ -322,10 +331,7 @@ pub struct BcDebugSession {
 
 impl BcDebugSession {
     /// Connect to the BC debug hub via SignalR WebSocket.
-    pub async fn connect(
-        config: &BcDebugConfig,
-        access_token: &str,
-    ) -> Result<Self> {
+    pub async fn connect(config: &BcDebugConfig, access_token: &str) -> Result<Self> {
         let hub_url = config.debug_hub_url();
 
         // SignalR negotiate to get connection token
@@ -346,9 +352,14 @@ impl BcDebugSession {
             .map_err(|e| DapError::ConnectionFailed(format!("SignalR negotiate failed: {e}")))?;
 
         let status = negotiate_resp.status();
-        let resp_text = negotiate_resp.text().await
-            .map_err(|e| DapError::ConnectionFailed(format!("Failed to read negotiate response: {e}")))?;
-        debug!("Negotiate response (HTTP {}): {}", status, &resp_text[..resp_text.len().min(500)]);
+        let resp_text = negotiate_resp.text().await.map_err(|e| {
+            DapError::ConnectionFailed(format!("Failed to read negotiate response: {e}"))
+        })?;
+        debug!(
+            "Negotiate response (HTTP {}): {}",
+            status,
+            &resp_text[..resp_text.len().min(500)]
+        );
 
         if !status.is_success() {
             return Err(DapError::ConnectionFailed(format!(
@@ -356,19 +367,29 @@ impl BcDebugSession {
             )));
         }
 
-        let negotiate: serde_json::Value = serde_json::from_str(&resp_text)
-            .map_err(|e| DapError::ConnectionFailed(format!("Bad negotiate JSON: {e}: {}", &resp_text[..resp_text.len().min(200)])))?;
+        let negotiate: serde_json::Value = serde_json::from_str(&resp_text).map_err(|e| {
+            DapError::ConnectionFailed(format!(
+                "Bad negotiate JSON: {e}: {}",
+                &resp_text[..resp_text.len().min(200)]
+            ))
+        })?;
 
-        let connection_token = negotiate.get("connectionToken")
+        let connection_token = negotiate
+            .get("connectionToken")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| DapError::ConnectionFailed("No connectionToken in negotiate".to_string()))?;
-        let connection_id = negotiate.get("connectionId")
+            .ok_or_else(|| {
+                DapError::ConnectionFailed("No connectionToken in negotiate".to_string())
+            })?;
+        let connection_id = negotiate
+            .get("connectionId")
             .and_then(|v| v.as_str())
             .unwrap_or(connection_token)
             .to_string();
 
         // Connect WebSocket
-        let ws_url = hub_url.replace("https://", "wss://").replace("http://", "ws://");
+        let ws_url = hub_url
+            .replace("https://", "wss://")
+            .replace("http://", "ws://");
         let ws_url = format!("{ws_url}?id={connection_token}");
         info!("SignalR WebSocket: {ws_url}");
 
@@ -378,19 +399,31 @@ impl BcDebugSession {
             .header("Connection", "Upgrade")
             .header("Upgrade", "websocket")
             .header("Sec-WebSocket-Version", "13")
-            .header("Sec-WebSocket-Key", tokio_tungstenite::tungstenite::handshake::client::generate_key())
-            .header("Host", url::Url::parse(&ws_url).map(|u| u.host_str().unwrap_or("").to_string()).unwrap_or_default())
+            .header(
+                "Sec-WebSocket-Key",
+                tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+            )
+            .header(
+                "Host",
+                url::Url::parse(&ws_url)
+                    .map(|u| u.host_str().unwrap_or("").to_string())
+                    .unwrap_or_default(),
+            )
             .body(())
             .map_err(|e| DapError::ConnectionFailed(format!("WS request build error: {e}")))?;
 
-        let (ws_stream, _) = tokio_tungstenite::connect_async(request).await
+        let (ws_stream, _) = tokio_tungstenite::connect_async(request)
+            .await
             .map_err(|e| DapError::ConnectionFailed(format!("WebSocket connect failed: {e}")))?;
 
         let (mut ws_sink, mut ws_source) = ws_stream.split();
 
         // Send SignalR handshake (JSON protocol)
         let handshake = "{\"protocol\":\"json\",\"version\":1}\x1e";
-        ws_sink.send(tokio_tungstenite::tungstenite::Message::Text(handshake.into()))
+        ws_sink
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                handshake.into(),
+            ))
             .await
             .map_err(|e| DapError::ConnectionFailed(format!("SignalR handshake failed: {e}")))?;
 
@@ -411,7 +444,11 @@ impl BcDebugSession {
         tokio::spawn(async move {
             while let Some(msg) = ws_rx.recv().await {
                 let framed = format!("{msg}\x1e"); // SignalR record separator
-                if ws_sink.send(tokio_tungstenite::tungstenite::Message::Text(framed.into())).await.is_err() {
+                if ws_sink
+                    .send(tokio_tungstenite::tungstenite::Message::Text(framed.into()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -447,8 +484,10 @@ impl BcDebugSession {
                                 // Ping — ignore
                                 continue;
                             }
-                            debug!("SignalR recv: type={} target={:?} id={:?}",
-                                msg.type_, msg.target, msg.invocation_id);
+                            debug!(
+                                "SignalR recv: type={} target={:?} id={:?}",
+                                msg.type_, msg.target, msg.invocation_id
+                            );
                             if event_tx.send(msg).is_err() {
                                 break;
                             }
@@ -492,8 +531,14 @@ impl BcDebugSession {
             "invocationId": id,
         });
 
-        info!("SignalR invoke: {} args={}", target, serde_json::to_string(&arguments).unwrap_or_default());
-        self.ws_tx.send(msg.to_string()).await
+        info!(
+            "SignalR invoke: {} args={}",
+            target,
+            serde_json::to_string(&arguments).unwrap_or_default()
+        );
+        self.ws_tx
+            .send(msg.to_string())
+            .await
             .map_err(|_| DapError::ConnectionFailed("WebSocket channel closed".to_string()))?;
 
         // Wait for completion with matching invocation ID
@@ -522,7 +567,11 @@ impl BcDebugSession {
                         buf.push_back(msg);
                     }
                 }
-                Ok(None) => return Err(DapError::ConnectionFailed("SignalR channel closed".to_string())),
+                Ok(None) => {
+                    return Err(DapError::ConnectionFailed(
+                        "SignalR channel closed".to_string(),
+                    ))
+                }
                 Err(_) => return Err(DapError::Timeout(timeout)),
             }
         }
@@ -568,14 +617,18 @@ impl BcDebugSession {
                     info!("Attached to debug connection");
                 }
                 "OnDetachedFromConnection" => {
-                    let terminate = msg.arguments.as_ref()
+                    let terminate = msg
+                        .arguments
+                        .as_ref()
                         .and_then(|a| a.first())
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     info!("Detached from debug connection (terminate={terminate})");
                 }
                 "OnFatalDebuggerException" => {
-                    let message = msg.arguments.as_ref()
+                    let message = msg
+                        .arguments
+                        .as_ref()
                         .and_then(|a| a.first())
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
@@ -667,7 +720,10 @@ impl BcDebugSession {
             "NumberOfSqlStatements": 10,
         });
         // Try with debug options first (newer BC >=2.0), fall back to empty args
-        match self.invoke("DebugAdapterConfigurationDone", vec![debug_options]).await {
+        match self
+            .invoke("DebugAdapterConfigurationDone", vec![debug_options])
+            .await
+        {
             Ok(_) => Ok(()),
             Err(_) => {
                 // Older BC: no args
@@ -703,21 +759,34 @@ impl BcDebugSession {
             "Line": line,
             "Column": column,
         });
-        let result = self.invoke("AddBreakpoint", vec![object_id, position, serde_json::json!(condition)]).await?;
+        let result = self
+            .invoke(
+                "AddBreakpoint",
+                vec![object_id, position, serde_json::json!(condition)],
+            )
+            .await?;
         Ok(result.unwrap_or(serde_json::Value::Null))
     }
 
     /// Remove a breakpoint.
     /// BC hub method: `RemoveBreakpoint(long breakpointId)`
     pub async fn remove_breakpoint(&self, breakpoint_id: i64) -> Result<()> {
-        self.invoke("RemoveBreakpoint", vec![serde_json::json!(breakpoint_id)]).await?;
+        self.invoke("RemoveBreakpoint", vec![serde_json::json!(breakpoint_id)])
+            .await?;
         Ok(())
     }
 
     /// Update a breakpoint condition.
     /// BC hub method: `UpdateBreakpoint(long id, string condition)`
     pub async fn update_breakpoint(&self, breakpoint_id: i64, condition: &str) -> Result<()> {
-        self.invoke("UpdateBreakpoint", vec![serde_json::json!(breakpoint_id), serde_json::json!(condition)]).await?;
+        self.invoke(
+            "UpdateBreakpoint",
+            vec![
+                serde_json::json!(breakpoint_id),
+                serde_json::json!(condition),
+            ],
+        )
+        .await?;
         Ok(())
     }
 
@@ -726,7 +795,8 @@ impl BcDebugSession {
     /// Note: BC uses "SetBreakpointResponse" for continue, not a "continue" method.
     pub async fn continue_execution(&self, breakpoint_response: serde_json::Value) -> Result<()> {
         *self.is_stopped.lock().await = false;
-        self.invoke("SetBreakpointResponse", vec![breakpoint_response]).await?;
+        self.invoke("SetBreakpointResponse", vec![breakpoint_response])
+            .await?;
         Ok(())
     }
 
@@ -771,28 +841,42 @@ impl BcDebugSession {
     /// Get variables for a frame.
     /// BC hub method: `GetVariables(int frameId)` → `LocalNode[]`
     pub async fn get_variables(&self, frame_id: i64) -> Result<serde_json::Value> {
-        let result = self.invoke("GetVariables", vec![serde_json::json!(frame_id)]).await?;
+        let result = self
+            .invoke("GetVariables", vec![serde_json::json!(frame_id)])
+            .await?;
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
     /// Get globals for a frame.
     /// BC hub method: `ExpandGlobals(int frameId)` → `LocalNode[]`
     pub async fn get_globals(&self, frame_id: i64) -> Result<serde_json::Value> {
-        let result = self.invoke("ExpandGlobals", vec![serde_json::json!(frame_id)]).await?;
+        let result = self
+            .invoke("ExpandGlobals", vec![serde_json::json!(frame_id)])
+            .await?;
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
     /// Expand a variable node.
     /// BC hub method: `ExpandNode(int frameId, string path)` → `LocalNode[]`
     pub async fn expand_node(&self, frame_id: i64, path: &str) -> Result<serde_json::Value> {
-        let result = self.invoke("ExpandNode", vec![serde_json::json!(frame_id), serde_json::json!(path)]).await?;
+        let result = self
+            .invoke(
+                "ExpandNode",
+                vec![serde_json::json!(frame_id), serde_json::json!(path)],
+            )
+            .await?;
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
     /// Evaluate an expression (watch).
     /// BC hub method: `GetWatchNode(int frameId, string expression)` → `LocalNode`
     pub async fn evaluate(&self, frame_id: i64, expression: &str) -> Result<serde_json::Value> {
-        let result = self.invoke("GetWatchNode", vec![serde_json::json!(frame_id), serde_json::json!(expression)]).await?;
+        let result = self
+            .invoke(
+                "GetWatchNode",
+                vec![serde_json::json!(frame_id), serde_json::json!(expression)],
+            )
+            .await?;
         Ok(result.unwrap_or(serde_json::Value::Null))
     }
 
@@ -804,7 +888,9 @@ impl BcDebugSession {
             "ObjectNumber": object_number,
         });
         let result = self.invoke("GetSource", vec![object_id]).await?;
-        Ok(result.and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default())
+        Ok(result
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default())
     }
 
     /// Terminate the debug session.
@@ -845,14 +931,18 @@ fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
             })
         }
         "OnDetachedFromConnection" => {
-            let terminate = msg.arguments.as_ref()
+            let terminate = msg
+                .arguments
+                .as_ref()
                 .and_then(|a| a.first())
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             Some(BcEvent::Detached { terminate })
         }
         "OnFatalDebuggerException" => {
-            let message = msg.arguments.as_ref()
+            let message = msg
+                .arguments
+                .as_ref()
                 .and_then(|a| a.first())
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
@@ -860,7 +950,9 @@ fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
             Some(BcEvent::FatalError { message })
         }
         "IsAlive" | "OnAttachedToConnection" => None, // handled internally
-        other => Some(BcEvent::Other { target: other.to_string() }),
+        other => Some(BcEvent::Other {
+            target: other.to_string(),
+        }),
     }
 }
 
@@ -944,6 +1036,9 @@ mod tests {
         // Default port (7049) should still appear in the URL — always include port
         let cfg = onprem_config("http://localhost", "BC", 7049);
         let url = cfg.base_url();
-        assert!(url.contains(":7049"), "default port should be in URL: {url}");
+        assert!(
+            url.contains(":7049"),
+            "default port should be in URL: {url}"
+        );
     }
 }

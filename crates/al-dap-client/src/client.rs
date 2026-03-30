@@ -235,10 +235,7 @@ mod tests {
     fn spawn_nonexistent_binary_returns_error() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let result = DapClient::spawn(
-                &PathBuf::from("/nonexistent/binary"),
-                &[],
-            );
+            let result = DapClient::spawn(&PathBuf::from("/nonexistent/binary"), &[]);
             assert!(result.is_err());
             match result {
                 Err(DapError::SpawnFailed(msg)) => {
@@ -253,10 +250,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_echo_and_kill() {
         // Spawn a simple process that we can kill
-        let result = DapClient::spawn(
-            &PathBuf::from("/usr/bin/cat"),
-            &[],
-        );
+        let result = DapClient::spawn(&PathBuf::from("/usr/bin/cat"), &[]);
         if let Ok(mut client) = result {
             // Just verify we can kill it without panicking
             client.kill().await.unwrap();

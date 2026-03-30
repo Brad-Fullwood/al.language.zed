@@ -28,7 +28,6 @@ pub struct AlConfig {
     // ----- Fields below are parsed from user settings but not yet wired to behavior. -----
     // They are retained so existing user configs don't break on deserialization.
     // TODO: Wire up or remove each field as features are implemented.
-
     /// Enable semantic code analysis via .NET bridge.
     pub enable_code_analysis: bool,
 
@@ -61,7 +60,6 @@ pub struct AlConfig {
     // -----------------------------------------------------------------------
     // Features
     // -----------------------------------------------------------------------
-
     /// Enable code actions (quick fixes, refactorings).
     pub enable_code_actions: bool,
 
@@ -74,7 +72,6 @@ pub struct AlConfig {
     // -----------------------------------------------------------------------
     // Native lint
     // -----------------------------------------------------------------------
-
     /// Master toggle for native lint rules (AL-L001–AL-L018). Default: true.
     pub enable_native_lint: bool,
 
@@ -85,7 +82,6 @@ pub struct AlConfig {
     // -----------------------------------------------------------------------
     // Symbol management
     // -----------------------------------------------------------------------
-
     /// Custom package cache path. If None, uses `<project>/.alpackages/`.
     pub package_cache_path: Option<PathBuf>,
 
@@ -104,7 +100,6 @@ pub struct AlConfig {
     // -----------------------------------------------------------------------
     // Compiler
     // -----------------------------------------------------------------------
-
     /// Additional compilation options passed to alc.
     pub compilation_options: Vec<String>,
 
@@ -114,7 +109,6 @@ pub struct AlConfig {
     // -----------------------------------------------------------------------
     // Debug / DAP
     // -----------------------------------------------------------------------
-
     /// Path to EditorServices.Host binary. If None, auto-discovered.
     pub editor_services_path: Option<PathBuf>,
 
@@ -124,7 +118,6 @@ pub struct AlConfig {
     // -----------------------------------------------------------------------
     // Project scaffolding
     // -----------------------------------------------------------------------
-
     /// Default root namespace for scaffolding new objects.
     pub root_namespace: Option<String>,
 
@@ -137,8 +130,6 @@ pub struct AlConfig {
     /// Suggested folder for AL:Go scaffolding.
     pub algo_suggested_folder: Option<PathBuf>,
 }
-
-
 
 /// NuGet feed configuration for symbol download.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,8 +279,7 @@ impl AlConfig {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         // Write to a sibling temp file, then rename atomically.
         let tmp_path = path.with_extension("tmp");
         std::fs::write(&tmp_path, &json)?;
@@ -321,26 +311,38 @@ impl AlConfig {
             match key.as_str() {
                 // -- Semantic --
                 "enableCodeAnalysis" => merge_bool(obj, key, &mut self.enable_code_analysis),
-                "backgroundCodeAnalysis" => merge_bool(obj, key, &mut self.background_code_analysis),
+                "backgroundCodeAnalysis" => {
+                    merge_bool(obj, key, &mut self.background_code_analysis)
+                }
                 "diagnosticsScope" => {
                     if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
-                        if let Ok(scope) = serde_json::from_value(serde_json::Value::String(s.to_string())) {
+                        if let Ok(scope) =
+                            serde_json::from_value(serde_json::Value::String(s.to_string()))
+                        {
                             self.diagnostics_scope = scope;
                         }
                     }
                 }
                 "diagnosticsTrigger" => {
                     if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
-                        if let Ok(trigger) = serde_json::from_value(serde_json::Value::String(s.to_string())) {
+                        if let Ok(trigger) =
+                            serde_json::from_value(serde_json::Value::String(s.to_string()))
+                        {
                             self.diagnostics_trigger = trigger;
                         }
                     }
                 }
                 "codeAnalyzers" => merge_string_array(obj, key, &mut self.code_analyzers),
-                "enableExternalRulesets" => merge_bool(obj, key, &mut self.enable_external_rulesets),
+                "enableExternalRulesets" => {
+                    merge_bool(obj, key, &mut self.enable_external_rulesets)
+                }
                 "ruleSetPath" => merge_optional_path(obj, key, &mut self.rule_set_path),
-                "assemblyProbingPaths" => merge_path_array(obj, key, &mut self.assembly_probing_paths),
-                "outputAnalyzerStatistics" => merge_bool(obj, key, &mut self.output_analyzer_statistics),
+                "assemblyProbingPaths" => {
+                    merge_path_array(obj, key, &mut self.assembly_probing_paths)
+                }
+                "outputAnalyzerStatistics" => {
+                    merge_bool(obj, key, &mut self.output_analyzer_statistics)
+                }
                 // -- Features --
                 "enableCodeActions" => merge_bool(obj, key, &mut self.enable_code_actions),
                 "inlayHints" => {
@@ -366,24 +368,35 @@ impl AlConfig {
                 }
                 // -- Symbols --
                 "packageCachePath" => merge_optional_path(obj, key, &mut self.package_cache_path),
-                "appLocalFolderPaths" => merge_path_array(obj, key, &mut self.app_local_folder_paths),
+                "appLocalFolderPaths" => {
+                    merge_path_array(obj, key, &mut self.app_local_folder_paths)
+                }
                 "nugetFeeds" => {
                     if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
-                        self.nuget_feeds = arr.iter().filter_map(|v| {
-                            serde_json::from_value::<NuGetFeedConfig>(v.clone()).ok()
-                        }).collect();
+                        self.nuget_feeds = arr
+                            .iter()
+                            .filter_map(|v| {
+                                serde_json::from_value::<NuGetFeedConfig>(v.clone()).ok()
+                            })
+                            .collect();
                     }
                 }
-                "symbolsCountryRegion" => merge_optional_string(obj, key, &mut self.symbols_country_region),
+                "symbolsCountryRegion" => {
+                    merge_optional_string(obj, key, &mut self.symbols_country_region)
+                }
                 "useOnlyCustomFeeds" => merge_bool(obj, key, &mut self.use_only_custom_feeds),
                 // -- Compiler --
                 "compilationOptions" => merge_string_array(obj, key, &mut self.compilation_options),
                 "incrementalBuild" => merge_bool(obj, key, &mut self.incremental_build),
                 // -- DAP --
-                "editorServicesPath" => merge_optional_path(obj, key, &mut self.editor_services_path),
+                "editorServicesPath" => {
+                    merge_optional_path(obj, key, &mut self.editor_services_path)
+                }
                 "editorServicesLogLevel" => {
                     if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
-                        if let Ok(level) = serde_json::from_value(serde_json::Value::String(s.to_string())) {
+                        if let Ok(level) =
+                            serde_json::from_value(serde_json::Value::String(s.to_string()))
+                        {
                             self.editor_services_log_level = level;
                         }
                     }
@@ -391,9 +404,15 @@ impl AlConfig {
                 // -- Scaffolding --
                 "rootNamespace" => merge_optional_string(obj, key, &mut self.root_namespace),
                 "publisher" => merge_optional_string(obj, key, &mut self.publisher),
-                "namespaceTemplate" => merge_optional_string(obj, key, &mut self.namespace_template),
-                "algoSuggestedFolder" => merge_optional_path(obj, key, &mut self.algo_suggested_folder),
-                _ => { unknown_keys.push(key.clone()); }
+                "namespaceTemplate" => {
+                    merge_optional_string(obj, key, &mut self.namespace_template)
+                }
+                "algoSuggestedFolder" => {
+                    merge_optional_path(obj, key, &mut self.algo_suggested_folder)
+                }
+                _ => {
+                    unknown_keys.push(key.clone());
+                }
             }
         }
 
@@ -420,7 +439,11 @@ fn merge_optional_path(
         Some(serde_json::Value::Null) => *target = None,
         Some(v) => {
             if let Some(s) = v.as_str() {
-                *target = if s.is_empty() { None } else { Some(PathBuf::from(s)) };
+                *target = if s.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(s))
+                };
             }
         }
         None => {}
@@ -436,7 +459,11 @@ fn merge_optional_string(
         Some(serde_json::Value::Null) => *target = None,
         Some(v) => {
             if let Some(s) = v.as_str() {
-                *target = if s.is_empty() { None } else { Some(s.to_string()) };
+                *target = if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                };
             }
         }
         None => {}
@@ -449,7 +476,10 @@ fn merge_string_array(
     target: &mut Vec<String>,
 ) {
     if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
-        *target = arr.iter().filter_map(|s| s.as_str().map(String::from)).collect();
+        *target = arr
+            .iter()
+            .filter_map(|s| s.as_str().map(String::from))
+            .collect();
     }
 }
 
@@ -459,7 +489,10 @@ fn merge_path_array(
     target: &mut Vec<PathBuf>,
 ) {
     if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
-        *target = arr.iter().filter_map(|s| s.as_str().map(PathBuf::from)).collect();
+        *target = arr
+            .iter()
+            .filter_map(|s| s.as_str().map(PathBuf::from))
+            .collect();
     }
 }
 
@@ -473,7 +506,10 @@ mod tests {
         // Semantic
         assert!(config.enable_code_analysis);
         assert!(config.background_code_analysis);
-        assert_eq!(config.code_analyzers, vec!["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]);
+        assert_eq!(
+            config.code_analyzers,
+            vec!["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]
+        );
         assert!(!config.enable_external_rulesets);
         assert!(config.rule_set_path.is_none());
         assert!(config.assembly_probing_paths.is_empty());
@@ -591,7 +627,10 @@ mod tests {
         assert_eq!(config.publisher, parsed.publisher);
         assert_eq!(config.nuget_feeds, parsed.nuget_feeds);
         assert_eq!(config.incremental_build, parsed.incremental_build);
-        assert_eq!(config.editor_services_log_level, parsed.editor_services_log_level);
+        assert_eq!(
+            config.editor_services_log_level,
+            parsed.editor_services_log_level
+        );
     }
 
     #[test]
@@ -601,7 +640,10 @@ mod tests {
 
         assert!(!config.enable_code_analysis);
         assert!(config.background_code_analysis);
-        assert_eq!(config.code_analyzers, vec!["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]);
+        assert_eq!(
+            config.code_analyzers,
+            vec!["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]
+        );
     }
 
     #[test]
@@ -643,7 +685,10 @@ mod tests {
         config.merge(&settings);
 
         assert!(config.enable_external_rulesets);
-        assert_eq!(config.rule_set_path, Some(PathBuf::from("/rules/custom.ruleset.json")));
+        assert_eq!(
+            config.rule_set_path,
+            Some(PathBuf::from("/rules/custom.ruleset.json"))
+        );
         assert_eq!(config.assembly_probing_paths.len(), 2);
         assert!(config.output_analyzer_statistics);
     }
@@ -661,7 +706,10 @@ mod tests {
         });
         config.merge(&settings);
 
-        assert_eq!(config.app_local_folder_paths, vec![PathBuf::from("/apps/local")]);
+        assert_eq!(
+            config.app_local_folder_paths,
+            vec![PathBuf::from("/apps/local")]
+        );
         assert_eq!(config.nuget_feeds.len(), 1);
         assert_eq!(config.nuget_feeds[0].name, "Custom Feed");
         assert_eq!(config.symbols_country_region, Some("w1".to_string()));
@@ -677,7 +725,10 @@ mod tests {
         });
         config.merge(&settings);
 
-        assert_eq!(config.compilation_options, vec!["/nowarn:AL0001", "/target:Cloud"]);
+        assert_eq!(
+            config.compilation_options,
+            vec!["/nowarn:AL0001", "/target:Cloud"]
+        );
         assert!(config.incremental_build);
     }
 
@@ -690,7 +741,10 @@ mod tests {
         });
         config.merge(&settings);
 
-        assert_eq!(config.editor_services_path, Some(PathBuf::from("/custom/EditorServices.Host")));
+        assert_eq!(
+            config.editor_services_path,
+            Some(PathBuf::from("/custom/EditorServices.Host"))
+        );
         assert_eq!(config.editor_services_log_level, LogLevel::Debug);
     }
 
@@ -707,8 +761,14 @@ mod tests {
 
         assert_eq!(config.root_namespace, Some("Contoso.App".to_string()));
         assert_eq!(config.publisher, Some("Contoso".to_string()));
-        assert_eq!(config.namespace_template, Some("{publisher}.{name}".to_string()));
-        assert_eq!(config.algo_suggested_folder, Some(PathBuf::from("/home/user/al-projects")));
+        assert_eq!(
+            config.namespace_template,
+            Some("{publisher}.{name}".to_string())
+        );
+        assert_eq!(
+            config.algo_suggested_folder,
+            Some(PathBuf::from("/home/user/al-projects"))
+        );
     }
 
     #[test]
@@ -821,7 +881,9 @@ mod tests {
     #[test]
     fn is_lint_rule_enabled_per_rule_override() {
         let mut config = AlConfig::default();
-        config.native_lint_rules.insert("AL-L001".to_string(), false);
+        config
+            .native_lint_rules
+            .insert("AL-L001".to_string(), false);
         config.native_lint_rules.insert("AL-L002".to_string(), true);
         assert!(!config.is_lint_rule_enabled("AL-L001")); // explicitly disabled
         assert!(config.is_lint_rule_enabled("AL-L002")); // explicitly enabled
@@ -848,7 +910,9 @@ mod tests {
     #[test]
     fn merge_lint_rules_are_additive() {
         let mut config = AlConfig::default();
-        config.native_lint_rules.insert("AL-L001".to_string(), false);
+        config
+            .native_lint_rules
+            .insert("AL-L001".to_string(), false);
         config.merge(&serde_json::json!({"nativeLintRules": {"AL-L002": false}}));
         assert_eq!(config.native_lint_rules.get("AL-L001"), Some(&false));
         assert_eq!(config.native_lint_rules.get("AL-L002"), Some(&false));

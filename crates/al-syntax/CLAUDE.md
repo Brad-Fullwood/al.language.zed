@@ -2,6 +2,14 @@
 
 **Leaf crate** — must NOT depend on al-symbols, al-semantic, or al-core.
 
+## Quick Reference
+
+```sh
+cargo test -p al-syntax                             # all tests (~179 inline + 2 integration)
+cargo test -p al-syntax --test comprehensive        # comprehensive integration tests
+cargo test -p al-syntax --test query_validation     # tree-sitter query validation
+```
+
 ## Key Exports (lib.rs)
 
 - `AlParser`, `ParseResult`, `SyntaxError` — tree-sitter parsing

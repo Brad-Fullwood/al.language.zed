@@ -536,21 +536,14 @@ pub fn populate_call_edges_for_procedure(
                 let name_lower = name.to_lowercase();
                 let obj_lower = object_name.to_lowercase();
                 // Resolve against the same object's procedures in insight
-                let callee_key = NodeKey::Procedure(
-                    object_kind,
-                    obj_lower.clone(),
-                    name_lower.clone(),
-                );
+                let callee_key =
+                    NodeKey::Procedure(object_kind, obj_lower.clone(), name_lower.clone());
                 if let Some(callee_id) = CallGraph::node_id_for(insight, &callee_key) {
                     call_graph.add_direct_call(caller_id, callee_id);
                 } else {
                     // Also check if the call target is an event publisher on the same object
                     // (e.g. DoProcess() calling OnBeforeProcess() which is an IntegrationEvent)
-                    let event_key = NodeKey::Event(
-                        object_kind,
-                        obj_lower,
-                        name_lower,
-                    );
+                    let event_key = NodeKey::Event(object_kind, obj_lower, name_lower);
                     if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
                         call_graph.add_direct_call(caller_id, event_id);
                     }
@@ -769,7 +762,12 @@ fn extract_method_symbol(
     source: &[u8],
 ) -> Option<al_symbols::MethodSymbol> {
     let name_node = proc_node.child_by_field_name("name")?;
-    let proc_name = name_node.utf8_text(source).ok()?.trim_matches('"').trim().to_string();
+    let proc_name = name_node
+        .utf8_text(source)
+        .ok()?
+        .trim_matches('"')
+        .trim()
+        .to_string();
     if proc_name.is_empty() {
         return None;
     }
@@ -841,7 +839,10 @@ fn extract_single_parameter(
         if kind.starts_with("kw_var") || kind == "kw_var" {
             is_var = true;
         } else if (kind == "name" || kind == "name_or_keyword") && name.is_none() {
-            name = child.utf8_text(source).ok().map(|s| s.trim_matches('"').to_string());
+            name = child
+                .utf8_text(source)
+                .ok()
+                .map(|s| s.trim_matches('"').to_string());
         } else if kind == "type_reference" {
             type_name = child.utf8_text(source).ok().unwrap_or("").to_string();
         }
@@ -855,10 +856,7 @@ fn extract_single_parameter(
 }
 
 /// Extract return type from a procedure declaration.
-fn extract_return_type(
-    proc_node: tree_sitter::Node,
-    source: &[u8],
-) -> Option<String> {
+fn extract_return_type(proc_node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
         if child.kind() == "return_type" || child.kind() == "type_reference" {

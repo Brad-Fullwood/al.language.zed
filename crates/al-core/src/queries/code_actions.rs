@@ -48,18 +48,16 @@ pub struct DiagnosticInfo {
 
 /// Build a `WorkspaceEdit` with a single file's edits — the overwhelmingly common case.
 fn single_edit_ws(uri: &Url, edits: Vec<TextEdit>) -> WorkspaceEdit {
-    WorkspaceEdit { changes: vec![(uri.clone(), edits)] }
+    WorkspaceEdit {
+        changes: vec![(uri.clone(), edits)],
+    }
 }
 
 /// Get code actions for a range in a document.
 ///
 /// This handles diagnostic-independent source actions (doc comment, region).
 /// Diagnostic-based quick fixes are handled by `quick_fix_for_diagnostic`.
-pub fn source_actions(
-    workspace: &Workspace,
-    uri: &Url,
-    range: Range,
-) -> Vec<CodeActionEntry> {
+pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<CodeActionEntry> {
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
     };
@@ -97,7 +95,9 @@ pub fn source_actions(
     }
 
     // Implement interface stub methods (T1202)
-    actions.extend(source_action_implement_interface(workspace, uri, &text, range));
+    actions.extend(source_action_implement_interface(
+        workspace, uri, &text, range,
+    ));
 
     // Add parentheses to bare method call (T1209)
     if let Some(action) = source_action_add_parens(workspace, uri, &text, range) {
@@ -144,7 +144,9 @@ pub fn namespace_quick_fix_for_diagnostic(
     // Only handle AL0185 or diagnostics whose message indicates an unresolved type
     let is_al0185 = diag.code.as_deref() == Some("AL0185");
     let msg_matches = diag.message.contains("could not be found")
-        || diag.message.contains("does not exist in the current context");
+        || diag
+            .message
+            .contains("does not exist in the current context");
 
     if !is_al0185 && !msg_matches {
         return Vec::new();
@@ -173,9 +175,7 @@ pub fn namespace_quick_fix_for_diagnostic(
     }
 
     let (existing_usings, insert_line) = parse_using_directives(text);
-    candidate_namespaces.retain(|ns| {
-        !existing_usings.iter().any(|u| u.eq_ignore_ascii_case(ns))
-    });
+    candidate_namespaces.retain(|ns| !existing_usings.iter().any(|u| u.eq_ignore_ascii_case(ns)));
 
     let ns_count = candidate_namespaces.len();
     candidate_namespaces
@@ -184,8 +184,14 @@ pub fn namespace_quick_fix_for_diagnostic(
             let new_text = format!("using {};\n", ns);
             let edit = TextEdit {
                 range: Range {
-                    start: super::Position { line: insert_line, character: 0 },
-                    end: super::Position { line: insert_line, character: 0 },
+                    start: super::Position {
+                        line: insert_line,
+                        character: 0,
+                    },
+                    end: super::Position {
+                        line: insert_line,
+                        character: 0,
+                    },
                 },
                 new_text,
             };
@@ -264,7 +270,9 @@ fn source_action_add_doc_comment(
     for sym in &doc_symbols {
         if let Some(children) = &sym.children {
             for child in children {
-                if child.kind != tower_lsp::lsp_types::SymbolKind::FUNCTION { continue; }
+                if child.kind != tower_lsp::lsp_types::SymbolKind::FUNCTION {
+                    continue;
+                }
                 if range.start.line >= child.range.start.line
                     && range.start.line <= child.range.end.line
                 {
@@ -273,7 +281,9 @@ fn source_action_add_doc_comment(
                         let lines: Vec<&str> = text.lines().collect();
                         if proc_line <= lines.len() {
                             let prev_line = lines[proc_line.saturating_sub(1)].trim();
-                            if prev_line.starts_with("///") { return None; }
+                            if prev_line.starts_with("///") {
+                                return None;
+                            }
                         }
                     }
                     let indent = detect_indent(text, child.range.start.line);
@@ -283,17 +293,29 @@ fn source_action_add_doc_comment(
                     doc.push_str(&format!("{}/// Description for {}.\n", indent, child.name));
                     doc.push_str(&format!("{}/// </summary>\n", indent));
                     for param in &param_names {
-                        doc.push_str(&format!("{}/// <param name=\"{}\">Description.</param>\n", indent, param));
+                        doc.push_str(&format!(
+                            "{}/// <param name=\"{}\">Description.</param>\n",
+                            indent, param
+                        ));
                     }
                     if let Some(detail) = &child.detail {
                         if detail.contains("):") || detail.contains(") :") {
-                            doc.push_str(&format!("{}/// <returns>Description of return value.</returns>\n", indent));
+                            doc.push_str(&format!(
+                                "{}/// <returns>Description of return value.</returns>\n",
+                                indent
+                            ));
                         }
                     }
                     let edit = TextEdit {
                         range: Range {
-                            start: super::Position { line: child.range.start.line, character: 0 },
-                            end: super::Position { line: child.range.start.line, character: 0 },
+                            start: super::Position {
+                                line: child.range.start.line,
+                                character: 0,
+                            },
+                            end: super::Position {
+                                line: child.range.start.line,
+                                character: 0,
+                            },
                         },
                         new_text: doc,
                     };
@@ -310,19 +332,35 @@ fn source_action_add_doc_comment(
     None
 }
 
-fn source_action_add_region(uri: &Url, text: &str, range: tower_lsp::lsp_types::Range) -> Option<CodeActionEntry> {
+fn source_action_add_region(
+    uri: &Url,
+    text: &str,
+    range: tower_lsp::lsp_types::Range,
+) -> Option<CodeActionEntry> {
     let indent = detect_indent(text, range.start.line);
     let region_start = TextEdit {
         range: Range {
-            start: super::Position { line: range.start.line, character: 0 },
-            end: super::Position { line: range.start.line, character: 0 },
+            start: super::Position {
+                line: range.start.line,
+                character: 0,
+            },
+            end: super::Position {
+                line: range.start.line,
+                character: 0,
+            },
         },
         new_text: format!("{}//region MyRegion\n", indent),
     };
     let region_end = TextEdit {
         range: Range {
-            start: super::Position { line: range.end.line + 1, character: 0 },
-            end: super::Position { line: range.end.line + 1, character: 0 },
+            start: super::Position {
+                line: range.end.line + 1,
+                character: 0,
+            },
+            end: super::Position {
+                line: range.end.line + 1,
+                character: 0,
+            },
         },
         new_text: format!("{}//endregion\n", indent),
     };
@@ -378,9 +416,7 @@ fn source_action_add_using(
     let (existing_usings, insert_line) = parse_using_directives(text);
 
     // Filter out namespaces already imported
-    candidate_namespaces.retain(|ns| {
-        !existing_usings.iter().any(|u| u.eq_ignore_ascii_case(ns))
-    });
+    candidate_namespaces.retain(|ns| !existing_usings.iter().any(|u| u.eq_ignore_ascii_case(ns)));
 
     // Generate one code action per candidate namespace
     candidate_namespaces
@@ -389,8 +425,14 @@ fn source_action_add_using(
             let new_text = format!("using {};\n", ns);
             let edit = TextEdit {
                 range: Range {
-                    start: super::Position { line: insert_line, character: 0 },
-                    end: super::Position { line: insert_line, character: 0 },
+                    start: super::Position {
+                        line: insert_line,
+                        character: 0,
+                    },
+                    end: super::Position {
+                        line: insert_line,
+                        character: 0,
+                    },
                 },
                 new_text,
             };
@@ -417,7 +459,8 @@ fn extract_word_at_position(text: &str, range: Range) -> String {
     let line = lines[line_idx];
 
     // Convert UTF-16 column offsets to byte offsets (safe for non-ASCII identifiers).
-    let start_byte = crate::resolution::utf16_col_to_byte_offset(line, range.start.character as usize);
+    let start_byte =
+        crate::resolution::utf16_col_to_byte_offset(line, range.start.character as usize);
     let end_byte = crate::resolution::utf16_col_to_byte_offset(line, range.end.character as usize);
 
     // If we have a real selection range, use it directly.
@@ -441,10 +484,14 @@ fn extract_word_at_position(text: &str, range: Range) -> String {
     let mut word_start = cursor;
     let mut word_end = cursor;
 
-    while word_start > 0 && (bytes[word_start - 1].is_ascii_alphanumeric() || bytes[word_start - 1] == b'_') {
+    while word_start > 0
+        && (bytes[word_start - 1].is_ascii_alphanumeric() || bytes[word_start - 1] == b'_')
+    {
         word_start -= 1;
     }
-    while word_end < bytes.len() && (bytes[word_end].is_ascii_alphanumeric() || bytes[word_end] == b'_') {
+    while word_end < bytes.len()
+        && (bytes[word_end].is_ascii_alphanumeric() || bytes[word_end] == b'_')
+    {
         word_end += 1;
     }
 
@@ -464,7 +511,11 @@ fn try_extract_quoted_identifier(bytes: &[u8], cursor: usize) -> Option<String> 
     let open_quote = {
         // Start one position to the left of cursor if cursor is itself a quote
         // (it may be the closing quote, not the opening one).
-        let start = if bytes[cursor] == b'"' && cursor > 0 { cursor - 1 } else { cursor };
+        let start = if bytes[cursor] == b'"' && cursor > 0 {
+            cursor - 1
+        } else {
+            cursor
+        };
         let mut pos = start;
         loop {
             if bytes[pos] == b'"' {
@@ -483,7 +534,11 @@ fn try_extract_quoted_identifier(bytes: &[u8], cursor: usize) -> Option<String> 
         while pos < bytes.len() && bytes[pos] != b'"' {
             pos += 1;
         }
-        if pos < bytes.len() { Some(pos) } else { None }
+        if pos < bytes.len() {
+            Some(pos)
+        } else {
+            None
+        }
     }?;
 
     // Cursor must be within [open_quote, close_quote] inclusive.
@@ -513,7 +568,8 @@ fn source_action_if_to_case(
     // Find the if_statement node at the cursor position.
     // LSP positions use UTF-16 code units for character offset; tree-sitter uses byte offsets.
     let cursor_line = text.lines().nth(range.start.line as usize).unwrap_or("");
-    let col_bytes = crate::resolution::utf16_col_to_byte_offset(cursor_line, range.start.character as usize);
+    let col_bytes =
+        crate::resolution::utf16_col_to_byte_offset(cursor_line, range.start.character as usize);
     let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
     let if_node = find_outermost_if_at_point(root, point)?;
 
@@ -522,7 +578,13 @@ fn source_action_if_to_case(
     let mut else_body: Option<String> = None;
     let mut common_var: Option<String> = None;
 
-    walk_if_chain(if_node, source, &mut branches, &mut else_body, &mut common_var);
+    walk_if_chain(
+        if_node,
+        source,
+        &mut branches,
+        &mut else_body,
+        &mut common_var,
+    );
 
     // Need 3+ branches and all on the same variable
     if branches.len() < 3 || common_var.is_none() {
@@ -575,7 +637,10 @@ fn source_action_if_to_case(
 
 /// Find the outermost if_statement containing the given point.
 /// Walks up the tree to find the topmost if_statement in the chain.
-fn find_outermost_if_at_point(root: tree_sitter::Node, point: tree_sitter::Point) -> Option<tree_sitter::Node> {
+fn find_outermost_if_at_point(
+    root: tree_sitter::Node,
+    point: tree_sitter::Point,
+) -> Option<tree_sitter::Node> {
     let mut node = root.descendant_for_point_range(point, point)?;
 
     // Walk up to find an if_statement
@@ -684,9 +749,11 @@ fn extract_equality_operands(node: tree_sitter::Node, source: &[u8]) -> Option<(
     for i in 0..child_count {
         let child = node.child(i)?;
         let is_eq = match child.kind() {
-            "binary_operator" | "operator" => {
-                child.utf8_text(source).ok().map(|t| t.trim() == "=").unwrap_or(false)
-            }
+            "binary_operator" | "operator" => child
+                .utf8_text(source)
+                .ok()
+                .map(|t| t.trim() == "=")
+                .unwrap_or(false),
             _ => false,
         };
         if is_eq {
@@ -733,7 +800,9 @@ fn extract_equality_operands(node: tree_sitter::Node, source: &[u8]) -> Option<(
 fn is_literal(s: &str) -> bool {
     let t = s.trim();
     // Numeric literal
-    if t.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '-')
+    if t.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit() || c == '-')
         && t.chars().skip(1).all(|c| c.is_ascii_digit() || c == '.')
     {
         return true;
@@ -789,8 +858,12 @@ fn source_action_implement_interface(
     for iface_name in &interface_names {
         // Look up the interface in the symbol index
         let iface_lower = iface_name.to_lowercase();
-        let interfaces = workspace.symbols.get_by_kind(al_symbols::model::ObjectKind::Interface);
-        let iface_entry = interfaces.iter().find(|e| e.name.to_lowercase() == iface_lower);
+        let interfaces = workspace
+            .symbols
+            .get_by_kind(al_symbols::model::ObjectKind::Interface);
+        let iface_entry = interfaces
+            .iter()
+            .find(|e| e.name.to_lowercase() == iface_lower);
         let iface_entry = match iface_entry {
             Some(e) => e,
             None => continue,
@@ -800,7 +873,11 @@ fn source_action_implement_interface(
         let missing: Vec<_> = iface_entry
             .methods
             .iter()
-            .filter(|m| !existing_procs.iter().any(|p| p.eq_ignore_ascii_case(&m.name)))
+            .filter(|m| {
+                !existing_procs
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(&m.name))
+            })
             .collect();
 
         if missing.is_empty() {
@@ -853,8 +930,14 @@ fn source_action_implement_interface(
 
         let edit = TextEdit {
             range: Range {
-                start: super::Position { line: insert_line, character: 0 },
-                end: super::Position { line: insert_line, character: 0 },
+                start: super::Position {
+                    line: insert_line,
+                    character: 0,
+                },
+                end: super::Position {
+                    line: insert_line,
+                    character: 0,
+                },
             },
             new_text: stub_text,
         };
@@ -906,13 +989,20 @@ fn extract_interface_names(obj_node: tree_sitter::Node, source: &[u8]) -> Vec<St
     let mut names = Vec::new();
 
     for i in 0..obj_node.child_count() {
-        let Some(child) = obj_node.child(i) else { continue };
+        let Some(child) = obj_node.child(i) else {
+            continue;
+        };
 
         if child.kind() == "implements_clause" {
             // The name is the second child (after the metadata_keyword)
             for j in 0..child.child_count() {
-                let Some(inner) = child.child(j) else { continue };
-                if inner.kind() == "name" || inner.kind() == "identifier" || inner.kind() == "quoted_identifier" {
+                let Some(inner) = child.child(j) else {
+                    continue;
+                };
+                if inner.kind() == "name"
+                    || inner.kind() == "identifier"
+                    || inner.kind() == "quoted_identifier"
+                {
                     if let Ok(t) = inner.utf8_text(source) {
                         let name = t.trim().trim_matches('"');
                         if !name.is_empty() {
@@ -978,7 +1068,8 @@ fn resolve_with_field_names(
     // Look up the table in the symbol index and collect field names.
     let entries = workspace.symbols.get_by_name(&table_name);
     for entry in &entries {
-        if (entry.kind == al_symbols::ObjectKind::Table || entry.kind == al_symbols::ObjectKind::TableExtension)
+        if (entry.kind == al_symbols::ObjectKind::Table
+            || entry.kind == al_symbols::ObjectKind::TableExtension)
             && !entry.fields.is_empty()
         {
             return entry.fields.iter().map(|f| f.name.clone()).collect();
@@ -991,12 +1082,20 @@ fn resolve_with_field_names(
 /// Walk an AST to find the Record type name for a given variable name.
 ///
 /// Searches `var_section` and `parameter_list` nodes across the whole file.
-fn find_record_type_for_var(root: tree_sitter::Node, source: &[u8], var_name: &str) -> Option<String> {
+fn find_record_type_for_var(
+    root: tree_sitter::Node,
+    source: &[u8],
+    var_name: &str,
+) -> Option<String> {
     let var_lower = var_name.to_lowercase();
     find_record_type_recursive(root, source, &var_lower)
 }
 
-fn find_record_type_recursive(node: tree_sitter::Node, source: &[u8], var_lower: &str) -> Option<String> {
+fn find_record_type_recursive(
+    node: tree_sitter::Node,
+    source: &[u8],
+    var_lower: &str,
+) -> Option<String> {
     let kind = node.kind();
 
     if kind == "regular_variable_declaration" {
@@ -1078,7 +1177,8 @@ fn source_action_eliminate_with(
     // Find with_statement at cursor.
     // LSP positions use UTF-16 code units; tree-sitter uses byte offsets.
     let cursor_line = text.lines().nth(range.start.line as usize).unwrap_or("");
-    let col_bytes = crate::resolution::utf16_col_to_byte_offset(cursor_line, range.start.character as usize);
+    let col_bytes =
+        crate::resolution::utf16_col_to_byte_offset(cursor_line, range.start.character as usize);
     let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
     let with_node = find_with_at_point(root, point)?;
 
@@ -1127,7 +1227,10 @@ fn source_action_eliminate_with(
 }
 
 /// Find a with_statement node at the given point.
-fn find_with_at_point(root: tree_sitter::Node, point: tree_sitter::Point) -> Option<tree_sitter::Node> {
+fn find_with_at_point(
+    root: tree_sitter::Node,
+    point: tree_sitter::Point,
+) -> Option<tree_sitter::Node> {
     let mut node = root.descendant_for_point_range(point, point)?;
     while node.kind() != "with_statement" {
         node = node.parent()?;
@@ -1172,7 +1275,12 @@ fn extract_with_body(body_node: tree_sitter::Node, source: &[u8]) -> (String, bo
 ///    prepend `record_var.` to the whole line.
 /// 2. Field-name: for each known field name, substitute unqualified occurrences with
 ///    `record_var.field` anywhere in the line (word-boundary, not already qualified).
-fn qualify_with_references(body: &str, record_var: &str, indent: &str, field_names: &[String]) -> String {
+fn qualify_with_references(
+    body: &str,
+    record_var: &str,
+    indent: &str,
+    field_names: &[String],
+) -> String {
     let mut result = String::new();
 
     for line in body.lines() {
@@ -1209,8 +1317,8 @@ fn qualify_line(line: &str, record_var: &str, field_names: &[String]) -> String 
     // Does NOT skip field names that begin with a keyword prefix (e.g. EndDate, IfFlag).
     let lower = trimmed.to_lowercase();
     let al_keywords = [
-        "if", "then", "else", "begin", "end", "for", "while", "repeat", "until",
-        "case", "exit", "error", "message", "//", "end;",
+        "if", "then", "else", "begin", "end", "for", "while", "repeat", "until", "case", "exit",
+        "error", "message", "//", "end;",
     ];
     let starts_with_keyword = al_keywords.iter().any(|kw| {
         if let Some(rest) = lower.strip_prefix(kw) {
@@ -1303,7 +1411,10 @@ fn substitute_field_names(line: &str, record_var: &str, field_names: &[String]) 
                 } else {
                     // Get previous char
                     let prev_char = result[..i].chars().next_back().unwrap_or(' ');
-                    prev_char != '.' && prev_char != ':' && !prev_char.is_alphanumeric() && prev_char != '_'
+                    prev_char != '.'
+                        && prev_char != ':'
+                        && !prev_char.is_alphanumeric()
+                        && prev_char != '_'
                 };
                 // Word-boundary check: char after must not be alphanumeric or `_`.
                 let next_ok = if match_end >= result.len() {
@@ -1369,7 +1480,11 @@ fn parse_using_directives(text: &str) -> (Vec<String>, u32) {
     }
 
     // Insert after the last directive line
-    let insert_line = if found_any_directive { last_directive_line + 1 } else { 0 };
+    let insert_line = if found_any_directive {
+        last_directive_line + 1
+    } else {
+        0
+    };
     (usings, insert_line)
 }
 
@@ -1411,8 +1526,14 @@ fn source_action_make_local(
 
     let edit = TextEdit {
         range: Range {
-            start: super::Position { line: proc_line as u32, character: proc_col as u32 },
-            end: super::Position { line: proc_line as u32, character: proc_end_col as u32 },
+            start: super::Position {
+                line: proc_line as u32,
+                character: proc_col as u32,
+            },
+            end: super::Position {
+                line: proc_line as u32,
+                character: proc_end_col as u32,
+            },
         },
         new_text: "local procedure".to_string(),
     };
@@ -1459,7 +1580,14 @@ fn source_action_move_tooltip(
     let in_page_field = {
         let mut found = false;
         let mut depth = 0i32;
-        for (i, l) in text.lines().enumerate().take(cursor_line + 1).collect::<Vec<_>>().into_iter().rev() {
+        for (i, l) in text
+            .lines()
+            .enumerate()
+            .take(cursor_line + 1)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
             let lt = l.trim().to_lowercase();
             // Count braces to track nesting
             for ch in l.chars() {
@@ -1490,8 +1618,14 @@ fn source_action_move_tooltip(
     // Delete from start of line to start of next line
     let edit = TextEdit {
         range: Range {
-            start: super::Position { line: cursor_line as u32, character: 0 },
-            end: super::Position { line: (cursor_line + 1) as u32, character: 0 },
+            start: super::Position {
+                line: cursor_line as u32,
+                character: 0,
+            },
+            end: super::Position {
+                line: (cursor_line + 1) as u32,
+                character: 0,
+            },
         },
         new_text: String::new(),
     };
@@ -1625,7 +1759,10 @@ fn collect_promoted_actions(text: &str) -> Vec<PromotedActionInfo> {
             let raw = lines[i].trim();
             let name = match extract_action_name(raw) {
                 Some(n) => n,
-                None => { i += 1; continue; }
+                None => {
+                    i += 1;
+                    continue;
+                }
             };
 
             // Find the matching closing brace for this action body
@@ -1739,8 +1876,14 @@ fn build_promoted_action_conversion(
     for &line_no in &pa.remove_lines {
         edits.push(TextEdit {
             range: Range {
-                start: super::Position { line: line_no as u32, character: 0 },
-                end: super::Position { line: (line_no + 1) as u32, character: 0 },
+                start: super::Position {
+                    line: line_no as u32,
+                    character: 0,
+                },
+                end: super::Position {
+                    line: (line_no + 1) as u32,
+                    character: 0,
+                },
             },
             new_text: String::new(),
         });
@@ -1772,8 +1915,14 @@ fn build_promoted_action_conversion(
 
     edits.push(TextEdit {
         range: Range {
-            start: super::Position { line: insert_line, character: 0 },
-            end: super::Position { line: insert_line, character: 0 },
+            start: super::Position {
+                line: insert_line,
+                character: 0,
+            },
+            end: super::Position {
+                line: insert_line,
+                character: 0,
+            },
         },
         new_text: action_ref_text,
     });
@@ -1797,7 +1946,11 @@ fn find_actions_block_end(text: &str) -> Option<u32> {
 
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim().to_lowercase();
-        if !in_actions && (trimmed == "actions" || trimmed.starts_with("actions ") || trimmed.starts_with("actions{")) {
+        if !in_actions
+            && (trimmed == "actions"
+                || trimmed.starts_with("actions ")
+                || trimmed.starts_with("actions{"))
+        {
             in_actions = true;
         }
         if in_actions {
@@ -1863,8 +2016,14 @@ fn source_action_set_application_area(
     // Insert object-level ApplicationArea = All
     edits.push(TextEdit {
         range: Range {
-            start: super::Position { line: insert_line, character: 0 },
-            end: super::Position { line: insert_line, character: 0 },
+            start: super::Position {
+                line: insert_line,
+                character: 0,
+            },
+            end: super::Position {
+                line: insert_line,
+                character: 0,
+            },
         },
         new_text: format!("{}ApplicationArea = All;\n", indent),
     });
@@ -1875,8 +2034,14 @@ fn source_action_set_application_area(
     for ln in &sorted_lines {
         edits.push(TextEdit {
             range: Range {
-                start: super::Position { line: *ln as u32, character: 0 },
-                end: super::Position { line: (*ln + 1) as u32, character: 0 },
+                start: super::Position {
+                    line: *ln as u32,
+                    character: 0,
+                },
+                end: super::Position {
+                    line: (*ln + 1) as u32,
+                    character: 0,
+                },
             },
             new_text: String::new(),
         });
@@ -1886,7 +2051,8 @@ fn source_action_set_application_area(
     edits.sort_by_key(|e| e.range.start.line);
 
     Some(CodeActionEntry {
-        title: "Set ApplicationArea = All on object and remove redundant field overrides (T1206)".to_string(),
+        title: "Set ApplicationArea = All on object and remove redundant field overrides (T1206)"
+            .to_string(),
         kind: CodeActionKind::Refactor,
         edit: Some(single_edit_ws(uri, edits)),
         is_preferred: false,
@@ -1898,7 +2064,11 @@ fn object_has_application_area(text: &str) -> bool {
     for line in text.lines() {
         let trimmed = line.trim().to_lowercase();
         // Stop scanning once we hit major section keywords
-        if trimmed == "layout" || trimmed == "actions" || trimmed == "requestpage" || trimmed == "rendering" {
+        if trimmed == "layout"
+            || trimmed == "actions"
+            || trimmed == "requestpage"
+            || trimmed == "rendering"
+        {
             break;
         }
         if trimmed.starts_with("applicationarea") && trimmed.contains('=') {
@@ -1918,7 +2088,11 @@ fn collect_field_application_area_lines(text: &str, value: &str) -> Vec<usize> {
             let trimmed = line.trim().to_lowercase();
             if trimmed.starts_with("applicationarea") && trimmed.contains('=') {
                 if let Some(eq) = trimmed.find('=') {
-                    let val = trimmed[eq + 1..].trim().trim_end_matches(';').trim().to_lowercase();
+                    let val = trimmed[eq + 1..]
+                        .trim()
+                        .trim_end_matches(';')
+                        .trim()
+                        .to_lowercase();
                     if val == value_lower {
                         return Some(i);
                     }
@@ -1949,11 +2123,7 @@ fn find_object_properties_insert_line(text: &str) -> Option<u32> {
 ///
 /// The action is offered when the cursor is within a few lines of an
 /// `RDLCLayout` or `WordLayout` property inside a `report` object.
-fn source_action_fix_report_layout(
-    uri: &Url,
-    text: &str,
-    range: Range,
-) -> Option<CodeActionEntry> {
+fn source_action_fix_report_layout(uri: &Url, text: &str, range: Range) -> Option<CodeActionEntry> {
     let cursor_line = range.start.line as usize;
 
     // Must be inside a report object
@@ -1995,11 +2165,23 @@ fn collect_legacy_layout_properties(text: &str) -> Vec<LegacyLayoutProp> {
     for (i, line) in text.lines().enumerate() {
         let trimmed = line.trim().to_lowercase();
         if trimmed.starts_with("rdlclayout") && trimmed.contains('=') {
-            let path = extract_property_value(line.trim()).trim_matches('\'').to_string();
-            result.push(LegacyLayoutProp { line: i, layout_type: "RDLC".to_string(), path });
+            let path = extract_property_value(line.trim())
+                .trim_matches('\'')
+                .to_string();
+            result.push(LegacyLayoutProp {
+                line: i,
+                layout_type: "RDLC".to_string(),
+                path,
+            });
         } else if trimmed.starts_with("wordlayout") && trimmed.contains('=') {
-            let path = extract_property_value(line.trim()).trim_matches('\'').to_string();
-            result.push(LegacyLayoutProp { line: i, layout_type: "Word".to_string(), path });
+            let path = extract_property_value(line.trim())
+                .trim_matches('\'')
+                .to_string();
+            result.push(LegacyLayoutProp {
+                line: i,
+                layout_type: "Word".to_string(),
+                path,
+            });
         }
     }
 
@@ -2018,8 +2200,14 @@ fn build_report_layout_conversion(
     for lp in legacy {
         edits.push(TextEdit {
             range: Range {
-                start: super::Position { line: lp.line as u32, character: 0 },
-                end: super::Position { line: (lp.line + 1) as u32, character: 0 },
+                start: super::Position {
+                    line: lp.line as u32,
+                    character: 0,
+                },
+                end: super::Position {
+                    line: (lp.line + 1) as u32,
+                    character: 0,
+                },
             },
             new_text: String::new(),
         });
@@ -2057,8 +2245,14 @@ fn build_report_layout_conversion(
 
     edits.push(TextEdit {
         range: Range {
-            start: super::Position { line: insert_line, character: 0 },
-            end: super::Position { line: insert_line, character: 0 },
+            start: super::Position {
+                line: insert_line,
+                character: 0,
+            },
+            end: super::Position {
+                line: insert_line,
+                character: 0,
+            },
         },
         new_text: rendering_text,
     });
@@ -2124,7 +2318,9 @@ fn source_action_add_parens(
             !body.is_empty()
                 && !body.contains('(')
                 && !body.contains(":=")
-                && body.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '"')
+                && body
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '"')
         } else {
             false
         }
@@ -2141,8 +2337,14 @@ fn source_action_add_parens(
 
     let edit = TextEdit {
         range: Range {
-            start: super::Position { line: line_idx as u32, character: semicolon_col },
-            end: super::Position { line: line_idx as u32, character: semicolon_col },
+            start: super::Position {
+                line: line_idx as u32,
+                character: semicolon_col,
+            },
+            end: super::Position {
+                line: line_idx as u32,
+                character: semicolon_col,
+            },
         },
         new_text: "()".to_string(),
     };
@@ -2177,7 +2379,12 @@ fn source_action_convert_event_subscriber(
     let mut attr_line_idx: Option<usize> = None;
     let mut attr_line_text = String::new();
 
-    for (offset, line) in text.lines().enumerate().skip(search_start).take(search_end - search_start) {
+    for (offset, line) in text
+        .lines()
+        .enumerate()
+        .skip(search_start)
+        .take(search_end - search_start)
+    {
         if line.trim_start().starts_with('[') && line.to_lowercase().contains("eventsubscriber") {
             attr_line_idx = Some(offset);
             attr_line_text = line.to_string();
@@ -2244,7 +2451,8 @@ fn source_action_convert_event_subscriber(
     // Compute character column offsets within the full line.
     // All indices so far are byte offsets; convert to UTF-16 code units for LSP.
     let abs_start = args_start + start_off;
-    let trimmed_prefix_len = rest[start_off..end_off].len() - rest[start_off..end_off].trim_start().len();
+    let trimmed_prefix_len =
+        rest[start_off..end_off].len() - rest[start_off..end_off].trim_start().len();
     let quote_byte = abs_start + trimmed_prefix_len;
     let quote_end_byte = quote_byte + arg_text.len();
 
@@ -2253,8 +2461,14 @@ fn source_action_convert_event_subscriber(
 
     let edit = TextEdit {
         range: Range {
-            start: super::Position { line: line_idx as u32, character: quote_col },
-            end: super::Position { line: line_idx as u32, character: quote_end_col },
+            start: super::Position {
+                line: line_idx as u32,
+                character: quote_col,
+            },
+            end: super::Position {
+                line: line_idx as u32,
+                character: quote_end_col,
+            },
         },
         new_text: event_name.to_string(),
     };
@@ -2275,9 +2489,18 @@ mod tests {
 
     #[test]
     fn code_action_kind_serializes_to_lsp_string() {
-        assert_eq!(serde_json::to_value(CodeActionKind::QuickFix).unwrap(), "quickfix");
-        assert_eq!(serde_json::to_value(CodeActionKind::Refactor).unwrap(), "refactor");
-        assert_eq!(serde_json::to_value(CodeActionKind::Source).unwrap(), "source");
+        assert_eq!(
+            serde_json::to_value(CodeActionKind::QuickFix).unwrap(),
+            "quickfix"
+        );
+        assert_eq!(
+            serde_json::to_value(CodeActionKind::Refactor).unwrap(),
+            "refactor"
+        );
+        assert_eq!(
+            serde_json::to_value(CodeActionKind::Source).unwrap(),
+            "source"
+        );
     }
 
     /// Open `al_code` in `ws` at `uri`.  Centralises the `uri.clone()` +
@@ -2310,9 +2533,12 @@ mod tests {
         let ws = Workspace::new();
 
         // Add a symbol "Customer" in namespace "Microsoft.Sales"
-        ws.symbols.add_entries(&[
-            make_entry_with_namespace(ObjectKind::Table, 18, "Customer", "Microsoft.Sales"),
-        ]);
+        ws.symbols.add_entries(&[make_entry_with_namespace(
+            ObjectKind::Table,
+            18,
+            "Customer",
+            "Microsoft.Sales",
+        )]);
 
         // AL file that uses Customer but doesn't have the right `using`
         let al_code = r#"namespace MyCompany.MyApp;
@@ -2329,8 +2555,14 @@ codeunit 50100 "My Codeunit"
         // Cursor on line 5: "        Cust: Record Customer;"
         // "Customer" starts at col 21, ends at col 29
         let range = Range {
-            start: super::super::Position { line: 5, character: 21 },
-            end: super::super::Position { line: 5, character: 29 },
+            start: super::super::Position {
+                line: 5,
+                character: 21,
+            },
+            end: super::super::Position {
+                line: 5,
+                character: 29,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2352,9 +2584,12 @@ codeunit 50100 "My Codeunit"
     fn add_using_not_offered_when_namespace_already_imported() {
         let ws = Workspace::new();
 
-        ws.symbols.add_entries(&[
-            make_entry_with_namespace(ObjectKind::Table, 18, "Customer", "Microsoft.Sales"),
-        ]);
+        ws.symbols.add_entries(&[make_entry_with_namespace(
+            ObjectKind::Table,
+            18,
+            "Customer",
+            "Microsoft.Sales",
+        )]);
 
         // File already has `using Microsoft.Sales;`
         let al_code = r#"namespace MyCompany.MyApp;
@@ -2371,8 +2606,14 @@ codeunit 50100 "My Codeunit"
 
         // Line 6: "        Cust: Record Customer;" — Customer at col 21-29
         let range = Range {
-            start: super::super::Position { line: 6, character: 21 },
-            end: super::super::Position { line: 6, character: 29 },
+            start: super::super::Position {
+                line: 6,
+                character: 21,
+            },
+            end: super::super::Position {
+                line: 6,
+                character: 29,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2381,7 +2622,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("using"))
             .collect();
 
-        assert!(using_actions.is_empty(), "Should NOT offer 'Add using' when already imported");
+        assert!(
+            using_actions.is_empty(),
+            "Should NOT offer 'Add using' when already imported"
+        );
     }
 
     #[test]
@@ -2402,8 +2646,14 @@ codeunit 50100 "My Codeunit"
 
         // "NonExistentTable" at col 21-37
         let range = Range {
-            start: super::super::Position { line: 5, character: 21 },
-            end: super::super::Position { line: 5, character: 37 },
+            start: super::super::Position {
+                line: 5,
+                character: 21,
+            },
+            end: super::super::Position {
+                line: 5,
+                character: 37,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2412,7 +2662,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("using"))
             .collect();
 
-        assert!(using_actions.is_empty(), "Should NOT offer 'Add using' for unknown types");
+        assert!(
+            using_actions.is_empty(),
+            "Should NOT offer 'Add using' for unknown types"
+        );
     }
 
     #[test]
@@ -2438,8 +2691,14 @@ codeunit 50100 "My Codeunit"
 
         // "Customer" at col 21-29
         let range = Range {
-            start: super::super::Position { line: 5, character: 21 },
-            end: super::super::Position { line: 5, character: 29 },
+            start: super::super::Position {
+                line: 5,
+                character: 21,
+            },
+            end: super::super::Position {
+                line: 5,
+                character: 29,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2448,7 +2707,11 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("using"))
             .collect();
 
-        assert_eq!(using_actions.len(), 2, "Should offer one action per namespace");
+        assert_eq!(
+            using_actions.len(),
+            2,
+            "Should offer one action per namespace"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2457,7 +2720,8 @@ codeunit 50100 "My Codeunit"
 
     #[test]
     fn insertion_point_after_existing_using_directives() {
-        let source = "namespace MyApp;\nusing Foo.Bar;\nusing Baz.Qux;\n\ncodeunit 50100 Test { }\n";
+        let source =
+            "namespace MyApp;\nusing Foo.Bar;\nusing Baz.Qux;\n\ncodeunit 50100 Test { }\n";
         let (usings, insert_line) = parse_using_directives(source);
         assert_eq!(usings, vec!["Foo.Bar", "Baz.Qux"]);
         // Should insert after line 2 (0-indexed), i.e. insert_line == 3
@@ -2504,7 +2768,9 @@ codeunit 50100 "My Codeunit"
     #[test]
     fn extract_type_name_from_does_not_exist_message() {
         assert_eq!(
-            extract_type_name_from_diagnostic("'PostingGroup' does not exist in the current context"),
+            extract_type_name_from_diagnostic(
+                "'PostingGroup' does not exist in the current context"
+            ),
             Some("PostingGroup".to_string()),
         );
     }
@@ -2516,9 +2782,12 @@ codeunit 50100 "My Codeunit"
     #[test]
     fn diagnostic_quick_fix_offered_for_al0185() {
         let ws = Workspace::new();
-        ws.symbols.add_entries(&[
-            make_entry_with_namespace(ObjectKind::Table, 18, "Customer", "Microsoft.Sales"),
-        ]);
+        ws.symbols.add_entries(&[make_entry_with_namespace(
+            ObjectKind::Table,
+            18,
+            "Customer",
+            "Microsoft.Sales",
+        )]);
 
         let al_code = "namespace MyApp;\n\ncodeunit 50100 Test { var c: Record Customer; }\n";
         let uri = Url::parse("file:///test/T.al").unwrap();
@@ -2563,16 +2832,22 @@ codeunit 50100 "My Codeunit"
         let actions = namespace_quick_fix_for_diagnostic(&ws, &uri, al_code, &diag);
         assert_eq!(actions.len(), 2);
         for a in &actions {
-            assert!(!a.is_preferred, "should not be preferred when multiple options");
+            assert!(
+                !a.is_preferred,
+                "should not be preferred when multiple options"
+            );
         }
     }
 
     #[test]
     fn diagnostic_quick_fix_skipped_when_already_imported() {
         let ws = Workspace::new();
-        ws.symbols.add_entries(&[
-            make_entry_with_namespace(ObjectKind::Table, 18, "Customer", "Microsoft.Sales"),
-        ]);
+        ws.symbols.add_entries(&[make_entry_with_namespace(
+            ObjectKind::Table,
+            18,
+            "Customer",
+            "Microsoft.Sales",
+        )]);
 
         let al_code = "namespace MyApp;\nusing Microsoft.Sales;\n\ncodeunit 50100 Test { }\n";
         let uri = Url::parse("file:///test/T.al").unwrap();
@@ -2585,15 +2860,21 @@ codeunit 50100 "My Codeunit"
         };
 
         let actions = namespace_quick_fix_for_diagnostic(&ws, &uri, al_code, &diag);
-        assert!(actions.is_empty(), "should not offer when namespace already imported");
+        assert!(
+            actions.is_empty(),
+            "should not offer when namespace already imported"
+        );
     }
 
     #[test]
     fn diagnostic_quick_fix_ignored_for_unrelated_diagnostic() {
         let ws = Workspace::new();
-        ws.symbols.add_entries(&[
-            make_entry_with_namespace(ObjectKind::Table, 18, "Customer", "Microsoft.Sales"),
-        ]);
+        ws.symbols.add_entries(&[make_entry_with_namespace(
+            ObjectKind::Table,
+            18,
+            "Customer",
+            "Microsoft.Sales",
+        )]);
 
         let al_code = "namespace MyApp;\n\ncodeunit 50100 Test { }\n";
         let uri = Url::parse("file:///test/T.al").unwrap();
@@ -2607,15 +2888,21 @@ codeunit 50100 "My Codeunit"
         };
 
         let actions = namespace_quick_fix_for_diagnostic(&ws, &uri, al_code, &diag);
-        assert!(actions.is_empty(), "should return nothing for unrelated diagnostics");
+        assert!(
+            actions.is_empty(),
+            "should return nothing for unrelated diagnostics"
+        );
     }
 
     #[test]
     fn diagnostic_quick_fix_works_via_message_without_code() {
         let ws = Workspace::new();
-        ws.symbols.add_entries(&[
-            make_entry_with_namespace(ObjectKind::Codeunit, 50100, "PostingSetup", "MyNs.Finance"),
-        ]);
+        ws.symbols.add_entries(&[make_entry_with_namespace(
+            ObjectKind::Codeunit,
+            50100,
+            "PostingSetup",
+            "MyNs.Finance",
+        )]);
 
         let al_code = "namespace MyApp;\n\ncodeunit 50200 Test { }\n";
         let uri = Url::parse("file:///test/T.al").unwrap();
@@ -2658,8 +2945,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on the first `if` line (line 4)
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2668,7 +2961,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Convert to case"))
             .collect();
 
-        assert!(!case_actions.is_empty(), "Should offer 'Convert to case' action");
+        assert!(
+            !case_actions.is_empty(),
+            "Should offer 'Convert to case' action"
+        );
 
         let edit = case_actions[0].edit.as_ref().expect("should have edit");
         let (_, edits) = &edit.changes[0];
@@ -2699,8 +2995,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2709,7 +3011,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Convert to case"))
             .collect();
 
-        assert!(case_actions.is_empty(), "Should NOT offer conversion for only 2 branches");
+        assert!(
+            case_actions.is_empty(),
+            "Should NOT offer conversion for only 2 branches"
+        );
     }
 
     #[test]
@@ -2733,8 +3038,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2743,7 +3054,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Convert to case"))
             .collect();
 
-        assert!(case_actions.is_empty(), "Should NOT offer when branches compare different variables");
+        assert!(
+            case_actions.is_empty(),
+            "Should NOT offer when branches compare different variables"
+        );
     }
 
     #[test]
@@ -2769,8 +3083,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2779,7 +3099,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Convert to case"))
             .collect();
 
-        assert!(!case_actions.is_empty(), "Should offer conversion with else");
+        assert!(
+            !case_actions.is_empty(),
+            "Should offer conversion with else"
+        );
 
         let edit = case_actions[0].edit.as_ref().unwrap();
         let (_, edits) = &edit.changes[0];
@@ -2818,8 +3141,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2836,10 +3165,17 @@ codeunit 50100 "My Codeunit"
         assert!(new_text.contains("begin"), "Body should contain begin");
         assert!(new_text.contains("end"), "Body should contain end");
         // The body lines (Message, assignment) should be indented more than the case label
-        let msg_line = new_text.lines().find(|l| l.contains("Message('one')")).expect("should have Message line");
-        let label_line = new_text.lines().find(|l| l.trim() == "1:").expect("should have 1: label");
+        let msg_line = new_text
+            .lines()
+            .find(|l| l.contains("Message('one')"))
+            .expect("should have Message line");
+        let label_line = new_text
+            .lines()
+            .find(|l| l.trim() == "1:")
+            .expect("should have 1: label");
         assert!(
-            msg_line.len() - msg_line.trim_start().len() > label_line.len() - label_line.trim_start().len(),
+            msg_line.len() - msg_line.trim_start().len()
+                > label_line.len() - label_line.trim_start().len(),
             "Body should be indented more than label"
         );
     }
@@ -2866,8 +3202,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2876,12 +3218,18 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Convert to case"))
             .collect();
 
-        assert!(!case_actions.is_empty(), "Should offer conversion for yoda-style");
+        assert!(
+            !case_actions.is_empty(),
+            "Should offer conversion for yoda-style"
+        );
         let edit = case_actions[0].edit.as_ref().unwrap();
         let (_, edits) = &edit.changes[0];
         let new_text = &edits[0].new_text;
         // The variable in the case should be 'x', not a literal
-        assert!(new_text.contains("case x of"), "Should use variable x in case, not literal");
+        assert!(
+            new_text.contains("case x of"),
+            "Should use variable x in case, not literal"
+        );
     }
 
     // Bug: extract_word_at_position closing quote
@@ -2898,12 +3246,21 @@ codeunit 50100 "My Codeunit"
         let text = "        SH: Record \"Sales Header\";\n";
         // Place cursor on the closing quote (col 32)
         let range = Range {
-            start: super::super::Position { line: 0, character: 32 },
-            end: super::super::Position { line: 0, character: 32 },
+            start: super::super::Position {
+                line: 0,
+                character: 32,
+            },
+            end: super::super::Position {
+                line: 0,
+                character: 32,
+            },
         };
 
         let word = extract_word_at_position(text, range);
-        assert_eq!(word, "Sales Header", "Should extract 'Sales Header' when cursor is on closing quote");
+        assert_eq!(
+            word, "Sales Header",
+            "Should extract 'Sales Header' when cursor is on closing quote"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2932,8 +3289,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on the `with` line (line 6)
         let range = Range {
-            start: super::super::Position { line: 6, character: 8 },
-            end: super::super::Position { line: 6, character: 8 },
+            start: super::super::Position {
+                line: 6,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 6,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -2942,16 +3305,28 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("with"))
             .collect();
 
-        assert!(!with_actions.is_empty(), "Should offer 'Eliminate with' action");
+        assert!(
+            !with_actions.is_empty(),
+            "Should offer 'Eliminate with' action"
+        );
 
         let edit = with_actions[0].edit.as_ref().expect("should have edit");
         let (_, edits) = &edit.changes[0];
         let new_text = &edits[0].new_text;
         // Should qualify field references with Cust.
-        assert!(new_text.contains("Cust.Name"), "Should qualify Name with Cust");
-        assert!(new_text.contains("Cust.\"No.\""), "Should qualify \"No.\" with Cust");
+        assert!(
+            new_text.contains("Cust.Name"),
+            "Should qualify Name with Cust"
+        );
+        assert!(
+            new_text.contains("Cust.\"No.\""),
+            "Should qualify \"No.\" with Cust"
+        );
         // Should NOT have with...do wrapper
-        assert!(!new_text.contains("with Cust do"), "Should remove with wrapper");
+        assert!(
+            !new_text.contains("with Cust do"),
+            "Should remove with wrapper"
+        );
     }
 
     #[test]
@@ -3004,8 +3379,14 @@ codeunit 50100 "My Codeunit"
     #[test]
     fn qualify_line_skips_already_qualified_references() {
         // Rec.Field := X should not become Rec2.Rec.Field := X
-        assert_eq!(qualify_line("Rec.Name := 'X';", "Rec2", &[]), "Rec.Name := 'X';");
-        assert_eq!(qualify_line("Customer.\"No.\" := '100';", "Rec", &[]), "Customer.\"No.\" := '100';");
+        assert_eq!(
+            qualify_line("Rec.Name := 'X';", "Rec2", &[]),
+            "Rec.Name := 'X';"
+        );
+        assert_eq!(
+            qualify_line("Customer.\"No.\" := '100';", "Rec", &[]),
+            "Customer.\"No.\" := '100';"
+        );
     }
 
     fn make_interface_entry(name: &str, methods: Vec<al_symbols::MethodSymbol>) -> SymbolEntry {
@@ -3057,9 +3438,11 @@ codeunit 50100 "My Codeunit"
         ws.symbols.add_entries(&[make_interface_entry(
             "IMyInterface",
             vec![
-                make_method("DoSomething", vec![
-                    make_param("Input", "Text", false),
-                ], None),
+                make_method(
+                    "DoSomething",
+                    vec![make_param("Input", "Text", false)],
+                    None,
+                ),
                 make_method("GetValue", vec![], Some("Integer")),
             ],
         )]);
@@ -3073,8 +3456,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on line 0 (the codeunit declaration line)
         let range = Range {
-            start: super::super::Position { line: 0, character: 10 },
-            end: super::super::Position { line: 0, character: 10 },
+            start: super::super::Position {
+                line: 0,
+                character: 10,
+            },
+            end: super::super::Position {
+                line: 0,
+                character: 10,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3083,7 +3472,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Implement interface"))
             .collect();
 
-        assert!(!impl_actions.is_empty(), "Should offer 'Implement interface' action");
+        assert!(
+            !impl_actions.is_empty(),
+            "Should offer 'Implement interface' action"
+        );
         assert!(impl_actions[0].title.contains("IMyInterface"));
 
         let edit = impl_actions[0].edit.as_ref().expect("should have edit");
@@ -3091,12 +3483,21 @@ codeunit 50100 "My Codeunit"
         let new_text = &edits[0].new_text;
 
         // Should generate stubs for both methods
-        assert!(new_text.contains("procedure DoSomething"), "Should have DoSomething stub");
+        assert!(
+            new_text.contains("procedure DoSomething"),
+            "Should have DoSomething stub"
+        );
         assert!(new_text.contains("Input: Text"), "Should have parameter");
-        assert!(new_text.contains("procedure GetValue"), "Should have GetValue stub");
+        assert!(
+            new_text.contains("procedure GetValue"),
+            "Should have GetValue stub"
+        );
         assert!(new_text.contains(": Integer"), "Should have return type");
         // Stubs should have Error placeholder bodies
-        assert!(new_text.contains("Error('Not implemented')"), "Should have Error placeholder");
+        assert!(
+            new_text.contains("Error('Not implemented')"),
+            "Should have Error placeholder"
+        );
     }
 
     #[test]
@@ -3124,8 +3525,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 0, character: 10 },
-            end: super::super::Position { line: 0, character: 10 },
+            start: super::super::Position {
+                line: 0,
+                character: 10,
+            },
+            end: super::super::Position {
+                line: 0,
+                character: 10,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3134,16 +3541,25 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Implement interface"))
             .collect();
 
-        assert!(!impl_actions.is_empty(), "Should still offer action for remaining methods");
+        assert!(
+            !impl_actions.is_empty(),
+            "Should still offer action for remaining methods"
+        );
 
         let edit = impl_actions[0].edit.as_ref().expect("should have edit");
         let (_, edits) = &edit.changes[0];
         let new_text = &edits[0].new_text;
 
         // Should NOT generate stub for DoSomething (already exists)
-        assert!(!new_text.contains("procedure DoSomething"), "Should skip existing method");
+        assert!(
+            !new_text.contains("procedure DoSomething"),
+            "Should skip existing method"
+        );
         // Should generate stub for GetValue
-        assert!(new_text.contains("procedure GetValue"), "Should generate missing method");
+        assert!(
+            new_text.contains("procedure GetValue"),
+            "Should generate missing method"
+        );
     }
 
     #[test]
@@ -3153,9 +3569,7 @@ codeunit 50100 "My Codeunit"
 
         ws.symbols.add_entries(&[make_interface_entry(
             "IMyInterface",
-            vec![
-                make_method("DoSomething", vec![], None),
-            ],
+            vec![make_method("DoSomething", vec![], None)],
         )]);
 
         let al_code = r#"codeunit 50100 "My Codeunit" implements IMyInterface
@@ -3170,8 +3584,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 0, character: 10 },
-            end: super::super::Position { line: 0, character: 10 },
+            start: super::super::Position {
+                line: 0,
+                character: 10,
+            },
+            end: super::super::Position {
+                line: 0,
+                character: 10,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3180,7 +3600,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Implement interface"))
             .collect();
 
-        assert!(impl_actions.is_empty(), "Should NOT offer when all methods already exist");
+        assert!(
+            impl_actions.is_empty(),
+            "Should NOT offer when all methods already exist"
+        );
     }
 
     #[test]
@@ -3200,8 +3623,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 0, character: 10 },
-            end: super::super::Position { line: 0, character: 10 },
+            start: super::super::Position {
+                line: 0,
+                character: 10,
+            },
+            end: super::super::Position {
+                line: 0,
+                character: 10,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3210,7 +3639,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Implement interface"))
             .collect();
 
-        assert!(impl_actions.is_empty(), "Should NOT offer for codeunits without implements");
+        assert!(
+            impl_actions.is_empty(),
+            "Should NOT offer for codeunits without implements"
+        );
     }
 
     #[test]
@@ -3219,12 +3651,14 @@ codeunit 50100 "My Codeunit"
 
         ws.symbols.add_entries(&[make_interface_entry(
             "IProcessor",
-            vec![
-                make_method("Process", vec![
+            vec![make_method(
+                "Process",
+                vec![
                     make_param("Input", "Text", false),
                     make_param("Output", "Text", true),
-                ], Some("Boolean")),
-            ],
+                ],
+                Some("Boolean"),
+            )],
         )]);
 
         let al_code = r#"codeunit 50100 "My Processor" implements IProcessor
@@ -3235,8 +3669,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 0, character: 10 },
-            end: super::super::Position { line: 0, character: 10 },
+            start: super::super::Position {
+                line: 0,
+                character: 10,
+            },
+            end: super::super::Position {
+                line: 0,
+                character: 10,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3251,8 +3691,14 @@ codeunit 50100 "My Codeunit"
         let (_, edits) = &edit.changes[0];
         let new_text = &edits[0].new_text;
 
-        assert!(new_text.contains("var Output: Text"), "Should include var modifier");
-        assert!(new_text.contains("Input: Text"), "Should include non-var param");
+        assert!(
+            new_text.contains("var Output: Text"),
+            "Should include var modifier"
+        );
+        assert!(
+            new_text.contains("Input: Text"),
+            "Should include non-var param"
+        );
         assert!(new_text.contains(": Boolean"), "Should include return type");
     }
 
@@ -3272,8 +3718,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3304,8 +3756,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 2, character: 4 },
-            end: super::super::Position { line: 2, character: 4 },
+            start: super::super::Position {
+                line: 2,
+                character: 4,
+            },
+            end: super::super::Position {
+                line: 2,
+                character: 4,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3314,7 +3772,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("local"))
             .collect();
 
-        assert!(!local_actions.is_empty(), "Should offer 'Make local' action");
+        assert!(
+            !local_actions.is_empty(),
+            "Should offer 'Make local' action"
+        );
         let edit = local_actions[0].edit.as_ref().expect("should have edit");
         let (_, edits) = &edit.changes[0];
         assert!(edits[0].new_text.contains("local"), "Should insert 'local'");
@@ -3335,8 +3796,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 2, character: 10 },
-            end: super::super::Position { line: 2, character: 10 },
+            start: super::super::Position {
+                line: 2,
+                character: 10,
+            },
+            end: super::super::Position {
+                line: 2,
+                character: 10,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3345,7 +3812,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("Make procedure local"))
             .collect();
 
-        assert!(local_actions.is_empty(), "Should NOT offer when already local");
+        assert!(
+            local_actions.is_empty(),
+            "Should NOT offer when already local"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -3368,8 +3838,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on "Commit" (line 4, col 8)
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3378,7 +3854,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("parentheses") || a.title.contains("()"))
             .collect();
 
-        assert!(!paren_actions.is_empty(), "Should offer 'Add parentheses' action");
+        assert!(
+            !paren_actions.is_empty(),
+            "Should offer 'Add parentheses' action"
+        );
     }
 
     #[test]
@@ -3397,8 +3876,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on "Commit" (line 4, col 8)
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3407,7 +3892,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("parentheses") || a.title.contains("()"))
             .collect();
 
-        assert!(paren_actions.is_empty(), "Should NOT offer when already has ()");
+        assert!(
+            paren_actions.is_empty(),
+            "Should NOT offer when already has ()"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -3430,22 +3918,36 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on line 2 where the EventSubscriber attribute is
         let range = Range {
-            start: super::super::Position { line: 2, character: 5 },
-            end: super::super::Position { line: 2, character: 5 },
+            start: super::super::Position {
+                line: 2,
+                character: 5,
+            },
+            end: super::super::Position {
+                line: 2,
+                character: 5,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
         let ev_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.to_lowercase().contains("event") && a.title.to_lowercase().contains("identifier"))
+            .filter(|a| {
+                a.title.to_lowercase().contains("event")
+                    && a.title.to_lowercase().contains("identifier")
+            })
             .collect();
 
-        assert!(!ev_actions.is_empty(), "Should offer event subscriber conversion");
+        assert!(
+            !ev_actions.is_empty(),
+            "Should offer event subscriber conversion"
+        );
         let edit = ev_actions[0].edit.as_ref().expect("has edit");
         let (_, edits) = &edit.changes[0];
         // The edit should remove the quotes around 'OnBeforeInsertEvent'
         assert!(
-            edits.iter().any(|e| e.new_text.contains("OnBeforeInsertEvent") && !e.new_text.contains('\'')),
+            edits
+                .iter()
+                .any(|e| e.new_text.contains("OnBeforeInsertEvent") && !e.new_text.contains('\'')),
             "Should replace string literal with identifier"
         );
     }
@@ -3465,17 +3967,29 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 2, character: 5 },
-            end: super::super::Position { line: 2, character: 5 },
+            start: super::super::Position {
+                line: 2,
+                character: 5,
+            },
+            end: super::super::Position {
+                line: 2,
+                character: 5,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
         let ev_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.to_lowercase().contains("event") && a.title.to_lowercase().contains("identifier"))
+            .filter(|a| {
+                a.title.to_lowercase().contains("event")
+                    && a.title.to_lowercase().contains("identifier")
+            })
             .collect();
 
-        assert!(ev_actions.is_empty(), "Should NOT offer when already using identifier");
+        assert!(
+            ev_actions.is_empty(),
+            "Should NOT offer when already using identifier"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -3506,8 +4020,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on the ToolTip line (line 9)
         let range = Range {
-            start: super::super::Position { line: 9, character: 16 },
-            end: super::super::Position { line: 9, character: 16 },
+            start: super::super::Position {
+                line: 9,
+                character: 16,
+            },
+            end: super::super::Position {
+                line: 9,
+                character: 16,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3516,7 +4036,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.to_lowercase().contains("tooltip"))
             .collect();
 
-        assert!(!tt_actions.is_empty(), "Should offer ToolTip action on page field");
+        assert!(
+            !tt_actions.is_empty(),
+            "Should offer ToolTip action on page field"
+        );
     }
 
     #[test]
@@ -3539,17 +4062,29 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on the ToolTip line (line 6)
         let range = Range {
-            start: super::super::Position { line: 6, character: 12 },
-            end: super::super::Position { line: 6, character: 12 },
+            start: super::super::Position {
+                line: 6,
+                character: 12,
+            },
+            end: super::super::Position {
+                line: 6,
+                character: 12,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
         let tt_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.to_lowercase().contains("tooltip") && a.title.to_lowercase().contains("table"))
+            .filter(|a| {
+                a.title.to_lowercase().contains("tooltip")
+                    && a.title.to_lowercase().contains("table")
+            })
             .collect();
 
-        assert!(tt_actions.is_empty(), "Should NOT offer move-to-table action inside a table object");
+        assert!(
+            tt_actions.is_empty(),
+            "Should NOT offer move-to-table action inside a table object"
+        );
     }
 
     // ISSUE-091: if_to_case UTF-16 column vs byte offset
@@ -3569,8 +4104,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on "if x = 1 then" (line 4, col 8 in UTF-16 and bytes — ASCII prefix)
         let range = Range {
-            start: super::super::Position { line: 4, character: 8 },
-            end: super::super::Position { line: 4, character: 8 },
+            start: super::super::Position {
+                line: 4,
+                character: 8,
+            },
+            end: super::super::Position {
+                line: 4,
+                character: 8,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3578,7 +4119,10 @@ codeunit 50100 "My Codeunit"
             .iter()
             .filter(|a| a.title.contains("Convert to case"))
             .collect();
-        assert!(!case_actions.is_empty(), "Should offer if-to-case conversion");
+        assert!(
+            !case_actions.is_empty(),
+            "Should offer if-to-case conversion"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -3610,17 +4154,30 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on the `Promoted = true;` line (line 9)
         let range = Range {
-            start: super::super::Position { line: 9, character: 16 },
-            end: super::super::Position { line: 9, character: 16 },
+            start: super::super::Position {
+                line: 9,
+                character: 16,
+            },
+            end: super::super::Position {
+                line: 9,
+                character: 16,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
         let conv_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("actionRef") || a.title.contains("actionref") || a.title.contains("T1205"))
+            .filter(|a| {
+                a.title.contains("actionRef")
+                    || a.title.contains("actionref")
+                    || a.title.contains("T1205")
+            })
             .collect();
 
-        assert!(!conv_actions.is_empty(), "Should offer promoted action conversion");
+        assert!(
+            !conv_actions.is_empty(),
+            "Should offer promoted action conversion"
+        );
 
         let edit = conv_actions[0].edit.as_ref().expect("should have edit");
         let (_, edits) = &edit.changes[0];
@@ -3628,11 +4185,15 @@ codeunit 50100 "My Codeunit"
 
         assert!(
             combined.to_lowercase().contains("actionref"),
-            "Should contain actionref keyword, got: {:?}", combined
+            "Should contain actionref keyword, got: {:?}",
+            combined
         );
         assert!(combined.contains("MyAction"), "Should reference MyAction");
         let remove_edits: Vec<_> = edits.iter().filter(|e| e.new_text.is_empty()).collect();
-        assert!(!remove_edits.is_empty(), "Should have removal edits for Promoted properties");
+        assert!(
+            !remove_edits.is_empty(),
+            "Should have removal edits for Promoted properties"
+        );
     }
 
     #[test]
@@ -3660,8 +4221,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on the action declaration line (line 6)
         let range = Range {
-            start: super::super::Position { line: 6, character: 12 },
-            end: super::super::Position { line: 6, character: 12 },
+            start: super::super::Position {
+                line: 6,
+                character: 12,
+            },
+            end: super::super::Position {
+                line: 6,
+                character: 12,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3676,7 +4243,10 @@ codeunit 50100 "My Codeunit"
         let (_, edits) = &edit.changes[0];
         let combined: String = edits.iter().map(|e| e.new_text.as_str()).collect();
 
-        assert!(combined.contains("New"), "Should preserve PromotedCategory = New");
+        assert!(
+            combined.contains("New"),
+            "Should preserve PromotedCategory = New"
+        );
     }
 
     #[test]
@@ -3698,8 +4268,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 5, character: 12 },
-            end: super::super::Position { line: 5, character: 12 },
+            start: super::super::Position {
+                line: 5,
+                character: 12,
+            },
+            end: super::super::Position {
+                line: 5,
+                character: 12,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3708,7 +4284,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("T1205") || a.title.to_lowercase().contains("actionref"))
             .collect();
 
-        assert!(conv_actions.is_empty(), "Should NOT offer promoted action conversion on table");
+        assert!(
+            conv_actions.is_empty(),
+            "Should NOT offer promoted action conversion on table"
+        );
     }
 
     #[test]
@@ -3733,8 +4312,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 7, character: 12 },
-            end: super::super::Position { line: 7, character: 12 },
+            start: super::super::Position {
+                line: 7,
+                character: 12,
+            },
+            end: super::super::Position {
+                line: 7,
+                character: 12,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3743,7 +4328,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("T1205") || a.title.to_lowercase().contains("actionref"))
             .collect();
 
-        assert!(conv_actions.is_empty(), "Should NOT offer conversion when no Promoted = true");
+        assert!(
+            conv_actions.is_empty(),
+            "Should NOT offer conversion when no Promoted = true"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -3778,17 +4366,28 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 8, character: 16 },
-            end: super::super::Position { line: 8, character: 16 },
+            start: super::super::Position {
+                line: 8,
+                character: 16,
+            },
+            end: super::super::Position {
+                line: 8,
+                character: 16,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
         let aa_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea"))
+            .filter(|a| {
+                a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea")
+            })
             .collect();
 
-        assert!(!aa_actions.is_empty(), "Should offer ApplicationArea action");
+        assert!(
+            !aa_actions.is_empty(),
+            "Should offer ApplicationArea action"
+        );
 
         let edit = aa_actions[0].edit.as_ref().expect("should have edit");
         let (_, edits) = &edit.changes[0];
@@ -3796,11 +4395,20 @@ codeunit 50100 "My Codeunit"
         let insert_edits: Vec<_> = edits.iter().filter(|e| !e.new_text.is_empty()).collect();
         let remove_edits: Vec<_> = edits.iter().filter(|e| e.new_text.is_empty()).collect();
 
-        assert!(!insert_edits.is_empty(), "Should insert object-level ApplicationArea");
-        assert!(!remove_edits.is_empty(), "Should remove field-level ApplicationArea properties");
+        assert!(
+            !insert_edits.is_empty(),
+            "Should insert object-level ApplicationArea"
+        );
+        assert!(
+            !remove_edits.is_empty(),
+            "Should remove field-level ApplicationArea properties"
+        );
 
         let inserted = &insert_edits[0].new_text;
-        assert!(inserted.to_lowercase().contains("applicationarea"), "Inserted text should set ApplicationArea");
+        assert!(
+            inserted.to_lowercase().contains("applicationarea"),
+            "Inserted text should set ApplicationArea"
+        );
         assert!(inserted.contains("All"), "Should set ApplicationArea = All");
     }
 
@@ -3828,17 +4436,28 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 10, character: 16 },
-            end: super::super::Position { line: 10, character: 16 },
+            start: super::super::Position {
+                line: 10,
+                character: 16,
+            },
+            end: super::super::Position {
+                line: 10,
+                character: 16,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
         let aa_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea"))
+            .filter(|a| {
+                a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea")
+            })
             .collect();
 
-        assert!(aa_actions.is_empty(), "Should NOT offer action when object already has ApplicationArea");
+        assert!(
+            aa_actions.is_empty(),
+            "Should NOT offer action when object already has ApplicationArea"
+        );
     }
 
     #[test]
@@ -3863,17 +4482,28 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 8, character: 16 },
-            end: super::super::Position { line: 8, character: 16 },
+            start: super::super::Position {
+                line: 8,
+                character: 16,
+            },
+            end: super::super::Position {
+                line: 8,
+                character: 16,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
         let aa_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea"))
+            .filter(|a| {
+                a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea")
+            })
             .collect();
 
-        assert!(aa_actions.is_empty(), "Should NOT offer action when no field-level ApplicationArea");
+        assert!(
+            aa_actions.is_empty(),
+            "Should NOT offer action when no field-level ApplicationArea"
+        );
     }
 
     #[test]
@@ -3895,17 +4525,28 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 6, character: 12 },
-            end: super::super::Position { line: 6, character: 12 },
+            start: super::super::Position {
+                line: 6,
+                character: 12,
+            },
+            end: super::super::Position {
+                line: 6,
+                character: 12,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
         let aa_actions: Vec<_> = actions
             .iter()
-            .filter(|a| a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea"))
+            .filter(|a| {
+                a.title.contains("T1206") || a.title.to_lowercase().contains("applicationarea")
+            })
             .collect();
 
-        assert!(aa_actions.is_empty(), "Should NOT offer action on table objects");
+        assert!(
+            aa_actions.is_empty(),
+            "Should NOT offer action on table objects"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -3930,8 +4571,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on the RDLCLayout line (line 2)
         let range = Range {
-            start: super::super::Position { line: 2, character: 4 },
-            end: super::super::Position { line: 2, character: 4 },
+            start: super::super::Position {
+                line: 2,
+                character: 4,
+            },
+            end: super::super::Position {
+                line: 2,
+                character: 4,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3940,22 +4587,43 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("T1207") || a.title.to_lowercase().contains("rendering"))
             .collect();
 
-        assert!(!layout_actions.is_empty(), "Should offer rendering section conversion");
+        assert!(
+            !layout_actions.is_empty(),
+            "Should offer rendering section conversion"
+        );
 
         let edit = layout_actions[0].edit.as_ref().expect("should have edit");
         let (_, edits) = &edit.changes[0];
 
         let remove_edits: Vec<_> = edits.iter().filter(|e| e.new_text.is_empty()).collect();
-        assert!(!remove_edits.is_empty(), "Should remove old RDLCLayout property");
+        assert!(
+            !remove_edits.is_empty(),
+            "Should remove old RDLCLayout property"
+        );
 
         let insert_edits: Vec<_> = edits.iter().filter(|e| !e.new_text.is_empty()).collect();
-        assert!(!insert_edits.is_empty(), "Should insert new rendering section");
+        assert!(
+            !insert_edits.is_empty(),
+            "Should insert new rendering section"
+        );
 
         let inserted = &insert_edits[0].new_text;
-        assert!(inserted.to_lowercase().contains("rendering"), "Inserted text should contain 'rendering'");
-        assert!(inserted.to_lowercase().contains("layout("), "Inserted text should contain 'layout('");
-        assert!(inserted.contains("MyReport.rdlc"), "Inserted text should preserve the layout path");
-        assert!(inserted.to_lowercase().contains("rdlc"), "Inserted text should set Type = RDLC");
+        assert!(
+            inserted.to_lowercase().contains("rendering"),
+            "Inserted text should contain 'rendering'"
+        );
+        assert!(
+            inserted.to_lowercase().contains("layout("),
+            "Inserted text should contain 'layout('"
+        );
+        assert!(
+            inserted.contains("MyReport.rdlc"),
+            "Inserted text should preserve the layout path"
+        );
+        assert!(
+            inserted.to_lowercase().contains("rdlc"),
+            "Inserted text should set Type = RDLC"
+        );
     }
 
     #[test]
@@ -3976,8 +4644,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor on the WordLayout line (line 2)
         let range = Range {
-            start: super::super::Position { line: 2, character: 4 },
-            end: super::super::Position { line: 2, character: 4 },
+            start: super::super::Position {
+                line: 2,
+                character: 4,
+            },
+            end: super::super::Position {
+                line: 2,
+                character: 4,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -3986,16 +4660,23 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("T1207") || a.title.to_lowercase().contains("rendering"))
             .collect();
 
-        assert!(!layout_actions.is_empty(), "Should offer rendering section conversion for WordLayout");
+        assert!(
+            !layout_actions.is_empty(),
+            "Should offer rendering section conversion for WordLayout"
+        );
 
         let edit = layout_actions[0].edit.as_ref().unwrap();
         let (_, edits) = &edit.changes[0];
         let inserted: String = edits.iter().map(|e| e.new_text.as_str()).collect();
 
-        assert!(inserted.contains("MyReport.docx"), "Should preserve the Word layout path");
+        assert!(
+            inserted.contains("MyReport.docx"),
+            "Should preserve the Word layout path"
+        );
         assert!(
             inserted.to_lowercase().contains("word"),
-            "Should set Type = Word, got: {:?}", inserted
+            "Should set Type = Word, got: {:?}",
+            inserted
         );
     }
 
@@ -4012,8 +4693,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 2, character: 4 },
-            end: super::super::Position { line: 2, character: 4 },
+            start: super::super::Position {
+                line: 2,
+                character: 4,
+            },
+            end: super::super::Position {
+                line: 2,
+                character: 4,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -4022,7 +4709,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("T1207") || a.title.to_lowercase().contains("rendering"))
             .collect();
 
-        assert!(layout_actions.is_empty(), "Should NOT offer rendering conversion on page objects");
+        assert!(
+            layout_actions.is_empty(),
+            "Should NOT offer rendering conversion on page objects"
+        );
     }
 
     #[test]
@@ -4049,8 +4739,14 @@ codeunit 50100 "My Codeunit"
 
         // Cursor far from the RDLCLayout line (line 9, inside dataset)
         let range = Range {
-            start: super::super::Position { line: 9, character: 12 },
-            end: super::super::Position { line: 9, character: 12 },
+            start: super::super::Position {
+                line: 9,
+                character: 12,
+            },
+            end: super::super::Position {
+                line: 9,
+                character: 12,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -4059,7 +4755,10 @@ codeunit 50100 "My Codeunit"
             .filter(|a| a.title.contains("T1207") || a.title.to_lowercase().contains("rendering"))
             .collect();
 
-        assert!(layout_actions.is_empty(), "Should NOT offer conversion when cursor is far from layout property");
+        assert!(
+            layout_actions.is_empty(),
+            "Should NOT offer conversion when cursor is far from layout property"
+        );
     }
 
     #[test]
@@ -4075,8 +4774,14 @@ codeunit 50100 "My Codeunit"
         open_doc(&ws, &uri, al_code);
 
         let range = Range {
-            start: super::super::Position { line: 2, character: 4 },
-            end: super::super::Position { line: 2, character: 4 },
+            start: super::super::Position {
+                line: 2,
+                character: 4,
+            },
+            end: super::super::Position {
+                line: 2,
+                character: 4,
+            },
         };
 
         let actions = source_actions(&ws, &uri, range);
@@ -4093,8 +4798,8 @@ codeunit 50100 "My Codeunit"
 
         assert!(
             combined.contains("./layouts/MyReport.rdlc"),
-            "Must not drop the layout path, got: {:?}", combined
+            "Must not drop the layout path, got: {:?}",
+            combined
         );
     }
 }
-

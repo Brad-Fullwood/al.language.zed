@@ -76,9 +76,7 @@ impl SymbolCache {
         // First read the header to validate freshness
         let (header, objects_data) = decode_cache(&cache_data)?;
 
-        let mtime_duration = mtime
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .ok()?;
+        let mtime_duration = mtime.duration_since(SystemTime::UNIX_EPOCH).ok()?;
         let mtime_secs = mtime_duration.as_secs();
         let mtime_nanos = mtime_duration.subsec_nanos();
 
@@ -167,8 +165,9 @@ impl SymbolCache {
         let objects_json = serde_json::to_vec(&pkg.objects)?;
 
         // Format: [4 bytes header_len][header_json][objects_json]
-        let header_len = u32::try_from(header_json.len())
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "header too large"))?;
+        let header_len = u32::try_from(header_json.len()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "header too large")
+        })?;
         let mut data = Vec::with_capacity(4 + header_json.len() + objects_json.len());
         data.extend_from_slice(&header_len.to_le_bytes());
         data.extend_from_slice(&header_json);

@@ -17,7 +17,9 @@ pub(crate) fn handle_definition(
         let loc = locations.into_iter().next()?;
         Some(GotoDefinitionResponse::Scalar(loc.into()))
     } else {
-        Some(GotoDefinitionResponse::Array(locations.into_iter().map(Into::into).collect()))
+        Some(GotoDefinitionResponse::Array(
+            locations.into_iter().map(Into::into).collect(),
+        ))
     }
 }
 
@@ -29,8 +31,17 @@ pub(crate) fn handle_references(
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
     let core_pos = position.into();
-    let locations = al_core::queries::references::references(&server.workspace, uri, core_pos, include_declaration);
-    if locations.is_empty() { None } else { Some(locations.into_iter().map(Into::into).collect()) }
+    let locations = al_core::queries::references::references(
+        &server.workspace,
+        uri,
+        core_pos,
+        include_declaration,
+    );
+    if locations.is_empty() {
+        None
+    } else {
+        Some(locations.into_iter().map(Into::into).collect())
+    }
 }
 
 /// Handle textDocument/rename.
@@ -52,7 +63,8 @@ pub(crate) fn handle_prepare_rename(
     position: Position,
 ) -> Option<PrepareRenameResponse> {
     let core_pos = position.into();
-    let (range, placeholder) = al_core::queries::rename::prepare_rename(&server.workspace, uri, core_pos)?;
+    let (range, placeholder) =
+        al_core::queries::rename::prepare_rename(&server.workspace, uri, core_pos)?;
     Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: range.into(),
         placeholder,

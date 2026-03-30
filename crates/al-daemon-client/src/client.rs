@@ -146,10 +146,13 @@ impl DaemonClient {
             return Err("Connection closed by daemon (EOF)".to_string());
         }
         if line.len() > MAX_RESPONSE_LINE {
-            return Err(format!("Response too large ({} bytes, max {})", line.len(), MAX_RESPONSE_LINE));
+            return Err(format!(
+                "Response too large ({} bytes, max {})",
+                line.len(),
+                MAX_RESPONSE_LINE
+            ));
         }
-        serde_json::from_str(line.trim())
-            .map_err(|e| format!("Failed to parse response: {}", e))
+        serde_json::from_str(line.trim()).map_err(|e| format!("Failed to parse response: {}", e))
     }
 
     fn start_daemon(project_root: &Path) -> Result<(), String> {
@@ -219,7 +222,10 @@ mod tests {
         sock
     }
 
-    fn mock_daemon(sock_path: &Path, fail_count: u32) -> (UnixListener, std::thread::JoinHandle<()>) {
+    fn mock_daemon(
+        sock_path: &Path,
+        fail_count: u32,
+    ) -> (UnixListener, std::thread::JoinHandle<()>) {
         let listener = UnixListener::bind(sock_path).unwrap();
         let listener_clone = listener.try_clone().unwrap();
         let handle = std::thread::spawn(move || {

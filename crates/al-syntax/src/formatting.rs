@@ -137,25 +137,21 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // --- Pre-indent adjustments (dedent before writing this line) ---
 
         // `begin` closes a var section — dedent back to the procedure level
-        if in_var_section
-            && (trimmed_lower == "begin" || trimmed_lower.ends_with(" begin"))
-        {
+        if in_var_section && (trimmed_lower == "begin" || trimmed_lower.ends_with(" begin")) {
             indent_level = (indent_level - 1).max(0);
             in_var_section = false;
         }
 
         // `begin` after single-statement openers (if...then begin written separately)
         // drains the single-stmt stack since begin starts a block
-        if single_stmt_depth > 0
-            && (trimmed_lower == "begin" || trimmed_lower.ends_with(" begin"))
+        if single_stmt_depth > 0 && (trimmed_lower == "begin" || trimmed_lower.ends_with(" begin"))
         {
             indent_level = (indent_level - single_stmt_depth).max(0);
             single_stmt_depth = 0;
         }
 
         // Case label: close previous label body before this new label
-        let is_case_label =
-            case_depth > 0 && trimmed.ends_with(':') && !trimmed.ends_with("::");
+        let is_case_label = case_depth > 0 && trimmed.ends_with(':') && !trimmed.ends_with("::");
         if is_case_label && in_case_label_body {
             // Drain any single-stmt from within the previous label body
             if single_stmt_depth > 0 {
@@ -363,8 +359,14 @@ pub fn format_range(
 
     Some(vec![tower_lsp::lsp_types::TextEdit {
         range: tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position { line: start_line, character: 0 },
-            end: tower_lsp::lsp_types::Position { line: end_line, character: end_char },
+            start: tower_lsp::lsp_types::Position {
+                line: start_line,
+                character: 0,
+            },
+            end: tower_lsp::lsp_types::Position {
+                line: end_line,
+                character: end_char,
+            },
         },
         new_text,
     }])
@@ -417,18 +419,18 @@ fn count_net_parens(line: &str) -> i32 {
 /// A line whose lowercased trimmed form starts with the prefix and ends with the suffix
 /// opens a single implicit statement body (no `begin`/`end` required).
 const SINGLE_STMT_OPENERS: &[(&str, &str)] = &[
-    ("if ",      " then"),
-    ("for ",     " do"),
-    ("while ",   " do"),
-    ("with ",    " do"),
+    ("if ", " then"),
+    ("for ", " do"),
+    ("while ", " do"),
+    ("with ", " do"),
     ("foreach ", " do"),
 ];
 
 /// Returns true if trimmed_lower represents a single-statement control flow opener.
 fn is_single_statement_opener(trimmed_lower: &str) -> bool {
-    SINGLE_STMT_OPENERS
-        .iter()
-        .any(|(prefix, suffix)| trimmed_lower.starts_with(prefix) && trimmed_lower.ends_with(suffix))
+    SINGLE_STMT_OPENERS.iter().any(|(prefix, suffix)| {
+        trimmed_lower.starts_with(prefix) && trimmed_lower.ends_with(suffix)
+    })
 }
 
 #[cfg(test)]
@@ -565,7 +567,10 @@ end;
         let result = fmt(input);
         // After blank line, single-stmt stack should be drained
         // so Message should be at the same level as the if
-        assert!(result.contains("        Message('after blank');") || result.contains("    Message('after blank');"));
+        assert!(
+            result.contains("        Message('after blank');")
+                || result.contains("    Message('after blank');")
+        );
     }
 
     #[test]
@@ -755,7 +760,8 @@ end;
 
     #[test]
     fn test_format_range_single_procedure_body() {
-        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nMessage(\'Hello\');\nend;\n}";
+        let input =
+            "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nMessage(\'Hello\');\nend;\n}";
         let opts = FormatOptions::default();
         let edits = format_range(input, 2, 5, &opts);
         assert!(edits.is_some());

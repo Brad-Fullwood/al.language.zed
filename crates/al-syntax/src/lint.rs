@@ -3,8 +3,8 @@
 //! 18 rules: AL-L001 through AL-L018. Each operates on the tree-sitter AST
 //! and raw source text. No type information or cross-file knowledge is used.
 
-use tree_sitter::{Node, Tree};
 use crate::traversal::walk_tree;
+use tree_sitter::{Node, Tree};
 
 /// A lint diagnostic from a native rule.
 #[derive(Debug, Clone)]
@@ -283,8 +283,7 @@ fn check_empty_begin_end(node: Node, _source: &[u8], diagnostics: &mut Vec<LintD
     let mut cursor = node.walk();
     let has_statements = node.children(&mut cursor).any(|c| {
         c.kind() == "statement_list"
-            || (c.is_named()
-                && !matches!(c.kind(), "kw_begin" | "kw_end" | "comment"))
+            || (c.is_named() && !matches!(c.kind(), "kw_begin" | "kw_end" | "comment"))
     });
 
     if !has_statements {
@@ -420,11 +419,7 @@ fn contains_word(text: &str, word: &str) -> bool {
     false
 }
 
-fn collect_var_names(
-    node: Node,
-    source: &[u8],
-    vars: &mut Vec<(String, tree_sitter::Range)>,
-) {
+fn collect_var_names(node: Node, source: &[u8], vars: &mut Vec<(String, tree_sitter::Range)>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "variable_declaration"
@@ -627,9 +622,7 @@ fn check_redundant_begin_end(node: Node, _source: &[u8], diagnostics: &mut Vec<L
         if child.kind() == "statement_list" {
             let mut sc = child.walk();
             for stmt in child.children(&mut sc) {
-                if stmt.is_named()
-                    && !matches!(stmt.kind(), "semicolon" | "comment")
-                {
+                if stmt.is_named() && !matches!(stmt.kind(), "semicolon" | "comment") {
                     stmt_count += 1;
                 }
             }
@@ -734,11 +727,7 @@ fn check_error_call_unreachable(
 
 // ── AL-L015: Global variable naming ─────────────────────────────────
 
-fn check_global_variable_naming(
-    node: Node,
-    source: &[u8],
-    diagnostics: &mut Vec<LintDiagnostic>,
-) {
+fn check_global_variable_naming(node: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
     // Object-level var sections contain global variables
     // Check that they follow naming conventions (e.g., g prefix, or descriptive names)
     let mut cursor = node.walk();
@@ -814,7 +803,10 @@ fn find_hardcoded_strings(root: Node, source: &[u8], diagnostics: &mut Vec<LintD
         if node.kind() == "string" || node.kind() == "verbatim_string" {
             if let Ok(text) = node.utf8_text(source) {
                 // Strip quotes
-                let inner = text.trim_start_matches("@'").trim_start_matches('\'').trim_end_matches('\'');
+                let inner = text
+                    .trim_start_matches("@'")
+                    .trim_start_matches('\'')
+                    .trim_end_matches('\'');
                 // Skip empty strings, format strings (%1), single characters
                 if !inner.is_empty() && inner.len() > 1 {
                     // Skip if it looks like a format placeholder
@@ -826,8 +818,9 @@ fn find_hardcoded_strings(root: Node, source: &[u8], diagnostics: &mut Vec<LintD
                             if is_in_call {
                                 diagnostics.push(LintDiagnostic {
                                     code: "AL-L017".to_string(),
-                                    message: "Hard-coded text string — consider using a Label variable"
-                                        .to_string(),
+                                    message:
+                                        "Hard-coded text string — consider using a Label variable"
+                                            .to_string(),
                                     range: node.range(),
                                     severity: LintSeverity::Info,
                                 });
@@ -880,11 +873,7 @@ fn is_user_facing_call_context(node: Node, source: &[u8]) -> bool {
 
 // ── AL-L018: Record variable naming convention ──────────────────────
 
-fn check_record_variable_naming(
-    node: Node,
-    source: &[u8],
-    diagnostics: &mut Vec<LintDiagnostic>,
-) {
+fn check_record_variable_naming(node: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "object_variable_declaration"
@@ -959,7 +948,8 @@ fn check_flowfield_editable_text(text: &str, diagnostics: &mut Vec<LintDiagnosti
             // Detect FieldClass = FlowField / FlowFilter
             if lower.contains("fieldclass") {
                 let no_ws: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
-                if no_ws.contains("fieldclass=flowfield") || no_ws.contains("fieldclass=flowfilter") {
+                if no_ws.contains("fieldclass=flowfield") || no_ws.contains("fieldclass=flowfilter")
+                {
                     ctx.is_flowfield = true;
                 }
             }
@@ -980,8 +970,14 @@ fn check_flowfield_editable_text(text: &str, diagnostics: &mut Vec<LintDiagnosti
                         let range = tree_sitter::Range {
                             start_byte: 0,
                             end_byte: 0,
-                            start_point: tree_sitter::Point { row: editable_line as usize, column: 0 },
-                            end_point: tree_sitter::Point { row: editable_line as usize, column: 80 },
+                            start_point: tree_sitter::Point {
+                                row: editable_line as usize,
+                                column: 0,
+                            },
+                            end_point: tree_sitter::Point {
+                                row: editable_line as usize,
+                                column: 80,
+                            },
                         };
                         diagnostics.push(LintDiagnostic {
                             code: "AL-L019".to_string(),
@@ -996,17 +992,12 @@ fn check_flowfield_editable_text(text: &str, diagnostics: &mut Vec<LintDiagnosti
     }
 }
 
-
 // ── AL-L020: SecretText enforcement ─────────────────────────────────
 
 /// Sensitive name patterns that should use SecretText instead of Text.
 const SECRET_PATTERNS: &[&str] = &["password", "secret", "apikey", "token", "privatekey"];
 
-fn check_secret_text_enforcement(
-    node: Node,
-    source: &[u8],
-    diagnostics: &mut Vec<LintDiagnostic>,
-) {
+fn check_secret_text_enforcement(node: Node, source: &[u8], diagnostics: &mut Vec<LintDiagnostic>) {
     let name_node = match node.child_by_field_name("name") {
         Some(n) => n,
         None => return,
@@ -1139,13 +1130,20 @@ fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDi
                     let range = tree_sitter::Range {
                         start_byte: 0,
                         end_byte: 0,
-                        start_point: tree_sitter::Point { row: diag_line as usize, column: 0 },
-                        end_point: tree_sitter::Point { row: diag_line as usize, column: 80 },
+                        start_point: tree_sitter::Point {
+                            row: diag_line as usize,
+                            column: 0,
+                        },
+                        end_point: tree_sitter::Point {
+                            row: diag_line as usize,
+                            column: 80,
+                        },
                     };
                     if !ctx.has_entity_name {
                         diagnostics.push(LintDiagnostic {
                             code: "AL-L022".to_string(),
-                            message: "API page is missing mandatory property 'EntityName'".to_string(),
+                            message: "API page is missing mandatory property 'EntityName'"
+                                .to_string(),
                             range,
                             severity: LintSeverity::Warning,
                         });
@@ -1153,7 +1151,8 @@ fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDi
                     if !ctx.has_entity_set_name {
                         diagnostics.push(LintDiagnostic {
                             code: "AL-L022".to_string(),
-                            message: "API page is missing mandatory property 'EntitySetName'".to_string(),
+                            message: "API page is missing mandatory property 'EntitySetName'"
+                                .to_string(),
                             range,
                             severity: LintSeverity::Warning,
                         });
@@ -1161,7 +1160,8 @@ fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDi
                     if !ctx.has_odata_key_fields {
                         diagnostics.push(LintDiagnostic {
                             code: "AL-L022".to_string(),
-                            message: "API page is missing mandatory property 'ODataKeyFields'".to_string(),
+                            message: "API page is missing mandatory property 'ODataKeyFields'"
+                                .to_string(),
                             range,
                             severity: LintSeverity::Warning,
                         });
@@ -1171,7 +1171,6 @@ fn check_api_page_mandatory_fields_text(text: &str, diagnostics: &mut Vec<LintDi
         }
     }
 }
-
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -1212,7 +1211,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L001"), "Should detect empty begin..end: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L001"),
+            "Should detect empty begin..end: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1225,7 +1228,10 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(!has_code(&diags, "AL-L001"), "Should not flag non-empty begin..end");
+        assert!(
+            !has_code(&diags, "AL-L001"),
+            "Should not flag non-empty begin..end"
+        );
     }
 
     #[test]
@@ -1257,7 +1263,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L006"), "Should detect empty trigger body: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L006"),
+            "Should detect empty trigger body: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1283,7 +1293,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L009"), "Should detect excessive parameters: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L009"),
+            "Should detect excessive parameters: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1299,7 +1313,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L010"), "Should detect missing case else: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L010"),
+            "Should detect missing case else: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1312,7 +1330,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L016"), "Should detect non-PascalCase procedure name: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L016"),
+            "Should detect non-PascalCase procedure name: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1325,7 +1347,10 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(!has_code(&diags, "AL-L016"), "Should not flag PascalCase procedure name");
+        assert!(
+            !has_code(&diags, "AL-L016"),
+            "Should not flag PascalCase procedure name"
+        );
     }
 
     #[test]
@@ -1344,7 +1369,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L004"), "Should detect deep if nesting: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L004"),
+            "Should detect deep if nesting: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1388,8 +1417,15 @@ mod tests {
 }"#;
         let diags = lint_src(src);
         // Should have no errors for clean code
-        let errors: Vec<_> = diags.iter().filter(|d| d.severity == LintSeverity::Error).collect();
-        assert!(errors.is_empty(), "Clean code should have no errors, got: {:?}", errors);
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == LintSeverity::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "Clean code should have no errors, got: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -1413,7 +1449,10 @@ mod tests {
             ..LintConfig::default()
         };
         let diags = lint_src_with_config(&src, &config);
-        assert!(has_code(&diags, "AL-L002"), "Should detect procedure over custom limit");
+        assert!(
+            has_code(&diags, "AL-L002"),
+            "Should detect procedure over custom limit"
+        );
     }
 
     #[test]
@@ -1429,7 +1468,10 @@ mod tests {
             ..LintConfig::default()
         };
         let diags = lint_src_with_config(src, &config);
-        assert!(has_code(&diags, "AL-L009"), "Should detect excessive params with custom limit of 2");
+        assert!(
+            has_code(&diags, "AL-L009"),
+            "Should detect excessive params with custom limit of 2"
+        );
     }
 
     #[test]
@@ -1444,7 +1486,11 @@ mod tests {
     fn test_lint_rules_returns_21_rules() {
         let rules = lint_rules();
         // AL-L012 is excluded (stub — no-op implementation).
-        assert_eq!(rules.len(), 21, "Should have exactly 21 lint rules (AL-L012 excluded as stub)");
+        assert_eq!(
+            rules.len(),
+            21,
+            "Should have exactly 21 lint rules (AL-L012 excluded as stub)"
+        );
         // AL-L012 must not appear in the registry
         assert!(
             !rules.iter().any(|r| r.code == "AL-L012"),
@@ -1500,7 +1546,11 @@ mod tests {
     }
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L019"), "Should detect FlowField with Editable=true: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L019"),
+            "Should detect FlowField with Editable=true: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1517,7 +1567,11 @@ mod tests {
     }
 }"#;
         let diags = lint_src(src);
-        assert!(!has_code(&diags, "AL-L019"), "Should not warn when Editable not set: {:?}", diags);
+        assert!(
+            !has_code(&diags, "AL-L019"),
+            "Should not warn when Editable not set: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1533,7 +1587,11 @@ mod tests {
     }
 }"#;
         let diags = lint_src(src);
-        assert!(!has_code(&diags, "AL-L019"), "Normal field with Editable=true is fine: {:?}", diags);
+        assert!(
+            !has_code(&diags, "AL-L019"),
+            "Normal field with Editable=true is fine: {:?}",
+            diags
+        );
     }
 
     // ── T1803: SecretText enforcement ─────────────────────────────────
@@ -1550,7 +1608,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L020"), "Should warn on Text variable named Password: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L020"),
+            "Should warn on Text variable named Password: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1564,7 +1626,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L020"), "Should warn on Text variable named ApiKey: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L020"),
+            "Should warn on Text variable named ApiKey: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1578,7 +1644,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(!has_code(&diags, "AL-L020"), "SecretText variable should not warn: {:?}", diags);
+        assert!(
+            !has_code(&diags, "AL-L020"),
+            "SecretText variable should not warn: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1592,7 +1662,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(!has_code(&diags, "AL-L020"), "Non-sensitive name should not warn: {:?}", diags);
+        assert!(
+            !has_code(&diags, "AL-L020"),
+            "Non-sensitive name should not warn: {:?}",
+            diags
+        );
     }
 
     // ── T1804: ReadIsolation over LockTable ───────────────────────────
@@ -1611,7 +1685,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L021"), "Should warn on LockTable(): {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L021"),
+            "Should warn on LockTable(): {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1627,7 +1705,11 @@ mod tests {
     end;
 }"#;
         let diags = lint_src(src);
-        assert!(!has_code(&diags, "AL-L021"), "No LockTable should not warn: {:?}", diags);
+        assert!(
+            !has_code(&diags, "AL-L021"),
+            "No LockTable should not warn: {:?}",
+            diags
+        );
     }
 
     // ── T1805: API page mandatory fields ─────────────────────────────
@@ -1652,7 +1734,11 @@ mod tests {
     }
 }"#;
         let diags = lint_src(src);
-        assert!(has_code(&diags, "AL-L022"), "Should warn when ODataKeyFields missing: {:?}", diags);
+        assert!(
+            has_code(&diags, "AL-L022"),
+            "Should warn when ODataKeyFields missing: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1676,7 +1762,11 @@ mod tests {
     }
 }"#;
         let diags = lint_src(src);
-        assert!(!has_code(&diags, "AL-L022"), "Complete API page should not warn: {:?}", diags);
+        assert!(
+            !has_code(&diags, "AL-L022"),
+            "Complete API page should not warn: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -1695,6 +1785,10 @@ mod tests {
     }
 }"#;
         let diags = lint_src(src);
-        assert!(!has_code(&diags, "AL-L022"), "Non-API page should not warn: {:?}", diags);
+        assert!(
+            !has_code(&diags, "AL-L022"),
+            "Non-API page should not warn: {:?}",
+            diags
+        );
     }
 }

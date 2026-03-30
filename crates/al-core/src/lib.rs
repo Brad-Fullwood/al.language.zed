@@ -10,6 +10,8 @@ pub mod config;
 pub mod documents;
 pub mod errors;
 pub mod file_index;
+pub mod generators;
+pub(crate) mod http_auth;
 pub mod insight;
 pub mod launch;
 pub mod native_debug;
@@ -19,9 +21,7 @@ pub mod profiling;
 pub mod project;
 pub mod publish;
 pub mod queries;
-pub(crate) mod http_auth;
 pub(crate) mod resolution;
-pub mod generators;
 pub mod scaffold;
 pub mod semantic;
 pub mod snapshot;
@@ -37,10 +37,9 @@ pub mod xliff;
 /// Re-exports from al-syntax for al-lsp consumption.
 pub mod syntax {
     pub use al_syntax::{
-        AlParser, ParseResult, SyntaxError,
-        format_al, format_range, FormatOptions, BraceStyle, KeywordCasing, BlankLinesBetweenProcedures,
-        lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity,
-        find_object_declaration, ts_range_to_lsp, sort_members,
+        find_object_declaration, format_al, format_range, lint, lint_rules, sort_members,
+        ts_range_to_lsp, AlParser, BlankLinesBetweenProcedures, BraceStyle, FormatOptions,
+        KeywordCasing, LintDiagnostic, LintRuleInfo, LintSeverity, ParseResult, SyntaxError,
     };
     pub mod complexity {
         pub use al_syntax::complexity::{compute_complexity, ProcedureComplexity};
@@ -84,8 +83,7 @@ pub mod symbols {
 /// Re-exports from al-semantic for al-lsp consumption.
 pub mod semantic_types {
     pub use al_semantic::{
-        AnalyzeRequest, CompileResult, CompletionItem, DiagnosticEntry,
-        SemanticBridge,
+        AnalyzeRequest, CompileResult, CompletionItem, DiagnosticEntry, SemanticBridge,
     };
     pub mod cache {
         pub use al_semantic::cache::{read_builtins, read_error_codes};

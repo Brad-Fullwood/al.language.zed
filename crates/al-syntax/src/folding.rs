@@ -42,11 +42,22 @@ fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<Folding
             }
 
             // Multi-line structural nodes: procedures, blocks, sections, control flow
-            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
-            | "begin_end_block" | "object_section" | "object_body" | "braced_block"
-            | "var_section" | "object_var_section"
-            | "if_statement" | "case_statement" | "for_statement" | "foreach_statement"
-            | "while_statement" | "repeat_statement" | "with_statement"
+            "procedure_declaration"
+            | "trigger_declaration"
+            | "event_procedure_declaration"
+            | "begin_end_block"
+            | "object_section"
+            | "object_body"
+            | "braced_block"
+            | "var_section"
+            | "object_var_section"
+            | "if_statement"
+            | "case_statement"
+            | "for_statement"
+            | "foreach_statement"
+            | "while_statement"
+            | "repeat_statement"
+            | "with_statement"
             | "enum_value_declaration" => {
                 if node.start_position().row < node.end_position().row {
                     add_range(node, FoldingRangeKind::Region, source, ranges);
@@ -165,7 +176,11 @@ mod tests {
         let result = parser.parse(src);
         let ranges = extract_folding_ranges(&result.tree, src);
         // Should have ranges for: object body, proc1, begin..end1, proc2, begin..end2
-        assert!(ranges.len() >= 3, "Expected at least 3 folding ranges, got {}", ranges.len());
+        assert!(
+            ranges.len() >= 3,
+            "Expected at least 3 folding ranges, got {}",
+            ranges.len()
+        );
     }
 
     #[test]
@@ -183,7 +198,10 @@ codeunit 50100 Test
             .iter()
             .filter(|r| r.kind == Some(FoldingRangeKind::Comment))
             .collect();
-        assert!(!comment_ranges.is_empty(), "Should have at least one comment folding range");
+        assert!(
+            !comment_ranges.is_empty(),
+            "Should have at least one comment folding range"
+        );
         assert_eq!(comment_ranges[0].start_line, 0);
     }
 
@@ -201,8 +219,13 @@ codeunit 50100 Test
         let result = parser.parse(source);
         let ranges = extract_folding_ranges(&result.tree, source);
         // Should have a comment block fold for the 3 consecutive comment lines
-        let comment_folds: Vec<_> = ranges.iter()
-            .filter(|r| r.kind.as_ref().map_or(false, |k| matches!(k, FoldingRangeKind::Comment)))
+        let comment_folds: Vec<_> = ranges
+            .iter()
+            .filter(|r| {
+                r.kind
+                    .as_ref()
+                    .map_or(false, |k| matches!(k, FoldingRangeKind::Comment))
+            })
             .collect();
         assert!(!comment_folds.is_empty(), "Should have comment block fold");
     }
@@ -220,7 +243,10 @@ codeunit 50100 Test
 }"#;
         let result = parser.parse(source);
         let ranges = extract_folding_ranges(&result.tree, source);
-        assert!(!ranges.is_empty(), "Should have folding ranges for procedure");
+        assert!(
+            !ranges.is_empty(),
+            "Should have folding ranges for procedure"
+        );
     }
 
     #[test]
@@ -230,13 +256,14 @@ codeunit 50100 Test
         let result = parser.parse(source);
         let ranges = extract_folding_ranges(&result.tree, source);
         // A single comment line should NOT produce a comment block fold
-        let single_line_comment_folds: Vec<_> = ranges.iter()
-            .filter(|r| {
-                r.kind == Some(FoldingRangeKind::Comment)
-                    && r.start_line == r.end_line
-            })
+        let single_line_comment_folds: Vec<_> = ranges
+            .iter()
+            .filter(|r| r.kind == Some(FoldingRangeKind::Comment) && r.start_line == r.end_line)
             .collect();
         // Single-line comment blocks should not exist (block must span 2+ lines)
-        assert!(single_line_comment_folds.is_empty(), "Single comment line should not produce fold");
+        assert!(
+            single_line_comment_folds.is_empty(),
+            "Single comment line should not produce fold"
+        );
     }
 }

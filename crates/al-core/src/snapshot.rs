@@ -64,7 +64,10 @@ pub enum SnapshotError {
 
 /// Build a [`reqwest::Client`] configured from the snapshot config.
 fn make_client(config: &SnapshotConfig) -> Result<reqwest::Client, SnapshotError> {
-    Ok(crate::http_auth::build_http_client(config.accept_invalid_certs, 120)?)
+    Ok(crate::http_auth::build_http_client(
+        config.accept_invalid_certs,
+        120,
+    )?)
 }
 
 /// Initiate a snapshot debugging session on the BC server.
@@ -88,7 +91,11 @@ pub async fn start_snapshot(
 
     debug!(url = %url, "snapshot: starting snapshot session");
 
-    let req = crate::http_auth::apply_basic_auth(client.post(&url).json(&body), &config.username, &config.password);
+    let req = crate::http_auth::apply_basic_auth(
+        client.post(&url).json(&body),
+        &config.username,
+        &config.password,
+    );
     let resp = req.send().await?;
     let status = resp.status();
 
@@ -125,7 +132,8 @@ pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>
 
     debug!(url = %url, "snapshot: listing snapshots");
 
-    let req = crate::http_auth::apply_basic_auth(client.get(&url), &config.username, &config.password);
+    let req =
+        crate::http_auth::apply_basic_auth(client.get(&url), &config.username, &config.password);
     let resp = req.send().await?;
     let status = resp.status();
 
@@ -199,7 +207,8 @@ pub async fn download_snapshot(
 
     debug!(url = %url, id = snapshot_id, "snapshot: downloading");
 
-    let req = crate::http_auth::apply_basic_auth(client.get(&url), &config.username, &config.password);
+    let req =
+        crate::http_auth::apply_basic_auth(client.get(&url), &config.username, &config.password);
     let resp = req.send().await?;
     let status = resp.status();
 
@@ -224,7 +233,13 @@ pub async fn download_snapshot(
     // Sanitize snapshot_id for use as a filename: keep only alphanumerics, hyphens, underscores.
     let safe_id: String = snapshot_id
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let file_name = format!("{safe_id}.alvsc");
     let dest = config.output_dir.join(&file_name);
@@ -299,10 +314,7 @@ mod tests {
         };
 
         assert_eq!(entries.len(), 2);
-        assert_eq!(
-            entries[0].get("id").and_then(|v| v.as_str()),
-            Some("s1")
-        );
+        assert_eq!(entries[0].get("id").and_then(|v| v.as_str()), Some("s1"));
         assert_eq!(
             entries[1].get("sizeBytes").and_then(|v| v.as_u64()),
             Some(1024)

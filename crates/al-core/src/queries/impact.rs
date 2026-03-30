@@ -138,7 +138,10 @@ fn check_entry_for_impact(
     // Check properties for SourceTable references
     for prop in &entry.properties {
         if prop.name.eq_ignore_ascii_case("SourceTable")
-            && prop.value.trim_matches('"').eq_ignore_ascii_case(&target_lower)
+            && prop
+                .value
+                .trim_matches('"')
+                .eq_ignore_ascii_case(&target_lower)
         {
             results.push(ImpactEntry {
                 kind: entry.kind,
@@ -162,7 +165,10 @@ fn check_entry_for_impact(
                     let target_obj_arg = attr.arguments.get(1).map(|s| {
                         let s = s.trim();
                         if let Some(pos) = s.find("::") {
-                            s[pos + 2..].trim_matches('"').trim_matches('\'').to_lowercase()
+                            s[pos + 2..]
+                                .trim_matches('"')
+                                .trim_matches('\'')
+                                .to_lowercase()
                         } else {
                             s.trim_matches('"').trim_matches('\'').to_lowercase()
                         }
@@ -190,11 +196,7 @@ fn check_entry_for_impact(
 
             // Check parameter types referencing the target object
             for param in &method.parameters {
-                if param
-                    .type_name
-                    .to_lowercase()
-                    .contains(&target_lower)
-                {
+                if param.type_name.to_lowercase().contains(&target_lower) {
                     results.push(ImpactEntry {
                         kind: entry.kind,
                         id: entry.id,
@@ -246,7 +248,10 @@ fn search_workspace_files(
         if !refs.is_empty() {
             // Determine the object info from this file
             if let Some(obj_info) = al_syntax::find_object_declaration(&tree, &file_text) {
-                let kind = obj_info.kind.parse::<ObjectKind>().unwrap_or(ObjectKind::Codeunit);
+                let kind = obj_info
+                    .kind
+                    .parse::<ObjectKind>()
+                    .unwrap_or(ObjectKind::Codeunit);
                 let id = obj_info.id.unwrap_or(0) as i32;
 
                 results.push(ImpactEntry {
@@ -355,8 +360,9 @@ mod tests {
         let results = impact(&ws, "Customer");
 
         assert!(
-            results.iter().any(|r| r.name == "Cust Ext"
-                && r.impact_type == ImpactType::Extends),
+            results
+                .iter()
+                .any(|r| r.name == "Cust Ext" && r.impact_type == ImpactType::Extends),
             "Expected extension to be found. Got: {:?}",
             results
         );
@@ -373,8 +379,9 @@ mod tests {
         let results = impact(&ws, "Customer");
 
         assert!(
-            results.iter().any(|r| r.name == "Customer Card"
-                && r.impact_type == ImpactType::Display),
+            results
+                .iter()
+                .any(|r| r.name == "Customer Card" && r.impact_type == ImpactType::Display),
             "Expected page with SourceTable=Customer to be found. Got: {:?}",
             results
         );
@@ -398,8 +405,9 @@ mod tests {
         let results = impact(&ws, "Customer");
 
         assert!(
-            results.iter().any(|r| r.name == "My Codeunit"
-                && r.impact_type == ImpactType::Read),
+            results
+                .iter()
+                .any(|r| r.name == "My Codeunit" && r.impact_type == ImpactType::Read),
             "Expected workspace file referencing Customer. Got: {:?}",
             results
         );
@@ -441,10 +449,8 @@ mod tests {
                 value: "Customer".to_string(),
             }],
         }];
-        ws.symbols.add_entries(&[
-            make_table(18, "Customer"),
-            sales_header,
-        ]);
+        ws.symbols
+            .add_entries(&[make_table(18, "Customer"), sales_header]);
 
         let results = impact(&ws, "Customer.\"No.\"");
 

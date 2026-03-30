@@ -1,33 +1,35 @@
 //! AL syntax layer — tree-sitter parsing, AST navigation, formatting, lint.
 
-pub mod parser;
-pub mod navigation;
+pub mod complexity;
+pub mod context;
+pub mod folding;
 pub mod formatting;
+pub mod language_data;
 pub mod lint;
+pub mod navigation;
+pub mod parser;
+pub mod sort;
 pub mod symbols;
 pub mod tokens;
-pub mod folding;
-pub mod type_resolver;
-pub mod context;
-pub mod complexity;
-pub mod sort;
 pub mod traversal;
-pub mod language_data;
+pub mod type_resolver;
 
-pub use parser::{AlParser, ParseResult, SyntaxError};
-pub use formatting::{format_al, format_range, FormatOptions, KeywordCasing, BlankLinesBetweenProcedures, BraceStyle};
-pub use sort::sort_members;
+pub use context::{detect_context, extract_last_identifier, find_call_context, CompletionContext};
+pub use folding::extract_folding_ranges;
+pub use formatting::{
+    format_al, format_range, BlankLinesBetweenProcedures, BraceStyle, FormatOptions, KeywordCasing,
+};
 pub use lint::{lint, lint_rules, LintDiagnostic, LintRuleInfo, LintSeverity};
+pub use navigation::{
+    find_call_references, find_node_at_position, find_object_declaration, find_procedure_at,
+    find_variable_references, ObjectInfo, ParameterInfo, ProcedureInfo,
+};
+pub use parser::{AlParser, ParseResult, SyntaxError};
+pub use sort::sort_members;
 pub use symbols::extract_document_symbols;
 pub use tokens::{extract_semantic_tokens, SemanticToken};
-pub use folding::extract_folding_ranges;
-pub use navigation::{
-    find_node_at_position, find_object_declaration, find_procedure_at,
-    find_variable_references, find_call_references, ObjectInfo, ProcedureInfo, ParameterInfo,
-};
-pub use type_resolver::{TypeResolver, VariableDecl, VariableScope, object_kind_to_al_type};
-pub use context::{detect_context, extract_last_identifier, find_call_context, CompletionContext};
 pub use traversal::{walk_tree, walk_tree_until};
+pub use type_resolver::{object_kind_to_al_type, TypeResolver, VariableDecl, VariableScope};
 
 /// Convert a byte-offset column (as produced by tree-sitter) within a UTF-8 line to a
 /// UTF-16 code unit column (as required by the LSP specification).

@@ -28,12 +28,11 @@ pub fn compute_complexity(tree: &Tree, text: &str) -> Vec<ProcedureComplexity> {
     results
 }
 
-fn collect_procedure_complexity(
-    node: Node,
-    source: &[u8],
-    results: &mut Vec<ProcedureComplexity>,
-) {
-    if matches!(node.kind(), "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration") {
+fn collect_procedure_complexity(node: Node, source: &[u8], results: &mut Vec<ProcedureComplexity>) {
+    if matches!(
+        node.kind(),
+        "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+    ) {
         let name = node
             .child_by_field_name("name")
             .and_then(|n| n.utf8_text(source).ok())
@@ -45,7 +44,12 @@ fn collect_procedure_complexity(
         let cyclomatic = compute_cyclomatic(node, source);
         let cognitive = compute_cognitive(node, source, 0);
 
-        results.push(ProcedureComplexity { name, cyclomatic, cognitive, line });
+        results.push(ProcedureComplexity {
+            name,
+            cyclomatic,
+            cognitive,
+            line,
+        });
         return;
     }
 
@@ -65,7 +69,9 @@ fn compute_cyclomatic(proc_node: Node, source: &[u8]) -> u32 {
 fn count_cyclomatic_decisions(node: Node, source: &[u8], count: &mut u32) {
     match node.kind() {
         "if_statement" | "empty_if_statement" => *count += 1,
-        "for_statement" | "foreach_statement" | "while_statement" | "repeat_statement" => *count += 1,
+        "for_statement" | "foreach_statement" | "while_statement" | "repeat_statement" => {
+            *count += 1
+        }
         "case_statement" => {
             // Each case arm adds a branch
             let mut cursor = node.walk();
@@ -187,7 +193,11 @@ mod tests {
 }"#;
         let metrics = complexity_for(src);
         assert_eq!(metrics.len(), 1);
-        assert!(metrics[0].cyclomatic >= 2, "if adds 1: got {}", metrics[0].cyclomatic);
+        assert!(
+            metrics[0].cyclomatic >= 2,
+            "if adds 1: got {}",
+            metrics[0].cyclomatic
+        );
     }
 
     #[test]
@@ -207,7 +217,11 @@ mod tests {
         let metrics = complexity_for(src);
         assert_eq!(metrics.len(), 1);
         // Outer if: +1 (nesting=0), inner if: +1+1 (nesting=1) = total 3
-        assert!(metrics[0].cognitive >= 3, "Nested if should have higher cognitive: got {}", metrics[0].cognitive);
+        assert!(
+            metrics[0].cognitive >= 3,
+            "Nested if should have higher cognitive: got {}",
+            metrics[0].cognitive
+        );
     }
 
     #[test]

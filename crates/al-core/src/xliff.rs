@@ -89,7 +89,10 @@ pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> 
     let mut units = Vec::new();
 
     // Iterate all indexed .al files
-    let mut paths: Vec<_> = workspace.file_index.files.iter()
+    let mut paths: Vec<_> = workspace
+        .file_index
+        .files
+        .iter()
         .map(|e| e.key().clone())
         .collect();
     paths.sort(); // deterministic order
@@ -129,7 +132,9 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
         // Caption = 'text';
         if let Some(caption) = parse_property_value(trimmed, "Caption") {
             let context = current_field.as_deref().unwrap_or(&obj_name);
-            let id = make_translation_id(&obj_type, obj_id, &obj_name, "Caption", field_id, context, path);
+            let id = make_translation_id(
+                &obj_type, obj_id, &obj_name, "Caption", field_id, context, path,
+            );
             units.push(TranslationUnit {
                 id,
                 object_type: obj_type.clone(),
@@ -145,7 +150,9 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
         // ToolTip = 'text';
         if let Some(tooltip) = parse_property_value(trimmed, "ToolTip") {
             let context = current_field.as_deref().unwrap_or(&obj_name);
-            let id = make_translation_id(&obj_type, obj_id, &obj_name, "ToolTip", field_id, context, path);
+            let id = make_translation_id(
+                &obj_type, obj_id, &obj_name, "ToolTip", field_id, context, path,
+            );
             units.push(TranslationUnit {
                 id,
                 object_type: obj_type.clone(),
@@ -180,10 +187,22 @@ fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
     // Extension types MUST appear before their base types so that `starts_with` doesn't
     // falsely match "tableextension" as "table", "pageextension" as "page", etc.
     let object_types = [
-        "tableextension", "pageextension", "reportextension", "enumextension",
-        "permissionsetextension", "profileextension",
-        "table", "page", "codeunit", "report", "query", "xmlport",
-        "enum", "interface", "permissionset", "profile",
+        "tableextension",
+        "pageextension",
+        "reportextension",
+        "enumextension",
+        "permissionsetextension",
+        "profileextension",
+        "table",
+        "page",
+        "codeunit",
+        "report",
+        "query",
+        "xmlport",
+        "enum",
+        "interface",
+        "permissionset",
+        "profile",
     ];
     for line in text.lines().take(10) {
         let lower = line.trim().to_lowercase();
@@ -191,7 +210,8 @@ fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
             // Require a word boundary after the keyword (space, tab, or digit) to avoid
             // false prefix matches like "pagepart" matching "page".
             if let Some(after) = lower.strip_prefix(ot) {
-                let boundary = after.starts_with(|c: char| c.is_ascii_whitespace() || c.is_ascii_digit());
+                let boundary =
+                    after.starts_with(|c: char| c.is_ascii_whitespace() || c.is_ascii_digit());
                 if !boundary {
                     continue;
                 }
@@ -199,7 +219,11 @@ fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
                 let rest = line.trim()[ot.len()..].trim();
                 let (id_str, rest2) = split_id_and_name(rest);
                 let id: u32 = id_str.parse().unwrap_or(0);
-                let name = rest2.trim().trim_matches('"').trim_matches('\'').to_string();
+                let name = rest2
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
                 if !name.is_empty() || id > 0 {
                     return Some((capitalize(ot), id, name));
                 }
@@ -301,17 +325,28 @@ fn extract_single_quoted(s: &str) -> Option<String> {
             result.push(ch);
         }
     }
-    if result.is_empty() { None } else { Some(result) }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 /// Build a deterministic translation unit ID.
 fn make_translation_id(
-    obj_type: &str, obj_id: u32, obj_name: &str,
-    property: &str, field_id: u32, context: &str,
+    obj_type: &str,
+    obj_id: u32,
+    obj_name: &str,
+    property: &str,
+    field_id: u32,
+    context: &str,
     _path: &Path,
 ) -> String {
     if field_id > 0 {
-        format!("{} {} {} - {} {} - {}", obj_type, obj_id, obj_name, property, field_id, context)
+        format!(
+            "{} {} {} - {} {} - {}",
+            obj_type, obj_id, obj_name, property, field_id, context
+        )
     } else {
         format!("{} {} {} - {}", obj_type, obj_id, obj_name, property)
     }
@@ -319,8 +354,12 @@ fn make_translation_id(
 
 /// Build an ID for a Label variable.
 fn make_label_id(
-    obj_type: &str, obj_id: u32, obj_name: &str,
-    _field_id: u32, _path: &Path, index: usize,
+    obj_type: &str,
+    obj_id: u32,
+    obj_name: &str,
+    _field_id: u32,
+    _path: &Path,
+    index: usize,
 ) -> String {
     format!("{} {} {} - Label {}", obj_type, obj_id, obj_name, index)
 }
@@ -346,7 +385,8 @@ pub fn generate_xliff(
 
     xml.push_str(&format!(
         "  <file datatype=\"xml\" source-language=\"{}\" target-language=\"{}\" ",
-        xml_escape(source_language), xml_escape(target_language)
+        xml_escape(source_language),
+        xml_escape(target_language)
     ));
     xml.push_str(&format!("original=\"{}\">\n", xml_escape(app_name)));
     xml.push_str("    <body>\n");
@@ -374,10 +414,7 @@ pub fn generate_xliff(
             ));
         }
         if let Some(note) = &unit.note {
-            xml.push_str(&format!(
-                "          <note>{}</note>\n",
-                xml_escape(note)
-            ));
+            xml.push_str(&format!("          <note>{}</note>\n", xml_escape(note)));
         }
         xml.push_str("        </trans-unit>\n");
     }
@@ -472,7 +509,11 @@ fn extract_xml_text(tag: &str) -> Option<String> {
     }
     let content_end = content.find('<').unwrap_or(content.len());
     let raw = &content[..content_end];
-    if raw.is_empty() { None } else { Some(xml_unescape(raw)) }
+    if raw.is_empty() {
+        None
+    } else {
+        Some(xml_unescape(raw))
+    }
 }
 
 fn xml_unescape(s: &str) -> String {
@@ -568,8 +609,14 @@ pub fn refresh_xliff(
 ///
 /// Returns units where `target` is `None` or empty, sorted by object type and ID.
 pub fn find_untranslated(units: &[TranslationUnit]) -> Vec<&TranslationUnit> {
-    units.iter()
-        .filter(|u| u.target.as_deref().map(|t| t.trim().is_empty()).unwrap_or(true))
+    units
+        .iter()
+        .filter(|u| {
+            u.target
+                .as_deref()
+                .map(|t| t.trim().is_empty())
+                .unwrap_or(true)
+        })
         .filter(|u| u.state != TranslationState::Final)
         .collect()
 }
@@ -627,7 +674,10 @@ pub fn suggest_translations(
                         source: unit.source.clone(),
                         suggested_translation: field.name.clone(),
                         confidence: 0.9,
-                        source_object: format!("{:?} {} - Field {}", entry.kind, entry.name, field.name),
+                        source_object: format!(
+                            "{:?} {} - Field {}",
+                            entry.kind, entry.name, field.name
+                        ),
                     });
                 }
             }
@@ -635,7 +685,11 @@ pub fn suggest_translations(
     }
 
     // Sort by confidence descending
-    suggestions.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    suggestions.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     suggestions
 }
 
@@ -670,7 +724,9 @@ pub fn build_xliff(workspace: &Workspace, project_root: &Path) -> Option<(PathBu
 fn read_app_name(project_root: &Path) -> Option<String> {
     let bytes = std::fs::read(project_root.join("app.json")).ok()?;
     let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    v.get("name")?.as_str().map(|s| s.replace([' ', '"', '\''], ""))
+    v.get("name")?
+        .as_str()
+        .map(|s| s.replace([' ', '"', '\''], ""))
 }
 
 // ---------------------------------------------------------------------------
@@ -683,8 +739,14 @@ mod tests {
 
     #[test]
     fn test_extract_single_quoted() {
-        assert_eq!(extract_single_quoted("'Hello world'"), Some("Hello world".to_string()));
-        assert_eq!(extract_single_quoted("'It''s a test'"), Some("It's a test".to_string()));
+        assert_eq!(
+            extract_single_quoted("'Hello world'"),
+            Some("Hello world".to_string())
+        );
+        assert_eq!(
+            extract_single_quoted("'It''s a test'"),
+            Some("It's a test".to_string())
+        );
         assert_eq!(extract_single_quoted("''"), None);
         assert_eq!(extract_single_quoted("no quotes"), None);
     }
@@ -752,10 +814,7 @@ mod tests {
         let parsed = parse_xliff(&xml);
         assert_eq!(parsed.len(), 2);
         assert!(parsed.contains_key("Table 50100 MyTable - Caption"));
-        assert_eq!(
-            parsed["Table 50100 MyTable - Caption"].source,
-            "My Table"
-        );
+        assert_eq!(parsed["Table 50100 MyTable - Caption"].source, "My Table");
         let translated = &parsed["Table 50100 MyTable - ToolTip 10 Name"];
         assert_eq!(translated.target.as_deref(), Some("Gibt den Namen an"));
         assert_eq!(translated.state, TranslationState::Translated);
@@ -787,26 +846,32 @@ mod tests {
         ];
 
         let mut existing: HashMap<String, TranslationUnit> = HashMap::new();
-        existing.insert("T2".to_string(), TranslationUnit {
-            id: "T2".to_string(),
-            object_type: "Table".to_string(),
-            object_id: 1,
-            object_name: "T".to_string(),
-            source: "World".to_string(),  // old source
-            target: Some("Welt".to_string()),
-            state: TranslationState::Translated,
-            note: None,
-        });
-        existing.insert("T_OLD".to_string(), TranslationUnit {
-            id: "T_OLD".to_string(),
-            object_type: "Table".to_string(),
-            object_id: 1,
-            object_name: "T".to_string(),
-            source: "Obsolete".to_string(),
-            target: Some("Veraltet".to_string()),
-            state: TranslationState::Translated,
-            note: None,
-        });
+        existing.insert(
+            "T2".to_string(),
+            TranslationUnit {
+                id: "T2".to_string(),
+                object_type: "Table".to_string(),
+                object_id: 1,
+                object_name: "T".to_string(),
+                source: "World".to_string(), // old source
+                target: Some("Welt".to_string()),
+                state: TranslationState::Translated,
+                note: None,
+            },
+        );
+        existing.insert(
+            "T_OLD".to_string(),
+            TranslationUnit {
+                id: "T_OLD".to_string(),
+                object_type: "Table".to_string(),
+                object_id: 1,
+                object_name: "T".to_string(),
+                source: "Obsolete".to_string(),
+                target: Some("Veraltet".to_string()),
+                state: TranslationState::Translated,
+                note: None,
+            },
+        );
 
         let (updated, result) = refresh_xliff(&generated, &existing);
 
@@ -890,10 +955,24 @@ mod tests {
 }"#;
         let mut units = Vec::new();
         extract_from_file(Path::new("test.al"), al, &mut units);
-        assert!(units.iter().any(|u| u.source == "Name"), "Should extract Caption 'Name'");
-        assert!(units.iter().any(|u| u.source == "Specifies the name of the record."), "Should extract ToolTip");
-        assert!(units.iter().any(|u| u.source == "This is a label"), "Should extract Label");
-        assert!(units.iter().any(|u| u.source == "Description"), "Should extract Caption 'Description'");
+        assert!(
+            units.iter().any(|u| u.source == "Name"),
+            "Should extract Caption 'Name'"
+        );
+        assert!(
+            units
+                .iter()
+                .any(|u| u.source == "Specifies the name of the record."),
+            "Should extract ToolTip"
+        );
+        assert!(
+            units.iter().any(|u| u.source == "This is a label"),
+            "Should extract Label"
+        );
+        assert!(
+            units.iter().any(|u| u.source == "Description"),
+            "Should extract Caption 'Description'"
+        );
     }
 
     fn make_test_unit(source: &str) -> TranslationUnit {
@@ -914,7 +993,10 @@ mod tests {
         let ws = crate::workspace::Workspace::new();
         let unit = make_test_unit("Customer");
         let result = suggest_translations(&[&unit], &ws);
-        assert!(result.is_empty(), "empty workspace should produce no suggestions");
+        assert!(
+            result.is_empty(),
+            "empty workspace should produce no suggestions"
+        );
     }
 
     #[test]
@@ -930,6 +1012,9 @@ mod tests {
         let unit = make_test_unit("Customer");
         let result = suggest_translations(&[&unit], &ws);
         assert!(!result.is_empty(), "should find exact match suggestion");
-        assert_eq!(result[0].confidence, 1.0, "exact match should have confidence 1.0");
+        assert_eq!(
+            result[0].confidence, 1.0,
+            "exact match should have confidence 1.0"
+        );
     }
 }

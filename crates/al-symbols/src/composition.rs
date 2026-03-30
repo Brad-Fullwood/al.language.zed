@@ -12,11 +12,7 @@ use crate::model::{ComposedObject, ObjectKind, SymbolEntry};
 /// Get a composed view of an object by merging the base with all extensions.
 ///
 /// Returns `None` if no base object with the given kind and name is found.
-pub fn get_composed(
-    index: &SymbolIndex,
-    kind: ObjectKind,
-    name: &str,
-) -> Option<ComposedObject> {
+pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option<ComposedObject> {
     // Don't compose extension objects themselves
     if kind.is_extension() {
         return None;
@@ -76,7 +72,12 @@ mod tests {
     use super::*;
     use crate::model::*;
 
-    fn make_table(id: i32, name: &str, fields: Vec<FieldSymbol>, methods: Vec<MethodSymbol>) -> SymbolEntry {
+    fn make_table(
+        id: i32,
+        name: &str,
+        fields: Vec<FieldSymbol>,
+        methods: Vec<MethodSymbol>,
+    ) -> SymbolEntry {
         SymbolEntry {
             kind: ObjectKind::Table,
             id,
@@ -95,7 +96,13 @@ mod tests {
         }
     }
 
-    fn make_table_ext(id: i32, name: &str, extends: &str, fields: Vec<FieldSymbol>, methods: Vec<MethodSymbol>) -> SymbolEntry {
+    fn make_table_ext(
+        id: i32,
+        name: &str,
+        extends: &str,
+        fields: Vec<FieldSymbol>,
+        methods: Vec<MethodSymbol>,
+    ) -> SymbolEntry {
         SymbolEntry {
             kind: ObjectKind::TableExtension,
             id,
@@ -133,7 +140,12 @@ mod tests {
         }
     }
 
-    fn make_enum_ext(id: i32, name: &str, extends: &str, values: Vec<EnumValueSymbol>) -> SymbolEntry {
+    fn make_enum_ext(
+        id: i32,
+        name: &str,
+        extends: &str,
+        values: Vec<EnumValueSymbol>,
+    ) -> SymbolEntry {
         SymbolEntry {
             kind: ObjectKind::EnumExtension,
             id,
@@ -156,32 +168,61 @@ mod tests {
     fn compose_table_with_extensions() {
         let index = SymbolIndex::new();
         index.add_entries(&[
-            make_table(18, "Customer", vec![
-                FieldSymbol { id: 1, name: "No.".into(), type_name: "Code".into(), properties: vec![] },
-                FieldSymbol { id: 2, name: "Name".into(), type_name: "Text".into(), properties: vec![] },
-            ], vec![
-                MethodSymbol {
+            make_table(
+                18,
+                "Customer",
+                vec![
+                    FieldSymbol {
+                        id: 1,
+                        name: "No.".into(),
+                        type_name: "Code".into(),
+                        properties: vec![],
+                    },
+                    FieldSymbol {
+                        id: 2,
+                        name: "Name".into(),
+                        type_name: "Text".into(),
+                        properties: vec![],
+                    },
+                ],
+                vec![MethodSymbol {
                     name: "GetFullName".into(),
                     parameters: Vec::new(),
                     return_type: Some("Text".into()),
                     attributes: Vec::new(),
                     is_local: false,
-                },
-            ]),
-            make_table_ext(50100, "Cust Ext 1", "Customer", vec![
-                FieldSymbol { id: 50100, name: "Custom Field".into(), type_name: "Boolean".into(), properties: vec![] },
-            ], vec![
-                MethodSymbol {
+                }],
+            ),
+            make_table_ext(
+                50100,
+                "Cust Ext 1",
+                "Customer",
+                vec![FieldSymbol {
+                    id: 50100,
+                    name: "Custom Field".into(),
+                    type_name: "Boolean".into(),
+                    properties: vec![],
+                }],
+                vec![MethodSymbol {
                     name: "GetCustomValue".into(),
                     parameters: Vec::new(),
                     return_type: Some("Boolean".into()),
                     attributes: Vec::new(),
                     is_local: false,
-                },
-            ]),
-            make_table_ext(50101, "Cust Ext 2", "Customer", vec![
-                FieldSymbol { id: 50101, name: "Another Field".into(), type_name: "Integer".into(), properties: vec![] },
-            ], Vec::new()),
+                }],
+            ),
+            make_table_ext(
+                50101,
+                "Cust Ext 2",
+                "Customer",
+                vec![FieldSymbol {
+                    id: 50101,
+                    name: "Another Field".into(),
+                    type_name: "Integer".into(),
+                    properties: vec![],
+                }],
+                Vec::new(),
+            ),
         ]);
 
         let composed = get_composed(&index, ObjectKind::Table, "Customer").unwrap();
@@ -200,13 +241,29 @@ mod tests {
     fn compose_enum_with_extension() {
         let index = SymbolIndex::new();
         index.add_entries(&[
-            make_enum(50100, "Status", vec![
-                EnumValueSymbol { ordinal: 0, name: "Open".into() },
-                EnumValueSymbol { ordinal: 1, name: "Released".into() },
-            ]),
-            make_enum_ext(50100, "Status Ext", "Status", vec![
-                EnumValueSymbol { ordinal: 10, name: "Custom".into() },
-            ]),
+            make_enum(
+                50100,
+                "Status",
+                vec![
+                    EnumValueSymbol {
+                        ordinal: 0,
+                        name: "Open".into(),
+                    },
+                    EnumValueSymbol {
+                        ordinal: 1,
+                        name: "Released".into(),
+                    },
+                ],
+            ),
+            make_enum_ext(
+                50100,
+                "Status Ext",
+                "Status",
+                vec![EnumValueSymbol {
+                    ordinal: 10,
+                    name: "Custom".into(),
+                }],
+            ),
         ]);
 
         let composed = get_composed(&index, ObjectKind::Enum, "Status").unwrap();
@@ -224,20 +281,30 @@ mod tests {
     #[test]
     fn compose_extension_kind_returns_none() {
         let index = SymbolIndex::new();
-        index.add_entries(&[
-            make_table_ext(50100, "Ext", "Customer", Vec::new(), Vec::new()),
-        ]);
+        index.add_entries(&[make_table_ext(
+            50100,
+            "Ext",
+            "Customer",
+            Vec::new(),
+            Vec::new(),
+        )]);
         assert!(get_composed(&index, ObjectKind::TableExtension, "Ext").is_none());
     }
 
     #[test]
     fn compose_no_extensions() {
         let index = SymbolIndex::new();
-        index.add_entries(&[
-            make_table(50100, "Standalone", vec![
-                FieldSymbol { id: 1, name: "F1".into(), type_name: "Text".into(), properties: vec![] },
-            ], Vec::new()),
-        ]);
+        index.add_entries(&[make_table(
+            50100,
+            "Standalone",
+            vec![FieldSymbol {
+                id: 1,
+                name: "F1".into(),
+                type_name: "Text".into(),
+                properties: vec![],
+            }],
+            Vec::new(),
+        )]);
 
         let composed = get_composed(&index, ObjectKind::Table, "Standalone").unwrap();
         assert!(composed.extensions.is_empty());
@@ -252,16 +319,37 @@ mod tests {
     fn cached_composed_returns_same_arc() {
         let index = SymbolIndex::new();
         index.add_entries(&[
-            make_table(18, "Customer", vec![
-                FieldSymbol { id: 1, name: "No.".into(), type_name: "Code".into(), properties: vec![] },
-            ], Vec::new()),
-            make_table_ext(50100, "Ext1", "Customer", vec![
-                FieldSymbol { id: 50100, name: "Custom".into(), type_name: "Boolean".into(), properties: vec![] },
-            ], Vec::new()),
+            make_table(
+                18,
+                "Customer",
+                vec![FieldSymbol {
+                    id: 1,
+                    name: "No.".into(),
+                    type_name: "Code".into(),
+                    properties: vec![],
+                }],
+                Vec::new(),
+            ),
+            make_table_ext(
+                50100,
+                "Ext1",
+                "Customer",
+                vec![FieldSymbol {
+                    id: 50100,
+                    name: "Custom".into(),
+                    type_name: "Boolean".into(),
+                    properties: vec![],
+                }],
+                Vec::new(),
+            ),
         ]);
 
-        let a = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
-        let b = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        let a = index
+            .get_composed_cached(ObjectKind::Table, "Customer")
+            .unwrap();
+        let b = index
+            .get_composed_cached(ObjectKind::Table, "Customer")
+            .unwrap();
         // Same Arc pointer — no recomputation
         assert!(Arc::ptr_eq(&a, &b));
     }
@@ -269,15 +357,25 @@ mod tests {
     #[test]
     fn invalidate_composed_clears_cache() {
         let index = SymbolIndex::new();
-        index.add_entries(&[
-            make_table(18, "Customer", vec![
-                FieldSymbol { id: 1, name: "No.".into(), type_name: "Code".into(), properties: vec![] },
-            ], Vec::new()),
-        ]);
+        index.add_entries(&[make_table(
+            18,
+            "Customer",
+            vec![FieldSymbol {
+                id: 1,
+                name: "No.".into(),
+                type_name: "Code".into(),
+                properties: vec![],
+            }],
+            Vec::new(),
+        )]);
 
-        let a = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        let a = index
+            .get_composed_cached(ObjectKind::Table, "Customer")
+            .unwrap();
         index.invalidate_composed("Customer");
-        let b = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        let b = index
+            .get_composed_cached(ObjectKind::Table, "Customer")
+            .unwrap();
         // Different Arc — cache was invalidated, recomputed
         assert!(!Arc::ptr_eq(&a, &b));
         // But data is the same
@@ -292,8 +390,12 @@ mod tests {
             make_table(27, "Item", Vec::new(), Vec::new()),
         ]);
 
-        let _a = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
-        let _b = index.get_composed_cached(ObjectKind::Table, "Item").unwrap();
+        let _a = index
+            .get_composed_cached(ObjectKind::Table, "Customer")
+            .unwrap();
+        let _b = index
+            .get_composed_cached(ObjectKind::Table, "Item")
+            .unwrap();
         assert!(!index.is_composed_cache_empty());
 
         index.invalidate_all_composed();
@@ -305,18 +407,31 @@ mod tests {
         let index = SymbolIndex::new();
 
         // Base table with a few fields
-        let mut entries = vec![make_table(18, "Customer", vec![
-            FieldSymbol { id: 1, name: "No.".into(), type_name: "Code".into(), properties: vec![] },
-            FieldSymbol { id: 2, name: "Name".into(), type_name: "Text".into(), properties: vec![] },
-        ], vec![
-            MethodSymbol {
+        let mut entries = vec![make_table(
+            18,
+            "Customer",
+            vec![
+                FieldSymbol {
+                    id: 1,
+                    name: "No.".into(),
+                    type_name: "Code".into(),
+                    properties: vec![],
+                },
+                FieldSymbol {
+                    id: 2,
+                    name: "Name".into(),
+                    type_name: "Text".into(),
+                    properties: vec![],
+                },
+            ],
+            vec![MethodSymbol {
                 name: "GetBalance".into(),
                 parameters: Vec::new(),
                 return_type: Some("Decimal".into()),
                 attributes: Vec::new(),
                 is_local: false,
-            },
-        ])];
+            }],
+        )];
 
         // 15 extensions, each adding a field and a method
         for i in 0..15 {
@@ -343,18 +458,30 @@ mod tests {
 
         // First call (cold cache): should be fast
         let start = std::time::Instant::now();
-        let composed = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        let composed = index
+            .get_composed_cached(ObjectKind::Table, "Customer")
+            .unwrap();
         let cold_elapsed = start.elapsed();
 
         assert_eq!(composed.all_fields.len(), 17); // 2 base + 15 ext
         assert_eq!(composed.all_methods.len(), 16); // 1 base + 15 ext
         assert_eq!(composed.extensions.len(), 15);
-        assert!(cold_elapsed.as_millis() < 5, "Cold compose took {}ms", cold_elapsed.as_millis());
+        assert!(
+            cold_elapsed.as_millis() < 5,
+            "Cold compose took {}ms",
+            cold_elapsed.as_millis()
+        );
 
         // Second call (warm cache): should be near-instant
         let start = std::time::Instant::now();
-        let _cached = index.get_composed_cached(ObjectKind::Table, "Customer").unwrap();
+        let _cached = index
+            .get_composed_cached(ObjectKind::Table, "Customer")
+            .unwrap();
         let warm_elapsed = start.elapsed();
-        assert!(warm_elapsed.as_micros() < 100, "Warm compose took {}µs", warm_elapsed.as_micros());
+        assert!(
+            warm_elapsed.as_micros() < 100,
+            "Warm compose took {}µs",
+            warm_elapsed.as_micros()
+        );
     }
 }

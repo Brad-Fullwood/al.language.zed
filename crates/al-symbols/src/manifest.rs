@@ -54,9 +54,8 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
                 let local_name = e.local_name();
                 if local_name.as_ref() == b"App" {
                     for attr in e.attributes() {
-                        let attr = attr.map_err(|e| {
-                            ManifestError::InvalidAttribute(format!("{e}"))
-                        })?;
+                        let attr =
+                            attr.map_err(|e| ManifestError::InvalidAttribute(format!("{e}")))?;
                         let local = attr.key.local_name();
                         let key = std::str::from_utf8(local.as_ref())?;
                         let val = std::str::from_utf8(&attr.value)?;
@@ -78,14 +77,11 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
     }
 
     Ok(NavxManifest {
-        app_id: app_id
-            .ok_or_else(|| ManifestError::MissingElement("App/@Id".into()))?,
-        name: name
-            .ok_or_else(|| ManifestError::MissingElement("App/@Name".into()))?,
+        app_id: app_id.ok_or_else(|| ManifestError::MissingElement("App/@Id".into()))?,
+        name: name.ok_or_else(|| ManifestError::MissingElement("App/@Name".into()))?,
         publisher: publisher
             .ok_or_else(|| ManifestError::MissingElement("App/@Publisher".into()))?,
-        version: version
-            .ok_or_else(|| ManifestError::MissingElement("App/@Version".into()))?,
+        version: version.ok_or_else(|| ManifestError::MissingElement("App/@Version".into()))?,
     })
 }
 

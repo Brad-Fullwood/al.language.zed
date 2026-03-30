@@ -1,8 +1,8 @@
 //! AST navigation helpers for AL tree-sitter trees.
 
+use crate::traversal::walk_tree;
 pub use tower_lsp::lsp_types::Position;
 use tree_sitter::{Node, Tree};
-use crate::traversal::walk_tree;
 
 /// Find the most specific node at a given position.
 pub fn find_node_at_position(tree: &Tree, pos: Position) -> Option<Node<'_>> {
@@ -88,7 +88,10 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
                     }
                 } else {
                     // Strip kw_ prefix
-                    kind_str = kind_str.strip_prefix("kw_").unwrap_or(&kind_str).to_string();
+                    kind_str = kind_str
+                        .strip_prefix("kw_")
+                        .unwrap_or(&kind_str)
+                        .to_string();
                 }
             }
 
@@ -230,12 +233,7 @@ pub fn find_call_references(tree: &Tree, text: &str, name: &str) -> usize {
     count
 }
 
-fn count_call_refs_recursive(
-    root: Node,
-    source: &[u8],
-    target_name: &str,
-    count: &mut usize,
-) {
+fn count_call_refs_recursive(root: Node, source: &[u8], target_name: &str, count: &mut usize) {
     walk_tree(root, &mut |node| {
         // Check if this node is an identifier matching the target name
         if matches!(node.kind(), "identifier" | "quoted_identifier") {
@@ -276,7 +274,9 @@ fn is_call_reference(node: Node, _source: &[u8]) -> bool {
     };
     // The immediate parent should be a `name` node (or could be directly in member_call_suffix)
     let parent = if name_node.kind() == "name" {
-        let Some(p) = name_node.parent() else { return false; };
+        let Some(p) = name_node.parent() else {
+            return false;
+        };
         p
     } else {
         name_node
@@ -287,12 +287,16 @@ fn is_call_reference(node: Node, _source: &[u8]) -> bool {
         "primary_expression" => {
             // The primary_expression must be a child of postfix_expression,
             // and that postfix_expression must also have a call_suffix child.
-            let Some(postfix) = parent.parent() else { return false; };
+            let Some(postfix) = parent.parent() else {
+                return false;
+            };
             if postfix.kind() != "postfix_expression" {
                 return false;
             }
             let mut cursor = postfix.walk();
-            let has_call_suffix = postfix.children(&mut cursor).any(|c| c.kind() == "call_suffix");
+            let has_call_suffix = postfix
+                .children(&mut cursor)
+                .any(|c| c.kind() == "call_suffix");
             has_call_suffix
         }
         // Member call: cu.ProcName()
@@ -406,14 +410,19 @@ mod tests {
             let indent = "  ".repeat(depth);
             let text = node.utf8_text(src.as_bytes()).unwrap_or("??");
             let short = if text.len() > 50 { &text[..50] } else { text };
-            eprintln!("{}{} [{}] field={:?} text={:?}",
-                indent, node.kind(), node.id(),
+            eprintln!(
+                "{}{} [{}] field={:?} text={:?}",
+                indent,
+                node.kind(),
+                node.id(),
                 node.parent().and_then(|p| {
                     (0..p.child_count()).find_map(|i| {
-                        p.field_name_for_child(i as u32).filter(|_| p.child(i).map(|c| c.id()) == Some(node.id()))
+                        p.field_name_for_child(i as u32)
+                            .filter(|_| p.child(i).map(|c| c.id()) == Some(node.id()))
                     })
                 }),
-                short);
+                short
+            );
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 dump(child, src, depth + 1);
@@ -474,7 +483,11 @@ mod tests {
         let result = parser.parse(src);
         let refs = find_variable_references(&result.tree, src, "MyVar");
         // Should find multiple references to MyVar
-        assert!(refs.len() >= 2, "Expected at least 2 references, got {}", refs.len());
+        assert!(
+            refs.len() >= 2,
+            "Expected at least 2 references, got {}",
+            refs.len()
+        );
     }
 
     #[test]
@@ -484,7 +497,13 @@ mod tests {
 }"#;
         let mut parser = AlParser::new();
         let result = parser.parse(src);
-        let node = find_node_at_position(&result.tree, Position { line: 0, character: 0 });
+        let node = find_node_at_position(
+            &result.tree,
+            Position {
+                line: 0,
+                character: 0,
+            },
+        );
         assert!(node.is_some());
     }
 
@@ -492,10 +511,16 @@ mod tests {
     fn test_find_node_at_position_out_of_range() {
         let mut parser = AlParser::new();
         let result = parser.parse("codeunit 50100 Test { }");
-        let pos = Position { line: 999, character: 0 };
+        let pos = Position {
+            line: 999,
+            character: 0,
+        };
         let node = find_node_at_position(&result.tree, pos);
         // Out-of-range position should not panic; tree-sitter clamps to nearest node
-        assert!(node.is_some(), "tree-sitter returns the nearest node for out-of-range positions");
+        assert!(
+            node.is_some(),
+            "tree-sitter returns the nearest node for out-of-range positions"
+        );
     }
 
     #[test]
@@ -541,7 +566,11 @@ mod tests {
         let result = parser.parse(src);
         let refs = find_variable_references(&result.tree, src, "MyVar");
         // Case-insensitive match should find references
-        assert!(refs.len() >= 1, "Expected at least 1 case-insensitive reference, got {}", refs.len());
+        assert!(
+            refs.len() >= 1,
+            "Expected at least 1 case-insensitive reference, got {}",
+            refs.len()
+        );
     }
 
     #[test]
@@ -555,8 +584,18 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         // Position on the codeunit keyword (outside any procedure)
-        let info = find_procedure_at(&result.tree, src, Position { line: 0, character: 0 });
-        assert!(info.is_none(), "Should not find a procedure at the object declaration level");
+        let info = find_procedure_at(
+            &result.tree,
+            src,
+            Position {
+                line: 0,
+                character: 0,
+            },
+        );
+        assert!(
+            info.is_none(),
+            "Should not find a procedure at the object declaration level"
+        );
     }
 
     #[test]
@@ -571,7 +610,14 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         // Position inside the procedure body
-        let info = find_procedure_at(&result.tree, src, Position { line: 4, character: 8 });
+        let info = find_procedure_at(
+            &result.tree,
+            src,
+            Position {
+                line: 4,
+                character: 8,
+            },
+        );
         assert!(info.is_some(), "Should find procedure at body position");
         let info = info.unwrap();
         assert_eq!(info.name, "MyProc");
@@ -651,7 +697,11 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let count = find_call_references(&result.tree, src, "Name");
-        assert_eq!(count, 0, "Field access Rec.Name must not count as call reference; got {}", count);
+        assert_eq!(
+            count, 0,
+            "Field access Rec.Name must not count as call reference; got {}",
+            count
+        );
     }
 
     #[test]
@@ -665,7 +715,11 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let count = find_call_references(&result.tree, src, "Init");
-        assert_eq!(count, 0, "Procedure declaration must not be counted as a call; got {}", count);
+        assert_eq!(
+            count, 0,
+            "Procedure declaration must not be counted as a call; got {}",
+            count
+        );
     }
 
     #[test]
@@ -687,7 +741,11 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let count = find_call_references(&result.tree, src, "Name");
-        assert_eq!(count, 0, "Field accesses must not prevent dead code detection; got {}", count);
+        assert_eq!(
+            count, 0,
+            "Field accesses must not prevent dead code detection; got {}",
+            count
+        );
     }
 
     #[test]
@@ -721,6 +779,10 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let count = find_call_references(&result.tree, src, "dosomething");
-        assert_eq!(count, 1, "Case-insensitive call reference expected; got {}", count);
+        assert_eq!(
+            count, 1,
+            "Case-insensitive call reference expected; got {}",
+            count
+        );
     }
 }

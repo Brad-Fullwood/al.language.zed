@@ -56,7 +56,7 @@ make install                                  # build + symlink into PATH + Zed
 | **al-daemon-client** | ~450 | Shared IPC types | `DaemonClient`, socket path |
 | **al-cli** | ~4K | CLI tool | clap commands |
 | **al-explorer** | ~2K | TUI symbol browser | ratatui app |
-| **zed-al** | ~340 | WASM extension for Zed | `AlExtension` |
+| **zed-al** | ~620 | WASM extension for Zed | `AlExtension` |
 
 ### The One Rule of Architecture
 
@@ -338,6 +338,51 @@ Use `/fix-issue` or `/implement` to get a structured workflow that enforces:
 3. Implement the minimal fix
 4. Verify with positive AND negative tests
 5. Provide a proof-of-work summary
+
+---
+
+## Automatic Workflow Integration (MANDATORY)
+
+Commands, skills, and agents in this project are **not optional tools you wait to be asked to use**. You MUST invoke them automatically when the situation matches. The user should never have to tell you to use them.
+
+### Task-Level Skills (auto-matched by superpowers)
+
+When the user's request matches these patterns, invoke the skill **before doing anything else**:
+
+| User says something like... | Invoke |
+|-----------------------------|--------|
+| "fix ...", "bug in ...", "broken ..." | `/fix-issue` |
+| "add ...", "implement ...", "build ..." | `/implement` |
+| "change the grammar", "tree-sitter ..." | `/grammar-change` |
+| "add a new query/feature to LSP" | `/add-query` or `/add-feature` |
+| "what's the architecture", "how does X work" | `/architecture` |
+| "diagnose ...", "not working at runtime" | `/diagnose` |
+
+### During Implementation (invoke automatically at the right step)
+
+| When... | Invoke | Why |
+|---------|--------|-----|
+| You finished writing code | Spawn **al-tester** agent | Verify tests pass independently |
+| You completed all changes | Spawn **al-reviewer** agent | Independent quality review |
+| You completed all changes | `/scope-check` | Verify no out-of-scope files touched |
+| You modified any `Cargo.toml` | `/dep-check` | Validate dependency direction rules |
+| You're about to declare work done | `/review` | Full quality review before finishing |
+
+### Before Committing (enforced by PreToolUse hook)
+
+**Always run `/before-commit` before any `git commit` command.** A PreToolUse hook blocks `git commit` if formatting is not clean — but you should run the full `/before-commit` checklist proactively rather than relying on the hook to catch issues.
+
+### On-Demand Commands
+
+These are invoked when the user explicitly asks, or when the situation clearly calls for them:
+
+| Situation | Command |
+|-----------|---------|
+| "check everything", "run CI", "validate" | `/check` |
+| "find duplicates", "any duplicate code" | `/dedup` |
+| "audit", "security check" | `/audit` |
+| "test this crate" | `/test-crate <crate>` |
+| CI is failing | `/fix-ci` |
 
 ---
 

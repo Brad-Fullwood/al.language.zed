@@ -2,6 +2,13 @@
 
 **Leaf crate** — must NOT depend on al-core, al-syntax, or al-symbols.
 
+## Quick Reference
+
+```sh
+cargo test -p al-dap-client                 # all tests (~31 inline: framing, config parsing, protocol)
+cargo check -p al-dap-client                # compile check
+```
+
 Two debug approaches coexist:
 - **Native** (`bc_debug.rs`, `native_dap.rs`): Direct REST + SignalR to Business Central — no EditorServices.Host needed
 - **Proxy** (`client.rs`): Low-level DAP framing for communicating with EditorServices.Host process

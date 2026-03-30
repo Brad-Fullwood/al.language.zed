@@ -35,8 +35,8 @@
 
 use serde::Serialize;
 
-use al_syntax::AlParser;
 use crate::workspace::Workspace;
+use al_syntax::AlParser;
 
 /// A profiler hotspot with source location.
 #[derive(Debug, Clone, Serialize)]
@@ -63,20 +63,28 @@ pub struct ProfilerHint {
 /// Only nodes with `hitCount > 0` are included.  Internal nodes
 /// (`(root)`, `(idle)`, `(garbage collector)`, `(program)`) are skipped.
 pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
-    let json: serde_json::Value = serde_json::from_str(profile_json)
-        .map_err(|e| format!("JSON parse error: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(profile_json).map_err(|e| format!("JSON parse error: {e}"))?;
 
-    let nodes = json.get("nodes").and_then(|v| v.as_array())
+    let nodes = json
+        .get("nodes")
+        .and_then(|v| v.as_array())
         .ok_or_else(|| "No 'nodes' array in profile".to_string())?;
 
-    let start_us = json.get("startTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let start_us = json
+        .get("startTime")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let end_us = json.get("endTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let duration_ms = (end_us - start_us) / 1000.0;
     let _ = duration_ms; // used for context; individual times are hit-count based
 
     let mut hints = Vec::new();
     for node_val in nodes {
-        let hit_count = node_val.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        let hit_count = node_val
+            .get("hitCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         if hit_count == 0 {
             continue;
         }
@@ -88,7 +96,8 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
             .to_string();
 
         // Skip internal runtime nodes
-        if matches!(function_name.as_str(),
+        if matches!(
+            function_name.as_str(),
             "(root)" | "(idle)" | "(garbage collector)" | "(program)" | ""
         ) {
             continue;
@@ -115,8 +124,11 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, String> {
     }
 
     // Sort descending by self time
-    hints.sort_by(|a, b| b.self_time_ms.partial_cmp(&a.self_time_ms)
-        .unwrap_or(std::cmp::Ordering::Equal));
+    hints.sort_by(|a, b| {
+        b.self_time_ms
+            .partial_cmp(&a.self_time_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     Ok(hints)
 }
@@ -134,7 +146,11 @@ pub fn profiler_hints(workspace: &Workspace, hotspots: &[serde_json::Value]) -> 
         .iter()
         .filter_map(|h| {
             let procedure = h.get("procedure")?.as_str()?.to_string();
-            let object = h.get("object").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let object = h
+                .get("object")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             Some(ProfilerHint {
                 procedure,
                 object,
@@ -205,10 +221,11 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
     // Resolve each hint — prefer the object-qualified key when available.
     for hint in hints.iter_mut() {
         let proc_lc = hint.procedure.to_lowercase();
-        let obj_lc  = hint.object.to_lowercase();
+        let obj_lc = hint.object.to_lowercase();
 
         let location = if !obj_lc.is_empty() {
-            qualified.get(&(obj_lc, proc_lc.clone()))
+            qualified
+                .get(&(obj_lc, proc_lc.clone()))
                 .or_else(|| fallback.get(&proc_lc))
         } else {
             fallback.get(&proc_lc)
@@ -231,7 +248,14 @@ fn collect_procedure_locations(
     fallback: &mut std::collections::HashMap<String, (String, u32)>,
 ) {
     let source = text.as_bytes();
-    collect_procs(tree.root_node(), source, file_path, object_name, qualified, fallback);
+    collect_procs(
+        tree.root_node(),
+        source,
+        file_path,
+        object_name,
+        qualified,
+        fallback,
+    );
 }
 
 fn collect_procs(
@@ -252,16 +276,13 @@ fn collect_procs(
                     // Qualified key: always insert (overwrites — last file wins per object,
                     // which is fine since object names should be unique in a workspace).
                     if !object_name.is_empty() {
-                        qualified.insert(
-                            (object_name.to_string(), name.to_lowercase()),
-                            loc.clone(),
-                        );
+                        qualified
+                            .insert((object_name.to_string(), name.to_lowercase()), loc.clone());
                     }
                     // Fallback: only the first occurrence (DashMap iteration is unordered,
                     // so this remains non-deterministic for identically-named procs in
                     // different objects — the qualified key should be used instead).
-                    fallback.entry(name.to_lowercase())
-                        .or_insert(loc);
+                    fallback.entry(name.to_lowercase()).or_insert(loc);
                 }
             }
         }
@@ -287,7 +308,10 @@ pub struct ProfilerSession {
 
 impl ProfilerSession {
     pub fn new(profile_path: String, hints: Vec<ProfilerHint>) -> Self {
-        Self { hints, profile_path }
+        Self {
+            hints,
+            profile_path,
+        }
     }
 
     /// Clear the session — removes all hints.
@@ -310,12 +334,19 @@ mod tests {
     fn workspace_with(files: Vec<(&str, &str)>) -> Workspace {
         let ws = Workspace::new();
         for (name, content) in files {
-            ws.file_index.add_file(PathBuf::from(name), content.to_string());
+            ws.file_index
+                .add_file(PathBuf::from(name), content.to_string());
         }
         ws
     }
 
-    fn make_hotspot(procedure: &str, object: &str, self_ms: f64, total_ms: f64, hits: u64) -> serde_json::Value {
+    fn make_hotspot(
+        procedure: &str,
+        object: &str,
+        self_ms: f64,
+        total_ms: f64,
+        hits: u64,
+    ) -> serde_json::Value {
         serde_json::json!({
             "procedure": procedure,
             "object": object,
@@ -342,9 +373,7 @@ mod tests {
     fn maps_hotspot_to_source_line() {
         let ws = workspace_with(vec![("/src/MyCodeunit.al", CODEUNIT_AL)]);
 
-        let hotspots = vec![
-            make_hotspot("ProcessRecord", "My Codeunit", 10.0, 10.0, 10),
-        ];
+        let hotspots = vec![make_hotspot("ProcessRecord", "My Codeunit", 10.0, 10.0, 10)];
 
         let hints = profiler_hints(&ws, &hotspots);
         assert_eq!(hints.len(), 1);
@@ -362,9 +391,7 @@ mod tests {
     fn unmapped_hotspot_has_no_location() {
         let ws = workspace_with(vec![("/src/MyCodeunit.al", CODEUNIT_AL)]);
 
-        let hotspots = vec![
-            make_hotspot("NonExistentProc", "", 5.0, 5.0, 5),
-        ];
+        let hotspots = vec![make_hotspot("NonExistentProc", "", 5.0, 5.0, 5)];
 
         let hints = profiler_hints(&ws, &hotspots);
         assert_eq!(hints.len(), 1);
@@ -377,13 +404,14 @@ mod tests {
         let ws = workspace_with(vec![("/src/MyCodeunit.al", CODEUNIT_AL)]);
 
         // Profiler may emit different casing
-        let hotspots = vec![
-            make_hotspot("processrecord", "", 3.0, 3.0, 3),
-        ];
+        let hotspots = vec![make_hotspot("processrecord", "", 3.0, 3.0, 3)];
 
         let hints = profiler_hints(&ws, &hotspots);
         assert_eq!(hints.len(), 1);
-        assert!(hints[0].file.is_some(), "Case-insensitive match should find the file");
+        assert!(
+            hints[0].file.is_some(),
+            "Case-insensitive match should find the file"
+        );
     }
 
     #[test]
@@ -427,7 +455,12 @@ mod tests {
         }"#;
 
         let hints = parse_profile(profile_json).expect("should parse");
-        assert_eq!(hints.len(), 1, "Only non-internal nodes with hits: {:?}", hints);
+        assert_eq!(
+            hints.len(),
+            1,
+            "Only non-internal nodes with hits: {:?}",
+            hints
+        );
         assert_eq!(hints[0].procedure, "ProcessData");
         assert_eq!(hints[0].hit_count, 25);
         assert_eq!(hints[0].self_time_ms, 25.0);
@@ -497,12 +530,24 @@ mod tests {
         assert_eq!(hints.len(), 2);
 
         // Both should be mapped (sorted by hit count descending)
-        let process = hints.iter().find(|h| h.procedure == "ProcessRecord").unwrap();
-        let validate = hints.iter().find(|h| h.procedure == "ValidateEntry").unwrap();
+        let process = hints
+            .iter()
+            .find(|h| h.procedure == "ProcessRecord")
+            .unwrap();
+        let validate = hints
+            .iter()
+            .find(|h| h.procedure == "ValidateEntry")
+            .unwrap();
 
-        assert!(process.file.is_some(), "ProcessRecord should be mapped to file");
+        assert!(
+            process.file.is_some(),
+            "ProcessRecord should be mapped to file"
+        );
         assert_eq!(process.line, Some(3), "ProcessRecord on line 3");
-        assert!(validate.file.is_some(), "ValidateEntry should be mapped to file");
+        assert!(
+            validate.file.is_some(),
+            "ValidateEntry should be mapped to file"
+        );
         assert_eq!(validate.line, Some(8), "ValidateEntry on line 8");
     }
 
@@ -526,19 +571,23 @@ mod tests {
         Message('beta');
     end;
 }"#;
-        let ws = workspace_with(vec![
-            ("/src/Alpha.al", file_a),
-            ("/src/Beta.al", file_b),
-        ]);
+        let ws = workspace_with(vec![("/src/Alpha.al", file_a), ("/src/Beta.al", file_b)]);
 
         // Hint for Beta Codeunit should resolve to /src/Beta.al
-        let hotspots_beta = vec![
-            make_hotspot("OnAfterValidate", "Beta Codeunit", 20.0, 20.0, 20),
-        ];
+        let hotspots_beta = vec![make_hotspot(
+            "OnAfterValidate",
+            "Beta Codeunit",
+            20.0,
+            20.0,
+            20,
+        )];
         let hints_beta = profiler_hints(&ws, &hotspots_beta);
         assert_eq!(hints_beta.len(), 1);
         let h_beta = &hints_beta[0];
-        assert!(h_beta.file.is_some(), "Should resolve file for Beta Codeunit");
+        assert!(
+            h_beta.file.is_some(),
+            "Should resolve file for Beta Codeunit"
+        );
         assert!(
             h_beta.file.as_deref().unwrap_or("").contains("Beta"),
             "Should resolve to Beta.al, got: {:?}",
@@ -546,13 +595,20 @@ mod tests {
         );
 
         // Hint for Alpha Codeunit should resolve to /src/Alpha.al
-        let hotspots_alpha = vec![
-            make_hotspot("OnAfterValidate", "Alpha Codeunit", 10.0, 10.0, 10),
-        ];
+        let hotspots_alpha = vec![make_hotspot(
+            "OnAfterValidate",
+            "Alpha Codeunit",
+            10.0,
+            10.0,
+            10,
+        )];
         let hints_alpha = profiler_hints(&ws, &hotspots_alpha);
         assert_eq!(hints_alpha.len(), 1);
         let h_alpha = &hints_alpha[0];
-        assert!(h_alpha.file.is_some(), "Should resolve file for Alpha Codeunit");
+        assert!(
+            h_alpha.file.is_some(),
+            "Should resolve file for Alpha Codeunit"
+        );
         assert!(
             h_alpha.file.as_deref().unwrap_or("").contains("Alpha"),
             "Should resolve to Alpha.al, got: {:?}",

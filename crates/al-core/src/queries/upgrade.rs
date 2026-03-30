@@ -42,10 +42,7 @@ pub struct UpgradeIssue {
 }
 
 /// Generate an upgrade report comparing two symbol sets.
-pub fn upgrade_report(
-    baseline: &[SymbolEntry],
-    current: &[SymbolEntry],
-) -> Vec<UpgradeIssue> {
+pub fn upgrade_report(baseline: &[SymbolEntry], current: &[SymbolEntry]) -> Vec<UpgradeIssue> {
     let mut issues = Vec::new();
 
     // Get breaking changes from T1703
@@ -197,8 +194,11 @@ mod tests {
 
         let issues = upgrade_report(&baseline, &current);
         assert!(
-            issues.iter().any(|i| i.object == "Legacy CU" && i.kind == UpgradeIssueKind::BreakingChange),
-            "Should detect removed object as upgrade issue: {:?}", issues
+            issues
+                .iter()
+                .any(|i| i.object == "Legacy CU" && i.kind == UpgradeIssueKind::BreakingChange),
+            "Should detect removed object as upgrade issue: {:?}",
+            issues
         );
     }
 
@@ -222,9 +222,12 @@ mod tests {
             namespace: String::new(),
             package: "Base".to_string(),
             methods: Vec::new(),
-            fields: vec![
-                FieldSymbol { id: 1, name: "Amount".to_string(), type_name: "Integer".to_string(), properties: vec![] },
-            ],
+            fields: vec![FieldSymbol {
+                id: 1,
+                name: "Amount".to_string(),
+                type_name: "Integer".to_string(),
+                properties: vec![],
+            }],
             controls: Vec::new(),
             enum_values: Vec::new(),
             keys: Vec::new(),
@@ -233,16 +236,22 @@ mod tests {
         };
 
         let new_table = SymbolEntry {
-            fields: vec![
-                al_symbols::FieldSymbol { id: 1, name: "Amount".to_string(), type_name: "Decimal".to_string(), properties: vec![] },
-            ],
+            fields: vec![al_symbols::FieldSymbol {
+                id: 1,
+                name: "Amount".to_string(),
+                type_name: "Decimal".to_string(),
+                properties: vec![],
+            }],
             ..old_table.clone()
         };
 
         let issues = upgrade_report(&[old_table], &[new_table]);
         assert!(
-            issues.iter().any(|i| i.kind == UpgradeIssueKind::DataMigration),
-            "Field type change should trigger data migration: {:?}", issues
+            issues
+                .iter()
+                .any(|i| i.kind == UpgradeIssueKind::DataMigration),
+            "Field type change should trigger data migration: {:?}",
+            issues
         );
     }
 }

@@ -211,19 +211,16 @@ fn resolve_key<'a>(token: &'a str, original_input: &str) -> Result<&'a str, ZedT
 /// (There is still a small OS-level delay before the target app processes
 /// them — callers should add their own `wait()` for timing-sensitive ops.)
 fn run_wtype(args: &[&str]) -> Result<(), ZedTestError> {
-    let output = Command::new("wtype")
-        .args(args)
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                ZedTestError::ToolNotFound {
-                    tool: "wtype",
-                    install_hint: "sudo pacman -S wtype",
-                }
-            } else {
-                ZedTestError::Io(e)
+    let output = Command::new("wtype").args(args).output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ZedTestError::ToolNotFound {
+                tool: "wtype",
+                install_hint: "sudo pacman -S wtype",
             }
-        })?;
+        } else {
+            ZedTestError::Io(e)
+        }
+    })?;
 
     if !output.status.success() {
         return Err(ZedTestError::CommandFailed {

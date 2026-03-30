@@ -28,13 +28,16 @@ fn al_binary() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         // exe = .../target/debug/deps/integration-xxx
         // go up 3 levels to reach target root, then target/debug/al
-        if let Some(deps) = exe.parent() {          // deps/
-            if let Some(debug) = deps.parent() {    // debug/
+        if let Some(deps) = exe.parent() {
+            // deps/
+            if let Some(debug) = deps.parent() {
+                // debug/
                 let candidate = debug.join("al");
                 if candidate.exists() {
                     return candidate;
                 }
-                if let Some(target) = debug.parent() { // target/
+                if let Some(target) = debug.parent() {
+                    // target/
                     let candidate = target.join("debug").join("al");
                     if candidate.exists() {
                         return candidate;
@@ -251,7 +254,10 @@ fn cli_rules_json_outputs_array() {
     );
 
     for rule in arr {
-        assert!(rule["code"].is_string(), "Each rule should have a 'code' field");
+        assert!(
+            rule["code"].is_string(),
+            "Each rule should have a 'code' field"
+        );
         assert!(
             rule["code"].as_str().unwrap().starts_with("AL-L"),
             "Rule code should start with AL-L"
@@ -293,7 +299,10 @@ fn cli_lint_detects_issues() {
     let combined = format!("{}{}", stdout, stderr);
 
     assert!(
-        combined.contains("AL-L007") || combined.contains("AL-L016") || combined.contains("TODO") || combined.contains("PascalCase"),
+        combined.contains("AL-L007")
+            || combined.contains("AL-L016")
+            || combined.contains("TODO")
+            || combined.contains("PascalCase"),
         "Should detect lint issues in code with TODO and bad naming, got stdout: {}, stderr: {}",
         stdout,
         stderr
@@ -381,7 +390,8 @@ end;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("    procedure DoSomething()") || stdout.contains("\tprocedure DoSomething()"),
+        stdout.contains("    procedure DoSomething()")
+            || stdout.contains("\tprocedure DoSomething()"),
         "Formatted output should have indented procedure, got: {}",
         stdout
     );
@@ -403,7 +413,12 @@ end;
         .stderr(std::process::Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            child.stdin.take().unwrap().write_all(unformatted.as_bytes()).unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(unformatted.as_bytes())
+                .unwrap();
             child.wait_with_output()
         })
         .expect("Failed to format via al format --stdin");
@@ -426,13 +441,16 @@ end;
 
 #[test]
 fn cli_format_check_on_unformatted_file_exits_nonzero() {
-    let tmp = write_temp_al("format-unformatted", r#"codeunit 50100 Test
+    let tmp = write_temp_al(
+        "format-unformatted",
+        r#"codeunit 50100 Test
 {
 procedure DoSomething()
 begin
 Message('Hello');
 end;
-}"#);
+}"#,
+    );
 
     let output = Command::new(al_binary())
         .args(["format", "--check", tmp.to_str().unwrap()])
@@ -509,7 +527,10 @@ fn cli_parse_clean_file_succeeds() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("nodes"), "Should show node count");
     assert!(stdout.contains("errors"), "Should show error count");
-    assert!(stdout.contains("0 errors"), "Clean file should have 0 errors");
+    assert!(
+        stdout.contains("0 errors"),
+        "Clean file should have 0 errors"
+    );
 }
 
 #[test]
@@ -541,11 +562,13 @@ fn cli_parse_json_has_structure() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
     assert!(parsed["nodeCount"].is_number(), "Should have nodeCount");
     assert!(parsed["parseTimeMs"].is_number(), "Should have parseTimeMs");
-    assert!(parsed["parseErrors"].is_array(), "Should have parseErrors array");
+    assert!(
+        parsed["parseErrors"].is_array(),
+        "Should have parseErrors array"
+    );
     assert!(
         parsed["nodeCount"].as_u64().unwrap() > 10,
         "Should have many nodes"
@@ -595,9 +618,11 @@ fn cli_fix_dry_run_json_has_structure() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Should be valid JSON");
-    assert!(parsed["diagnostics"].is_number(), "Should have diagnostics count");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
+    assert!(
+        parsed["diagnostics"].is_number(),
+        "Should have diagnostics count"
+    );
     assert!(parsed["fixes"].is_number(), "Should have fixes count");
     assert!(parsed["dryRun"].is_boolean(), "Should have dryRun flag");
     assert!(parsed["edits"].is_array(), "Should have edits array");
@@ -608,7 +633,11 @@ fn cli_fix_with_rule_filter() {
     let tmp = write_temp_al("fix-filter", LINT_ISSUES);
     let output = Command::new(al_binary())
         .args([
-            "--json", "fix", "--dry-run", "--rule", "AL-L016",
+            "--json",
+            "fix",
+            "--dry-run",
+            "--rule",
+            "AL-L016",
             tmp.to_str().unwrap(),
         ])
         .output()
@@ -617,8 +646,7 @@ fn cli_fix_with_rule_filter() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
     let edits = parsed["edits"].as_array().unwrap();
     for edit in edits {
         assert_eq!(
@@ -638,7 +666,11 @@ fn cli_fix_runs_without_error() {
         .expect("Failed to execute al fix");
     let _ = std::fs::remove_file(&tmp);
 
-    assert!(output.status.success(), "fix command should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "fix command should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("diagnostics") || stderr.contains("fixed"),
@@ -658,8 +690,7 @@ fn cli_fix_clean_file_no_fixes() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
     assert_eq!(
         parsed["fixes"].as_u64().unwrap_or(0),
         0,
@@ -703,9 +734,11 @@ fn cli_folding_json_outputs_valid_json() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Should be valid JSON");
-    assert!(parsed.is_array() || parsed.is_null(), "Should be array or null");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
+    assert!(
+        parsed.is_array() || parsed.is_null(),
+        "Should be array or null"
+    );
 }
 
 #[test]
@@ -738,7 +771,11 @@ fn cli_tokens_outputs_json() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !stdout.trim().is_empty() {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(&stdout);
-        assert!(parsed.is_ok(), "Tokens output should be valid JSON, got: {}", stdout);
+        assert!(
+            parsed.is_ok(),
+            "Tokens output should be valid JSON, got: {}",
+            stdout
+        );
     }
 }
 
@@ -753,9 +790,11 @@ fn cli_tokens_json_outputs_valid_json() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Should be valid JSON");
-    assert!(parsed.is_array() || parsed.is_null(), "Should be array or null");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
+    assert!(
+        parsed.is_array() || parsed.is_null(),
+        "Should be array or null"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -789,8 +828,7 @@ fn cli_hints_json_valid() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
     assert!(parsed.is_array(), "Hints JSON should be array");
 }
 
@@ -839,8 +877,7 @@ fn cli_symbols_json_on_codeunit() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("Should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
     assert!(parsed.is_array() || parsed.is_null());
 }
 

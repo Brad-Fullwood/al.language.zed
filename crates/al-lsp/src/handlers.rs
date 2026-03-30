@@ -34,14 +34,20 @@ pub(crate) fn handle_semantic_tokens(server: &AlServer, uri: &Url) -> Option<Sem
     if tokens.is_empty() {
         return None;
     }
-    let lsp_tokens: Vec<SemanticToken> = tokens.into_iter().map(|t| SemanticToken {
-        delta_line: t.delta_line,
-        delta_start: t.delta_start,
-        length: t.length,
-        token_type: t.token_type,
-        token_modifiers_bitset: t.token_modifiers,
-    }).collect();
-    Some(SemanticTokensResult::Tokens(SemanticTokens { result_id: None, data: lsp_tokens }))
+    let lsp_tokens: Vec<SemanticToken> = tokens
+        .into_iter()
+        .map(|t| SemanticToken {
+            delta_line: t.delta_line,
+            delta_start: t.delta_start,
+            length: t.length,
+            token_type: t.token_type,
+            token_modifiers_bitset: t.token_modifiers,
+        })
+        .collect();
+    Some(SemanticTokensResult::Tokens(SemanticTokens {
+        result_id: None,
+        data: lsp_tokens,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -56,22 +62,31 @@ pub(crate) fn handle_signature_help(
     let core_pos = position.into();
     let result = al_core::queries::signature::signature_help(&server.workspace, uri, core_pos)?;
     Some(SignatureHelp {
-        signatures: result.signatures.into_iter().map(|s| {
-            let params: Option<Vec<ParameterInformation>> = if s.parameters.is_empty() {
-                None
-            } else {
-                Some(s.parameters.into_iter().map(|p| ParameterInformation {
-                    label: ParameterLabel::Simple(p.label),
-                    documentation: p.documentation.map(Documentation::String),
-                }).collect())
-            };
-            SignatureInformation {
-                label: s.label,
-                documentation: s.documentation.map(Documentation::String),
-                parameters: params,
-                active_parameter: s.active_parameter,
-            }
-        }).collect(),
+        signatures: result
+            .signatures
+            .into_iter()
+            .map(|s| {
+                let params: Option<Vec<ParameterInformation>> = if s.parameters.is_empty() {
+                    None
+                } else {
+                    Some(
+                        s.parameters
+                            .into_iter()
+                            .map(|p| ParameterInformation {
+                                label: ParameterLabel::Simple(p.label),
+                                documentation: p.documentation.map(Documentation::String),
+                            })
+                            .collect(),
+                    )
+                };
+                SignatureInformation {
+                    label: s.label,
+                    documentation: s.documentation.map(Documentation::String),
+                    parameters: params,
+                    active_parameter: s.active_parameter,
+                }
+            })
+            .collect(),
         active_signature: result.active_signature,
         active_parameter: result.active_parameter,
     })
@@ -101,21 +116,29 @@ pub(crate) fn handle_code_action(
             message: diag.message.clone(),
             code,
         };
-        if let Some(entry) = al_core::queries::code_actions::quick_fix_for_diagnostic(uri, &text, &diag_info) {
+        if let Some(entry) =
+            al_core::queries::code_actions::quick_fix_for_diagnostic(uri, &text, &diag_info)
+        {
             actions.push(core_action_to_lsp(entry, Some(diag)));
         }
     }
 
     // Source actions via al-core
     let core_range: al_core::queries::Range = range.into();
-    for entry in al_core::queries::code_actions::source_actions(&server.workspace, uri, core_range) {
+    for entry in al_core::queries::code_actions::source_actions(&server.workspace, uri, core_range)
+    {
         actions.push(core_action_to_lsp(entry, None));
     }
 
     // Format File (calculate edits directly)
     if let Some(edits) = formatting::handle_formatting(
-        server, uri,
-        &FormattingOptions { tab_size: 4, insert_spaces: true, ..Default::default() },
+        server,
+        uri,
+        &FormattingOptions {
+            tab_size: 4,
+            insert_spaces: true,
+            ..Default::default()
+        },
     ) {
         if !edits.is_empty() {
             let mut changes = std::collections::HashMap::new();
@@ -123,7 +146,10 @@ pub(crate) fn handle_code_action(
             actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                 title: "AL: Format File".to_string(),
                 kind: Some(CodeActionKind::SOURCE),
-                edit: Some(WorkspaceEdit { changes: Some(changes), ..Default::default() }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }));
         }
@@ -141,20 +167,30 @@ pub(crate) fn handle_code_action(
         ..Default::default()
     }));
 
-    if actions.is_empty() { None } else { Some(actions) }
+    if actions.is_empty() {
+        None
+    } else {
+        Some(actions)
+    }
 }
 
 /// Convert an `al-core` transport-agnostic `WorkspaceEdit` to a tower-lsp `WorkspaceEdit`.
 pub(crate) fn core_workspace_edit_to_lsp(we: al_core::queries::WorkspaceEdit) -> WorkspaceEdit {
     let mut changes = std::collections::HashMap::new();
     for (uri, edits) in we.changes {
-        let lsp_edits: Vec<TextEdit> = edits.into_iter().map(|e| TextEdit {
-            range: e.range.into(),
-            new_text: e.new_text,
-        }).collect();
+        let lsp_edits: Vec<TextEdit> = edits
+            .into_iter()
+            .map(|e| TextEdit {
+                range: e.range.into(),
+                new_text: e.new_text,
+            })
+            .collect();
         changes.insert(uri, lsp_edits);
     }
-    WorkspaceEdit { changes: Some(changes), ..Default::default() }
+    WorkspaceEdit {
+        changes: Some(changes),
+        ..Default::default()
+    }
 }
 
 fn core_action_to_lsp(

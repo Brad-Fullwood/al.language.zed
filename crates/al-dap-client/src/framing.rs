@@ -65,7 +65,10 @@ async fn read_headers<R: tokio::io::AsyncRead + Unpin>(
         }
     }
     content_length.ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "Missing Content-Length header")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Missing Content-Length header",
+        )
     })
 }
 
@@ -146,7 +149,10 @@ mod tests {
         let mut reader = BufReader::new(&b""[..]);
         let result = read_dap_body(&mut reader).await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
     }
 
     #[tokio::test]
@@ -200,8 +206,8 @@ mod tests {
         let counter = AtomicI64::new(1);
         let patched = ensure_seq(body, &counter);
         // Must parse as valid JSON (no trailing comma).
-        let value: serde_json::Value = serde_json::from_slice(&patched)
-            .expect("patched empty object must be valid JSON");
+        let value: serde_json::Value =
+            serde_json::from_slice(&patched).expect("patched empty object must be valid JSON");
         assert_eq!(value["seq"], 1);
     }
 
@@ -224,7 +230,11 @@ mod tests {
         let body = b"not-json-at-all";
         let counter = AtomicI64::new(7);
         let _ = ensure_seq(body, &counter);
-        assert_eq!(counter.load(Ordering::Relaxed), 7, "counter must not increment when no `{{` found");
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            7,
+            "counter must not increment when no `{{` found"
+        );
     }
 
     #[test]
@@ -233,7 +243,10 @@ mod tests {
         let counter = AtomicI64::new(7);
         let patched = ensure_seq(body, &counter);
         let value: serde_json::Value = serde_json::from_slice(&patched).unwrap();
-        assert_eq!(value["seq"], 7, "seq must be injected despite \"seq\": appearing in a string value");
+        assert_eq!(
+            value["seq"], 7,
+            "seq must be injected despite \"seq\": appearing in a string value"
+        );
     }
 
     #[test]
@@ -246,7 +259,10 @@ mod tests {
         let counter = AtomicI64::new(7);
         let patched = ensure_seq(body, &counter);
         let value: serde_json::Value = serde_json::from_slice(&patched).unwrap();
-        assert_eq!(value["seq"], 7, "seq must be injected at top level even when nested body.seq exists");
+        assert_eq!(
+            value["seq"], 7,
+            "seq must be injected at top level even when nested body.seq exists"
+        );
     }
 
     #[tokio::test]
@@ -270,7 +286,10 @@ mod tests {
         let result = read_dap_body(&mut reader).await;
         // Guard passed; EOF from missing body is expected.
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
     }
 
     #[tokio::test]

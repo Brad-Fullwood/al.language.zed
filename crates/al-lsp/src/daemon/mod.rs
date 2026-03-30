@@ -6,10 +6,10 @@
 //! - Accepts JSON-RPC requests, routes to al-core queries
 //! - Auto-shuts down after 30 minutes of idle
 
-mod lsp_dispatch;
+mod build_dispatch;
 mod debug_dispatch;
 mod insight_dispatch;
-mod build_dispatch;
+mod lsp_dispatch;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,7 +48,6 @@ const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 const MAX_CONNECTIONS: usize = 64;
 const ACCEPT_BACKOFF_START: Duration = Duration::from_millis(10);
 const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
-
 
 /// Run the daemon server for a project.
 pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -114,7 +113,10 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                     tracing::info!("daemon: idle timeout skipped (debug session active)");
                     continue;
                 }
-                tracing::info!(idle_secs = elapsed.as_secs(), "daemon: idle timeout, shutting down");
+                tracing::info!(
+                    idle_secs = elapsed.as_secs(),
+                    "daemon: idle timeout, shutting down"
+                );
                 shutdown_idle.notify_one();
                 return;
             }
@@ -129,12 +131,12 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     // SocketCleanup drop guard. Instead, we break out of the accept loop so Drop runs.
     #[cfg(unix)]
     let mut sigterm = {
-        use tokio::signal::unix::{SignalKind, signal};
+        use tokio::signal::unix::{signal, SignalKind};
         signal(SignalKind::terminate()).ok()
     };
     #[cfg(unix)]
     let mut sigint = {
-        use tokio::signal::unix::{SignalKind, signal};
+        use tokio::signal::unix::{signal, SignalKind};
         signal(SignalKind::interrupt()).ok()
     };
 
@@ -145,14 +147,18 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
         #[cfg(unix)]
         let sigterm_fut = async {
             match sigterm.as_mut() {
-                Some(s) => { s.recv().await; },
+                Some(s) => {
+                    s.recv().await;
+                }
                 None => std::future::pending::<()>().await,
             }
         };
         #[cfg(unix)]
         let sigint_fut = async {
             match sigint.as_mut() {
-                Some(s) => { s.recv().await; },
+                Some(s) => {
+                    s.recv().await;
+                }
                 None => std::future::pending::<()>().await,
             }
         };
@@ -227,7 +233,9 @@ async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            return if buf.is_empty() { Ok(None) } else {
+            return if buf.is_empty() {
+                Ok(None)
+            } else {
                 String::from_utf8(buf)
                     .map(Some)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
@@ -309,9 +317,18 @@ async fn handle_connection(
             // Request deduplication: skip if identical method+params within 50ms.
             // Only build the dedup key for eligible methods to avoid serialization cost.
             let is_dup = if DEDUP_METHODS.contains(&req.method.as_str()) {
-                let dedup_key = format!("{}:{}", req.method, req.params.as_ref().map(|p| p.to_string()).unwrap_or_default());
+                let dedup_key = format!(
+                    "{}:{}",
+                    req.method,
+                    req.params
+                        .as_ref()
+                        .map(|p| p.to_string())
+                        .unwrap_or_default()
+                );
                 let now = Instant::now();
-                let dup = dedup_keys.iter().any(|(k, t)| k == &dedup_key && now.duration_since(*t).as_millis() < 50);
+                let dup = dedup_keys
+                    .iter()
+                    .any(|(k, t)| k == &dedup_key && now.duration_since(*t).as_millis() < 50);
                 // Ring buffer insert
                 if dedup_write_idx < dedup_keys.len() {
                     dedup_keys[dedup_write_idx] = (dedup_key, now);
@@ -330,7 +347,11 @@ async fn handle_connection(
                     "completions" | "inlayHints" => serde_json::json!([]),
                     _ => serde_json::Value::Null,
                 };
-                Response { id: req_id, result: Some(empty_result), error: None }
+                Response {
+                    id: req_id,
+                    result: Some(empty_result),
+                    error: None,
+                }
             } else {
                 let start = Instant::now();
                 let resp = dispatch_request(&workspace, req, &shutdown).await;
@@ -379,9 +400,13 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "lint" => build_dispatch::dispatch_lint(workspace, id, &params),
         "format" => build_dispatch::dispatch_format(workspace, id, &params),
         "fix" => build_dispatch::dispatch_fix(workspace, id, &params),
-        "fix.applicationArea" => build_dispatch::dispatch_fix_application_area(workspace, id, &params),
+        "fix.applicationArea" => {
+            build_dispatch::dispatch_fix_application_area(workspace, id, &params)
+        }
         "fix.tooltips" => build_dispatch::dispatch_fix_tooltips(workspace, id, &params),
-        "fix.dataClassification" => build_dispatch::dispatch_fix_data_classification(workspace, id, &params),
+        "fix.dataClassification" => {
+            build_dispatch::dispatch_fix_data_classification(workspace, id, &params)
+        }
         "rules" => build_dispatch::dispatch_rules(id),
         "parse" => build_dispatch::dispatch_parse(workspace, id, &params),
         "metrics" => build_dispatch::dispatch_metrics(workspace, id, &params),
@@ -425,7 +450,9 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "generate" => build_dispatch::dispatch_generate(workspace, id, &params),
         // WP17: Analysis differentiators
         "obsolete" => build_dispatch::dispatch_obsolete(workspace, id),
-        "audit.dataClassification" => build_dispatch::dispatch_audit_data_classification(workspace, id),
+        "audit.dataClassification" => {
+            build_dispatch::dispatch_audit_data_classification(workspace, id)
+        }
         "permissions.audit" => build_dispatch::dispatch_permission_set_audit(workspace, id),
         "deps.graph" => build_dispatch::dispatch_deps_graph(workspace, id, &params),
         "breaking" => build_dispatch::dispatch_breaking_changes(workspace, id, &params),
@@ -435,11 +462,19 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "profiler.hints" => build_dispatch::dispatch_profiler_hints(workspace, id, &params),
         // Diagnostics / observability
         "diag" => dispatch_diag(workspace, id, &params),
-        "ping" => Response { id, result: Some(serde_json::json!("pong")), error: None },
+        "ping" => Response {
+            id,
+            result: Some(serde_json::json!("pong")),
+            error: None,
+        },
         "shutdown" => {
             tracing::info!("daemon: shutdown requested");
             shutdown.notify_one();
-            Response { id, result: Some(serde_json::json!("ok")), error: None }
+            Response {
+                id,
+                result: Some(serde_json::json!("ok")),
+                error: None,
+            }
         }
         "status" => {
             let cache_stats = workspace.semantic_cache.read().ok().map(|c| { // SILENT: avoid RwLock poison panic per CLAUDE.md
@@ -454,7 +489,11 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
                 "builtinTypes": workspace.builtins.read().ok().map(|g| g.len()).unwrap_or(0), // SILENT: avoid RwLock poison panic per CLAUDE.md
                 "semanticCache": cache_stats,
             });
-            Response { id, result: Some(status), error: None }
+            Response {
+                id,
+                result: Some(status),
+                error: None,
+            }
         }
         _ => Response {
             id,
@@ -468,12 +507,19 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
 }
 
 fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
-    let cmd = params.get("cmd").and_then(|v| v.as_str()).unwrap_or("summary");
+    let cmd = params
+        .get("cmd")
+        .and_then(|v| v.as_str())
+        .unwrap_or("summary");
     match cmd {
         "summary" => {
             let stats = workspace.memory_stats();
             let value = serde_json::to_value(&stats).unwrap_or(serde_json::Value::Null);
-            Response { id, result: Some(value), error: None }
+            Response {
+                id,
+                result: Some(value),
+                error: None,
+            }
         }
         _ => Response {
             id,
@@ -546,16 +592,32 @@ pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<Pat
 }
 
 /// Parse an ObjectKind from a string, or return an invalid-params Response.
-pub(crate) fn parse_object_kind(id: u64, kind_str: &str) -> Result<al_core::symbols::ObjectKind, Response> {
-    kind_str.parse::<al_core::symbols::ObjectKind>().map_err(|_| {
-        rpc_error(id, error_codes::INVALID_PARAMS, &format!("Unknown object kind: {kind_str}"))
-    })
+pub(crate) fn parse_object_kind(
+    id: u64,
+    kind_str: &str,
+) -> Result<al_core::symbols::ObjectKind, Response> {
+    kind_str
+        .parse::<al_core::symbols::ObjectKind>()
+        .map_err(|_| {
+            rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("Unknown object kind: {kind_str}"),
+            )
+        })
 }
 
 /// Get document text, loading from disk if needed. Returns the text or a file-not-found Response.
-pub(crate) fn require_document_text(workspace: &Workspace, uri: &url::Url, id: u64) -> Result<String, Response> {
+pub(crate) fn require_document_text(
+    workspace: &Workspace,
+    uri: &url::Url,
+    id: u64,
+) -> Result<String, Response> {
     ensure_document(workspace, uri);
-    workspace.documents.get_text(uri).ok_or_else(|| file_not_found(id))
+    workspace
+        .documents
+        .get_text(uri)
+        .ok_or_else(|| file_not_found(id))
 }
 
 /// Ensure a file is loaded in the document store. If not found, read from disk.
@@ -599,7 +661,6 @@ pub(crate) fn lint_diag_to_json(d: &al_core::syntax::LintDiagnostic) -> serde_js
         "endColumn": d.range.end_point.column + 1,
     })
 }
-
 
 // ---------------------------------------------------------------------------
 // Workspace initialization (daemon mode — no LSP Client)

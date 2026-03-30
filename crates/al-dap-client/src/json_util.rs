@@ -20,11 +20,28 @@ pub fn strip_json_comments(input: &str) -> String {
     let mut chars = input.chars().peekable();
 
     while let Some(c) = chars.next() {
-        if escape_next { result.push(c); escape_next = false; continue; }
-        if c == '\\' && in_string { result.push(c); escape_next = true; continue; }
-        if c == '"' { in_string = !in_string; result.push(c); continue; }
+        if escape_next {
+            result.push(c);
+            escape_next = false;
+            continue;
+        }
+        if c == '\\' && in_string {
+            result.push(c);
+            escape_next = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            result.push(c);
+            continue;
+        }
         if !in_string && c == '/' && chars.peek() == Some(&'/') {
-            for cc in chars.by_ref() { if cc == '\n' { result.push('\n'); break; } }
+            for cc in chars.by_ref() {
+                if cc == '\n' {
+                    result.push('\n');
+                    break;
+                }
+            }
             continue;
         }
         result.push(c);
@@ -50,13 +67,29 @@ pub fn strip_trailing_commas(input: &str) -> String {
 
     for i in 0..len {
         let b = bytes[i];
-        if escape_next { result.push(b); escape_next = false; continue; }
-        if b == b'\\' && in_string { result.push(b); escape_next = true; continue; }
-        if b == b'"' { in_string = !in_string; result.push(b); continue; }
+        if escape_next {
+            result.push(b);
+            escape_next = false;
+            continue;
+        }
+        if b == b'\\' && in_string {
+            result.push(b);
+            escape_next = true;
+            continue;
+        }
+        if b == b'"' {
+            in_string = !in_string;
+            result.push(b);
+            continue;
+        }
         if !in_string && b == b',' {
             let mut j = i + 1;
-            while j < len && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') { j += 1; }
-            if j < len && (bytes[j] == b']' || bytes[j] == b'}') { continue; }
+            while j < len && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') {
+                j += 1;
+            }
+            if j < len && (bytes[j] == b']' || bytes[j] == b'}') {
+                continue;
+            }
         }
         result.push(b);
     }

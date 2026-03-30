@@ -33,7 +33,10 @@ pub fn references(
         if !include_declaration && range.start == position {
             continue;
         }
-        locations.push(Location { uri: uri.clone(), range });
+        locations.push(Location {
+            uri: uri.clone(),
+            range,
+        });
     }
 
     let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path

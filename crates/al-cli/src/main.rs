@@ -9,7 +9,7 @@ mod commands;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use clap_complete::{Shell, generate};
+use clap_complete::{generate, Shell};
 
 use commands::{build, debug, insight, lsp};
 
@@ -208,13 +208,16 @@ Examples:
     /// List all built-in types and methods from CodeAnalysis
     Builtins,
     /// Generate shell completion scripts (bash, zsh, fish, elvish, powershell)
-    #[command(name = "generate-completions", after_help = "\
+    #[command(
+        name = "generate-completions",
+        after_help = "\
 Examples:
   al generate-completions bash
   al generate-completions zsh
   al generate-completions fish
   al generate-completions bash >> ~/.bash_completion
-  al generate-completions fish > ~/.config/fish/completions/al.fish")]
+  al generate-completions fish > ~/.config/fish/completions/al.fish"
+    )]
     GenerateCompletions {
         /// Shell to generate completions for (bash, zsh, fish, elvish, powershell)
         shell: Shell,
@@ -715,16 +718,25 @@ fn main() -> ExitCode {
         Commands::Composed { kind, name } => lsp::cmd_composed(&kind, &name, cli.json),
         Commands::Packages => lsp::cmd_packages(cli.json),
         Commands::Deps => lsp::cmd_deps(cli.json),
-        Commands::Compile { project } => {
-            build::cmd_compile(project.as_deref(), cli.json)
-        }
-        Commands::Lint { file, all, analyzers } => {
-            let joined = if file.is_empty() { None } else { Some(file.join(" ")) };
+        Commands::Compile { project } => build::cmd_compile(project.as_deref(), cli.json),
+        Commands::Lint {
+            file,
+            all,
+            analyzers,
+        } => {
+            let joined = if file.is_empty() {
+                None
+            } else {
+                Some(file.join(" "))
+            };
             lsp::cmd_lint(joined.as_deref(), all, analyzers.as_deref(), cli.json)
         }
-        Commands::Format { file, check, stdin, all } => {
-            lsp::cmd_format(file.as_deref(), check, stdin, all, cli.json)
-        }
+        Commands::Format {
+            file,
+            check,
+            stdin,
+            all,
+        } => lsp::cmd_format(file.as_deref(), check, stdin, all, cli.json),
         Commands::Symbols { file } => lsp::cmd_symbols(&file, cli.json),
         Commands::Hover { file, line, col } => lsp::cmd_hover(&file, line, col, cli.json),
         Commands::Definition { file, line, col } => {
@@ -739,32 +751,55 @@ fn main() -> ExitCode {
         Commands::Completions { file, line, col } => {
             lsp::cmd_position_query("completions", &file, line, col, cli.json)
         }
-        Commands::Rename { file, line, col, new_name, dry_run } => {
-            lsp::cmd_rename(&file, line, col, &new_name, dry_run, cli.json)
-        }
+        Commands::Rename {
+            file,
+            line,
+            col,
+            new_name,
+            dry_run,
+        } => lsp::cmd_rename(&file, line, col, &new_name, dry_run, cli.json),
         Commands::Rules => lsp::cmd_rules(cli.json),
         Commands::ErrorCodes => lsp::cmd_error_codes(cli.json),
         Commands::Builtins => lsp::cmd_builtins(cli.json),
         Commands::Folding { file } => lsp::cmd_folding(&file, cli.json),
         Commands::Tokens { file } => lsp::cmd_tokens(&file, cli.json),
         Commands::Parse { file } => lsp::cmd_parse(&file, cli.json),
-        Commands::Metrics { file, all, threshold_cyclomatic, threshold_cognitive } => {
-            lsp::cmd_metrics(file.as_deref(), all, threshold_cyclomatic, threshold_cognitive, cli.json)
-        }
+        Commands::Metrics {
+            file,
+            all,
+            threshold_cyclomatic,
+            threshold_cognitive,
+        } => lsp::cmd_metrics(
+            file.as_deref(),
+            all,
+            threshold_cyclomatic,
+            threshold_cognitive,
+            cli.json,
+        ),
         Commands::SqlScan => lsp::cmd_sql_scan(cli.json),
-        Commands::Hints { file, start_line, end_line } => {
-            lsp::cmd_hints(&file, start_line, end_line, cli.json)
-        }
-        Commands::Fix { file, dry_run, rule } => {
-            lsp::cmd_fix(file.as_deref(), dry_run, rule.as_deref(), cli.json)
-        }
-        Commands::Permissions { format, name, id, role_id } => {
-            lsp::cmd_permissions(&format, &name, id, &role_id, cli.json)
-        }
+        Commands::Hints {
+            file,
+            start_line,
+            end_line,
+        } => lsp::cmd_hints(&file, start_line, end_line, cli.json),
+        Commands::Fix {
+            file,
+            dry_run,
+            rule,
+        } => lsp::cmd_fix(file.as_deref(), dry_run, rule.as_deref(), cli.json),
+        Commands::Permissions {
+            format,
+            name,
+            id,
+            role_id,
+        } => lsp::cmd_permissions(&format, &name, id, &role_id, cli.json),
         Commands::Package => build::cmd_package(cli.json),
-        Commands::New { dir, name, publisher, template } => {
-            lsp::cmd_new(&dir, &name, &publisher, &template, cli.json)
-        }
+        Commands::New {
+            dir,
+            name,
+            publisher,
+            template,
+        } => lsp::cmd_new(&dir, &name, &publisher, &template, cli.json),
         Commands::InitDebug => lsp::cmd_init_debug(cli.json),
         Commands::Authenticate { cmd, tenant } => {
             lsp::cmd_authenticate(&cmd, tenant.as_deref(), cli.json)
@@ -775,9 +810,13 @@ fn main() -> ExitCode {
         Commands::InsightStats => insight::cmd_insight_stats(cli.json),
         Commands::DeadCode => insight::cmd_dead_code(cli.json),
         Commands::Impact { symbol } => insight::cmd_impact(&symbol, cli.json),
-        Commands::SuggestEvent { object, procedure, table, field, event } => {
-            insight::cmd_suggest_event(object, procedure, table, field, event, cli.json)
-        }
+        Commands::SuggestEvent {
+            object,
+            procedure,
+            table,
+            field,
+            event,
+        } => insight::cmd_suggest_event(object, procedure, table, field, event, cli.json),
         Commands::Diag => lsp::cmd_diag(cli.json),
         Commands::Debug { subcmd } => debug::cmd_debug(&subcmd, cli.json),
         Commands::Snapshot { subcmd } => debug::cmd_snapshot(&subcmd, cli.json),
@@ -786,29 +825,53 @@ fn main() -> ExitCode {
         Commands::AddApplicationArea { value, dry_run } => {
             lsp::cmd_add_application_area(&value, dry_run, cli.json)
         }
-        Commands::AddTooltips { from_table, dry_run } => {
-            lsp::cmd_add_tooltips(from_table.as_deref(), dry_run, cli.json)
-        }
+        Commands::AddTooltips {
+            from_table,
+            dry_run,
+        } => lsp::cmd_add_tooltips(from_table.as_deref(), dry_run, cli.json),
         Commands::AddDataClassification { value, dry_run } => {
             lsp::cmd_add_data_classification(&value, dry_run, cli.json)
         }
         Commands::Tests => lsp::cmd_tests_discover(cli.json),
-        Commands::TestRun { codeunit, name, method, config } => {
-            lsp::cmd_test_run(codeunit, name.as_deref(), method.as_deref(), config.as_deref(), cli.json)
-        }
+        Commands::TestRun {
+            codeunit,
+            name,
+            method,
+            config,
+        } => lsp::cmd_test_run(
+            codeunit,
+            name.as_deref(),
+            method.as_deref(),
+            config.as_deref(),
+            cli.json,
+        ),
         Commands::TestCoverage => lsp::cmd_tests_coverage(cli.json),
-        Commands::Generate { kind, id, name, table, page_type, subject } => {
-            lsp::cmd_generate(&kind, id, &name, table.as_deref(), page_type.as_deref(), subject.as_deref(), cli.json)
-        }
+        Commands::Generate {
+            kind,
+            id,
+            name,
+            table,
+            page_type,
+            subject,
+        } => lsp::cmd_generate(
+            &kind,
+            id,
+            &name,
+            table.as_deref(),
+            page_type.as_deref(),
+            subject.as_deref(),
+            cli.json,
+        ),
         Commands::Obsolete => lsp::cmd_obsolete(cli.json),
         Commands::AuditData => lsp::cmd_audit_data_classification(cli.json),
         Commands::PermissionAudit => lsp::cmd_permission_audit(cli.json),
         Commands::DepsGraph { format } => lsp::cmd_deps_graph(&format, cli.json),
         Commands::Breaking => lsp::cmd_breaking_changes(cli.json),
         Commands::ArchLint => lsp::cmd_arch_lint(cli.json),
-        Commands::Duplicates { min_tokens, min_similarity } => {
-            lsp::cmd_duplicates(min_tokens, min_similarity, cli.json)
-        }
+        Commands::Duplicates {
+            min_tokens,
+            min_similarity,
+        } => lsp::cmd_duplicates(min_tokens, min_similarity, cli.json),
         Commands::Upgrade => lsp::cmd_upgrade_report(cli.json),
         Commands::ProfilerHints { hotspots } => lsp::cmd_profiler_hints(&hotspots, cli.json),
         Commands::SortMembers { file, all, dry_run } => {

@@ -130,16 +130,27 @@ async fn test_edit_a01_change_file_updates_document_symbols() {
     let symbols = client.document_symbols("src/edit_test.al").await;
     let names: Vec<&str> = symbol_names(&symbols);
     assert!(names.contains(&"HelloWorld"), "initial symbols: {names:?}");
-    assert!(!names.contains(&"NewProcedure"), "NewProcedure should not exist yet");
+    assert!(
+        !names.contains(&"NewProcedure"),
+        "NewProcedure should not exist yet"
+    );
 
     // Edit: add a second procedure
-    client.change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC).await;
+    client
+        .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
+        .await;
 
     // After edit: both procedures visible
     let symbols = client.document_symbols("src/edit_test.al").await;
     let names: Vec<&str> = symbol_names(&symbols);
-    assert!(names.contains(&"HelloWorld"), "HelloWorld should still exist after edit");
-    assert!(names.contains(&"NewProcedure"), "NewProcedure should appear after edit: {names:?}");
+    assert!(
+        names.contains(&"HelloWorld"),
+        "HelloWorld should still exist after edit"
+    );
+    assert!(
+        names.contains(&"NewProcedure"),
+        "NewProcedure should appear after edit: {names:?}"
+    );
 
     client.shutdown().await;
 }
@@ -150,14 +161,22 @@ async fn test_edit_a02_change_file_updates_hover() {
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
     // Edit: add NewProcedure
-    client.change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC).await;
+    client
+        .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
+        .await;
 
     // Hover on the new procedure's parameter "Input" (line 10, col 28 zero-indexed)
     let hover = client.hover("src/edit_test.al", 10, 28).await;
-    assert!(hover.is_some(), "hover should work on parameter in newly added procedure");
+    assert!(
+        hover.is_some(),
+        "hover should work on parameter in newly added procedure"
+    );
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val).unwrap_or("");
-    assert!(content.contains("Text"), "hover on Input param should show Text type: got {content}");
+    assert!(
+        content.contains("Text"),
+        "hover on Input param should show Text type: got {content}"
+    );
 
     client.shutdown().await;
 }
@@ -168,13 +187,17 @@ async fn test_edit_a03_change_file_updates_completions() {
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
     // Edit: add NewProcedure
-    client.change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC).await;
+    client
+        .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
+        .await;
 
     // Completions inside HelloWorld body should include NewProcedure
     let items = client.completion("src/edit_test.al", 7, 0).await;
     let labels: Vec<&str> = completion_labels(&items);
-    assert!(labels.iter().any(|l| l.contains("NewProcedure")),
-        "completions should include newly added procedure: {labels:?}");
+    assert!(
+        labels.iter().any(|l| l.contains("NewProcedure")),
+        "completions should include newly added procedure: {labels:?}"
+    );
 
     client.shutdown().await;
 }
@@ -185,17 +208,21 @@ async fn test_edit_a04_change_file_updates_semantic_tokens() {
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
     let tokens_before = client.semantic_tokens("src/edit_test.al").await;
-    let count_before = tokens_before.as_ref()
+    let count_before = tokens_before
+        .as_ref()
         .and_then(|t| t.get("data"))
         .and_then(|d| d.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
 
     // Edit: add more code
-    client.change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC).await;
+    client
+        .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
+        .await;
 
     let tokens_after = client.semantic_tokens("src/edit_test.al").await;
-    let count_after = tokens_after.as_ref()
+    let count_after = tokens_after
+        .as_ref()
         .and_then(|t| t.get("data"))
         .and_then(|d| d.as_array())
         .map(|a| a.len())
@@ -221,15 +248,19 @@ async fn test_edit_b01_diagnostics_appear_after_introducing_error() {
     let initial_diag_count = diags.values().flat_map(|v| v.iter()).count();
 
     // Edit: introduce syntax error (missing semicolon)
-    client.change_file("src/edit_test.al", EDITED_CODEUNIT_SYNTAX_ERROR).await;
+    client
+        .change_file("src/edit_test.al", EDITED_CODEUNIT_SYNTAX_ERROR)
+        .await;
 
     let diags = client.drain_diagnostics();
     let uri = client.file_uri("src/edit_test.al");
     // The server should publish diagnostics for the edited file
     // (may or may not include syntax errors depending on parser tolerance)
     // The key assertion is: diagnostics were published (the server processed the change)
-    assert!(diags.contains_key(&uri) || !diags.is_empty(),
-        "server should publish diagnostics after edit introducing error");
+    assert!(
+        diags.contains_key(&uri) || !diags.is_empty(),
+        "server should publish diagnostics after edit introducing error"
+    );
 
     client.shutdown().await;
 }
@@ -244,20 +275,36 @@ async fn test_edit_b02_diagnostics_clear_after_fixing_error() {
     client.open_file("src/edit_test.al", EMPTY_BEGIN_END).await;
     let diags = client.drain_diagnostics();
     let uri = client.file_uri("src/edit_test.al");
-    let initial_codes: Vec<&str> = diags.get(&uri)
-        .map(|d| d.iter().filter_map(|v| v.get("code").and_then(|c| c.as_str())).collect())
+    let initial_codes: Vec<&str> = diags
+        .get(&uri)
+        .map(|d| {
+            d.iter()
+                .filter_map(|v| v.get("code").and_then(|c| c.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
-    assert!(!initial_codes.contains(&"AL-L001"),
-        "AL-L001 should not appear with custom lint rules removed: got {initial_codes:?}");
+    assert!(
+        !initial_codes.contains(&"AL-L001"),
+        "AL-L001 should not appear with custom lint rules removed: got {initial_codes:?}"
+    );
 
     // Edit to valid code — server must process without error.
-    client.change_file("src/edit_test.al", INITIAL_CODEUNIT).await;
+    client
+        .change_file("src/edit_test.al", INITIAL_CODEUNIT)
+        .await;
     let diags = client.drain_diagnostics();
-    let fixed_codes: Vec<&str> = diags.get(&uri)
-        .map(|d| d.iter().filter_map(|v| v.get("code").and_then(|c| c.as_str())).collect())
+    let fixed_codes: Vec<&str> = diags
+        .get(&uri)
+        .map(|d| {
+            d.iter()
+                .filter_map(|v| v.get("code").and_then(|c| c.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
-    assert!(!fixed_codes.contains(&"AL-L001"),
-        "AL-L001 should not appear after edit either: got {fixed_codes:?}");
+    assert!(
+        !fixed_codes.contains(&"AL-L001"),
+        "AL-L001 should not appear after edit either: got {fixed_codes:?}"
+    );
 
     client.shutdown().await;
 }
@@ -279,20 +326,36 @@ async fn test_edit_b03_lint_diagnostics_update_on_edit() {
     client.open_file("src/edit_test.al", with_todo).await;
     let diags = client.drain_diagnostics();
     let uri = client.file_uri("src/edit_test.al");
-    let codes: Vec<&str> = diags.get(&uri)
-        .map(|d| d.iter().filter_map(|v| v.get("code").and_then(|c| c.as_str())).collect())
+    let codes: Vec<&str> = diags
+        .get(&uri)
+        .map(|d| {
+            d.iter()
+                .filter_map(|v| v.get("code").and_then(|c| c.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
-    assert!(!codes.contains(&"AL-L007"),
-        "AL-L007 should not appear with custom lint rules removed: got {codes:?}");
+    assert!(
+        !codes.contains(&"AL-L007"),
+        "AL-L007 should not appear with custom lint rules removed: got {codes:?}"
+    );
 
     // Edit: remove the TODO — server must still process the change without error.
-    client.change_file("src/edit_test.al", INITIAL_CODEUNIT).await;
+    client
+        .change_file("src/edit_test.al", INITIAL_CODEUNIT)
+        .await;
     let diags = client.drain_diagnostics();
-    let codes: Vec<&str> = diags.get(&uri)
-        .map(|d| d.iter().filter_map(|v| v.get("code").and_then(|c| c.as_str())).collect())
+    let codes: Vec<&str> = diags
+        .get(&uri)
+        .map(|d| {
+            d.iter()
+                .filter_map(|v| v.get("code").and_then(|c| c.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
-    assert!(!codes.contains(&"AL-L007"),
-        "AL-L007 should not appear after edit: got {codes:?}");
+    assert!(
+        !codes.contains(&"AL-L007"),
+        "AL-L007 should not appear after edit: got {codes:?}"
+    );
 
     client.shutdown().await;
 }
@@ -309,7 +372,10 @@ async fn test_edit_c01_close_file_does_not_crash() {
 
     // Server should still be responsive after closing a file
     let symbols = client.workspace_symbol("").await;
-    assert!(!symbols.is_empty(), "server should still work after closing a file");
+    assert!(
+        !symbols.is_empty(),
+        "server should still work after closing a file"
+    );
 
     client.shutdown().await;
 }
@@ -326,11 +392,15 @@ async fn test_edit_c02_close_then_reopen_file() {
     client.close_file("src/edit_test.al").await;
 
     // Reopen with different content
-    client.open_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC).await;
+    client
+        .open_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
+        .await;
     let symbols2 = client.document_symbols("src/edit_test.al").await;
     let names: Vec<&str> = symbol_names(&symbols2);
-    assert!(names.contains(&"NewProcedure"),
-        "reopened file should reflect new content: {names:?}");
+    assert!(
+        names.contains(&"NewProcedure"),
+        "reopened file should reflect new content: {names:?}"
+    );
 
     client.shutdown().await;
 }
@@ -347,7 +417,10 @@ async fn test_edit_c03_close_one_file_other_still_works() {
 
     // file_b should still work
     let symbols = client.document_symbols("src/file_b.al").await;
-    assert!(!symbols.is_empty(), "file_b should still have symbols after closing file_a");
+    assert!(
+        !symbols.is_empty(),
+        "file_b should still have symbols after closing file_a"
+    );
 
     client.shutdown().await;
 }
@@ -362,14 +435,19 @@ async fn test_edit_d01_edit_variable_then_hover() {
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
     // Edit: rename variable from Msg to Greeting
-    client.change_file("src/edit_test.al", EDITED_CODEUNIT_RENAME_VAR).await;
+    client
+        .change_file("src/edit_test.al", EDITED_CODEUNIT_RENAME_VAR)
+        .await;
 
     // Hover on the renamed variable (line 6, "Greeting")
     let hover = client.hover("src/edit_test.al", 6, 10).await;
     assert!(hover.is_some(), "hover should work on renamed variable");
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val).unwrap_or("");
-    assert!(content.contains("Text"), "hover on Greeting should show Text type: got {content}");
+    assert!(
+        content.contains("Text"),
+        "hover on Greeting should show Text type: got {content}"
+    );
 
     client.shutdown().await;
 }
@@ -382,16 +460,22 @@ async fn test_edit_d02_add_field_then_document_symbols() {
     let symbols_before = client.document_symbols("src/edit_table.al").await;
 
     // Edit: add a field
-    client.change_file("src/edit_table.al", TABLE_AL_ADD_FIELD).await;
+    client
+        .change_file("src/edit_table.al", TABLE_AL_ADD_FIELD)
+        .await;
 
     let symbols_after = client.document_symbols("src/edit_table.al").await;
     let names_after: Vec<&str> = symbol_names(&symbols_after);
-    assert!(names_after.iter().any(|n| n.contains("Description")),
-        "document symbols should include newly added field: {names_after:?}");
+    assert!(
+        names_after.iter().any(|n| n.contains("Description")),
+        "document symbols should include newly added field: {names_after:?}"
+    );
 
     // Should have more symbols after adding a field
-    assert!(symbol_names(&symbols_after).len() > symbol_names(&symbols_before).len(),
-        "should have more symbols after adding a field");
+    assert!(
+        symbol_names(&symbols_after).len() > symbol_names(&symbols_before).len(),
+        "should have more symbols after adding a field"
+    );
 
     client.shutdown().await;
 }
@@ -404,15 +488,21 @@ async fn test_edit_d03_edit_does_not_corrupt_other_file() {
     client.open_file("src/file_b.al", TABLE_AL).await;
 
     // Edit only file_a
-    client.change_file("src/file_a.al", EDITED_CODEUNIT_ADD_PROC).await;
+    client
+        .change_file("src/file_a.al", EDITED_CODEUNIT_ADD_PROC)
+        .await;
 
     // file_b should be unchanged
     let symbols_b = client.document_symbols("src/file_b.al").await;
     let names_b: Vec<&str> = symbol_names(&symbols_b);
-    assert!(names_b.iter().any(|n| n.contains("No.")),
-        "file_b should still have its original fields: {names_b:?}");
-    assert!(!names_b.iter().any(|n| n.contains("NewProcedure")),
-        "file_b should NOT have file_a's new procedure");
+    assert!(
+        names_b.iter().any(|n| n.contains("No.")),
+        "file_b should still have its original fields: {names_b:?}"
+    );
+    assert!(
+        !names_b.iter().any(|n| n.contains("NewProcedure")),
+        "file_b should NOT have file_a's new procedure"
+    );
 
     client.shutdown().await;
 }
@@ -428,7 +518,8 @@ async fn test_edit_e01_rapid_edits_no_crash() {
 
     // Simulate rapid typing — 10 edits without waiting
     for i in 0..10 {
-        let content = format!(r#"codeunit 50100 "Edit Test"
+        let content = format!(
+            r#"codeunit 50100 "Edit Test"
 {{
     procedure HelloWorld()
     var
@@ -437,7 +528,8 @@ async fn test_edit_e01_rapid_edits_no_crash() {
         Msg := 'Hello edit {i}';
         Message(Msg);
     end;
-}}"#);
+}}"#
+        );
         client.change_file_no_wait("src/rapid.al", &content).await;
     }
 
@@ -446,7 +538,10 @@ async fn test_edit_e01_rapid_edits_no_crash() {
 
     // Server should still be responsive
     let symbols = client.document_symbols("src/rapid.al").await;
-    assert!(!symbols.is_empty(), "server should still work after rapid edits");
+    assert!(
+        !symbols.is_empty(),
+        "server should still work after rapid edits"
+    );
 
     // Hover should work
     let hover = client.hover("src/rapid.al", 6, 10).await;
@@ -461,15 +556,23 @@ async fn test_edit_e02_rapid_edits_final_state_correct() {
     client.open_file("src/rapid.al", INITIAL_CODEUNIT).await;
 
     // Send several rapid edits, last one adds NewProcedure
-    client.change_file_no_wait("src/rapid.al", INITIAL_CODEUNIT).await;
-    client.change_file_no_wait("src/rapid.al", EDITED_CODEUNIT_RENAME_VAR).await;
-    client.change_file("src/rapid.al", EDITED_CODEUNIT_ADD_PROC).await; // wait on last one
+    client
+        .change_file_no_wait("src/rapid.al", INITIAL_CODEUNIT)
+        .await;
+    client
+        .change_file_no_wait("src/rapid.al", EDITED_CODEUNIT_RENAME_VAR)
+        .await;
+    client
+        .change_file("src/rapid.al", EDITED_CODEUNIT_ADD_PROC)
+        .await; // wait on last one
 
     // Final state should reflect the last edit
     let symbols = client.document_symbols("src/rapid.al").await;
     let names: Vec<&str> = symbol_names(&symbols);
-    assert!(names.contains(&"NewProcedure"),
-        "final state should reflect last edit: {names:?}");
+    assert!(
+        names.contains(&"NewProcedure"),
+        "final state should reflect last edit: {names:?}"
+    );
 
     client.shutdown().await;
 }
@@ -486,12 +589,17 @@ async fn test_edit_f01_folding_ranges_update_after_edit() {
     let folds_before = client.folding_ranges("src/edit_test.al").await;
 
     // Add a second procedure (more foldable regions)
-    client.change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC).await;
+    client
+        .change_file("src/edit_test.al", EDITED_CODEUNIT_ADD_PROC)
+        .await;
 
     let folds_after = client.folding_ranges("src/edit_test.al").await;
-    assert!(folds_after.len() >= folds_before.len(),
+    assert!(
+        folds_after.len() >= folds_before.len(),
         "adding a procedure should not reduce folding ranges: before={}, after={}",
-        folds_before.len(), folds_after.len());
+        folds_before.len(),
+        folds_after.len()
+    );
 
     client.shutdown().await;
 }
@@ -510,16 +618,24 @@ end;
     client.open_file("src/edit_test.al", unformatted).await;
 
     let edits = client.format("src/edit_test.al").await;
-    assert!(!edits.is_empty(), "unformatted code should produce formatting edits");
+    assert!(
+        !edits.is_empty(),
+        "unformatted code should produce formatting edits"
+    );
 
     // Now edit to well-formatted code
-    client.change_file("src/edit_test.al", INITIAL_CODEUNIT).await;
+    client
+        .change_file("src/edit_test.al", INITIAL_CODEUNIT)
+        .await;
 
     let edits2 = client.format("src/edit_test.al").await;
     // Well-formatted code should produce fewer (or no) edits
-    assert!(edits2.len() <= edits.len(),
+    assert!(
+        edits2.len() <= edits.len(),
         "well-formatted code should produce fewer edits: before={}, after={}",
-        edits.len(), edits2.len());
+        edits.len(),
+        edits2.len()
+    );
 
     client.shutdown().await;
 }
@@ -534,18 +650,23 @@ async fn test_edit_g01_configuration_change_no_crash() {
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
     // Send a configuration change (Zed does this when settings update)
-    client.change_configuration(serde_json::json!({
-        "al": {
-            "inlayHints": {
-                "parameterNames": true,
-                "returnTypes": true
+    client
+        .change_configuration(serde_json::json!({
+            "al": {
+                "inlayHints": {
+                    "parameterNames": true,
+                    "returnTypes": true
+                }
             }
-        }
-    })).await;
+        }))
+        .await;
 
     // Server should still be responsive
     let hover = client.hover("src/edit_test.al", 2, 14).await;
-    assert!(hover.is_some(), "hover should work after configuration change");
+    assert!(
+        hover.is_some(),
+        "hover should work after configuration change"
+    );
 
     client.shutdown().await;
 }
@@ -578,7 +699,9 @@ async fn test_edit_h02_edit_to_invalid_al() {
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
     // Edit to completely invalid AL
-    client.change_file("src/edit_test.al", "this is not valid AL code at all!!!").await;
+    client
+        .change_file("src/edit_test.al", "this is not valid AL code at all!!!")
+        .await;
 
     // Queries should not crash
     let symbols = client.document_symbols("src/edit_test.al").await;
@@ -626,21 +749,28 @@ async fn test_edit_h04_many_sequential_edits() {
 
     // 50 sequential edits
     for i in 0..50 {
-        let content = format!(r#"codeunit 50100 "Edit Test"
+        let content = format!(
+            r#"codeunit 50100 "Edit Test"
 {{
     procedure Proc{i}()
     begin
     end;
-}}"#);
+}}"#
+        );
         client.change_file("src/edit_test.al", &content).await;
     }
 
     // After 50 edits, the latest procedure should be visible
     let symbols = client.document_symbols("src/edit_test.al").await;
     let names: Vec<&str> = symbol_names(&symbols);
-    assert!(names.contains(&"Proc49"), "should see the 50th procedure: {names:?}");
-    assert!(!names.contains(&"Proc0"), "should NOT see earlier procedures: {names:?}");
+    assert!(
+        names.contains(&"Proc49"),
+        "should see the 50th procedure: {names:?}"
+    );
+    assert!(
+        !names.contains(&"Proc0"),
+        "should NOT see earlier procedures: {names:?}"
+    );
 
     client.shutdown().await;
 }
-

@@ -12,15 +12,15 @@ use crate::server::AlServer;
 
 /// Wrap diagnostics in a full pull-diagnostics report.
 pub(crate) fn full_diagnostic_report(items: Vec<Diagnostic>) -> DocumentDiagnosticReportResult {
-    DocumentDiagnosticReportResult::Report(
-        DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+    DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
+        RelatedFullDocumentDiagnosticReport {
             related_documents: None,
             full_document_diagnostic_report: FullDocumentDiagnosticReport {
                 result_id: None,
                 items,
             },
-        }),
-    )
+        },
+    ))
 }
 
 /// Return true if the URI points to a file inside the al-lsp symbol cache.
@@ -45,7 +45,11 @@ pub(crate) fn is_cache_path(uri: &Url) -> bool {
 /// Used by the pull path (`textDocument/diagnostic`). The push path
 /// (`publish_diagnostics`) keeps its own two-phase publish logic for instant
 /// Phase-1 feedback.
-pub(crate) async fn compute_diagnostics(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
+pub(crate) async fn compute_diagnostics(
+    server: &AlServer,
+    uri: &Url,
+    text: &str,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     // Phase 1: Instant syntax + lint.
@@ -55,7 +59,10 @@ pub(crate) async fn compute_diagnostics(server: &AlServer, uri: &Url, text: &str
             None => {
                 let result = AlParser::parse_quick(text);
                 let version = server.workspace.documents.get_version(uri).unwrap_or(0);
-                server.workspace.documents.cache_tree(uri, version, result.tree.clone());
+                server
+                    .workspace
+                    .documents
+                    .cache_tree(uri, version, result.tree.clone());
                 result.tree
             }
         };
@@ -111,7 +118,10 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
                 tracing::warn!(uri = %uri, "publish_diagnostics: document not in store, parsing directly");
                 let result = AlParser::parse_quick(text);
                 let version = server.workspace.documents.get_version(uri).unwrap_or(0);
-                server.workspace.documents.cache_tree(uri, version, result.tree.clone());
+                server
+                    .workspace
+                    .documents
+                    .cache_tree(uri, version, result.tree.clone());
                 result.tree
             }
         };
@@ -367,7 +377,10 @@ mod tests {
         let src = "codeunit 50100 T { }";
         let err = al_core::syntax::SyntaxError {
             message: "Missing semicolon".to_string(),
-            range: al_core::syntax::AlParser::parse_quick(src).tree.root_node().range(),
+            range: al_core::syntax::AlParser::parse_quick(src)
+                .tree
+                .root_node()
+                .range(),
         };
 
         let diag = syntax_error_to_diagnostic(&err, src.as_bytes());
@@ -382,7 +395,10 @@ mod tests {
         let lint = al_core::syntax::LintDiagnostic {
             code: "AL-L001".to_string(),
             message: "Empty begin..end block".to_string(),
-            range: al_core::syntax::AlParser::parse_quick(src).tree.root_node().range(),
+            range: al_core::syntax::AlParser::parse_quick(src)
+                .tree
+                .root_node()
+                .range(),
             severity: al_core::syntax::LintSeverity::Warning,
         };
 
@@ -402,7 +418,10 @@ mod tests {
         let lint = al_core::syntax::LintDiagnostic {
             code: "AL-L006".to_string(),
             message: "Empty trigger".to_string(),
-            range: al_core::syntax::AlParser::parse_quick(src).tree.root_node().range(),
+            range: al_core::syntax::AlParser::parse_quick(src)
+                .tree
+                .root_node()
+                .range(),
             severity: al_core::syntax::LintSeverity::Hint,
         };
 
@@ -416,7 +435,10 @@ mod tests {
         let lint = al_core::syntax::LintDiagnostic {
             code: "AL-L007".to_string(),
             message: "TODO comment".to_string(),
-            range: al_core::syntax::AlParser::parse_quick(src).tree.root_node().range(),
+            range: al_core::syntax::AlParser::parse_quick(src)
+                .tree
+                .root_node()
+                .range(),
             severity: al_core::syntax::LintSeverity::Info,
         };
 

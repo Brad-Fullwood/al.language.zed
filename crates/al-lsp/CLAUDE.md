@@ -2,6 +2,15 @@
 
 **TRANSPORT ONLY.** All business logic lives in al-core/src/queries/.
 
+## Quick Reference
+
+```sh
+cargo test -p al-lsp                        # all tests (~20 inline + integration)
+cargo test -p al-lsp --test integration     # integration tests (syntax + symbols, no binary spawn)
+cargo run -p al-lsp -- --stdio              # run LSP server (stdin/stdout)
+cargo run -p al-lsp -- daemon --project .   # run daemon mode
+```
+
 ## The Pattern (every handler)
 
 ```
@@ -26,6 +35,7 @@ If you're writing >10 lines of non-trivial logic here, it belongs in al-core.
 
 | File | Purpose |
 |------|---------|
+| lib.rs | Crate root, re-exports |
 | main.rs | Entry point, arg parsing |
 | server.rs | tower-lsp setup, capability registration |
 | handlers.rs | LSP request/notification dispatch |

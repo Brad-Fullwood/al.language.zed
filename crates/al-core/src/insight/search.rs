@@ -14,8 +14,8 @@
 
 use std::collections::HashSet;
 
-use petgraph::Direction;
 use petgraph::visit::EdgeRef;
+use petgraph::Direction;
 use serde::Serialize;
 
 use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
@@ -120,7 +120,14 @@ fn trace_from_node(
                                     name: ename.clone(),
                                     object: object_name.clone(),
                                 });
-                                trace_from_node(graph, evt_idx, depth + 2, max_depth, visited, steps);
+                                trace_from_node(
+                                    graph,
+                                    evt_idx,
+                                    depth + 2,
+                                    max_depth,
+                                    visited,
+                                    steps,
+                                );
                             }
                         }
                     }
@@ -235,7 +242,10 @@ pub fn trace_event_chain(
             let chain = ChainNode {
                 edge_kind: "origin".to_string(),
                 node_type: "event".to_string(),
-                name: root_info.map(|i| i.name.as_str()).unwrap_or(event_name).to_string(),
+                name: root_info
+                    .map(|i| i.name.as_str())
+                    .unwrap_or(event_name)
+                    .to_string(),
                 object: pub_obj,
                 depth: 0,
                 cycle: false,
@@ -407,9 +417,7 @@ pub fn export_dot(graph: &InsightGraph) -> String {
     for idx in graph.graph.node_indices() {
         let node = &graph.graph[idx];
         let (label, shape) = match node {
-            InsightNode::Object { kind, name, .. } => {
-                (format!("{kind}\\n{name}"), "box")
-            }
+            InsightNode::Object { kind, name, .. } => (format!("{kind}\\n{name}"), "box"),
             InsightNode::Procedure {
                 object_name, name, ..
             } => (format!("{object_name}.{name}"), "ellipse"),
@@ -496,7 +504,7 @@ mod tests {
     fn make_codeunit_with_events(
         id: i32,
         name: &str,
-        events: Vec<(&str, &str)>,       // (method_name, attr_name)
+        events: Vec<(&str, &str)>, // (method_name, attr_name)
         subscribers: Vec<(&str, &str, &str, &str)>, // (method, target_kind, target_obj, target_event)
     ) -> SymbolEntry {
         let mut methods = Vec::new();
@@ -533,8 +541,8 @@ mod tests {
             id,
             name: name.to_string(),
             extends: None,
-                implements: Vec::new(),
-                namespace: String::new(),
+            implements: Vec::new(),
+            namespace: String::new(),
             package: "TestPkg".to_string(),
             methods,
             fields: Vec::new(),
@@ -550,12 +558,7 @@ mod tests {
     fn trace_event_finds_subscribers() {
         let index = SymbolIndex::new();
         index.add_entries(&[
-            make_codeunit_with_events(
-                1,
-                "Publisher",
-                vec![("OnPost", "IntegrationEvent")],
-                vec![],
-            ),
+            make_codeunit_with_events(1, "Publisher", vec![("OnPost", "IntegrationEvent")], vec![]),
             make_codeunit_with_events(
                 2,
                 "Subscriber",
@@ -666,7 +669,12 @@ mod tests {
     #[test]
     fn chain_returns_root_event() {
         let index = SymbolIndex::new();
-        index.add_entries(&[make_cu(1, "CU", vec![("OnPost", "IntegrationEvent")], vec![])]);
+        index.add_entries(&[make_cu(
+            1,
+            "CU",
+            vec![("OnPost", "IntegrationEvent")],
+            vec![],
+        )]);
 
         let mut insight = InsightGraph::new();
         insight.build_from_index(&index);
@@ -684,7 +692,12 @@ mod tests {
     fn chain_finds_single_subscriber() {
         let index = SymbolIndex::new();
         index.add_entries(&[
-            make_cu(1, "SalesPost", vec![("OnAfterPost", "IntegrationEvent")], vec![]),
+            make_cu(
+                1,
+                "SalesPost",
+                vec![("OnAfterPost", "IntegrationEvent")],
+                vec![],
+            ),
             make_cu(
                 2,
                 "MyExt",
@@ -714,9 +727,24 @@ mod tests {
         let index = SymbolIndex::new();
         index.add_entries(&[
             make_cu(1, "Publisher", vec![("OnRelease", "BusinessEvent")], vec![]),
-            make_cu(2, "SubA", vec![], vec![("H1", "Codeunit", "Publisher", "OnRelease")]),
-            make_cu(3, "SubB", vec![], vec![("H2", "Codeunit", "Publisher", "OnRelease")]),
-            make_cu(4, "SubC", vec![], vec![("H3", "Codeunit", "Publisher", "OnRelease")]),
+            make_cu(
+                2,
+                "SubA",
+                vec![],
+                vec![("H1", "Codeunit", "Publisher", "OnRelease")],
+            ),
+            make_cu(
+                3,
+                "SubB",
+                vec![],
+                vec![("H2", "Codeunit", "Publisher", "OnRelease")],
+            ),
+            make_cu(
+                4,
+                "SubC",
+                vec![],
+                vec![("H3", "Codeunit", "Publisher", "OnRelease")],
+            ),
         ]);
 
         let mut insight = InsightGraph::new();
@@ -777,7 +805,12 @@ mod tests {
         let index = SymbolIndex::new();
         index.add_entries(&[
             make_cu(1, "Pub", vec![("OnPost", "IntegrationEvent")], vec![]),
-            make_cu(2, "Sub", vec![], vec![("Handle", "Codeunit", "Pub", "OnPost")]),
+            make_cu(
+                2,
+                "Sub",
+                vec![],
+                vec![("Handle", "Codeunit", "Pub", "OnPost")],
+            ),
         ]);
 
         let mut insight = InsightGraph::new();
@@ -803,7 +836,12 @@ mod tests {
                 vec![("EventB", "IntegrationEvent")],
                 vec![("HandleEventA", "Codeunit", "Pub", "EventA")],
             ),
-            make_cu(3, "Final", vec![], vec![("HandleEventB", "Codeunit", "Mid", "EventB")]),
+            make_cu(
+                3,
+                "Final",
+                vec![],
+                vec![("HandleEventB", "Codeunit", "Mid", "EventB")],
+            ),
         ]);
 
         let mut insight = InsightGraph::new();
@@ -831,7 +869,12 @@ mod tests {
     #[test]
     fn chain_event_name_case_insensitive() {
         let index = SymbolIndex::new();
-        index.add_entries(&[make_cu(1, "CU", vec![("OnPost", "IntegrationEvent")], vec![])]);
+        index.add_entries(&[make_cu(
+            1,
+            "CU",
+            vec![("OnPost", "IntegrationEvent")],
+            vec![],
+        )]);
 
         let mut insight = InsightGraph::new();
         insight.build_from_index(&index);
@@ -850,7 +893,12 @@ mod tests {
     #[test]
     fn chain_unknown_event_returns_empty() {
         let index = SymbolIndex::new();
-        index.add_entries(&[make_cu(1, "CU", vec![("OnPost", "IntegrationEvent")], vec![])]);
+        index.add_entries(&[make_cu(
+            1,
+            "CU",
+            vec![("OnPost", "IntegrationEvent")],
+            vec![],
+        )]);
 
         let mut insight = InsightGraph::new();
         insight.build_from_index(&index);

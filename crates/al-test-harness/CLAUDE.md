@@ -2,13 +2,43 @@
 
 Spawns the real `al-lsp` binary over stdio for end-to-end LSP testing.
 
+## Quick Reference
+
+```sh
+cargo test -p al-test-harness                           # all E2E tests (spawns al-lsp binary)
+cargo test -p al-test-harness --test e2e                # core E2E tests
+cargo test -p al-test-harness --test regression         # regression tests
+cargo test -p al-test-harness --test zed_fidelity       # Zed parity tests
+cargo test -p al-test-harness --test e2e -- test_name   # single test
+RUST_LOG=debug cargo test -p al-test-harness --test e2e # with logging
+```
+
+**Requires:** `al-lsp` binary built first (`cargo build -p al-lsp`).
+
+## Test Files
+
+| File | Focus |
+|------|-------|
+| e2e.rs | Core LSP feature tests |
+| regression.rs | Bug regression tests |
+| real_world.rs | Real-world AL file tests |
+| zed_fidelity.rs | Zed editor parity |
+| zed_simulation.rs | Zed workflow simulation |
+| completeness.rs | Feature completeness |
+| data_driven.rs | Data-driven test cases |
+| edit_lifecycle.rs | Document edit lifecycle |
+| integration_full.rs | Full integration scenarios |
+| performance.rs | Performance benchmarks |
+| transport.rs | Transport-level tests |
+
 ## Key Types
 
 - `LspClient` — owns the child process, async writer, pending-request map, notification channel, document versions
 
 ## Public API
 
-- `spawn(project_root)` / `connect(socket_path, project_root)` — constructors (`connect` is unimplemented, blocked on T303)
+- `spawn(project_root)` — spawns al-lsp over stdio with full LSP handshake
+- `connect(socket_path, project_root)` — daemon socket transport (unimplemented)
 - `open_file()`, `change_file()`, `close_file()` — document lifecycle (waits for publishDiagnostics, 5s timeout)
 - `hover()`, `completion()`, `definition()`, `references()`, `document_symbols()`, `semantic_tokens()`, etc. — LSP queries
 - `drain_notifications()`, `drain_diagnostics()` — notification inspection

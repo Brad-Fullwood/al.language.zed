@@ -46,7 +46,7 @@ fn spawn_parent_monitor() {
 #[cfg(unix)]
 fn spawn_signal_handlers() {
     tokio::spawn(async {
-        use tokio::signal::unix::{SignalKind, signal};
+        use tokio::signal::unix::{signal, SignalKind};
 
         let mut sigterm = match signal(SignalKind::terminate()) {
             Ok(s) => s,
@@ -88,7 +88,10 @@ async fn main() {
     {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("al-lsp: failed to open log file {}: {e}", log_path.display());
+            eprintln!(
+                "al-lsp: failed to open log file {}: {e}",
+                log_path.display()
+            );
             // Fall back to /dev/null or continue without file logging by using stderr
             // We cannot proceed with structured logging — exit so Zed can restart us.
             std::process::exit(1);
@@ -169,11 +172,13 @@ async fn main() {
             let root = PathBuf::from(&project_root);
             if root.join("app.json").is_file() {
                 file_index.scan(&root);
-                tracing::info!(files = file_index.files.len(), "DAP: indexed workspace files");
+                tracing::info!(
+                    files = file_index.files.len(),
+                    "DAP: indexed workspace files"
+                );
             }
         }
         let fi = file_index.clone();
-
 
         let _ = al_dap_client::native_dap::run_native_dap(
             &project_root,
@@ -188,12 +193,12 @@ async fn main() {
             },
             move |file_path| {
                 let path = PathBuf::from(file_path);
-                fi.object_info.get(&path).map(|info| {
-                    al_dap_client::native_dap::ResolvedObject {
+                fi.object_info
+                    .get(&path)
+                    .map(|info| al_dap_client::native_dap::ResolvedObject {
                         object_type: al_dap_client::native_dap::kind_to_object_type(&info.kind),
                         object_id: info.id.unwrap_or(-1) as i32,
-                    }
-                })
+                    })
             },
         )
         .await;
@@ -209,7 +214,8 @@ async fn main() {
         let _ = al_lsp::dap::run_dap_server(&toolchain).await;
     } else if args.iter().any(|a| a == "daemon") {
         // Daemon mode — JSON-RPC over Unix socket
-        let project_arg = args.iter()
+        let project_arg = args
+            .iter()
             .position(|a| a == "--project")
             .and_then(|i| args.get(i + 1))
             .map(PathBuf::from)

@@ -2,6 +2,13 @@
 
 **Leaf crate** — must NOT depend on al-core or any other al-* crate. Used by al-cli, al-explorer, and al-lsp's daemon-mode tests.
 
+## Quick Reference
+
+```sh
+cargo test -p al-daemon-client              # all tests (~9 inline: hash stability, mock server)
+cargo check -p al-daemon-client             # compile check
+```
+
 ## Key Types
 
 - `DaemonClient` — synchronous Unix socket client with auto-start and 3× retry on "initializing" errors

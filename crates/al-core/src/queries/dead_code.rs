@@ -149,29 +149,26 @@ fn find_unused_procedures(
         // nodes that appear in actual call positions (bare calls, member calls, scope
         // calls). This avoids false negatives where a procedure named "Name" or "Status"
         // would match ubiquitous field access tokens like `Rec.Name` or `Rec.Status`.
-        let referenced_in_other_file = all_files.iter().any(|(other_path, other_text, other_tree)| {
-            if *other_path == file_path {
-                return false;
-            }
-            // Primary: tree-sitter call references (misses action triggers due to grammar limitation).
-            // Fallback: text scan for calls inside trigger bodies that braced_block doesn't parse.
-            // ISSUE-076: prevents false positives for procedures called inside action triggers.
-            al_syntax::find_call_references(other_tree, other_text, proc_name) > 0
-                || text_contains_call_outside_declaration(
-                    other_text,
-                    proc_name,
-                )
-        });
+        let referenced_in_other_file =
+            all_files
+                .iter()
+                .any(|(other_path, other_text, other_tree)| {
+                    if *other_path == file_path {
+                        return false;
+                    }
+                    // Primary: tree-sitter call references (misses action triggers due to grammar limitation).
+                    // Fallback: text scan for calls inside trigger bodies that braced_block doesn't parse.
+                    // ISSUE-076: prevents false positives for procedures called inside action triggers.
+                    al_syntax::find_call_references(other_tree, other_text, proc_name) > 0
+                        || text_contains_call_outside_declaration(other_text, proc_name)
+                });
 
         let referenced_in_same_file = {
             // find_call_references counts call sites only (excludes the declaration itself),
             // so any non-zero count means the procedure is actually called within this file.
             // Fallback text scan handles calls in action triggers not visible to tree-sitter.
             al_syntax::find_call_references(file_tree, file_text, proc_name) > 0
-                || text_contains_call_outside_declaration(
-                    file_text,
-                    proc_name,
-                )
+                || text_contains_call_outside_declaration(file_text, proc_name)
         };
 
         let referenced = referenced_in_other_file || referenced_in_same_file;
@@ -291,13 +288,15 @@ fn find_unused_fields(
 
     for (field_name, line) in &fields {
         // Check if this field name appears in any OTHER file
-        let referenced = all_files.iter().any(|(other_path, other_text, other_tree)| {
-            if *other_path == file_path {
-                return false; // The defining file doesn't count
-            }
-            let refs = al_syntax::find_variable_references(other_tree, other_text, field_name);
-            !refs.is_empty()
-        });
+        let referenced = all_files
+            .iter()
+            .any(|(other_path, other_text, other_tree)| {
+                if *other_path == file_path {
+                    return false; // The defining file doesn't count
+                }
+                let refs = al_syntax::find_variable_references(other_tree, other_text, field_name);
+                !refs.is_empty()
+            });
 
         if !referenced {
             results.push(UnusedSymbol {
@@ -320,7 +319,10 @@ fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
     for (line_idx, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         // Match: field(id; "Name"; ...) or field(id; Name; ...)
-        if let Some(rest) = trimmed.strip_prefix("field(").or_else(|| trimmed.strip_prefix("field (")) {
+        if let Some(rest) = trimmed
+            .strip_prefix("field(")
+            .or_else(|| trimmed.strip_prefix("field ("))
+        {
             // Extract name: skip the id part (before first ;), then get the name
             if let Some(after_semi) = rest.find(';').map(|i| &rest[i + 1..]) {
                 let name_part = after_semi.trim();
@@ -524,7 +526,8 @@ mod tests {
     fn workspace_with_files(files: Vec<(&str, &str)>) -> Workspace {
         let ws = Workspace::new();
         for (name, content) in files {
-            ws.file_index.add_file(PathBuf::from(name), content.to_string());
+            ws.file_index
+                .add_file(PathBuf::from(name), content.to_string());
         }
         ws
     }
@@ -624,11 +627,15 @@ mod tests {
 
         // "No." and "Name" ARE referenced in MyPage.al
         assert!(
-            !unused.iter().any(|u| u.name == "No." && u.kind == UnusedKind::Field),
+            !unused
+                .iter()
+                .any(|u| u.name == "No." && u.kind == UnusedKind::Field),
             "'No.' should not be flagged as unused"
         );
         assert!(
-            !unused.iter().any(|u| u.name == "Name" && u.kind == UnusedKind::Field),
+            !unused
+                .iter()
+                .any(|u| u.name == "Name" && u.kind == UnusedKind::Field),
             "'Name' should not be flagged as unused"
         );
     }
@@ -752,7 +759,9 @@ mod tests {
 
         // The procedure "Name" is never CALLED — field accesses must not suppress detection
         assert!(
-            unused.iter().any(|u| u.name == "Name" && u.kind == UnusedKind::Procedure),
+            unused
+                .iter()
+                .any(|u| u.name == "Name" && u.kind == UnusedKind::Procedure),
             "Procedure 'Name' must be flagged as unused despite Rec.Name field accesses. Got: {:?}",
             unused
         );

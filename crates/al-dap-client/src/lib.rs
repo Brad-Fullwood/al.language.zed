@@ -6,11 +6,11 @@
 //! This crate does NOT depend on al-core, al-syntax, or al-symbols.
 
 pub mod bc_debug;
-pub mod native_dap;
 pub mod client;
 pub mod config;
 pub mod framing;
 pub mod json_util;
+pub mod native_dap;
 pub mod protocol;
 pub mod types;
 

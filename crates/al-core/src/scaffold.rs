@@ -259,7 +259,8 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
         manifest["capabilities"] = serde_json::json!(["AzureOpenAI"]);
     }
 
-    serde_json::to_string_pretty(&manifest).map_err(|e| format!("Failed to serialize app.json: {e}"))
+    serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("Failed to serialize app.json: {e}"))
 }
 
 fn generate_gitignore() -> String {
@@ -699,8 +700,7 @@ mod tests {
             .iter()
             .any(|f| f.contains("AzureOpenAI")));
         let participant =
-            std::fs::read_to_string(dir.path().join("src/CopilotParticipant.Codeunit.al"))
-                .unwrap();
+            std::fs::read_to_string(dir.path().join("src/CopilotParticipant.Codeunit.al")).unwrap();
         assert!(participant.contains("EventSubscriber"));
         assert!(participant.contains("OnGenerateCompletion"));
     }
@@ -714,7 +714,10 @@ mod tests {
             ..Default::default()
         };
         let result = create_project(dir.path(), &config).unwrap();
-        assert!(result.files_created.iter().any(|f| f.contains("Agent.Codeunit")));
+        assert!(result
+            .files_created
+            .iter()
+            .any(|f| f.contains("Agent.Codeunit")));
         assert!(result
             .files_created
             .iter()

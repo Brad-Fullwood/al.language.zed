@@ -81,7 +81,10 @@ pub enum ProfilingError {
 
 /// Build a [`reqwest::Client`] configured from the profiling config.
 fn make_client(config: &ProfilingConfig) -> Result<reqwest::Client, ProfilingError> {
-    Ok(crate::http_auth::build_http_client(config.accept_invalid_certs, 300)?)
+    Ok(crate::http_auth::build_http_client(
+        config.accept_invalid_certs,
+        300,
+    )?)
 }
 
 /// Start CPU profiling on the BC server.
@@ -98,7 +101,11 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
 
     debug!(url = %url, "profiling: starting CPU profiler");
 
-    let req = crate::http_auth::apply_basic_auth(client.post(&url).json(&serde_json::json!({})), &config.username, &config.password);
+    let req = crate::http_auth::apply_basic_auth(
+        client.post(&url).json(&serde_json::json!({})),
+        &config.username,
+        &config.password,
+    );
     let resp = req.send().await?;
     let status = resp.status();
 
@@ -145,7 +152,11 @@ pub async fn stop_profiling(
     debug!(url = %url, session_id = session_id, "profiling: stopping profiler");
 
     let body = serde_json::json!({ "sessionId": session_id });
-    let req = crate::http_auth::apply_basic_auth(client.post(&url).json(&body), &config.username, &config.password);
+    let req = crate::http_auth::apply_basic_auth(
+        client.post(&url).json(&body),
+        &config.username,
+        &config.password,
+    );
     let resp = req.send().await?;
     let status = resp.status();
 
@@ -198,10 +209,7 @@ pub fn analyze_profile(
         .get("startTime")
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
-    let end_time = json
-        .get("endTime")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+    let end_time = json.get("endTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
     // Duration in ms (Chrome profile times are in microseconds)
     let duration_ms = if end_time > start_time {
@@ -261,7 +269,11 @@ pub fn analyze_profile(
         .collect();
 
     // Sort by self_time_ms descending
-    hotspots.sort_by(|a, b| b.self_time_ms.partial_cmp(&a.self_time_ms).unwrap_or(std::cmp::Ordering::Equal));
+    hotspots.sort_by(|a, b| {
+        b.self_time_ms
+            .partial_cmp(&a.self_time_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     hotspots.truncate(top_n);
 
     Ok(ProfilingResult {

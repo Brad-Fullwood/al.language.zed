@@ -37,7 +37,11 @@ pub struct BlockLocation {
 /// Find duplicate/similar procedures across workspace files.
 ///
 /// Minimum similarity threshold and minimum token count can be configured.
-pub fn find_duplicates(workspace: &Workspace, min_tokens: usize, min_similarity: f32) -> Vec<DuplicateBlock> {
+pub fn find_duplicates(
+    workspace: &Workspace,
+    min_tokens: usize,
+    min_similarity: f32,
+) -> Vec<DuplicateBlock> {
     // Extract procedure bodies from all workspace files
     let mut procedures: Vec<ProcedureBody> = Vec::new();
 
@@ -68,15 +72,20 @@ pub fn find_duplicates(workspace: &Workspace, min_tokens: usize, min_similarity:
 
             // Skip trivially short procedures
             let shorter = a.tokens.len().min(b.tokens.len());
-            if shorter < min_tokens { continue; }
+            if shorter < min_tokens {
+                continue;
+            }
 
             // Skip identical procedure names in the same object (same proc, different file sections)
-            if a.location.object == b.location.object && a.location.procedure == b.location.procedure {
+            if a.location.object == b.location.object
+                && a.location.procedure == b.location.procedure
+            {
                 continue;
             }
 
             let similarity = compute_similarity(&a.tokens, &b.tokens);
-            let token_count = ((a.tokens.len() + b.tokens.len()) as f32 / 2.0 * similarity) as usize;
+            let token_count =
+                ((a.tokens.len() + b.tokens.len()) as f32 / 2.0 * similarity) as usize;
 
             if similarity >= min_similarity {
                 duplicates.push(DuplicateBlock {
@@ -90,7 +99,11 @@ pub fn find_duplicates(workspace: &Workspace, min_tokens: usize, min_similarity:
     }
 
     // Sort by similarity descending
-    duplicates.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    duplicates.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     duplicates
 }
 
@@ -210,15 +223,21 @@ fn collect_tokens(node: tree_sitter::Node, source: &[u8], tokens: &mut Vec<Strin
 
 /// Compute similarity using Jaccard-like coefficient on token bigrams.
 fn compute_similarity(a: &[String], b: &[String]) -> f32 {
-    if a.is_empty() && b.is_empty() { return 1.0; }
-    if a.is_empty() || b.is_empty() { return 0.0; }
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
 
     // Build bigram bags
     let a_bigrams = bigrams(a);
     let b_bigrams = bigrams(b);
 
     let total: usize = a_bigrams.values().sum::<usize>() + b_bigrams.values().sum::<usize>();
-    if total == 0 { return 0.0; }
+    if total == 0 {
+        return 0.0;
+    }
 
     let mut intersection = 0usize;
     for (bigram, count) in &a_bigrams {
@@ -248,7 +267,8 @@ mod tests {
     fn workspace_with(files: Vec<(&str, &str)>) -> Workspace {
         let ws = Workspace::new();
         for (name, content) in files {
-            ws.file_index.add_file(PathBuf::from(name), content.to_string());
+            ws.file_index
+                .add_file(PathBuf::from(name), content.to_string());
         }
         ws
     }

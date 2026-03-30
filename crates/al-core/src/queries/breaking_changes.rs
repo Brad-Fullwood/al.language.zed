@@ -87,11 +87,7 @@ fn build_map(entries: &[SymbolEntry]) -> HashMap<(String, String), &SymbolEntry>
         .collect()
 }
 
-fn diff_object(
-    old: &SymbolEntry,
-    new: &SymbolEntry,
-    changes: &mut Vec<BreakingChange>,
-) {
+fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingChange>) {
     let old_methods: HashMap<String, &MethodSymbol> = old
         .methods
         .iter()
@@ -129,8 +125,16 @@ fn diff_object(
     }
 
     // Check removed fields
-    let old_fields: HashMap<String, _> = old.fields.iter().map(|f| (f.name.to_lowercase(), f)).collect();
-    let new_fields: HashMap<String, _> = new.fields.iter().map(|f| (f.name.to_lowercase(), f)).collect();
+    let old_fields: HashMap<String, _> = old
+        .fields
+        .iter()
+        .map(|f| (f.name.to_lowercase(), f))
+        .collect();
+    let new_fields: HashMap<String, _> = new
+        .fields
+        .iter()
+        .map(|f| (f.name.to_lowercase(), f))
+        .collect();
 
     for (name_lower, old_field) in &old_fields {
         if !new_fields.contains_key(name_lower) {
@@ -138,18 +142,18 @@ fn diff_object(
                 kind: BreakingChangeKind::FieldRemoved,
                 object: old.name.clone(),
                 member: Some(old_field.name.clone()),
-                description: format!(
-                    "Field '{}' was removed from '{}'",
-                    old_field.name, old.name
-                ),
+                description: format!("Field '{}' was removed from '{}'", old_field.name, old.name),
                 is_breaking: true,
             });
         }
     }
 
     // Check removed enum values
-    let new_enums: std::collections::HashSet<String> =
-        new.enum_values.iter().map(|v| v.name.to_lowercase()).collect();
+    let new_enums: std::collections::HashSet<String> = new
+        .enum_values
+        .iter()
+        .map(|v| v.name.to_lowercase())
+        .collect();
 
     for old_val in &old.enum_values {
         if !new_enums.contains(&old_val.name.to_lowercase()) {
@@ -216,7 +220,10 @@ fn check_signature_change(
                     member: Some(old.name.clone()),
                     description: format!(
                         "Parameter {} type changed from '{}' to '{}' in '{}'",
-                        i + 1, op.type_name, np.type_name, old.name
+                        i + 1,
+                        op.type_name,
+                        np.type_name,
+                        old.name
                     ),
                     is_breaking: true,
                 });
@@ -274,46 +281,69 @@ mod tests {
 
         let changes = analyze_breaking_changes(&baseline, &current);
         assert!(
-            changes.iter().any(|c| c.kind == BreakingChangeKind::ObjectRemoved && c.object == "Sales Post"),
-            "Should detect removed object: {:?}", changes
+            changes
+                .iter()
+                .any(|c| c.kind == BreakingChangeKind::ObjectRemoved && c.object == "Sales Post"),
+            "Should detect removed object: {:?}",
+            changes
         );
     }
 
     #[test]
     fn detects_removed_procedure() {
-        let old_cu = make_codeunit("My CU", vec![
-            make_method("PublicProc", vec![], None),
-        ]);
+        let old_cu = make_codeunit("My CU", vec![make_method("PublicProc", vec![], None)]);
         let new_cu = make_codeunit("My CU", vec![]);
 
         let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
         assert!(
-            changes.iter().any(|c| c.kind == BreakingChangeKind::ProcedureRemoved && c.member.as_deref() == Some("PublicProc")),
-            "Should detect removed procedure: {:?}", changes
+            changes
+                .iter()
+                .any(|c| c.kind == BreakingChangeKind::ProcedureRemoved
+                    && c.member.as_deref() == Some("PublicProc")),
+            "Should detect removed procedure: {:?}",
+            changes
         );
     }
 
     #[test]
     fn detects_signature_change() {
-        let old_cu = make_codeunit("My CU", vec![
-            make_method("Process", vec![make_param("Amount", "Decimal")], None),
-        ]);
-        let new_cu = make_codeunit("My CU", vec![
-            make_method("Process", vec![make_param("Amount", "Integer")], None),
-        ]);
+        let old_cu = make_codeunit(
+            "My CU",
+            vec![make_method(
+                "Process",
+                vec![make_param("Amount", "Decimal")],
+                None,
+            )],
+        );
+        let new_cu = make_codeunit(
+            "My CU",
+            vec![make_method(
+                "Process",
+                vec![make_param("Amount", "Integer")],
+                None,
+            )],
+        );
 
         let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
         assert!(
-            changes.iter().any(|c| c.kind == BreakingChangeKind::SignatureChanged),
-            "Should detect parameter type change: {:?}", changes
+            changes
+                .iter()
+                .any(|c| c.kind == BreakingChangeKind::SignatureChanged),
+            "Should detect parameter type change: {:?}",
+            changes
         );
     }
 
     #[test]
     fn no_changes_for_identical_symbols() {
-        let cu = make_codeunit("My CU", vec![
-            make_method("Process", vec![make_param("Amount", "Decimal")], None),
-        ]);
+        let cu = make_codeunit(
+            "My CU",
+            vec![make_method(
+                "Process",
+                vec![make_param("Amount", "Decimal")],
+                None,
+            )],
+        );
 
         let changes = analyze_breaking_changes(&[cu.clone()], &[cu]);
         assert!(changes.is_empty(), "No changes for identical symbols");
@@ -331,8 +361,18 @@ mod tests {
             namespace: String::new(),
             methods: Vec::new(),
             fields: vec![
-                FieldSymbol { id: 1, name: "No.".to_string(), type_name: "Code".to_string(), properties: vec![] },
-                FieldSymbol { id: 2, name: "Old Field".to_string(), type_name: "Text".to_string(), properties: vec![] },
+                FieldSymbol {
+                    id: 1,
+                    name: "No.".to_string(),
+                    type_name: "Code".to_string(),
+                    properties: vec![],
+                },
+                FieldSymbol {
+                    id: 2,
+                    name: "Old Field".to_string(),
+                    type_name: "Text".to_string(),
+                    properties: vec![],
+                },
             ],
             controls: Vec::new(),
             enum_values: Vec::new(),
@@ -342,36 +382,46 @@ mod tests {
         };
 
         let new_table = SymbolEntry {
-            fields: vec![
-                FieldSymbol { id: 1, name: "No.".to_string(), type_name: "Code".to_string(), properties: vec![] },
-            ],
+            fields: vec![FieldSymbol {
+                id: 1,
+                name: "No.".to_string(),
+                type_name: "Code".to_string(),
+                properties: vec![],
+            }],
             ..old_table.clone()
         };
 
         let changes = analyze_breaking_changes(&[old_table], &[new_table]);
 
         assert!(
-            changes.iter().any(|c| c.kind == BreakingChangeKind::FieldRemoved && c.member.as_deref() == Some("Old Field")),
-            "Should detect removed field: {:?}", changes
+            changes
+                .iter()
+                .any(|c| c.kind == BreakingChangeKind::FieldRemoved
+                    && c.member.as_deref() == Some("Old Field")),
+            "Should detect removed field: {:?}",
+            changes
         );
     }
 
     #[test]
     fn local_procedures_not_breaking() {
-        let old_cu = make_codeunit("My CU", vec![
-            MethodSymbol {
+        let old_cu = make_codeunit(
+            "My CU",
+            vec![MethodSymbol {
                 name: "LocalHelper".to_string(),
                 parameters: vec![],
                 return_type: None,
                 attributes: vec![],
                 is_local: true,
-            },
-        ]);
+            }],
+        );
         let new_cu = make_codeunit("My CU", vec![]);
 
         let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
         assert!(
-            !changes.iter().any(|c| c.member.as_deref() == Some("LocalHelper")),
+            !changes
+                .iter()
+                .any(|c| c.member.as_deref() == Some("LocalHelper")),
             "Local procedures should not be flagged as breaking"
         );
     }
@@ -379,11 +429,12 @@ mod tests {
     #[test]
     fn adding_procedure_is_not_breaking() {
         let old_cu = make_codeunit("My CU", vec![]);
-        let new_cu = make_codeunit("My CU", vec![
-            make_method("NewProc", vec![], None),
-        ]);
+        let new_cu = make_codeunit("My CU", vec![make_method("NewProc", vec![], None)]);
 
         let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
-        assert!(changes.is_empty(), "Adding a procedure is not a breaking change");
+        assert!(
+            changes.is_empty(),
+            "Adding a procedure is not a breaking change"
+        );
     }
 }

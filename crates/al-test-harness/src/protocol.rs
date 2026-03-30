@@ -60,7 +60,9 @@ pub fn definition_uri(result: &Value) -> Option<&str> {
         return Some(uri);
     }
     if let Some(arr) = result.as_array() {
-        return arr.first().and_then(|loc| loc.get("uri").and_then(|u| u.as_str()));
+        return arr
+            .first()
+            .and_then(|loc| loc.get("uri").and_then(|u| u.as_str()));
     }
     None
 }

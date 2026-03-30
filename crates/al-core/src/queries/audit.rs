@@ -61,7 +61,10 @@ pub fn data_classification_audit(workspace: &Workspace) -> Vec<DataClassificatio
             continue;
         };
 
-        if !matches!(obj_info.kind.to_lowercase().as_str(), "table" | "tableextension") {
+        if !matches!(
+            obj_info.kind.to_lowercase().as_str(),
+            "table" | "tableextension"
+        ) {
             continue;
         }
 
@@ -109,7 +112,8 @@ fn scan_table_fields(
             ctx.brace_depth += open - close;
 
             if lower.contains("dataclassification") {
-                let classification = extract_property_value_from_line(trimmed, "DataClassification");
+                let classification =
+                    extract_property_value_from_line(trimmed, "DataClassification");
                 if let Some(c) = classification {
                     ctx.classification = Some(c);
                 }
@@ -117,7 +121,10 @@ fn scan_table_fields(
 
             if ctx.brace_depth <= 0 {
                 let ctx = stack.pop().unwrap();
-                let classification = ctx.classification.clone().unwrap_or_else(|| "(none)".to_string());
+                let classification = ctx
+                    .classification
+                    .clone()
+                    .unwrap_or_else(|| "(none)".to_string());
                 let risk = classify_gdpr_risk(&classification);
 
                 results.push(DataClassificationEntry {
@@ -135,8 +142,11 @@ fn scan_table_fields(
 
 fn extract_field_name_from_line(line: &str) -> String {
     // field(id; "Name"; ...) or field(id; Name; ...)
-    if let Some(rest) = line.strip_prefix("field(").or_else(|| line.strip_prefix("field (")) {
-        if let Some(after_semi) = rest.find(';').map(|i| rest[i+1..].trim()) {
+    if let Some(rest) = line
+        .strip_prefix("field(")
+        .or_else(|| line.strip_prefix("field ("))
+    {
+        if let Some(after_semi) = rest.find(';').map(|i| rest[i + 1..].trim()) {
             if let Some(stripped) = after_semi.strip_prefix('"') {
                 if let Some(end) = stripped.find('"') {
                     return stripped[..end].to_string();
@@ -155,9 +165,15 @@ fn extract_property_value_from_line(line: &str, prop: &str) -> Option<String> {
     let pos = lower.find(&prop_lower)?;
     let after = line[pos + prop_lower.len()..].trim_start_matches([' ', '=', ':']);
     let after = after.trim_start_matches(['"', '\'']);
-    let end = after.find(['"', '\'', ';', '\n', ' ']).unwrap_or(after.len().min(100));
+    let end = after
+        .find(['"', '\'', ';', '\n', ' '])
+        .unwrap_or(after.len().min(100));
     let val = after[..end].trim().to_string();
-    if val.is_empty() { None } else { Some(val) }
+    if val.is_empty() {
+        None
+    } else {
+        Some(val)
+    }
 }
 
 fn classify_gdpr_risk(classification: &str) -> GdprRisk {
@@ -233,9 +249,7 @@ pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntr
         let name_lower = obj_info.name.to_lowercase();
         let covered_by: Vec<String> = perm_sets
             .iter()
-            .filter(|(_, objects)| {
-                objects.iter().any(|o| o.to_lowercase() == name_lower)
-            })
+            .filter(|(_, objects)| objects.iter().any(|o| o.to_lowercase() == name_lower))
             .map(|(n, _)| n.clone())
             .collect();
 
@@ -259,7 +273,9 @@ fn extract_permission_objects(text: &str) -> Vec<String> {
     for line in text.lines() {
         let trimmed = line.trim();
         // Skip comments
-        if trimmed.starts_with("//") { continue; }
+        if trimmed.starts_with("//") {
+            continue;
+        }
 
         let lower = trimmed.to_lowercase();
         for prefix in &["tabledata ", "table ", "page ", "codeunit ", "report "] {
@@ -271,7 +287,9 @@ fn extract_permission_objects(text: &str) -> Vec<String> {
                     rest.find(['=', ' ']).map(|i| rest[..i].trim().to_string())
                 };
                 if let Some(n) = name {
-                    if !n.is_empty() { objects.push(n); }
+                    if !n.is_empty() {
+                        objects.push(n);
+                    }
                 }
             }
         }
@@ -288,7 +306,8 @@ mod tests {
     fn workspace_with(files: Vec<(&str, &str)>) -> Workspace {
         let ws = Workspace::new();
         for (name, content) in files {
-            ws.file_index.add_file(PathBuf::from(name), content.to_string());
+            ws.file_index
+                .add_file(PathBuf::from(name), content.to_string());
         }
         ws
     }
@@ -315,11 +334,19 @@ mod tests {
         let entries = data_classification_audit(&ws);
         let no_field = entries.iter().find(|e| e.field == "No.");
         assert!(no_field.is_some(), "Should find 'No.' field");
-        assert_eq!(no_field.unwrap().risk, GdprRisk::Unclassified, "No. should be unclassified");
+        assert_eq!(
+            no_field.unwrap().risk,
+            GdprRisk::Unclassified,
+            "No. should be unclassified"
+        );
 
         let name_field = entries.iter().find(|e| e.field == "Name");
         assert!(name_field.is_some(), "Should find 'Name' field");
-        assert_eq!(name_field.unwrap().risk, GdprRisk::Personal, "CustomerContent is personal");
+        assert_eq!(
+            name_field.unwrap().risk,
+            GdprRisk::Personal,
+            "CustomerContent is personal"
+        );
     }
 
     #[test]
@@ -340,15 +367,13 @@ mod tests {
 
     #[test]
     fn permission_audit_finds_uncovered_object() {
-        let ws = workspace_with(vec![
-            (
-                "/src/MyTable.al",
-                r#"table 50100 "My Table"
+        let ws = workspace_with(vec![(
+            "/src/MyTable.al",
+            r#"table 50100 "My Table"
 {
     fields { field(1; "No."; Code[20]) { } }
 }"#,
-            ),
-        ]);
+        )]);
 
         let entries = permission_set_audit(&ws);
         let my_table = entries.iter().find(|e| e.name == "My Table");

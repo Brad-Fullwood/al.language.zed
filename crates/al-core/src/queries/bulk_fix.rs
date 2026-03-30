@@ -151,7 +151,9 @@ fn collect_al_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -159,7 +161,10 @@ fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
             if !name.starts_with('.') && name != "target" {
                 collect_recursive(&path, files);
             }
-        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("al")) {
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("al"))
+        {
             files.push(path);
         }
     }
@@ -305,7 +310,11 @@ fn inject_tooltips(source: &str, tooltips: &[(String, String)]) -> (String, usiz
         // or a standalone `{` line following a bare field declaration.
         let effective_field_name = if field_name.is_some() && trimmed.contains('{') {
             field_name.clone()
-        } else if field_name.is_none() && brace_open > 0 && brace_close == 0 && pending_field_name.is_some() {
+        } else if field_name.is_none()
+            && brace_open > 0
+            && brace_close == 0
+            && pending_field_name.is_some()
+        {
             pending_field_name.clone()
         } else {
             None
@@ -409,10 +418,7 @@ fn inject_data_classification(source: &str, value: &str) -> (String, usize) {
             for _ in 0..closes {
                 if let Some(ctx) = stack.pop() {
                     if ctx.is_field && !ctx.is_flow && !ctx.has_classification {
-                        output.push(format!(
-                            "{}    DataClassification = {value};",
-                            ctx.indent
-                        ));
+                        output.push(format!("{}    DataClassification = {value};", ctx.indent));
                         changes += 1;
                     }
                 }
@@ -427,7 +433,9 @@ fn inject_data_classification(source: &str, value: &str) -> (String, usize) {
                 top.has_classification = true;
             }
         }
-        if lower.contains("fieldclass") && (lower.contains("flowfield") || lower.contains("flowfilter")) {
+        if lower.contains("fieldclass")
+            && (lower.contains("flowfield") || lower.contains("flowfilter"))
+        {
             if let Some(top) = stack.last_mut() {
                 top.is_flow = true;
             }
@@ -490,7 +498,11 @@ fn extract_field_source_name(line: &str) -> Option<String> {
     let source = source.strip_prefix("Rec.").unwrap_or(source);
     let source = source.strip_prefix("rec.").unwrap_or(source);
     let source = source.trim_matches('"').trim();
-    if source.is_empty() { None } else { Some(source.to_string()) }
+    if source.is_empty() {
+        None
+    } else {
+        Some(source.to_string())
+    }
 }
 
 fn find_tooltip<'a>(field_name: &str, tooltips: &'a [(String, String)]) -> Option<&'a str> {
@@ -603,7 +615,9 @@ mod tests {
     #[test]
     fn is_page_file_detects_page() {
         assert!(is_page_file("page 50100 \"Test\"\n{"));
-        assert!(is_page_file("pageextension 50100 extends \"Customer List\"\n{"));
+        assert!(is_page_file(
+            "pageextension 50100 extends \"Customer List\"\n{"
+        ));
         assert!(!is_page_file("table 50100 \"Test\"\n{"));
         assert!(!is_page_file("codeunit 50100 \"Test\"\n{"));
     }

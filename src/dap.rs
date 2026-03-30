@@ -12,8 +12,7 @@ pub fn get_dap_binary(
 ) -> zed::Result<zed::DebugAdapterBinary> {
     let workspace_path = worktree.root_path();
 
-    let config_json: Value =
-        serde_json::from_str(&config.config).unwrap_or_else(|_| json!({}));
+    let config_json: Value = serde_json::from_str(&config.config).unwrap_or_else(|_| json!({}));
 
     let request_type = config_json
         .get("request")
@@ -64,9 +63,7 @@ pub fn get_dap_binary(
 }
 
 /// Determine the DAP request kind (launch or attach) from config.
-pub fn dap_request_kind(
-    config: Value,
-) -> zed::Result<zed::StartDebuggingRequestArgumentsRequest> {
+pub fn dap_request_kind(config: Value) -> zed::Result<zed::StartDebuggingRequestArgumentsRequest> {
     let request = config
         .get("request")
         .and_then(|r| r.as_str())

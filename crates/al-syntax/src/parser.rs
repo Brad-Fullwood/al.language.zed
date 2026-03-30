@@ -1,7 +1,7 @@
 //! Tree-sitter parser wrapper for AL.
 
-use tree_sitter::{Language, Parser, Tree};
 use crate::traversal::walk_tree;
+use tree_sitter::{Language, Parser, Tree};
 
 extern "C" {
     fn tree_sitter_al() -> Language;
@@ -33,19 +33,25 @@ pub struct SyntaxError {
 impl AlParser {
     pub fn new() -> Self {
         let mut parser = Parser::new();
-        parser.set_language(&language()).expect("Failed to set AL language");
+        parser
+            .set_language(&language())
+            .expect("Failed to set AL language");
         Self { parser }
     }
 
     pub fn parse(&mut self, text: &str) -> ParseResult {
-        let tree = self.parser.parse(text, None)
+        let tree = self
+            .parser
+            .parse(text, None)
             .expect("tree-sitter parse must succeed without timeout or cancellation");
         let errors = collect_errors(&tree, text);
         ParseResult { tree, errors }
     }
 
     pub fn parse_incremental(&mut self, text: &str, old_tree: &Tree) -> ParseResult {
-        let tree = self.parser.parse(text, Some(old_tree))
+        let tree = self
+            .parser
+            .parse(text, Some(old_tree))
             .expect("tree-sitter incremental parse must succeed without timeout or cancellation");
         let errors = collect_errors(&tree, text);
         ParseResult { tree, errors }
@@ -200,10 +206,16 @@ mod tests {
     end;
 }"#;
         let result = parser.parse(source);
-        assert!(result.tree.root_node().child_count() > 0, "Should parse List of [Interface ...] successfully");
+        assert!(
+            result.tree.root_node().child_count() > 0,
+            "Should parse List of [Interface ...] successfully"
+        );
         // The parse should have no ERROR nodes for this valid syntax
         let root_text = result.tree.root_node().to_sexp();
-        assert!(!root_text.contains("ERROR"), "No parse errors expected for List of [Interface ...] syntax");
+        assert!(
+            !root_text.contains("ERROR"),
+            "No parse errors expected for List of [Interface ...] syntax"
+        );
     }
 
     #[test]
@@ -222,7 +234,10 @@ mod tests {
         let result = parser.parse(source);
         assert!(result.tree.root_node().child_count() > 0);
         let root_text = result.tree.root_node().to_sexp();
-        assert!(!root_text.contains("ERROR"), "No parse errors expected for List of [Interface ...] return type");
+        assert!(
+            !root_text.contains("ERROR"),
+            "No parse errors expected for List of [Interface ...] return type"
+        );
     }
 
     #[test]

@@ -279,12 +279,23 @@ mod tests {
         );
 
         let mut entries = collect_permissions(&workspace);
-        entries.sort_by(|a, b| a.object_type.cmp(&b.object_type).then(a.object_name.cmp(&b.object_name)));
+        entries.sort_by(|a, b| {
+            a.object_type
+                .cmp(&b.object_type)
+                .then(a.object_name.cmp(&b.object_name))
+        });
 
-        assert_eq!(entries.len(), 4, "Should have 4 entries (table, page, codeunit, report)");
+        assert_eq!(
+            entries.len(),
+            4,
+            "Should have 4 entries (table, page, codeunit, report)"
+        );
 
         // Check codeunit entry
-        let cu = entries.iter().find(|e| e.object_type == "codeunit").unwrap();
+        let cu = entries
+            .iter()
+            .find(|e| e.object_type == "codeunit")
+            .unwrap();
         assert_eq!(cu.object_name, "My Codeunit");
         assert_eq!(cu.object_id, Some(50100));
         assert_eq!(cu.permissions, "X");
@@ -300,7 +311,10 @@ mod tests {
         assert_eq!(rp.permissions, "X");
 
         // Check tabledata entry (tables get "tabledata" permission type)
-        let td = entries.iter().find(|e| e.object_type == "tabledata").unwrap();
+        let td = entries
+            .iter()
+            .find(|e| e.object_type == "tabledata")
+            .unwrap();
         assert_eq!(td.object_name, "My Table");
         assert_eq!(td.object_id, Some(50100));
         assert_eq!(td.permissions, "RIMD");

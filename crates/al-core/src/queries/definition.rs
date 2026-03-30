@@ -18,13 +18,24 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     // Access path resolution
     if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos) {
-        if let Some(receiver) =
-            resolution::resolve_expression_type(workspace, uri, &text, &tree, &access.receiver, lsp_pos)
-        {
-            if let Some(member) = resolution::resolve_member(workspace, uri, &receiver, &access.member) {
+        if let Some(receiver) = resolution::resolve_expression_type(
+            workspace,
+            uri,
+            &text,
+            &tree,
+            &access.receiver,
+            lsp_pos,
+        ) {
+            if let Some(member) =
+                resolution::resolve_member(workspace, uri, &receiver, &access.member)
+            {
                 match member.kind {
-                    ResolvedMemberKind::Variable { range: Some(range), .. }
-                    | ResolvedMemberKind::Procedure { range: Some(range), .. }
+                    ResolvedMemberKind::Variable {
+                        range: Some(range), ..
+                    }
+                    | ResolvedMemberKind::Procedure {
+                        range: Some(range), ..
+                    }
                     | ResolvedMemberKind::Field { range: Some(range) }
                     | ResolvedMemberKind::EnumValue { range: Some(range) } => {
                         return Some(vec![Location {
@@ -33,9 +44,20 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                         }]);
                     }
                     _ => {
-                        if let Some(entry) = find_package_entry_for_type(workspace, &receiver.type_name, receiver.type_subtype.as_deref()) {
-                            if let Some((file_uri, range)) = super::get_or_create_virtual_file(workspace, &entry, Some(&access.member)) {
-                                return Some(vec![Location { uri: file_uri, range: range.into() }]);
+                        if let Some(entry) = find_package_entry_for_type(
+                            workspace,
+                            &receiver.type_name,
+                            receiver.type_subtype.as_deref(),
+                        ) {
+                            if let Some((file_uri, range)) = super::get_or_create_virtual_file(
+                                workspace,
+                                &entry,
+                                Some(&access.member),
+                            ) {
+                                return Some(vec![Location {
+                                    uri: file_uri,
+                                    range: range.into(),
+                                }]);
                             }
                         }
                     }
@@ -46,13 +68,23 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     let looks_like_object_name = node.kind() == "quoted_identifier" || clean_name.contains(' ');
     if looks_like_object_name {
-        if let Some((obj_uri, range)) = resolution::resolve_workspace_object_definition(workspace, clean_name) {
-            return Some(vec![Location { uri: obj_uri, range: range.into() }]);
+        if let Some((obj_uri, range)) =
+            resolution::resolve_workspace_object_definition(workspace, clean_name)
+        {
+            return Some(vec![Location {
+                uri: obj_uri,
+                range: range.into(),
+            }]);
         }
         let pkg_entries = workspace.symbols.get_by_name(clean_name);
         if let Some(entry) = pkg_entries.into_iter().find(|e| !e.kind.is_extension()) {
-            if let Some((file_uri, range)) = super::get_or_create_virtual_file(workspace, &entry, None) {
-                return Some(vec![Location { uri: file_uri, range: range.into() }]);
+            if let Some((file_uri, range)) =
+                super::get_or_create_virtual_file(workspace, &entry, None)
+            {
+                return Some(vec![Location {
+                    uri: file_uri,
+                    range: range.into(),
+                }]);
             }
         }
     }
@@ -61,7 +93,10 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     if let Some(decl) = resolver.resolve_type(clean_name, lsp_pos) {
         let def_range: Range = al_syntax::ts_range_to_lsp(&decl.range, text.as_bytes()).into();
         if def_range.start != position {
-            return Some(vec![Location { uri: uri.clone(), range: def_range }]);
+            return Some(vec![Location {
+                uri: uri.clone(),
+                range: def_range,
+            }]);
         }
     }
 
@@ -71,7 +106,10 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         let first = &refs[0];
         let def_range: Range = al_syntax::ts_range_to_lsp(first, text.as_bytes()).into();
         if def_range.start != position {
-            return Some(vec![Location { uri: uri.clone(), range: def_range }]);
+            return Some(vec![Location {
+                uri: uri.clone(),
+                range: def_range,
+            }]);
         }
     }
 
@@ -88,7 +126,11 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                     if let Ok(file_uri) = Url::from_file_path(&file_path) {
                         return Some(vec![Location {
                             uri: file_uri,
-                            range: al_syntax::ts_range_to_lsp(&obj_info.range, file_text_entry.value().as_bytes()).into(),
+                            range: al_syntax::ts_range_to_lsp(
+                                &obj_info.range,
+                                file_text_entry.value().as_bytes(),
+                            )
+                            .into(),
                         }]);
                     }
                 }
@@ -98,7 +140,9 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     if let Some(proc_entries) = workspace.file_index.lookup_procedures(clean_name) {
         for info in &proc_entries {
-            if current_path.as_ref() == Some(&info.file) { continue; }
+            if current_path.as_ref() == Some(&info.file) {
+                continue;
+            }
             if let Ok(file_uri) = Url::from_file_path(&info.file) {
                 return Some(vec![Location {
                     uri: file_uri,
@@ -110,8 +154,12 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
 
     let symbols = workspace.symbols.get_by_name(clean_name);
     if let Some(entry) = symbols.into_iter().find(|e| !e.kind.is_extension()) {
-        if let Some((file_uri, range)) = super::get_or_create_virtual_file(workspace, &entry, None) {
-            return Some(vec![Location { uri: file_uri, range: range.into() }]);
+        if let Some((file_uri, range)) = super::get_or_create_virtual_file(workspace, &entry, None)
+        {
+            return Some(vec![Location {
+                uri: file_uri,
+                range: range.into(),
+            }]);
         }
     }
 
@@ -153,7 +201,9 @@ mod tests {
 
     fn make_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
-            kind, id, name: name.to_string(),
+            kind,
+            id,
+            name: name.to_string(),
             package: "TestPkg".to_string(),
             ..Default::default()
         }
@@ -165,14 +215,21 @@ mod tests {
     fn unknown_identifier_returns_none() {
         let ws = Workspace::new();
         let uri = test_uri();
-        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     begin
         UnknownThing := 1;
     end;
-}"#);
-        let pos = Position { line: 4, character: 8 }; // "UnknownThing"
+}"#,
+        );
+        let pos = Position {
+            line: 4,
+            character: 8,
+        }; // "UnknownThing"
         let result = definition(&ws, &uri, pos);
         assert!(result.is_none(), "unknown identifier should return None");
     }
@@ -183,7 +240,10 @@ mod tests {
     fn local_variable_resolved_by_type_resolver() {
         let ws = Workspace::new();
         let uri = test_uri();
-        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     var
@@ -191,16 +251,24 @@ mod tests {
     begin
         MyVar := 42;
     end;
-}"#);
+}"#,
+        );
         // Position on "MyVar" in the assignment (line 6, char 8)
-        let pos = Position { line: 6, character: 8 };
+        let pos = Position {
+            line: 6,
+            character: 8,
+        };
         let result = definition(&ws, &uri, pos);
         // Should resolve to the variable declaration on line 4
         assert!(result.is_some(), "should resolve local variable");
         let locs = result.unwrap();
         assert_eq!(locs.len(), 1);
         assert_eq!(locs[0].uri, uri);
-        assert!(locs[0].range.start.line <= 4, "should point to declaration, got line {}", locs[0].range.start.line);
+        assert!(
+            locs[0].range.start.line <= 4,
+            "should point to declaration, got line {}",
+            locs[0].range.start.line
+        );
     }
 
     // --- Symbol index lookup for known package objects ---
@@ -210,7 +278,10 @@ mod tests {
         let ws = Workspace::new();
         let uri = test_uri();
         // Don't open any document — definition should return None
-        let pos = Position { line: 0, character: 0 };
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
         let result = definition(&ws, &uri, pos);
         assert!(result.is_none(), "empty workspace should return None");
     }
@@ -221,18 +292,26 @@ mod tests {
         let uri = test_uri();
 
         // Add a "Customer" table to the symbol index
-        ws.symbols.add_entries(&[make_entry(ObjectKind::Table, 18, "Customer")]);
+        ws.symbols
+            .add_entries(&[make_entry(ObjectKind::Table, 18, "Customer")]);
 
-        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     var
         Cust: Record "Customer";
     begin
     end;
-}"#);
+}"#,
+        );
         // Quoted "Customer" on line 4
-        let pos = Position { line: 4, character: 24 };
+        let pos = Position {
+            line: 4,
+            character: 24,
+        };
         let result = definition(&ws, &uri, pos);
         // Should find the symbol entry (returns a virtual file URI)
         assert!(result.is_some(), "known package object should return Some");
@@ -255,21 +334,32 @@ mod tests {
     {
         field(1; "No."; Code[20]) { }
     }
-}"#.to_string(),
+}"#
+            .to_string(),
         );
 
-        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     var
         Rec: Record "My Table";
     begin
     end;
-}"#);
+}"#,
+        );
         // "My Table" on line 4
-        let pos = Position { line: 4, character: 24 };
+        let pos = Position {
+            line: 4,
+            character: 24,
+        };
         let result = definition(&ws, &uri, pos);
-        assert!(result.is_some(), "workspace object should be found via file index");
+        assert!(
+            result.is_some(),
+            "workspace object should be found via file index"
+        );
         let locs = result.unwrap();
         assert_eq!(locs[0].uri, Url::from_file_path(&table_path).unwrap());
     }
@@ -290,20 +380,31 @@ mod tests {
     procedure DoSomething()
     begin
     end;
-}"#.to_string(),
+}"#
+            .to_string(),
         );
 
-        open_doc(&ws, &uri, r#"codeunit 50100 "Test"
+        open_doc(
+            &ws,
+            &uri,
+            r#"codeunit 50100 "Test"
 {
     procedure Foo()
     begin
         DoSomething();
     end;
-}"#);
+}"#,
+        );
         // "DoSomething" on line 4
-        let pos = Position { line: 4, character: 8 };
+        let pos = Position {
+            line: 4,
+            character: 8,
+        };
         let result = definition(&ws, &uri, pos);
-        assert!(result.is_some(), "cross-file procedure should be found via reverse index");
+        assert!(
+            result.is_some(),
+            "cross-file procedure should be found via reverse index"
+        );
         let locs = result.unwrap();
         assert_eq!(locs[0].uri, Url::from_file_path(&cu_path).unwrap());
     }
@@ -320,7 +421,11 @@ mod tests {
 
         let result = find_package_entry_for_type(&ws, "Record", Some("Customer"));
         assert!(result.is_some());
-        assert_eq!(result.unwrap().kind, ObjectKind::Table, "should prefer base object over extension");
+        assert_eq!(
+            result.unwrap().kind,
+            ObjectKind::Table,
+            "should prefer base object over extension"
+        );
     }
 
     #[test]
@@ -333,7 +438,8 @@ mod tests {
     #[test]
     fn find_package_entry_uses_type_name_when_not_record() {
         let ws = Workspace::new();
-        ws.symbols.add_entries(&[make_entry(ObjectKind::Codeunit, 50100, "MyHelper")]);
+        ws.symbols
+            .add_entries(&[make_entry(ObjectKind::Codeunit, 50100, "MyHelper")]);
 
         // When type_name is not a generic type like "Record", it should use type_name as object name
         let result = find_package_entry_for_type(&ws, "MyHelper", None);

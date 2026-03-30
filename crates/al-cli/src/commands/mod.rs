@@ -68,9 +68,15 @@ pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
     let root = project_root(project_dir);
     DaemonClient::connect(&root).map_err(|e| {
         if e.contains("No such file") || e.contains("Connection refused") {
-            format!("{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}", root.display())
+            format!(
+                "{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}",
+                root.display()
+            )
         } else if e.contains("app.json") {
-            format!("{e}\n\nHint: No AL project found. Ensure app.json exists in {}", root.display())
+            format!(
+                "{e}\n\nHint: No AL project found. Ensure app.json exists in {}",
+                root.display()
+            )
         } else {
             e
         }
@@ -108,7 +114,10 @@ fn collect_al_files_recursive(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
                 continue;
             }
             collect_al_files_recursive(&path, files);
-        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("al")) {
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("al"))
+        {
             files.push(path);
         }
     }
@@ -145,7 +154,10 @@ pub fn print_symbol_entries(result: &serde_json::Value) {
                 println!("  methods:");
                 for m in methods {
                     let mname = m.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let ret = m.get("return_type").and_then(|v| v.as_str()).unwrap_or("void");
+                    let ret = m
+                        .get("return_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("void");
                     let is_local = m.get("is_local").and_then(|v| v.as_bool()).unwrap_or(false);
                     let scope = if is_local { " [local]" } else { "" };
                     let params = m
@@ -156,10 +168,8 @@ pub fn print_symbol_entries(result: &serde_json::Value) {
                                 .map(|p| {
                                     let pname =
                                         p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let ptype = p
-                                        .get("type_name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("?");
+                                    let ptype =
+                                        p.get("type_name").and_then(|v| v.as_str()).unwrap_or("?");
                                     let is_var =
                                         p.get("is_var").and_then(|v| v.as_bool()).unwrap_or(false);
                                     if is_var {

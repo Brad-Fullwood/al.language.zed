@@ -2,6 +2,13 @@
 
 Full-screen terminal UI for browsing AL symbols. Uses `ratatui` + `crossterm`. All data comes from the al-lsp daemon via JSON-RPC — no dependency on any analysis crate.
 
+## Quick Reference
+
+```sh
+cargo build -p al-explorer                  # build (no tests — UI-only crate)
+cargo run -p al-explorer -- --project .     # launch TUI (requires running al-lsp daemon)
+```
+
 ## Modules
 
 | File | Purpose |

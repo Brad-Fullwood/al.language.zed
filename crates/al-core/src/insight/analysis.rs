@@ -188,7 +188,10 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
     // Sort objects by name for stable output.
     let mut objects: Vec<ObjectImpact> = by_object.into_values().collect();
     objects.sort_by(|a, b| {
-        a.object_name.as_bytes().iter().map(u8::to_ascii_lowercase)
+        a.object_name
+            .as_bytes()
+            .iter()
+            .map(u8::to_ascii_lowercase)
             .cmp(b.object_name.as_bytes().iter().map(u8::to_ascii_lowercase))
     });
 
@@ -223,9 +226,7 @@ fn is_record_of(type_name: &str, table_lower: &str) -> bool {
         _ => return false,
     };
     // Strip surrounding quotes
-    let name = rest
-        .trim_matches('"')
-        .trim_matches('\'');
+    let name = rest.trim_matches('"').trim_matches('\'');
     // Guard: an empty name after stripping cannot match anything.
     if name.is_empty() {
         return false;
@@ -392,10 +393,11 @@ mod tests {
             .impacts
             .iter()
             .any(|i| i.operation == TableOperationKind::RecordVariable));
-        assert!(cu_impact
-            .impacts
-            .iter()
-            .any(|i| i.location_hint.as_deref().unwrap_or("").contains("Cust")));
+        assert!(cu_impact.impacts.iter().any(|i| i
+            .location_hint
+            .as_deref()
+            .unwrap_or("")
+            .contains("Cust")));
     }
 
     // --- table_impact: record parameter ---

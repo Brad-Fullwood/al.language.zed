@@ -129,7 +129,9 @@ impl FileIndex {
 
     /// Look up procedure/event locations by name (case-insensitive).
     pub fn lookup_procedures(&self, name: &str) -> Option<Vec<CachedProcedureInfo>> {
-        self.procedures.get(&name.to_lowercase()).map(|v| v.value().clone())
+        self.procedures
+            .get(&name.to_lowercase())
+            .map(|v| v.value().clone())
     }
 
     /// Get the cached parse tree and text for a workspace file (not an open document).
@@ -240,12 +242,15 @@ impl FileIndex {
             let obj_name = obj_info.name.to_lowercase();
             self.objects.insert(obj_name.clone(), path.clone());
             self.path_to_object.insert(path.clone(), obj_name);
-            self.object_info.insert(path.clone(), CachedObjectInfo {
-                kind: obj_info.kind,
-                id: obj_info.id,
-                name: obj_info.name,
-                range: obj_info.range,
-            });
+            self.object_info.insert(
+                path.clone(),
+                CachedObjectInfo {
+                    kind: obj_info.kind,
+                    id: obj_info.id,
+                    name: obj_info.name,
+                    range: obj_info.range,
+                },
+            );
         } else {
             // No object declaration — remove any stale cached metadata.
             self.object_info.remove(&path);
@@ -313,7 +318,9 @@ impl FileIndex {
 
     /// Look up file path by object name (case-insensitive).
     pub fn find_by_object_name(&self, name: &str) -> Option<PathBuf> {
-        self.objects.get(&name.to_lowercase()).map(|r| r.value().clone())
+        self.objects
+            .get(&name.to_lowercase())
+            .map(|r| r.value().clone())
     }
 
     /// Number of indexed files.
@@ -446,7 +453,10 @@ mod tests {
         let index = FileIndex::new();
         let count = index.scan(dir.path());
 
-        assert_eq!(count, 3, "Should find 3 .al files (2 root + 1 subdirectory)");
+        assert_eq!(
+            count, 3,
+            "Should find 3 .al files (2 root + 1 subdirectory)"
+        );
         assert_eq!(index.len(), 3);
     }
 
@@ -567,7 +577,11 @@ mod tests {
         let delta = index.incremental_scan(dir.path());
 
         // 3 files: MyTestTable.al, MyTestPage.al, src/MyCodeunit.al
-        assert_eq!(delta.changed.len(), 3, "All 3 files should be indexed on first call");
+        assert_eq!(
+            delta.changed.len(),
+            3,
+            "All 3 files should be indexed on first call"
+        );
         assert_eq!(delta.removed.len(), 0);
         assert_eq!(index.len(), 3);
     }
@@ -584,7 +598,10 @@ mod tests {
         // Second scan: nothing changed on disk.
         let delta = index.incremental_scan(dir.path());
 
-        assert!(delta.is_empty(), "No files should be re-indexed when nothing changed");
+        assert!(
+            delta.is_empty(),
+            "No files should be re-indexed when nothing changed"
+        );
         assert_eq!(index.len(), 3);
     }
 
@@ -655,15 +672,15 @@ mod tests {
 
         // Add a new file.
         let new_path = dir.path().join("NewReport.al");
-        fs::write(
-            &new_path,
-            r#"report 50100 "New Report" { }"#,
-        )
-        .unwrap();
+        fs::write(&new_path, r#"report 50100 "New Report" { }"#).unwrap();
 
         let delta = index.incremental_scan(dir.path());
 
-        assert_eq!(delta.changed.len(), 1, "The new file should appear in changed");
+        assert_eq!(
+            delta.changed.len(),
+            1,
+            "The new file should appear in changed"
+        );
         assert_eq!(delta.removed.len(), 0);
         assert_eq!(index.len(), 4, "Total file count should increase by 1");
         assert!(index.get_content(&new_path).is_some());
@@ -686,7 +703,11 @@ mod tests {
         let delta = index.incremental_scan(dir.path());
 
         assert_eq!(delta.changed.len(), 0);
-        assert_eq!(delta.removed.len(), 1, "Deleted file should appear in removed");
+        assert_eq!(
+            delta.removed.len(),
+            1,
+            "Deleted file should appear in removed"
+        );
         assert_eq!(delta.removed[0], page_path);
         assert_eq!(index.len(), 2, "Total file count should decrease by 1");
         assert!(
@@ -756,7 +777,8 @@ mod tests {
             let idx = Arc::clone(&index);
             handles.push(thread::spawn(move || {
                 let path = PathBuf::from(format!("/test/src/CU{i}.al"));
-                let content = format!(r#"codeunit 5010{i} "CU{i}" {{ procedure Proc{i}() begin end; }}"#);
+                let content =
+                    format!(r#"codeunit 5010{i} "CU{i}" {{ procedure Proc{i}() begin end; }}"#);
                 idx.add_file(path, content);
             }));
         }
@@ -790,7 +812,9 @@ mod tests {
         // Pre-populate
         for i in 0..10 {
             let path = PathBuf::from(format!("/test/src/T{i}.al"));
-            let content = format!(r#"table 5010{i} "T{i}" {{ fields {{ field(1; "No."; Code[20]) {{ }} }} }}"#);
+            let content = format!(
+                r#"table 5010{i} "T{i}" {{ fields {{ field(1; "No."; Code[20]) {{ }} }} }}"#
+            );
             index.add_file(path, content);
         }
         assert_eq!(index.files.len(), 10);
@@ -807,7 +831,9 @@ mod tests {
             let idx = Arc::clone(&index);
             handles.push(thread::spawn(move || {
                 let path = PathBuf::from(format!("/test/src/T{i}.al"));
-                let content = format!(r#"table 5010{i} "T{i}" {{ fields {{ field(1; "No."; Code[20]) {{ }} }} }}"#);
+                let content = format!(
+                    r#"table 5010{i} "T{i}" {{ fields {{ field(1; "No."; Code[20]) {{ }} }} }}"#
+                );
                 idx.add_file(path, content);
             }));
         }
@@ -827,9 +853,8 @@ mod tests {
         // Add and immediately update same file 50 times
         for i in 0..50 {
             let path = PathBuf::from("/test/src/Rapid.al");
-            let content = format!(
-                r#"codeunit 50100 "Rapid" {{ procedure Version{i}() begin end; }}"#
-            );
+            let content =
+                format!(r#"codeunit 50100 "Rapid" {{ procedure Version{i}() begin end; }}"#);
             index.add_file(path, content);
         }
 

@@ -153,7 +153,10 @@ async fn test_hover_on_procedure_name() {
 
     // "HelloWorld" is on line 2, starts at column 14
     let hover = client.hover("src/test.al", 2, 18).await;
-    assert!(hover.is_some(), "Should return hover info for procedure name");
+    assert!(
+        hover.is_some(),
+        "Should return hover info for procedure name"
+    );
 
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
@@ -212,7 +215,11 @@ async fn test_completions_in_procedure_body() {
     let completions = client.completion("src/test.al", 4, 9).await;
     let labels = completion_labels(&completions);
 
-    assert!(!labels.is_empty(), "Should return completions. Got: {:?}", labels);
+    assert!(
+        !labels.is_empty(),
+        "Should return completions. Got: {:?}",
+        labels
+    );
 
     client.shutdown().await;
 }
@@ -412,7 +419,10 @@ async fn test_hover_on_local_variable() {
     // "Msg" is a local variable declared on line 4, used on line 6
     // Hover on Msg usage at line 6 should show its type (Text)
     let hover = client.hover("src/test.al", 6, 8).await;
-    assert!(hover.is_some(), "Should return hover info for local variable Msg");
+    assert!(
+        hover.is_some(),
+        "Should return hover info for local variable Msg"
+    );
 
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
@@ -444,7 +454,10 @@ async fn test_hover_on_local_variable_with_record_type() {
 
     // Hover on CustomerRec at line 6, col 8
     let hover = client.hover("src/test.al", 6, 8).await;
-    assert!(hover.is_some(), "Should return hover info for Record variable");
+    assert!(
+        hover.is_some(),
+        "Should return hover info for Record variable"
+    );
 
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);

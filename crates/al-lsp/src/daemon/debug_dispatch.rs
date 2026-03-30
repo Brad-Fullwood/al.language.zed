@@ -4,11 +4,19 @@ use al_core::workspace::Workspace;
 use al_daemon_client::jsonrpc::{Response, RpcError};
 
 fn no_session(id: u64) -> Response {
-    Response::error(id, al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR, "No active debug session")
+    Response::error(
+        id,
+        al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+        "No active debug session",
+    )
 }
 
 fn missing_cmd(id: u64, msg: &str) -> Response {
-    Response::error(id, al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS, msg)
+    Response::error(
+        id,
+        al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+        msg,
+    )
 }
 
 /// Build a `BcDebugConfig` from a named (or default) configuration in the project's
@@ -24,7 +32,10 @@ fn resolve_debug_config(
     use al_core::launch::find_launch_config;
     use al_dap_client::bc_debug::BcDebugConfig;
 
-    let project_root = workspace.project.try_read().ok()
+    let project_root = workspace
+        .project
+        .try_read()
+        .ok()
         .and_then(|g| g.as_ref().map(|p| p.root.clone()))?;
 
     let debug_file = find_launch_config(&project_root)?;
@@ -33,7 +44,10 @@ fn resolve_debug_config(
 
     // Select the requested config by name, or fall back to the first one.
     let bc_cfg = match config_name {
-        Some(name) => debug_file.configs.iter().find(|c| c.name == name)
+        Some(name) => debug_file
+            .configs
+            .iter()
+            .find(|c| c.name == name)
             .or_else(|| debug_file.configs.first()),
         None => debug_file.configs.first(),
     }?;
@@ -55,7 +69,10 @@ fn resolve_debug_config(
         server: bc_cfg.server.clone(),
         server_instance: bc_cfg.server_instance.clone(),
         port: bc_cfg.port.unwrap_or(7049),
-        tenant: bc_cfg.tenant.clone().unwrap_or_else(|| "default".to_string()),
+        tenant: bc_cfg
+            .tenant
+            .clone()
+            .unwrap_or_else(|| "default".to_string()),
         environment_type,
         environment_name: bc_cfg.environment_name.clone(),
         authentication,
@@ -64,10 +81,14 @@ fn resolve_debug_config(
     })
 }
 
-pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
+pub(super) async fn dispatch_debug(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
     use al_core::native_debug::NativeDebugSession;
-    use al_dap_client::bc_debug::BcDebugConfig;
     use al_daemon_client::jsonrpc::error_codes;
+    use al_dap_client::bc_debug::BcDebugConfig;
 
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
         Some(c) => c,
@@ -143,7 +164,10 @@ pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serd
                 }
             };
             let line = params.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let condition = params.get("condition").and_then(|v| v.as_str()).map(String::from);
+            let condition = params
+                .get("condition")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
@@ -151,8 +175,12 @@ pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serd
                 Some(session) => {
                     let bps: Vec<(u32, Option<&str>)> = vec![(line, condition.as_deref())];
                     // object_type/object_id: use defaults (0) when not provided by caller
-                    let obj_type = params.get("objectType").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                    let obj_id = params.get("objectId").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                    let obj_type = params
+                        .get("objectType")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0) as i32;
+                    let obj_id =
+                        params.get("objectId").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                     match session.set_breakpoints(&file, &bps, obj_type, obj_id).await {
                         Ok(verified) => {
                             let bp_json: Vec<serde_json::Value> = verified
@@ -294,10 +322,7 @@ pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serd
         }
 
         "history" => {
-            let var_filter = params
-                .get("var")
-                .and_then(|v| v.as_str())
-                .map(String::from);
+            let var_filter = params.get("var").and_then(|v| v.as_str()).map(String::from);
 
             let guard = workspace.debug_session.lock().await;
             match guard.as_ref() {
@@ -360,4 +385,3 @@ pub(super) async fn dispatch_debug(workspace: &Workspace, id: u64, params: &serd
         },
     }
 }
-

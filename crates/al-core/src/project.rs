@@ -83,9 +83,7 @@ impl AlProject {
             }
         }
 
-        if self.app_json.platform.is_some()
-            && !deps.iter().any(|d| d.id == SYSTEM_APP_ID)
-        {
+        if self.app_json.platform.is_some() && !deps.iter().any(|d| d.id == SYSTEM_APP_ID) {
             let platform_version = self
                 .app_json
                 .application
@@ -227,19 +225,16 @@ pub fn nuget_feeds() -> Vec<NuGetFeed> {
 
 /// Get the user's home directory.
 pub fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(PathBuf::from)
-        .or({
-            #[cfg(target_os = "windows")]
-            {
-                std::env::var("USERPROFILE").ok().map(PathBuf::from)
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                None
-            }
-        })
+    std::env::var("HOME").ok().map(PathBuf::from).or({
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var("USERPROFILE").ok().map(PathBuf::from)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    })
 }
 
 #[cfg(test)]
@@ -252,10 +247,15 @@ mod tests {
         let tmp = tempdir();
         let project_dir = tmp.join("my-project");
         std::fs::create_dir_all(&project_dir).unwrap();
-        std::fs::write(project_dir.join("app.json"), serde_json::json!({
-            "id": "00000000-0000-0000-0000-000000000000",
-            "name": "Test", "publisher": "Test", "version": "1.0.0.0"
-        }).to_string()).unwrap();
+        std::fs::write(
+            project_dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "Test", "publisher": "Test", "version": "1.0.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
 
         let project = find_project(&project_dir).unwrap();
         assert_eq!(project.root, project_dir);
@@ -273,12 +273,17 @@ mod tests {
             root: PathBuf::from("/tmp/fake"),
             app_json: AppManifest {
                 id: "00000000-0000-0000-0000-000000000000".into(),
-                name: "Test".into(), publisher: "Test".into(), version: "1.0.0.0".into(),
-                dependencies: vec![], application: Some("25.0.0.0".into()),
-                platform: Some("25.0.0.0".into()), runtime: None,
+                name: "Test".into(),
+                publisher: "Test".into(),
+                version: "1.0.0.0".into(),
+                dependencies: vec![],
+                application: Some("25.0.0.0".into()),
+                platform: Some("25.0.0.0".into()),
+                runtime: None,
             },
             packages_dir: PathBuf::from("/tmp/fake/.alpackages"),
-            packages: vec![], server_configs: vec![],
+            packages: vec![],
+            server_configs: vec![],
         };
         assert!(project.all_dependencies().len() >= 5);
     }
@@ -287,7 +292,11 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("al-core-project-test-{}-{}", std::process::id(), id));
+        let dir = std::env::temp_dir().join(format!(
+            "al-core-project-test-{}-{}",
+            std::process::id(),
+            id
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

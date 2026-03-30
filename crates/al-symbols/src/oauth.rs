@@ -174,9 +174,7 @@ async fn browser_auth_flow(
     .map_err(|_| OAuthError::Expired)??;
 
     // Exchange auth code for token
-    let token_url = format!(
-        "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-    );
+    let token_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token");
 
     let resp = client
         .post(&token_url)
@@ -211,10 +209,13 @@ async fn read_http_request<R: tokio::io::AsyncRead + Unpin>(
     let mut buf = Vec::with_capacity(4096);
     let mut tmp = [0u8; 1024];
     loop {
-        let n = reader.read(&mut tmp).await.map_err(|e| OAuthError::Protocol {
-            error: "read_failed".into(),
-            description: format!("Failed to read HTTP request: {e}"),
-        })?;
+        let n = reader
+            .read(&mut tmp)
+            .await
+            .map_err(|e| OAuthError::Protocol {
+                error: "read_failed".into(),
+                description: format!("Failed to read HTTP request: {e}"),
+            })?;
         if n == 0 {
             break;
         }
@@ -301,10 +302,7 @@ async fn wait_for_auth_callback(
 
     // Check for error
     if let Some(err) = params.get("error") {
-        let desc = params
-            .get("error_description")
-            .cloned()
-            .unwrap_or_default();
+        let desc = params.get("error_description").cloned().unwrap_or_default();
         return Err(if err == "access_denied" {
             OAuthError::Denied
         } else {
@@ -376,12 +374,8 @@ async fn device_code_flow(
     client_id: &str,
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
-    let device_url = format!(
-        "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/devicecode"
-    );
-    let token_url = format!(
-        "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-    );
+    let device_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/devicecode");
+    let token_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token");
 
     let dc: DeviceCodeResponse = client
         .post(&device_url)
@@ -465,9 +459,7 @@ async fn refresh_token_flow(
     client_id: &str,
     refresh: &str,
 ) -> Result<TokenResponse, OAuthError> {
-    let token_url = format!(
-        "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-    );
+    let token_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token");
 
     let resp = client
         .post(&token_url)
@@ -521,8 +513,7 @@ fn random_bytes(n: usize) -> Vec<u8> {
 
 /// Base64url encoding without padding (RFC 7636).
 fn base64url_encode(data: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -757,11 +748,10 @@ fn now_unix() -> u64 {
 // ---------------------------------------------------------------------------
 
 fn parse_token_error<T>(body: &str) -> Result<T, OAuthError> {
-    let err: TokenErrorResponse =
-        serde_json::from_str(body).unwrap_or(TokenErrorResponse {
-            error: "unknown".into(),
-            error_description: body.to_string(),
-        });
+    let err: TokenErrorResponse = serde_json::from_str(body).unwrap_or(TokenErrorResponse {
+        error: "unknown".into(),
+        error_description: body.to_string(),
+    });
     Err(OAuthError::Protocol {
         error: err.error,
         description: err.error_description,
@@ -857,6 +847,10 @@ mod tests {
         let cache_dir = dir.path().join("oauth");
         create_secure_dir(&cache_dir).unwrap();
         let perms = std::fs::metadata(&cache_dir).unwrap().permissions();
-        assert_eq!(perms.mode() & 0o777, 0o700, "OAuth cache dir must be owner-only");
+        assert_eq!(
+            perms.mode() & 0o777,
+            0o700,
+            "OAuth cache dir must be owner-only"
+        );
     }
 }

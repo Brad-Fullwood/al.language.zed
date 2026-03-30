@@ -168,10 +168,7 @@ impl InsightGraph {
     /// Remove all outgoing edges from `node`. Used for invalidation when
     /// a file changes and its call edges need re-extraction.
     pub fn remove_edges_from(&mut self, node: NodeIndex) {
-        let to_remove: Vec<_> = self.graph
-            .edges(node)
-            .map(|e| e.id())
-            .collect();
+        let to_remove: Vec<_> = self.graph.edges(node).map(|e| e.id()).collect();
         for edge_id in to_remove {
             self.graph.remove_edge(edge_id);
         }
@@ -219,17 +216,17 @@ impl InsightGraph {
         );
 
         for method in &entry.methods {
-            let is_event = method.attributes.iter().any(|a| {
-                a.name == "IntegrationEvent" || a.name == "BusinessEvent"
-            });
-            let is_subscriber = method.attributes.iter().any(|a| a.name == "EventSubscriber");
+            let is_event = method
+                .attributes
+                .iter()
+                .any(|a| a.name == "IntegrationEvent" || a.name == "BusinessEvent");
+            let is_subscriber = method
+                .attributes
+                .iter()
+                .any(|a| a.name == "EventSubscriber");
 
             if is_event {
-                let event_type = if method
-                    .attributes
-                    .iter()
-                    .any(|a| a.name == "BusinessEvent")
-                {
+                let event_type = if method.attributes.iter().any(|a| a.name == "BusinessEvent") {
                     EventNodeType::Business
                 } else {
                     EventNodeType::Integration
@@ -290,7 +287,11 @@ impl InsightGraph {
     }
 
     /// Resolve cross-object relationships (Extends, SubscribesTo).
-    fn resolve_relationships(&mut self, entry: &Arc<SymbolEntry>, _symbols: &al_symbols::SymbolIndex) {
+    fn resolve_relationships(
+        &mut self,
+        entry: &Arc<SymbolEntry>,
+        _symbols: &al_symbols::SymbolIndex,
+    ) {
         // Extends edges
         if let Some(ref extends_name) = entry.extends {
             if let Some(base_kind) = entry.kind.base_kind() {
@@ -307,7 +308,11 @@ impl InsightGraph {
 
         // SubscribesTo edges: connect Subscriber nodes to their target Event nodes
         for method in &entry.methods {
-            if method.attributes.iter().any(|a| a.name == "EventSubscriber") {
+            if method
+                .attributes
+                .iter()
+                .any(|a| a.name == "EventSubscriber")
+            {
                 let (target_kind, target_object, target_event) =
                     parse_subscriber_target_full(&method.attributes);
 
@@ -345,8 +350,7 @@ impl InsightGraph {
                     let event_key =
                         NodeKey::Event(*kind, target_obj_lower.clone(), target_event_lower.clone());
                     // Connect subscriber to ALL matching event nodes (across packages).
-                    let event_indices: Vec<NodeIndex> =
-                        self.get_nodes(&event_key).to_vec();
+                    let event_indices: Vec<NodeIndex> = self.get_nodes(&event_key).to_vec();
                     if event_indices.is_empty() {
                         continue;
                     }
@@ -621,7 +625,10 @@ mod tests {
             .get_node(&NodeKey::Object(ObjectKind::Table, "customer".to_string()))
             .is_some());
         assert!(g
-            .get_node(&NodeKey::Object(ObjectKind::Codeunit, "sales-post".to_string()))
+            .get_node(&NodeKey::Object(
+                ObjectKind::Codeunit,
+                "sales-post".to_string()
+            ))
             .is_some());
     }
 
@@ -631,7 +638,10 @@ mod tests {
         index.add_entries(&[make_codeunit(
             80,
             "Sales-Post",
-            vec![regular_method("PostDocument"), regular_method("CheckHeader")],
+            vec![
+                regular_method("PostDocument"),
+                regular_method("CheckHeader"),
+            ],
         )]);
 
         let mut g = InsightGraph::new();
@@ -641,7 +651,10 @@ mod tests {
         assert_eq!(g.node_count(), 3);
 
         let obj = g
-            .get_node(&NodeKey::Object(ObjectKind::Codeunit, "sales-post".to_string()))
+            .get_node(&NodeKey::Object(
+                ObjectKind::Codeunit,
+                "sales-post".to_string(),
+            ))
             .unwrap();
         let proc = g
             .get_node(&NodeKey::Procedure(
@@ -654,7 +667,9 @@ mod tests {
         // Object -> Procedure via Contains
         assert!(g.graph.find_edge(obj, proc).is_some());
         assert_eq!(
-            *g.graph.edge_weight(g.graph.find_edge(obj, proc).unwrap()).unwrap(),
+            *g.graph
+                .edge_weight(g.graph.find_edge(obj, proc).unwrap())
+                .unwrap(),
             InsightEdge::Contains
         );
     }
@@ -679,7 +694,10 @@ mod tests {
         assert_eq!(g.node_count(), 4);
 
         let obj = g
-            .get_node(&NodeKey::Object(ObjectKind::Codeunit, "sales-post".to_string()))
+            .get_node(&NodeKey::Object(
+                ObjectKind::Codeunit,
+                "sales-post".to_string(),
+            ))
             .unwrap();
         let event = g
             .get_node(&NodeKey::Event(
@@ -692,7 +710,9 @@ mod tests {
         // Object -> Event via Publishes
         assert!(g.graph.find_edge(obj, event).is_some());
         assert_eq!(
-            *g.graph.edge_weight(g.graph.find_edge(obj, event).unwrap()).unwrap(),
+            *g.graph
+                .edge_weight(g.graph.find_edge(obj, event).unwrap())
+                .unwrap(),
             InsightEdge::Publishes
         );
 
@@ -745,7 +765,9 @@ mod tests {
         // Subscriber -> Event via SubscribesTo
         assert!(g.graph.find_edge(sub, event).is_some());
         assert_eq!(
-            *g.graph.edge_weight(g.graph.find_edge(sub, event).unwrap()).unwrap(),
+            *g.graph
+                .edge_weight(g.graph.find_edge(sub, event).unwrap())
+                .unwrap(),
             InsightEdge::SubscribesTo
         );
     }
@@ -774,7 +796,9 @@ mod tests {
         // Extension -> Base via Extends
         assert!(g.graph.find_edge(ext, base).is_some());
         assert_eq!(
-            *g.graph.edge_weight(g.graph.find_edge(ext, base).unwrap()).unwrap(),
+            *g.graph
+                .edge_weight(g.graph.find_edge(ext, base).unwrap())
+                .unwrap(),
             InsightEdge::Extends
         );
     }

@@ -70,7 +70,9 @@ pub fn source(
     trigger_filter: Option<&str>,
 ) -> Option<SourceResult> {
     // 1. Try workspace files first
-    if let Some(result) = try_workspace_source(workspace, name, kind_filter, proc_filter, trigger_filter) {
+    if let Some(result) =
+        try_workspace_source(workspace, name, kind_filter, proc_filter, trigger_filter)
+    {
         return Some(result);
     }
 
@@ -114,7 +116,8 @@ fn try_workspace_source(
             let end_line = node.end_position().row;
             let code = node.utf8_text(text.as_bytes()).unwrap_or("").to_string();
 
-            let relative_path = file_path.file_name()
+            let relative_path = file_path
+                .file_name()
                 .map(|f| f.to_string_lossy().to_string())
                 .unwrap_or_default();
 
@@ -177,7 +180,9 @@ fn try_package_source(
                 let member_filter = proc_filter.or(trigger_filter);
                 if let Some(member_name) = member_filter {
                     // Parse and extract specific procedure from package source
-                    if let Some((code, sig)) = extract_procedure_from_text(&full_source, member_name) {
+                    if let Some((code, sig)) =
+                        extract_procedure_from_text(&full_source, member_name)
+                    {
                         return Some(SourceResult {
                             k: entry.kind,
                             id: entry.id,
@@ -214,7 +219,10 @@ fn try_package_source(
     let member_filter = proc_filter.or(trigger_filter);
     if let Some(member_name) = member_filter {
         // Find specific procedure in symbol entry
-        let method = entry.methods.iter().find(|m| m.name.eq_ignore_ascii_case(member_name))?;
+        let method = entry
+            .methods
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(member_name))?;
         let sig = render_method_signature(method);
         return Some(SourceResult {
             k: entry.kind,
@@ -226,7 +234,10 @@ fn try_package_source(
             sig: Some(sig.clone()),
             range: None,
             code: sig,
-            note: Some("Rendered from symbol metadata — signature only, no implementation body".to_string()),
+            note: Some(
+                "Rendered from symbol metadata — signature only, no implementation body"
+                    .to_string(),
+            ),
         });
     }
 
@@ -241,7 +252,10 @@ fn try_package_source(
         sig: None,
         range: None,
         code,
-        note: Some("Rendered from symbol metadata — full signatures and fields, no implementation bodies".to_string()),
+        note: Some(
+            "Rendered from symbol metadata — full signatures and fields, no implementation bodies"
+                .to_string(),
+        ),
     })
 }
 
@@ -437,10 +451,22 @@ mod tests {
             fields: Vec::new(),
             controls: Vec::new(),
             enum_values: vec![
-                EnumValueSymbol { ordinal: 0, name: "Quote".to_string() },
-                EnumValueSymbol { ordinal: 1, name: "Order".to_string() },
-                EnumValueSymbol { ordinal: 2, name: "Invoice".to_string() },
-                EnumValueSymbol { ordinal: 3, name: "Credit Memo".to_string() },
+                EnumValueSymbol {
+                    ordinal: 0,
+                    name: "Quote".to_string(),
+                },
+                EnumValueSymbol {
+                    ordinal: 1,
+                    name: "Order".to_string(),
+                },
+                EnumValueSymbol {
+                    ordinal: 2,
+                    name: "Invoice".to_string(),
+                },
+                EnumValueSymbol {
+                    ordinal: 3,
+                    name: "Credit Memo".to_string(),
+                },
             ],
             keys: Vec::new(),
             properties: Vec::new(),
@@ -471,13 +497,11 @@ mod tests {
                 },
                 MethodSymbol {
                     name: "OnAfterPost".to_string(),
-                    parameters: vec![
-                        ParameterSymbol {
-                            name: "SalesHeader".to_string(),
-                            type_name: "Record \"Sales Header\"".to_string(),
-                            is_var: false,
-                        },
-                    ],
+                    parameters: vec![ParameterSymbol {
+                        name: "SalesHeader".to_string(),
+                        type_name: "Record \"Sales Header\"".to_string(),
+                        is_var: false,
+                    }],
                     return_type: None,
                     attributes: vec![AttributeSymbol {
                         name: "IntegrationEvent".to_string(),
@@ -566,9 +590,12 @@ mod tests {
 
         assert!(outline.contains("codeunit 80 \"Sales-Post\""));
         // Non-local procedure
-        assert!(outline.contains("    procedure PostSalesDocument(var SalesHeader: Record \"Sales Header\")"));
+        assert!(outline
+            .contains("    procedure PostSalesDocument(var SalesHeader: Record \"Sales Header\")"));
         // Local procedure
-        assert!(outline.contains("    local procedure ValidateHeader(var SalesHeader: Record \"Sales Header\"): Boolean"));
+        assert!(outline.contains(
+            "    local procedure ValidateHeader(var SalesHeader: Record \"Sales Header\"): Boolean"
+        ));
         // Event attribute
         assert!(outline.contains("[IntegrationEvent(false, false)]"));
         // Variables

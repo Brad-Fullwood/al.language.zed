@@ -100,10 +100,27 @@ pub struct TestCodeunitResult {
 impl TestCodeunitResult {
     fn from_methods(name: String, id: i32, methods: Vec<TestMethodResult>) -> Self {
         let total = methods.len();
-        let passed = methods.iter().filter(|m| m.status == TestStatus::Pass).count();
-        let failed = methods.iter().filter(|m| m.status == TestStatus::Fail).count();
-        let skipped = methods.iter().filter(|m| m.status == TestStatus::Skip).count();
-        Self { name, id, methods, total, passed, failed, skipped }
+        let passed = methods
+            .iter()
+            .filter(|m| m.status == TestStatus::Pass)
+            .count();
+        let failed = methods
+            .iter()
+            .filter(|m| m.status == TestStatus::Fail)
+            .count();
+        let skipped = methods
+            .iter()
+            .filter(|m| m.status == TestStatus::Skip)
+            .count();
+        Self {
+            name,
+            id,
+            methods,
+            total,
+            passed,
+            failed,
+            skipped,
+        }
     }
 }
 
@@ -190,7 +207,12 @@ impl TestRunnerClient {
         method: Option<&str>,
     ) -> Result<TestCodeunitResult, TestRunnerError> {
         let url = if let Some(m) = method {
-            format!("{}/dev/tests/{}/run?method={}", self.base_url, codeunit_id, urlencoding::encode(m))
+            format!(
+                "{}/dev/tests/{}/run?method={}",
+                self.base_url,
+                codeunit_id,
+                urlencoding::encode(m)
+            )
         } else {
             format!("{}/dev/tests/{}/run", self.base_url, codeunit_id)
         };
@@ -236,10 +258,7 @@ impl TestRunnerClient {
     /// List test methods in a codeunit without executing them.
     ///
     /// Calls `GET /dev/tests/{codeunit}`.
-    pub async fn list_methods(
-        &self,
-        codeunit_id: i32,
-    ) -> Result<Vec<String>, TestRunnerError> {
+    pub async fn list_methods(&self, codeunit_id: i32) -> Result<Vec<String>, TestRunnerError> {
         let url = format!("{}/dev/tests/{}", self.base_url, codeunit_id);
         debug!(url = %url, codeunit = %codeunit_id, "Listing BC test methods");
 
@@ -324,9 +343,15 @@ impl TestRunnerClient {
 fn map_dev_result(r: DevTestResult) -> TestMethodResult {
     let name = r.name.unwrap_or_default();
     let status = match r.result.as_deref() {
-        Some(s) if s.eq_ignore_ascii_case("pass") || s.eq_ignore_ascii_case("success") => TestStatus::Pass,
-        Some(s) if s.eq_ignore_ascii_case("fail") || s.eq_ignore_ascii_case("failure") => TestStatus::Fail,
-        Some(s) if s.eq_ignore_ascii_case("skip") || s.eq_ignore_ascii_case("skipped") => TestStatus::Skip,
+        Some(s) if s.eq_ignore_ascii_case("pass") || s.eq_ignore_ascii_case("success") => {
+            TestStatus::Pass
+        }
+        Some(s) if s.eq_ignore_ascii_case("fail") || s.eq_ignore_ascii_case("failure") => {
+            TestStatus::Fail
+        }
+        Some(s) if s.eq_ignore_ascii_case("skip") || s.eq_ignore_ascii_case("skipped") => {
+            TestStatus::Skip
+        }
         _ => TestStatus::Skip,
     };
     let duration_ms = r.duration.map(|d| (d * 1000.0) as u64);
@@ -442,7 +467,10 @@ mod tests {
         };
         let result = map_dev_result(r);
         assert_eq!(result.status, TestStatus::Fail);
-        assert_eq!(result.error, Some("Assert.AreEqual failed: expected 1, got 2".to_string()));
+        assert_eq!(
+            result.error,
+            Some("Assert.AreEqual failed: expected 1, got 2".to_string())
+        );
     }
 
     #[test]
@@ -460,9 +488,24 @@ mod tests {
     #[test]
     fn test_codeunit_result_computes_summary() {
         let methods = vec![
-            TestMethodResult { name: "A".into(), status: TestStatus::Pass, error: None, duration_ms: None },
-            TestMethodResult { name: "B".into(), status: TestStatus::Fail, error: Some("err".into()), duration_ms: None },
-            TestMethodResult { name: "C".into(), status: TestStatus::Skip, error: None, duration_ms: None },
+            TestMethodResult {
+                name: "A".into(),
+                status: TestStatus::Pass,
+                error: None,
+                duration_ms: None,
+            },
+            TestMethodResult {
+                name: "B".into(),
+                status: TestStatus::Fail,
+                error: Some("err".into()),
+                duration_ms: None,
+            },
+            TestMethodResult {
+                name: "C".into(),
+                status: TestStatus::Skip,
+                error: None,
+                duration_ms: None,
+            },
         ];
         let result = TestCodeunitResult::from_methods("MyTests".into(), 50100, methods);
         assert_eq!(result.total, 3);

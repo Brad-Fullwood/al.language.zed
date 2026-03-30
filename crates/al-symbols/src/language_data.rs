@@ -3,8 +3,8 @@
 //! al-symbols cannot depend on al-syntax (dependency rule), so it loads
 //! the data files it needs directly.
 
-use std::sync::LazyLock;
 use serde::Deserialize;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ObjectType {

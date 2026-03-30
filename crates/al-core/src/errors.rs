@@ -107,7 +107,10 @@ mod tests {
 
     #[test]
     fn bridge_restart_limit_display() {
-        let err = AlError::BridgeRestartLimitExceeded { attempts: 4, max: 3 };
+        let err = AlError::BridgeRestartLimitExceeded {
+            attempts: 4,
+            max: 3,
+        };
         assert_eq!(
             err.to_string(),
             "bridge restart limit exceeded (4 attempts, max 3)"

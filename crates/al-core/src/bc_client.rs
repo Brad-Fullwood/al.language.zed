@@ -246,10 +246,7 @@ impl BcClient {
         status: StatusCode,
         response: reqwest::Response,
     ) -> Result<T, BcClientError> {
-        let message = response
-            .text()
-            .await
-            .unwrap_or_else(|_| status.to_string());
+        let message = response.text().await.unwrap_or_else(|_| status.to_string());
 
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             return Err(BcClientError::AuthenticationFailed {
@@ -280,11 +277,12 @@ fn build_base_url(config: &BcServerConfig) -> String {
             let instance = config.server_instance.as_deref().unwrap_or("BC");
             // Ensure the server URL has a scheme to prevent accidental plain-HTTP
             // requests when the caller omits the scheme prefix.
-            let server_with_scheme = if server.starts_with("http://") || server.starts_with("https://") {
-                server.to_string()
-            } else {
-                format!("http://{}", server)
-            };
+            let server_with_scheme =
+                if server.starts_with("http://") || server.starts_with("https://") {
+                    server.to_string()
+                } else {
+                    format!("http://{}", server)
+                };
             let server_trimmed = server_with_scheme.trim_end_matches('/');
             if let Some(port) = config.port {
                 format!("{}:{}/{}", server_trimmed, port, instance)
@@ -364,8 +362,16 @@ mod tests {
     #[test]
     fn cloud_url_contains_tenant_and_env() {
         let url = build_base_url(&cloud_config());
-        assert!(url.contains("mycompany.onmicrosoft.com") || url.contains("mycompany"), "URL should contain tenant: {}", url);
-        assert!(url.contains("MySandbox"), "URL should contain env name: {}", url);
+        assert!(
+            url.contains("mycompany.onmicrosoft.com") || url.contains("mycompany"),
+            "URL should contain tenant: {}",
+            url
+        );
+        assert!(
+            url.contains("MySandbox"),
+            "URL should contain env name: {}",
+            url
+        );
     }
 
     #[test]

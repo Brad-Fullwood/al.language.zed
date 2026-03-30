@@ -27,8 +27,8 @@ fn validate_query_file(filename: &str) {
     if !path.exists() {
         panic!("{filename} does not exist at {}", path.display());
     }
-    let source = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {filename}: {e}"));
+    let source =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("Failed to read {filename}: {e}"));
 
     if source.trim().is_empty() {
         return; // Empty query files are valid

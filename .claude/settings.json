@@ -36,6 +36,15 @@
             "command": "bash -c 'CMD=\"$CLAUDE_BASH_COMMAND\"; if echo \"$CMD\" | grep -qE \"git\\s+push.*\\s(main|master)\"; then echo \"BLOCKED: Direct push to main/master. Use feature branches.\" >&2; exit 2; fi; exit 0'"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'CMD=\"$CLAUDE_BASH_COMMAND\"; if echo \"$CMD\" | grep -qE \"git\\s+commit\"; then cd \"$CLAUDE_PROJECT_DIR\" && if ! cargo fmt --all -- --check 2>/dev/null; then echo \"BLOCKED: Code not formatted. Run cargo fmt --all and /before-commit before committing.\" >&2; exit 2; fi; fi; exit 0'"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -62,6 +71,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in *.rs) cargo fmt --all 2>/dev/null;; esac; exit 0'"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in *.rs) cargo clippy --workspace --exclude zed-al --message-format=short 2>&1 | head -20;; esac; exit 0'"
           }
         ]
@@ -72,6 +90,15 @@
           {
             "type": "command",
             "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in */Cargo.toml) cargo machete 2>&1 | head -15;; esac; exit 0'"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in */Cargo.toml) cd \"$CLAUDE_PROJECT_DIR\" && for crate in al-syntax al-symbols al-semantic; do if grep -q \"al-core\" \"crates/$crate/Cargo.toml\" 2>/dev/null; then echo \"BLOCKED: $crate depends on al-core — violates dependency rules\" >&2; exit 2; fi; for other in al-syntax al-symbols al-semantic; do if [ \"$crate\" != \"$other\" ] && grep -q \"$other\" \"crates/$crate/Cargo.toml\" 2>/dev/null; then echo \"BLOCKED: $crate depends on $other — foundation crates must not depend on each other\" >&2; exit 2; fi; done; done; if grep -q \"al-core\" \"crates/al-daemon-client/Cargo.toml\" 2>/dev/null; then echo \"BLOCKED: al-daemon-client depends on al-core — violates dependency rules\" >&2; exit 2; fi;; esac; exit 0'"
           }
         ]
       }

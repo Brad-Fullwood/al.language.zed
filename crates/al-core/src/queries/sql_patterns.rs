@@ -2,9 +2,9 @@
 //!
 //! Detects: FindFirst in loops (N+1), FindSet without filters, Get in loops, CalcFields in loops.
 
-use serde::Serialize;
-use al_syntax::AlParser;
 use crate::workspace::Workspace;
+use al_syntax::AlParser;
+use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +39,13 @@ pub fn detect_sql_patterns(workspace: &Workspace) -> Vec<SqlPatternViolation> {
             continue;
         };
 
-        scan_file_for_sql_patterns(&file_path, text, &parsed.tree, &obj_info.name, &mut violations);
+        scan_file_for_sql_patterns(
+            &file_path,
+            text,
+            &parsed.tree,
+            &obj_info.name,
+            &mut violations,
+        );
     }
 
     violations
@@ -74,7 +80,14 @@ fn scan_procedures(
 
         if let Ok(proc_text) = node.utf8_text(source) {
             let start_line = node.start_position().row as u32 + 1;
-            analyze_proc_text(proc_text, start_line, file_path, object_name, &proc_name, violations);
+            analyze_proc_text(
+                proc_text,
+                start_line,
+                file_path,
+                object_name,
+                &proc_name,
+                violations,
+            );
         }
         return;
     }
@@ -111,7 +124,8 @@ fn analyze_proc_text(
             // If the loop header ends with "begin" (e.g. "for ... do begin" or
             // "while ... do begin"), the loop body is a begin..end block — start
             // with depth 1 so the matching end; closes the body first.
-            let opens_body = lower.ends_with(" begin") || lower.ends_with("\tbegin") || lower == "begin";
+            let opens_body =
+                lower.ends_with(" begin") || lower.ends_with("\tbegin") || lower == "begin";
             loop_begin_depth.push(if opens_body { 1 } else { 0 });
         } else if lower == "begin" {
             // A standalone "begin" inside a loop opens a nested block.
@@ -143,21 +157,30 @@ fn analyze_proc_text(
                 violations.push(make_violation(
                     SqlAntiPattern::FindInLoop,
                     "FindFirst/FindLast inside loop causes N+1 queries",
-                    object_name, proc_name, file_path, line_num,
+                    object_name,
+                    proc_name,
+                    file_path,
+                    line_num,
                 ));
             }
             if contains_get_call(&lower) {
                 violations.push(make_violation(
                     SqlAntiPattern::GetInLoop,
                     "Get() inside loop causes N+1 queries",
-                    object_name, proc_name, file_path, line_num,
+                    object_name,
+                    proc_name,
+                    file_path,
+                    line_num,
                 ));
             }
             if lower.contains(".calcfields(") {
                 violations.push(make_violation(
                     SqlAntiPattern::CalcFieldsInLoop,
                     "CalcFields() in loop is expensive — use SetAutoCalcFields() instead",
-                    object_name, proc_name, file_path, line_num,
+                    object_name,
+                    proc_name,
+                    file_path,
+                    line_num,
                 ));
             }
         }
@@ -167,7 +190,10 @@ fn analyze_proc_text(
                 violations.push(make_violation(
                     SqlAntiPattern::FindSetWithoutFilters,
                     "FindSet() without filters causes full table scan",
-                    object_name, proc_name, file_path, line_num,
+                    object_name,
+                    proc_name,
+                    file_path,
+                    line_num,
                 ));
             }
             has_filter_before_findset = false;
@@ -180,7 +206,10 @@ fn contains_get_call(lower: &str) -> bool {
     if let Some(pos) = lower.find(".get(") {
         // Make sure it's a standalone .Get(
         let before = &lower[..pos];
-        let last_word: &str = before.rsplit(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap_or("");
+        let last_word: &str = before
+            .rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()
+            .unwrap_or("");
         // If last word before .get is an identifier, it's a record .Get() call
         !last_word.is_empty()
     } else {
@@ -189,8 +218,11 @@ fn contains_get_call(lower: &str) -> bool {
 }
 
 fn is_loop_start(lower: &str) -> bool {
-    lower.starts_with("for ") || lower.starts_with("foreach ") ||
-    lower.starts_with("while ") || lower == "repeat" || lower.starts_with("repeat ")
+    lower.starts_with("for ")
+        || lower.starts_with("foreach ")
+        || lower.starts_with("while ")
+        || lower == "repeat"
+        || lower.starts_with("repeat ")
 }
 
 fn make_violation(
@@ -220,7 +252,8 @@ mod tests {
     fn workspace_with(files: Vec<(&str, &str)>) -> Workspace {
         let ws = Workspace::new();
         for (name, content) in files {
-            ws.file_index.add_file(PathBuf::from(name), content.to_string());
+            ws.file_index
+                .add_file(PathBuf::from(name), content.to_string());
         }
         ws
     }
@@ -245,7 +278,11 @@ mod tests {
         )]);
 
         let v = detect_sql_patterns(&ws);
-        assert!(v.iter().any(|x| x.kind == SqlAntiPattern::FindInLoop), "FindFirst in loop: {:?}", v);
+        assert!(
+            v.iter().any(|x| x.kind == SqlAntiPattern::FindInLoop),
+            "FindFirst in loop: {:?}",
+            v
+        );
     }
 
     #[test]
@@ -267,7 +304,12 @@ mod tests {
         )]);
 
         let v = detect_sql_patterns(&ws);
-        assert!(v.iter().any(|x| x.kind == SqlAntiPattern::FindSetWithoutFilters), "FindSet no filter: {:?}", v);
+        assert!(
+            v.iter()
+                .any(|x| x.kind == SqlAntiPattern::FindSetWithoutFilters),
+            "FindSet no filter: {:?}",
+            v
+        );
     }
 
     #[test]
@@ -290,7 +332,10 @@ mod tests {
         )]);
 
         let v = detect_sql_patterns(&ws);
-        let filt: Vec<_> = v.iter().filter(|x| x.kind == SqlAntiPattern::FindSetWithoutFilters).collect();
+        let filt: Vec<_> = v
+            .iter()
+            .filter(|x| x.kind == SqlAntiPattern::FindSetWithoutFilters)
+            .collect();
         assert!(filt.is_empty(), "Filtered FindSet no warn: {:?}", filt);
     }
 

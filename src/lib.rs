@@ -3,10 +3,10 @@ mod discovery;
 mod platform;
 mod settings;
 
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use zed_extension_api::{self as zed, settings::LspSettings, Result};
-use serde_json::{json, Value};
 
 const GITHUB_REPO: &str = "Brad-Fullwood/zed-al";
 
@@ -315,10 +315,7 @@ impl zed::Extension for AlExtension {
         dap::dap_request_kind(config)
     }
 
-    fn dap_config_to_scenario(
-        &mut self,
-        config: zed::DebugConfig,
-    ) -> Result<zed::DebugScenario> {
+    fn dap_config_to_scenario(&mut self, config: zed::DebugConfig) -> Result<zed::DebugScenario> {
         dap::dap_config_to_scenario(config)
     }
 
