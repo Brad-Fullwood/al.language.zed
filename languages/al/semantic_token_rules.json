@@ -121,6 +121,6 @@
   },
   {
     "token_type": "attribute",
-    "style": ["attribute", "type"]
+    "style": ["attribute", "function"]
   }
 ]

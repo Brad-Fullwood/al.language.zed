@@ -40,7 +40,7 @@
         "surface.background": "#1E1E1E",
         "syntax": {
           "attribute": {
-            "color": "#9CDCFE",
+            "color": "#DCDCAA",
             "font_style": null,
             "font_weight": null
           },
@@ -50,7 +50,7 @@
             "font_weight": null
           },
           "comment": {
-            "color": "#64707D",
+            "color": "#6A9955",
             "font_style": null,
             "font_weight": null
           },
@@ -88,8 +88,13 @@
             "font_style": null,
             "font_weight": null
           },
+          "constant.builtin": {
+            "color": "#569CD6",
+            "font_style": null,
+            "font_weight": null
+          },
           "keyword": {
-            "color": "#00747F",
+            "color": "#569CD6",
             "font_style": null,
             "font_weight": null
           },
@@ -98,12 +103,12 @@
             "font_weight": null
           },
           "number": {
-            "color": "#9FD89F",
+            "color": "#B5CEA8",
             "font_style": null,
             "font_weight": null
           },
           "operator": {
-            "color": "#00747F",
+            "color": "#D4D4D4",
             "font_style": null,
             "font_weight": null
           },
@@ -193,7 +198,7 @@
         "surface.background": "#FFFFFF",
         "syntax": {
           "attribute": {
-            "color": "#FF0000",
+            "color": "#795E26",
             "font_style": null,
             "font_weight": null
           },
@@ -203,7 +208,7 @@
             "font_weight": null
           },
           "comment": {
-            "color": "#56616C",
+            "color": "#008000",
             "font_style": null,
             "font_weight": null
           },
@@ -241,8 +246,13 @@
             "font_style": null,
             "font_weight": null
           },
+          "constant.builtin": {
+            "color": "#0000FF",
+            "font_style": null,
+            "font_weight": null
+          },
           "keyword": {
-            "color": "#00747F",
+            "color": "#0000FF",
             "font_style": null,
             "font_weight": null
           },
@@ -256,7 +266,7 @@
             "font_weight": null
           },
           "operator": {
-            "color": "#00747F",
+            "color": "#202428",
             "font_style": null,
             "font_weight": null
           },

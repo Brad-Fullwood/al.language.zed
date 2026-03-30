@@ -231,7 +231,7 @@
 ; Category captures for keyword types
 (operator_word) @keyword.operator
 (object_keyword) @keyword
-(type_keyword) @keyword
+(type_keyword) @type
 (metadata_keyword) @keyword
 (property_keyword) @keyword
 (keyword) @keyword
