@@ -221,11 +221,8 @@ fn cli_rules_lists_lint_rules() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("AL-L001"), "Should list AL-L001");
-    assert!(stdout.contains("AL-L007"), "Should list AL-L007 (TODO)");
-    assert!(stdout.contains("AL-L016"), "Should list AL-L016 (naming)");
-    assert!(stdout.contains("AL-L018"), "Should list AL-L018");
+    // Native lint rules have been removed — all diagnostics come from .NET bridge.
+    // The `rules` command should still succeed but list nothing.
 }
 
 #[test]
@@ -247,22 +244,12 @@ fn cli_rules_json_outputs_array() {
 
     assert!(parsed.is_array(), "Rules JSON output should be an array");
     let arr = parsed.as_array().unwrap();
+    // Native lint rules removed — array should be empty.
     assert!(
-        arr.len() >= 15,
-        "Should have at least 15 lint rules, got {}",
+        arr.is_empty(),
+        "No native lint rules should be registered, got {}",
         arr.len()
     );
-
-    for rule in arr {
-        assert!(
-            rule["code"].is_string(),
-            "Each rule should have a 'code' field"
-        );
-        assert!(
-            rule["code"].as_str().unwrap().starts_with("AL-L"),
-            "Rule code should start with AL-L"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +273,8 @@ fn cli_lint_on_clean_file() {
 }
 
 #[test]
-fn cli_lint_detects_issues() {
+fn cli_lint_detects_no_issues_without_native_rules() {
+    // Native lint rules removed — lint command should produce no diagnostics.
     let tmp = write_temp_al("lint-issues", LINT_ISSUES);
     let output = Command::new(al_binary())
         .args(["lint", tmp.to_str().unwrap()])
@@ -294,18 +282,10 @@ fn cli_lint_detects_issues() {
         .expect("Failed to execute al lint");
     let _ = std::fs::remove_file(&tmp);
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{}{}", stdout, stderr);
-
     assert!(
-        combined.contains("AL-L007")
-            || combined.contains("AL-L016")
-            || combined.contains("TODO")
-            || combined.contains("PascalCase"),
-        "Should detect lint issues in code with TODO and bad naming, got stdout: {}, stderr: {}",
-        stdout,
-        stderr
+        output.status.success(),
+        "al lint should succeed (no native rules): {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
