@@ -23,4 +23,4 @@ languages = ["AL"]
 
 [grammars.al]
 repository = "https://github.com/Brad-Fullwood/AL-Tree-Sitter"
-rev = "1ca6dc67d5f0255bed471a398489e08043634e04"
+rev = "24a2a54a6e5bdc6cf223d258f4e99b0caca11f46"
