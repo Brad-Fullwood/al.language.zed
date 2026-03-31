@@ -491,7 +491,7 @@ fn overload_candidates_from_symbols(
         if let Some(children) = &sym.children {
             for child in children {
                 if child.name.eq_ignore_ascii_case(func_name)
-                    && super::is_procedure_symbol(child.kind)
+                    && super::is_procedure_symbol(child.kind.into())
                 {
                     if let Some(detail) = &child.detail {
                         let params = parse_detail_params(detail);

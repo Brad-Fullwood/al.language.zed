@@ -21,6 +21,35 @@ use types::{ObjectKind, SymbolEntry, SymbolIndex};
 use al_daemon_client::DaemonClient;
 
 // ---------------------------------------------------------------------------
+// Navigation helpers
+// ---------------------------------------------------------------------------
+
+/// Advance a wrap-around list index forward by one.
+///
+/// Returns the next index (wrapping from the last item back to 0).
+/// If `current` is `None` (no selection), starts at index 0.
+#[inline]
+fn wrap_next(current: Option<usize>, len: usize) -> usize {
+    match current {
+        Some(i) if i >= len.saturating_sub(1) => 0,
+        Some(i) => i + 1,
+        None => 0,
+    }
+}
+
+/// Retreat a wrap-around list index backward by one.
+///
+/// Returns the previous index (wrapping from 0 to the last item).
+/// If `current` is `None` (no selection), starts at index 0.
+#[inline]
+fn wrap_prev(current: Option<usize>, len: usize) -> usize {
+    match current {
+        Some(0) | None => len.saturating_sub(1),
+        Some(i) => i - 1,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // View mode
 // ---------------------------------------------------------------------------
 
@@ -186,16 +215,7 @@ impl EventChainView {
         if self.rows.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.rows.len().saturating_sub(1) {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
+        let i = wrap_next(self.list_state.selected(), self.rows.len());
         self.list_state.select(Some(i));
     }
 
@@ -203,16 +223,7 @@ impl EventChainView {
         if self.rows.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.rows.len().saturating_sub(1)
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
+        let i = wrap_prev(self.list_state.selected(), self.rows.len());
         self.list_state.select(Some(i));
     }
 }
@@ -328,16 +339,7 @@ impl CallGraphView {
         if self.rows.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.rows.len().saturating_sub(1) {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
+        let i = wrap_next(self.list_state.selected(), self.rows.len());
         self.list_state.select(Some(i));
     }
 
@@ -345,16 +347,7 @@ impl CallGraphView {
         if self.rows.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.rows.len().saturating_sub(1)
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
+        let i = wrap_prev(self.list_state.selected(), self.rows.len());
         self.list_state.select(Some(i));
     }
 }
@@ -510,16 +503,7 @@ impl ProfilerView {
         if self.hotspots.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.hotspots.len().saturating_sub(1) {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
+        let i = wrap_next(self.list_state.selected(), self.hotspots.len());
         self.list_state.select(Some(i));
     }
 
@@ -527,16 +511,7 @@ impl ProfilerView {
         if self.hotspots.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.hotspots.len().saturating_sub(1)
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
+        let i = wrap_prev(self.list_state.selected(), self.hotspots.len());
         self.list_state.select(Some(i));
     }
 }
@@ -723,34 +698,17 @@ impl App {
                 self.details_list_state.select(None);
             }
         }
+        self.update_details_items();
     }
 
     fn next_package(&mut self) {
-        let i = match self.package_list_state.selected() {
-            Some(i) => {
-                if i >= self.packages.len().saturating_sub(1) {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
+        let i = wrap_next(self.package_list_state.selected(), self.packages.len());
         self.package_list_state.select(Some(i));
         self.update_objects_list(true);
     }
 
     fn previous_package(&mut self) {
-        let i = match self.package_list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.packages.len().saturating_sub(1)
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
+        let i = wrap_prev(self.package_list_state.selected(), self.packages.len());
         self.package_list_state.select(Some(i));
         self.update_objects_list(true);
     }
@@ -789,6 +747,7 @@ impl App {
         if !self.current_objects.is_empty() {
             self.object_list_state.select(Some(i));
             self.details_list_state.select(Some(0));
+            self.update_details_items();
         }
     }
 
@@ -806,6 +765,250 @@ impl App {
         if !self.current_objects.is_empty() {
             self.object_list_state.select(Some(i));
             self.details_list_state.select(Some(0));
+            self.update_details_items();
+        }
+    }
+
+    fn update_details_items(&mut self) {
+        self.details_items.clear();
+
+        if let Some(selected) = self.object_list_state.selected()
+            && let Some(entry) = self.current_objects.get(selected)
+        {
+            self.details_items.push((
+                None,
+                Line::from(vec![
+                    Span::styled(
+                        format!("{:?} ", entry.kind),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(entry.id.to_string(), Style::default().fg(Color::Cyan)),
+                    Span::raw(" ".to_string()),
+                    Span::styled(
+                        entry.name.clone(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                ]),
+            ));
+
+            if let Some(extends) = &entry.extends {
+                self.details_items.push((
+                    None,
+                    Line::from(vec![
+                        Span::styled(
+                            "Extends: ".to_string(),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(extends.clone()),
+                    ]),
+                ));
+            }
+
+            self.details_items.push((
+                None,
+                Line::from(vec![
+                    Span::styled(
+                        "Package: ".to_string(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(entry.package.clone()),
+                ]),
+            ));
+
+            if !entry.properties.is_empty() {
+                self.details_items.push((None, Line::from("".to_string())));
+                self.details_items.push((
+                    None,
+                    Line::from(Span::styled(
+                        "Properties:".to_string(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                ));
+                for p in entry.properties.iter() {
+                    self.details_items.push((
+                        None,
+                        Line::from(vec![
+                            Span::raw("    ".to_string()),
+                            Span::styled(
+                                format!("{:<20}", p.name),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                            Span::raw(" = ".to_string()),
+                            Span::raw(p.value.clone()),
+                        ]),
+                    ));
+                }
+            }
+
+            if !entry.keys.is_empty() {
+                self.details_items.push((None, Line::from("".to_string())));
+                self.details_items.push((
+                    None,
+                    Line::from(Span::styled(
+                        format!("Keys ({}):", entry.keys.len()),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                ));
+                for k in entry.keys.iter() {
+                    let fields = k.field_names.join(", ");
+                    self.details_items.push((
+                        Some(DetailTarget {
+                            name: k.name.clone(),
+                            kind: DetailTargetKind::Key,
+                        }),
+                        Line::from(vec![
+                            Span::raw("    ".to_string()),
+                            Span::styled(
+                                format!("{:<20}", k.name),
+                                Style::default().fg(Color::Cyan),
+                            ),
+                            Span::raw(format!(" ({})", fields)),
+                        ]),
+                    ));
+                }
+            }
+
+            if !entry.fields.is_empty() {
+                self.details_items.push((None, Line::from("".to_string())));
+                self.details_items.push((
+                    None,
+                    Line::from(Span::styled(
+                        format!("Fields ({}):", entry.fields.len()),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                ));
+                for f in entry.fields.iter() {
+                    self.details_items.push((
+                        Some(DetailTarget {
+                            name: f.name.clone(),
+                            kind: DetailTargetKind::Field,
+                        }),
+                        Line::from(vec![
+                            Span::styled(
+                                format!("    {:<4} ", f.id),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                            Span::styled(
+                                format!("{:<30}", f.name),
+                                Style::default().fg(Color::White),
+                            ),
+                            Span::styled(
+                                format!(" : {}", f.type_name),
+                                Style::default().fg(Color::Cyan),
+                            ),
+                        ]),
+                    ));
+                }
+            }
+
+            if !entry.controls.is_empty() {
+                self.details_items.push((None, Line::from("".to_string())));
+                self.details_items.push((
+                    None,
+                    Line::from(Span::styled(
+                        format!("Controls/Actions ({}):", entry.controls.len()),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                ));
+                for c in entry.controls.iter() {
+                    self.details_items.push((
+                        Some(DetailTarget {
+                            name: c.name.clone(),
+                            kind: DetailTargetKind::Control(c.kind.clone()),
+                        }),
+                        Line::from(vec![
+                            Span::raw("    ".to_string()),
+                            Span::styled(
+                                format!("{:<15}", c.kind),
+                                Style::default().fg(Color::Magenta),
+                            ),
+                            Span::raw(format!(" {}", c.name)),
+                        ]),
+                    ));
+                }
+            }
+
+            if !entry.enum_values.is_empty() {
+                self.details_items.push((None, Line::from("".to_string())));
+                self.details_items.push((
+                    None,
+                    Line::from(Span::styled(
+                        format!("Values ({}):", entry.enum_values.len()),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                ));
+                for v in entry.enum_values.iter() {
+                    self.details_items.push((
+                        Some(DetailTarget {
+                            name: v.name.clone(),
+                            kind: DetailTargetKind::EnumValue,
+                        }),
+                        Line::from(vec![
+                            Span::styled(
+                                format!("    {:<4} ", v.ordinal),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                            Span::raw(v.name.clone()),
+                        ]),
+                    ));
+                }
+            }
+
+            if !entry.methods.is_empty() {
+                self.details_items.push((None, Line::from("".to_string())));
+                self.details_items.push((
+                    None,
+                    Line::from(Span::styled(
+                        format!("Procedures ({}):", entry.methods.len()),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                ));
+                for m in entry.methods.iter() {
+                    let mut spans = vec![Span::raw("    ".to_string())];
+                    if m.is_local {
+                        spans.push(Span::styled("local ", Style::default().fg(Color::DarkGray)));
+                    } else {
+                        spans.push(Span::raw("      ".to_string()));
+                    }
+                    spans.push(Span::styled(
+                        m.name.clone(),
+                        Style::default().fg(Color::Green),
+                    ));
+                    spans.push(Span::raw("(".to_string()));
+
+                    let params = m
+                        .parameters
+                        .iter()
+                        .map(|p| p.name.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    spans.push(Span::raw(params));
+
+                    spans.push(Span::raw(")".to_string()));
+
+                    if let Some(ret) = &m.return_type {
+                        spans.push(Span::styled(
+                            format!(" : {}", ret),
+                            Style::default().fg(Color::Cyan),
+                        ));
+                    }
+
+                    self.details_items.push((
+                        Some(DetailTarget {
+                            name: m.name.clone(),
+                            kind: DetailTargetKind::Procedure,
+                        }),
+                        Line::from(spans),
+                    ));
+                }
+            }
+        }
+
+        if self.details_items.is_empty() {
+            self.details_items
+                .push((None, Line::from("No object selected".to_string())));
         }
     }
 
@@ -910,6 +1113,13 @@ impl App {
 // ---------------------------------------------------------------------------
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen);
+        original_hook(info);
+    }));
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -1293,6 +1503,7 @@ fn handle_object_browser_mouse(app: &mut App, mouse_event: crossterm::event::Mou
                     if target < app.current_objects.len() {
                         app.object_list_state.select(Some(target));
                         app.details_list_state.select(Some(0));
+                        app.update_details_items();
                         let is_double = app.register_click(ClickTarget::Objects, target);
                         if is_double {
                             app.details_list_state.select(None);
@@ -1656,241 +1867,6 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         Style::default().fg(Color::DarkGray)
     };
-
-    app.details_items.clear();
-
-    if let Some(selected) = app.object_list_state.selected()
-        && let Some(entry) = app.current_objects.get(selected)
-    {
-        app.details_items.push((
-            None,
-            Line::from(vec![
-                Span::styled(
-                    format!("{:?} ", entry.kind),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(entry.id.to_string(), Style::default().fg(Color::Cyan)),
-                Span::raw(" ".to_string()),
-                Span::styled(
-                    entry.name.clone(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ]),
-        ));
-
-        if let Some(extends) = &entry.extends {
-            app.details_items.push((
-                None,
-                Line::from(vec![
-                    Span::styled(
-                        "Extends: ".to_string(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(extends.clone()),
-                ]),
-            ));
-        }
-
-        app.details_items.push((
-            None,
-            Line::from(vec![
-                Span::styled(
-                    "Package: ".to_string(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(entry.package.clone()),
-            ]),
-        ));
-
-        if !entry.properties.is_empty() {
-            app.details_items.push((None, Line::from("".to_string())));
-            app.details_items.push((
-                None,
-                Line::from(Span::styled(
-                    "Properties:".to_string(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-            ));
-            for p in entry.properties.iter() {
-                app.details_items.push((
-                    None,
-                    Line::from(vec![
-                        Span::raw("    ".to_string()),
-                        Span::styled(
-                            format!("{:<20}", p.name),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::raw(" = ".to_string()),
-                        Span::raw(p.value.clone()),
-                    ]),
-                ));
-            }
-        }
-
-        if !entry.keys.is_empty() {
-            app.details_items.push((None, Line::from("".to_string())));
-            app.details_items.push((
-                None,
-                Line::from(Span::styled(
-                    format!("Keys ({}):", entry.keys.len()),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-            ));
-            for k in entry.keys.iter() {
-                let fields = k.field_names.join(", ");
-                app.details_items.push((
-                    Some(DetailTarget {
-                        name: k.name.clone(),
-                        kind: DetailTargetKind::Key,
-                    }),
-                    Line::from(vec![
-                        Span::raw("    ".to_string()),
-                        Span::styled(format!("{:<20}", k.name), Style::default().fg(Color::Cyan)),
-                        Span::raw(format!(" ({})", fields)),
-                    ]),
-                ));
-            }
-        }
-
-        if !entry.fields.is_empty() {
-            app.details_items.push((None, Line::from("".to_string())));
-            app.details_items.push((
-                None,
-                Line::from(Span::styled(
-                    format!("Fields ({}):", entry.fields.len()),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-            ));
-            for f in entry.fields.iter() {
-                app.details_items.push((
-                    Some(DetailTarget {
-                        name: f.name.clone(),
-                        kind: DetailTargetKind::Field,
-                    }),
-                    Line::from(vec![
-                        Span::styled(
-                            format!("    {:<4} ", f.id),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::styled(format!("{:<30}", f.name), Style::default().fg(Color::White)),
-                        Span::styled(
-                            format!(" : {}", f.type_name),
-                            Style::default().fg(Color::Cyan),
-                        ),
-                    ]),
-                ));
-            }
-        }
-
-        if !entry.controls.is_empty() {
-            app.details_items.push((None, Line::from("".to_string())));
-            app.details_items.push((
-                None,
-                Line::from(Span::styled(
-                    format!("Controls/Actions ({}):", entry.controls.len()),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-            ));
-            for c in entry.controls.iter() {
-                app.details_items.push((
-                    Some(DetailTarget {
-                        name: c.name.clone(),
-                        kind: DetailTargetKind::Control(c.kind.clone()),
-                    }),
-                    Line::from(vec![
-                        Span::raw("    ".to_string()),
-                        Span::styled(
-                            format!("{:<15}", c.kind),
-                            Style::default().fg(Color::Magenta),
-                        ),
-                        Span::raw(format!(" {}", c.name)),
-                    ]),
-                ));
-            }
-        }
-
-        if !entry.enum_values.is_empty() {
-            app.details_items.push((None, Line::from("".to_string())));
-            app.details_items.push((
-                None,
-                Line::from(Span::styled(
-                    format!("Values ({}):", entry.enum_values.len()),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-            ));
-            for v in entry.enum_values.iter() {
-                app.details_items.push((
-                    Some(DetailTarget {
-                        name: v.name.clone(),
-                        kind: DetailTargetKind::EnumValue,
-                    }),
-                    Line::from(vec![
-                        Span::styled(
-                            format!("    {:<4} ", v.ordinal),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::raw(v.name.clone()),
-                    ]),
-                ));
-            }
-        }
-
-        if !entry.methods.is_empty() {
-            app.details_items.push((None, Line::from("".to_string())));
-            app.details_items.push((
-                None,
-                Line::from(Span::styled(
-                    format!("Procedures ({}):", entry.methods.len()),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-            ));
-            for m in entry.methods.iter() {
-                let mut spans = vec![Span::raw("    ".to_string())];
-                if m.is_local {
-                    spans.push(Span::styled("local ", Style::default().fg(Color::DarkGray)));
-                } else {
-                    spans.push(Span::raw("      ".to_string()));
-                }
-                spans.push(Span::styled(
-                    m.name.clone(),
-                    Style::default().fg(Color::Green),
-                ));
-                spans.push(Span::raw("(".to_string()));
-
-                let params = m
-                    .parameters
-                    .iter()
-                    .map(|p| p.name.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                spans.push(Span::raw(params));
-
-                spans.push(Span::raw(")".to_string()));
-
-                if let Some(ret) = &m.return_type {
-                    spans.push(Span::styled(
-                        format!(" : {}", ret),
-                        Style::default().fg(Color::Cyan),
-                    ));
-                }
-
-                app.details_items.push((
-                    Some(DetailTarget {
-                        name: m.name.clone(),
-                        kind: DetailTargetKind::Procedure,
-                    }),
-                    Line::from(spans),
-                ));
-            }
-        }
-    }
-
-    if app.details_items.is_empty() {
-        app.details_items
-            .push((None, Line::from("No object selected".to_string())));
-    }
 
     let list_items: Vec<ListItem> = app
         .details_items

@@ -66,28 +66,28 @@ impl BcServerClient {
     /// `insecure_tls` disables TLS certificate validation. Only set to `true` for
     /// on-prem BC servers using self-signed certificates. Defaults to `false` for
     /// cloud connections.
+    ///
+    /// Returns an error if the HTTP client cannot be built (e.g. missing TLS
+    /// backend). The error is surfaced rather than silently falling back to a
+    /// default client that may not support HTTPS.
     pub fn new(
         auth: AuthMethod,
         tenant: Option<String>,
         message_sink: MessageSink,
         insecure_tls: bool,
-    ) -> Self {
+    ) -> Result<Self, BcServerError> {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(insecure_tls)
             .timeout(std::time::Duration::from_secs(300)) // 5 min for large packages
-            .build()
-            .unwrap_or_else(|e| {
-                warn!(error = %e, "Failed to build TLS-configured HTTP client; falling back to default (may not support HTTPS)");
-                reqwest::Client::default()
-            });
+            .build()?;
 
-        Self {
+        Ok(Self {
             client,
             auth,
             tenant,
             message_sink,
             cached_token: tokio::sync::OnceCell::new(),
-        }
+        })
     }
 
     /// Download a single dependency from the BC Dev API.
@@ -112,8 +112,21 @@ impl BcServerClient {
         let response = request.send().await?;
         let status = response.status().as_u16();
 
+        const MAX_PACKAGE_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
         match status {
             200 => {
+                if let Some(content_length) = response.content_length() {
+                    if content_length > MAX_PACKAGE_BYTES {
+                        return Err(BcServerError::ServerError {
+                            status,
+                            message: format!(
+                                "Package '{name}' Content-Length {content_length} exceeds {max} byte limit — refusing download",
+                                name = dep.name,
+                                max = MAX_PACKAGE_BYTES,
+                            ),
+                        });
+                    }
+                }
                 let bytes = response.bytes().await?;
 
                 // Save to .alpackages/

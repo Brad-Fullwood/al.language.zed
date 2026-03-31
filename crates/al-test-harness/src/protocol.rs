@@ -18,15 +18,16 @@ pub fn completion_labels(items: &[Value]) -> Vec<&str> {
         .collect()
 }
 
-/// Extract document symbol names (recursive).
-pub fn symbol_names(symbols: &[Value]) -> Vec<&str> {
+/// Extract document symbol names (iterative).
+pub fn symbol_names<'a>(symbols: &'a [Value]) -> Vec<&'a str> {
     let mut names = vec![];
-    for sym in symbols {
+    let mut stack: Vec<&'a Value> = symbols.iter().collect();
+    while let Some(sym) = stack.pop() {
         if let Some(name) = sym.get("name").and_then(|n| n.as_str()) {
             names.push(name);
         }
         if let Some(children) = sym.get("children").and_then(|c| c.as_array()) {
-            names.extend(symbol_names(children));
+            stack.extend(children.iter());
         }
     }
     names

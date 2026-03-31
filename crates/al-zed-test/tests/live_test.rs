@@ -1,5 +1,5 @@
 //! Live integration test — requires Zed running on Hyprland.
-//! Run with: cargo test -p al-zed-test --test live_test -- --nocapture
+//! Run with: cargo test -p al-zed-test --test live_test -- --nocapture --include-ignored
 
 use al_zed_test::ZedTest;
 use std::path::PathBuf;
@@ -12,6 +12,7 @@ fn test_project_dir() -> PathBuf {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_connect_to_zed() {
     let zed = ZedTest::connect().await;
     match &zed {
@@ -29,6 +30,7 @@ async fn test_connect_to_zed() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_focus_zed() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
     let result = zed.focus();
@@ -37,6 +39,7 @@ async fn test_focus_zed() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_screenshot() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
     zed.focus().expect("focus");
@@ -55,6 +58,7 @@ async fn test_screenshot() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_screenshot_to_file() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
     zed.focus().expect("focus");
@@ -71,6 +75,7 @@ async fn test_screenshot_to_file() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_clipboard_roundtrip() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
 

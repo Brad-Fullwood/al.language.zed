@@ -805,7 +805,8 @@ pub(super) async fn dispatch_authenticate(
             let mut statuses = Vec::new();
             for tenant in &tenants {
                 let cache_path = al_core::symbols::oauth::token_cache_path(tenant);
-                let cached = std::fs::read_to_string(&cache_path)
+                let cached = tokio::fs::read_to_string(&cache_path)
+                    .await
                     .ok()
                     .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
                 if let Some(cached) = cached {
@@ -847,7 +848,7 @@ pub(super) async fn dispatch_authenticate(
                     }
                 }
                 let cache_path = al_core::symbols::oauth::token_cache_path(tenant);
-                if std::fs::remove_file(&cache_path).is_ok() {
+                if tokio::fs::remove_file(&cache_path).await.is_ok() {
                     cleared += 1;
                 }
             }
@@ -1003,12 +1004,15 @@ pub(super) fn dispatch_download_symbols(
                         al_core::symbols::bc_server::AuthMethod::AAD
                     }
                 };
-                let client = al_core::symbols::bc_server::BcServerClient::new(
+                let client = match al_core::symbols::bc_server::BcServerClient::new(
                     auth,
                     cfg.tenant.clone(),
                     std::sync::Arc::new(|msg| tracing::info!("{msg}")),
                     cfg.accept_invalid_certs,
-                );
+                ) {
+                    Ok(c) => c,
+                    Err(e) => return vec![serde_json::json!({ "error": e.to_string() })],
+                };
                 let url_deps: Vec<(String, al_core::symbols::nuget::AppDependency)> = all_deps
                     .iter()
                     .filter_map(|dep| cfg.dev_packages_url(dep).map(|url| (url, dep.clone())))
@@ -1445,7 +1449,7 @@ pub(super) async fn dispatch_xlf_refresh(
             .unwrap_or_else(|| xlf_path.with_extension("g.xlf"))
     };
 
-    let gen_content = match std::fs::read_to_string(&generated_path) {
+    let gen_content = match tokio::fs::read_to_string(&generated_path).await {
         Ok(c) => c,
         Err(e) => {
             return rpc_error(
@@ -1455,7 +1459,7 @@ pub(super) async fn dispatch_xlf_refresh(
             )
         }
     };
-    let lang_content = match std::fs::read_to_string(&xlf_path) {
+    let lang_content = match tokio::fs::read_to_string(&xlf_path).await {
         Ok(c) => c,
         Err(e) => {
             return rpc_error(

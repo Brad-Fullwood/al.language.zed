@@ -303,7 +303,13 @@ Examples:
     InitDebug,
     /// Show workspace diagnostics (memory stats, object counts)
     Diag,
-    /// Authenticate to Business Central (browser-based OAuth)
+    /// Authenticate to Business Central (browser-based OAuth).
+    ///
+    /// For non-interactive environments (CI, scripting) consider using
+    /// `--password` on snapshot/profile commands instead. Note that passwords
+    /// supplied via `--password` are visible in shell history, `/proc/<pid>/cmdline`,
+    /// and daemon logs at DEBUG level. Prefer reading credentials from a file or
+    /// environment variable when possible.
     Authenticate {
         /// Subcommand: login (default), status, clear
         #[arg(default_value = "login")]
@@ -800,7 +806,7 @@ fn main() -> ExitCode {
             publisher,
             template,
         } => lsp::cmd_new(&dir, &name, &publisher, &template, cli.json),
-        Commands::InitDebug => lsp::cmd_init_debug(cli.json),
+        Commands::InitDebug => lsp::cmd_init_debug(&commands::project_root(None), cli.json),
         Commands::Authenticate { cmd, tenant } => {
             lsp::cmd_authenticate(&cmd, tenant.as_deref(), cli.json)
         }

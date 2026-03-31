@@ -141,7 +141,7 @@ pub fn get_or_create_virtual_file(
     workspace: &crate::workspace::Workspace,
     entry: &SymbolEntry,
     member_name: Option<&str>,
-) -> Option<(Url, tower_lsp::lsp_types::Range)> {
+) -> Option<(Url, Range)> {
     let app_path = workspace.symbols.app_path(&entry.package);
     match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
         Ok(path) => {
@@ -153,10 +153,16 @@ pub fn get_or_create_virtual_file(
                         name,
                         al_symbols::virtual_file::MemberKind::Unknown,
                     )?;
-                    Some(tower_lsp::lsp_types::Range::new(
-                        tower_lsp::lsp_types::Position::new(r.line, r.col_start),
-                        tower_lsp::lsp_types::Position::new(r.line, r.col_end),
-                    ))
+                    Some(Range {
+                        start: Position {
+                            line: r.line,
+                            character: r.col_start,
+                        },
+                        end: Position {
+                            line: r.line,
+                            character: r.col_end,
+                        },
+                    })
                 })
                 .unwrap_or_default();
             Some((uri, range))
@@ -165,10 +171,88 @@ pub fn get_or_create_virtual_file(
     }
 }
 
-/// Check if a DocumentSymbol represents a procedure or event (FUNCTION or EVENT).
-pub fn is_procedure_symbol(kind: tower_lsp::lsp_types::SymbolKind) -> bool {
-    kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
-        || kind == tower_lsp::lsp_types::SymbolKind::EVENT
+/// Transport-agnostic symbol kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AlSymbolKind {
+    File,
+    Module,
+    Namespace,
+    Class,
+    Method,
+    Property,
+    Field,
+    Constructor,
+    Enum,
+    Interface,
+    Function,
+    Variable,
+    Constant,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    Struct,
+    Event,
+    Operator,
+    TypeParameter,
+}
+
+/// A document symbol (for outline/symbol views).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AlDocumentSymbol {
+    pub name: std::string::String,
+    pub detail: Option<std::string::String>,
+    pub kind: AlSymbolKind,
+    pub range: Range,
+    pub selection_range: Range,
+    pub children: Option<Vec<AlDocumentSymbol>>,
+}
+
+/// Folding range kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AlFoldingRangeKind {
+    Comment,
+    Imports,
+    Region,
+}
+
+/// A folding range in a document.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AlFoldingRange {
+    pub start_line: u32,
+    pub start_character: Option<u32>,
+    pub end_line: u32,
+    pub end_character: Option<u32>,
+    pub kind: Option<AlFoldingRangeKind>,
+}
+
+/// Inlay hint kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AlInlayHintKind {
+    Type,
+    Parameter,
+}
+
+/// Inlay hint label.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum AlInlayHintLabel {
+    String(std::string::String),
+}
+
+/// An inlay hint.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AlInlayHint {
+    pub position: Position,
+    pub label: AlInlayHintLabel,
+    pub kind: Option<AlInlayHintKind>,
+    pub padding_left: Option<bool>,
+    pub padding_right: Option<bool>,
+}
+
+/// Check if a symbol kind represents a procedure or event.
+pub fn is_procedure_symbol(kind: AlSymbolKind) -> bool {
+    kind == AlSymbolKind::Function || kind == AlSymbolKind::Event
 }
 
 /// Human-readable label for a `VariableScope` variant.
@@ -298,6 +382,135 @@ impl From<Location> for tower_lsp::lsp_types::Location {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// From impls: al-core types -> LSP types (used by al-lsp boundary)
+// ---------------------------------------------------------------------------
+
+impl From<AlSymbolKind> for tower_lsp::lsp_types::SymbolKind {
+    fn from(k: AlSymbolKind) -> Self {
+        match k {
+            AlSymbolKind::File => tower_lsp::lsp_types::SymbolKind::FILE,
+            AlSymbolKind::Module => tower_lsp::lsp_types::SymbolKind::MODULE,
+            AlSymbolKind::Namespace => tower_lsp::lsp_types::SymbolKind::NAMESPACE,
+            AlSymbolKind::Class => tower_lsp::lsp_types::SymbolKind::CLASS,
+            AlSymbolKind::Method => tower_lsp::lsp_types::SymbolKind::METHOD,
+            AlSymbolKind::Property => tower_lsp::lsp_types::SymbolKind::PROPERTY,
+            AlSymbolKind::Field => tower_lsp::lsp_types::SymbolKind::FIELD,
+            AlSymbolKind::Constructor => tower_lsp::lsp_types::SymbolKind::CONSTRUCTOR,
+            AlSymbolKind::Enum => tower_lsp::lsp_types::SymbolKind::ENUM,
+            AlSymbolKind::Interface => tower_lsp::lsp_types::SymbolKind::INTERFACE,
+            AlSymbolKind::Function => tower_lsp::lsp_types::SymbolKind::FUNCTION,
+            AlSymbolKind::Variable => tower_lsp::lsp_types::SymbolKind::VARIABLE,
+            AlSymbolKind::Constant => tower_lsp::lsp_types::SymbolKind::CONSTANT,
+            AlSymbolKind::String => tower_lsp::lsp_types::SymbolKind::STRING,
+            AlSymbolKind::Number => tower_lsp::lsp_types::SymbolKind::NUMBER,
+            AlSymbolKind::Boolean => tower_lsp::lsp_types::SymbolKind::BOOLEAN,
+            AlSymbolKind::Array => tower_lsp::lsp_types::SymbolKind::ARRAY,
+            AlSymbolKind::Object => tower_lsp::lsp_types::SymbolKind::OBJECT,
+            AlSymbolKind::Struct => tower_lsp::lsp_types::SymbolKind::STRUCT,
+            AlSymbolKind::Event => tower_lsp::lsp_types::SymbolKind::EVENT,
+            AlSymbolKind::Operator => tower_lsp::lsp_types::SymbolKind::OPERATOR,
+            AlSymbolKind::TypeParameter => tower_lsp::lsp_types::SymbolKind::TYPE_PARAMETER,
+        }
+    }
+}
+
+impl From<tower_lsp::lsp_types::SymbolKind> for AlSymbolKind {
+    fn from(k: tower_lsp::lsp_types::SymbolKind) -> Self {
+        match k {
+            tower_lsp::lsp_types::SymbolKind::FILE => AlSymbolKind::File,
+            tower_lsp::lsp_types::SymbolKind::MODULE => AlSymbolKind::Module,
+            tower_lsp::lsp_types::SymbolKind::NAMESPACE => AlSymbolKind::Namespace,
+            tower_lsp::lsp_types::SymbolKind::CLASS => AlSymbolKind::Class,
+            tower_lsp::lsp_types::SymbolKind::METHOD => AlSymbolKind::Method,
+            tower_lsp::lsp_types::SymbolKind::PROPERTY => AlSymbolKind::Property,
+            tower_lsp::lsp_types::SymbolKind::FIELD => AlSymbolKind::Field,
+            tower_lsp::lsp_types::SymbolKind::CONSTRUCTOR => AlSymbolKind::Constructor,
+            tower_lsp::lsp_types::SymbolKind::ENUM => AlSymbolKind::Enum,
+            tower_lsp::lsp_types::SymbolKind::INTERFACE => AlSymbolKind::Interface,
+            tower_lsp::lsp_types::SymbolKind::FUNCTION => AlSymbolKind::Function,
+            tower_lsp::lsp_types::SymbolKind::VARIABLE => AlSymbolKind::Variable,
+            tower_lsp::lsp_types::SymbolKind::CONSTANT => AlSymbolKind::Constant,
+            tower_lsp::lsp_types::SymbolKind::STRING => AlSymbolKind::String,
+            tower_lsp::lsp_types::SymbolKind::NUMBER => AlSymbolKind::Number,
+            tower_lsp::lsp_types::SymbolKind::BOOLEAN => AlSymbolKind::Boolean,
+            tower_lsp::lsp_types::SymbolKind::ARRAY => AlSymbolKind::Array,
+            tower_lsp::lsp_types::SymbolKind::OBJECT => AlSymbolKind::Object,
+            tower_lsp::lsp_types::SymbolKind::STRUCT => AlSymbolKind::Struct,
+            tower_lsp::lsp_types::SymbolKind::EVENT => AlSymbolKind::Event,
+            tower_lsp::lsp_types::SymbolKind::OPERATOR => AlSymbolKind::Operator,
+            tower_lsp::lsp_types::SymbolKind::TYPE_PARAMETER => AlSymbolKind::TypeParameter,
+            _ => AlSymbolKind::Object,
+        }
+    }
+}
+
+#[allow(deprecated)]
+impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
+    fn from(s: AlDocumentSymbol) -> Self {
+        Self {
+            name: s.name,
+            detail: s.detail,
+            kind: s.kind.into(),
+            tags: None,
+            deprecated: None,
+            range: s.range.into(),
+            selection_range: s.selection_range.into(),
+            children: s.children.map(|v| v.into_iter().map(Into::into).collect()),
+        }
+    }
+}
+
+impl From<AlFoldingRangeKind> for tower_lsp::lsp_types::FoldingRangeKind {
+    fn from(k: AlFoldingRangeKind) -> Self {
+        match k {
+            AlFoldingRangeKind::Comment => tower_lsp::lsp_types::FoldingRangeKind::Comment,
+            AlFoldingRangeKind::Imports => tower_lsp::lsp_types::FoldingRangeKind::Imports,
+            AlFoldingRangeKind::Region => tower_lsp::lsp_types::FoldingRangeKind::Region,
+        }
+    }
+}
+
+impl From<AlFoldingRange> for tower_lsp::lsp_types::FoldingRange {
+    fn from(r: AlFoldingRange) -> Self {
+        Self {
+            start_line: r.start_line,
+            start_character: r.start_character,
+            end_line: r.end_line,
+            end_character: r.end_character,
+            kind: r.kind.map(Into::into),
+            collapsed_text: None,
+        }
+    }
+}
+
+impl From<AlInlayHintKind> for tower_lsp::lsp_types::InlayHintKind {
+    fn from(k: AlInlayHintKind) -> Self {
+        match k {
+            AlInlayHintKind::Type => tower_lsp::lsp_types::InlayHintKind::TYPE,
+            AlInlayHintKind::Parameter => tower_lsp::lsp_types::InlayHintKind::PARAMETER,
+        }
+    }
+}
+
+impl From<AlInlayHint> for tower_lsp::lsp_types::InlayHint {
+    fn from(h: AlInlayHint) -> Self {
+        let label = match h.label {
+            AlInlayHintLabel::String(s) => tower_lsp::lsp_types::InlayHintLabel::String(s),
+        };
+        Self {
+            position: h.position.into(),
+            label,
+            kind: h.kind.map(Into::into),
+            text_edits: None,
+            tooltip: None,
+            padding_left: h.padding_left,
+            padding_right: h.padding_right,
+            data: None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod query_types_tests {

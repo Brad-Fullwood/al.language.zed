@@ -23,7 +23,7 @@ type FreeBufferFn = unsafe extern "system" fn(*mut u8);
 ///
 /// Thread-safe: the .NET runtime is initialized once and function pointers
 /// are safe to call from any thread (CLR handles its own thread safety).
-pub struct DotNetHost {
+pub(crate) struct DotNetHost {
     _context: HostfxrContext<InitializedForRuntimeConfig>,
     _init_fn: InitFn,
     handle_request_fn: HandleRequestFn,
@@ -116,8 +116,12 @@ impl DotNetHost {
     }
 
     /// Call a bridge method with JSON params, returning the JSON result.
+    ///
+    /// Takes `&mut self` because the CLR response buffer is shared and not
+    /// safe for concurrent access. The caller (SemanticBridge) serializes
+    /// calls via a `std::sync::Mutex<DotNetHost>`.
     pub fn call(
-        &self,
+        &mut self,
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, SemanticError> {

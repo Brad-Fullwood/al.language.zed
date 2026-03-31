@@ -136,8 +136,14 @@ impl LspClient {
             .env("RUST_LOG", "debug")
             .spawn()?;
 
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or("al-lsp child stdin not available")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("al-lsp child stdout not available")?;
 
         let mut client = Self::from_transport(
             Box::new(stdin),
@@ -269,15 +275,26 @@ impl LspClient {
                 tracing::warn!("Timed out waiting for workspace init");
                 break;
             }
-            // Use empty query to check if any workspace symbols are loaded
+            // Use empty query to check if any workspace symbols are loaded.
+            // Track the id before the request so we can clean up the pending
+            // entry if the request times out (avoids a pending-map leak).
+            let probe_id = self.next_id.load(Ordering::SeqCst);
             let probe = self
                 .request("workspace/symbol", serde_json::json!({ "query": "" }))
                 .await;
-            if let Ok(val) = probe {
-                if let Some(arr) = val.as_array() {
-                    if !arr.is_empty() {
-                        break; // Workspace has scanned files
+            match probe {
+                Ok(val) => {
+                    if let Some(arr) = val.as_array() {
+                        if !arr.is_empty() {
+                            break; // Workspace has scanned files
+                        }
                     }
+                }
+                Err(_) => {
+                    // On timeout or error the oneshot sender is dropped but the
+                    // pending map entry may still hold the id.  Remove it so the
+                    // slot does not leak across iterations.
+                    self.pending.lock().await.remove(&probe_id);
                 }
             }
         }
@@ -304,7 +321,9 @@ impl LspClient {
             }
         });
 
-        self.notify("textDocument/didOpen", params).await.unwrap();
+        if let Err(e) = self.notify("textDocument/didOpen", params).await {
+            tracing::warn!("textDocument/didOpen notify failed: {e}");
+        }
         self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5))
             .await;
     }
@@ -329,7 +348,9 @@ impl LspClient {
             }]
         });
 
-        self.notify("textDocument/didChange", params).await.unwrap();
+        if let Err(e) = self.notify("textDocument/didChange", params).await {
+            tracing::warn!("textDocument/didChange notify failed: {e}");
+        }
         self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5))
             .await;
     }
@@ -375,7 +396,9 @@ impl LspClient {
             }]
         });
 
-        self.notify("textDocument/didChange", params).await.unwrap();
+        if let Err(e) = self.notify("textDocument/didChange", params).await {
+            tracing::warn!("textDocument/didChange (no_wait) notify failed: {e}");
+        }
     }
 
     /// Close a file (simulates Zed closing a tab).
@@ -387,7 +410,9 @@ impl LspClient {
             "textDocument": { "uri": uri }
         });
 
-        self.notify("textDocument/didClose", params).await.unwrap();
+        if let Err(e) = self.notify("textDocument/didClose", params).await {
+            tracing::warn!("textDocument/didClose notify failed: {e}");
+        }
     }
 
     /// Send configuration change (simulates Zed settings update).
@@ -396,9 +421,12 @@ impl LspClient {
             "settings": settings
         });
 
-        self.notify("workspace/didChangeConfiguration", params)
+        if let Err(e) = self
+            .notify("workspace/didChangeConfiguration", params)
             .await
-            .unwrap();
+        {
+            tracing::warn!("workspace/didChangeConfiguration notify failed: {e}");
+        }
     }
 
     /// Prepare rename — check if a position is renamable and get the range.

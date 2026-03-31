@@ -6,7 +6,6 @@
 use serde::Serialize;
 
 use crate::workspace::Workspace;
-use al_syntax::AlParser;
 
 // ---------------------------------------------------------------------------
 // DataClassification Audit (T1702)
@@ -53,11 +52,13 @@ pub fn data_classification_audit(workspace: &Workspace) -> Vec<DataClassificatio
     let mut results = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key().to_string_lossy().to_string();
-        let file_text = entry.value();
-        let parsed = AlParser::parse_quick(file_text);
+        let path = entry.key();
+        let file_path = path.to_string_lossy().to_string();
+        let Some((file_text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
+            continue;
+        };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed.tree, file_text) else {
+        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &file_text) else {
             continue;
         };
 
@@ -68,7 +69,7 @@ pub fn data_classification_audit(workspace: &Workspace) -> Vec<DataClassificatio
             continue;
         }
 
-        scan_table_fields(&file_path, file_text, &obj_info.name, &mut results);
+        scan_table_fields(&file_path, &file_text, &obj_info.name, &mut results);
     }
 
     results
@@ -220,23 +221,27 @@ pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntr
     let mut perm_sets: Vec<(String, Vec<String>)> = Vec::new(); // (name, covered object names)
 
     for entry in workspace.file_index.files.iter() {
-        let text = entry.value();
-        let parsed = AlParser::parse_quick(text);
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed.tree, text) else {
+        let path = entry.key();
+        let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
+            continue;
+        };
+        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &text) else {
             continue;
         };
 
         if obj_info.kind.to_lowercase() == "permissionset" {
-            let covered = extract_permission_objects(text);
+            let covered = extract_permission_objects(&text);
             perm_sets.push((obj_info.name.clone(), covered));
         }
     }
 
     // Check workspace objects against permission sets
     for entry in workspace.file_index.files.iter() {
-        let text = entry.value();
-        let parsed = AlParser::parse_quick(text);
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed.tree, text) else {
+        let path = entry.key();
+        let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
+            continue;
+        };
+        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &text) else {
             continue;
         };
 

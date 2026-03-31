@@ -121,7 +121,7 @@ pub fn signature_help(
         if let Some(children) = &sym.children {
             for child in children {
                 if child.name.eq_ignore_ascii_case(func_name)
-                    && super::is_procedure_symbol(child.kind)
+                    && super::is_procedure_symbol(child.kind.into())
                 {
                     let detail = child.detail.as_deref().unwrap_or("()");
                     let parameters = parse_parameters_from_detail(detail);
@@ -254,7 +254,7 @@ fn resolve_receiver_signature(
         if let Some(children) = &sym.children {
             for child in children {
                 if child.name.eq_ignore_ascii_case(func_name)
-                    && super::is_procedure_symbol(child.kind)
+                    && super::is_procedure_symbol(child.kind.into())
                 {
                     let detail = child.detail.as_deref().unwrap_or("()");
                     let parameters = parse_parameters_from_detail(detail);

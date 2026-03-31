@@ -3,11 +3,13 @@ use zed_extension_api as zed;
 
 /// Build the DAP binary configuration for the AL debug adapter.
 ///
+/// `al_lsp_path` is the resolved binary path from the full 4-step resolution
+/// chain (user config → cache → PATH → download) performed by the caller.
 /// al-lsp's `--dap` mode runs the DAP server over stdio. Zed communicates
 /// with it using the DAP protocol for breakpoints, stepping, etc.
-pub fn get_dap_binary(
+pub fn build_dap_binary(
     config: zed::DebugTaskDefinition,
-    user_provided_debug_adapter_path: Option<String>,
+    al_lsp_path: String,
     worktree: &zed::Worktree,
 ) -> zed::Result<zed::DebugAdapterBinary> {
     let workspace_path = worktree.root_path();
@@ -23,18 +25,6 @@ pub fn get_dap_binary(
         zed::StartDebuggingRequestArgumentsRequest::Attach
     } else {
         zed::StartDebuggingRequestArgumentsRequest::Launch
-    };
-
-    // Find al-lsp binary: user-provided path > PATH lookup
-    let al_lsp_path = if let Some(path) = user_provided_debug_adapter_path {
-        path
-    } else if let Some(path) = worktree.which("al-lsp") {
-        path
-    } else {
-        return Err(
-            "al-lsp not found. Install al-lsp or set the debug adapter path in Zed settings."
-                .to_string(),
-        );
     };
 
     let mut args = vec![
@@ -91,16 +81,16 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
             if let Some(cwd) = &launch.cwd {
                 al_config.insert("projectDir".to_string(), json!(cwd));
             }
+            // Launch-only defaults — not applicable when attaching to a running session.
+            al_config.insert("breakOnError".to_string(), json!(true));
+            al_config.insert("launchBrowser".to_string(), json!(true));
+            al_config.insert("authentication".to_string(), json!("UserPassword"));
+            al_config.insert("environmentType".to_string(), json!("OnPrem"));
         }
         zed::DebugRequest::Attach(_) => {
             al_config.insert("request".to_string(), json!("attach"));
         }
     }
-
-    al_config.insert("breakOnError".to_string(), json!(true));
-    al_config.insert("launchBrowser".to_string(), json!(true));
-    al_config.insert("authentication".to_string(), json!("UserPassword"));
-    al_config.insert("environmentType".to_string(), json!("OnPrem"));
 
     Ok(zed::DebugScenario {
         label: config.label,

@@ -131,17 +131,15 @@ pub fn render_xml(entries: &[PermissionEntry], role_id: &str, role_name: &str) -
 }
 
 /// Map an AL object kind string to a (permission_type, permission_value) pair.
+///
+/// Looks up the object type in the `tree-sitter-al/data/object_types.json` data file
+/// via [`al_syntax::language_data::object_type_by_keyword`].
 /// Returns None for object types that don't get permission entries (extensions, enums, interfaces, etc.).
 fn permission_for_kind(kind: &str) -> Option<(&'static str, &'static str)> {
-    match kind {
-        "table" => Some(("tabledata", "RIMD")),
-        "page" => Some(("page", "X")),
-        "codeunit" => Some(("codeunit", "X")),
-        "report" => Some(("report", "X")),
-        "xmlport" => Some(("xmlport", "X")),
-        "query" => Some(("query", "X")),
-        _ => None,
-    }
+    let ot = al_syntax::language_data::object_type_by_keyword(kind)?;
+    let perm_type = ot.permission_type.as_deref()?;
+    let perm_value = ot.permission_value.as_deref()?;
+    Some((perm_type, perm_value))
 }
 
 /// Escape a string for safe embedding in an XML attribute value (double-quoted).

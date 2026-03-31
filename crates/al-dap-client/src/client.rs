@@ -44,8 +44,14 @@ impl DapClient {
             .spawn()
             .map_err(|e| DapError::SpawnFailed(format!("{}: {}", binary.display(), e)))?;
 
-        let stdin = child.stdin.take().expect("child stdin");
-        let stdout = child.stdout.take().expect("child stdout");
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| DapError::SpawnFailed("child stdin/stdout not available".to_string()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| DapError::SpawnFailed("child stdin/stdout not available".to_string()))?;
 
         let seq_counter = AtomicI64::new(1);
         let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<DapResponse>>>> =

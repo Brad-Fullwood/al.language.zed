@@ -390,7 +390,7 @@ impl BcDebugSession {
         let ws_url = hub_url
             .replace("https://", "wss://")
             .replace("http://", "ws://");
-        let ws_url = format!("{ws_url}?id={connection_token}");
+        let ws_url = format!("{ws_url}?id={}", percent_encode_url(connection_token));
         info!("SignalR WebSocket: {ws_url}");
 
         let request = tokio_tungstenite::tungstenite::http::Request::builder()
@@ -957,6 +957,33 @@ fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
 }
 
 // ---------------------------------------------------------------------------
+// URL helpers
+// ---------------------------------------------------------------------------
+
+/// Percent-encode a string for safe embedding as a URL query parameter value.
+///
+/// Unreserved characters (RFC 3986) are passed through unchanged; all other
+/// bytes are encoded as `%XX`. This is used to sanitize server-returned values
+/// (e.g. SignalR `connectionToken`) before they are embedded in WebSocket URLs.
+fn percent_encode_url(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0xF) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1040,5 +1067,25 @@ mod tests {
             url.contains(":7049"),
             "default port should be in URL: {url}"
         );
+    }
+
+    #[test]
+    fn percent_encode_url_safe_chars_unchanged() {
+        assert_eq!(percent_encode_url("abc-123_XYZ.~"), "abc-123_XYZ.~");
+    }
+
+    #[test]
+    fn percent_encode_url_encodes_special_chars() {
+        let token = "token=value&other=x";
+        let encoded = percent_encode_url(token);
+        assert!(!encoded.contains('='), "= should be encoded: {encoded}");
+        assert!(!encoded.contains('&'), "& should be encoded: {encoded}");
+        assert!(encoded.contains("%3D"), "= → %3D: {encoded}");
+        assert!(encoded.contains("%26"), "& → %26: {encoded}");
+    }
+
+    #[test]
+    fn percent_encode_url_empty_string() {
+        assert_eq!(percent_encode_url(""), "");
     }
 }

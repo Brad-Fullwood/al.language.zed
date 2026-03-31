@@ -602,20 +602,33 @@ impl<'a> TypeResolver<'a> {
             Err(_) => return,
         };
 
+        // Build a table of (line_start_byte, line_str) pairs so we can compute
+        // accurate start_byte / end_byte for the synthetic VariableDecl ranges.
+        // We need real byte offsets because `str::lines()` strips newlines, so
+        // we walk the raw bytes to find where each line starts.
+        let mut line_starts: Vec<usize> = Vec::new();
+        line_starts.push(0);
+        for (i, &b) in self.source.iter().enumerate() {
+            if b == b'\n' {
+                line_starts.push(i + 1);
+            }
+        }
+
         for (line_idx, line) in text.lines().enumerate() {
             let trimmed = line.trim();
-            if !trimmed.starts_with("dataitem(") {
+            let trimmed_lower = trimmed.to_ascii_lowercase();
+            if !trimmed_lower.starts_with("dataitem(") {
                 continue;
             }
             // Parse: dataitem(VarName; "Table Name")
-            let inside = match trimmed
-                .strip_prefix("dataitem(")
-                .and_then(|s| s.split(')').next())
-            {
+            // Use the lowercase version to strip the prefix, then index back into
+            // original trimmed to preserve the original casing of the variable name.
+            let prefix_len = "dataitem(".len();
+            let inside_raw = match trimmed[prefix_len..].split(')').next() {
                 Some(s) => s,
                 None => continue,
             };
-            let mut parts = inside.splitn(2, ';');
+            let mut parts = inside_raw.splitn(2, ';');
             let var_name = match parts.next() {
                 Some(n) => n.trim().trim_matches('"'),
                 None => continue,
@@ -633,7 +646,14 @@ impl<'a> TypeResolver<'a> {
                 line = line_idx,
                 "collect_dataitem_vars: found dataitem"
             );
-            let col = line.find("dataitem(").unwrap_or(0);
+            // Column of "dataitem(" within the original (possibly-indented) line.
+            // Since trimmed_lower starts with "dataitem(", the keyword is at the
+            // first non-whitespace character.
+            let col = line.len() - line.trim_start().len();
+            let line_start = line_starts.get(line_idx).copied().unwrap_or(0);
+            let start_byte = line_start + col;
+            // end_byte covers through the end of the line content (excluding newline).
+            let end_byte = line_start + line.len();
             result.push(VariableDecl {
                 name: var_name.to_string(),
                 type_name: "Record".to_string(),
@@ -641,8 +661,8 @@ impl<'a> TypeResolver<'a> {
                 is_var: false,
                 scope: VariableScope::Local,
                 range: tree_sitter::Range {
-                    start_byte: 0,
-                    end_byte: 0,
+                    start_byte,
+                    end_byte,
                     start_point: tree_sitter::Point {
                         row: line_idx,
                         column: col,

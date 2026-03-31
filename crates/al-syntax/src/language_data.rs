@@ -4,7 +4,7 @@
 //! typed public accessor functions.  Callers should prefer the accessor
 //! functions over the statics directly.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 // ── Structs ──────────────────────────────────────────────────────────────────
@@ -54,6 +54,12 @@ pub struct ObjectType {
     pub node_kind: String,
     pub extensions: Vec<String>,
     pub lsp_symbol_kind: String,
+    /// The permission object type used in AL permission sets (e.g. `"tabledata"`, `"page"`).
+    /// `None` for object types that do not participate in permission sets (extensions, enums, etc.).
+    pub permission_type: Option<String>,
+    /// The permission value for this object type (e.g. `"RIMD"` for tabledata, `"X"` for executables).
+    /// `None` when `permission_type` is `None`.
+    pub permission_value: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -69,6 +75,27 @@ pub struct ImplicitVariable {
 pub struct RuntimeEnum {
     pub name: String,
     pub values: Vec<String>,
+}
+
+/// One entry from `page_controls.json`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PageControlEntry {
+    pub keyword: String,
+    pub node_kind: String,
+    /// LSP SymbolKind name (e.g. `"Field"`, `"Struct"`, `"Event"`).
+    pub lsp_symbol_kind: String,
+}
+
+/// One entry from `single_stmt_openers.json`.
+///
+/// A single-statement opener is a control-flow construct (e.g. `if … then`,
+/// `for … do`) whose body is a single statement without `begin`/`end`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SingleStmtOpener {
+    /// Lowercase prefix the line must start with (e.g. `"if "`).
+    pub prefix: String,
+    /// Lowercase suffix the line must end with (e.g. `" then"`).
+    pub suffix: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -95,15 +122,6 @@ pub struct TokenClassification {
 #[derive(serde::Deserialize)]
 struct ObjectTypesFile {
     object_types: Vec<ObjectType>,
-}
-
-/// The page_controls.json file stores entries as `{"keyword": "area", "node_kind": "kw_area"}`.
-/// We unwrap to just the keyword strings for the public API.
-#[derive(serde::Deserialize)]
-struct PageControlEntry {
-    pub keyword: String,
-    #[allow(dead_code)]
-    pub node_kind: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -140,12 +158,19 @@ static IMPLICIT_VARIABLES: LazyLock<Vec<ImplicitVariable>> = LazyLock::new(|| {
     .expect("implicit_variables.json must be valid")
 });
 
-static PAGE_CONTROLS: LazyLock<Vec<String>> = LazyLock::new(|| {
+static PAGE_CONTROLS: LazyLock<Vec<PageControlEntry>> = LazyLock::new(|| {
     let file: PageControlsFile = serde_json::from_str(include_str!(
         "../../../tree-sitter-al/data/page_controls.json"
     ))
     .expect("page_controls.json must be valid");
-    file.page_controls.into_iter().map(|e| e.keyword).collect()
+    file.page_controls
+});
+
+static SINGLE_STMT_OPENERS: LazyLock<Vec<SingleStmtOpener>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!(
+        "../../../tree-sitter-al/data/single_stmt_openers.json"
+    ))
+    .expect("single_stmt_openers.json must be valid")
 });
 
 static RUNTIME_ENUMS: LazyLock<Vec<RuntimeEnum>> = LazyLock::new(|| {
@@ -169,6 +194,45 @@ static TOKEN_CLASSIFICATION: LazyLock<TokenClassification> = LazyLock::new(|| {
     }
 });
 
+/// O(1) lookup set for `is_keyword`. Keys are lowercase keyword strings.
+static KEYWORD_SET: LazyLock<HashSet<String>> = LazyLock::new(|| {
+    let kw = &*KEYWORDS;
+    kw.control
+        .iter()
+        .chain(kw.object.iter())
+        .chain(kw.r#type.iter())
+        .chain(kw.operator.iter())
+        .map(|k| k.keyword.clone())
+        .collect()
+});
+
+/// O(1) lookup map for `builtin_function_by_name`. Keys are lowercase function names.
+static BUILTIN_FUNCTION_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
+    BUILTIN_FUNCTIONS
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.to_ascii_lowercase(), i))
+        .collect()
+});
+
+/// O(1) lookup map for `object_type_by_keyword`. Keys are lowercase keywords.
+static OBJECT_TYPE_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
+    OBJECT_TYPES
+        .iter()
+        .enumerate()
+        .map(|(i, o)| (o.keyword.to_ascii_lowercase(), i))
+        .collect()
+});
+
+/// O(1) lookup map for `page_control_by_keyword`. Keys are lowercase keywords.
+static PAGE_CONTROL_MAP: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
+    PAGE_CONTROLS
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.keyword.to_ascii_lowercase(), i))
+        .collect()
+});
+
 // ── Public accessor functions ─────────────────────────────────────────────────
 
 pub fn keywords() -> &'static Keywords {
@@ -187,8 +251,12 @@ pub fn implicit_variables() -> &'static [ImplicitVariable] {
     &IMPLICIT_VARIABLES
 }
 
-pub fn page_controls() -> &'static [String] {
+pub fn page_controls() -> &'static [PageControlEntry] {
     &PAGE_CONTROLS
+}
+
+pub fn single_stmt_openers() -> &'static [SingleStmtOpener] {
+    &SINGLE_STMT_OPENERS
 }
 
 pub fn runtime_enums() -> &'static [RuntimeEnum] {
@@ -202,27 +270,22 @@ pub fn token_classification() -> &'static TokenClassification {
 // ── Lookup helpers ────────────────────────────────────────────────────────────
 
 pub fn builtin_function_by_name(name: &str) -> Option<&'static BuiltinFunction> {
-    BUILTIN_FUNCTIONS
-        .iter()
-        .find(|f| f.name.eq_ignore_ascii_case(name))
+    let idx = *BUILTIN_FUNCTION_MAP.get(&name.to_ascii_lowercase())?;
+    BUILTIN_FUNCTIONS.get(idx)
 }
 
 pub fn object_type_by_keyword(kw: &str) -> Option<&'static ObjectType> {
-    OBJECT_TYPES
-        .iter()
-        .find(|o| o.keyword.eq_ignore_ascii_case(kw))
+    let idx = *OBJECT_TYPE_MAP.get(&kw.to_ascii_lowercase())?;
+    OBJECT_TYPES.get(idx)
+}
+
+pub fn page_control_by_keyword(kw: &str) -> Option<&'static PageControlEntry> {
+    let idx = *PAGE_CONTROL_MAP.get(&kw.to_ascii_lowercase())?;
+    PAGE_CONTROLS.get(idx)
 }
 
 pub fn is_keyword(word: &str) -> bool {
-    let kw = keywords();
-    let lower = word.to_ascii_lowercase();
-    // Keywords in the JSON are already lowercase — no need to lowercase them again
-    kw.control
-        .iter()
-        .chain(kw.object.iter())
-        .chain(kw.r#type.iter())
-        .chain(kw.operator.iter())
-        .any(|k| k.keyword == lower)
+    KEYWORD_SET.contains(&word.to_ascii_lowercase())
 }
 
 pub fn is_builtin_function(name: &str) -> bool {
@@ -240,6 +303,10 @@ pub fn is_object_keyword_node(node_kind: &str) -> bool {
 
 pub fn is_type_keyword_node(node_kind: &str) -> bool {
     token_classification().builtin_type.contains(node_kind)
+}
+
+pub fn is_page_control_keyword(kw: &str) -> bool {
+    page_control_by_keyword(kw).is_some()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -270,9 +337,29 @@ mod tests {
     fn object_types_loads() {
         let types = object_types();
         assert!(types.len() >= 10);
-        let table = object_type_by_keyword("table").unwrap();
+        let table = object_type_by_keyword("table").expect("test");
         assert_eq!(table.display_name, "Table");
         assert!(table.extensions.contains(&"tableextension".to_string()));
+    }
+
+    #[test]
+    fn object_types_permission_fields_load() {
+        let table = object_type_by_keyword("table").expect("test");
+        assert_eq!(table.permission_type.as_deref(), Some("tabledata"));
+        assert_eq!(table.permission_value.as_deref(), Some("RIMD"));
+
+        let page = object_type_by_keyword("page").expect("test");
+        assert_eq!(page.permission_type.as_deref(), Some("page"));
+        assert_eq!(page.permission_value.as_deref(), Some("X"));
+
+        let ext = object_type_by_keyword("tableextension").expect("test");
+        assert!(ext.permission_type.is_none());
+        assert!(ext.permission_value.is_none());
+
+        let iface = object_type_by_keyword("interface").expect("test");
+        assert!(iface.permission_type.is_none());
+        // Unknown keyword
+        assert!(object_type_by_keyword("notanobject").is_none());
     }
 
     #[test]
@@ -300,8 +387,54 @@ mod tests {
     #[test]
     fn page_controls_loads() {
         let pc = page_controls();
-        assert!(pc.contains(&"area".to_string()));
-        assert!(pc.contains(&"field".to_string()));
+        assert!(pc.iter().any(|e| e.keyword == "area"));
+        assert!(pc.iter().any(|e| e.keyword == "field"));
+    }
+
+    #[test]
+    fn page_controls_have_lsp_symbol_kind() {
+        let field = page_control_by_keyword("field").expect("test");
+        assert_eq!(field.lsp_symbol_kind, "Field");
+        let area = page_control_by_keyword("area").expect("test");
+        assert_eq!(area.lsp_symbol_kind, "Struct");
+        let action = page_control_by_keyword("action").expect("test");
+        assert_eq!(action.lsp_symbol_kind, "Event");
+        // Unknown keyword returns None
+        assert!(page_control_by_keyword("notacontrol").is_none());
+    }
+
+    #[test]
+    fn page_controls_is_page_control_keyword() {
+        assert!(is_page_control_keyword("area"));
+        assert!(is_page_control_keyword("FIELD"));
+        assert!(!is_page_control_keyword("procedure"));
+        assert!(!is_page_control_keyword(""));
+    }
+
+    #[test]
+    fn single_stmt_openers_loads() {
+        let openers = single_stmt_openers();
+        assert!(openers
+            .iter()
+            .any(|o| o.prefix == "if " && o.suffix == " then"));
+        assert!(openers
+            .iter()
+            .any(|o| o.prefix == "for " && o.suffix == " do"));
+        assert!(openers
+            .iter()
+            .any(|o| o.prefix == "while " && o.suffix == " do"));
+        assert!(!openers.is_empty());
+    }
+
+    #[test]
+    fn single_stmt_openers_invalid_returns_false() {
+        // Verify that random strings don't match any opener
+        let openers = single_stmt_openers();
+        let not_opener = "end;";
+        let matches = openers
+            .iter()
+            .any(|o| not_opener.starts_with(&o.prefix) && not_opener.ends_with(&o.suffix));
+        assert!(!matches);
     }
 
     #[test]

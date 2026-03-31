@@ -6,7 +6,7 @@
 //! Architecture: Rust → netcorehost → Bridge.dll → CodeAnalysis.dll
 
 pub mod cache;
-pub mod host;
+pub(crate) mod host;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -147,6 +147,9 @@ pub enum SemanticError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Bridge Mutex is poisoned -- CLR state may be corrupt after a panic")]
+    Poisoned,
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +209,14 @@ impl SemanticBridge {
     /// The `std::sync::Mutex` is acquired inside `spawn_blocking` (a sync context)
     /// to serialize concurrent calls — the CLR response buffer is shared and is
     /// not safe to access from multiple threads simultaneously.
+    ///
+    /// # Timeout behaviour
+    ///
+    /// The `tokio::time::timeout` wraps `spawn_blocking`. If the timeout fires
+    /// **after** `spawn_blocking` has started (i.e. the Mutex is already held),
+    /// the blocking task continues running — the timeout does NOT release the
+    /// Mutex lock or interrupt the .NET call. The lock will remain held until
+    /// the bridge returns or the process exits.
     async fn call(
         &self,
         method: &str,
@@ -219,10 +230,7 @@ impl SemanticBridge {
         let result = tokio::time::timeout(
             DEFAULT_TIMEOUT,
             tokio::task::spawn_blocking(move || {
-                let guard = host.lock().unwrap_or_else(|e| {
-                    tracing::warn!("SemanticBridge Mutex was poisoned — recovering inner value");
-                    e.into_inner()
-                });
+                let mut guard = host.lock().map_err(|_| SemanticError::Poisoned)?;
                 guard.call(&method, params)
             }),
         )

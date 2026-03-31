@@ -51,19 +51,13 @@ const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 
 /// Run the daemon server for a project.
 pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let sock_path = socket_path(&project_root);
+    let sock_path = socket_path(&project_root).ok_or(
+        "Cannot determine Unix socket path: XDG_RUNTIME_DIR is not set and no secure runtime directory is available"
+    )?;
 
     // Ensure parent directory exists
     if let Some(parent) = sock_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
-        // If using the /tmp fallback (not XDG_RUNTIME_DIR), lock down dir permissions.
-        if std::env::var("XDG_RUNTIME_DIR").is_err() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-            }
-        }
     }
 
     // Remove stale socket file if it exists
@@ -298,14 +292,23 @@ async fn handle_connection(
         let req = match serde_json::from_str::<Request>(&line) {
             Ok(r) => r,
             Err(e) => {
-                let safe_msg = e.to_string().replace('"', "'");
-                let raw = format!(
-                    r#"{{"id":null,"error":{{"code":{},"message":"Invalid JSON-RPC: {}"}}}}"#,
-                    error_codes::PARSE_ERROR,
-                    safe_msg,
-                );
+                let error_obj = serde_json::json!({
+                    "id": null,
+                    "error": {
+                        "code": error_codes::PARSE_ERROR,
+                        "message": format!("Invalid JSON-RPC: {}", e),
+                    }
+                });
+                let mut raw = serde_json::to_string(&error_obj).unwrap_or_else(|_| {
+                    // Extremely unlikely: the json! macro produces valid JSON.
+                    // Fall back to a minimal static error string.
+                    format!(
+                        r#"{{"id":null,"error":{{"code":{},"message":"Parse error"}}}}"#,
+                        error_codes::PARSE_ERROR
+                    )
+                });
+                raw.push('\n');
                 writer.write_all(raw.as_bytes()).await?;
-                writer.write_all(b"\n").await?;
                 writer.flush().await?;
                 continue;
             }
@@ -329,13 +332,16 @@ async fn handle_connection(
                 let dup = dedup_keys
                     .iter()
                     .any(|(k, t)| k == &dedup_key && now.duration_since(*t).as_millis() < 50);
-                // Ring buffer insert
-                if dedup_write_idx < dedup_keys.len() {
-                    dedup_keys[dedup_write_idx] = (dedup_key, now);
-                } else {
-                    dedup_keys.push((dedup_key, now));
+                // Ring buffer insert: only record non-duplicate requests so we don't
+                // keep refreshing the timestamp and extending the dedup window.
+                if !dup {
+                    if dedup_write_idx < dedup_keys.len() {
+                        dedup_keys[dedup_write_idx] = (dedup_key, now);
+                    } else {
+                        dedup_keys.push((dedup_key, now));
+                    }
+                    dedup_write_idx = (dedup_write_idx + 1) % DEDUP_CACHE_SIZE;
                 }
-                dedup_write_idx = (dedup_write_idx + 1) % DEDUP_CACHE_SIZE;
                 dup
             } else {
                 false
@@ -693,9 +699,13 @@ mod tests {
     /// Verify socket_path produces the same result for the same canonical path.
     #[test]
     fn socket_path_is_deterministic() {
+        // Ensure XDG_RUNTIME_DIR is set so socket_path returns Some.
+        std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
         let p = std::path::Path::new("/tmp");
-        let path1 = al_daemon_client::socket_path(p);
-        let path2 = al_daemon_client::socket_path(p);
+        let path1 = al_daemon_client::socket_path(p)
+            .expect("socket_path returned None with XDG_RUNTIME_DIR set");
+        let path2 = al_daemon_client::socket_path(p)
+            .expect("socket_path returned None with XDG_RUNTIME_DIR set");
         assert_eq!(path1, path2);
         assert!(path1.to_str().unwrap().ends_with(".sock"));
         let filename = path1.file_name().unwrap().to_str().unwrap();

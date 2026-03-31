@@ -100,7 +100,8 @@ where
     R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
 {
     let seq = AtomicI64::new(1);
-    let session: Arc<Mutex<Option<BcDebugSession>>> = Arc::new(Mutex::new(None));
+    let session: Arc<Mutex<Option<Arc<BcDebugSession>>>> = Arc::new(Mutex::new(None));
+    let debug_config: Arc<Mutex<Option<BcDebugConfig>>> = Arc::new(Mutex::new(None));
     let breakpoints: Arc<Mutex<HashMap<String, Vec<i64>>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Channel for the BC-event forwarding task to send pre-serialized DAP event bytes
@@ -181,6 +182,15 @@ where
             }
 
             "configurationDone" => {
+                // Clone both Arc and config before dropping locks so we don't hold
+                // the mutex guard across the async invoke() call.
+                let session_arc = session.lock().await.clone();
+                let cfg = debug_config.lock().await.clone();
+                if let (Some(s), Some(cfg)) = (session_arc, cfg) {
+                    if let Err(e) = s.configuration_done(&cfg).await {
+                        warn!("configurationDone: {e}");
+                    }
+                }
                 write_dap(
                     &mut stdout,
                     &make_response(&seq, request_seq, &command, true, None, None),
@@ -190,6 +200,8 @@ where
 
             "launch" | "attach" => {
                 let config = BcDebugConfig::from_dap_args(&arguments);
+                // Store config for use in the configurationDone handler.
+                *debug_config.lock().await = Some(config.clone());
 
                 // Compile if alc is available and this is a launch
                 if command == "launch" {
@@ -403,11 +415,9 @@ where
                             continue;
                         }
 
-                        debug_session.configuration_done(&config).await.ok();
-
-                        // Capture connection ID before moving session into mutex
+                        // Capture connection ID before moving session into Arc+mutex
                         let conn_id = debug_session.connection_id.clone();
-                        *session.lock().await = Some(debug_session);
+                        *session.lock().await = Some(Arc::new(debug_session));
 
                         // Fix #1: Spawn background task to forward BC push events to Zed.
                         //
@@ -639,9 +649,23 @@ where
 
             "next" => {
                 // Step over: BC BreakpointExitReason = 1 via SetBreakpointResponse.
-                let guard = session.lock().await;
-                if let Some(ref s) = *guard {
-                    let _ = s.step_over().await;
+                let session_arc = session.lock().await.clone();
+                if let Some(s) = session_arc {
+                    if let Err(e) = s.step_over().await {
+                        write_dap(
+                            &mut stdout,
+                            &make_response(
+                                &seq,
+                                request_seq,
+                                &command,
+                                false,
+                                None,
+                                Some(e.to_string()),
+                            ),
+                        )
+                        .await?;
+                        continue;
+                    }
                 }
                 write_dap(
                     &mut stdout,
@@ -652,9 +676,23 @@ where
 
             "stepIn" => {
                 // Step into: BC BreakpointExitReason = 2 via SetBreakpointResponse.
-                let guard = session.lock().await;
-                if let Some(ref s) = *guard {
-                    let _ = s.step_in().await;
+                let session_arc = session.lock().await.clone();
+                if let Some(s) = session_arc {
+                    if let Err(e) = s.step_in().await {
+                        write_dap(
+                            &mut stdout,
+                            &make_response(
+                                &seq,
+                                request_seq,
+                                &command,
+                                false,
+                                None,
+                                Some(e.to_string()),
+                            ),
+                        )
+                        .await?;
+                        continue;
+                    }
                 }
                 write_dap(
                     &mut stdout,
@@ -665,9 +703,23 @@ where
 
             "stepOut" => {
                 // Step out: BC BreakpointExitReason = 3 via SetBreakpointResponse.
-                let guard = session.lock().await;
-                if let Some(ref s) = *guard {
-                    let _ = s.step_out().await;
+                let session_arc = session.lock().await.clone();
+                if let Some(s) = session_arc {
+                    if let Err(e) = s.step_out().await {
+                        write_dap(
+                            &mut stdout,
+                            &make_response(
+                                &seq,
+                                request_seq,
+                                &command,
+                                false,
+                                None,
+                                Some(e.to_string()),
+                            ),
+                        )
+                        .await?;
+                        continue;
+                    }
                 }
                 write_dap(
                     &mut stdout,
@@ -700,10 +752,24 @@ where
             }
 
             "continue" => {
-                let guard = session.lock().await;
-                if let Some(ref s) = *guard {
-                    // BC uses SetBreakpointResponse to continue; pass empty response for now
-                    let _ = s.continue_execution(serde_json::json!({})).await;
+                let session_arc = session.lock().await.clone();
+                if let Some(s) = session_arc {
+                    // BC expects BreakpointExitReason integer 0 (continue)
+                    if let Err(e) = s.continue_execution(serde_json::json!(0)).await {
+                        write_dap(
+                            &mut stdout,
+                            &make_response(
+                                &seq,
+                                request_seq,
+                                &command,
+                                false,
+                                None,
+                                Some(e.to_string()),
+                            ),
+                        )
+                        .await?;
+                        continue;
+                    }
                 }
                 write_dap(
                     &mut stdout,
@@ -736,8 +802,8 @@ where
 
             "stackTrace" => {
                 // Fix #5: call get_call_stack() and map BC StackFrame[] to DAP StackFrames.
-                let guard = session.lock().await;
-                let stack_frames = if let Some(ref s) = *guard {
+                let session_arc = session.lock().await.clone();
+                let stack_frames = if let Some(s) = session_arc {
                     match s.get_call_stack().await {
                         Ok(frames) => bc_stack_to_dap(frames),
                         Err(e) => {
@@ -748,7 +814,6 @@ where
                 } else {
                     Vec::new()
                 };
-                drop(guard);
                 let total = stack_frames.len();
                 write_dap(
                     &mut stdout,
@@ -775,9 +840,10 @@ where
                     .get("frameId")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
-                let guard = session.lock().await;
+                // Clone Arc and drop guard before any async work (T-023).
+                let session_arc = session.lock().await.clone();
                 let mut scopes = Vec::new();
-                if let Some(ref s) = *guard {
+                if let Some(s) = session_arc {
                     // Locals scope (variablesReference = frame_id * 100 + 1)
                     // Always include locals — GetVariables returns per-frame locals.
                     let locals_ref = frame_id * 100 + 1;
@@ -815,7 +881,6 @@ where
                         }
                     }
                 }
-                drop(guard);
                 write_dap(
                     &mut stdout,
                     &make_response(
@@ -835,11 +900,24 @@ where
                     .get("variablesReference")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
-                let guard = session.lock().await;
-                let variables = if let Some(ref s) = *guard {
-                    match s.get_variables(vars_ref).await {
-                        Ok(v) => v,
-                        Err(_) => serde_json::json!([]),
+                // Decode the variablesReference encoding from the "scopes" handler:
+                // variablesReference = frame_id * 100 + scope_index
+                // scope_index 2 → globals, otherwise → locals
+                let frame_id = vars_ref / 100;
+                let scope_index = vars_ref % 100;
+                // Clone Arc and drop guard before async work (T-023).
+                let session_arc = session.lock().await.clone();
+                let variables = if let Some(s) = session_arc {
+                    if scope_index == 2 {
+                        match s.get_globals(frame_id).await {
+                            Ok(v) => v,
+                            Err(_) => serde_json::json!([]),
+                        }
+                    } else {
+                        match s.get_variables(frame_id).await {
+                            Ok(v) => v,
+                            Err(_) => serde_json::json!([]),
+                        }
                     }
                 } else {
                     serde_json::json!([])
@@ -867,8 +945,9 @@ where
                     .get("frameId")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
-                let guard = session.lock().await;
-                let result = if let Some(ref s) = *guard {
+                // Clone Arc and drop guard before async work (T-023).
+                let session_arc = session.lock().await.clone();
+                let result = if let Some(s) = session_arc {
                     s.evaluate(frame_id, expression)
                         .await
                         .unwrap_or(serde_json::Value::Null)
@@ -897,11 +976,12 @@ where
             }
 
             "disconnect" | "terminate" => {
-                let mut guard = session.lock().await;
-                if let Some(ref s) = *guard {
+                // Clone Arc, drop guard, then stop (T-023: don't hold mutex across await).
+                let session_arc = session.lock().await.clone();
+                if let Some(s) = session_arc {
                     let _ = s.stop_debugging().await;
                 }
-                *guard = None;
+                *session.lock().await = None;
                 write_dap(
                     &mut stdout,
                     &make_response(&seq, request_seq, &command, true, None, None),
@@ -951,7 +1031,7 @@ fn make_response(
     let mut resp = serde_json::json!({
         "seq": s,
         "type": "response",
-        "request_seq": request_seq,
+        "requestSeq": request_seq,
         "success": success,
         "command": command,
     });

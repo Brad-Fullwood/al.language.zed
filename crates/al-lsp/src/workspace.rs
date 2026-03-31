@@ -212,6 +212,7 @@ pub(crate) async fn initialize_workspace(
                 if let Ok(uri) = url::Url::from_file_path(&path) {
                     if let Some(text_entry) = workspace.file_index.files.get(&path) {
                         let text = text_entry.value().clone();
+                        drop(text_entry);
                         let source = text.as_bytes();
                         let parse_result = al_core::syntax::AlParser::parse_quick(&text);
                         let mut lsp_diags = Vec::new();
@@ -387,12 +388,18 @@ async fn download_symbols_from_server(
         al_core::launch::AuthMethod::AAD => al_core::symbols::bc_server::AuthMethod::AAD,
     };
     let insecure_tls = config.accept_invalid_certs;
-    let client = al_core::symbols::bc_server::BcServerClient::new(
+    let client = match al_core::symbols::bc_server::BcServerClient::new(
         auth,
         config.tenant.clone(),
         message_sink,
         insecure_tls,
-    );
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "Failed to build HTTP client for BC server; skipping server download");
+            return Vec::new();
+        }
+    };
     // al_core::project::AppDependency is re-exported from al-symbols — clone directly.
     let url_deps: Vec<(String, al_core::symbols::nuget::AppDependency)> = deps
         .iter()

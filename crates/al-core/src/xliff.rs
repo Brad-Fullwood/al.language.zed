@@ -11,6 +11,7 @@
 //! `{ObjectType} {ObjectId} - {PropertyName} {FieldId} - {PropertyType}`
 //! Matches the MS AL extension format so translation memories are compatible.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -184,29 +185,18 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
 
 /// Detect the first AL object declaration line: (type, id, name).
 fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
-    // Extension types MUST appear before their base types so that `starts_with` doesn't
-    // falsely match "tableextension" as "table", "pageextension" as "page", etc.
-    let object_types = [
-        "tableextension",
-        "pageextension",
-        "reportextension",
-        "enumextension",
-        "permissionsetextension",
-        "profileextension",
-        "table",
-        "page",
-        "codeunit",
-        "report",
-        "query",
-        "xmlport",
-        "enum",
-        "interface",
-        "permissionset",
-        "profile",
-    ];
+    // Sort object type keywords by length descending so that longer keywords (extensions) are
+    // tried before their shorter base-type prefixes — e.g. "tableextension" before "table".
+    // This avoids false prefix matches like "pagepart" matching "page".
+    let mut sorted_types: Vec<&str> = al_syntax::language_data::object_types()
+        .iter()
+        .map(|ot| ot.keyword.as_str())
+        .collect();
+    sorted_types.sort_by_key(|k| Reverse(k.len()));
+
     for line in text.lines().take(10) {
         let lower = line.trim().to_lowercase();
-        for ot in &object_types {
+        for ot in &sorted_types {
             // Require a word boundary after the keyword (space, tab, or digit) to avoid
             // false prefix matches like "pagepart" matching "page".
             if let Some(after) = lower.strip_prefix(ot) {

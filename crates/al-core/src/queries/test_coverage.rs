@@ -14,7 +14,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use al_syntax::AlParser;
 use serde::Serialize;
 
 use crate::queries::tests::{collect_test_procedures, has_test_subtype};
@@ -117,12 +116,13 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
     let mut covered_proc_names: HashSet<String> = HashSet::new();
 
     for entry in workspace.file_index.files.iter() {
-        let path = entry.key().to_string_lossy().to_string();
-        let text = entry.value().clone();
-        let parse_result = AlParser::parse_quick(&text);
-        let tree = &parse_result.tree;
+        let entry_path = entry.key();
+        let path = entry_path.to_string_lossy().to_string();
+        let Some((text, tree)) = workspace.file_index.get_cached_parse(entry_path) else {
+            continue;
+        };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(tree, &text) else {
+        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
         if obj_info.kind.to_lowercase() != "codeunit" {
@@ -182,12 +182,13 @@ fn collect_all_procedures(workspace: &Workspace) -> Vec<ProcDef> {
     let mut result = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
-        let path = entry.key().to_string_lossy().to_string();
-        let text = entry.value().clone();
-        let parse_result = AlParser::parse_quick(&text);
-        let tree = &parse_result.tree;
+        let entry_path = entry.key();
+        let path = entry_path.to_string_lossy().to_string();
+        let Some((text, tree)) = workspace.file_index.get_cached_parse(entry_path) else {
+            continue;
+        };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(tree, &text) else {
+        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
         let object_name = obj_info.name.clone();

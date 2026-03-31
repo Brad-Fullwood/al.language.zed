@@ -6,8 +6,6 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
-use al_syntax::AlParser;
-
 use crate::workspace::Workspace;
 
 /// A pair of duplicate/similar code blocks.
@@ -46,21 +44,18 @@ pub fn find_duplicates(
     let mut procedures: Vec<ProcedureBody> = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key().to_string_lossy().to_string();
-        let text = entry.value();
-        let parsed = AlParser::parse_quick(text);
-
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed.tree, text) else {
+        let path = entry.key().clone();
+        let file_path = path.to_string_lossy().to_string();
+        drop(entry);
+        let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
             continue;
         };
 
-        collect_procedure_bodies(
-            &file_path,
-            text,
-            &obj_info.name,
-            &parsed.tree,
-            &mut procedures,
-        );
+        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
+            continue;
+        };
+
+        collect_procedure_bodies(&file_path, &text, &obj_info.name, &tree, &mut procedures);
     }
 
     // Compare all pairs
@@ -188,34 +183,38 @@ fn extract_normalized_tokens(node: tree_sitter::Node, source: &[u8]) -> Vec<Stri
 }
 
 fn collect_tokens(node: tree_sitter::Node, source: &[u8], tokens: &mut Vec<String>) {
-    if !node.is_named() {
-        // Punctuation/keywords — keep as-is
-        if let Ok(text) = node.utf8_text(source) {
-            let lower = text.to_lowercase();
-            tokens.push(lower);
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if !current.is_named() {
+            // Punctuation/keywords — keep as-is
+            if let Ok(text) = current.utf8_text(source) {
+                let lower = text.to_lowercase();
+                tokens.push(lower);
+            }
+            continue;
         }
-        return;
-    }
 
-    match node.kind() {
-        "identifier" | "name" => {
-            // Normalize identifiers to their category
-            tokens.push("$ID".to_string());
-        }
-        "string" | "verbatim_string" => {
-            tokens.push("$STR".to_string());
-        }
-        "integer" | "decimal" => {
-            tokens.push("$NUM".to_string());
-        }
-        "comment" => {
-            // Skip comments in similarity analysis
-        }
-        _ => {
-            // Recurse into children
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                collect_tokens(child, source, tokens);
+        match current.kind() {
+            "identifier" | "name" => {
+                // Normalize identifiers to their category
+                tokens.push("$ID".to_string());
+            }
+            "string" | "verbatim_string" => {
+                tokens.push("$STR".to_string());
+            }
+            "integer" | "decimal" => {
+                tokens.push("$NUM".to_string());
+            }
+            "comment" => {
+                // Skip comments in similarity analysis
+            }
+            _ => {
+                // Push children in reverse order for left-to-right DFS
+                for i in (0..current.child_count()).rev() {
+                    if let Some(child) = current.child(i) {
+                        stack.push(child);
+                    }
+                }
             }
         }
     }

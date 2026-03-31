@@ -243,23 +243,25 @@ async fn test_edit_b01_diagnostics_appear_after_introducing_error() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/edit_test.al", INITIAL_CODEUNIT).await;
 
-    // Initial: should have no syntax errors
-    let diags = client.drain_diagnostics();
-    let initial_diag_count = diags.values().flat_map(|v| v.iter()).count();
+    // Initial: drain the open notification so we start clean
+    let _initial_diags = client.drain_diagnostics();
 
     // Edit: introduce syntax error (missing semicolon)
+    // change_file() waits for publishDiagnostics, so the notification is
+    // buffered and available immediately after it returns.
     client
         .change_file("src/edit_test.al", EDITED_CODEUNIT_SYNTAX_ERROR)
         .await;
 
     let diags = client.drain_diagnostics();
     let uri = client.file_uri("src/edit_test.al");
-    // The server should publish diagnostics for the edited file
-    // (may or may not include syntax errors depending on parser tolerance)
-    // The key assertion is: diagnostics were published (the server processed the change)
+    // The server must publish a diagnostics notification for the edited file
+    // specifically — not just any file. This is the observable evidence that
+    // the server processed the didChange notification.
     assert!(
-        diags.contains_key(&uri) || !diags.is_empty(),
-        "server should publish diagnostics after edit introducing error"
+        diags.contains_key(&uri),
+        "server should publish diagnostics for the edited file URI after introducing an error. Got: {:?}",
+        diags.keys().collect::<Vec<_>>()
     );
 
     client.shutdown().await;

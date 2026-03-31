@@ -63,7 +63,12 @@ pub fn sort_members(text: &str) -> Option<String> {
         } else if trimmed.starts_with("trigger ") {
             let name = extract_member_name(first, "trigger");
             triggers.push((name, member));
-        } else if trimmed.starts_with("procedure ") || trimmed.starts_with("local procedure ") {
+        } else if trimmed.starts_with("procedure ")
+            || trimmed.starts_with("local procedure ")
+            || trimmed.starts_with("internal procedure ")
+            || trimmed.starts_with("protected procedure ")
+            || trimmed.starts_with("protected local procedure ")
+        {
             let name = extract_member_name_procedure(first);
             procedures.push((name, member));
         } else if trimmed.starts_with("[") {
@@ -72,7 +77,11 @@ pub fn sort_members(text: &str) -> Option<String> {
                 .iter()
                 .find(|l| {
                     let t = l.trim().to_lowercase();
-                    t.starts_with("procedure ") || t.starts_with("local procedure ")
+                    t.starts_with("procedure ")
+                        || t.starts_with("local procedure ")
+                        || t.starts_with("internal procedure ")
+                        || t.starts_with("protected procedure ")
+                        || t.starts_with("protected local procedure ")
                 })
                 .map(|l| extract_member_name_procedure(l))
                 .unwrap_or_default();
@@ -209,6 +218,9 @@ fn is_member_keyword(trimmed_lower: &str) -> bool {
         || trimmed_lower.starts_with("trigger ")
         || trimmed_lower.starts_with("procedure ")
         || trimmed_lower.starts_with("local procedure ")
+        || trimmed_lower.starts_with("internal procedure ")
+        || trimmed_lower.starts_with("protected procedure ")
+        || trimmed_lower.starts_with("protected local procedure ")
         || (trimmed_lower.starts_with('[') && trimmed_lower.ends_with(']'))
 }
 
@@ -228,7 +240,14 @@ fn extract_member_name(line: &str, keyword: &str) -> String {
 
 fn extract_member_name_procedure(line: &str) -> String {
     let lower = line.trim().to_lowercase();
-    let after = if let Some(rest) = lower.strip_prefix("local procedure ") {
+    // Strip the longest matching prefix first (most-specific to least-specific).
+    let after = if let Some(rest) = lower.strip_prefix("protected local procedure ") {
+        rest.trim()
+    } else if let Some(rest) = lower.strip_prefix("protected procedure ") {
+        rest.trim()
+    } else if let Some(rest) = lower.strip_prefix("internal procedure ") {
+        rest.trim()
+    } else if let Some(rest) = lower.strip_prefix("local procedure ") {
         rest.trim()
     } else if let Some(rest) = lower.strip_prefix("procedure ") {
         rest.trim()

@@ -103,7 +103,7 @@ pub fn results_to_diagnostics(
                     (DiagnosticSeverity::Error, msg)
                 }
                 TestStatus::Skip => (DiagnosticSeverity::Warning, "Test was skipped".to_string()),
-                TestStatus::Pass => unreachable!(),
+                TestStatus::Pass => continue,
             };
 
             diagnostics.push(TestDiagnostic {

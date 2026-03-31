@@ -3,7 +3,6 @@
 //! Detects: FindFirst in loops (N+1), FindSet without filters, Get in loops, CalcFields in loops.
 
 use crate::workspace::Workspace;
-use al_syntax::AlParser;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -31,18 +30,20 @@ pub fn detect_sql_patterns(workspace: &Workspace) -> Vec<SqlPatternViolation> {
     let mut violations = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key().to_string_lossy().to_string();
-        let text = entry.value();
-        let parsed = AlParser::parse_quick(text);
+        let path = entry.key();
+        let file_path = path.to_string_lossy().to_string();
+        let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
+            continue;
+        };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed.tree, text) else {
+        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &text) else {
             continue;
         };
 
         scan_file_for_sql_patterns(
             &file_path,
-            text,
-            &parsed.tree,
+            &text,
+            &parsed_tree,
             &obj_info.name,
             &mut violations,
         );

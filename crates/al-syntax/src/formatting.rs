@@ -355,7 +355,10 @@ pub fn format_range(
     let mut new_text = formatted_region.join("\n");
     new_text.push('\n');
 
-    let end_char = orig_lines.get(end).map(|l| l.len() as u32).unwrap_or(0);
+    let end_char = orig_lines
+        .get(end)
+        .map(|l| crate::byte_col_to_utf16_col(l, l.len()))
+        .unwrap_or(0);
 
     Some(vec![tower_lsp::lsp_types::TextEdit {
         range: tower_lsp::lsp_types::Range {
@@ -414,22 +417,13 @@ fn count_net_parens(line: &str) -> i32 {
     crate::count_net_delimiters(line, '(', ')')
 }
 
-/// (keyword_prefix, statement_suffix) pairs for single-statement control flow openers.
-///
-/// A line whose lowercased trimmed form starts with the prefix and ends with the suffix
-/// opens a single implicit statement body (no `begin`/`end` required).
-const SINGLE_STMT_OPENERS: &[(&str, &str)] = &[
-    ("if ", " then"),
-    ("for ", " do"),
-    ("while ", " do"),
-    ("with ", " do"),
-    ("foreach ", " do"),
-];
-
 /// Returns true if trimmed_lower represents a single-statement control flow opener.
+///
+/// Single-statement openers are loaded from `tree-sitter-al/data/single_stmt_openers.json`
+/// via [`crate::language_data::single_stmt_openers`].
 fn is_single_statement_opener(trimmed_lower: &str) -> bool {
-    SINGLE_STMT_OPENERS.iter().any(|(prefix, suffix)| {
-        trimmed_lower.starts_with(prefix) && trimmed_lower.ends_with(suffix)
+    crate::language_data::single_stmt_openers().iter().any(|o| {
+        trimmed_lower.starts_with(o.prefix.as_str()) && trimmed_lower.ends_with(o.suffix.as_str())
     })
 }
 

@@ -213,20 +213,15 @@ pub async fn wait_for(pattern: &str, timeout_ms: u64) -> Result<String, ZedTestE
     }
 }
 
-/// Like [`wait_for`] but matches against a regex pattern.
+/// Like [`wait_for`] but the name makes the literal-substring semantics explicit.
 ///
-/// Uses a simple substring search via [`regex`]-free pattern. Actually this
-/// implementation uses a plain `contains` check on a compiled pattern string —
-/// for true regex matching, integrate the `regex` crate if needed.
-///
-/// Currently this is an alias for [`wait_for`] with the same literal-match
-/// semantics. The name is provided for API stability: if regex support is added
-/// later, callers using this function will get the upgrade automatically.
+/// This is an alias for [`wait_for`] with identical behaviour. The name
+/// `wait_for_substring` is preferred over the old `wait_for_regex` because the
+/// match is a plain `contains` check, not a regex.
 ///
 /// # Errors
 ///
 /// Same as [`wait_for`].
-pub async fn wait_for_regex(pattern: &str, timeout_ms: u64) -> Result<String, ZedTestError> {
-    // Future: compile pattern as regex and use .is_match() instead of .contains().
+pub async fn wait_for_substring(pattern: &str, timeout_ms: u64) -> Result<String, ZedTestError> {
     wait_for(pattern, timeout_ms).await
 }

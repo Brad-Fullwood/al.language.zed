@@ -276,7 +276,8 @@ async fn wait_for_auth_callback(
                  <p>{}: {}</p>\
                  <p style=\"color:#666\">You can close this tab.</p>\
                  </div></body></html>",
-                err, desc
+                html_escape(err),
+                html_escape(desc)
             ),
         )
     } else {
@@ -536,6 +537,26 @@ fn base64url_encode(data: &[u8]) -> String {
 // URL helpers
 // ---------------------------------------------------------------------------
 
+/// Escape HTML special characters to prevent XSS in the OAuth redirect page.
+///
+/// The OAuth redirect page renders server-returned values (`error`, `error_description`)
+/// directly in HTML. These values come from the authorization server redirect URL and
+/// could contain `<script>` or other HTML if the user was redirected to a malicious server.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Minimal percent-encoding for URL query parameter values.
 fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 2);
@@ -696,7 +717,10 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
     use std::os::unix::fs::OpenOptionsExt;
 
     if let Some(parent) = path.parent() {
-        let _ = create_secure_dir(parent);
+        if let Err(e) = create_secure_dir(parent) {
+            warn!(error = %e, path = %parent.display(), "Failed to create secure OAuth cache directory — token will not be cached");
+            return;
+        }
     }
     let cached = CachedToken {
         access_token: tok.access_token.clone(),

@@ -279,7 +279,7 @@ fn add_default_completions(
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
-                    if super::is_procedure_symbol(child.kind) {
+                    if super::is_procedure_symbol(child.kind.into()) {
                         items.push(CompletionEntry {
                             label: child.name.clone(),
                             kind: CompletionKind::Function,

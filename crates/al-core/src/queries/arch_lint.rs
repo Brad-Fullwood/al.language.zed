@@ -5,7 +5,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::workspace::Workspace;
-use al_syntax::AlParser;
 
 /// An architectural lint violation.
 #[derive(Debug, Clone, Serialize)]
@@ -66,11 +65,14 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
     let mut violations = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key().to_string_lossy().to_string();
-        let text = entry.value();
-        let parsed = AlParser::parse_quick(text);
+        let path = entry.key().clone();
+        let file_path = path.to_string_lossy().to_string();
+        drop(entry);
+        let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) else {
+            continue;
+        };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed.tree, text) else {
+        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
 
@@ -78,8 +80,8 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
         for rule in &config.rules {
             apply_rule(
                 &file_path,
-                text,
-                &parsed.tree,
+                &text,
+                &tree,
                 &obj_info,
                 &obj_kind_lower,
                 rule,
@@ -90,8 +92,8 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
         for rule in &ArchConfig::builtin_rules() {
             apply_rule(
                 &file_path,
-                text,
-                &parsed.tree,
+                &text,
+                &tree,
                 &obj_info,
                 &obj_kind_lower,
                 rule,

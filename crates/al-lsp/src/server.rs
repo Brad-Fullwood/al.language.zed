@@ -638,6 +638,7 @@ impl LanguageServer for AlServer {
     // -- Formatting --
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        self.await_ready().await;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
         let result = formatting::handle_formatting(self, uri, &params.options);
@@ -651,6 +652,7 @@ impl LanguageServer for AlServer {
         &self,
         params: DocumentRangeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
+        self.await_ready().await;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
         let result = formatting::handle_range_formatting(self, uri, params.range, &params.options);
@@ -772,6 +774,7 @@ impl LanguageServer for AlServer {
         &self,
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
+        self.await_ready().await;
         let uri = &params.text_document.uri;
         let position = params.position;
         let start = std::time::Instant::now();
@@ -859,7 +862,7 @@ impl LanguageServer for AlServer {
             }
             "al.clearSymbolCache" => {
                 let cache_dir = al_core::symbols::virtual_file::cache_dir();
-                match std::fs::remove_dir_all(&cache_dir) {
+                match tokio::fs::remove_dir_all(&cache_dir).await {
                     Ok(()) => {
                         tracing::info!(path = ?cache_dir, "Cleared symbol cache");
                         self.client

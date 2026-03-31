@@ -65,6 +65,12 @@ pub fn detect_platform(env_map: &HashMap<String, String>) -> Platform {
         }
     }
 
+    // USERPROFILE and HOMEDRIVE are set by Windows natively (even without MSYS/Cygwin).
+    // Check them before the HOME drive-letter heuristic.
+    if env_map.contains_key("USERPROFILE") || env_map.contains_key("HOMEDRIVE") {
+        return Platform::Windows;
+    }
+
     if let Some(home) = env_map.get("HOME") {
         if home.len() >= 2 {
             let first_char = home.chars().next().unwrap_or(' ');

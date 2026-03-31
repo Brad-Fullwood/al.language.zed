@@ -35,7 +35,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
         // Top-level symbols (objects) — recurse into children
         if let Some(children) = &sym.children {
             for child in children {
-                if super::is_procedure_symbol(child.kind) {
+                if super::is_procedure_symbol(child.kind.into()) {
                     let count = count_references_by_name(workspace, uri, &child.name);
                     let title = reference_label(count);
                     lenses.push(CodeLensEntry {
@@ -46,7 +46,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
             }
         }
         // Also include top-level referenceable symbols (rare in AL, but complete)
-        if super::is_procedure_symbol(sym.kind) {
+        if super::is_procedure_symbol(sym.kind.into()) {
             let count = count_references_by_name(workspace, uri, &sym.name);
             let title = reference_label(count);
             lenses.push(CodeLensEntry {

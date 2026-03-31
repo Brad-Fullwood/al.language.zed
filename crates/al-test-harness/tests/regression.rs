@@ -187,39 +187,43 @@ async fn test_regression_inlay_hints_show_parameter_names() {
 
     let hints = client.inlay_hints("src/hints_content.al", 0, 12).await;
 
-    // Should have parameter name hints for the Calculate(10, 20) call
-    if !hints.is_empty() {
-        // Verify at least one hint has a label
-        let has_label = hints.iter().any(|h| h.get("label").is_some());
-        assert!(has_label, "inlay hints should have labels: {hints:?}");
+    // The Calculate(10, 20) call has named parameters — the server must emit
+    // at least one inlay hint for the call site on line 4.
+    assert!(
+        !hints.is_empty(),
+        "inlay hints should be non-empty for a call with named parameters: {hints:?}"
+    );
 
-        // Check that hint labels reference parameter names
-        let labels: Vec<String> = hints
-            .iter()
-            .filter_map(|h| {
-                if let Some(s) = h.get("label").and_then(|l| l.as_str()) {
-                    Some(s.to_string())
-                } else if let Some(arr) = h.get("label").and_then(|l| l.as_array()) {
-                    Some(
-                        arr.iter()
-                            .filter_map(|p| p.get("value").and_then(|v| v.as_str()))
-                            .collect::<Vec<_>>()
-                            .join(""),
-                    )
-                } else {
-                    None
-                }
-            })
-            .collect();
+    // Verify at least one hint has a label
+    let has_label = hints.iter().any(|h| h.get("label").is_some());
+    assert!(has_label, "inlay hints should have labels: {hints:?}");
 
-        let has_param_name = labels
-            .iter()
-            .any(|l| l.contains("Width") || l.contains("Height"));
-        assert!(
-            has_param_name,
-            "inlay hints should reference parameter names (Width/Height): {labels:?}"
-        );
-    }
+    // Check that hint labels reference parameter names
+    let labels: Vec<String> = hints
+        .iter()
+        .filter_map(|h| {
+            if let Some(s) = h.get("label").and_then(|l| l.as_str()) {
+                Some(s.to_string())
+            } else if let Some(arr) = h.get("label").and_then(|l| l.as_array()) {
+                Some(
+                    arr.iter()
+                        .filter_map(|p| p.get("value").and_then(|v| v.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(""),
+                )
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let has_param_name = labels
+        .iter()
+        .any(|l| l.contains("Width") || l.contains("Height"));
+    assert!(
+        has_param_name,
+        "inlay hints should reference parameter names (Width/Height): {labels:?}"
+    );
 
     client.shutdown().await;
 }

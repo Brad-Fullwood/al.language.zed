@@ -524,7 +524,6 @@ pub fn cmd_format(file: Option<&str>, check: bool, stdin: bool, all: bool, json:
             } else if check {
                 if changed {
                     eprintln!("{file}: would reformat");
-                    return ExitCode::FAILURE;
                 } else {
                     eprintln!("{file}: already formatted");
                 }
@@ -533,7 +532,12 @@ pub fn cmd_format(file: Option<&str>, check: bool, stdin: bool, all: bool, json:
             } else {
                 eprintln!("{file}: already formatted");
             }
-            ExitCode::SUCCESS
+            // Exit 1 when --check detects changes, regardless of --json.
+            if check && changed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(e) => report_error(&e, json),
     }
@@ -985,18 +989,24 @@ fn apply_workspace_edit(
         // Sort descending by start position (line then character).
         parsed_edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
 
-        let mut new_content = content.clone();
-        for (sl, sc, el, ec, new_text) in parsed_edits {
-            let start_byte = lsp_pos_to_byte_offset(&lines, sl, sc)?;
-            let end_byte = lsp_pos_to_byte_offset(&lines, el, ec)?;
-            if start_byte > new_content.len()
-                || end_byte > new_content.len()
-                || start_byte > end_byte
-            {
+        // Pre-compute all byte ranges from the *original* lines before any
+        // mutation so that later edits don't shift the offsets used by earlier
+        // ones.  The edits are already sorted descending, so applying them in
+        // order produces correct results.
+        let mut byte_ranges: Vec<(usize, usize, &str)> = Vec::with_capacity(parsed_edits.len());
+        for (sl, sc, el, ec, new_text) in &parsed_edits {
+            let start_byte = lsp_pos_to_byte_offset(&lines, *sl, *sc)?;
+            let end_byte = lsp_pos_to_byte_offset(&lines, *el, *ec)?;
+            if start_byte > content.len() || end_byte > content.len() || start_byte > end_byte {
                 return Err(format!(
                     "Edit range out of bounds in {uri}: {sl}:{sc}-{el}:{ec}"
                 ));
             }
+            byte_ranges.push((start_byte, end_byte, new_text));
+        }
+
+        let mut new_content = content.clone();
+        for (start_byte, end_byte, new_text) in byte_ranges {
             new_content.replace_range(start_byte..end_byte, new_text);
         }
 
@@ -1289,18 +1299,20 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
     }
 }
 
-pub fn cmd_init_debug(json: bool) -> ExitCode {
-    let debug_path = std::path::Path::new(".zed/debug.json");
+pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
+    let zed_dir = project_root.join(".zed");
+    let debug_path = zed_dir.join("debug.json");
+    let debug_path_display = debug_path.display().to_string();
     if debug_path.exists() {
         if json {
-            print_json(&serde_json::json!({"status": "exists", "path": ".zed/debug.json"}));
+            print_json(&serde_json::json!({"status": "exists", "path": debug_path_display}));
         } else {
-            eprintln!(".zed/debug.json already exists — not overwriting");
+            eprintln!("{}: already exists — not overwriting", debug_path.display());
         }
         return ExitCode::SUCCESS;
     }
 
-    if let Err(e) = std::fs::create_dir_all(".zed") {
+    if let Err(e) = std::fs::create_dir_all(&zed_dir) {
         let msg = format!("Failed to create .zed directory: {e}");
         return report_error(&msg, json);
     }
@@ -1380,25 +1392,31 @@ pub fn cmd_init_debug(json: bool) -> ExitCode {
     ]);
 
     let content = serde_json::to_string_pretty(&configs).unwrap();
-    match std::fs::write(debug_path, &content) {
+    match std::fs::write(&debug_path, &content) {
         Ok(_) => {
             if json {
                 print_json(&serde_json::json!({
                     "status": "created",
-                    "path": ".zed/debug.json",
+                    "path": debug_path_display,
                     "configurations": 4
                 }));
             } else {
-                eprintln!("Created .zed/debug.json with 4 configurations:");
+                eprintln!("Created {} with 4 configurations:", debug_path.display());
                 eprintln!("  - Publish: Your own server (launch)");
                 eprintln!("  - Publish: Cloud Sandbox (launch)");
                 eprintln!("  - Attach: Your own server (attach)");
                 eprintln!("  - Attach: Cloud Sandbox (attach)");
-                eprintln!("\nEdit .zed/debug.json to configure server URLs and authentication.");
+                eprintln!(
+                    "\nEdit {} to configure server URLs and authentication.",
+                    debug_path.display()
+                );
             }
             ExitCode::SUCCESS
         }
-        Err(e) => report_error(&format!("Failed to write .zed/debug.json: {e}"), json),
+        Err(e) => report_error(
+            &format!("Failed to write {}: {e}", debug_path.display()),
+            json,
+        ),
     }
 }
 
@@ -2088,12 +2106,7 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
     }
 }
 
-pub fn cmd_sort_members(
-    file: Option<&str>,
-    all: bool,
-    dry_run: bool,
-    json: bool,
-) -> std::process::ExitCode {
+pub fn cmd_sort_members(file: Option<&str>, all: bool, dry_run: bool, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -2119,13 +2132,13 @@ pub fn cmd_sort_members(
                     println!("Already sorted — no changes.");
                 }
             }
-            std::process::ExitCode::SUCCESS
+            ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
     }
 }
 
-pub fn cmd_organize_files(dry_run: bool, json: bool) -> std::process::ExitCode {
+pub fn cmd_organize_files(dry_run: bool, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -2161,7 +2174,7 @@ pub fn cmd_organize_files(dry_run: bool, json: bool) -> std::process::ExitCode {
                     }
                 }
             }
-            std::process::ExitCode::SUCCESS
+            ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
     }

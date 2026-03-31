@@ -6,7 +6,6 @@
 use serde::Serialize;
 
 use crate::workspace::Workspace;
-use al_syntax::AlParser;
 
 /// ObsoleteState value from the attribute.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -49,16 +48,17 @@ pub struct ObsoleteEntry {
 pub fn obsolescence_timeline(workspace: &Workspace) -> Vec<ObsoleteEntry> {
     let mut results = Vec::new();
 
-    // Pre-parse all workspace files
+    // Collect cached parse results for all workspace files.
     let parsed: Vec<(String, String, tree_sitter::Tree)> = workspace
         .file_index
         .files
         .iter()
-        .map(|e| {
-            let path = e.key().to_string_lossy().to_string();
-            let text = e.value().clone();
-            let result = AlParser::parse_quick(&text);
-            (path, text, result.tree)
+        .filter_map(|e| {
+            let path = e.key().clone();
+            let file_path_str = path.to_string_lossy().to_string();
+            drop(e);
+            let (text, tree) = workspace.file_index.get_cached_parse(&path)?;
+            Some((file_path_str, text, tree))
         })
         .collect();
 

@@ -96,31 +96,37 @@ pub fn report_error(msg: &str, json: bool) -> ExitCode {
 /// Collect all .al files under a directory.
 pub fn collect_al_files(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    collect_al_files_recursive(dir, &mut files);
-    files.sort();
-    files
-}
-
-fn collect_al_files_recursive(dir: &std::path::Path, files: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if name.starts_with('.') || name == "target" || name == "node_modules" {
-                continue;
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current_dir) = stack.pop() {
+        // Resolve symlinks to detect cycles
+        if let Ok(canonical) = current_dir.canonicalize() {
+            if !visited.insert(canonical) {
+                continue; // Already visited this real path — skip to avoid cycle
             }
-            collect_al_files_recursive(&path, files);
-        } else if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("al"))
-        {
-            files.push(path);
+        }
+        let entries = match std::fs::read_dir(&current_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if name.starts_with('.') || name == "target" || name == "node_modules" {
+                    continue;
+                }
+                stack.push(path);
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("al"))
+            {
+                files.push(path);
+            }
         }
     }
+    files.sort();
+    files
 }
 
 pub fn print_symbol_entries(result: &serde_json::Value) {

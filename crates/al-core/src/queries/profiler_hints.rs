@@ -39,7 +39,6 @@ use url::Url;
 use crate::queries::code_lens::CodeLensEntry;
 use crate::queries::Range;
 use crate::workspace::Workspace;
-use al_syntax::AlParser;
 
 /// A profiler hotspot with source location.
 #[derive(Debug, Clone, Serialize)]
@@ -202,18 +201,20 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
         std::collections::HashMap::new();
 
     for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key().to_string_lossy().to_string();
-        let text = entry.value();
-        let parsed = AlParser::parse_quick(text);
+        let path = entry.key();
+        let file_path = path.to_string_lossy().to_string();
+        let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
+            continue;
+        };
 
         // Extract the AL object name declared in this file (e.g. "Alpha Codeunit").
-        let object_name = al_syntax::find_object_declaration(&parsed.tree, text)
+        let object_name = al_syntax::find_object_declaration(&parsed_tree, &text)
             .map(|o| o.name.to_lowercase())
             .unwrap_or_default();
 
         collect_procedure_locations(
-            &parsed.tree,
-            text,
+            &parsed_tree,
+            &text,
             &file_path,
             &object_name,
             &mut qualified,
@@ -464,6 +465,7 @@ impl ProfilerSession {
 mod tests {
     use super::*;
     use crate::workspace::Workspace;
+    use al_syntax::AlParser;
     use std::path::PathBuf;
 
     fn workspace_with(files: Vec<(&str, &str)>) -> Workspace {

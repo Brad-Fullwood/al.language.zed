@@ -834,8 +834,12 @@ fn source_action_implement_interface(
     let root = tree.root_node();
     let source = text.as_bytes();
 
-    // Find the codeunit object declaration at the cursor position
-    let point = tree_sitter::Point::new(range.start.line as usize, range.start.character as usize);
+    // Find the codeunit object declaration at the cursor position.
+    // LSP positions use UTF-16 code units; tree-sitter uses byte offsets.
+    let cursor_line = text.lines().nth(range.start.line as usize).unwrap_or("");
+    let col_bytes =
+        crate::resolution::utf16_col_to_byte_offset(cursor_line, range.start.character as usize);
+    let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
     let obj_node = match find_codeunit_at_point(root, source, point) {
         Some(n) => n,
         None => return Vec::new(),
@@ -1315,18 +1319,19 @@ fn qualify_line(line: &str, record_var: &str, field_names: &[String]) -> String 
 
     // Skip lines that start with AL keywords (whole-word match).
     // Does NOT skip field names that begin with a keyword prefix (e.g. EndDate, IfFlag).
+    // Keywords are looked up via LanguageData (loaded from tree-sitter-al/data/keywords.json).
+    // "//" (line comment) and "end;" are not grammar keywords but must also be skipped here.
     let lower = trimmed.to_lowercase();
-    let al_keywords = [
-        "if", "then", "else", "begin", "end", "for", "while", "repeat", "until", "case", "exit",
-        "error", "message", "//", "end;",
-    ];
-    let starts_with_keyword = al_keywords.iter().any(|kw| {
-        if let Some(rest) = lower.strip_prefix(kw) {
-            rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric() && c != '_')
-        } else {
-            false
-        }
-    });
+    let starts_with_keyword = {
+        // Check LanguageData keywords first (covers if/then/else/begin/end/for/while/etc.)
+        let keyword_match = lower
+            .split_once(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|(word, _)| al_syntax::language_data::is_keyword(word))
+            .unwrap_or_else(|| al_syntax::language_data::is_keyword(&lower));
+        // Also skip "//" (line comment start) and "end;" (not a grammar keyword but structural)
+        let special_match = lower.starts_with("//") || lower.starts_with("end;");
+        keyword_match || special_match
+    };
 
     let structurally_qualified = if starts_with_keyword {
         // Cannot structurally qualify a keyword-led line — fall through to field-name pass.
@@ -1498,7 +1503,11 @@ fn source_action_make_local(
     let (_, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
     let root = tree.root_node();
 
-    let point = tree_sitter::Point::new(range.start.line as usize, range.start.character as usize);
+    // LSP positions use UTF-16 code units; tree-sitter uses byte offsets.
+    let cursor_line = text.lines().nth(range.start.line as usize).unwrap_or("");
+    let col_bytes =
+        crate::resolution::utf16_col_to_byte_offset(cursor_line, range.start.character as usize);
+    let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
     let mut node = root.descendant_for_point_range(point, point)?;
 
     // Walk up to find procedure_declaration (skip trigger_declaration)

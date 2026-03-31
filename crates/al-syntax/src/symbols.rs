@@ -428,42 +428,18 @@ fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<Document
     })
 }
 
-/// Page control keywords that appear as metadata_keyword nodes in the grammar.
-/// These produce a pattern: metadata_keyword + parenthesized_block + braced_block
-const PAGE_CONTROL_KEYWORDS: &[&str] = &[
-    "area",
-    "group",
-    "repeater",
-    "field",
-    "part",
-    "action",
-    "separator",
-    "cuegroup",
-    "grid",
-    "fixed",
-    "usercontrol",
-    "label",
-    "dataitem",
-    "column",
-    "filter",
-    "addfirst",
-    "addlast",
-    "addafter",
-    "addbefore",
-    "modify",
-    "moveafter",
-    "movebefore",
-    "actionref",
-];
-
+/// Map a page control keyword's `lsp_symbol_kind` string (from page_controls.json) to a
+/// tower-lsp [`SymbolKind`].
 fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
-    match keyword {
-        "field" | "column" | "filter" => SymbolKind::FIELD,
-        "action" | "actionref" | "separator" => SymbolKind::EVENT,
-        "area" | "group" | "repeater" | "cuegroup" | "grid" | "fixed" => SymbolKind::STRUCT,
-        "part" | "usercontrol" => SymbolKind::CLASS,
-        "dataitem" => SymbolKind::STRUCT,
-        "label" => SymbolKind::CONSTANT,
+    match crate::language_data::page_control_by_keyword(keyword)
+        .map(|e| e.lsp_symbol_kind.as_str())
+        .unwrap_or("Namespace")
+    {
+        "Field" => SymbolKind::FIELD,
+        "Event" => SymbolKind::EVENT,
+        "Struct" => SymbolKind::STRUCT,
+        "Class" => SymbolKind::CLASS,
+        "Constant" => SymbolKind::CONSTANT,
         _ => SymbolKind::NAMESPACE,
     }
 }
@@ -613,10 +589,7 @@ fn extract_triggers_from_braced_block(
 fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kw_text = kw_node.utf8_text(source).ok()?;
 
-    if !PAGE_CONTROL_KEYWORDS
-        .iter()
-        .any(|k| k.eq_ignore_ascii_case(kw_text))
-    {
+    if !crate::language_data::is_page_control_keyword(kw_text) {
         return None;
     }
 
@@ -887,8 +860,17 @@ fn extract_var_section_children(node: Node, source: &[u8], symbols: &mut Vec<Doc
 }
 
 fn collect_var_symbols_recursive(root: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
-    let mut cursor = root.walk();
-    for child in root.children(&mut cursor) {
+    // Iterative DFS using an explicit stack — avoids stack overflow on deeply nested AL.
+    // Start by pushing the children of root (mirroring the original behaviour of iterating
+    // root's children and recursing only into unknown-kind nodes).
+    let mut stack: Vec<Node> = {
+        let mut cursor = root.walk();
+        root.children(&mut cursor).collect()
+    };
+    // Reverse so that popping yields left-to-right order
+    stack.reverse();
+
+    while let Some(child) = stack.pop() {
         match child.kind() {
             "regular_variable_declaration" => {
                 let detail = extract_node_text(child.child_by_field_name("type"), source);
@@ -905,7 +887,7 @@ fn collect_var_symbols_recursive(root: Node, source: &[u8], symbols: &mut Vec<Do
                         children: None,
                     });
                 }
-                // Do not recurse into regular_variable_declaration children
+                // Do not descend into regular_variable_declaration children
             }
             "label_declaration" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
@@ -923,11 +905,15 @@ fn collect_var_symbols_recursive(root: Node, source: &[u8], symbols: &mut Vec<Do
                         });
                     }
                 }
-                // Do not recurse into label_declaration children
+                // Do not descend into label_declaration children
             }
             _ => {
-                // Recurse into container nodes (variable_declaration wrappers, etc.)
-                collect_var_symbols_recursive(child, source, symbols);
+                // Descend into container nodes (variable_declaration wrappers, etc.)
+                let mut cursor = child.walk();
+                let grandchildren: Vec<Node> = child.children(&mut cursor).collect();
+                for gc in grandchildren.into_iter().rev() {
+                    stack.push(gc);
+                }
             }
         }
     }

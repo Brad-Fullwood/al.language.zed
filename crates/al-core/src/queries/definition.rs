@@ -1,3 +1,5 @@
+#![allow(clippy::useless_conversion)]
+
 //! Go-to-definition query.
 
 use al_symbols::SymbolEntry;

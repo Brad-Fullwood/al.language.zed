@@ -1,3 +1,5 @@
+#![allow(clippy::useless_conversion)]
+
 //! Go-to-implementations query.
 //!
 //! Returns all codeunits that implement a given AL interface name.

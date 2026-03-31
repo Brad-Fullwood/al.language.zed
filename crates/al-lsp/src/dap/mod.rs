@@ -86,15 +86,24 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
         .take()
         .ok_or_else(|| DapError::SpawnFailed("child stdout not available".to_string()))?;
 
-    // DAP protocol capture log — writes all messages to a file for reverse-engineering
+    // DAP protocol capture log — writes all messages to a file for reverse-engineering.
+    // If the file cannot be opened, log a warning and disable capture rather than panicking.
     let capture_log: Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> =
-        std::env::var("AL_DAP_CAPTURE").ok().map(|path| {
-            let file = std::fs::OpenOptions::new()
+        std::env::var("AL_DAP_CAPTURE").ok().and_then(|path| {
+            match std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&path)
-                .expect("Failed to open DAP capture log");
-            std::sync::Arc::new(std::sync::Mutex::new(file))
+            {
+                Ok(file) => Some(std::sync::Arc::new(std::sync::Mutex::new(file))),
+                Err(e) => {
+                    warn!(
+                        "AL_DAP_CAPTURE set but could not open '{}': {} — capture disabled",
+                        path, e
+                    );
+                    None
+                }
+            }
         });
 
     // Capture EditorServices stderr to the DAP log if enabled

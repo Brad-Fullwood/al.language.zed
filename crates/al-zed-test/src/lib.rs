@@ -530,7 +530,7 @@ impl ZedTest {
     ///
     /// Returns the first matching line. Polls every 100 ms. Pattern is matched
     /// as a literal substring (not a regex) for simplicity; call the lower-level
-    /// [`lsp_log::wait_for_regex`] if you need regex matching.
+    /// [`lsp_log::wait_for_substring`] if you need substring matching.
     ///
     /// # Errors
     ///

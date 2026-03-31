@@ -338,26 +338,18 @@ async fn test_diagnostics_published_on_open() {
     // Open a file to trigger diagnostics publication.
     // Custom lint rules have been removed, so AL-L007 will not appear,
     // but the server must still publish a diagnostics notification.
+    // open_file() already waits for publishDiagnostics (5s timeout), so the
+    // buffered notification is available immediately after it returns.
     client.open_file("src/test.al", CODEUNIT_AL).await;
 
-    // Poll for the diagnostics notification with retries.
-    // open_file already waits for publishDiagnostics, so a published (possibly
-    // empty) notification satisfies the intent of this test.
-    let mut has_notification = false;
-    let mut last_diags = std::collections::HashMap::new();
-    for _ in 0..20 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        last_diags = client.drain_diagnostics();
-        // Accept any notification (including an empty diagnostics array).
-        if !last_diags.is_empty() {
-            has_notification = true;
-            break;
-        }
-    }
+    let uri = client.file_uri("src/test.al");
+    let diags = client.drain_diagnostics();
+    // Accept any notification for the opened URI (including an empty array) —
+    // the key invariant is that the server published diagnostics for this file.
     assert!(
-        has_notification,
-        "Should publish a diagnostics notification. Got: {:?}",
-        last_diags
+        diags.contains_key(&uri),
+        "Should publish a diagnostics notification for the opened file. Got: {:?}",
+        diags
     );
 
     client.shutdown().await;
@@ -396,11 +388,25 @@ async fn test_workspace_symbol_search() {
     // Open a file so it gets indexed
     client.open_file("src/test.al", CODEUNIT_AL).await;
 
+    // initialize() polls workspace/symbol until symbols are present, so after
+    // open_file() the index should include at least the codeunit we just opened.
     let symbols = client.workspace_symbol("Test").await;
-    // May or may not find symbols depending on workspace scan
-    // At minimum, the opened file should be indexed
-    // This test mainly verifies the request doesn't crash
-    tracing::info!(count = symbols.len(), "workspace symbol results");
+    assert!(
+        !symbols.is_empty(),
+        "workspace/symbol should return results after opening a file with 'Test' in its name. Got 0 results."
+    );
+
+    // Verify basic structure: each symbol must have name and location
+    for sym in &symbols {
+        assert!(
+            sym.get("name").and_then(|n| n.as_str()).is_some(),
+            "workspace symbol must have a name: {sym}"
+        );
+        assert!(
+            sym.get("location").is_some() || sym.get("containerName").is_some(),
+            "workspace symbol must have location: {sym}"
+        );
+    }
 
     client.shutdown().await;
 }

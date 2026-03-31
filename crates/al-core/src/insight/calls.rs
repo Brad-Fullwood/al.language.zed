@@ -1282,21 +1282,25 @@ fn collect_procedure_names_from_node(
     source: &[u8],
     names: &mut Vec<String>,
 ) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "procedure_declaration" | "trigger_declaration" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    if let Ok(text) = name_node.utf8_text(source) {
-                        let name = text.trim_matches('"').trim().to_string();
-                        if !name.is_empty() {
-                            names.push(name);
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        let mut cursor = current.walk();
+        for child in current.children(&mut cursor) {
+            match child.kind() {
+                "procedure_declaration" | "trigger_declaration" => {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        if let Ok(text) = name_node.utf8_text(source) {
+                            let name = text.trim_matches('"').trim().to_string();
+                            if !name.is_empty() {
+                                names.push(name);
+                            }
                         }
                     }
+                    // Don't push procedure children — we only want top-level names
                 }
-            }
-            _ => {
-                collect_procedure_names_from_node(child, source, names);
+                _ => {
+                    stack.push(child);
+                }
             }
         }
     }

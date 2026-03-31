@@ -14,3 +14,91 @@ pub fn folding_ranges(
     let ranges = al_syntax::extract_folding_ranges(&tree, &text);
     Some(ranges)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::Workspace;
+    use url::Url;
+
+    // --- positive tests ---
+
+    #[test]
+    fn folding_ranges_returns_ranges_for_open_document() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/fold.al").expect("test");
+        let src = r#"codeunit 50100 "My CU"
+{
+    procedure DoWork()
+    begin
+        Message('Hello');
+    end;
+}"#;
+        ws.documents.open(uri.clone(), src.to_string());
+        let ranges = folding_ranges(&ws, &uri);
+        assert!(
+            ranges.is_some(),
+            "Should return Some for a known open document"
+        );
+        let ranges = ranges.expect("test");
+        assert!(
+            !ranges.is_empty(),
+            "Should produce at least one folding range"
+        );
+    }
+
+    #[test]
+    fn folding_ranges_includes_procedure_region() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/fold_proc.al").expect("test");
+        let src = r#"codeunit 50100 "Fold"
+{
+    procedure Alpha()
+    begin
+        Message('a');
+    end;
+
+    procedure Beta()
+    begin
+        Message('b');
+    end;
+}"#;
+        ws.documents.open(uri.clone(), src.to_string());
+        let ranges = folding_ranges(&ws, &uri).expect("test");
+        // Expect region-kind folds for object + two procedures
+        let region_count = ranges
+            .iter()
+            .filter(|r| r.kind == Some(tower_lsp::lsp_types::FoldingRangeKind::Region))
+            .count();
+        assert!(
+            region_count >= 2,
+            "Expected at least 2 region folds, got {}",
+            region_count
+        );
+    }
+
+    // --- negative tests ---
+
+    #[test]
+    fn folding_ranges_missing_uri_returns_none() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///nonexistent/file.al").expect("test");
+        let result = folding_ranges(&ws, &uri);
+        assert!(result.is_none(), "Unknown URI must return None");
+    }
+
+    #[test]
+    fn folding_ranges_empty_document_returns_some_empty() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/empty_fold.al").expect("test");
+        ws.documents.open(uri.clone(), String::new());
+        let result = folding_ranges(&ws, &uri);
+        // An empty document should parse and return Some([])
+        assert!(
+            result.is_some(),
+            "Empty document should return Some (not None)"
+        );
+        let ranges = result.expect("test");
+        assert!(ranges.is_empty(), "Empty document should produce no folds");
+    }
+}

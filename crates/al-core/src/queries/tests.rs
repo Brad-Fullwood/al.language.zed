@@ -3,7 +3,6 @@
 //! Uses tree-sitter static analysis to find [Test] codeunits and [Test] procedures
 //! in AL source files. No runtime connection to BC required.
 
-use al_syntax::AlParser;
 use serde::Serialize;
 
 use crate::workspace::Workspace;
@@ -31,13 +30,14 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
     let mut results = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
-        let path = entry.key().to_string_lossy().to_string();
-        let text = entry.value().clone();
-        let parse_result = AlParser::parse_quick(&text);
-        let tree = &parse_result.tree;
+        let entry_path = entry.key();
+        let path = entry_path.to_string_lossy().to_string();
+        let Some((text, tree)) = workspace.file_index.get_cached_parse(entry_path) else {
+            continue;
+        };
         let source = text.as_bytes();
 
-        let Some(obj_info) = al_syntax::find_object_declaration(tree, &text) else {
+        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
         if obj_info.kind.to_lowercase() != "codeunit" {
@@ -188,6 +188,7 @@ pub fn is_test_attribute(text: &str) -> bool {
 #[cfg(test)]
 mod test_discovery {
     use super::*;
+    use al_syntax::AlParser;
 
     #[test]
     fn test_attribute_detection() {

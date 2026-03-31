@@ -262,7 +262,7 @@ impl FileIndex {
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
-                    if crate::queries::is_procedure_symbol(child.kind) {
+                    if crate::queries::is_procedure_symbol(child.kind.into()) {
                         let proc_key = child.name.to_lowercase();
                         let info = CachedProcedureInfo {
                             file: path.clone(),

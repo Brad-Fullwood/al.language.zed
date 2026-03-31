@@ -280,8 +280,25 @@ impl AlConfig {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        // Write to a sibling temp file, then rename atomically.
-        let tmp_path = path.with_extension("tmp");
+        // Write to a uniquely-named sibling temp file, then rename atomically.
+        // Using pid + a counter avoids collisions when multiple processes write
+        // concurrently, and avoids clobbering an existing .tmp file that may be
+        // another in-flight write.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
+        let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp_name = format!(
+            ".{}.{}.{}.tmp",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("settings"),
+            std::process::id(),
+            seq,
+        );
+        let tmp_path = path
+            .parent()
+            .map(|p| p.join(&tmp_name))
+            .unwrap_or_else(|| std::path::PathBuf::from(&tmp_name));
         std::fs::write(&tmp_path, &json)?;
         std::fs::rename(&tmp_path, path)?;
         Ok(())

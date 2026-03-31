@@ -29,33 +29,38 @@ pub fn compute_complexity(tree: &Tree, text: &str) -> Vec<ProcedureComplexity> {
 }
 
 fn collect_procedure_complexity(node: Node, source: &[u8], results: &mut Vec<ProcedureComplexity>) {
-    if matches!(
-        node.kind(),
-        "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
-    ) {
-        let name = node
-            .child_by_field_name("name")
-            .and_then(|n| n.utf8_text(source).ok())
-            .unwrap_or("(unknown)")
-            .trim_matches('"')
-            .to_string();
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if matches!(
+            current.kind(),
+            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+        ) {
+            let name = current
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(unknown)")
+                .trim_matches('"')
+                .to_string();
 
-        let line = node.start_position().row as u32 + 1;
-        let cyclomatic = compute_cyclomatic(node, source);
-        let cognitive = compute_cognitive(node, source, 0);
+            let line = current.start_position().row as u32 + 1;
+            let cyclomatic = compute_cyclomatic(current, source);
+            let cognitive = compute_cognitive(current, source);
 
-        results.push(ProcedureComplexity {
-            name,
-            cyclomatic,
-            cognitive,
-            line,
-        });
-        return;
-    }
+            results.push(ProcedureComplexity {
+                name,
+                cyclomatic,
+                cognitive,
+                line,
+            });
+            // Don't recurse into procedure bodies for nested procedures
+            continue;
+        }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_procedure_complexity(child, source, results);
+        for i in (0..current.child_count()).rev() {
+            if let Some(child) = current.child(i) {
+                stack.push(child);
+            }
+        }
     }
 }
 
@@ -67,66 +72,85 @@ fn compute_cyclomatic(proc_node: Node, source: &[u8]) -> u32 {
 }
 
 fn count_cyclomatic_decisions(node: Node, source: &[u8], count: &mut u32) {
-    match node.kind() {
-        "if_statement" | "empty_if_statement" => *count += 1,
-        "for_statement" | "foreach_statement" | "while_statement" | "repeat_statement" => {
-            *count += 1
-        }
-        "case_statement" => {
-            // Each case arm adds a branch
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "case_arm" || child.kind() == "case_element" {
-                    *count += 1;
-                }
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        match current.kind() {
+            "if_statement" | "empty_if_statement" => *count += 1,
+            "for_statement" | "foreach_statement" | "while_statement" | "repeat_statement" => {
+                *count += 1
             }
-        }
-        "binary_expression" => {
-            // AND/OR operators add paths
-            if let Some(op_node) = node.child_by_field_name("op") {
-                if let Ok(op) = op_node.utf8_text(source) {
-                    let lower = op.to_lowercase();
-                    if lower == "and" || lower == "or" {
+            "case_statement" => {
+                // Each case arm adds a branch
+                let mut cursor = current.walk();
+                for child in current.children(&mut cursor) {
+                    if child.kind() == "case_arm" || child.kind() == "case_element" {
                         *count += 1;
                     }
                 }
             }
+            "binary_expression" => {
+                // AND/OR operators add paths
+                if let Some(op_node) = current.child_by_field_name("op") {
+                    if let Ok(op) = op_node.utf8_text(source) {
+                        let lower = op.to_lowercase();
+                        if lower == "and" || lower == "or" {
+                            *count += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
-        _ => {}
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        count_cyclomatic_decisions(child, source, count);
+        for i in (0..current.child_count()).rev() {
+            if let Some(child) = current.child(i) {
+                stack.push(child);
+            }
+        }
     }
 }
 
 /// Cognitive complexity: increments for structural nesting, with nesting multiplier.
-fn compute_cognitive(node: Node, source: &[u8], nesting: u32) -> u32 {
+fn compute_cognitive(node: Node, source: &[u8]) -> u32 {
     let mut total = 0u32;
-    let mut cursor = node.walk();
+    // Stack holds (node, nesting_depth)
+    let mut stack: Vec<(Node, u32)> = Vec::new();
 
+    // Push the initial node's children at nesting 0
+    let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        let kind = child.kind();
+        stack.push((child, 0));
+    }
+
+    while let Some((current, nesting)) = stack.pop() {
+        let kind = current.kind();
         match kind {
             "if_statement" | "empty_if_statement" => {
-                total += 1 + nesting; // +1 for structure, +nesting for depth
-                total += compute_cognitive(child, source, nesting + 1);
+                total += 1 + nesting;
+                let mut cur = current.walk();
+                for child in current.children(&mut cur) {
+                    stack.push((child, nesting + 1));
+                }
             }
             "for_statement" | "foreach_statement" | "while_statement" | "repeat_statement" => {
                 total += 1 + nesting;
-                total += compute_cognitive(child, source, nesting + 1);
+                let mut cur = current.walk();
+                for child in current.children(&mut cur) {
+                    stack.push((child, nesting + 1));
+                }
             }
             "case_statement" => {
                 total += 1 + nesting;
                 // Each arm counts as 1 at the same level
-                let arm_count = count_case_arms(child);
-                total += arm_count;
-                total += compute_cognitive(child, source, nesting + 1);
+                total += count_case_arms(current);
+                let mut cur = current.walk();
+                for child in current.children(&mut cur) {
+                    stack.push((child, nesting + 1));
+                }
             }
             "binary_expression" => {
                 // Boolean operators: count sequences
-                if let Some(op_node) = child.child_by_field_name("op") {
+                if let Some(op_node) = current.child_by_field_name("op") {
                     if let Ok(op) = op_node.utf8_text(source) {
                         let lower = op.to_lowercase();
                         if lower == "and" || lower == "or" {
@@ -134,10 +158,16 @@ fn compute_cognitive(node: Node, source: &[u8], nesting: u32) -> u32 {
                         }
                     }
                 }
-                total += compute_cognitive(child, source, nesting);
+                let mut cur = current.walk();
+                for child in current.children(&mut cur) {
+                    stack.push((child, nesting));
+                }
             }
             _ => {
-                total += compute_cognitive(child, source, nesting);
+                let mut cur = current.walk();
+                for child in current.children(&mut cur) {
+                    stack.push((child, nesting));
+                }
             }
         }
     }

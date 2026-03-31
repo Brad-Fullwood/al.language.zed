@@ -615,12 +615,20 @@ impl SymbolReferenceJson {
     /// Convert to a flat list of `SymbolEntry` values.
     pub fn into_entries(self, package_name: &str) -> Vec<SymbolEntry> {
         let mut entries = Vec::new();
-        self.collect_entries_recursive(package_name, &mut entries);
+        let mut stack = vec![self];
+        while let Some(mut current) = stack.pop() {
+            // Drain nested namespaces onto the stack before processing this level
+            let nested = std::mem::take(&mut current.namespaces);
+            for ns in nested {
+                stack.push(ns);
+            }
+            current.collect_entries_at_level(package_name, &mut entries);
+        }
         entries
     }
 
-    /// Recursively collect entries from this level and all nested namespaces.
-    fn collect_entries_recursive(self, package_name: &str, entries: &mut Vec<SymbolEntry>) {
+    /// Collect entries from this level only (namespaces field must be empty).
+    fn collect_entries_at_level(self, package_name: &str, entries: &mut Vec<SymbolEntry>) {
         let pkg = package_name.to_string();
 
         let collections: Vec<(ObjectKind, Vec<ObjectJson>)> = vec![
@@ -735,11 +743,6 @@ impl SymbolReferenceJson {
                     namespace: String::new(),
                 });
             }
-        }
-
-        // Recursively flatten nested namespaces
-        for ns in self.namespaces {
-            ns.collect_entries_recursive(package_name, entries);
         }
     }
 }
