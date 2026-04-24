@@ -198,7 +198,7 @@ demand.
 
 **Optional (enables additional features)**
 - .NET SDK 8 or newer — builds the `al-semantic` bridge and enables CodeAnalysis diagnostics
-- Microsoft ALTool — enables compilation, semantic diagnostics, and the EditorServices proxy debug path. `al setup` can install it for you.
+- Microsoft ALTool — enables compilation, semantic diagnostics, and the EditorServices proxy debug path. `al setup` reports whether it is installed and prints the install command if it is not.
 
 Without .NET / ALTool the extension still provides syntax highlighting, folding,
 navigation, formatting, and symbol-index completion from `.app` packages.
@@ -263,9 +263,10 @@ into your Zed config. `al doctor` will flag common misconfigurations.
 
 ## The `al` CLI
 
-`al` is a thin JSON-RPC client that talks to a running `al-lsp daemon`. If no
-daemon is running for the current project, start one with
-`al-lsp daemon --project <path>` — the CLI does not auto-spawn the daemon.
+`al` is a thin JSON-RPC client that talks to an `al-lsp daemon`. If no daemon
+is running for the current project, `al` spawns one automatically (running
+`al-lsp daemon --project <cwd>` and waiting up to 5 seconds for the socket to
+come up).
 
 Every command accepts the global `--json` flag for machine-readable output.
 
@@ -382,11 +383,11 @@ al xlf suggest       <xlf>
 ### Utility
 
 ```sh
-al setup                                   # install ALTool, verify .NET SDK
+al setup                                   # report ALTool / .NET SDK status
 al doctor                                  # green/red project checklist
 al authenticate [login|status|clear] [--tenant ID]
 al diag                                    # daemon memory stats, object counts
-al clear-cache
+al clear-cache                             # remove ~/.cache/al-lsp/packages/ and flush the daemon's in-memory cache
 al version
 al generate-completions <bash|zsh|fish|elvish|powershell>
 ```
@@ -395,11 +396,13 @@ al generate-completions <bash|zsh|fish|elvish|powershell>
 
 ## `al-explorer` TUI
 
-`al-explorer` is a ratatui-based browser over the daemon's symbol index:
+`al-explorer` is a ratatui-based browser over the daemon's symbol index.
+Run it from the project root — it uses `cwd` as the project and takes no
+command-line arguments:
 
 ```sh
-al-explorer                     # use project at cwd
-al-explorer --project <path>
+cd path/to/my-al-project
+al-explorer
 ```
 
 Use it to explore loaded packages, navigate to objects, and inspect composed
@@ -414,6 +417,7 @@ is required.
 |----------|----------|
 | `<project>/.alpackages/` | `.app` packages downloaded from NuGet or a BC server |
 | `~/.cache/al-lsp/index/` | Parsed-symbol disk cache (rebuilt from `.app` files) |
+| `~/.cache/al-lsp/packages/` | Legacy package cache location; not populated by current code but still cleared by `al clear-cache` |
 
 On first open, `al-lsp` resolves `app.json` dependencies against the configured
 NuGet feeds:
@@ -454,8 +458,11 @@ from the interactive debugger: they drive BC server-side data collection via
 REST and then analyse the downloaded artefact offline. Hotspot results can be
 surfaced as inlay hints in the editor (`profiler-hints` query).
 
-The `init-debug` command generates a `.zed/debug.json` with launch configurations
-keyed from `app.json` and `launch.json` if present.
+The `init-debug` command writes a `.zed/debug.json` containing four placeholder
+launch configurations (Publish and Attach, each against an on-prem server and
+a cloud sandbox). It does not read `app.json` or an existing `launch.json` —
+edit the generated file to fill in your BC server URL, tenant, and credentials.
+If `.zed/debug.json` already exists it is left alone.
 
 ---
 
@@ -561,7 +568,7 @@ servers do not accumulate when Zed is force-killed.
 
 ## Testing
 
-Three layers of tests:
+Four layers of tests:
 
 | Layer | Location | What it covers |
 |-------|----------|----------------|
@@ -654,5 +661,5 @@ and `RUST_LOG` are the most-used test environment knobs.
 
 ## License
 
-Source is available under the terms in [`LICENSE`](LICENSE). The repository is
-not yet licensed for redistribution via the Zed marketplace or elsewhere.
+MIT — see [`LICENSE`](LICENSE). The extension is not yet published to the Zed
+marketplace; installation is dev-extension only until then.
