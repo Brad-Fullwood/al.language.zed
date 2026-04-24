@@ -1,236 +1,658 @@
 # Zed AL Extension
 
-> **Work in Progress** -- This extension is under active development and is not yet published to the Zed extension marketplace. Features may be incomplete, APIs may change, and documentation may lag behind the code. Use at your own risk.
+> **Work in progress.** Not yet published to the Zed extension marketplace.
+> APIs, binaries, and on-disk formats may change between commits.
 
-AL (Microsoft Dynamics 365 Business Central) language support for [Zed](https://zed.dev), powered by a custom language server written in Rust.
+AL (Microsoft Dynamics 365 Business Central) language support for [Zed](https://zed.dev),
+powered by a custom language server written in Rust. The WASM extension is a thin
+adapter; all heavy lifting (parsing, symbol index, diagnostics, formatting, debugging,
+code generation) happens in `al-lsp` outside the Zed sandbox.
+
+---
+
+## Contents
+
+- [Status](#status)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Build & install](#build--install)
+- [Configuration in Zed](#configuration-in-zed)
+- [The `al` CLI](#the-al-cli)
+- [`al-explorer` TUI](#al-explorer-tui)
+- [Symbol & package cache](#symbol--package-cache)
+- [Debugging](#debugging)
+- [Tree-sitter grammar](#tree-sitter-grammar)
+- [Development](#development)
+- [Testing](#testing)
+- [Continuous integration](#continuous-integration)
+- [Repository layout](#repository-layout)
+- [License](#license)
+
+---
+
+## Status
+
+| Area | State |
+|------|-------|
+| Syntax highlighting, folding, navigation | Working across the full AL surface |
+| Completion, hover, signature help, rename | Working; driven by workspace AST + `.app` symbol index |
+| Formatting | Working (text-based formatter — no AST round-trip) |
+| Diagnostics — tree-sitter parse errors | Always on |
+| Diagnostics — .NET CodeAnalysis analyzers | Requires .NET SDK + ALTool |
+| Diagnostics — native lint rules | Framework in place, rule catalogue still empty |
+| Compilation | Requires ALTool; falls back to `alc` subprocess |
+| Debugging (native REST + SignalR) | Working against live BC services |
+| Debugging (EditorServices proxy) | Working when Microsoft's adapter is available |
+| Zed extension API | Tracks `zed_extension_api` on `main`; API version `0.8.0` |
+
+---
 
 ## Features
 
-### Editor
-
-- Syntax highlighting via a custom [tree-sitter grammar](https://github.com/Brad-Fullwood/AL-Tree-Sitter) with a Business Central theme
-- Code folding, document symbols, and breadcrumbs
-- Hover information, go-to-definition, find references, and find implementations
-- Signature help and completion from `.app` symbol packages (auto-downloaded from NuGet)
-- Inlay hints, code lenses, and semantic tokens
-- Code actions and rename support
-- AL code formatting
-- Snippet support for AL and `launch.json`
+### Editor experience
+- Custom tree-sitter grammar — see [`tree-sitter-al/`](tree-sitter-al/) — with highlights, folds, indents, textobjects, outline, bracket-matching queries
+- Business Central theme (`themes/bc-themes.json`)
+- Hover, go-to-definition, find references, find implementations
+- Context-aware completion with `.` and `:` trigger characters, signature help on `(` / `,`
+- Document symbols and breadcrumbs
+- Inlay hints (parameter names, return types, profiler hotspots)
+- Code lens (reference counts on procedures, methods, events)
+- Semantic tokens (full-document, AL-aware token types: directives, object keywords, built-in types, `Self`)
+- Code actions (quick fixes, refactors, source-level commands)
+- Rename with `prepareRename` validation
+- Folding: object bodies, `begin`/`end`, section bodies, consecutive comment blocks, `var`, `repeat…until`, `case…end`
+- Snippet sets for AL (`snippets/al.json`) and `launch.json` (`snippets/json.json`)
 
 ### Analysis
-
-- Diagnostics from ALTool/.NET CodeAnalysis (optional -- syntax features work without it)
-- Architecture lint rules and SQL anti-pattern detection
-- Duplicate code detection, dead code analysis, and breaking change detection
-- Cyclomatic and cognitive complexity metrics
-- Obsolescence timeline tracking
+- Pull and push diagnostics (LSP 3.17) from four sources: tree-sitter (`al`), .NET analyzers (`al-analyzer`), compiler (`al-compiler`), test runner (`al-test-runner`)
+- Architecture lint rules from `.alarch.json` (`al arch-lint`)
+- SQL anti-pattern detection — `FindFirst` in loops, unfiltered `FindSet`, missing `CalcFields`, etc.
+- Duplicate-code detection with normalized AST hashing and a similarity threshold
+- Dead-code analysis — unused procedures, unreferenced table fields, orphaned event subscribers
+- Breaking-change detection between two `.app` versions
+- Cyclomatic and cognitive (Sonar-style) complexity metrics
+- Obsolescence timeline and caller counts for deprecated symbols
 - Dependency impact analysis and event propagation tracing
-- Permission set and data classification auditing
-- Test coverage analysis
+- `DataClassification` and permission-set audits
+- Static test discovery and BC REST test runner
+- Static test coverage (call-graph from tests to production code)
+- Upgrade-impact report between two `.app` versions
 
 ### Debugging
-
-- Debug Adapter Protocol (DAP) integration for Zed's debugger
-- Native Business Central debugging via REST + SignalR (no EditorServices binary required)
-- Proxy mode for Microsoft's EditorServices.Host
-- Snapshot debugging and CPU profiling
+- Debug Adapter Protocol integration through Zed's debugger
+- Native Business Central debugging over REST + SignalR (no `EditorServices.Host` required)
+- Proxy mode for Microsoft's `EditorServices.Host` when it is available
+- Snapshot debugging (`.alvsc` download) and CPU profiling (`.alcpuprofile` capture + hotspot analysis) against live BC servers
+- Tolerates BC's non-standard DAP messages: injects missing `seq` fields; accepts string-or-bool launch arguments (`breakOnError`, `breakOnRecordWrite`)
 
 ### Tooling
+- `al` — JSON-RPC client for every LSP feature from the terminal, plus batch analysis, code generation, builds, and translations
+- `al-explorer` — ratatui-based TUI symbol browser with multiple view modes
+- XLIFF workflow: generate `.g.xlf`, refresh language files, list untranslated strings, suggest translations from base-app symbols
+- Project scaffolding: `default`, `pte`, `appsource`, `library`, `test`, `copilot`, `agent`, `api` templates
+- Bulk fixes: add `ApplicationArea`, add `Tooltips` from base app, add `DataClassification`, sort members in canonical order, rename files to `<Type><Id>.<Name>.al`
+- OAuth 2.0 Authorization Code + PKCE flow to authenticate with Business Central (device-code fallback)
 
-- `al` CLI -- thin client for all LSP features from the terminal
-- `al-explorer` -- TUI symbol browser with four view modes
-- XLIFF translation file management (generate, refresh, suggest translations)
-- Project scaffolding with templates (PTE, AppSource, library, test, copilot, agent, API)
-- Bulk code fixes (add ApplicationArea, Tooltips, DataClassification, sort members, organize files)
+---
 
 ## Architecture
 
 ```
-zed-al (WASM)        -->  al-lsp --stdio     \
-al-cli               -->  al-lsp daemon       +--> al-core (all business logic)
-al-explorer          -->  al-lsp daemon       /       |-- al-syntax
-                                                      |-- al-symbols
-                                                      |-- al-semantic
-                                                      |-- al-dap-client
-                                                      '-- al-daemon-client
+┌─ Entry points ──────────────────────────────┐     ┌─ Business logic ─────────┐
+│                                             │     │                          │
+│ Zed editor ──► zed-al (wasm32-wasip1)       │     │  al-core                 │
+│                  │                          │     │   ├─ al-syntax           │
+│                  │ spawns & speaks LSP      │     │   ├─ al-symbols          │
+│                  ▼                          │     │   ├─ al-semantic         │
+│                al-lsp --stdio  ────────────►├────►│   ├─ al-dap-client       │
+│                                             │     │   └─ al-daemon-client    │
+│ al (CLI)     ──► al-lsp daemon ────────────►│     │                          │
+│ al-explorer  ──► al-lsp daemon ────────────►│     │  Queries live in         │
+│                                             │     │  al-core/src/queries/    │
+│ Zed debugger ──► al-lsp --dap  ────────────►│     │  (32 modules)            │
+│                                             │     │                          │
+└─────────────────────────────────────────────┘     └──────────────────────────┘
 ```
 
-- **al-core** -- all business logic, 32 query modules, workspace state
-- **al-syntax** -- tree-sitter parser wrappers, type resolver, formatting, complexity analysis
-- **al-symbols** -- `.app` package parsing, NuGet client, symbol index, OAuth
-- **al-semantic** -- .NET CLR bridge via `netcorehost` into CodeAnalysis.dll
-- **al-lsp** -- LSP/daemon/DAP transport layer (no business logic)
-- **al-dap-client** -- DAP protocol client and native BC debug via REST + SignalR
-- **al-daemon-client** -- shared IPC types and Unix socket client
-- **al-cli** -- `al` command-line tool (thin JSON-RPC client to the daemon)
-- **al-explorer** -- TUI symbol browser (ratatui)
-- **al-test-harness** -- E2E test infrastructure (spawns real LSP binary over stdio)
-- **zed-al** -- WASM extension for Zed (completely isolated from native crates)
+### The one rule
 
-### Server Modes
+All business logic lives in `al-core`. Each file under `crates/al-core/src/queries/`
+takes a `&Workspace` plus a position/argument struct and returns **transport-agnostic
+types**. Converting to LSP or JSON-RPC wire shapes happens at the transport boundary
+in `al-lsp`. `al-lsp` must not parse, resolve, or analyse anything itself.
+
+### Crates
+
+| Crate | Role | Key types |
+|-------|------|-----------|
+| **al-core** | All queries, workspace state, diagnostics pipeline, insight graph | `Workspace`, `DocumentStore`, `SymbolIndex`, `InsightGraph`, `CallGraph`, `AlConfig`, `AlToolchain` |
+| **al-syntax** | tree-sitter wrappers, type resolver, formatter, complexity, folding, semantic tokens | `AlParser`, `TypeResolver`, `LanguageData` |
+| **al-symbols** | `.app` reader, NuGet client, symbol index, OAuth 2.0 | `AppReader`, `SymbolIndex`, `NuGetClient` |
+| **al-semantic** | In-process CLR bridge to Microsoft's `CodeAnalysis.dll` | `SemanticBridge`, `DotNetHost` |
+| **al-lsp** | Server binary — LSP, daemon, and DAP transports (no logic) | `AlServer`, daemon handlers |
+| **al-dap-client** | DAP client: native BC (REST + SignalR) and EditorServices proxy | `BcDebugSession`, `NativeDap`, `DapClient` |
+| **al-daemon-client** | Shared IPC types and Unix-socket client | `DaemonClient`, socket-path helpers |
+| **al-cli** | `al` terminal client (thin JSON-RPC) | clap command tree |
+| **al-explorer** | TUI symbol browser | ratatui app |
+| **al-test-harness** | Spawns real `al-lsp` over stdio for E2E tests | `LspClient` |
+| **al-zed-test** | Drives a live Zed IDE on Wayland/Hyprland for full-stack tests | test helpers around `hyprctl`, `wtype`, `grim` |
+| **zed-al** | WASM extension for Zed — binary resolution, DAP wiring, settings | `AlExtension` |
+
+### Server modes
 
 | Mode | Launch | Transport | Client |
 |------|--------|-----------|--------|
-| LSP | `al-lsp --stdio` | tower-lsp over stdin/stdout | Zed editor |
-| Daemon | `al-lsp daemon --project <path>` | JSON-RPC over Unix socket | al CLI, al-explorer |
+| LSP | `al-lsp --stdio` (default) | `tower-lsp` over stdin/stdout | Zed editor |
+| Daemon | `al-lsp daemon --project <path>` | line-delimited JSON-RPC over Unix socket | `al` CLI, `al-explorer` |
 | DAP | `al-lsp --dap` | Debug Adapter Protocol over stdio | Zed debugger |
 
-The daemon listens on `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock` and auto-shuts down after 30 minutes of idle.
+Daemon socket: `$XDG_RUNTIME_DIR/al-lsp/<fnv1a-hash-of-project-path>.sock`.
+Auto-shutdown after 30 minutes of idle.
 
-## Installation
+The LSP surface is the *interactive subset*: hover, completion, definition, references,
+rename (+ `prepareRename`), formatting (full + range), folding, document & workspace
+symbols, semantic tokens (full), signature help, code actions, code lens, inlay hints,
+pull diagnostics. Analytical and batch operations (lint-all, metrics, SQL scan,
+arch-lint, duplicates, dead-code, breaking, obsolete, audits, deps graph, insight
+queries, code generation, XLIFF, tests, debug, compile) are **daemon-only** RPCs.
 
-### Prerequisites
+### Dependency rules (enforced)
 
-- Rust stable toolchain
+```
+al-lsp ──► al-core ──► al-syntax
+                  ──► al-symbols
+                  ──► al-semantic
+                  ──► al-dap-client
+                  ──► al-daemon-client
+```
+
+`al-syntax`, `al-symbols`, and `al-semantic` never depend on each other or on
+`al-core`. `al-daemon-client` never depends on `al-core`. `zed-al` has no
+compile-time dependency on any native crate — it ships as pure WASM and shells out
+to `al-lsp`. Hookify rules in `.claude/` block imports that would break these rules.
+
+### Diagnostics pipeline
+
+Two phases per open/change/save cycle:
+
+1. **Instant** — tree-sitter parse errors (`source: "al"`, `code: "syntax"`) and
+   native lint framework output (`source: "al-lint"`). Published immediately.
+2. **Async** — `.NET` CodeAnalysis results (`source: "al-analyzer"`,
+   codes like `AL0001`) via `SemanticBridge::analyze`. Gated by
+   `enable_code_analysis` + `background_code_analysis`. Debounced to 400 ms on
+   `did_change`; always runs on `did_save`. Pull diagnostics
+   (`textDocument/diagnostic`) run both phases inline.
+
+Test results (`al-test-runner` / `AL-TEST`) and compiler output
+(`al-compiler` from `alc`) are separate diagnostic sources published per-file on
+demand.
+
+---
+
+## Prerequisites
+
+**Required**
+- Rust stable (`rustup default stable`)
 - `wasm32-wasip1` target (`rustup target add wasm32-wasip1`)
-- .NET SDK (optional -- required for semantic analysis, compilation, and debugging)
-- ALTool from Microsoft (optional -- required for compilation and semantic diagnostics)
 
-### Build
+**Optional (enables additional features)**
+- .NET SDK 8 or newer — builds the `al-semantic` bridge and enables CodeAnalysis diagnostics
+- Microsoft ALTool — enables compilation, semantic diagnostics, and the EditorServices proxy debug path. `al setup` can install it for you.
+
+Without .NET / ALTool the extension still provides syntax highlighting, folding,
+navigation, formatting, and symbol-index completion from `.app` packages.
+The native BC debugger (REST + SignalR) works with ALTool absent provided `alc`
+is on `PATH`.
+
+---
+
+## Build & install
 
 ```sh
-make build      # all Rust crates + WASM extension + .NET bridges
-make install    # build + symlink binaries into ~/.local/bin + dev extension into Zed
+make build      # Rust crates + WASM extension + .NET bridge
+make install    # build, symlink al-lsp/al/al-explorer into ~/.local/bin,
+                # and symlink this repo into ~/.local/share/zed/extensions/installed/al
 ```
 
-Or build individual components:
+Individual targets:
 
 ```sh
-make rust       # native Rust crates only
-make wasm       # WASM extension only
-make bridges    # .NET bridges only
+make rust       # native crates only (cargo build --workspace --exclude zed-al)
+make wasm       # zed-al for wasm32-wasip1 (release)
+make bridges    # dotnet build crates/al-semantic/bridge/AlBridge.csproj (skipped if .NET missing)
+make clean
 ```
 
-### Install in Zed
+Then in Zed: open the command palette → **zed: install dev extension** → point at
+this repository root.
 
-1. Run `make install` (symlinks the dev extension into Zed's extension directory)
-2. In Zed, open the command palette and run **zed: install dev extension**
-3. Point to this repository root
+The WASM extension resolves `al-lsp` in this order:
+1. `lsp.al-lsp.binary.path` in Zed settings, if set
+2. Previously downloaded binary in the extension work directory
+3. `al-lsp` on `$PATH`
+4. Download from the latest GitHub release of `Brad-Fullwood/zed-al`
+   (`al-<os>-<arch>.tar.gz`)
 
-The WASM extension resolves the `al-lsp` binary in this order: user-configured path in Zed settings, previously downloaded binary, `PATH` lookup, GitHub releases download.
+---
 
-## CLI
+## Configuration in Zed
 
-The `al` binary is a thin JSON-RPC client to the `al-lsp` daemon. It auto-starts the daemon if not running.
+Minimal `settings.json`:
 
-### Symbol Lookup
-
-```sh
-al search <query>                  # fuzzy symbol search
-al object <type> <name>            # look up object by type and name
-al by-id <type> <id>               # look up object by numeric ID
-al events <name>                   # find event publishers
-al subscribers <event>             # find event subscribers
-al composed <type> <name>          # show base + all extensions merged
-al packages                        # list loaded packages
-al deps                            # show dependency graph
+```jsonc
+{
+  "lsp": {
+    "al-lsp": {
+      "settings": {
+        "al": {
+          "enableCodeAnalysis": true,
+          "backgroundCodeAnalysis": true,
+          "codeAnalyzers": ["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]
+        }
+      }
+    }
+  }
+}
 ```
 
-### Code Navigation
+Run `al.applyRecommendedSettings` from the command palette to write these defaults
+into your Zed config. `al doctor` will flag common misconfigurations.
+
+---
+
+## The `al` CLI
+
+`al` is a thin JSON-RPC client that talks to a running `al-lsp daemon`. If no
+daemon is running for the current project, start one with
+`al-lsp daemon --project <path>` — the CLI does not auto-spawn the daemon.
+
+Every command accepts the global `--json` flag for machine-readable output.
+
+### Symbol lookup & navigation
 
 ```sh
-al hover <file> <line> <col>
+al search <query> [--limit N]             # fuzzy symbol search
+al object <TYPE> <name>                   # look up an object
+al by-id <TYPE> <id>                      # look up by numeric ID
+al events <name>                          # find event publishers
+al subscribers <event>                    # find event subscribers
+al composed <TYPE> <name>                 # base + merged extensions
+al packages                               # loaded packages with stats
+al deps                                   # direct dependencies
+al deps-graph [--format json|dot]         # transitive dependency graph
+
+al hover      <file> <line> <col>
 al definition <file> <line> <col>
 al references <file> <line> <col>
 al completions <file> <line> <col>
-al signature <file> <line> <col>
-al rename <file> <line> <col> <new_name> [--dry-run]
+al signature  <file> <line> <col>
+al rename     <file> <line> <col> <new-name> [--dry-run]
+al symbols    <file>                      # outline
+al hints      <file> [--start-line N] [--end-line N]
+al folding    <file>
+al tokens     <file>
+al parse      <file>                      # show parse tree
 ```
 
-### Analysis
+### Analysis & quality
 
 ```sh
-al lint [file]                     # run lint rules (--all, --analyzers)
-al format [file]                   # format AL code (--check, --stdin, --all)
-al metrics                         # cyclomatic/cognitive complexity
-al sql-scan                        # detect SQL anti-patterns
-al arch-lint                       # architecture lint rules
-al duplicates                      # find duplicate code blocks
-al dead-code                       # find unused procedures, fields, subscribers
-al breaking                        # detect breaking API changes
-al obsolete                        # show obsolescence timeline
-al audit-data                      # audit DataClassification on table fields
-al permission-audit                # audit permission set coverage
+al lint [files...] [--all] [--analyzers CodeCop,AppSourceCop,UICop,PerTenantCop]
+al format [file] [--check] [--stdin] [--all]
+al fix    [file] [--dry-run] [--rule CODE]
+al metrics [file] [--all] [--threshold-cyclomatic N] [--threshold-cognitive N]
+al sql-scan
+al arch-lint
+al duplicates [--min-tokens N] [--min-similarity F]
+al dead-code
+al breaking
+al obsolete
+al audit-data
+al permission-audit
+al upgrade
+al rules                                   # list lint rules
+al error-codes                             # list compiler error codes
+al builtins                                # list built-in types and methods
 ```
 
-### Build and Test
+### Build & test
 
 ```sh
-al compile                         # compile via alc
-al package                         # compile into .app
-al download-symbols                # download symbols from server or NuGet
-al tests                           # discover test codeunits
-al test-run <codeunit>             # run tests via BC REST API
-al test-coverage                   # show test coverage summary
+al compile [--project DIR]
+al package
+al download-symbols [--project DIR] [--source server|nuget]
+al tests                                   # discover [Test] codeunits
+al test-run <codeunit-id> [--name N] [--method M] [--config C]
+al test-coverage
 ```
 
-### Code Generation
+### Code generation
 
 ```sh
-al new <dir>                       # new project from template
-al generate <kind>                 # scaffold page, report, or test
-al permissions                     # generate permission set (AL or XML)
-al add-application-area            # bulk add ApplicationArea
-al add-tooltips                    # bulk add Tooltips from base app
-al add-data-classification         # bulk add DataClassification
-al sort-members                    # sort members in canonical order
-al organize-files                  # rename files to convention
+al new <dir> [--template default|pte|appsource|library|test|copilot|agent|api]
+al generate <page|report|test> [--id] [--name] [--table] [--page-type] [--subject]
+al permissions [--format al|xml]
+al add-application-area    [--value All]            [--dry-run]
+al add-tooltips            [--from-table NAME]      [--dry-run]
+al add-data-classification [--value CustomerContent][--dry-run]
+al sort-members   [file] [--all] [--dry-run]
+al organize-files        [--dry-run]
 ```
 
-### Insight Graph
+### Insight graph
 
 ```sh
-al trace <event>                   # trace event propagation chain
-al entrypoints                     # find entry point procedures
-al impact <symbol>                 # dependency impact analysis
-al suggest-event                   # find integration points
-al graph                           # export insight graph (json or dot)
+al trace <event> [--depth N]
+al entrypoints
+al graph [--format json|dot]
+al insight-stats
+al impact <symbol>
+al suggest-event [--object] [--procedure] [--table] [--field] [--event]
 ```
 
-### Debugging
+### Debugging, snapshots, profiling
 
 ```sh
-al debug start|breakpoint|state|eval|continue|step|history|stop
-al snapshot start|list|download    # BC snapshot debugging
-al profile start|stop|analyze      # BC CPU profiling
-al init-debug                      # generate .zed/debug.json
+al debug start [--config NAME]
+al debug breakpoint <file> <line> [--condition EXPR]
+al debug state | eval <expr> | continue | step [over|into|out] | history | stop
+
+al snapshot start  [--server] [--company] [--description] [--output-dir] ...
+al snapshot list   [--server] [--company] ...
+al snapshot download <snapshot-id> [--output-dir] ...
+
+al profile start [--server] [--company] [--output-dir] ...
+al profile stop  [--session-id] ...
+al profile analyze <path> [--top N]
+al profiler-hints [hotspot...]
+
+al init-debug                               # write .zed/debug.json
 ```
 
 ### Translations
 
 ```sh
-al xlf generate                    # generate .g.xlf from AL source
-al xlf refresh <xlf>               # refresh language .xlf
-al xlf untranslated <xlf>          # list untranslated texts
-al xlf suggest <xlf>               # suggest translations from base app
+al xlf generate      [--project DIR]
+al xlf refresh       <xlf> [--generated PATH]
+al xlf untranslated  <xlf>
+al xlf suggest       <xlf>
 ```
 
-### Other
+### Utility
 
 ```sh
-al setup                           # check/install ALTool and .NET SDK
-al doctor                          # diagnose project issues
-al authenticate                    # browser-based OAuth to Business Central
-al version                         # show version info
-al --json <subcommand>             # machine-readable JSON output
-al generate-completions <shell>    # shell completions (bash, zsh, fish, etc.)
+al setup                                   # install ALTool, verify .NET SDK
+al doctor                                  # green/red project checklist
+al authenticate [login|status|clear] [--tenant ID]
+al diag                                    # daemon memory stats, object counts
+al clear-cache
+al version
+al generate-completions <bash|zsh|fish|elvish|powershell>
 ```
 
-## Symbol Cache
+---
 
-Downloaded `.app` packages are cached at `~/.cache/al-lsp/packages/`. Packages are fetched from the NuGet `dynamicssmb2` feed on first open and reused on subsequent runs.
+## `al-explorer` TUI
+
+`al-explorer` is a ratatui-based browser over the daemon's symbol index:
+
+```sh
+al-explorer                     # use project at cwd
+al-explorer --project <path>
+```
+
+Use it to explore loaded packages, navigate to objects, and inspect composed
+(base + extensions) views. It talks to the same daemon as `al`; no extra setup
+is required.
+
+---
+
+## Symbol & package cache
+
+| Location | Contents |
+|----------|----------|
+| `<project>/.alpackages/` | `.app` packages downloaded from NuGet or a BC server |
+| `~/.cache/al-lsp/index/` | Parsed-symbol disk cache (rebuilt from `.app` files) |
+
+On first open, `al-lsp` resolves `app.json` dependencies against the configured
+NuGet feeds:
+
+- `https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json`
+- `…/_packaging/AppSourceSymbols/…`
+- `…/_packaging/BCPublic/…`
+
+Five Microsoft package IDs (Application, Base Application, Business Foundation,
+System Application, System) are recognised as implicit BC dependencies and
+resolved even when omitted from `app.json`.
+
+`.app` files are NAVX-headed ZIP archives. The reader scans for the `PK\x03\x04`
+ZIP signature to tolerate non-standard header sizes, strips the UTF-8 BOM from
+`SymbolReference.json`, and tolerates `NUL` / DOS-EOF padding after the JSON
+payload. `EnumTypes` and integer-valued `Kind` fields from newer BC versions are
+handled transparently.
+
+---
+
+## Debugging
+
+The DAP server in `al-lsp` can operate in two modes:
+
+**Native** — `al-dap-client` talks directly to Business Central via REST and a
+SignalR WebSocket hub (`DebuggerHub`). The hub methods (`Attach`, `AddBreakpoint`,
+`GetStackTrace`, `GetVariables`, `ExpandNode`, `GetSource`, `StopDebugging`,
+`TerminateSession`, etc.) are reverse-engineered from
+`EditorServices.Protocol.dll`. No Microsoft binary is required at runtime.
+
+**Proxy** — `DapClient` spawns Microsoft's `EditorServices.Host` as a subprocess
+and routes DAP messages through its stdio. The wrapper injects `seq` fields
+omitted by the upstream adapter and normalises string-valued launch arguments
+(`breakOnError`, `breakOnRecordWrite`) to booleans.
+
+Snapshot debugging (`.alvsc`) and CPU profiling (`.alcpuprofile`) are **separate**
+from the interactive debugger: they drive BC server-side data collection via
+REST and then analyse the downloaded artefact offline. Hotspot results can be
+surfaced as inlay hints in the editor (`profiler-hints` query).
+
+The `init-debug` command generates a `.zed/debug.json` with launch configurations
+keyed from `app.json` and `launch.json` if present.
+
+---
+
+## Tree-sitter grammar
+
+`tree-sitter-al/` is a git submodule with its own generation pipeline. The short
+version: **never hardcode AL keywords, built-ins, or object types in Rust**.
+Everything lives in JSON under `tree-sitter-al/data/` and is loaded at runtime
+by `al_syntax::LanguageData`.
+
+### Layout
+
+```
+tree-sitter-al/
+├── grammar.js                     # hand-authored; keyword terminals come from data/
+├── queries/
+│   ├── highlights.scm
+│   ├── locals.scm
+│   ├── indents.scm
+│   ├── folds.scm
+│   ├── outline.scm
+│   ├── textobjects.scm
+│   └── brackets.scm
+├── data/                          # embedded into al-syntax via include_str!
+│   ├── keywords.json              # control, object, type, operator, metadata, property
+│   ├── builtin_functions.json     # 81 global built-ins with signatures
+│   ├── object_types.json          # table, page, codeunit, report, ...
+│   ├── implicit_variables.json    # Rec, xRec, CurrPage, etc.
+│   ├── runtime_enums.json
+│   ├── page_controls.json
+│   ├── single_stmt_openers.json
+│   └── token_classification.json
+├── src/                           # GENERATED — parser.c, scanner.c, keywords.c
+├── bindings/                      # GENERATED
+├── generator/
+│   └── tools/
+│       ├── al-gen/                # Rust: generates grammar.js keywords + queries
+│       └── al-extract/            # C#: extracts signatures from Microsoft DLLs
+└── tests/fixtures/{valid,invalid}/
+```
+
+### Regeneration pipeline
+
+1. `al-extract` (C#) reflects Microsoft's `Microsoft.Dynamics.Nav.CodeAnalysis.dll`
+   to produce `builtin_functions.json`, `runtime_enums.json`, and
+   `implicit_variables.json`.
+2. `al-gen` (Rust) reads `alsyntax.tmlanguage` from the same AL extension, emits
+   `src/keywords.c`, the keyword terminals in `grammar.js`, and the captures in
+   `queries/highlights.scm`.
+3. `tree-sitter generate` compiles `grammar.js` into `src/parser.c`.
+
+### Submodule workflow
+
+When you change anything in `tree-sitter-al/`:
+
+```sh
+cd tree-sitter-al
+git add -A && git commit -m "..." && git push
+cd ..
+git add tree-sitter-al
+git commit -m "chore: bump tree-sitter-al submodule"
+```
+
+Do not edit `src/` or `bindings/` directly — they are regenerated and your
+changes will be lost on the next run.
+
+### Known limitation
+
+The grammar's `braced_block` does not include `trigger_declaration`, so triggers
+inside `key(...)` and a few action-tree positions are not visible via the clean
+AST. `TypeResolver::collect_action_trigger_vars` in `al-syntax` does a
+text-based backward scan to recover trigger-local variables. Fixing this
+properly requires a grammar change; do not paper over it elsewhere.
+
+---
 
 ## Development
 
 ```sh
-cargo check --workspace --exclude zed-al    # compile check
-cargo test --workspace --exclude zed-al     # run all tests
-cargo clippy --workspace --exclude zed-al -- -D warnings  # lint
-cargo fmt --all                              # format
+cargo check   --workspace --exclude zed-al
+cargo build   --workspace --exclude zed-al
+cargo test    --workspace --exclude zed-al
+cargo clippy  --workspace --exclude zed-al -- -D warnings
+cargo fmt --all
+
+cargo test -p al-core                           # single crate
+cargo test -p al-test-harness --test e2e        # single test file
+cargo test -p al-test-harness --test e2e  name  # single test
 ```
 
-Always exclude `zed-al` from workspace commands -- it requires `wasm32-wasip1` and will fail on the default target.
+Always exclude `zed-al` from workspace commands — it only builds for
+`wasm32-wasip1`. `cargo build -p zed-al --target wasm32-wasip1 --release`
+produces the WASM extension (`target/wasm32-wasip1/release/zed_al.wasm`).
+
+Runtime logs:
+- stderr, gated by `RUST_LOG` (`RUST_LOG=al_core=debug,al_lsp=debug`)
+- `~/.local/share/al-lsp/logs/al-lsp.log` at INFO level, always on
+
+`al-lsp` monitors its parent process and exits when the parent dies, so stale
+servers do not accumulate when Zed is force-killed.
+
+---
+
+## Testing
+
+Three layers of tests:
+
+| Layer | Location | What it covers |
+|-------|----------|----------------|
+| Unit | inside each crate | pure functions, parsers, formatters |
+| Integration | `crates/al-lsp/tests/integration.rs` | al-syntax + al-symbols + handler logic, no transport |
+| E2E (stdio) | `crates/al-test-harness/tests/*.rs` | spawns the real `al-lsp` binary, drives LSP over stdio |
+| E2E (Zed IDE) | `crates/al-zed-test/` | drives a live Zed window on Wayland/Hyprland |
+
+The `al-test-harness` picks up the `al-lsp` binary in this order:
+`target/debug/al-lsp` → `target/release/al-lsp` → `$PATH`. The default fixture
+is `crates/al-test-harness/data/test_al_project/`. Override the init timeout
+with `AL_TEST_INIT_TIMEOUT` (seconds, default 60); point at a different project
+with `AL_TEST_PROJECT_PATH`.
+
+Harness test files:
+
+```
+e2e.rs                core LSP feature coverage
+regression.rs         known-bug regressions
+real_world.rs         large real AL files
+zed_fidelity.rs       parity with Zed's editor behaviour
+zed_simulation.rs     end-to-end Zed workflows (skipped without AL_TEST_PROJECT_PATH)
+completeness.rs       feature-matrix coverage
+data_driven.rs        table-driven cases
+edit_lifecycle.rs     open / change / close
+integration_full.rs   multi-feature integration scenarios
+performance.rs        latency budgets
+transport.rs          JSON-RPC framing
+```
+
+`al-zed-test` is a Linux-only crate that drives a real Zed window via
+`hyprctl`, `wtype`, `grim`, `wl-copy`/`wl-paste`, `zeditor`, and optionally
+`tesseract` for OCR. It verifies the full stack — WASM extension, language
+server, Zed renderer — for features the stdio harness cannot reach.
+
+There are roughly 1,300 test annotations across the workspace. `AL_TEST_INIT_TIMEOUT`
+and `RUST_LOG` are the most-used test environment knobs.
+
+---
+
+## Continuous integration
+
+`.github/workflows/` has two workflows:
+
+- **ci.yml** — triggers on push and PRs targeting `main` / `dev`. Two jobs:
+  `ci` (matrix: Ubuntu, macOS, Windows) runs `cargo check`, the full test
+  suite with `AL_TEST_PROJECT_PATH=""` so the Zed-simulation suite is skipped,
+  `cargo clippy -D warnings`, and `cargo fmt --check`. `wasm` builds the
+  `zed-al` extension for `wasm32-wasip1` on Ubuntu.
+- **release.yml** — triggers on `v*` tags. Builds release binaries
+  (Linux x86_64, Linux aarch64 via `cross`, macOS x86_64, macOS aarch64,
+  Windows x86_64), the WASM extension, and creates a GitHub release with
+  generated notes. Tags containing `-` are marked as pre-releases.
+
+---
+
+## Repository layout
+
+```
+.
+├── Cargo.toml            # workspace manifest; root crate is zed-al (cdylib)
+├── Makefile              # build / install / wasm / bridges / clean
+├── extension.toml        # Zed extension metadata (id: al, API version 0.8.0)
+├── CLAUDE.md             # rules for AI agents contributing to this repo
+├── crates/
+│   ├── al-core/          # queries, workspace, state
+│   ├── al-syntax/        # parser, formatter, type resolver
+│   ├── al-symbols/       # .app reader, NuGet, OAuth
+│   ├── al-semantic/      # .NET CLR bridge
+│   │   └── bridge/       # AlBridge.csproj + Bridge.cs
+│   ├── al-lsp/           # server binary (LSP / daemon / DAP)
+│   ├── al-dap-client/    # DAP client (native BC + proxy)
+│   ├── al-daemon-client/ # IPC types
+│   ├── al-cli/           # al
+│   ├── al-explorer/      # al-explorer
+│   ├── al-test-harness/  # stdio E2E test infrastructure
+│   └── al-zed-test/      # live-Zed E2E tests
+├── src/                  # zed-al WASM extension source (lib.rs, dap.rs, ...)
+├── tree-sitter-al/       # submodule: grammar + generators + data
+├── languages/al/         # Zed language config
+├── grammars/             # built grammar artefacts
+├── snippets/             # AL and launch.json snippets
+├── themes/               # Business Central theme
+├── schemas/              # JSON schemas (app.json, settings, etc.)
+├── scripts/              # bump-version.sh, DAP/SignalR capture helpers
+└── .github/workflows/    # ci.yml, release.yml
+```
+
+---
 
 ## License
 
-This project is not yet licensed for distribution.
+Source is available under the terms in [`LICENSE`](LICENSE). The repository is
+not yet licensed for redistribution via the Zed marketplace or elsewhere.
