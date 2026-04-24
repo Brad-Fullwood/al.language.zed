@@ -17,12 +17,10 @@ pub fn get_or_parse(
     documents: &DocumentStore,
     uri: &Url,
 ) -> Option<(Arc<String>, tree_sitter::Tree)> {
-    let text = documents.get_text_arc(uri);
-    if text.is_none() {
+    let Some(text) = documents.get_text_arc(uri) else {
         tracing::warn!(uri = %uri, "get_or_parse: document not in store (not opened?)");
         return None;
-    }
-    let text = text.unwrap();
+    };
     let version = documents.get_version(uri).unwrap_or(0);
 
     // Check cache first

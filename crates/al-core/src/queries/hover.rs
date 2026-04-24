@@ -14,6 +14,7 @@ pub struct HoverResult {
 }
 
 /// Get hover information at a position in a document.
+#[must_use]
 pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<HoverResult> {
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;

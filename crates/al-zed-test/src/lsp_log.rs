@@ -36,7 +36,9 @@ use crate::ZedTestError;
 ///
 /// `~/.local/share/al-lsp/logs/al-lsp.log`
 pub fn log_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/root".to_string());
     PathBuf::from(home)
         .join(".local")
         .join("share")
@@ -152,7 +154,7 @@ pub async fn since_offset(byte_offset: u64) -> Result<Vec<String>, ZedTestError>
         if n == 0 {
             break;
         }
-        lines.push(line.trim_end_matches('\n').to_string());
+        lines.push(line.trim_end().to_string());
     }
 
     Ok(lines)

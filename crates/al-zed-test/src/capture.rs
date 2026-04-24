@@ -77,7 +77,12 @@ pub async fn screenshot(zed: &ZedInstance) -> Result<Vec<u8>, ZedTestError> {
 /// - [`ZedTestError::Io`] — file could not be written
 pub async fn screenshot_to(zed: &ZedInstance, path: &Path) -> Result<(), ZedTestError> {
     let geometry = zed.grim_geometry();
-    let path_str = path.to_str().unwrap_or("");
+    let path_str = path.to_str().ok_or_else(|| {
+        ZedTestError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "screenshot path contains non-UTF-8 characters",
+        ))
+    })?;
 
     let status = tokio::process::Command::new("grim")
         .args(["-g", &geometry, path_str])

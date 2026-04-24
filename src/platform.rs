@@ -46,11 +46,14 @@ impl Platform {
 /// Detect the host platform from environment variables
 ///
 /// Strategy:
-/// 1. Primary: Check OSTYPE environment variable (set by bash/zsh)
-/// 2. Fallback 1: Check if HOME looks like a Windows path (starts with drive letter)
-/// 3. Fallback 2: Check if macOS system path exists
-/// 4. Default: Linux (development environment)
+/// 1. Primary: Check OSTYPE environment variable (bash/zsh only — not set in fish or other shells)
+/// 2. Fallback 1: Check Windows-specific env vars (USERPROFILE, HOMEDRIVE)
+/// 3. Fallback 2: Check if HOME looks like a Windows drive path (C:\...)
+/// 4. Fallback 3: Check if macOS system path exists
+/// 5. Default: Linux (development environment)
 pub fn detect_platform(env_map: &HashMap<String, String>) -> Platform {
+    // OSTYPE is a bash/zsh variable — may not be set in other shells (e.g., fish).
+    // Fallback chain handles this.
     if let Some(ostype) = env_map.get("OSTYPE") {
         let ostype_lower = ostype.to_lowercase();
         if ostype_lower.starts_with("darwin") {
@@ -81,7 +84,7 @@ pub fn detect_platform(env_map: &HashMap<String, String>) -> Platform {
         }
     }
 
-    // Path::exists() doesn't work in WASM — use std::fs::metadata()
+    // Using std::fs::metadata for WASI compatibility (may not be available in all WASI runtimes)
     if std::fs::metadata("/System/Library").is_ok() {
         return Platform::MacOS;
     }

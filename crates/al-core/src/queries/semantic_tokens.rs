@@ -35,6 +35,7 @@ impl From<al_syntax::SemanticToken> for SemanticToken {
 }
 
 /// Get semantic tokens for an entire document.
+#[must_use]
 pub fn semantic_tokens_full(workspace: &Workspace, uri: &Url) -> Vec<SemanticToken> {
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
         return Vec::new();

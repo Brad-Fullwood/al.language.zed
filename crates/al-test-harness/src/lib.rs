@@ -248,7 +248,7 @@ impl LspClient {
             },
             "workspaceFolders": [{
                 "uri": root_uri,
-                "name": self.root_path.file_name().unwrap().to_str().unwrap()
+                "name": self.root_path.file_name().and_then(|n| n.to_str()).unwrap_or("project")
             }]
         });
 

@@ -1,6 +1,6 @@
 //! CodeLens query — reference count lenses on procedure/method/event declarations.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use url::Url;
 
@@ -23,35 +23,74 @@ pub struct CodeLensEntry {
 /// - **Profiler lenses** — shown only when a `.alcpuprofile` is loaded into the
 ///   workspace; display self-time and hit count for the procedure
 ///   (e.g. `"⏱ 42ms · 3 calls"`).
+#[must_use]
 pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
         return vec![];
     };
 
     let symbols = al_syntax::extract_document_symbols(&tree, &text);
-    let mut lenses = Vec::new();
 
+    // Collect the names of all procedure symbols we need reference counts for.
+    // This avoids building the full reference map when there are no procedures.
+    let mut proc_names: Vec<String> = Vec::new();
     for sym in &symbols {
-        // Top-level symbols (objects) — recurse into children
         if let Some(children) = &sym.children {
             for child in children {
                 if super::is_procedure_symbol(child.kind.into()) {
-                    let count = count_references_by_name(workspace, uri, &child.name);
-                    let title = reference_label(count);
+                    proc_names.push(child.name.trim_matches('"').to_lowercase());
+                }
+            }
+        }
+        if super::is_procedure_symbol(sym.kind.into()) {
+            proc_names.push(sym.name.trim_matches('"').to_lowercase());
+        }
+    }
+
+    if proc_names.is_empty() {
+        // No procedure symbols — skip scanning, fall through to profiler lenses.
+        let profiler_lenses = {
+            let guard = workspace
+                .profiler_session
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(session) if session.is_active() => {
+                    super::profiler_hints::profiler_code_lenses(&session.hints, uri, &text, &tree)
+                }
+                _ => vec![],
+            }
+        };
+        return profiler_lenses;
+    }
+
+    // Build a workspace-wide reference count map in a single pass over all
+    // files: O(F + P) instead of O(P * F).
+    //
+    // Key: lowercased procedure name (AL identifiers are case-insensitive).
+    // Value: number of distinct (uri, line, col) positions referencing that name.
+    let ref_counts = build_reference_counts(workspace, uri);
+
+    let mut lenses = Vec::new();
+    for sym in &symbols {
+        if let Some(children) = &sym.children {
+            for child in children {
+                if super::is_procedure_symbol(child.kind.into()) {
+                    let key = child.name.trim_matches('"').to_lowercase();
+                    let count = ref_counts.get(&key).copied().unwrap_or(0);
                     lenses.push(CodeLensEntry {
                         range: child.selection_range.into(),
-                        title,
+                        title: reference_label(count),
                     });
                 }
             }
         }
-        // Also include top-level referenceable symbols (rare in AL, but complete)
         if super::is_procedure_symbol(sym.kind.into()) {
-            let count = count_references_by_name(workspace, uri, &sym.name);
-            let title = reference_label(count);
+            let key = sym.name.trim_matches('"').to_lowercase();
+            let count = ref_counts.get(&key).copied().unwrap_or(0);
             lenses.push(CodeLensEntry {
                 range: sym.selection_range.into(),
-                title,
+                title: reference_label(count),
             });
         }
     }
@@ -82,27 +121,52 @@ fn reference_label(count: usize) -> String {
     }
 }
 
-/// Count workspace-wide references to `name`, deduplicating by (uri, line, col).
-fn count_references_by_name(workspace: &Workspace, current_uri: &Url, name: &str) -> usize {
-    let mut seen: HashSet<(String, u32, u32)> = HashSet::new();
-    let clean_name = name.trim_matches('"');
+/// Build a map of lowercased procedure name → distinct reference count by
+/// scanning every file in the workspace exactly once.
+///
+/// Complexity: O(F) where F is the number of workspace files (times the work
+/// of walking each file's parse tree).  The caller then does O(P) lookups —
+/// total O(F + P) versus the previous O(P * F).
+fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<String, usize> {
+    // name_lower → set of (uri_string, line, col) to deduplicate locations
+    let mut seen: HashMap<String, std::collections::HashSet<(String, u32, u32)>> = HashMap::new();
 
-    // Search the current document
-    if let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, current_uri) {
+    /// Walk a single file's parse tree once, recording every identifier node
+    /// into `seen` keyed by its lowercased text.
+    fn record_file(
+        uri_str: &str,
+        text: &str,
+        tree: &tree_sitter::Tree,
+        seen: &mut HashMap<String, std::collections::HashSet<(String, u32, u32)>>,
+    ) {
         let source_bytes = text.as_bytes();
-        let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-        for r in &refs {
-            let range = al_syntax::ts_range_to_lsp(r, source_bytes);
-            let key = (
-                current_uri.to_string(),
-                range.start.line,
-                range.start.character,
-            );
-            seen.insert(key);
-        }
+        al_syntax::walk_tree(tree.root_node(), &mut |node| {
+            if matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
+                if let Ok(node_text) = node.utf8_text(source_bytes) {
+                    let name_lower = node_text.trim_matches('"').to_lowercase();
+                    if name_lower.is_empty() {
+                        return;
+                    }
+                    let ts_range = node.range();
+                    let lsp_range = al_syntax::ts_range_to_lsp(&ts_range, source_bytes);
+                    let key = (
+                        uri_str.to_string(),
+                        lsp_range.start.line,
+                        lsp_range.start.character,
+                    );
+                    seen.entry(name_lower).or_default().insert(key);
+                }
+            }
+        });
     }
 
-    // Search all other workspace files
+    // Current (open) document — read from the document store.
+    if let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, current_uri) {
+        let uri_str = current_uri.to_string();
+        record_file(&uri_str, &text, &tree, &mut seen);
+    }
+
+    // All other workspace files — read from the file index cache.
     let current_path = current_uri.to_file_path().ok();
     for entry in workspace.file_index.files.iter() {
         let file_path = entry.key().clone();
@@ -112,22 +176,14 @@ fn count_references_by_name(workspace: &Workspace, current_uri: &Url, name: &str
         let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
             continue;
         };
-        let file_source_bytes = file_text.as_bytes();
-        let refs = al_syntax::find_variable_references(&file_tree, &file_text, clean_name);
-        for r in &refs {
-            if let Ok(file_uri) = Url::from_file_path(&file_path) {
-                let range = al_syntax::ts_range_to_lsp(r, file_source_bytes);
-                let key = (
-                    file_uri.to_string(),
-                    range.start.line,
-                    range.start.character,
-                );
-                seen.insert(key);
-            }
+        if let Ok(file_uri) = Url::from_file_path(&file_path) {
+            let uri_str = file_uri.to_string();
+            record_file(&uri_str, &file_text, &file_tree, &mut seen);
         }
     }
 
-    seen.len()
+    // Flatten: we only need the count, not the individual positions.
+    seen.into_iter().map(|(k, v)| (k, v.len())).collect()
 }
 
 // ---------------------------------------------------------------------------

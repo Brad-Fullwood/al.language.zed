@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 use dashmap::DashMap;
@@ -19,7 +19,13 @@ use crate::model::{ObjectKind, SymbolEntry};
 const MAX_HEADER_BYTES: usize = 256 * 1024;
 
 /// Cached source index per `.app` file.
+///
+/// Each entry is paired with a per-path `Mutex<()>` build guard so that
+/// concurrent callers for the **same** path serialise on building the index
+/// (double-checked locking) while callers for **different** paths remain
+/// independent.
 static SOURCE_INDEX_CACHE: OnceLock<DashMap<PathBuf, Arc<AppSourceIndex>>> = OnceLock::new();
+static SOURCE_BUILD_LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock::new();
 
 #[derive(Debug)]
 pub struct AppSourceIndex {
@@ -110,8 +116,37 @@ impl AppSourceIndex {
 }
 
 /// Get a cached index for the given `.app` path, rebuilding if the file changed.
+///
+/// Uses double-checked locking to avoid redundant builds under concurrent
+/// access: after acquiring the per-path build mutex a second staleness check
+/// is performed so that a thread that lost the race finds the already-built
+/// index and returns it immediately.
 pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     let cache = SOURCE_INDEX_CACHE.get_or_init(DashMap::new);
+
+    // --- First check (no lock) ---
+    if let Some(existing) = cache.get(app_path) {
+        if let Ok(meta) = std::fs::metadata(app_path) {
+            let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            if existing.modified == modified {
+                return Ok(existing.value().clone());
+            }
+        }
+    }
+
+    // --- Serialise concurrent builds for this specific path ---
+    let build_locks = SOURCE_BUILD_LOCKS.get_or_init(DashMap::new);
+    let lock_arc = {
+        // Avoid holding the DashMap shard lock while we await the build mutex.
+        build_locks
+            .entry(app_path.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .value()
+            .clone()
+    };
+    let _guard = lock_arc.lock().unwrap_or_else(|e| e.into_inner());
+
+    // --- Second check (under lock) ---
     if let Some(existing) = cache.get(app_path) {
         if let Ok(meta) = std::fs::metadata(app_path) {
             let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -124,6 +159,19 @@ pub fn get_or_build(app_path: &Path) -> io::Result<Arc<AppSourceIndex>> {
     let built = Arc::new(AppSourceIndex::from_app_path(app_path)?);
     cache.insert(app_path.to_path_buf(), built.clone());
     Ok(built)
+}
+
+/// Clear all cached source indices, freeing memory.
+///
+/// Callers should invoke this when switching projects or when cached `.app`
+/// files are no longer needed.
+pub fn clear_source_index_cache() {
+    if let Some(cache) = SOURCE_INDEX_CACHE.get() {
+        cache.clear();
+    }
+    if let Some(locks) = SOURCE_BUILD_LOCKS.get() {
+        locks.clear();
+    }
 }
 
 fn parse_object_header(bytes: &[u8]) -> Option<(ObjectKind, i32, String)> {

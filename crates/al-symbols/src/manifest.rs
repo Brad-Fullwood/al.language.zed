@@ -58,7 +58,7 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
                             attr.map_err(|e| ManifestError::InvalidAttribute(format!("{e}")))?;
                         let local = attr.key.local_name();
                         let key = std::str::from_utf8(local.as_ref())?;
-                        let val = std::str::from_utf8(&attr.value)?;
+                        let val = attr.unescape_value().map_err(ManifestError::Xml)?;
                         match key {
                             "Id" => app_id = Some(val.to_string()),
                             "Name" => name = Some(val.to_string()),

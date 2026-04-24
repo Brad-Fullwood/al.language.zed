@@ -45,6 +45,7 @@ pub struct ObsoleteEntry {
 }
 
 /// Find all obsolete symbols in the workspace files.
+#[must_use]
 pub fn obsolescence_timeline(workspace: &Workspace) -> Vec<ObsoleteEntry> {
     let mut results = Vec::new();
 
@@ -152,53 +153,47 @@ fn scan_file_for_obsolete(
 fn scan_procedures_for_obsolete(
     file_path: &str,
     _file_text: &str,
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     object_name: &str,
     all_files: &[(&str, &str, &tree_sitter::Tree)],
     results: &mut Vec<ObsoleteEntry>,
 ) {
-    if matches!(
-        node.kind(),
-        "procedure_declaration" | "event_procedure_declaration"
-    ) {
-        if let Some(obs) = extract_obsolete_from_preceding_attr(node, source) {
-            let name = node
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("(unknown)")
-                .trim_matches('"')
-                .to_string();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind(),
+            "procedure_declaration" | "event_procedure_declaration"
+        ) {
+            if let Some(obs) = extract_obsolete_from_preceding_attr(node, source) {
+                let name = node
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .unwrap_or("(unknown)")
+                    .trim_matches('"')
+                    .to_string();
 
-            let line = node.start_position().row as u32 + 1;
-            let caller_count = count_references_in_files(all_files, &name);
+                let line = node.start_position().row as u32 + 1;
+                let caller_count = count_references_in_files(all_files, &name);
 
-            results.push(ObsoleteEntry {
-                object: object_name.to_string(),
-                symbol: name,
-                kind: "procedure".to_string(),
-                state: obs.0,
-                reason: obs.1,
-                tag: obs.2,
-                file: Some(file_path.to_string()),
-                line: Some(line),
-                caller_count,
-            });
+                results.push(ObsoleteEntry {
+                    object: object_name.to_string(),
+                    symbol: name,
+                    kind: "procedure".to_string(),
+                    state: obs.0,
+                    reason: obs.1,
+                    tag: obs.2,
+                    file: Some(file_path.to_string()),
+                    line: Some(line),
+                    caller_count,
+                });
+            }
+            // Do not recurse into procedure body
+            continue;
         }
-        return;
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        scan_procedures_for_obsolete(
-            file_path,
-            _file_text,
-            child,
-            source,
-            object_name,
-            all_files,
-            results,
-        );
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
 }
 

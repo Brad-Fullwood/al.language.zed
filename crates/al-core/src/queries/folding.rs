@@ -6,6 +6,7 @@ use crate::workspace::Workspace;
 
 /// Get folding ranges for a document.
 /// Returns tower-lsp FoldingRange directly since al-syntax produces that type.
+#[must_use]
 pub fn folding_ranges(
     workspace: &Workspace,
     uri: &Url,

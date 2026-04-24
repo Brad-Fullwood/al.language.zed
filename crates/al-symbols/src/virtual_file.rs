@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -29,12 +30,25 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
 
     ensure_readonly_settings(&cache_root);
 
-    if !file_path.exists() {
-        let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
-        let source = extracted.unwrap_or_else(|| render_outline(entry));
-
+    // Use create_new to atomically create the file, avoiding a TOCTOU race.
+    // If another thread/process already created it, AlreadyExists is fine.
+    {
         fs::create_dir_all(&pkg_dir)?;
-        fs::write(&file_path, &source)?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file_path)
+        {
+            Ok(mut f) => {
+                let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
+                let source = extracted.unwrap_or_else(|| render_outline(entry));
+                f.write_all(source.as_bytes())?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Another thread already wrote the file; use what's there.
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     enforce_readonly(&file_path);

@@ -83,6 +83,7 @@ fn parse_parameters_from_detail(detail: &str) -> Vec<SignatureParameterInfo> {
 }
 
 /// Get signature help at a position (inside a function call).
+#[must_use]
 pub fn signature_help(
     workspace: &Workspace,
     uri: &Url,
@@ -246,10 +247,7 @@ fn resolve_receiver_signature(
 
     let obj_key = subtype.to_lowercase();
     let file_path = workspace.file_index.objects.get(&obj_key)?.value().clone();
-    // Use cached parse tree — avoids re-parsing on every signature-help request.
-    let (file_text, file_tree) = workspace.file_index.get_cached_parse(&file_path)?;
-
-    let doc_symbols = al_syntax::extract_document_symbols(&file_tree, &file_text);
+    let doc_symbols = workspace.file_index.get_cached_symbols(&file_path)?;
     for sym in &doc_symbols {
         if let Some(children) = &sym.children {
             for child in children {

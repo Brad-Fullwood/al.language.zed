@@ -134,9 +134,9 @@ async fn browser_auth_flow(
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
     // Generate PKCE
-    let verifier = generate_code_verifier();
+    let verifier = generate_code_verifier()?;
     let challenge = pkce_challenge(&verifier);
-    let state = generate_random_string(16);
+    let state = generate_random_string(16)?;
 
     // Start local server on random port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -426,6 +426,19 @@ async fn device_code_flow(
             return Ok(resp.json().await?);
         }
 
+        // Handle HTTP 429 Too Many Requests before attempting to parse the body.
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(Duration::from_secs)
+                .unwrap_or_else(|| interval * 2);
+            interval = retry_after;
+            continue;
+        }
+
         let body = resp.text().await.unwrap_or_default();
         let err: TokenErrorResponse = match serde_json::from_str(&body) {
             Ok(e) => e,
@@ -485,9 +498,9 @@ async fn refresh_token_flow(
 // PKCE helpers
 // ---------------------------------------------------------------------------
 
-fn generate_code_verifier() -> String {
-    let bytes = random_bytes(32);
-    base64url_encode(&bytes)
+fn generate_code_verifier() -> Result<String, OAuthError> {
+    let bytes = random_bytes(32)?;
+    Ok(base64url_encode(&bytes))
 }
 
 fn pkce_challenge(verifier: &str) -> String {
@@ -495,21 +508,24 @@ fn pkce_challenge(verifier: &str) -> String {
     base64url_encode(&hash)
 }
 
-fn generate_random_string(len: usize) -> String {
+fn generate_random_string(len: usize) -> Result<String, OAuthError> {
     const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let bytes = random_bytes(len);
-    bytes
+    let bytes = random_bytes(len)?;
+    Ok(bytes
         .iter()
         .map(|b| CHARS[(*b as usize) % CHARS.len()] as char)
-        .collect()
+        .collect())
 }
 
 /// Generate `n` cryptographically random bytes using the OS entropy source.
 /// Uses `getrandom` which works on Linux, macOS, Windows, and WASM.
-fn random_bytes(n: usize) -> Vec<u8> {
+fn random_bytes(n: usize) -> Result<Vec<u8>, OAuthError> {
     let mut buf = vec![0u8; n];
-    getrandom::getrandom(&mut buf).expect("failed to get random bytes");
-    buf
+    getrandom::getrandom(&mut buf).map_err(|e| OAuthError::Protocol {
+        error: "getrandom_failed".to_string(),
+        description: format!("Failed to get random bytes: {e}"),
+    })?;
+    Ok(buf)
 }
 
 /// Base64url encoding without padding (RFC 7636).
@@ -788,7 +804,7 @@ mod tests {
 
     #[test]
     fn pkce_verifier_and_challenge() {
-        let verifier = generate_code_verifier();
+        let verifier = generate_code_verifier().expect("random bytes available in test");
         assert!(verifier.len() >= 43); // 32 bytes → 43 base64url chars
         let challenge = pkce_challenge(&verifier);
         assert!(challenge.len() >= 43);

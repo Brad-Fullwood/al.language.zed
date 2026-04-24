@@ -65,37 +65,39 @@ fn scan_file_for_sql_patterns(
 }
 
 fn scan_procedures(
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     file_path: &str,
     object_name: &str,
     violations: &mut Vec<SqlPatternViolation>,
 ) {
-    if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-        let proc_name = node
-            .child_by_field_name("name")
-            .and_then(|n| n.utf8_text(source).ok())
-            .unwrap_or("(unknown)")
-            .trim_matches('"')
-            .to_string();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
+            let proc_name = node
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(source).ok())
+                .unwrap_or("(unknown)")
+                .trim_matches('"')
+                .to_string();
 
-        if let Ok(proc_text) = node.utf8_text(source) {
-            let start_line = node.start_position().row as u32 + 1;
-            analyze_proc_text(
-                proc_text,
-                start_line,
-                file_path,
-                object_name,
-                &proc_name,
-                violations,
-            );
+            if let Ok(proc_text) = node.utf8_text(source) {
+                let start_line = node.start_position().row as u32 + 1;
+                analyze_proc_text(
+                    proc_text,
+                    start_line,
+                    file_path,
+                    object_name,
+                    &proc_name,
+                    violations,
+                );
+            }
+            // Do not recurse into procedure body
+            continue;
         }
-        return;
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        scan_procedures(child, source, file_path, object_name, violations);
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
 }
 

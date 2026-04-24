@@ -187,7 +187,9 @@ pub(super) fn dispatch_format(
         if let Some(uri) = file_uri_from_params(params) {
             if let Ok(path) = uri.to_file_path() {
                 if changed {
-                    if let Err(e) = std::fs::write(&path, &formatted) {
+                    if let Err(e) =
+                        tokio::task::block_in_place(|| std::fs::write(&path, &formatted))
+                    {
                         return rpc_error(
                             id,
                             -32000,
@@ -1436,15 +1438,17 @@ pub(super) async fn dispatch_xlf_refresh(
         xlf_path
             .parent()
             .and_then(|dir| {
-                std::fs::read_dir(dir)
-                    .ok()?
-                    .filter_map(|e| e.ok())
-                    .find(|e| {
-                        let name = e.file_name();
-                        let s = name.to_string_lossy();
-                        s.ends_with(".g.xlf")
-                    })
-                    .map(|e| e.path())
+                tokio::task::block_in_place(|| {
+                    std::fs::read_dir(dir)
+                        .ok()?
+                        .filter_map(|e| e.ok())
+                        .find(|e| {
+                            let name = e.file_name();
+                            let s = name.to_string_lossy();
+                            s.ends_with(".g.xlf")
+                        })
+                        .map(|e| e.path())
+                })
             })
             .unwrap_or_else(|| xlf_path.with_extension("g.xlf"))
     };
@@ -1485,7 +1489,7 @@ pub(super) async fn dispatch_xlf_refresh(
         .trim_end_matches(".g")
         .to_string();
     let new_xlf = al_core::xliff::generate_xliff(&app_name, "en-US", "en-US", &updated_units);
-    if let Err(e) = std::fs::write(&xlf_path, new_xlf) {
+    if let Err(e) = tokio::task::block_in_place(|| std::fs::write(&xlf_path, new_xlf)) {
         return rpc_error(
             id,
             al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
@@ -1519,7 +1523,7 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
             "'xlf' must be an absolute path",
         );
     }
-    let xlf_content = match std::fs::read_to_string(xlf_path) {
+    let xlf_content = match tokio::task::block_in_place(|| std::fs::read_to_string(xlf_path)) {
         Ok(c) => c,
         Err(e) => {
             return rpc_error(
@@ -1575,7 +1579,7 @@ pub(super) async fn dispatch_xlf_suggest(
         );
     }
 
-    let xlf_content = match std::fs::read_to_string(xlf_path) {
+    let xlf_content = match tokio::task::block_in_place(|| std::fs::read_to_string(xlf_path)) {
         Ok(c) => c,
         Err(e) => {
             return rpc_error(
@@ -2133,7 +2137,7 @@ pub(super) fn dispatch_deps_graph(
         .try_read()
         .ok()
         .and_then(|p| p.as_ref().map(|p| p.root.join("app.json")))
-        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|path| tokio::task::block_in_place(|| std::fs::read_to_string(path)).ok())
         .unwrap_or_default();
 
     // Build package list from loaded symbols — name, publisher, version, deps
@@ -2297,7 +2301,7 @@ pub(super) fn dispatch_sort_members(
     if changed && !dry_run {
         if let Some(uri) = file_uri_from_params(params) {
             if let Ok(path) = uri.to_file_path() {
-                let _ = std::fs::write(&path, &sorted);
+                let _ = tokio::task::block_in_place(|| std::fs::write(&path, &sorted));
                 workspace.documents.open(uri, sorted.clone());
             }
         }
@@ -2364,7 +2368,7 @@ pub(super) fn dispatch_organize_files(
         let new_path = path.parent().unwrap_or(&root).join(&expected_name);
 
         let renamed = if !dry_run {
-            std::fs::rename(&path, &new_path).is_ok()
+            tokio::task::block_in_place(|| std::fs::rename(&path, &new_path)).is_ok()
         } else {
             false
         };

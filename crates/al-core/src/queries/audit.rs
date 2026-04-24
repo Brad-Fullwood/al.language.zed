@@ -48,6 +48,7 @@ pub struct DataClassificationEntry {
 }
 
 /// Enumerate all table fields in workspace and report their DataClassification.
+#[must_use]
 pub fn data_classification_audit(workspace: &Workspace) -> Vec<DataClassificationEntry> {
     let mut results = Vec::new();
 
@@ -121,7 +122,9 @@ fn scan_table_fields(
             }
 
             if ctx.brace_depth <= 0 {
-                let ctx = stack.pop().unwrap();
+                let Some(ctx) = stack.pop() else {
+                    continue;
+                };
                 let classification = ctx
                     .classification
                     .clone()

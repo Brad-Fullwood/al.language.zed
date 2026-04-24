@@ -22,14 +22,23 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 /// directory can be determined (e.g. non-Linux, non-XDG environment without
 /// `/proc`).
 pub fn socket_path(project_root: &Path) -> Option<PathBuf> {
+    socket_path_with_runtime_dir(project_root, runtime_dir()?)
+}
+
+/// Like `socket_path` but accepts an explicit runtime directory.
+/// Useful for testing without modifying environment variables.
+pub fn socket_path_with_runtime_dir(
+    project_root: &Path,
+    runtime_dir: impl AsRef<str>,
+) -> Option<PathBuf> {
     let canonical = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
     let hash = format!("{:016x}", fnv1a64(canonical.as_os_str().as_encoded_bytes()));
-    let runtime_dir = runtime_dir()?;
     Some(PathBuf::from(format!(
         "{}/al-lsp/{}.sock",
-        runtime_dir, hash
+        runtime_dir.as_ref(),
+        hash
     )))
 }
 
@@ -71,41 +80,31 @@ mod tests {
 
     #[test]
     fn socket_path_is_deterministic() {
-        // Ensure XDG_RUNTIME_DIR is set so socket_path returns Some.
-        std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
         let p = Path::new("/tmp");
-        let path1 = socket_path(p).expect("socket_path returned None with XDG_RUNTIME_DIR set");
-        let path2 = socket_path(p).expect("socket_path returned None with XDG_RUNTIME_DIR set");
+        let path1 = socket_path_with_runtime_dir(p, "/tmp")
+            .expect("socket_path_with_runtime_dir returned None");
+        let path2 = socket_path_with_runtime_dir(p, "/tmp")
+            .expect("socket_path_with_runtime_dir returned None");
         assert_eq!(path1, path2);
-        assert!(path1.to_str().unwrap().ends_with(".sock"));
-        let filename = path1.file_name().unwrap().to_str().unwrap();
-        let hash_part = filename.strip_suffix(".sock").unwrap();
+        assert!(path1.to_str().expect("valid UTF-8").ends_with(".sock"));
+        let filename = path1
+            .file_name()
+            .expect("has filename")
+            .to_str()
+            .expect("valid UTF-8");
+        let hash_part = filename.strip_suffix(".sock").expect("ends with .sock");
         assert_eq!(hash_part.len(), 16);
         assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
-    fn socket_path_returns_none_without_runtime_dir() {
-        // Temporarily clear XDG_RUNTIME_DIR and check behaviour.
-        // On Linux with /proc/self/status, the fallback may still succeed;
-        // on other platforms it must return None.
-        let saved = std::env::var("XDG_RUNTIME_DIR").ok();
-        std::env::remove_var("XDG_RUNTIME_DIR");
-
-        let result = socket_path(Path::new("/tmp"));
-
-        // Restore
-        if let Some(v) = saved {
-            std::env::set_var("XDG_RUNTIME_DIR", v);
-        }
-
-        // On Linux we may get Some from /proc fallback; on other OSes expect None.
-        #[cfg(not(target_os = "linux"))]
-        assert!(
-            result.is_none(),
-            "Expected None without XDG_RUNTIME_DIR on non-Linux"
-        );
-        #[cfg(target_os = "linux")]
-        let _ = result; // either outcome is valid depending on /proc availability
+    fn socket_path_different_runtime_dirs_differ() {
+        let p = Path::new("/tmp");
+        let path_a = socket_path_with_runtime_dir(p, "/run/user/1000").expect("returns Some");
+        let path_b = socket_path_with_runtime_dir(p, "/run/user/1001").expect("returns Some");
+        // Same project hash but different parent directories
+        assert_ne!(path_a, path_b);
+        assert!(path_a.starts_with("/run/user/1000/al-lsp/"));
+        assert!(path_b.starts_with("/run/user/1001/al-lsp/"));
     }
 }

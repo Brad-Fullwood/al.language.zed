@@ -6,6 +6,7 @@ use super::{Location, Position, Range};
 use crate::workspace::Workspace;
 
 /// Find all references to the symbol at the given position.
+#[must_use]
 pub fn references(
     workspace: &Workspace,
     uri: &Url,

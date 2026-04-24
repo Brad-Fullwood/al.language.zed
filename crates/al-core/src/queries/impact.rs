@@ -62,6 +62,7 @@ pub struct ImpactEntry {
 /// - A qualified procedure: `"Sales-Post.PostDocument"`
 ///
 /// Returns a list of impact entries describing how each consumer references the symbol.
+#[must_use]
 pub fn impact(workspace: &Workspace, symbol: &str) -> Vec<ImpactEntry> {
     let (object_part, member_part) = parse_symbol(symbol);
     let mut results = Vec::new();

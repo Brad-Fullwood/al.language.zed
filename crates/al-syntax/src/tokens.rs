@@ -191,99 +191,74 @@ pub fn extract_semantic_tokens(tree: &Tree, text: &str) -> Vec<SemanticToken> {
     tokens
 }
 
-/// Recursively collect tokens from the AST.
+/// Build a table of byte offsets for the start of each line in `source`.
+/// `line_starts[i]` is the byte offset of the first byte on line `i`.
+fn build_line_starts(source: &[u8]) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(
+            source
+                .iter()
+                .enumerate()
+                .filter(|(_, &b)| b == b'\n')
+                .map(|(i, _)| i + 1),
+        )
+        .collect()
+}
+
+/// Return the content of a single line from `source` using the precomputed
+/// `line_starts` table.  Returns an empty slice if `row` is out of range.
+fn get_line<'a>(source: &'a [u8], line_starts: &[usize], row: usize) -> &'a [u8] {
+    let Some(&start) = line_starts.get(row) else {
+        return &[];
+    };
+    let end = line_starts.get(row + 1).copied().unwrap_or(source.len());
+    &source[start..end]
+}
+
+/// Collect tokens from the AST using an iterative DFS traversal.
 fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u32)>) {
-    let kind = node.kind();
+    // Pre-build line offsets once so every per-token line lookup is O(1).
+    let line_starts = build_line_starts(source);
 
-    // Classify this node
-    if let Some(token_type) = classify_node(kind, node, source) {
-        let start = node.start_position();
-        let end = node.end_position();
-
-        // For single-line tokens, emit directly
-        if start.row == end.row {
-            // tree-sitter columns are byte offsets; LSP requires UTF-16 code unit offsets.
-            let line_str = source
-                .split(|&b| b == b'\n')
-                .nth(start.row)
-                .and_then(|l| std::str::from_utf8(l).ok())
-                .unwrap_or("");
-            let utf16_col = crate::byte_col_to_utf16_col(line_str, start.column);
-            let utf16_end = crate::byte_col_to_utf16_col(line_str, end.column);
-            let len = utf16_end.saturating_sub(utf16_col);
-            if len > 0 {
-                tokens.push((start.row as u32, utf16_col, len, token_type));
-            }
-        } else {
-            // Multi-line tokens (e.g., block comments, multi-line strings):
-            // emit one entry per line, converting byte offsets to UTF-16 columns.
-            if let Ok(text) = node.utf8_text(source) {
-                for (i, line) in text.lines().enumerate() {
-                    let row = start.row + i;
-                    // For the first line, the start column is a byte offset from tree-sitter.
-                    // For subsequent lines, col is 0 (start of line).
-                    let byte_col = if i == 0 { start.column } else { 0 };
-                    let source_line = source
-                        .split(|&b| b == b'\n')
-                        .nth(row)
-                        .and_then(|l| std::str::from_utf8(l).ok())
-                        .unwrap_or(line);
-                    let utf16_col = crate::byte_col_to_utf16_col(source_line, byte_col);
-                    let utf16_len = line.encode_utf16().count() as u32;
-                    if utf16_len > 0 {
-                        tokens.push((row as u32, utf16_col, utf16_len, token_type));
-                    }
-                }
-            }
-        }
-        // Don't recurse into classified nodes (they are leaves conceptually)
-        return;
-    }
-
-    // Iteratively visit children
     let mut stack = Vec::new();
-    for i in (0..node.child_count()).rev() {
-        if let Some(child) = node.child(i) {
-            stack.push(child);
-        }
-    }
+    stack.push(node);
+
     while let Some(current) = stack.pop() {
         let kind = current.kind();
         if let Some(token_type) = classify_node(kind, current, source) {
             let start = current.start_position();
             let end = current.end_position();
+
             if start.row == end.row {
-                let line_str = source
-                    .split(|&b| b == b'\n')
-                    .nth(start.row)
-                    .and_then(|l| std::str::from_utf8(l).ok())
-                    .unwrap_or("");
+                // Single-line token: convert byte column to UTF-16 column.
+                let line_bytes = get_line(source, &line_starts, start.row);
+                let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
                 let utf16_col = crate::byte_col_to_utf16_col(line_str, start.column);
                 let utf16_end = crate::byte_col_to_utf16_col(line_str, end.column);
                 let len = utf16_end.saturating_sub(utf16_col);
                 if len > 0 {
                     tokens.push((start.row as u32, utf16_col, len, token_type));
                 }
-            } else if let Ok(text) = current.utf8_text(source) {
-                for (i, line) in text.lines().enumerate() {
-                    let row = start.row + i;
-                    let byte_col = if i == 0 { start.column } else { 0 };
-                    let source_line = source
-                        .split(|&b| b == b'\n')
-                        .nth(row)
-                        .and_then(|l| std::str::from_utf8(l).ok())
-                        .unwrap_or(line);
-                    let utf16_col = crate::byte_col_to_utf16_col(source_line, byte_col);
-                    let utf16_len = line.encode_utf16().count() as u32;
-                    if utf16_len > 0 {
-                        tokens.push((row as u32, utf16_col, utf16_len, token_type));
+            } else {
+                // Multi-line token (block comment, multi-line string): one entry per line.
+                if let Ok(text) = current.utf8_text(source) {
+                    for (i, line) in text.lines().enumerate() {
+                        let row = start.row + i;
+                        let byte_col = if i == 0 { start.column } else { 0 };
+                        let line_bytes = get_line(source, &line_starts, row);
+                        let source_line = std::str::from_utf8(line_bytes).unwrap_or(line);
+                        let utf16_col = crate::byte_col_to_utf16_col(source_line, byte_col);
+                        let utf16_len = line.encode_utf16().count() as u32;
+                        if utf16_len > 0 {
+                            tokens.push((row as u32, utf16_col, utf16_len, token_type));
+                        }
                     }
                 }
             }
-            // Don't push children of classified nodes
+            // Don't push children of classified nodes.
             continue;
         }
-        // Push children in reverse order for left-to-right DFS
+        // Push children in reverse order for left-to-right DFS.
         for i in (0..current.child_count()).rev() {
             if let Some(child) = current.child(i) {
                 stack.push(child);

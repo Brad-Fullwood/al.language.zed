@@ -57,6 +57,7 @@ fn single_edit_ws(uri: &Url, edits: Vec<TextEdit>) -> WorkspaceEdit {
 ///
 /// This handles diagnostic-independent source actions (doc comment, region).
 /// Diagnostic-based quick fixes are handled by `quick_fix_for_diagnostic`.
+#[must_use]
 pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<CodeActionEntry> {
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
@@ -591,7 +592,7 @@ fn source_action_if_to_case(
         return None;
     }
 
-    let var_name = common_var.unwrap();
+    let var_name = common_var?;
     let indent = detect_indent(text, if_node.start_position().row as u32);
     let inner_indent = format!("{}    ", indent);
     let body_indent = format!("{}        ", indent);
@@ -1096,43 +1097,42 @@ fn find_record_type_for_var(
 }
 
 fn find_record_type_recursive(
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     var_lower: &str,
 ) -> Option<String> {
-    let kind = node.kind();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let kind = node.kind();
 
-    if kind == "regular_variable_declaration" {
-        // Check if this is the variable we're looking for.
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(name_text) = name_node.utf8_text(source) {
-                let name_clean = name_text.trim_matches('"').trim();
-                if name_clean.to_lowercase() == *var_lower {
-                    // Extract Record type
-                    if let Some(type_node) = node.child_by_field_name("type") {
-                        return extract_record_subtype(type_node, source);
+        if kind == "regular_variable_declaration" {
+            // Check if this is the variable we're looking for.
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name_text) = name_node.utf8_text(source) {
+                    let name_clean = name_text.trim_matches('"').trim();
+                    if name_clean.to_lowercase() == *var_lower {
+                        // Extract Record type
+                        if let Some(type_node) = node.child_by_field_name("type") {
+                            return extract_record_subtype(type_node, source);
+                        }
+                    }
+                }
+            }
+        } else if kind == "parameter" {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name_text) = name_node.utf8_text(source) {
+                    let name_clean = name_text.trim_matches('"').trim();
+                    if name_clean.to_lowercase() == *var_lower {
+                        if let Some(type_node) = node.child_by_field_name("type") {
+                            return extract_record_subtype(type_node, source);
+                        }
                     }
                 }
             }
         }
-    } else if kind == "parameter" {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(name_text) = name_node.utf8_text(source) {
-                let name_clean = name_text.trim_matches('"').trim();
-                if name_clean.to_lowercase() == *var_lower {
-                    if let Some(type_node) = node.child_by_field_name("type") {
-                        return extract_record_subtype(type_node, source);
-                    }
-                }
-            }
-        }
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(found) = find_record_type_recursive(child, source, var_lower) {
-            return Some(found);
-        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
 
     None
@@ -1436,7 +1436,9 @@ fn substitute_field_names(line: &str, record_var: &str, field_names: &[String]) 
                 }
             }
             // Push one character and advance.
-            let ch = result[i..].chars().next().unwrap();
+            let Some(ch) = result[i..].chars().next() else {
+                break;
+            };
             output.push(ch);
             i += ch.len_utf8();
         }

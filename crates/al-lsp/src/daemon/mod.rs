@@ -27,7 +27,7 @@ use tokio::sync::{Mutex, Notify, Semaphore};
 static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Clean up the socket file (called from signal handlers or shutdown).
-pub fn cleanup_socket() {
+pub(crate) fn cleanup_socket() {
     if let Some(path) = SOCKET_PATH.get() {
         let _ = std::fs::remove_file(path);
         tracing::info!("daemon: socket cleaned up");
@@ -631,9 +631,9 @@ pub(crate) fn ensure_document(workspace: &Workspace, uri: &url::Url) -> Option<(
     if workspace.documents.get_text(uri).is_some() {
         return Some(());
     }
-    // Try to read from disk
+    // Try to read from disk (block_in_place avoids blocking the tokio runtime)
     let path = uri.to_file_path().ok()?; // SILENT: non-file URIs legitimately have no path
-    let content = std::fs::read_to_string(&path).ok()?; // SILENT: file read failure handled by returning None
+    let content = tokio::task::block_in_place(|| std::fs::read_to_string(&path)).ok()?;
     workspace.documents.open(uri.clone(), content);
     Some(())
 }

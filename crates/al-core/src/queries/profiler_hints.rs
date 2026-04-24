@@ -263,39 +263,43 @@ fn collect_procedure_locations(
 }
 
 fn collect_procs(
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     file_path: &str,
     object_name: &str,
     qualified: &mut std::collections::HashMap<(String, String), (String, u32)>,
     fallback: &mut std::collections::HashMap<String, (String, u32)>,
 ) {
-    if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(name_text) = name_node.utf8_text(source) {
-                let name = name_text.trim_matches('"').trim().to_string();
-                if !name.is_empty() {
-                    let line = node.start_position().row as u32 + 1; // 1-based
-                    let loc = (file_path.to_string(), line);
-                    // Qualified key: always insert (overwrites — last file wins per object,
-                    // which is fine since object names should be unique in a workspace).
-                    if !object_name.is_empty() {
-                        qualified
-                            .insert((object_name.to_string(), name.to_lowercase()), loc.clone());
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name_text) = name_node.utf8_text(source) {
+                    let name = name_text.trim_matches('"').trim().to_string();
+                    if !name.is_empty() {
+                        let line = node.start_position().row as u32 + 1; // 1-based
+                        let loc = (file_path.to_string(), line);
+                        // Qualified key: always insert (overwrites — last file wins per object,
+                        // which is fine since object names should be unique in a workspace).
+                        if !object_name.is_empty() {
+                            qualified.insert(
+                                (object_name.to_string(), name.to_lowercase()),
+                                loc.clone(),
+                            );
+                        }
+                        // Fallback: only the first occurrence (DashMap iteration is unordered,
+                        // so this remains non-deterministic for identically-named procs in
+                        // different objects — the qualified key should be used instead).
+                        fallback.entry(name.to_lowercase()).or_insert(loc);
                     }
-                    // Fallback: only the first occurrence (DashMap iteration is unordered,
-                    // so this remains non-deterministic for identically-named procs in
-                    // different objects — the qualified key should be used instead).
-                    fallback.entry(name.to_lowercase()).or_insert(loc);
                 }
             }
+            // Don't recurse into procedure body
+            continue;
         }
-        return; // Don't recurse into procedure body
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_procs(child, source, file_path, object_name, qualified, fallback);
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
 }
 

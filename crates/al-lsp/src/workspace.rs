@@ -143,7 +143,11 @@ pub(crate) async fn initialize_workspace(
     // Offer recommended settings on first open of an AL project.
     // Runs after workspace init but before diagnostics — same timing window
     // as the symbol download prompt, which Zed reliably displays.
-    if !settings_prompt_shown() && !zed_has_al_settings() {
+    let should_prompt =
+        tokio::task::spawn_blocking(|| !settings_prompt_shown() && !zed_has_al_settings())
+            .await
+            .unwrap_or(false);
+    if should_prompt {
         if let Ok(Some(action)) = client
             .show_message_request(
                 MessageType::INFO,
@@ -163,8 +167,8 @@ pub(crate) async fn initialize_workspace(
             .await
         {
             if action.title == "Yes" {
-                match apply_recommended_settings() {
-                    Ok(()) => {
+                match tokio::task::spawn_blocking(apply_recommended_settings).await {
+                    Ok(Ok(())) => {
                         client
                             .show_message(
                                 MessageType::INFO,
@@ -172,13 +176,16 @@ pub(crate) async fn initialize_workspace(
                             )
                             .await;
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         client
                             .show_message(
                                 MessageType::WARNING,
                                 format!("Failed to apply settings: {e}"),
                             )
                             .await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Settings task panicked: {e}");
                     }
                 }
             }
@@ -210,17 +217,16 @@ pub(crate) async fn initialize_workspace(
                     tokio::task::yield_now().await;
                 }
                 if let Ok(uri) = url::Url::from_file_path(&path) {
-                    if let Some(text_entry) = workspace.file_index.files.get(&path) {
-                        let text = text_entry.value().clone();
-                        drop(text_entry);
+                    // Use cached parse tree from file_index instead of re-parsing.
+                    if let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) {
                         let source = text.as_bytes();
-                        let parse_result = al_core::syntax::AlParser::parse_quick(&text);
+                        let errors = al_core::syntax::AlParser::errors_from_tree(&tree);
                         let mut lsp_diags = Vec::new();
-                        for err in &parse_result.errors {
+                        for err in &errors {
                             lsp_diags
                                 .push(crate::diagnostics::syntax_error_to_diagnostic(err, source));
                         }
-                        let lint_result = al_core::syntax::lint(&parse_result.tree, &text);
+                        let lint_result = al_core::syntax::lint(&tree, &text);
                         for lint in &lint_result {
                             if config.is_lint_rule_enabled(&lint.code) {
                                 lsp_diags

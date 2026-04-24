@@ -90,6 +90,7 @@ async fn test_clipboard_roundtrip() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_lsp_log_tail() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
     let log = zed.lsp_log_tail(10).await;
@@ -107,6 +108,7 @@ async fn test_lsp_log_tail() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_open_file_and_type() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
 
@@ -132,6 +134,7 @@ async fn test_open_file_and_type() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_send_keys_command_palette() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
     zed.focus().expect("focus");
@@ -155,6 +158,7 @@ async fn test_send_keys_command_palette() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_goto_line() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
 
@@ -179,6 +183,7 @@ async fn test_goto_line() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_trigger_completion() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
 
@@ -223,6 +228,7 @@ async fn test_trigger_completion() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_run_command() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
     zed.focus().expect("focus");
@@ -245,6 +251,7 @@ async fn test_run_command() {
 }
 
 #[tokio::test]
+#[ignore = "requires running Zed on Hyprland"]
 async fn test_ocr() {
     let zed = ZedTest::connect().await.expect("Zed must be running");
     zed.focus().expect("focus");

@@ -14,6 +14,7 @@ use url::Url;
 use crate::workspace::Workspace;
 
 /// Get inlay hints for a range within a document.
+#[must_use]
 pub fn inlay_hints(
     workspace: &Workspace,
     uri: &Url,
@@ -59,7 +60,7 @@ pub fn inlay_hints(
 
 #[allow(clippy::too_many_arguments)]
 fn collect_inlay_hints(
-    node: tree_sitter::Node<'_>,
+    root: tree_sitter::Node<'_>,
     source: &[u8],
     text: &str,
     tree: &tree_sitter::Tree,
@@ -68,50 +69,43 @@ fn collect_inlay_hints(
     range: &Range,
     hints: &mut Vec<InlayHint>,
 ) {
-    let node_start = node.start_position().row as u32;
-    let node_end = node.end_position().row as u32;
-    if node_end < range.start.line || node_start > range.end.line {
-        return;
-    }
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let node_start = node.start_position().row as u32;
+        let node_end = node.end_position().row as u32;
+        if node_end < range.start.line || node_start > range.end.line {
+            // Entire subtree is outside the visible range — skip it.
+            continue;
+        }
 
-    if node.kind() == "argument_list" || node.kind() == "call_arguments" {
-        if let Some(parent) = node.parent() {
-            let call_info = extract_call_info(parent, source);
-            if let Some((func_name, receiver_name)) = call_info {
-                let position = Position {
-                    line: node.start_position().row as u32,
-                    character: node.start_position().column as u32,
-                };
-                let arg_types = infer_argument_types(node, source, text, tree, position);
-                let param_names = lookup_parameter_names(
-                    workspace,
-                    doc_symbols,
-                    &func_name,
-                    receiver_name.as_deref(),
-                    text,
-                    tree,
-                    position,
-                    &arg_types,
-                );
-                if !param_names.is_empty() {
-                    add_parameter_hints(node, source, &param_names, hints);
+        if node.kind() == "argument_list" || node.kind() == "call_arguments" {
+            if let Some(parent) = node.parent() {
+                let call_info = extract_call_info(parent, source);
+                if let Some((func_name, receiver_name)) = call_info {
+                    let position = Position {
+                        line: node.start_position().row as u32,
+                        character: node.start_position().column as u32,
+                    };
+                    let arg_types = infer_argument_types(node, source, text, tree, position);
+                    let param_names = lookup_parameter_names(
+                        workspace,
+                        doc_symbols,
+                        &func_name,
+                        receiver_name.as_deref(),
+                        text,
+                        tree,
+                        position,
+                        &arg_types,
+                    );
+                    if !param_names.is_empty() {
+                        add_parameter_hints(node, source, &param_names, hints);
+                    }
                 }
             }
         }
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_inlay_hints(
-            child,
-            source,
-            text,
-            tree,
-            workspace,
-            doc_symbols,
-            range,
-            hints,
-        );
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
 }
 
@@ -457,9 +451,7 @@ fn lookup_via_receiver(
         let obj_key = subtype.to_lowercase();
         if let Some(file_path) = workspace.file_index.objects.get(&obj_key) {
             let file_path = file_path.value().clone();
-            // Use cached parse tree — avoids re-parsing on every inlay-hint request.
-            if let Some((content, file_tree)) = workspace.file_index.get_cached_parse(&file_path) {
-                let target_symbols = al_syntax::extract_document_symbols(&file_tree, &content);
+            if let Some(target_symbols) = workspace.file_index.get_cached_symbols(&file_path) {
                 let candidates = overload_candidates_from_symbols(&target_symbols, func_name);
                 if let Some(best) = select_best_overload(&candidates, arg_types) {
                     return Some(best);
@@ -513,63 +505,65 @@ fn overload_candidates_from_symbols(
 /// a return type. The hint appears immediately after the closing `)` of the
 /// parameter list and shows `: <ReturnType>`.
 fn collect_return_type_hints(
-    node: tree_sitter::Node<'_>,
+    root: tree_sitter::Node<'_>,
     source: &[u8],
     range: &Range,
     hints: &mut Vec<InlayHint>,
 ) {
-    let node_start = node.start_position().row as u32;
-    let node_end = node.end_position().row as u32;
-    if node_end < range.start.line || node_start > range.end.line {
-        return;
-    }
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let node_start = node.start_position().row as u32;
+        let node_end = node.end_position().row as u32;
+        if node_end < range.start.line || node_start > range.end.line {
+            // Entire subtree is outside the visible range — skip it.
+            continue;
+        }
 
-    let kind = node.kind();
-    if kind == "procedure_declaration"
-        || kind == "trigger_declaration"
-        || kind == "event_procedure_declaration"
-    {
-        if let Some(rt_node) = node.child_by_field_name("return_type") {
-            if let Ok(rt_text) = rt_node.utf8_text(source) {
-                let rt_text = rt_text.trim();
-                if !rt_text.is_empty() {
-                    // Place the hint at the end of the parameter list (closing paren).
-                    // Fall back to the name-node end position if no parameter node exists.
-                    let hint_pos = node
-                        .child_by_field_name("parameters")
-                        .map(|p| Position {
-                            line: p.end_position().row as u32,
-                            character: p.end_position().column as u32,
-                        })
-                        .or_else(|| {
-                            node.child_by_field_name("name").map(|n| Position {
-                                line: n.end_position().row as u32,
-                                character: n.end_position().column as u32,
+        let kind = node.kind();
+        if kind == "procedure_declaration"
+            || kind == "trigger_declaration"
+            || kind == "event_procedure_declaration"
+        {
+            if let Some(rt_node) = node.child_by_field_name("return_type") {
+                if let Ok(rt_text) = rt_node.utf8_text(source) {
+                    let rt_text = rt_text.trim();
+                    if !rt_text.is_empty() {
+                        // Place the hint at the end of the parameter list (closing paren).
+                        // Fall back to the name-node end position if no parameter node exists.
+                        let hint_pos = node
+                            .child_by_field_name("parameters")
+                            .map(|p| Position {
+                                line: p.end_position().row as u32,
+                                character: p.end_position().column as u32,
                             })
-                        });
-
-                    if let Some(pos) = hint_pos {
-                        if pos.line >= range.start.line && pos.line <= range.end.line {
-                            hints.push(InlayHint {
-                                position: pos,
-                                label: InlayHintLabel::String(format!(": {rt_text}")),
-                                kind: Some(InlayHintKind::TYPE),
-                                text_edits: None,
-                                tooltip: None,
-                                padding_left: Some(true),
-                                padding_right: None,
-                                data: None,
+                            .or_else(|| {
+                                node.child_by_field_name("name").map(|n| Position {
+                                    line: n.end_position().row as u32,
+                                    character: n.end_position().column as u32,
+                                })
                             });
+
+                        if let Some(pos) = hint_pos {
+                            if pos.line >= range.start.line && pos.line <= range.end.line {
+                                hints.push(InlayHint {
+                                    position: pos,
+                                    label: InlayHintLabel::String(format!(": {rt_text}")),
+                                    kind: Some(InlayHintKind::TYPE),
+                                    text_edits: None,
+                                    tooltip: None,
+                                    padding_left: Some(true),
+                                    padding_right: None,
+                                    data: None,
+                                });
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_return_type_hints(child, source, range, hints);
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
 }
 

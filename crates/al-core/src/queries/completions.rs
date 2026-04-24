@@ -65,6 +65,7 @@ impl serde::Serialize for CompletionKind {
 use al_syntax::context::{detect_context, CompletionContext};
 
 /// Get completions at a position in a document.
+#[must_use]
 pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let Some(text) = workspace.documents.get_text_arc(uri) else {

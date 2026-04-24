@@ -13,11 +13,11 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::io::{self, BufReader};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::bc_debug::{publish_app, BcDebugConfig, BcDebugSession, BcEvent};
@@ -99,10 +99,18 @@ where
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
     R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
 {
-    let seq = AtomicI64::new(1);
+    // Single monotonic sequence counter shared between the main loop and the background
+    // event-forwarding task. DAP spec requires non-decreasing seq values across all
+    // messages (responses, events) sent to the client. Using a single AtomicU64
+    // prevents the two previously-separate counters from interleaving non-monotonically.
+    let seq: Arc<AtomicU64> = Arc::new(AtomicU64::new(1));
     let session: Arc<Mutex<Option<Arc<BcDebugSession>>>> = Arc::new(Mutex::new(None));
     let debug_config: Arc<Mutex<Option<BcDebugConfig>>> = Arc::new(Mutex::new(None));
     let breakpoints: Arc<Mutex<HashMap<String, Vec<i64>>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    // Cancellation channel for the background event-forwarding task.
+    // When a new debug session starts we send a new value so the old task exits.
+    let (cancel_tx, cancel_rx) = watch::channel(0u64);
 
     // Channel for the BC-event forwarding task to send pre-serialized DAP event bytes
     // to the main loop. The main loop drains this channel before processing each
@@ -419,38 +427,52 @@ where
                         let conn_id = debug_session.connection_id.clone();
                         *session.lock().await = Some(Arc::new(debug_session));
 
-                        // Fix #1: Spawn background task to forward BC push events to Zed.
+                        // Spawn background task to forward BC push events to Zed.
                         //
                         // BC sends Break events via SignalR push at any time (not just in
                         // response to our invocations). This task polls `try_drain_push_events()`
                         // which uses try_lock() on event_rx — if an invoke() is running it skips,
                         // knowing the event will be captured in pending_events and forwarded after
                         // the invoke returns via flush_pending_events().
+                        //
+                        // Cancellation: send a new value on cancel_tx before spawning a new task
+                        // so the old task exits cleanly on reconnect (prevents task leaks).
                         {
+                            // Notify any previously spawned task to exit, then give the new task
+                            // its own receiver starting from the current generation.
+                            let generation = *cancel_tx.borrow() + 1;
+                            let _ = cancel_tx.send(generation);
+                            let mut cancel_rx_clone = cancel_rx.clone();
                             let session_clone = session.clone();
                             let event_tx_clone = dap_event_tx.clone();
+                            let seq_clone = seq.clone();
                             tokio::spawn(async move {
-                                // Use a local seq counter for events emitted by this task.
-                                let bg_seq = AtomicI64::new(100_000_000);
+                                // Snapshot the generation we were spawned in.
+                                // If cancel_rx_clone sees a newer value, the task exits.
+                                let my_generation = generation;
                                 loop {
-                                    let guard = session_clone.lock().await;
-                                    let bc_events = match guard.as_ref() {
-                                        Some(s) => {
-                                            let events = s.try_drain_push_events().await;
-                                            // Also flush pending events buffered during invoke() calls
-                                            let pending = s.flush_pending_events().await;
-                                            let mut all = events;
-                                            all.extend(pending);
-                                            all
-                                        }
-                                        None => break, // session ended
+                                    // Check for cancellation (non-blocking).
+                                    if *cancel_rx_clone.borrow() != my_generation {
+                                        return;
+                                    }
+
+                                    // Clone the Arc<BcDebugSession> while holding the mutex,
+                                    // then immediately drop the guard so async methods on the
+                                    // session are not called while the mutex is held (deadlock).
+                                    let session_arc = session_clone.lock().await.clone();
+                                    let bc_session = match session_arc {
+                                        Some(s) => s,
+                                        None => return, // session ended
                                     };
-                                    drop(guard);
+                                    // All async calls happen without holding the session mutex.
+                                    let mut bc_events = bc_session.try_drain_push_events().await;
+                                    // Also flush pending events buffered during invoke() calls.
+                                    bc_events.extend(bc_session.flush_pending_events().await);
 
                                     for bc_event in bc_events {
                                         let dap_evt = match &bc_event {
                                             BcEvent::Break { reason, thread_id } => make_event(
-                                                &bg_seq,
+                                                &seq_clone,
                                                 "stopped",
                                                 Some(serde_json::json!({
                                                     "reason": reason,
@@ -460,13 +482,13 @@ where
                                             ),
                                             BcEvent::Detached { terminate } => {
                                                 if *terminate {
-                                                    make_event(&bg_seq, "terminated", None)
+                                                    make_event(&seq_clone, "terminated", None)
                                                 } else {
                                                     continue;
                                                 }
                                             }
                                             BcEvent::FatalError { message } => make_event(
-                                                &bg_seq,
+                                                &seq_clone,
                                                 "output",
                                                 Some(serde_json::json!({
                                                     "category": "stderr",
@@ -483,8 +505,15 @@ where
                                         }
                                     }
 
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(50))
-                                        .await;
+                                    // Wait for cancellation or next poll interval.
+                                    tokio::select! {
+                                        _ = cancel_rx_clone.changed() => {
+                                            if *cancel_rx_clone.borrow() != my_generation {
+                                                return;
+                                            }
+                                        }
+                                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {}
+                                    }
                                 }
                             });
                         }
@@ -512,9 +541,9 @@ where
                         if config.launch_browser {
                             let web_url = if config.environment_type.eq_ignore_ascii_case("OnPrem")
                             {
-                                let server = config.server.as_deref().unwrap_or("http://localhost");
-                                let instance = config.server_instance.as_deref().unwrap_or("BC");
-                                format!("{server}/{instance}/?page={}&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
+                                // Use onprem_base() to include the port number in the URL.
+                                let base = config.onprem_base();
+                                format!("{base}/?page={}&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
                                     config.startup_object_id)
                             } else {
                                 let env = config.environment_name.as_deref().unwrap_or("sandbox");
@@ -560,29 +589,36 @@ where
                     .get("source")
                     .and_then(|s| s.get("path"))
                     .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                    .unwrap_or("")
+                    .to_string();
                 let bp_requests = arguments
                     .get("breakpoints")
                     .and_then(|v| v.as_array())
                     .cloned()
                     .unwrap_or_default();
 
-                let guard = session.lock().await;
+                // Clone the Arc<BcDebugSession> while holding the session mutex,
+                // then drop the guard immediately so no mutex is held across
+                // the async breakpoint operations below (prevents deadlock).
+                let session_arc = session.lock().await.clone();
                 let mut result_bps = Vec::new();
 
-                if let Some(ref s) = *guard {
-                    // Resolve object type and ID from workspace symbol index
-                    let resolved = resolve_object(source_path);
+                if let Some(s) = session_arc {
+                    // Resolve object type and ID from workspace symbol index.
+                    let resolved = resolve_object(&source_path);
 
                     if let Some(obj) = resolved {
                         let obj_type = obj.object_type;
                         let obj_id = obj.object_id;
-                        // Remove old breakpoints for this file
-                        let mut bps = breakpoints.lock().await;
-                        if let Some(old_ids) = bps.remove(source_path) {
-                            for id in old_ids {
-                                let _ = s.remove_breakpoint(id).await;
-                            }
+
+                        // Collect old breakpoint IDs under the breakpoints lock, then
+                        // drop the lock before awaiting (remove_breakpoint is async).
+                        let old_ids: Vec<i64> = {
+                            let mut bps = breakpoints.lock().await;
+                            bps.remove(&source_path).unwrap_or_default()
+                        };
+                        for id in old_ids {
+                            let _ = s.remove_breakpoint(id).await;
                         }
 
                         let mut new_ids = Vec::new();
@@ -614,7 +650,10 @@ where
                                 }
                             }
                         }
-                        bps.insert(source_path.to_string(), new_ids);
+                        breakpoints
+                            .lock()
+                            .await
+                            .insert(source_path.clone(), new_ids);
                     } else {
                         for bp in &bp_requests {
                             let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
@@ -1020,7 +1059,7 @@ where
 // ---------------------------------------------------------------------------
 
 fn make_response(
-    seq: &AtomicI64,
+    seq: &AtomicU64,
     request_seq: i64,
     command: &str,
     success: bool,
@@ -1031,7 +1070,7 @@ fn make_response(
     let mut resp = serde_json::json!({
         "seq": s,
         "type": "response",
-        "requestSeq": request_seq,
+        "request_seq": request_seq,
         "success": success,
         "command": command,
     });
@@ -1044,7 +1083,7 @@ fn make_response(
     resp
 }
 
-fn make_event(seq: &AtomicI64, event: &str, body: Option<serde_json::Value>) -> serde_json::Value {
+fn make_event(seq: &AtomicU64, event: &str, body: Option<serde_json::Value>) -> serde_json::Value {
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let mut evt = serde_json::json!({
         "seq": s,

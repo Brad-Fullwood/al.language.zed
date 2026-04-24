@@ -106,29 +106,29 @@ fn find_procedure_node<'a>(
 }
 
 fn find_procedure_in_node<'a>(
-    node: tree_sitter::Node<'a>,
+    root: tree_sitter::Node<'a>,
     source: &[u8],
     proc_name_lower: &str,
 ) -> Option<tree_sitter::Node<'a>> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let kind = child.kind();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let kind = node.kind();
         if kind == "procedure_declaration" || kind == "trigger_declaration" {
             // Check the name field
-            if let Some(name_node) = child.child_by_field_name("name") {
+            if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name_text) = name_node.utf8_text(source) {
                     let clean = name_text.trim_matches('"').trim();
                     if clean.to_lowercase() == proc_name_lower {
-                        return Some(child);
+                        return Some(node);
                     }
                 }
             }
-        } else {
-            // Recurse into braced_block, object_declaration, etc.
-            if let Some(found) = find_procedure_in_node(child, source, proc_name_lower) {
-                return Some(found);
-            }
+            // Do not descend further into this procedure's body
+            continue;
         }
+        // Recurse into braced_block, object_declaration, etc.
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
     None
 }
@@ -629,16 +629,17 @@ pub fn fanout_score(tree: &tree_sitter::Tree) -> usize {
     count
 }
 
-fn count_call_suffixes(node: tree_sitter::Node, count: &mut usize) {
-    match node.kind() {
-        "call_suffix" | "member_call_suffix" | "scope_call_suffix" => {
-            *count += 1;
+fn count_call_suffixes(root: tree_sitter::Node, count: &mut usize) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "call_suffix" | "member_call_suffix" | "scope_call_suffix" => {
+                *count += 1;
+            }
+            _ => {}
         }
-        _ => {}
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        count_call_suffixes(child, count);
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
 }
 
@@ -737,20 +738,22 @@ fn extract_methods_from_tree(
 }
 
 fn collect_methods_recursive(
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     methods: &mut Vec<al_symbols::MethodSymbol>,
 ) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
             "procedure_declaration" | "trigger_declaration" => {
-                if let Some(method) = extract_method_symbol(child, source) {
+                if let Some(method) = extract_method_symbol(node, source) {
                     methods.push(method);
                 }
+                // Do not recurse into procedure body
             }
             _ => {
-                collect_methods_recursive(child, source, methods);
+                let mut cursor = node.walk();
+                stack.extend(node.children(&mut cursor));
             }
         }
     }

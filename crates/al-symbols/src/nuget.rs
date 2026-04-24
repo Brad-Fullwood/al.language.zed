@@ -4,7 +4,9 @@
 //! - Package ID: `{publisher}.{name}.symbols.{app_id}` (lowercase, spaces→dots)
 //! - The `.nupkg` is a ZIP containing the `.app` file
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use thiserror::Error;
 use tracing::{debug, info, warn};
@@ -154,14 +156,21 @@ struct VersionIndex {
 pub struct NuGetClient {
     client: reqwest::Client,
     feeds: Vec<NuGetFeed>,
+    /// Cache of service index base addresses keyed by feed index_url.
+    base_address_cache: Mutex<HashMap<String, String>>,
 }
 
 impl NuGetClient {
     /// Create a new NuGet client with the given feeds.
     pub fn new(feeds: Vec<NuGetFeed>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            client: reqwest::Client::new(),
+            client,
             feeds,
+            base_address_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -171,7 +180,7 @@ impl NuGetClient {
     pub async fn download(&self, pkg: &PackageRef, dest: &Path) -> Result<PathBuf, NuGetError> {
         let mut last_err = None;
         for feed in &self.feeds {
-            match download(&self.client, feed, pkg, dest).await {
+            match download(&self.client, &self.base_address_cache, feed, pkg, dest).await {
                 Ok(path) => return Ok(path),
                 Err(e) => {
                     tracing::debug!(feed = %feed.index_url, error = %e, "Feed failed, trying next");
@@ -205,19 +214,40 @@ impl NuGetClient {
 /// Returns the path to the extracted .app file.
 async fn download(
     client: &reqwest::Client,
+    cache: &Mutex<HashMap<String, String>>,
     feed: &NuGetFeed,
     pkg: &PackageRef,
     dest: &Path,
 ) -> Result<PathBuf, NuGetError> {
-    // 1. Get service index
-    let base_url = get_package_base_address(client, &feed.index_url).await?;
+    // 1. Get service index (cached per feed index_url)
+    let cached = {
+        let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(&feed.index_url).cloned()
+    };
+    let base_url = if let Some(url) = cached {
+        debug!(feed = %feed.index_url, "Using cached PackageBaseAddress");
+        url
+    } else {
+        let url = get_package_base_address(client, &feed.index_url).await?;
+        cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(feed.index_url.clone(), url.clone());
+        url
+    };
 
     let id_lower = pkg.id.to_lowercase();
 
     // 2. Get version list
     let version_url = format!("{}{}/index.json", base_url, id_lower);
     debug!(url = %version_url, "Fetching version index");
-    let version_index: VersionIndex = client.get(&version_url).send().await?.json().await?;
+    let version_index: VersionIndex = client
+        .get(&version_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
 
     if version_index.versions.is_empty() {
         return Err(NuGetError::NoVersions(pkg.id.clone()));
@@ -231,11 +261,12 @@ async fn download(
         } else {
             // Find best prefix match: e.g. "26.5.0.0" → latest "26.5.*"
             let prefix = version_prefix(requested);
-            let prefix_matches: Vec<&String> = version_index
+            let mut prefix_matches: Vec<&String> = version_index
                 .versions
                 .iter()
                 .filter(|v| v.starts_with(&prefix))
                 .collect();
+            prefix_matches.sort_by_key(|a| parse_version(a));
             if let Some(v) = prefix_matches.last() {
                 info!(
                     requested = %requested,
@@ -316,6 +347,22 @@ fn version_prefix(version: &str) -> String {
     }
 }
 
+/// Parse a version string into a tuple of integer components for correct numeric comparison.
+///
+/// "2.0.999.0"   → (2, 0, 999, 0)
+/// "2.0.12345.0" → (2, 0, 12345, 0)
+///
+/// Components that fail to parse as `u64` are treated as 0 so that malformed
+/// versions sort consistently rather than panicking.
+fn parse_version(version: &str) -> (u64, u64, u64, u64) {
+    let mut parts = version.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+    let major = parts.next().unwrap_or(0);
+    let minor = parts.next().unwrap_or(0);
+    let patch = parts.next().unwrap_or(0);
+    let rev = parts.next().unwrap_or(0);
+    (major, minor, patch, rev)
+}
+
 /// Get the PackageBaseAddress URL from the NuGet v3 service index.
 async fn get_package_base_address(
     client: &reqwest::Client,
@@ -377,23 +424,30 @@ fn extract_app_from_nupkg(
                 continue;
             }
             let out_path = dest.join(raw_filename);
+            let tmp_path = dest.join(format!("{}.tmp", raw_filename));
 
             std::fs::create_dir_all(dest)?;
-            let mut out_file = std::fs::File::create(&out_path)?;
-            // Limit extraction to 512 MB to guard against decompression bombs.
-            // Use Read::take explicitly to avoid ambiguity with Iterator::take.
-            const MAX_APP_SIZE: u64 = 536_870_912;
-            let mut limited = std::io::Read::take(file, MAX_APP_SIZE);
-            let bytes_copied = std::io::copy(&mut limited, &mut out_file)?;
-            if bytes_copied >= MAX_APP_SIZE {
-                return Err(NuGetError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "Extracted .app file exceeds {:.0} MB limit — possible decompression bomb or oversized package",
-                        MAX_APP_SIZE as f64 / 1_048_576.0
-                    ),
-                )));
+            {
+                let mut out_file = std::fs::File::create(&tmp_path)?;
+                // Limit extraction to 512 MB to guard against decompression bombs.
+                // Use Read::take explicitly to avoid ambiguity with Iterator::take.
+                const MAX_APP_SIZE: u64 = 536_870_912;
+                let mut limited = std::io::Read::take(file, MAX_APP_SIZE);
+                let bytes_copied = std::io::copy(&mut limited, &mut out_file)?;
+                if bytes_copied >= MAX_APP_SIZE {
+                    // Remove the partial temp file before returning the error.
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(NuGetError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "Extracted .app file exceeds {:.0} MB limit — possible decompression bomb or oversized package",
+                            MAX_APP_SIZE as f64 / 1_048_576.0
+                        ),
+                    )));
+                }
             }
+            // Atomic rename: only the complete file is ever visible at the final path.
+            std::fs::rename(&tmp_path, &out_path)?;
 
             return Ok(out_path);
         }
@@ -531,5 +585,56 @@ mod tests {
         let dest = std::env::temp_dir().join("al-symbols-test-no-app");
         let result = extract_app_from_nupkg(&nupkg_buf, &dest, "Test");
         assert!(matches!(result.unwrap_err(), NuGetError::NoAppInNupkg));
+    }
+
+    #[test]
+    fn parse_version_numeric_comparison() {
+        // "2.0.999.0" must sort BELOW "2.0.12345.0" — lexicographic sort gets this wrong
+        assert!(parse_version("2.0.999.0") < parse_version("2.0.12345.0"));
+        assert_eq!(parse_version("26.5.0.0"), (26, 5, 0, 0));
+        assert_eq!(parse_version("2.0.999.0"), (2, 0, 999, 0));
+        assert_eq!(parse_version("2.0.12345.0"), (2, 0, 12345, 0));
+        // Malformed components fall back to 0
+        assert_eq!(parse_version("1.x.0.0"), (1, 0, 0, 0));
+        // Fewer than 4 components are padded with 0
+        assert_eq!(parse_version("26.0.40469"), (26, 0, 40469, 0));
+    }
+
+    #[test]
+    fn parse_version_invalid_empty() {
+        // Empty string should not panic
+        assert_eq!(parse_version(""), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn extract_app_from_nupkg_atomic_no_tmp_left_on_success() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let mut nupkg_buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut nupkg_buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options = SimpleFileOptions::default();
+            zip.start_file("Test.app", options).expect("add zip entry");
+            zip.write_all(b"NAVX").expect("write zip data");
+            zip.finish().expect("finalize zip");
+        }
+
+        let dest = std::env::temp_dir().join("al-symbols-test-atomic");
+        let _ = std::fs::create_dir_all(&dest);
+
+        let result = extract_app_from_nupkg(&nupkg_buf, &dest, "Test");
+        assert!(result.is_ok());
+
+        // The .tmp file must not remain after a successful extraction.
+        let tmp = dest.join("Test.app.tmp");
+        assert!(!tmp.exists(), ".tmp file should have been renamed away");
+
+        // The final .app file must exist.
+        let app = dest.join("Test.app");
+        assert!(app.exists(), ".app file should exist at final path");
+
+        let _ = std::fs::remove_dir_all(&dest);
     }
 }

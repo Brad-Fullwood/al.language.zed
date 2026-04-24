@@ -15,7 +15,10 @@ use al_daemon_client::DaemonClient;
 // ---------------------------------------------------------------------------
 
 pub fn print_json<T: Serialize>(value: &T) {
-    println!("{}", serde_json::to_string_pretty(value).unwrap());
+    match serde_json::to_string_pretty(value) {
+        Ok(json) => println!("{json}"),
+        Err(e) => eprintln!("{{\"error\":\"serialization failed: {e}\"}}"),
+    }
 }
 
 /// Build JSON params for a BC server command with common connection fields.
@@ -48,7 +51,7 @@ pub fn bc_server_params(
 pub fn project_root(project_arg: Option<&str>) -> PathBuf {
     project_arg
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 /// Convert a file path to a file:// URI string.

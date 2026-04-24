@@ -126,18 +126,24 @@ impl Workspace {
     /// The graph is built once from the current symbol index and cached.
     /// Call `invalidate_insight_graph()` after reloading packages.
     pub fn get_or_build_insight_graph(&self) -> Arc<InsightGraph> {
+        // Fast path: read lock
         if let Ok(guard) = self.insight_graph.read() {
             if let Some(arc) = guard.as_ref() {
                 return Arc::clone(arc);
             }
         }
-        // Build and cache
+        // Slow path: double-checked locking to prevent duplicate builds
+        let mut guard = self
+            .insight_graph
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(arc) = guard.as_ref() {
+            return Arc::clone(arc);
+        }
         let mut graph = InsightGraph::new();
         graph.build_from_index(&self.symbols);
         let arc = Arc::new(graph);
-        if let Ok(mut guard) = self.insight_graph.write() {
-            *guard = Some(Arc::clone(&arc));
-        }
+        *guard = Some(Arc::clone(&arc));
         arc
     }
 

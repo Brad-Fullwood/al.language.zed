@@ -56,6 +56,7 @@ pub struct UnusedSymbol {
 /// 1. Procedures that are never called from any other file
 /// 2. Table fields that are never referenced in any page/report/codeunit
 /// 3. Event subscribers whose target publisher no longer exists in the symbol index
+#[must_use]
 pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
     let mut results = Vec::new();
 
@@ -209,33 +210,35 @@ fn text_contains_call_outside_declaration(text: &str, proc_name: &str) -> bool {
     false
 }
 
-/// Recursively collect procedure declarations: (name, is_event_publisher, line_1based).
+/// Collect procedure declarations iteratively: (name, is_event_publisher, line_1based).
 fn collect_procedures(
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     procs: &mut Vec<(String, bool, u32)>,
 ) {
-    if matches!(
-        node.kind(),
-        "procedure_declaration" | "event_procedure_declaration"
-    ) {
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(name) = name_node.utf8_text(source) {
-                let name = name.trim_matches('"').to_string();
-                let line = node.start_position().row as u32 + 1;
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind(),
+            "procedure_declaration" | "event_procedure_declaration"
+        ) {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    let name = name.trim_matches('"').to_string();
+                    let line = node.start_position().row as u32 + 1;
 
-                // Check for IntegrationEvent or BusinessEvent attribute
-                let is_event = has_event_attribute(node, source);
+                    // Check for IntegrationEvent or BusinessEvent attribute
+                    let is_event = has_event_attribute(node, source);
 
-                procs.push((name, is_event, line));
+                    procs.push((name, is_event, line));
+                }
             }
+            // Do not recurse into procedure body
+            continue;
         }
-        return;
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_procedures(child, source, procs);
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
 }
 
@@ -392,36 +395,38 @@ fn find_orphaned_subscribers(
     }
 }
 
-/// Collect event subscriber procedures: (proc_name, target_object, target_event, line_1based).
+/// Collect event subscriber procedures iteratively: (proc_name, target_object, target_event, line_1based).
 fn collect_event_subscribers(
-    node: tree_sitter::Node,
+    root: tree_sitter::Node,
     source: &[u8],
     subscribers: &mut Vec<(String, String, String, u32)>,
 ) {
-    if matches!(
-        node.kind(),
-        "procedure_declaration" | "event_procedure_declaration"
-    ) {
-        // Check for EventSubscriber attribute
-        let attr_text = get_preceding_attribute(node, source);
-        if let Some(ref text) = attr_text {
-            if text.to_lowercase().contains("eventsubscriber") {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    if let Ok(proc_name) = name_node.utf8_text(source) {
-                        let proc_name = proc_name.trim_matches('"').to_string();
-                        let (target_object, target_event) = parse_subscriber_args(text);
-                        let line = node.start_position().row as u32 + 1;
-                        subscribers.push((proc_name, target_object, target_event, line));
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind(),
+            "procedure_declaration" | "event_procedure_declaration"
+        ) {
+            // Check for EventSubscriber attribute
+            let attr_text = get_preceding_attribute(node, source);
+            if let Some(ref text) = attr_text {
+                if text.to_lowercase().contains("eventsubscriber") {
+                    if let Some(name_node) = node.child_by_field_name("name") {
+                        if let Ok(proc_name) = name_node.utf8_text(source) {
+                            let proc_name = proc_name.trim_matches('"').to_string();
+                            let (target_object, target_event) = parse_subscriber_args(text);
+                            let line = node.start_position().row as u32 + 1;
+                            subscribers.push((proc_name, target_object, target_event, line));
+                        }
                     }
                 }
             }
+            // Do not recurse into procedure body
+            continue;
         }
-        return;
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_event_subscribers(child, source, subscribers);
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
     }
 }
 

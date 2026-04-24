@@ -747,8 +747,12 @@ impl<'a> TypeResolver<'a> {
             return;
         }
 
-        let var_start = var_line.unwrap();
-        let begin_at = begin_line.unwrap();
+        let Some(var_start) = var_line else {
+            return;
+        };
+        let Some(begin_at) = begin_line else {
+            return;
+        };
 
         // Parse variable declarations between `var` and `begin`
         for line_idx in (var_start + 1)..begin_at {

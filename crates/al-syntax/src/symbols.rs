@@ -946,20 +946,26 @@ fn collect_variable_name_nodes(
     source: &[u8],
     names: &mut Vec<(String, tower_lsp::lsp_types::Range)>,
 ) {
-    if node.start_byte() >= sep_start {
-        return;
-    }
-
-    if node.child_count() == 0 && is_variable_name_node(node.kind()) {
-        if let Some(name) = clean_node_text(node, source) {
-            names.push((name, ts_range_to_lsp(&node.range(), source)));
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if current.start_byte() >= sep_start {
+            continue;
         }
-        return;
-    }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_variable_name_nodes(child, sep_start, source, names);
+        if current.child_count() == 0 && is_variable_name_node(current.kind()) {
+            if let Some(name) = clean_node_text(current, source) {
+                names.push((name, ts_range_to_lsp(&current.range(), source)));
+            }
+            continue;
+        }
+
+        // Push children in reverse order so left-to-right children are
+        // popped (and thus processed) in their original left-to-right order.
+        let mut cursor = current.walk();
+        let children: Vec<_> = current.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
+        }
     }
 }
 

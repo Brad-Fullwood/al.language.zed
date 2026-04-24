@@ -953,14 +953,16 @@ impl LanguageServer for AlServer {
             "al.reindex" => {
                 let root_uri = self.root_uri.read().await.clone();
                 if let Some(uri) = &root_uri {
-                    tracing::info!(root = %uri, "Reindexing workspace");
+                    tracing::info!(root = %uri, "Reindexing workspace (background)");
                     let ws = Arc::clone(&self.workspace);
                     let client = self.client.clone();
                     let uri_cloned = uri.clone();
-                    workspace::initialize_workspace(ws, client, Some(uri_cloned)).await;
-                    self.client
-                        .show_message(MessageType::INFO, "Workspace reindex complete")
-                        .await;
+                    tokio::spawn(async move {
+                        workspace::initialize_workspace(ws, client.clone(), Some(uri_cloned)).await;
+                        client
+                            .show_message(MessageType::INFO, "Workspace reindex complete")
+                            .await;
+                    });
                 } else {
                     self.client
                         .show_message(MessageType::WARNING, "No workspace root — cannot reindex")
@@ -1064,7 +1066,10 @@ impl LanguageServer for AlServer {
             }
             "al.applyRecommendedSettings" => {
                 let result =
-                    crate::workspace::apply_recommended_settings().map_err(|e| e.to_string());
+                    tokio::task::spawn_blocking(crate::workspace::apply_recommended_settings)
+                        .await
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r.map_err(|e| e.to_string()));
                 match result {
                     Ok(()) => {
                         self.client

@@ -90,20 +90,17 @@ pub fn workspace_search_children(
     let mut results = Vec::new();
     let query_lower = query.to_lowercase();
 
-    for tree_entry in workspace.file_index.file_trees.iter() {
+    for entry in workspace.file_index.files.iter() {
         if results.len() >= limit {
             break;
         }
-        let file_path = tree_entry.key().clone();
-        let tree = tree_entry.value().clone();
-        drop(tree_entry); // release dashmap lock before accessing files
+        let file_path = entry.key().clone();
+        drop(entry); // release dashmap lock before accessing symbols
 
-        let text = match workspace.file_index.files.get(&file_path) {
-            Some(t) => t.value().clone(),
+        let doc_symbols = match workspace.file_index.get_cached_symbols(&file_path) {
+            Some(s) => s,
             None => continue,
         };
-
-        let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
         for sym in &doc_symbols {
             let container_name = sym.name.clone();
             if let Some(children) = &sym.children {

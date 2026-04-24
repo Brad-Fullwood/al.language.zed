@@ -106,6 +106,8 @@ pub struct FileIndex {
     pub object_info: DashMap<PathBuf, CachedObjectInfo>,
     /// File path → cached parse tree (avoids re-parsing for cross-file queries).
     pub file_trees: DashMap<PathBuf, tree_sitter::Tree>,
+    /// File path → cached document symbols (avoids re-extracting for cross-file queries).
+    pub(crate) file_symbols: DashMap<PathBuf, Vec<tower_lsp::lsp_types::DocumentSymbol>>,
     /// Lowercase procedure/event name → location (reverse index for O(1) go-to-definition).
     pub(crate) procedures: DashMap<String, Vec<CachedProcedureInfo>>,
     /// File path → list of procedure names (for cleanup on file remove/update).
@@ -122,6 +124,7 @@ impl FileIndex {
             file_metadata: DashMap::new(),
             object_info: DashMap::new(),
             file_trees: DashMap::new(),
+            file_symbols: DashMap::new(),
             procedures: DashMap::new(),
             path_to_procedures: DashMap::new(),
         }
@@ -142,6 +145,25 @@ impl FileIndex {
         let text = self.files.get(path)?.value().clone();
         let tree = self.file_trees.get(path)?.value().clone();
         Some((text, tree))
+    }
+
+    /// Get cached document symbols for a workspace file.
+    ///
+    /// Returns the symbols extracted at index time. Falls back to extracting
+    /// from the cached parse tree if symbols were not cached (shouldn't happen).
+    pub fn get_cached_symbols(
+        &self,
+        path: &Path,
+    ) -> Option<Vec<tower_lsp::lsp_types::DocumentSymbol>> {
+        if let Some(entry) = self.file_symbols.get(path) {
+            return Some(entry.value().clone());
+        }
+        // Fallback: extract from cached parse tree
+        let (text, tree) = self.get_cached_parse(path)?;
+        let symbols = al_syntax::extract_document_symbols(&tree, &text);
+        self.file_symbols
+            .insert(path.to_path_buf(), symbols.clone());
+        Some(symbols)
     }
 
     /// Scan a directory tree for .al files and index their contents.
@@ -281,6 +303,9 @@ impl FileIndex {
             self.path_to_procedures.insert(path.clone(), proc_names);
         }
 
+        // Cache document symbols for cross-file queries.
+        self.file_symbols.insert(path.clone(), doc_symbols);
+
         self.files.insert(path, content);
     }
 
@@ -289,6 +314,7 @@ impl FileIndex {
         self.files.remove(path);
         self.file_metadata.remove(path);
         self.file_trees.remove(path);
+        self.file_symbols.remove(path);
         self.object_info.remove(path);
         self.remove_procedures_for_file(path);
         if let Some((_, obj_name)) = self.path_to_object.remove(path) {

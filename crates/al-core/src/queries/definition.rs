@@ -10,6 +10,7 @@ use crate::resolution::{self, ResolvedMemberKind};
 use crate::workspace::Workspace;
 
 /// Find the definition location of the symbol at the given position.
+#[must_use]
 pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Option<Vec<Location>> {
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;

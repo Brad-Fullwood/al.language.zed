@@ -21,6 +21,10 @@ use crate::protocol::{DapEvent, DapMessage, DapResponse};
 use crate::{DapError, Result};
 
 /// Low-level DAP client that manages a subprocess.
+///
+/// Not `Sync` because `events_rx` is an `mpsc::UnboundedReceiver` which is
+/// single-consumer. Use from a single task only; share via `Arc<Mutex<DapClient>>`
+/// if cross-task access is needed.
 pub struct DapClient {
     child: Child,
     stdin: BufWriter<ChildStdin>,

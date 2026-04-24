@@ -14,6 +14,7 @@ use crate::workspace::Workspace;
 /// Sources searched:
 /// 1. Symbol index (from .app packages) — codeunits with `implements` populated.
 /// 2. Workspace source files — scanned via cached parse trees for `implements_clause` nodes.
+#[must_use]
 pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position) -> Vec<Location> {
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {

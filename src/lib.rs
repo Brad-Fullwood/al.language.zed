@@ -52,9 +52,6 @@ fn merge_json_owned(base: Value, overrides: Value) -> Value {
 
     let mut work: Vec<Work> = vec![Work::Merge(base, overrides)];
     let mut results: Vec<Value> = Vec::new();
-    // key_stack stores keys in LIFO order matching the AssembleObject instructions
-    let mut key_stack: Vec<String> = Vec::new();
-
     while let Some(item) = work.pop() {
         match item {
             Work::Merge(b, o) => match (b, o) {

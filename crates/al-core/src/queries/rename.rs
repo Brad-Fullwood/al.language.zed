@@ -30,6 +30,7 @@ pub fn prepare_rename(
 }
 
 /// Rename the symbol at the given position to `new_name`.
+#[must_use]
 pub fn rename(
     workspace: &Workspace,
     uri: &Url,

@@ -128,8 +128,8 @@ impl BcDebugConfig {
         if let Some(n) = args.get("startupObjectId").and_then(|v| v.as_i64()) {
             cfg.startup_object_id = n;
         }
-        if let Some(b) = args.get("launchBrowser").and_then(|v| v.as_bool()) {
-            cfg.launch_browser = b;
+        if let Some(v) = args.get("launchBrowser") {
+            cfg.launch_browser = parse_bool_or_string(v, cfg.launch_browser);
         }
         if let Some(s) = args.get("schemaUpdateMode").and_then(|v| v.as_str()) {
             cfg.schema_update_mode = s.to_string();
@@ -140,18 +140,15 @@ impl BcDebugConfig {
         {
             cfg.dependency_publishing_option = s.to_string();
         }
-        if let Some(b) = args
-            .get("validateServerCertificate")
-            .and_then(|v| v.as_bool())
-        {
-            cfg.accept_invalid_certs = !b;
+        if let Some(v) = args.get("validateServerCertificate") {
+            cfg.accept_invalid_certs = !parse_bool_or_string(v, !cfg.accept_invalid_certs);
         }
         cfg
     }
 
     /// Build the base URL prefix for on-prem: `{server}:{port}/{instance}`.
     /// Uses the same pattern as `al-core::launch::BcServerConfig::dev_packages_url`.
-    fn onprem_base(&self) -> String {
+    pub(crate) fn onprem_base(&self) -> String {
         let server = self.server.as_deref().unwrap_or("http://localhost");
         let instance = self.server_instance.as_deref().unwrap_or("BC");
         let host = format!("{}:{}", server.trim_end_matches('/'), self.port);
@@ -164,9 +161,11 @@ impl BcDebugConfig {
             // Fix #3: include port in on-prem URL
             format!("{}/dev", self.onprem_base())
         } else {
-            // Fix #2: cloud URL must include tenant before environment name
-            let tenant = &self.tenant;
-            let env = self.environment_name.as_deref().unwrap_or("sandbox");
+            // Fix #2: cloud URL must include tenant before environment name.
+            // URL-encode tenant and environment name so values containing special
+            // characters (spaces, dots, slashes) produce valid URLs.
+            let tenant = percent_encode_url(&self.tenant);
+            let env = percent_encode_url(self.environment_name.as_deref().unwrap_or("sandbox"));
             format!("https://api.businesscentral.dynamics.com/v2.0/{tenant}/{env}/dev")
         }
     }
@@ -177,9 +176,10 @@ impl BcDebugConfig {
             // Fix #3: include port in on-prem URL
             format!("{}/dev/DebuggerHub", self.onprem_base())
         } else {
-            // Fix #2: cloud URL must include tenant before environment name
-            let tenant = &self.tenant;
-            let env = self.environment_name.as_deref().unwrap_or("sandbox");
+            // Fix #2: cloud URL must include tenant before environment name.
+            // URL-encode tenant and environment name (same reason as base_url).
+            let tenant = percent_encode_url(&self.tenant);
+            let env = percent_encode_url(self.environment_name.as_deref().unwrap_or("sandbox"));
             format!("https://api.businesscentral.dynamics.com/v2.0/{tenant}/{env}/dev/DebuggerHub")
         }
     }
@@ -221,7 +221,9 @@ pub async fn publish_app(
     let base = config.base_url();
     let url = format!(
         "{base}/apps?tenant={}&SchemaUpdateMode={}&DependencyPublishingOption={}",
-        config.tenant, config.schema_update_mode, config.dependency_publishing_option
+        percent_encode_url(&config.tenant),
+        config.schema_update_mode,
+        config.dependency_publishing_option
     );
 
     info!("Publishing package to {url}");
@@ -256,7 +258,10 @@ pub async fn publish_app(
         Ok(())
     } else {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
         Err(DapError::PublishFailed(format!(
             "Publish failed (HTTP {status}): {body}"
         )))
@@ -270,7 +275,10 @@ pub async fn get_metadata(
     access_token: &str,
 ) -> Result<serde_json::Value> {
     let base = config.base_url();
-    let url = format!("{base}/metadata?tenant={}", config.tenant);
+    let url = format!(
+        "{base}/metadata?tenant={}",
+        percent_encode_url(&config.tenant)
+    );
 
     let resp = http
         .get(&url)
@@ -285,7 +293,10 @@ pub async fn get_metadata(
             .map_err(|e| DapError::ConnectionFailed(format!("Bad metadata response: {e}")))
     } else {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
         Err(DapError::ConnectionFailed(format!(
             "Metadata failed (HTTP {status}): {body}"
         )))
@@ -727,7 +738,9 @@ impl BcDebugSession {
             Ok(_) => Ok(()),
             Err(_) => {
                 // Older BC: no args
-                let _ = self.invoke("DebugAdapterConfigurationDone", vec![]).await;
+                if let Err(e) = self.invoke("DebugAdapterConfigurationDone", vec![]).await {
+                    tracing::warn!("configurationDone fallback failed: {e}");
+                }
                 Ok(())
             }
         }
@@ -818,7 +831,9 @@ impl BcDebugSession {
     /// Stop debugging.
     /// BC hub method: `StopDebugging`
     pub async fn stop_debugging(&self) -> Result<()> {
-        let _ = self.invoke("StopDebugging", vec![]).await;
+        if let Err(e) = self.invoke("StopDebugging", vec![]).await {
+            tracing::warn!("StopDebugging failed (non-fatal): {e}");
+        }
         Ok(())
     }
 

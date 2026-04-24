@@ -170,6 +170,9 @@ pub struct SemanticBridge {
     /// buffer is shared and not safe to access from multiple threads at once).
     host: Arc<std::sync::Mutex<DotNetHost>>,
     version: String,
+    /// Set to true after a timeout — all future calls return `Poisoned` immediately
+    /// rather than blocking on a potentially hung Mutex.
+    timed_out: std::sync::atomic::AtomicBool,
 }
 
 /// Default timeout for bridge calls.
@@ -189,6 +192,7 @@ impl SemanticBridge {
         Ok(Self {
             host: Arc::new(std::sync::Mutex::new(host)),
             version: version.to_string(),
+            timed_out: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -222,6 +226,12 @@ impl SemanticBridge {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, SemanticError> {
+        // If a previous call timed out, the Mutex may be held indefinitely by
+        // the hung CLR call. Bail immediately to avoid blocking the entire server.
+        if self.timed_out.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(SemanticError::Poisoned);
+        }
+
         let host = self.host.clone();
         let method = method.to_string();
 
@@ -241,7 +251,12 @@ impl SemanticBridge {
             Ok(Err(join_err)) => Err(SemanticError::HostInit(format!(
                 "Bridge call panicked: {join_err}"
             ))),
-            Err(_) => Err(SemanticError::Timeout(DEFAULT_TIMEOUT)),
+            Err(_) => {
+                // Mark as poisoned so future calls fail fast instead of blocking.
+                self.timed_out
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                Err(SemanticError::Timeout(DEFAULT_TIMEOUT))
+            }
         }
     }
 
