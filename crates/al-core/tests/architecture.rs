@@ -197,6 +197,38 @@ fn test_inlay_hints_does_not_return_tower_lsp_inlay_hint() {
     );
 }
 
+/// Reproduces: 785dc67b07d290a2 — `WorkspaceChildSearchResult` previously
+/// stored `tower_lsp::lsp_types::SymbolKind` and `tower_lsp::lsp_types::Range`
+/// in its public fields. Search result types must use transport-agnostic
+/// types.
+#[test]
+fn test_workspace_child_search_result_does_not_embed_tower_lsp_types() {
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/queries/search.rs"
+    ))
+    .expect("failed to read queries/search.rs");
+    let struct_pos = source
+        .find("pub struct WorkspaceChildSearchResult")
+        .expect("could not find WorkspaceChildSearchResult");
+    let struct_end = source[struct_pos..]
+        .find('}')
+        .map(|p| struct_pos + p)
+        .unwrap_or(source.len());
+    let struct_body = &source[struct_pos..struct_end];
+    assert!(
+        !struct_body.contains("SymbolKind") || struct_body.contains("AlSymbolKind"),
+        "WorkspaceChildSearchResult.kind must use AlSymbolKind, not tower_lsp SymbolKind."
+    );
+    // Range field type must not be the tower_lsp imported one. We check by
+    // scanning the imports — search.rs must not import tower_lsp::lsp_types::Range/SymbolKind.
+    assert!(
+        !source.contains("use tower_lsp::lsp_types::{Range, SymbolKind}")
+            && !source.contains("use tower_lsp::lsp_types::{SymbolKind, Range}"),
+        "queries/search.rs must not import tower_lsp::lsp_types::{{Range, SymbolKind}}. Use AlSymbolKind and crate::queries::Range."
+    );
+}
+
 /// Reproduces: 8e48b967d935bfd5 — `get_or_build_insight_graph` in
 /// `workspace.rs` previously held a `std::sync::RwLock` write guard
 /// across `graph.build_from_index(...)`. The expensive build must run

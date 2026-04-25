@@ -637,12 +637,12 @@ pub(crate) fn handle_workspace_symbol(
                 #[allow(deprecated)]
                 results.push(SymbolInformation {
                     name: r.name,
-                    kind: r.kind,
+                    kind: r.kind.into(),
                     tags: None,
                     deprecated: None,
                     location: Location {
                         uri: file_uri,
-                        range: r.range,
+                        range: r.range.into(),
                     },
                     container_name: if r.container_name.is_empty() {
                         None

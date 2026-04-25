@@ -6,8 +6,7 @@
 
 use std::path::PathBuf;
 
-use tower_lsp::lsp_types::{Range, SymbolKind};
-
+use super::{AlSymbolKind, Range};
 use crate::file_index::CachedObjectInfo;
 use crate::workspace::Workspace;
 
@@ -67,8 +66,8 @@ pub struct WorkspaceChildSearchResult {
     pub file_path: PathBuf,
     /// Symbol name (e.g. procedure name).
     pub name: String,
-    /// LSP symbol kind.
-    pub kind: SymbolKind,
+    /// Transport-agnostic symbol kind.
+    pub kind: AlSymbolKind,
     /// Range of the symbol in the file.
     pub range: Range,
     /// Name of the parent object (container), or empty string if unknown.
@@ -114,8 +113,8 @@ pub fn workspace_search_children(
                     results.push(WorkspaceChildSearchResult {
                         file_path: file_path.clone(),
                         name: child.name.clone(),
-                        kind: child.kind.into(),
-                        range: child.range.into(),
+                        kind: child.kind,
+                        range: child.range,
                         container_name: container_name.clone(),
                     });
                 }
