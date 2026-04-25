@@ -174,8 +174,11 @@ impl FileIndex {
     pub fn scan(&self, root: &Path) -> usize {
         let mut count = 0;
         self.walk_al_files(root, &mut count, 0, &mut |path| {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                self.add_file(path, content);
+            match std::fs::read_to_string(&path) {
+                Ok(content) => self.add_file(path, content),
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "skipping unreadable .al file during scan");
+                }
             }
         });
         count
@@ -205,16 +208,24 @@ impl FileIndex {
         for path in &on_disk {
             let current_meta = match FileMetadata::read(path) {
                 Some(m) => m,
-                None => continue, // can't read metadata — skip
+                None => {
+                    tracing::warn!(path = %path.display(), "skipping file: cannot read metadata");
+                    continue;
+                }
             };
             let needs_index = match self.file_metadata.get(path) {
                 Some(prev) => *prev != current_meta,
                 None => true, // new file
             };
             if needs_index {
-                if let Ok(content) = std::fs::read_to_string(path) {
-                    self.add_file_with_meta(path.clone(), content, Some(current_meta));
-                    delta.changed.push(path.clone());
+                match std::fs::read_to_string(path) {
+                    Ok(content) => {
+                        self.add_file_with_meta(path.clone(), content, Some(current_meta));
+                        delta.changed.push(path.clone());
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path.display(), error = %e, "skipping unreadable .al file during incremental scan");
+                    }
                 }
             }
         }

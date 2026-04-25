@@ -157,13 +157,19 @@ impl Workspace {
     }
 
     /// Invalidate the cached InsightGraph (call when packages reload).
+    ///
+    /// Recovers from poisoned locks via `into_inner` so a panic during a build
+    /// does not permanently disable invalidation — without recovery the
+    /// poisoned guard would silently skip `*guard = None` and leave a stale
+    /// graph cached forever.
     pub fn invalidate_insight_graph(&self) {
-        if let Ok(mut guard) = self.insight_graph.write() {
-            *guard = None;
-        }
-        if let Ok(mut guard) = self.call_graph.write() {
-            *guard = None;
-        }
+        let mut ig = self
+            .insight_graph
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        *ig = None;
+        let mut cg = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
+        *cg = None;
     }
 
     /// Get (or lazily build) the cached CallGraph.
@@ -218,10 +224,15 @@ impl Workspace {
         );
         let insight = Arc::new(graph);
 
-        // Cache the enriched InsightGraph (replaces symbol-only version)
-        if let Ok(mut ig_guard) = self.insight_graph.write() {
-            *ig_guard = Some(Arc::clone(&insight));
-        }
+        // Cache the enriched InsightGraph (replaces symbol-only version).
+        // Recover from poisoned lock so the enriched graph is not silently
+        // discarded after a prior panic in a build path.
+        let mut ig_guard = self
+            .insight_graph
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        *ig_guard = Some(Arc::clone(&insight));
+        drop(ig_guard);
 
         // Build CallGraph and populate Tier 1 call edges
         let mut cg = CallGraph::build_from_insight(&insight);

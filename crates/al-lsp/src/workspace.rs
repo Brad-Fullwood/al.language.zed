@@ -347,8 +347,19 @@ async fn prompt_download_symbols(
             None
         }
         Err(e) => {
-            // Fall back to NuGet if the client doesn't support showMessageRequest
+            // The LSP client returned an error for window/showMessageRequest.
+            // Surface this to the user via window/showMessage so they know an
+            // automatic decision is being made on their behalf, then fall
+            // back to NuGet (the safer default for clients without the
+            // request-style prompt).
             warn!(error = %e, "showMessageRequest failed, falling back to NuGet");
+            client
+                .show_message(
+                    MessageType::WARNING,
+                    "Could not show symbol-source prompt — falling back to NuGet. \
+                     Set al.symbolSource explicitly to silence this warning.",
+                )
+                .await;
             Some(DownloadSource::NuGet)
         }
     }

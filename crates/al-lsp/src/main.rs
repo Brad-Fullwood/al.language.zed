@@ -43,31 +43,43 @@ fn spawn_parent_monitor() {
 }
 
 /// Set up signal handlers that log before exiting.
+///
+/// If a signal cannot be registered, the spawned task must NOT exit early.
+/// `tokio::signal::unix::signal()` already alters the kernel-level signal
+/// disposition the moment we touch it, so an early-return after a successful
+/// SIGTERM and a failing SIGINT (or vice versa) leaves the process unable to
+/// react to *either* signal. Match the daemon's pattern: keep a `pending`
+/// future for any signal that failed so the task waits forever for whichever
+/// signals did register.
 #[cfg(unix)]
 fn spawn_signal_handlers() {
     tokio::spawn(async {
+        use std::future::pending;
+
         use tokio::signal::unix::{signal, SignalKind};
 
-        let mut sigterm = match signal(SignalKind::terminate()) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to register SIGTERM handler");
-                return;
-            }
-        };
-        let mut sigint = match signal(SignalKind::interrupt()) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to register SIGINT handler");
-                return;
-            }
-        };
+        let mut sigterm = signal(SignalKind::terminate()).map_err(|e| {
+            tracing::warn!(error = %e, "Failed to register SIGTERM handler");
+        });
+        let mut sigint = signal(SignalKind::interrupt()).map_err(|e| {
+            tracing::warn!(error = %e, "Failed to register SIGINT handler");
+        });
 
         tokio::select! {
-            _ = sigterm.recv() => {
+            _ = async {
+                match sigterm.as_mut() {
+                    Ok(s) => { s.recv().await; }
+                    Err(()) => pending::<()>().await,
+                }
+            } => {
                 tracing::info!("Received SIGTERM, shutting down");
             }
-            _ = sigint.recv() => {
+            _ = async {
+                match sigint.as_mut() {
+                    Ok(s) => { s.recv().await; }
+                    Err(()) => pending::<()>().await,
+                }
+            } => {
                 tracing::info!("Received SIGINT, shutting down");
             }
         }
@@ -180,7 +192,7 @@ async fn main() {
         }
         let fi = file_index.clone();
 
-        let _ = al_dap_client::native_dap::run_native_dap(
+        if let Err(e) = al_dap_client::native_dap::run_native_dap(
             &project_root,
             alc_path.as_deref(),
             |tenant| async move {
@@ -201,7 +213,11 @@ async fn main() {
                     })
             },
         )
-        .await;
+        .await
+        {
+            tracing::error!(error = %e, "Native DAP run failed");
+            std::process::exit(1);
+        }
     } else if args.iter().any(|a| a == "--dap-legacy") {
         // Legacy DAP mode — proxy through EditorServices.Host
         let toolchain = match al_core::toolchain::find_toolchain() {
