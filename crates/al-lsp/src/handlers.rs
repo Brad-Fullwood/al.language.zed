@@ -26,6 +26,7 @@ pub(crate) fn handle_document_symbol(
 
 pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<FoldingRange>> {
     al_core::queries::folding::folding_ranges(&server.workspace, uri)
+        .map(|ranges| ranges.into_iter().map(Into::into).collect())
 }
 
 // ---------------------------------------------------------------------------

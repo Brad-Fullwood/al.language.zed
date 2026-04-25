@@ -2,18 +2,18 @@
 
 use url::Url;
 
+use super::AlFoldingRange;
 use crate::workspace::Workspace;
 
 /// Get folding ranges for a document.
-/// Returns tower-lsp FoldingRange directly since al-syntax produces that type.
+///
+/// Returns transport-agnostic `AlFoldingRange` values; al-lsp converts to
+/// `tower_lsp::lsp_types::FoldingRange` at the boundary.
 #[must_use]
-pub fn folding_ranges(
-    workspace: &Workspace,
-    uri: &Url,
-) -> Option<Vec<tower_lsp::lsp_types::FoldingRange>> {
+pub fn folding_ranges(workspace: &Workspace, uri: &Url) -> Option<Vec<AlFoldingRange>> {
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
     let ranges = al_syntax::extract_folding_ranges(&tree, &text);
-    Some(ranges)
+    Some(ranges.into_iter().map(Into::into).collect())
 }
 
 #[cfg(test)]
@@ -69,7 +69,7 @@ mod tests {
         // Expect region-kind folds for object + two procedures
         let region_count = ranges
             .iter()
-            .filter(|r| r.kind == Some(tower_lsp::lsp_types::FoldingRangeKind::Region))
+            .filter(|r| r.kind == Some(crate::queries::AlFoldingRangeKind::Region))
             .count();
         assert!(
             region_count >= 2,

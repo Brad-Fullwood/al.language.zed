@@ -153,6 +153,28 @@ fn test_document_symbols_does_not_return_tower_lsp_response() {
     );
 }
 
+/// Reproduces: b0842b450dc4f630 — `folding_ranges()` previously returned
+/// `Vec<tower_lsp::lsp_types::FoldingRange>`. Query functions must return
+/// transport-agnostic types.
+#[test]
+fn test_folding_ranges_does_not_return_tower_lsp_folding_range() {
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/queries/folding.rs"
+    ))
+    .expect("failed to read queries/folding.rs");
+    let fn_pos = source
+        .find("pub fn folding_ranges")
+        .expect("could not find folding_ranges");
+    let window = &source[fn_pos..(fn_pos + 400).min(source.len())];
+    let sig = window.split('{').next().unwrap_or(window);
+    assert!(
+        !sig.contains("tower_lsp::lsp_types::FoldingRange"),
+        "folding_ranges still returns tower_lsp::lsp_types::FoldingRange. \
+         Return Vec<AlFoldingRange> instead and convert at the al-lsp boundary."
+    );
+}
+
 /// Reproduces: 8e48b967d935bfd5 — `get_or_build_insight_graph` in
 /// `workspace.rs` previously held a `std::sync::RwLock` write guard
 /// across `graph.build_from_index(...)`. The expensive build must run

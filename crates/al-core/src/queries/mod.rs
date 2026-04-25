@@ -499,6 +499,28 @@ impl From<AlFoldingRange> for tower_lsp::lsp_types::FoldingRange {
     }
 }
 
+impl From<tower_lsp::lsp_types::FoldingRangeKind> for AlFoldingRangeKind {
+    fn from(k: tower_lsp::lsp_types::FoldingRangeKind) -> Self {
+        match k {
+            tower_lsp::lsp_types::FoldingRangeKind::Comment => AlFoldingRangeKind::Comment,
+            tower_lsp::lsp_types::FoldingRangeKind::Imports => AlFoldingRangeKind::Imports,
+            tower_lsp::lsp_types::FoldingRangeKind::Region => AlFoldingRangeKind::Region,
+        }
+    }
+}
+
+impl From<tower_lsp::lsp_types::FoldingRange> for AlFoldingRange {
+    fn from(r: tower_lsp::lsp_types::FoldingRange) -> Self {
+        Self {
+            start_line: r.start_line,
+            start_character: r.start_character,
+            end_line: r.end_line,
+            end_character: r.end_character,
+            kind: r.kind.map(Into::into),
+        }
+    }
+}
+
 impl From<AlInlayHintKind> for tower_lsp::lsp_types::InlayHintKind {
     fn from(k: AlInlayHintKind) -> Self {
         match k {

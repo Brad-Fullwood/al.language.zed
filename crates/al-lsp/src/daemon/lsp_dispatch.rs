@@ -186,7 +186,12 @@ pub(super) fn dispatch_folding_ranges(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
-    let result = al_core::queries::folding::folding_ranges(workspace, &uri);
+    let result = al_core::queries::folding::folding_ranges(workspace, &uri).map(|ranges| {
+        ranges
+            .into_iter()
+            .map(tower_lsp::lsp_types::FoldingRange::from)
+            .collect::<Vec<_>>()
+    });
     let value = result.and_then(|r| serde_json::to_value(r).ok()); // SILENT: serialization of valid structs should not fail
     Response {
         id,
