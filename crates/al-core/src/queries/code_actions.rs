@@ -742,14 +742,15 @@ fn walk_if_chain(
 /// Extract (left, right) from an equality expression `left = right`.
 /// Tree-sitter structure: expression -> unary_expression, binary_operator(operator "="), unary_expression
 fn extract_equality_operands(node: tree_sitter::Node, source: &[u8]) -> Option<(String, String)> {
-    let child_count = node.child_count();
-
-    // Single-child wrapper: descend
-    if child_count == 1 {
-        let inner = node.child(0)?;
-        return extract_equality_operands(inner, source);
+    // Iteratively unwrap single-child wrapper nodes to avoid recursion on
+    // deeply nested AST wrappers (CLAUDE.md prohibits recursive tree-sitter
+    // traversal).
+    let mut node = node;
+    while node.child_count() == 1 {
+        node = node.child(0)?;
     }
 
+    let child_count = node.child_count();
     if child_count < 3 {
         return None;
     }

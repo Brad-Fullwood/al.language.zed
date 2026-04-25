@@ -309,19 +309,41 @@ async fn download(
     );
     const MAX_NUPKG_BYTES: u64 = 200 * 1024 * 1024; // 200 MB
     let response = client.get(&nupkg_url).send().await?;
-    if let Some(content_length) = response.content_length() {
-        if content_length > MAX_NUPKG_BYTES {
-            return Err(NuGetError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "Package '{name}' Content-Length {content_length} exceeds {max} byte limit — refusing download",
-                    name = pkg.display_name,
-                    max = MAX_NUPKG_BYTES,
-                ),
-            )));
-        }
+    // Require a Content-Length header so the cap below is enforceable. Without
+    // a length header an attacker-controlled server could lie about the
+    // content size and push arbitrary bytes through `response.bytes()` —
+    // bytes() buffers without a cap. Refuse the download in that case.
+    let content_length = response.content_length().ok_or_else(|| {
+        NuGetError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Package '{}' download has no Content-Length header — refusing.",
+                pkg.display_name
+            ),
+        ))
+    })?;
+    if content_length > MAX_NUPKG_BYTES {
+        return Err(NuGetError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Package '{name}' Content-Length {content_length} exceeds {max} byte limit — refusing download",
+                name = pkg.display_name,
+                max = MAX_NUPKG_BYTES,
+            ),
+        )));
     }
     let nupkg_bytes = response.bytes().await?;
+    if nupkg_bytes.len() as u64 > MAX_NUPKG_BYTES {
+        return Err(NuGetError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Package '{name}' actual body {actual} exceeds {max} byte limit — server lied about Content-Length",
+                name = pkg.display_name,
+                actual = nupkg_bytes.len(),
+                max = MAX_NUPKG_BYTES,
+            ),
+        )));
+    }
 
     // 5. Extract .app from .nupkg
     let app_path = extract_app_from_nupkg(&nupkg_bytes, dest, &pkg.display_name)?;

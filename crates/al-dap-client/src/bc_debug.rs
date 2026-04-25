@@ -545,10 +545,14 @@ impl BcDebugSession {
             "invocationId": id,
         });
 
-        info!(
-            "SignalR invoke: {} args={}",
-            target,
-            serde_json::to_string(&arguments).unwrap_or_default()
+        // Log only the invocation target at INFO. The argument payload
+        // can include breakpoint paths, attach metadata and other
+        // potentially sensitive content; keep it at DEBUG.
+        info!("SignalR invoke: {target}");
+        debug!(
+            target = %target,
+            args = %serde_json::to_string(&arguments).unwrap_or_default(),
+            "SignalR invoke arguments"
         );
         self.ws_tx
             .send(msg.to_string())
