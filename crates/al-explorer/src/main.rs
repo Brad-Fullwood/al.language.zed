@@ -554,10 +554,19 @@ struct App {
 
     // Persistent daemon connection for open_selected_object
     pub daemon_client: Option<DaemonClient>,
+
+    // Project root resolved once at startup. Subsequent code paths must use
+    // this field rather than calling current_dir() again — the user can `cd`
+    // after launching al-explorer, which would otherwise drift the daemon
+    // socket key.
+    pub project_root: std::path::PathBuf,
 }
 
 impl App {
     fn new() -> App {
+        // Resolve project_root ONCE here. al-explorer is long-running and the
+        // user can `cd` after launch, so we must not re-call current_dir() in
+        // later code paths or the daemon socket key would drift.
         let project_root =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         App {
@@ -579,14 +588,15 @@ impl App {
             last_click_target: None,
             last_click_index: 0,
             event_chain: EventChainView::new(project_root.clone()),
-            call_graph: CallGraphView::new(project_root),
+            call_graph: CallGraphView::new(project_root.clone()),
             profiler: ProfilerView::new(),
             daemon_client: None,
+            project_root,
         }
     }
 
     fn init_workspace(&mut self) -> Result<(), Box<dyn Error>> {
-        let root = std::env::current_dir()?;
+        let root = self.project_root.clone();
         let mut client = DaemonClient::connect(&root)
             .map_err(|e| format!("Cannot connect to al-lsp daemon: {e}"))?;
 
@@ -1057,8 +1067,7 @@ impl App {
             // Ask the daemon for the workspace file path for this object.
             // Reconnect if the persistent client has been dropped.
             if self.daemon_client.is_none() {
-                let root = std::env::current_dir().unwrap_or_default();
-                self.daemon_client = DaemonClient::connect(&root).ok();
+                self.daemon_client = DaemonClient::connect(&self.project_root).ok();
             }
             if let Some(client) = self.daemon_client.as_mut() {
                 let loc_result = client.request(
