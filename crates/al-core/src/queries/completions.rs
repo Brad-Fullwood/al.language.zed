@@ -195,9 +195,11 @@ pub async fn completions_full(
         return items;
     }
 
-    // Bridge fallback: only for member access context
+    // Bridge fallback: only for member access context.
+    // Use get_text_arc to share the cached Arc<String> instead of deep-cloning
+    // the entire file contents on every keystroke.
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
-    let Some(text) = workspace.documents.get_text(uri) else {
+    let Some(text) = workspace.documents.get_text_arc(uri) else {
         return items;
     };
     let ctx = al_syntax::context::detect_context(&text, lsp_pos);
