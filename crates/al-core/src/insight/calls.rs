@@ -328,20 +328,26 @@ pub fn extract_call_sites(
     sites
 }
 
-/// Recursively collect call sites from a `begin_end_block` or any child node.
+/// Iteratively collect call sites from a `begin_end_block` or any child node.
+///
+/// Uses an explicit stack to avoid unbounded recursion on deeply nested AL
+/// (CLAUDE.md requires iterative tree-sitter traversal).
 fn collect_call_sites_from_block(
     node: tree_sitter::Node,
     source: &[u8],
     sites: &mut Vec<CallSite>,
 ) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "postfix_expression" {
-            if let Some(site) = parse_postfix_expression(child, source) {
-                sites.push(site);
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        let mut cursor = current.walk();
+        for child in current.children(&mut cursor) {
+            if child.kind() == "postfix_expression" {
+                if let Some(site) = parse_postfix_expression(child, source) {
+                    sites.push(site);
+                }
+            } else {
+                stack.push(child);
             }
-        } else {
-            collect_call_sites_from_block(child, source, sites);
         }
     }
 }

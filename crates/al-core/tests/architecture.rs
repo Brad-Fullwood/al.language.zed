@@ -130,3 +130,32 @@ fn test_resolution_source_is_readable() {
         "Could not read crates/al-core/src/resolution.rs — path assumption is wrong"
     );
 }
+
+/// Reproduces: 27f075b6af883ba3 — `collect_call_sites_from_block` in
+/// `insight/calls.rs` was a self-recursive tree-sitter walker. CLAUDE.md
+/// requires iterative traversal (explicit stack) for tree-sitter nodes to
+/// avoid stack overflow on deeply nested AL.
+#[test]
+fn test_collect_call_sites_from_block_is_iterative() {
+    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/insight/calls.rs"))
+        .expect("failed to read insight/calls.rs");
+
+    // Locate the function body.
+    let fn_pos = source
+        .find("fn collect_call_sites_from_block")
+        .expect("could not find collect_call_sites_from_block");
+    // Grab a generous window for the function body.
+    let window_end = (fn_pos + 1500).min(source.len());
+    let window = &source[fn_pos..window_end];
+
+    // The body must NOT call itself — that is the recursion this test guards against.
+    // Skip the first occurrence (the fn declaration itself) and check for any
+    // subsequent self-call.
+    let after_decl = &window[window.find('{').unwrap_or(0)..];
+    assert!(
+        !after_decl.contains("collect_call_sites_from_block("),
+        "collect_call_sites_from_block in insight/calls.rs is recursive. \
+         CLAUDE.md requires iterative tree-sitter traversal — rewrite using \
+         an explicit `Vec<Node>` stack."
+    );
+}
