@@ -173,7 +173,16 @@ impl SymbolCache {
         data.extend_from_slice(&header_json);
         data.extend_from_slice(&objects_json);
 
+        // Cache may contain proprietary symbol data from private packages.
+        // Restrict the directory to user-only read/write/execute (0o700) on
+        // Unix; on other platforms fall back to the OS default since chmod
+        // semantics are not portable.
         fs::create_dir_all(&self.cache_dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&self.cache_dir, fs::Permissions::from_mode(0o700));
+        }
         self.cleanup_stale_tmp();
 
         // Write to a temp file in the same directory, then atomically rename.

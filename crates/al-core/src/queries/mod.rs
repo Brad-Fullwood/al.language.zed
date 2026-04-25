@@ -309,18 +309,18 @@ pub struct WorkspaceEdit {
 impl serde::Serialize for WorkspaceEdit {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
+        // Serialize the edits Vec<TextEdit> directly via the parent serializer
+        // rather than going through serde_json::to_value first. The previous
+        // implementation called `serde_json::to_value(edits).unwrap_or_default()`
+        // which silently dropped serialization errors and forced an extra
+        // allocation per entry.
         let mut map = serializer.serialize_map(Some(1))?;
-        let changes: serde_json::Map<String, serde_json::Value> = self
+        let changes_map: std::collections::HashMap<&str, &Vec<TextEdit>> = self
             .changes
             .iter()
-            .map(|(uri, edits)| {
-                (
-                    uri.as_str().to_string(),
-                    serde_json::to_value(edits).unwrap_or_default(),
-                )
-            })
+            .map(|(uri, edits)| (uri.as_str(), edits))
             .collect();
-        map.serialize_entry("changes", &changes)?;
+        map.serialize_entry("changes", &changes_map)?;
         map.end()
     }
 }

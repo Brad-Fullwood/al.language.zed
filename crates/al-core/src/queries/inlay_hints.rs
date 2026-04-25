@@ -115,6 +115,7 @@ fn collect_inlay_hints(
                         receiver_name.as_deref(),
                         text,
                         tree,
+                        &resolver,
                         position,
                         &arg_types,
                     );
@@ -348,6 +349,7 @@ fn lookup_parameter_names(
     receiver_name: Option<&str>,
     text: &str,
     tree: &tree_sitter::Tree,
+    resolver: &al_syntax::TypeResolver<'_>,
     position: Position,
     arg_types: &[Option<InferredType>],
 ) -> Vec<String> {
@@ -361,9 +363,9 @@ fn lookup_parameter_names(
 
     // 2. Receiver type resolution
     if let Some(recv) = receiver_name {
-        if let Some(names) =
-            lookup_via_receiver(workspace, func_name, recv, text, tree, position, arg_types)
-        {
+        if let Some(names) = lookup_via_receiver(
+            workspace, func_name, recv, text, tree, resolver, position, arg_types,
+        ) {
             return names;
         }
     }
@@ -407,16 +409,17 @@ fn lookup_parameter_names(
     Vec::new()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lookup_via_receiver(
     workspace: &Workspace,
     func_name: &str,
     receiver_name: &str,
-    text: &str,
-    tree: &tree_sitter::Tree,
+    _text: &str,
+    _tree: &tree_sitter::Tree,
+    resolver: &al_syntax::TypeResolver<'_>,
     position: Position,
     arg_types: &[Option<InferredType>],
 ) -> Option<Vec<String>> {
-    let resolver = al_syntax::TypeResolver::new(tree, text);
     let decl = resolver.resolve_type(receiver_name, position)?;
 
     // Builtins filtered by receiver type — use semantic_cache for O(1) type lookup

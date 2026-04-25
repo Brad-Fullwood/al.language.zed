@@ -520,11 +520,20 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
     match cmd {
         "summary" => {
             let stats = workspace.memory_stats();
-            let value = serde_json::to_value(&stats).unwrap_or(serde_json::Value::Null);
-            Response {
-                id,
-                result: Some(value),
-                error: None,
+            match serde_json::to_value(&stats) {
+                Ok(value) => Response {
+                    id,
+                    result: Some(value),
+                    error: None,
+                },
+                Err(e) => Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!("diag/summary serialization failed: {e}"),
+                    }),
+                },
             }
         }
         _ => Response {
