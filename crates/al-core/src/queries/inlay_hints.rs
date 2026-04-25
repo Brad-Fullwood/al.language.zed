@@ -74,6 +74,13 @@ fn collect_inlay_hints(
     range: &Range,
     hints: &mut Vec<InlayHint>,
 ) {
+    // Construct the TypeResolver ONCE and re-use it for every argument node.
+    // Previously we built a fresh resolver inside infer_argument_type for
+    // every argument — N call-sites means N full-AST scans (variables_at →
+    // collect_local/global/dataitem vars) per inlay-hints request, which
+    // dominates latency for long procedure-heavy files.
+    let resolver = al_syntax::TypeResolver::new(tree, text);
+
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         let node_start = node.start_position().row as u32;
@@ -91,7 +98,7 @@ fn collect_inlay_hints(
                         line: node.start_position().row as u32,
                         character: node.start_position().column as u32,
                     };
-                    let arg_types = infer_argument_types(node, source, text, tree, position);
+                    let arg_types = infer_argument_types(node, source, &resolver, position);
                     let param_names = lookup_parameter_names(
                         workspace,
                         doc_symbols,
@@ -128,8 +135,7 @@ struct OverloadCandidate {
 fn infer_argument_type(
     node: tree_sitter::Node<'_>,
     source: &[u8],
-    text: &str,
-    tree: &tree_sitter::Tree,
+    resolver: &al_syntax::TypeResolver<'_>,
     position: Position,
 ) -> Option<InferredType> {
     // Non-UTF8 node text means invalid expression — skip
@@ -180,7 +186,6 @@ fn infer_argument_type(
         });
     }
     let var_name = expr.trim_matches('"');
-    let resolver = al_syntax::TypeResolver::new(tree, text);
     if let Some(decl) = resolver.resolve_type(var_name, position) {
         return Some(InferredType {
             base: decl.type_name,
@@ -193,8 +198,7 @@ fn infer_argument_type(
 fn infer_argument_types(
     arg_list: tree_sitter::Node<'_>,
     source: &[u8],
-    text: &str,
-    tree: &tree_sitter::Tree,
+    resolver: &al_syntax::TypeResolver<'_>,
     position: Position,
 ) -> Vec<Option<InferredType>> {
     let expr_parent = arg_list
@@ -209,7 +213,7 @@ fn infer_argument_types(
         {
             continue;
         }
-        types.push(infer_argument_type(child, source, text, tree, position));
+        types.push(infer_argument_type(child, source, resolver, position));
     }
     types
 }
