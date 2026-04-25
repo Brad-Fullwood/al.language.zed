@@ -175,6 +175,28 @@ fn test_folding_ranges_does_not_return_tower_lsp_folding_range() {
     );
 }
 
+/// Reproduces: fdd0e58a6cd9865c — `inlay_hints()` previously returned
+/// `Option<Vec<tower_lsp::lsp_types::InlayHint>>`. Query functions must
+/// return transport-agnostic types.
+#[test]
+fn test_inlay_hints_does_not_return_tower_lsp_inlay_hint() {
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/queries/inlay_hints.rs"
+    ))
+    .expect("failed to read queries/inlay_hints.rs");
+    let fn_pos = source
+        .find("pub fn inlay_hints")
+        .expect("could not find inlay_hints");
+    let window = &source[fn_pos..(fn_pos + 600).min(source.len())];
+    let sig = window.split('{').next().unwrap_or(window);
+    assert!(
+        !sig.contains("Vec<InlayHint>") && !sig.contains("Vec<lsp_types::InlayHint>"),
+        "inlay_hints still returns tower_lsp InlayHint. \
+         Return Vec<AlInlayHint> instead and convert at the al-lsp boundary."
+    );
+}
+
 /// Reproduces: 8e48b967d935bfd5 — `get_or_build_insight_graph` in
 /// `workspace.rs` previously held a `std::sync::RwLock` write guard
 /// across `graph.build_from_index(...)`. The expensive build must run

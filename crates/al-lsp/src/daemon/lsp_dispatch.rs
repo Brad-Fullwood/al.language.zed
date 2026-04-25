@@ -237,7 +237,11 @@ pub(super) fn dispatch_inlay_hints(
         start: tower_lsp::lsp_types::Position::new(start_line, 0),
         end: tower_lsp::lsp_types::Position::new(end_line, u32::MAX),
     };
-    let hints = al_core::queries::inlay_hints::inlay_hints(workspace, &uri, range);
+    let hints = al_core::queries::inlay_hints::inlay_hints(workspace, &uri, range).map(|h| {
+        h.into_iter()
+            .map(tower_lsp::lsp_types::InlayHint::from)
+            .collect::<Vec<_>>()
+    });
     let value = hints
         .and_then(|h| serde_json::to_value(&h).ok()) // SILENT: serialization of valid structs should not fail
         .unwrap_or(serde_json::json!([]));

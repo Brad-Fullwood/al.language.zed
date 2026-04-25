@@ -12,12 +12,15 @@ use url::Url;
 use crate::workspace::Workspace;
 
 /// Get inlay hints for a range within a document.
+///
+/// Returns transport-agnostic `AlInlayHint` values; al-lsp converts to
+/// `tower_lsp::lsp_types::InlayHint` at the boundary.
 #[must_use]
 pub fn inlay_hints(
     workspace: &Workspace,
     uri: &Url,
     range: lsp_types::Range,
-) -> Option<Vec<InlayHint>> {
+) -> Option<Vec<super::AlInlayHint>> {
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
     let root = tree.root_node();
     let source = text.as_bytes();
@@ -56,7 +59,7 @@ pub fn inlay_hints(
     if hints.is_empty() {
         None
     } else {
-        Some(hints)
+        Some(hints.into_iter().map(Into::into).collect())
     }
 }
 

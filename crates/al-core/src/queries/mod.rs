@@ -548,6 +548,37 @@ impl From<AlInlayHint> for tower_lsp::lsp_types::InlayHint {
     }
 }
 
+impl From<tower_lsp::lsp_types::InlayHintKind> for AlInlayHintKind {
+    fn from(k: tower_lsp::lsp_types::InlayHintKind) -> Self {
+        if k == tower_lsp::lsp_types::InlayHintKind::TYPE {
+            AlInlayHintKind::Type
+        } else {
+            AlInlayHintKind::Parameter
+        }
+    }
+}
+
+impl From<tower_lsp::lsp_types::InlayHint> for AlInlayHint {
+    fn from(h: tower_lsp::lsp_types::InlayHint) -> Self {
+        let label = match h.label {
+            tower_lsp::lsp_types::InlayHintLabel::String(s) => AlInlayHintLabel::String(s),
+            // For label parts, concatenate values into a single string. We
+            // do not currently emit InlayHintLabel::LabelParts from al-core,
+            // so this branch is defensive.
+            tower_lsp::lsp_types::InlayHintLabel::LabelParts(parts) => {
+                AlInlayHintLabel::String(parts.into_iter().map(|p| p.value).collect())
+            }
+        };
+        Self {
+            position: h.position.into(),
+            label,
+            kind: h.kind.map(Into::into),
+            padding_left: h.padding_left,
+            padding_right: h.padding_right,
+        }
+    }
+}
+
 #[cfg(test)]
 mod query_types_tests {
     use super::*;
