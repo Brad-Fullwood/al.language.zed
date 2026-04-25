@@ -71,7 +71,7 @@ fn compute_cyclomatic(proc_node: Node, source: &[u8]) -> u32 {
     count
 }
 
-fn count_cyclomatic_decisions(node: Node, source: &[u8], count: &mut u32) {
+fn count_cyclomatic_decisions(node: Node, _source: &[u8], count: &mut u32) {
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
         match current.kind() {
@@ -88,14 +88,14 @@ fn count_cyclomatic_decisions(node: Node, source: &[u8], count: &mut u32) {
                     }
                 }
             }
-            "binary_expression" => {
-                // AND/OR operators add paths
-                if let Some(op_node) = current.child_by_field_name("op") {
-                    if let Ok(op) = op_node.utf8_text(source) {
-                        let lower = op.to_lowercase();
-                        if lower == "and" || lower == "or" {
-                            *count += 1;
-                        }
+            // Binary operators: the grammar does NOT wrap binary expressions in a
+            // `binary_expression` node — operators (op_and, op_or, etc.) appear as
+            // direct children inside expression nodes. Each AND/OR adds a path.
+            "expression" => {
+                let mut c = current.walk();
+                for child in current.children(&mut c) {
+                    if matches!(child.kind(), "op_and" | "op_or") {
+                        *count += 1;
                     }
                 }
             }
@@ -111,7 +111,7 @@ fn count_cyclomatic_decisions(node: Node, source: &[u8], count: &mut u32) {
 }
 
 /// Cognitive complexity: increments for structural nesting, with nesting multiplier.
-fn compute_cognitive(node: Node, source: &[u8]) -> u32 {
+fn compute_cognitive(node: Node, _source: &[u8]) -> u32 {
     let mut total = 0u32;
     // Stack holds (node, nesting_depth)
     let mut stack: Vec<(Node, u32)> = Vec::new();
@@ -148,14 +148,14 @@ fn compute_cognitive(node: Node, source: &[u8]) -> u32 {
                     stack.push((child, nesting + 1));
                 }
             }
-            "binary_expression" => {
-                // Boolean operators: count sequences
-                if let Some(op_node) = current.child_by_field_name("op") {
-                    if let Ok(op) = op_node.utf8_text(source) {
-                        let lower = op.to_lowercase();
-                        if lower == "and" || lower == "or" {
-                            total += 1;
-                        }
+            "expression" => {
+                // Boolean operators: count sequences. The grammar does NOT
+                // wrap binary expressions in a binary_expression node — the
+                // operators (op_and, op_or) are direct children of expression.
+                let mut cur = current.walk();
+                for child in current.children(&mut cur) {
+                    if matches!(child.kind(), "op_and" | "op_or") {
+                        total += 1;
                     }
                 }
                 let mut cur = current.walk();
