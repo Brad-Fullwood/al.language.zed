@@ -402,7 +402,10 @@ impl BcDebugSession {
             .replace("https://", "wss://")
             .replace("http://", "ws://");
         let ws_url = format!("{ws_url}?id={}", percent_encode_url(connection_token));
-        info!("SignalR WebSocket: {ws_url}");
+        // Redact the connection_token from the log line — it grants access to
+        // the active debug session and must not appear in plaintext logs.
+        let log_url = ws_url.split('?').next().unwrap_or(&ws_url);
+        info!("SignalR WebSocket: {log_url}?id=<redacted>");
 
         let request = tokio_tungstenite::tungstenite::http::Request::builder()
             .uri(&ws_url)
