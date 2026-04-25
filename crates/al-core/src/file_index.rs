@@ -90,7 +90,7 @@ pub struct CachedProcedureInfo {
     /// File path containing this procedure.
     pub file: PathBuf,
     /// Selection range of the procedure name (for go-to-definition).
-    pub selection_range: tower_lsp::lsp_types::Range,
+    pub selection_range: crate::queries::Range,
 }
 
 pub struct FileIndex {
@@ -288,7 +288,7 @@ impl FileIndex {
                         let proc_key = child.name.to_lowercase();
                         let info = CachedProcedureInfo {
                             file: path.clone(),
-                            selection_range: child.selection_range,
+                            selection_range: child.selection_range.into(),
                         };
                         self.procedures
                             .entry(proc_key.clone())
