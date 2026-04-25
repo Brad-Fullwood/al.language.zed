@@ -716,18 +716,16 @@ async fn test_diagnostics_syntax_error() {
     end;
 }"#;
 
+    // open_file already blocks until publishDiagnostics arrives — no extra
+    // sleep is needed.
     client.open_file("objects/test.al", code).await;
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let diags = client.drain_diagnostics();
-    let _all_messages: Vec<&str> = diags
-        .values()
-        .flat_map(|d| d.iter())
-        .filter_map(|d| d.get("message").and_then(|m| m.as_str()))
-        .collect();
-
-    // May or may not detect missing semicolon depending on tree-sitter grammar
-    // But at least diagnostics should be published (even if empty)
+    assert!(
+        diags.keys().any(|uri| uri.ends_with("objects/test.al")),
+        "publishDiagnostics must arrive for the opened URI; got keys: {:?}",
+        diags.keys().collect::<Vec<_>>()
+    );
 
     client.shutdown().await;
 }
@@ -939,8 +937,14 @@ async fn test_inlay_hints_on_procedure_call() {
 
     client.open_file("objects/test.al", code).await;
 
-    let _hints = client.inlay_hints("objects/test.al", 0, 12).await;
-    // May or may not produce hints depending on whether the call is detected
+    let hints = client.inlay_hints("objects/test.al", 0, 12).await;
+    // The fixture has a single-arg call; if inlay-hints regress to producing
+    // none, the test must surface that — assert at least one hint or accept
+    // empty only when the bridge is unavailable.
+    assert!(
+        !hints.is_empty(),
+        "inlay_hints should produce at least one parameter-name hint for the procedure call fixture; got empty"
+    );
 
     client.shutdown().await;
 }
@@ -961,12 +965,16 @@ async fn test_code_action_empty_begin_end() {
     end;
 }"#;
 
+    // open_file already waits for publishDiagnostics; no extra sleep needed.
     client.open_file("objects/test.al", code).await;
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-    // Get code actions at the empty begin..end
-    let _actions = client.code_actions("objects/test.al", 3, 5).await;
-    // Even if empty, shouldn't crash
+    let actions = client.code_actions("objects/test.al", 3, 5).await;
+    for action in &actions {
+        assert!(
+            action.get("title").and_then(|v| v.as_str()).is_some(),
+            "code action must have a title field, got: {action:?}"
+        );
+    }
 
     client.shutdown().await;
 }
