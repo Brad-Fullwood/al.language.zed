@@ -881,20 +881,26 @@ async fn zed_fidelity_diagnostic_range_is_utf16() {
     let dir = test_project_dir();
     let mut client = LspClient::spawn(&dir).await.unwrap();
 
-    client.open_file("src/zed_utf16.al", CODEUNIT_AL).await;
+    // Use AL code that triggers a syntax-error diagnostic so the assertion
+    // body actually fires. CODEUNIT_AL is well-formed and produces no
+    // diagnostics, so the previous 10×300ms poll loop wasted 3s without
+    // ever entering the for-loop below.
+    let bad_al = r#"codeunit 50100 "Zed Fidelity Bad"
+{
+    procedure Broken()
+    begin
+        Message('missing semicolon')
+    end
+}"#;
+    client.open_file("src/zed_utf16.al", bad_al).await;
 
-    // Collect any diagnostics
-    let mut all_diags: Vec<serde_json::Value> = vec![];
-    for _ in 0..10 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-        let diag_map = client.drain_diagnostics();
-        for diags in diag_map.into_values() {
-            all_diags.extend(diags);
-        }
-        if !all_diags.is_empty() {
-            break;
-        }
-    }
+    let diag_map = client.drain_diagnostics();
+    let all_diags: Vec<serde_json::Value> = diag_map.into_values().flatten().collect();
+    assert!(
+        !all_diags.is_empty(),
+        "syntax-error fixture must produce at least one diagnostic — \
+         the open_file await already drained the publishDiagnostics notification"
+    );
 
     for diag in &all_diags {
         let range = &diag["range"];

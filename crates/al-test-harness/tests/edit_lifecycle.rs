@@ -537,8 +537,22 @@ async fn test_edit_e01_rapid_edits_no_crash() {
         client.change_file_no_wait("src/rapid.al", &content).await;
     }
 
-    // Small delay to let server process
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Final change with wait — this synchronizes against publishDiagnostics
+    // for the last version, which is far more reliable on a loaded CI host
+    // than a fixed 500ms sleep.
+    let final_content = format!(
+        r#"codeunit 50100 "Edit Test"
+{{
+    procedure HelloWorld()
+    var
+        Msg: Text;
+    begin
+        Msg := 'Hello edit final';
+        Message(Msg);
+    end;
+}}"#
+    );
+    client.change_file("src/rapid.al", &final_content).await;
 
     // Server should still be responsive
     let symbols = client.document_symbols("src/rapid.al").await;

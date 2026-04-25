@@ -290,16 +290,25 @@ async fn test_regression_prepare_rename_returns_range() {
 }"#;
     client.open_file("src/rename_test.al", code).await;
 
-    // prepareRename on the variable name
+    // prepareRename on a clearly renamable identifier (`MyVar` at line 4
+    // col 10) — must return a range or range+placeholder.
     let result = client.prepare_rename("src/rename_test.al", 4, 10).await;
-    if let Some(range) = result {
-        // Should return a range covering the identifier
-        assert!(
-            range.get("start").is_some() || range.get("range").is_some(),
-            "prepareRename should return a range or range+placeholder: {range}"
-        );
-    }
-    // If None, the server doesn't support prepareRename for this position — acceptable
+    let range = result.expect(
+        "prepareRename on a renamable identifier (MyVar) must return Some — \
+         accepting None hides regressions in prepareRename support",
+    );
+    assert!(
+        range.get("start").is_some() || range.get("range").is_some(),
+        "prepareRename should return a range or range+placeholder: {range}"
+    );
+
+    // Negative case: prepareRename on a keyword (`procedure` at line 2 col 4)
+    // must return None — the server cannot rename language keywords.
+    let on_keyword = client.prepare_rename("src/rename_test.al", 2, 4).await;
+    assert!(
+        on_keyword.is_none(),
+        "prepareRename on the `procedure` keyword must return None, got: {on_keyword:?}"
+    );
 
     client.shutdown().await;
 }
