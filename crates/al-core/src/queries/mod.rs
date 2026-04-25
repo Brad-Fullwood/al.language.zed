@@ -2,8 +2,6 @@
 //!
 //! Each query takes `&Workspace` and returns transport-agnostic types.
 //! al-lsp converts results to LSP types at the boundary.
-//!
-//! T301: skeleton with stubs. T302: full migration from al-lsp.
 
 pub mod arch_lint;
 pub mod audit;
