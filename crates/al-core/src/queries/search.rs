@@ -114,8 +114,8 @@ pub fn workspace_search_children(
                     results.push(WorkspaceChildSearchResult {
                         file_path: file_path.clone(),
                         name: child.name.clone(),
-                        kind: child.kind,
-                        range: child.range,
+                        kind: child.kind.into(),
+                        range: child.range.into(),
                         container_name: container_name.clone(),
                     });
                 }

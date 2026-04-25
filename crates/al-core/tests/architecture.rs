@@ -39,3 +39,37 @@ fn test_file_index_source_is_readable() {
         "Could not read crates/al-core/src/file_index.rs — path assumption is wrong"
     );
 }
+
+/// Reproduces: eb12bf9fb43d529d — FileIndex.file_symbols and get_cached_symbols use
+/// tower_lsp::lsp_types::DocumentSymbol as the stored/returned type inside al-core,
+/// violating the dependency-direction rule (al-core must not embed LSP wire types).
+#[test]
+fn test_file_index_does_not_embed_tower_lsp_document_symbol() {
+    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/file_index.rs"))
+        .expect("failed to read file_index.rs");
+
+    // Check the file_symbols field declaration line specifically.
+    // We scan line by line so we only flag the field declaration, not comments.
+    let field_violation = source.lines().any(|line| {
+        // The line must declare file_symbols as a DashMap containing the LSP wire type.
+        line.contains("file_symbols") && line.contains("tower_lsp::lsp_types::DocumentSymbol")
+    });
+    assert!(
+        !field_violation,
+        "FileIndex.file_symbols in file_index.rs stores \
+         `tower_lsp::lsp_types::DocumentSymbol` — an LSP wire type — directly \
+         inside al-core. Replace with a crate-local `AlDocumentSymbol` type and \
+         convert to DocumentSymbol at the al-lsp boundary."
+    );
+
+    // Also check get_cached_symbols return type.
+    let return_violation = source.lines().any(|line| {
+        line.contains("get_cached_symbols") && line.contains("tower_lsp::lsp_types::DocumentSymbol")
+    });
+    assert!(
+        !return_violation,
+        "get_cached_symbols in file_index.rs returns \
+         `tower_lsp::lsp_types::DocumentSymbol` — an LSP wire type. \
+         Return a crate-local type instead and convert at the al-lsp boundary."
+    );
+}

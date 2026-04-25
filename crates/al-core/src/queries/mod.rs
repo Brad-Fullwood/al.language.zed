@@ -462,6 +462,20 @@ impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
     }
 }
 
+#[allow(deprecated)]
+impl From<tower_lsp::lsp_types::DocumentSymbol> for AlDocumentSymbol {
+    fn from(s: tower_lsp::lsp_types::DocumentSymbol) -> Self {
+        Self {
+            name: s.name,
+            detail: s.detail,
+            kind: s.kind.into(),
+            range: s.range.into(),
+            selection_range: s.selection_range.into(),
+            children: s.children.map(|v| v.into_iter().map(Into::into).collect()),
+        }
+    }
+}
+
 impl From<AlFoldingRangeKind> for tower_lsp::lsp_types::FoldingRangeKind {
     fn from(k: AlFoldingRangeKind) -> Self {
         match k {

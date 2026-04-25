@@ -107,7 +107,7 @@ pub struct FileIndex {
     /// File path → cached parse tree (avoids re-parsing for cross-file queries).
     pub file_trees: DashMap<PathBuf, tree_sitter::Tree>,
     /// File path → cached document symbols (avoids re-extracting for cross-file queries).
-    pub(crate) file_symbols: DashMap<PathBuf, Vec<tower_lsp::lsp_types::DocumentSymbol>>,
+    pub(crate) file_symbols: DashMap<PathBuf, Vec<crate::queries::AlDocumentSymbol>>,
     /// Lowercase procedure/event name → location (reverse index for O(1) go-to-definition).
     pub(crate) procedures: DashMap<String, Vec<CachedProcedureInfo>>,
     /// File path → list of procedure names (for cleanup on file remove/update).
@@ -151,16 +151,17 @@ impl FileIndex {
     ///
     /// Returns the symbols extracted at index time. Falls back to extracting
     /// from the cached parse tree if symbols were not cached (shouldn't happen).
-    pub fn get_cached_symbols(
-        &self,
-        path: &Path,
-    ) -> Option<Vec<tower_lsp::lsp_types::DocumentSymbol>> {
+    pub fn get_cached_symbols(&self, path: &Path) -> Option<Vec<crate::queries::AlDocumentSymbol>> {
         if let Some(entry) = self.file_symbols.get(path) {
             return Some(entry.value().clone());
         }
         // Fallback: extract from cached parse tree
         let (text, tree) = self.get_cached_parse(path)?;
-        let symbols = al_syntax::extract_document_symbols(&tree, &text);
+        let symbols: Vec<crate::queries::AlDocumentSymbol> =
+            al_syntax::extract_document_symbols(&tree, &text)
+                .into_iter()
+                .map(Into::into)
+                .collect();
         self.file_symbols
             .insert(path.to_path_buf(), symbols.clone());
         Some(symbols)
@@ -303,8 +304,10 @@ impl FileIndex {
             self.path_to_procedures.insert(path.clone(), proc_names);
         }
 
-        // Cache document symbols for cross-file queries.
-        self.file_symbols.insert(path.clone(), doc_symbols);
+        // Cache document symbols for cross-file queries (convert to crate-local type).
+        let al_doc_symbols: Vec<crate::queries::AlDocumentSymbol> =
+            doc_symbols.into_iter().map(Into::into).collect();
+        self.file_symbols.insert(path.clone(), al_doc_symbols);
 
         self.files.insert(path, content);
     }

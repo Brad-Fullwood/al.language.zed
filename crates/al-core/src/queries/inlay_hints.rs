@@ -6,9 +6,7 @@
 //! Also provides return type hints for procedure declarations when
 //! `al.inlayhints.returnTypes` is enabled.
 
-use tower_lsp::lsp_types::{
-    self, DocumentSymbol, InlayHint, InlayHintKind, InlayHintLabel, Position, Range,
-};
+use tower_lsp::lsp_types::{self, InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 use url::Url;
 
 use crate::workspace::Workspace;
@@ -34,7 +32,11 @@ pub fn inlay_hints(
     };
 
     if param_hints {
-        let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
+        let doc_symbols: Vec<super::AlDocumentSymbol> =
+            al_syntax::extract_document_symbols(&tree, &text)
+                .into_iter()
+                .map(Into::into)
+                .collect();
         collect_inlay_hints(
             root,
             source,
@@ -65,7 +67,7 @@ fn collect_inlay_hints(
     text: &str,
     tree: &tree_sitter::Tree,
     workspace: &Workspace,
-    doc_symbols: &[DocumentSymbol],
+    doc_symbols: &[super::AlDocumentSymbol],
     range: &Range,
     hints: &mut Vec<InlayHint>,
 ) {
@@ -325,7 +327,7 @@ fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) ->
 #[allow(clippy::too_many_arguments)]
 fn lookup_parameter_names(
     workspace: &Workspace,
-    doc_symbols: &[DocumentSymbol],
+    doc_symbols: &[super::AlDocumentSymbol],
     func_name: &str,
     receiver_name: Option<&str>,
     text: &str,
@@ -470,12 +472,11 @@ fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
 
 use super::parse_detail_params;
 
-/// Collect `OverloadCandidate` entries from a slice of `DocumentSymbol` for the given
+/// Collect `OverloadCandidate` entries from a slice of `AlDocumentSymbol` for the given
 /// function name. Shared by `lookup_parameter_names` (local file) and
 /// `lookup_via_receiver` (resolved-type file) to avoid duplicating the nested loop.
-#[allow(deprecated)]
 fn overload_candidates_from_symbols(
-    symbols: &[tower_lsp::lsp_types::DocumentSymbol],
+    symbols: &[super::AlDocumentSymbol],
     func_name: &str,
 ) -> Vec<OverloadCandidate> {
     let mut candidates = Vec::new();
@@ -483,7 +484,7 @@ fn overload_candidates_from_symbols(
         if let Some(children) = &sym.children {
             for child in children {
                 if child.name.eq_ignore_ascii_case(func_name)
-                    && super::is_procedure_symbol(child.kind.into())
+                    && super::is_procedure_symbol(child.kind)
                 {
                     if let Some(detail) = &child.detail {
                         let params = parse_detail_params(detail);

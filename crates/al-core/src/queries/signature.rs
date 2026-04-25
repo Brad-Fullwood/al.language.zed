@@ -252,7 +252,7 @@ fn resolve_receiver_signature(
         if let Some(children) = &sym.children {
             for child in children {
                 if child.name.eq_ignore_ascii_case(func_name)
-                    && super::is_procedure_symbol(child.kind.into())
+                    && super::is_procedure_symbol(child.kind)
                 {
                     let detail = child.detail.as_deref().unwrap_or("()");
                     let parameters = parse_parameters_from_detail(detail);
