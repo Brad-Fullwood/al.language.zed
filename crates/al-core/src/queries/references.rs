@@ -41,8 +41,19 @@ pub fn references(
     }
 
     let current_path = uri.to_file_path().ok(); // SILENT: non-file URIs legitimately have no path
-    for entry in workspace.file_index.files.iter() {
-        let file_path = entry.key().clone();
+
+    // Snapshot the file paths in a single short-lived DashMap iteration so we
+    // do not hold a shard lock across cached-parse lookups + AST walks. This
+    // matters because `find_variable_references` is non-trivial work and
+    // holding the shard lock blocks any concurrent file_index update.
+    let file_paths: Vec<std::path::PathBuf> = workspace
+        .file_index
+        .files
+        .iter()
+        .map(|e| e.key().clone())
+        .collect();
+
+    for file_path in file_paths {
         if current_path.as_ref() == Some(&file_path) {
             continue;
         }

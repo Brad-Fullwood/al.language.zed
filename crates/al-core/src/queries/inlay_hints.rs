@@ -35,11 +35,20 @@ pub fn inlay_hints(
     };
 
     if param_hints {
-        let doc_symbols: Vec<super::AlDocumentSymbol> =
-            al_syntax::extract_document_symbols(&tree, &text)
-                .into_iter()
-                .map(Into::into)
-                .collect();
+        // Prefer the cached symbols already populated by the file index to
+        // avoid re-extracting on every keystroke. Fall back to a fresh
+        // extraction only when the cache is empty (e.g., a virtual document
+        // not stored on disk).
+        let file_path = uri.to_file_path().ok();
+        let doc_symbols: Vec<super::AlDocumentSymbol> = file_path
+            .as_ref()
+            .and_then(|p| workspace.file_index.get_cached_symbols(p))
+            .unwrap_or_else(|| {
+                al_syntax::extract_document_symbols(&tree, &text)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            });
         collect_inlay_hints(
             root,
             source,

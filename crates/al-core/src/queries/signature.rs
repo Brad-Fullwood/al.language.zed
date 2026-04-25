@@ -1,5 +1,7 @@
 //! Signature help query.
 
+use std::sync::Arc;
+
 use url::Url;
 
 use super::Position;
@@ -165,8 +167,15 @@ pub fn signature_help(
         }
     }
 
-    // Built-in types — collect all overloads
-    let builtins = workspace.builtins.read().unwrap_or_else(|e| e.into_inner()); // SILENT: recover from poison
+    // Built-in types — collect all overloads.
+    // Take a clone of the Arc<Vec<BuiltinType>> and immediately drop the
+    // read guard. The builtins value is itself an Arc, so the clone is a
+    // single refcount bump — far cheaper than holding the lock across the
+    // nested overload-collection loops.
+    let builtins = {
+        let guard = workspace.builtins.read().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(&*guard)
+    };
     let mut signatures = Vec::new();
     for bt in builtins.iter() {
         for method in &bt.methods {
