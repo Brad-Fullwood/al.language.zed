@@ -131,6 +131,28 @@ fn test_resolution_source_is_readable() {
     );
 }
 
+/// Reproduces: ca6efab0bb29e004 — `document_symbols()` in queries/symbols.rs
+/// previously returned `tower_lsp::lsp_types::DocumentSymbolResponse`. Query
+/// functions must return transport-agnostic types.
+#[test]
+fn test_document_symbols_does_not_return_tower_lsp_response() {
+    let source = fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/queries/symbols.rs"
+    ))
+    .expect("failed to read queries/symbols.rs");
+    let fn_pos = source
+        .find("fn document_symbols")
+        .expect("could not find document_symbols");
+    let window = &source[fn_pos..(fn_pos + 400).min(source.len())];
+    let sig = window.split('{').next().unwrap_or(window);
+    assert!(
+        !sig.contains("tower_lsp::lsp_types::DocumentSymbolResponse"),
+        "document_symbols still returns tower_lsp::lsp_types::DocumentSymbolResponse. \
+         Return Vec<AlDocumentSymbol> instead and convert at the al-lsp boundary."
+    );
+}
+
 /// Reproduces: 8e48b967d935bfd5 — `get_or_build_insight_graph` in
 /// `workspace.rs` previously held a `std::sync::RwLock` write guard
 /// across `graph.build_from_index(...)`. The expensive build must run

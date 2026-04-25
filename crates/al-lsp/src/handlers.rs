@@ -14,7 +14,10 @@ pub(crate) fn handle_document_symbol(
     server: &AlServer,
     uri: &Url,
 ) -> Option<DocumentSymbolResponse> {
-    al_core::queries::symbols::document_symbols(&server.workspace, uri)
+    let symbols = al_core::queries::symbols::document_symbols(&server.workspace, uri)?;
+    Some(DocumentSymbolResponse::Nested(
+        symbols.into_iter().map(Into::into).collect(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
