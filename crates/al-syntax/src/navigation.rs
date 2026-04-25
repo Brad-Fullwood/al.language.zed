@@ -4,12 +4,18 @@ use crate::traversal::walk_tree;
 pub use tower_lsp::lsp_types::Position;
 use tree_sitter::{Node, Tree};
 
-/// Find the most specific node at a given position.
-pub fn find_node_at_position(tree: &Tree, pos: Position) -> Option<Node<'_>> {
-    let point = tree_sitter::Point {
-        row: pos.line as usize,
-        column: pos.character as usize,
-    };
+/// Find the most specific node at a given LSP position.
+///
+/// `pos.character` is a UTF-16 code unit offset, while tree-sitter's
+/// `Point.column` is a byte offset. The conversion requires the source
+/// line, so the caller must pass the parsed source text along with the
+/// tree. ASCII-only lines are equal in both representations; lines with
+/// non-ASCII characters need the conversion to land on the correct node.
+pub fn find_node_at_position<'a>(tree: &'a Tree, source: &str, pos: Position) -> Option<Node<'a>> {
+    let row = pos.line as usize;
+    let line = source.lines().nth(row).unwrap_or("");
+    let column = crate::utf16_col_to_byte_offset(line, pos.character as usize);
+    let point = tree_sitter::Point { row, column };
     let root = tree.root_node();
     root.descendant_for_point_range(point, point)
 }
@@ -151,7 +157,7 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
 
 /// Find a procedure at the given position.
 pub fn find_procedure_at(tree: &Tree, text: &str, pos: Position) -> Option<ProcedureInfo> {
-    let node = find_node_at_position(tree, pos)?;
+    let node = find_node_at_position(tree, text, pos)?;
     let source = text.as_bytes();
 
     // Walk up to find the procedure/trigger node
@@ -499,12 +505,39 @@ mod tests {
         let result = parser.parse(src);
         let node = find_node_at_position(
             &result.tree,
+            src,
             Position {
                 line: 0,
                 character: 0,
             },
         );
         assert!(node.is_some());
+    }
+
+    /// Reproduces tb-003 / 0a40a392e926a846: find_node_at_position must convert
+    /// the LSP UTF-16 column to a byte column before constructing the
+    /// tree-sitter Point. The fixture contains a non-ASCII identifier (`Ø`) so
+    /// the wrong column would land on the wrong node.
+    #[test]
+    fn test_find_node_at_position_utf16_after_multibyte() {
+        let src = "codeunit 50100 Test\n{\n    var\n        ØreName: Text;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        // UTF-16 column 8 is the start of `Ø` (after 8 leading spaces).
+        let pos = Position {
+            line: 3,
+            character: 8,
+        };
+        let node = find_node_at_position(&result.tree, src, pos)
+            .expect("should resolve to a node at the Ø identifier position");
+        let bytes = src.as_bytes();
+        let txt = std::str::from_utf8(&bytes[node.byte_range()]).unwrap_or("");
+        assert!(
+            txt.contains('Ø') || node.kind().contains("identifier"),
+            "expected to land on the ØreName identifier, got node kind={} text={:?}",
+            node.kind(),
+            txt
+        );
     }
 
     #[test]
@@ -515,7 +548,7 @@ mod tests {
             line: 999,
             character: 0,
         };
-        let node = find_node_at_position(&result.tree, pos);
+        let node = find_node_at_position(&result.tree, "codeunit 50100 Test { }", pos);
         // Out-of-range position should not panic; tree-sitter clamps to nearest node
         assert!(
             node.is_some(),

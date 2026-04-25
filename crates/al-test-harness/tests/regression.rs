@@ -251,17 +251,15 @@ async fn test_regression_utf16_position_after_multibyte() {
 }"#;
     client.open_file("src/utf16_test.al", code).await;
 
-    // Hover on ØreName — this documents ISSUE-024 (UTF-16 position bugs).
-    // Ø is 2 bytes in UTF-8 but 1 code unit in UTF-16.
-    // Currently, hover returns None due to byte/UTF-16 offset confusion.
-    // When ISSUE-024 is fixed, change this assertion to assert!(hover.is_some()).
-    let hover = client.hover("src/utf16_test.al", 4, 1).await;
-    if hover.is_none() {
-        eprintln!(
-            "KNOWN BUG (ISSUE-024): hover on Ø identifier returns None — UTF-16 position bug"
-        );
-    }
-    // At minimum, it should not crash
+    // Hover on ØreName. The UTF-16 column for Ø after 8 leading spaces is 8;
+    // line 4 (0-based) is the `ØreName: Text;` declaration. Once tb-003 is
+    // landed, hover must succeed at this position.
+    let hover = client.hover("src/utf16_test.al", 4, 8).await;
+    assert!(
+        hover.is_some(),
+        "tb-003 / ISSUE-024 regression: hover on Ø identifier must resolve. \
+         find_node_at_position must convert LSP UTF-16 column to byte offset."
+    );
     let symbols = client.document_symbols("src/utf16_test.al").await;
     assert!(
         !symbols.is_empty(),

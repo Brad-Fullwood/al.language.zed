@@ -15,7 +15,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
-    let node = al_syntax::find_node_at_position(&tree, lsp_pos)?;
+    let node = al_syntax::find_node_at_position(&tree, &text, lsp_pos)?;
     let source = text.as_bytes();
     let clean_name = super::node_clean_name(node, source)?;
 

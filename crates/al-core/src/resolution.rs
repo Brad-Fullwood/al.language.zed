@@ -76,7 +76,7 @@ pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Opt
         return Some(path);
     }
 
-    let Some(node) = al_syntax::find_node_at_position(tree, position) else {
+    let Some(node) = al_syntax::find_node_at_position(tree, text, position) else {
         tracing::debug!(
             line = position.line,
             character = position.character,

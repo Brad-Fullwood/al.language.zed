@@ -21,7 +21,7 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
         return Vec::new();
     };
 
-    let Some(node) = al_syntax::find_node_at_position(&tree, lsp_pos) else {
+    let Some(node) = al_syntax::find_node_at_position(&tree, &text, lsp_pos) else {
         return Vec::new();
     };
     let Some(interface_name) = super::node_clean_name(node, text.as_bytes()) else {

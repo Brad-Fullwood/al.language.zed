@@ -19,7 +19,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
-    let node = al_syntax::find_node_at_position(&tree, lsp_pos)?;
+    let node = al_syntax::find_node_at_position(&tree, &text, lsp_pos)?;
     let source = text.as_bytes();
     // Non-UTF8 node text means the node isn't a valid identifier — skip silently
     let node_text = node.utf8_text(source).unwrap_or("");

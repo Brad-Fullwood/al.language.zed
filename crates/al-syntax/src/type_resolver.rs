@@ -193,10 +193,17 @@ impl<'a> TypeResolver<'a> {
 
     /// Find the procedure/trigger declaration enclosing the given position.
     fn find_enclosing_procedure(&self, position: Position) -> Option<Node<'a>> {
-        let point = tree_sitter::Point {
-            row: position.line as usize,
-            column: position.character as usize,
-        };
+        // Convert the LSP UTF-16 column to a byte column before constructing
+        // the tree-sitter Point. Otherwise lines containing non-ASCII
+        // identifiers resolve to the wrong descendant and we silently fall
+        // through to the text-scanning fallback.
+        let row = position.line as usize;
+        let line = std::str::from_utf8(self.source)
+            .ok()
+            .and_then(|s| s.lines().nth(row).map(str::to_string))
+            .unwrap_or_default();
+        let column = crate::utf16_col_to_byte_offset(&line, position.character as usize);
+        let point = tree_sitter::Point { row, column };
 
         let node = self
             .tree
