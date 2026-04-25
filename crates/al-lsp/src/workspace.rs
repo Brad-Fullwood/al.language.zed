@@ -190,7 +190,9 @@ pub(crate) async fn initialize_workspace(
                 }
             }
             // Mark as shown only after user explicitly responded (Yes or No).
-            mark_settings_prompt_shown();
+            // Run the sentinel write on the blocking pool so the async
+            // executor thread is not stalled on disk I/O.
+            tokio::task::spawn_blocking(mark_settings_prompt_shown);
         }
         // If show_message_request returned Ok(None) or Err, do NOT mark —
         // the prompt was dismissed/lost, so retry next time.

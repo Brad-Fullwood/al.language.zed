@@ -2190,13 +2190,16 @@ pub(super) fn dispatch_breaking_changes(
 }
 
 pub(super) fn dispatch_arch_lint(workspace: &Workspace, id: u64) -> Response {
-    // Load .alarch.json from project root if present; fall back to defaults
+    // Load .alarch.json from project root if present; fall back to defaults.
+    // The synchronous fs::read_to_string is wrapped in block_in_place so the
+    // async runtime hosting this dispatch can re-schedule the parked thread
+    // for other work while the read is in flight (matches dispatch_format).
     let config = workspace
         .project
         .try_read()
         .ok()
         .and_then(|p| p.as_ref().map(|p| p.root.join(".alarch.json")))
-        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|path| tokio::task::block_in_place(|| std::fs::read_to_string(path).ok()))
         .and_then(|json| al_core::queries::arch_lint::ArchConfig::from_json(&json).ok())
         .unwrap_or_default();
     let violations = al_core::queries::arch_lint::arch_lint(workspace, &config);

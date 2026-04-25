@@ -175,9 +175,12 @@ fn cli_version_outputs_version_info() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // cmd_version prints `al <version>` (binary name without the `-cli`
+    // suffix) — the prior `al-cli` substring assertion was always met by
+    // the `0.1.0`/`version` fallbacks, so it never tightened the test.
     assert!(
-        stdout.contains("al-cli") || stdout.contains("0.1.0") || stdout.contains("version"),
-        "Version output should contain version info, got: {}",
+        stdout.starts_with("al ") && stdout.contains('.'),
+        "Version output should start with `al ` and contain a version, got: {}",
         stdout
     );
 }

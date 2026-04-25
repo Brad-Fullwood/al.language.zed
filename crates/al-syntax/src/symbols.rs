@@ -543,9 +543,14 @@ fn extract_triggers_from_braced_block(
                     let trigger_kw_range = child.range();
                     if let Some(name_node) = child.next_sibling() {
                         let name_kind = name_node.kind();
+                        // `keyword` is rejected: bare keyword nodes are produced
+                        // for AL reserved words used as identifier-like tokens
+                        // (e.g. `var`), but they are NOT trigger names — matching
+                        // them produced bogus DocumentSymbols. Restrict to true
+                        // identifier-like node kinds.
                         if matches!(
                             name_kind,
-                            "identifier" | "name" | "name_or_keyword" | "keyword"
+                            "identifier" | "name" | "name_or_keyword" | "quoted_identifier"
                         ) {
                             if let Ok(name_text) = name_node.utf8_text(source) {
                                 let name = name_text.trim_matches('"').to_string();
