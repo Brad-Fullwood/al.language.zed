@@ -133,10 +133,18 @@ pub fn cmd_doctor(json: bool) -> ExitCode {
         .get("workspaceFiles")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    println!(
-        "[OK] {} symbols indexed, {} workspace files",
-        symbols, files
-    );
+    if symbols > 0 && files > 0 {
+        println!(
+            "[OK] {} symbols indexed, {} workspace files",
+            symbols, files
+        );
+    } else {
+        println!(
+            "[!!] {} symbols indexed, {} workspace files — daemon may still be loading",
+            symbols, files
+        );
+        any_failed = true;
+    }
     if any_failed {
         ExitCode::FAILURE
     } else {
