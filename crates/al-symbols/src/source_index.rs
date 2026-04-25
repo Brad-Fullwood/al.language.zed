@@ -60,6 +60,13 @@ impl AppSourceIndex {
         let mut by_kind_id = HashMap::new();
         let mut by_kind_name = HashMap::new();
 
+        // Zip-bomb guard: cap total decompressed bytes across all `.al` entries
+        // so a malicious .app cannot expand to gigabytes during scan. 1 GiB is
+        // far above any plausible legitimate package and well below typical
+        // memory limits.
+        const MAX_TOTAL_DECOMPRESSED_BYTES: u64 = 1_073_741_824; // 1 GiB
+        let mut total_decompressed: u64 = 0;
+
         for i in 0..archive.len() {
             let file = archive.by_index(i)?;
             let name = file.name().to_string();
@@ -71,6 +78,13 @@ impl AppSourceIndex {
             let mut limited = file.take(MAX_HEADER_BYTES as u64);
             if limited.read_to_end(&mut buf).is_err() {
                 continue;
+            }
+            total_decompressed = total_decompressed.saturating_add(buf.len() as u64);
+            if total_decompressed > MAX_TOTAL_DECOMPRESSED_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "decompressed .al header bytes exceed 1 GiB total — refusing potential zip bomb",
+                ));
             }
 
             if let Some((kind, id, obj_name)) = parse_object_header(&buf) {
