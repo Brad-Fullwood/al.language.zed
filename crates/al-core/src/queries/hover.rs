@@ -297,10 +297,17 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         }
     }
 
-    // 5. Check workspace object name index
-    if let Some(file_path_entry) = workspace.file_index.objects.get(&clean_name.to_lowercase()) {
-        let file_path = file_path_entry.value();
-        if let Some(cached) = workspace.file_index.object_info.get(file_path) {
+    // 5. Check workspace object name index.
+    // Clone the file_path out of the first DashMap entry and drop the ref
+    // before doing the second lookup, so we are never holding two shard
+    // locks across the format! call.
+    let file_path = workspace
+        .file_index
+        .objects
+        .get(&clean_name.to_lowercase())
+        .map(|entry| entry.value().clone());
+    if let Some(file_path) = file_path {
+        if let Some(cached) = workspace.file_index.object_info.get(&file_path) {
             let info = cached.value();
             let content = format!(
                 "```al\n{} {} \"{}\"\n```\n*(workspace)*",

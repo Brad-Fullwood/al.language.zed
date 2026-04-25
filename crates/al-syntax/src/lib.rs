@@ -127,6 +127,13 @@ pub fn count_net_delimiters(line: &str, open: char, close: char) -> i32 {
             break;
         }
         if ch == '\'' {
+            // AL escapes single quotes inside string literals by doubling
+            // them ('').  A `''` sequence inside a string keeps `in_string`
+            // true; a single `'` toggles the flag.
+            if in_string && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                i += 2;
+                continue;
+            }
             in_string = !in_string;
             i += 1;
             continue;

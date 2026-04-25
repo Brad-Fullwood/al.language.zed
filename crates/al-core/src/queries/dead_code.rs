@@ -198,6 +198,11 @@ fn text_contains_call_outside_declaration(text: &str, proc_name: &str) -> bool {
     let name_lower = proc_name.to_lowercase();
     let call_pat = format!("{}(", name_lower);
     for line in text.lines() {
+        let trimmed = line.trim_start();
+        // Skip line-comments — `// MyProc(` should not be treated as a call.
+        if trimmed.starts_with("//") {
+            continue;
+        }
         let lower = line.to_lowercase();
         // Skip the declaration line itself
         if lower.contains("procedure ") && lower.contains(&name_lower) {

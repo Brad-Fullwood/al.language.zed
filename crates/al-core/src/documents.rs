@@ -150,11 +150,14 @@ fn position_to_offset(rope: &Rope, line: u32, character: u32) -> Option<usize> {
         return None;
     }
     // LSP positions are UTF-16 code units; ropey chars are Unicode scalar values.
-    // Convert via byte offset to avoid wrong offsets for non-BMP characters.
+    // Use ropey's native utf16_cu_to_char on the line slice to avoid
+    // allocating a fresh String (rope.line(line).to_string() copies the
+    // entire line on every position-to-offset call).
+    let line_slice = rope.line(line);
     let line_byte_start = rope.line_to_byte(line);
-    let line_string = rope.line(line).to_string();
-    let byte_col = crate::resolution::utf16_col_to_byte_offset(&line_string, character as usize);
-    Some(rope.byte_to_char(line_byte_start + byte_col))
+    let utf16_idx = (character as usize).min(line_slice.len_utf16_cu());
+    let char_in_line = line_slice.utf16_cu_to_char(utf16_idx);
+    Some(rope.byte_to_char(line_byte_start) + char_in_line)
 }
 
 #[cfg(test)]
