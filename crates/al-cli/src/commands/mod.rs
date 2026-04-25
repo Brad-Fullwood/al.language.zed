@@ -55,6 +55,12 @@ pub fn project_root(project_arg: Option<&str>) -> PathBuf {
 }
 
 /// Convert a file path to a file:// URI string.
+///
+/// Returns `None` when the path cannot be canonicalized (i.e. the file does
+/// not exist on disk). Previously this silently fell back to the
+/// non-canonicalized path, which produced URIs the daemon could not match
+/// against its open-document map and led to mysterious "no result" responses
+/// for typo'd paths. Returning `None` lets callers surface a clear error.
 pub fn file_to_uri(file: &str) -> Option<String> {
     let path = std::path::Path::new(file);
     let abs = if path.is_absolute() {
@@ -62,7 +68,13 @@ pub fn file_to_uri(file: &str) -> Option<String> {
     } else {
         std::env::current_dir().ok()?.join(path)
     };
-    let canon = abs.canonicalize().unwrap_or(abs);
+    let canon = match abs.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("error: file not found: {}", abs.display());
+            return None;
+        }
+    };
     url::Url::from_file_path(canon).ok().map(|u| u.to_string())
 }
 
