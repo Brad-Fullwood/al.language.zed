@@ -4,6 +4,9 @@
 .alpackages/
 .claude/worktrees/
 
+# Agentic loop run directories (Review/Arch/Dev/Release/Overseer)
+.agentic/
+
 # .NET build artifacts (all obj/ and bin/ under any .NET project)
 **/obj/
 **/bin/

@@ -383,6 +383,42 @@ These are invoked when the user explicitly asks, or when the situation clearly c
 | "audit", "security check" | `/audit` |
 | "test this crate" | `/test-crate <crate>` |
 | CI is failing | `/fix-ci` |
+| "deep review", "exhaustive review", "ultrareview" | `/review-all` (Review Department) |
+| "design a refactor", "architect this task" | `/arch-plan <handoff.json>` |
+| "implement these findings", "fix the review output" | `/dev-implement <handoff.json>` |
+| "ship this batch", "prepare a PR" | `/release-prep` |
+| "run the full loop", "autonomous review→fix→ship" | `/loop` (Operations Overseer) |
+
+---
+
+## Agentic Loop (Review → Arch → Dev → Release)
+
+Heavy-weight workflow for exhaustive, reviewer-led improvement cycles.
+`/review-all` replaces what Anthropic's cloud `/ultrareview` used to do,
+and the remaining departments close the loop so findings actually get
+acted on.
+
+Map: [`.claude/docs/agentic/organization.md`](.claude/docs/agentic/organization.md)
+
+State directory contract:
+[`.claude/docs/agentic/state-dir.md`](.claude/docs/agentic/state-dir.md)
+(always under `.agentic/<run-id>/`, gitignored).
+
+Key behaviours to know when working with the loop:
+
+- **Everything is file-based.** Departments communicate via JSON/JSONL
+  artefacts in `.agentic/<run-id>/`, never via in-memory context.
+- **Schemas are versioned.** See [`.claude/docs/agentic/schema-version.md`](.claude/docs/agentic/schema-version.md).
+- **Departments are independently invocable.** A human can run
+  `/dev-implement` on a handoff file produced last week without
+  re-running Review.
+- **Nightly Routine.** `review-all-nightly` runs `/review-all` on `dev`
+  at 03:00 local. Disable via `/routines`.
+- **Persistent human-readable log.** `docs/agentic-log.md` summarises
+  every `/loop` run against the branch.
+
+Day-to-day `/review`, `/audit`, `/before-commit` are unchanged — they
+are fast gates; the agentic loop is the heavy workflow.
 
 ---
 
