@@ -131,6 +131,37 @@ fn test_resolution_source_is_readable() {
     );
 }
 
+/// Reproduces: 8e48b967d935bfd5 — `get_or_build_insight_graph` in
+/// `workspace.rs` previously held a `std::sync::RwLock` write guard
+/// across `graph.build_from_index(...)`. The expensive build must run
+/// without any lock held to avoid parking the tokio executor.
+#[test]
+fn test_get_or_build_insight_graph_does_not_hold_write_lock_across_build() {
+    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/workspace.rs"))
+        .expect("failed to read workspace.rs");
+
+    let fn_pos = source
+        .find("fn get_or_build_insight_graph")
+        .expect("could not find get_or_build_insight_graph");
+    let window_end = (fn_pos + 1500).min(source.len());
+    let window = &source[fn_pos..window_end];
+
+    // Find the first `.write()` call after the fn declaration and the
+    // `build_from_index` call. The fix moves `build_from_index` BEFORE the
+    // write guard is taken, so build_from_index must appear before .write().
+    let build_pos = window.find("build_from_index");
+    let write_pos = window.find(".write()");
+    if let (Some(b), Some(w)) = (build_pos, write_pos) {
+        assert!(
+            b < w,
+            "get_or_build_insight_graph still calls `build_from_index` AFTER \
+             acquiring the write lock — meaning the std::sync::RwLock write guard \
+             is held across the expensive build. Move the build before the write \
+             lock acquisition to avoid parking the tokio executor."
+        );
+    }
+}
+
 /// Reproduces: 2e506b918924b167 — `register_procedures_from_tree` in
 /// `insight/calls.rs` was a self-recursive tree-sitter walker. Same risk
 /// as collect_call_sites_from_block: must be iterative.
