@@ -37,11 +37,15 @@ impl From<al_syntax::SemanticToken> for SemanticToken {
 /// Get semantic tokens for an entire document.
 #[must_use]
 pub fn semantic_tokens_full(workspace: &Workspace, uri: &Url) -> Vec<SemanticToken> {
+    let _span = tracing::debug_span!("semantic_tokens_full", uri = %uri).entered();
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
+        tracing::debug!("document not parsed; returning empty token list");
         return Vec::new();
     };
-    al_syntax::extract_semantic_tokens(&tree, &text)
+    let tokens: Vec<SemanticToken> = al_syntax::extract_semantic_tokens(&tree, &text)
         .into_iter()
         .map(SemanticToken::from)
-        .collect()
+        .collect();
+    tracing::debug!(count = tokens.len(), "semantic tokens emitted");
+    tokens
 }

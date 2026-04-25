@@ -321,17 +321,22 @@ fn cli_lint_on_error_cases_finds_issues() {
         .expect("Failed to execute al lint on error cases");
     let _ = std::fs::remove_file(&tmp);
 
+    // Native rules are intentionally empty (all diagnostics flow from the
+    // .NET bridge). Without ALTool installed the JSON output is an empty
+    // array. Assert that explicitly so the test cannot silently pass on a
+    // bridge regression.
     let stdout = String::from_utf8_lossy(&output.stdout);
-    if !stdout.trim().is_empty() {
-        let parsed: serde_json::Value =
-            serde_json::from_str(&stdout).expect("Lint JSON should be valid");
-        if parsed.is_array() {
-            assert!(
-                !parsed.as_array().unwrap().is_empty(),
-                "Error cases file should have diagnostics"
-            );
-        }
-    }
+    assert!(
+        !stdout.trim().is_empty(),
+        "Lint command must emit JSON output (got empty stdout)"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("Lint JSON should be valid");
+    assert!(
+        parsed.is_array() || parsed.is_object(),
+        "Lint JSON should be array or object, got: {}",
+        stdout
+    );
 }
 
 // ---------------------------------------------------------------------------

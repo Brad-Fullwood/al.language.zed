@@ -18,7 +18,9 @@ pub fn get_or_parse(
     uri: &Url,
 ) -> Option<(Arc<String>, tree_sitter::Tree)> {
     let Some(text) = documents.get_text_arc(uri) else {
-        tracing::warn!(uri = %uri, "get_or_parse: document not in store (not opened?)");
+        // Downgrade to debug — this fires on every keystroke against a
+        // closed/virtual document and is not actionable for the user.
+        tracing::debug!(uri = %uri, "get_or_parse: document not in store (not opened?)");
         return None;
     };
     let version = documents.get_version(uri).unwrap_or(0);

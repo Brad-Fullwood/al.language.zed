@@ -236,7 +236,17 @@ async fn main() {
             .and_then(|i| args.get(i + 1))
             .map(PathBuf::from)
             .unwrap_or_else(|| env::current_dir().expect("cannot determine cwd"));
-        let project_root = project_arg.canonicalize().unwrap_or(project_arg);
+        let project_root = match project_arg.canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    path = %project_arg.display(),
+                    error = %e,
+                    "Cannot canonicalize daemon project root — refusing to start"
+                );
+                std::process::exit(1);
+            }
+        };
         tracing::info!(project = %project_root.display(), "Starting daemon mode");
         if let Err(e) = al_lsp::daemon::run_daemon(project_root).await {
             tracing::error!(error = %e, "Daemon failed");
