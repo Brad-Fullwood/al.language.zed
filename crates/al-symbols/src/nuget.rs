@@ -382,13 +382,27 @@ async fn get_package_base_address(
         url.push('/');
     }
 
-    // Validate that the base URL uses HTTPS. Non-HTTPS feeds are accepted for
-    // dev/local feeds but are a MITM risk in production — the caller should
-    // ensure the feed index_url is trusted before reaching this point.
+    // Refuse non-HTTPS PackageBaseAddress URLs by default — package downloads
+    // over plain HTTP are vulnerable to MITM substitution and we have no
+    // checksum verification path. Setting `AL_LSP_ALLOW_HTTP_FEED=1` opts in
+    // for local-dev / loopback feeds.
     if !url.starts_with("https://") {
+        let allow_http = std::env::var("AL_LSP_ALLOW_HTTP_FEED")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !allow_http {
+            return Err(NuGetError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "PackageBaseAddress {url} is not HTTPS. Refusing to download \
+                     over plain HTTP. Set AL_LSP_ALLOW_HTTP_FEED=1 to opt in for \
+                     local-dev or loopback feeds."
+                ),
+            )));
+        }
         warn!(
             url = %url,
-            "PackageBaseAddress does not use HTTPS — package downloads may be intercepted"
+            "PackageBaseAddress is HTTP — explicitly allowed via AL_LSP_ALLOW_HTTP_FEED"
         );
     }
 
