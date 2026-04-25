@@ -73,3 +73,60 @@ fn test_file_index_does_not_embed_tower_lsp_document_symbol() {
          Return a crate-local type instead and convert at the al-lsp boundary."
     );
 }
+
+/// Reproduces: ef9c083a9859bf71 — Three private helpers in resolution.rs return
+/// `Vec<tower_lsp::lsp_types::CompletionItem>` directly from al-core, violating the
+/// CLAUDE.md rule that al-core query/resolution helpers must not return LSP wire types.
+/// The helpers `completion_items_for_receiver`, `enum_completion_items`, and
+/// `workspace_field_items` must return a crate-local `CompletionCandidate` type instead.
+///
+/// Strategy: for each helper, find its `fn <name>` position in the source, then scan
+/// the next 10 lines for the return type.  This handles multi-line signatures.
+#[test]
+fn test_resolution_helpers_do_not_return_tower_lsp_completion_item() {
+    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/resolution.rs"))
+        .expect("failed to read resolution.rs");
+
+    let helpers = [
+        "completion_items_for_receiver",
+        "enum_completion_items",
+        "workspace_field_items",
+    ];
+
+    for helper in helpers {
+        let needle = format!("fn {helper}");
+        // Find the byte offset of the fn declaration.
+        let fn_pos = source.find(&needle).unwrap_or_else(|| {
+            panic!("resolution.rs: could not find `fn {helper}` — test assumption broken")
+        });
+        // Grab the 300 bytes after the `fn` keyword to cover the full signature
+        // including multi-line parameter lists and the return type arrow.
+        let window_end = (fn_pos + 300).min(source.len());
+        let window = &source[fn_pos..window_end];
+
+        // The opening brace `{` marks the start of the body; return type must appear before it.
+        let sig = if let Some(brace) = window.find('{') {
+            &window[..brace]
+        } else {
+            window
+        };
+
+        let violation = sig.contains("tower_lsp::lsp_types::CompletionItem");
+        assert!(
+            !violation,
+            "resolution.rs: `fn {helper}` has `tower_lsp::lsp_types::CompletionItem` in its \
+             return type — an LSP wire type must not appear in al-core helper signatures. \
+             Define a crate-local `CompletionCandidate` struct and convert at the al-lsp boundary."
+        );
+    }
+}
+
+/// Negative guard: resolution.rs must be readable (detects path misconfiguration).
+#[test]
+fn test_resolution_source_is_readable() {
+    let result = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/resolution.rs"));
+    assert!(
+        result.is_ok(),
+        "Could not read crates/al-core/src/resolution.rs — path assumption is wrong"
+    );
+}

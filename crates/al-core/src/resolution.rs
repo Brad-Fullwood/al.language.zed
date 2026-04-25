@@ -780,10 +780,31 @@ pub(crate) fn resolve_workspace_object_definition(
     ))
 }
 
+/// Transport-agnostic completion candidate returned by resolution helpers.
+/// Callers in al-lsp convert this to `tower_lsp::lsp_types::CompletionItem`.
+#[derive(Debug, Clone)]
+pub(crate) struct CompletionCandidate {
+    pub label: String,
+    pub kind: CompletionCandidateKind,
+    pub detail: Option<String>,
+    pub documentation: Option<String>,
+    pub insert_text: Option<String>,
+    pub sort_text: Option<String>,
+}
+
+/// Completion item kind for `CompletionCandidate` (transport-agnostic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompletionCandidateKind {
+    Variable,
+    Method,
+    Field,
+    EnumMember,
+}
+
 pub(crate) fn completion_items_for_receiver(
     workspace: &Workspace,
     receiver: &ResolvedType,
-) -> Vec<tower_lsp::lsp_types::CompletionItem> {
+) -> Vec<CompletionCandidate> {
     tracing::debug!(
         receiver = %receiver.type_name,
         receiver_subtype = ?receiver.type_subtype,
@@ -809,14 +830,16 @@ pub(crate) fn completion_items_for_receiver(
                         continue;
                     }
                     workspace_vars += 1;
-                    items.push(tower_lsp::lsp_types::CompletionItem {
+                    items.push(CompletionCandidate {
                         label: var.name.clone(),
-                        kind: Some(tower_lsp::lsp_types::CompletionItemKind::VARIABLE),
+                        kind: CompletionCandidateKind::Variable,
                         detail: Some(format_type_detail(
                             &var.type_name,
                             var.type_subtype.as_deref(),
                         )),
-                        ..Default::default()
+                        documentation: None,
+                        insert_text: None,
+                        sort_text: None,
                     });
                 }
 
@@ -827,11 +850,13 @@ pub(crate) fn completion_items_for_receiver(
                                 || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT
                             {
                                 workspace_symbols += 1;
-                                items.push(tower_lsp::lsp_types::CompletionItem {
+                                items.push(CompletionCandidate {
                                     label: child.name,
-                                    kind: Some(tower_lsp::lsp_types::CompletionItemKind::METHOD),
+                                    kind: CompletionCandidateKind::Method,
                                     detail: child.detail,
-                                    ..Default::default()
+                                    documentation: None,
+                                    insert_text: None,
+                                    sort_text: None,
                                 });
                             }
                         }
@@ -852,24 +877,28 @@ pub(crate) fn completion_items_for_receiver(
                     continue;
                 }
                 index_methods += 1;
-                items.push(tower_lsp::lsp_types::CompletionItem {
+                items.push(CompletionCandidate {
                     label: method.name.clone(),
-                    kind: Some(tower_lsp::lsp_types::CompletionItemKind::METHOD),
+                    kind: CompletionCandidateKind::Method,
                     detail: Some(format_method_signature(
                         method.name.as_str(),
                         &method.parameters,
                         method.return_type.as_deref(),
                     )),
-                    ..Default::default()
+                    documentation: None,
+                    insert_text: None,
+                    sort_text: None,
                 });
             }
             for field in &entry.fields {
                 index_fields += 1;
-                items.push(tower_lsp::lsp_types::CompletionItem {
+                items.push(CompletionCandidate {
                     label: field.name.clone(),
-                    kind: Some(tower_lsp::lsp_types::CompletionItemKind::FIELD),
+                    kind: CompletionCandidateKind::Field,
                     detail: Some(field.type_name.clone()),
-                    ..Default::default()
+                    documentation: None,
+                    insert_text: None,
+                    sort_text: None,
                 });
             }
         }
@@ -889,21 +918,17 @@ pub(crate) fn completion_items_for_receiver(
     if let Some(builtin) = builtin {
         for method in &builtin.methods {
             builtin_methods += 1;
-            items.push(tower_lsp::lsp_types::CompletionItem {
+            items.push(CompletionCandidate {
                 label: method.name.clone(),
-                kind: Some(tower_lsp::lsp_types::CompletionItemKind::METHOD),
+                kind: CompletionCandidateKind::Method,
                 detail: Some(format_builtin_signature(method)),
                 documentation: if method.documentation.is_empty() {
                     None
                 } else {
-                    Some(tower_lsp::lsp_types::Documentation::MarkupContent(
-                        tower_lsp::lsp_types::MarkupContent {
-                            kind: tower_lsp::lsp_types::MarkupKind::Markdown,
-                            value: method.documentation.clone(),
-                        },
-                    ))
+                    Some(method.documentation.clone())
                 },
-                ..Default::default()
+                insert_text: None,
+                sort_text: None,
             });
         }
     }
@@ -925,7 +950,7 @@ pub(crate) fn completion_items_for_receiver(
 pub(crate) fn enum_completion_items(
     workspace: &Workspace,
     enum_type: &ResolvedType,
-) -> Vec<tower_lsp::lsp_types::CompletionItem> {
+) -> Vec<CompletionCandidate> {
     // For enum access, the name might be the type_name (for system enums used directly)
     // or the type_subtype (for Enum "MyEnum" declarations)
     let enum_name = enum_type
@@ -950,11 +975,13 @@ pub(crate) fn enum_completion_items(
                     for child in children {
                         if child.kind == tower_lsp::lsp_types::SymbolKind::ENUM_MEMBER {
                             workspace_values += 1;
-                            items.push(tower_lsp::lsp_types::CompletionItem {
+                            items.push(CompletionCandidate {
                                 label: child.name,
-                                kind: Some(tower_lsp::lsp_types::CompletionItemKind::ENUM_MEMBER),
+                                kind: CompletionCandidateKind::EnumMember,
                                 detail: child.detail,
-                                ..Default::default()
+                                documentation: None,
+                                insert_text: None,
+                                sort_text: None,
                             });
                         }
                     }
@@ -973,11 +1000,13 @@ pub(crate) fn enum_completion_items(
         }
         for value in &entry.enum_values {
             index_values += 1;
-            items.push(tower_lsp::lsp_types::CompletionItem {
+            items.push(CompletionCandidate {
                 label: value.name.clone(),
-                kind: Some(tower_lsp::lsp_types::CompletionItemKind::ENUM_MEMBER),
+                kind: CompletionCandidateKind::EnumMember,
                 detail: Some(format!("value({})", value.ordinal)),
-                ..Default::default()
+                documentation: None,
+                insert_text: None,
+                sort_text: None,
             });
         }
     }
@@ -992,11 +1021,13 @@ pub(crate) fn enum_completion_items(
             if !bt.enum_values.is_empty() {
                 for value in &bt.enum_values {
                     builtin_values += 1;
-                    items.push(tower_lsp::lsp_types::CompletionItem {
+                    items.push(CompletionCandidate {
                         label: value.clone(),
-                        kind: Some(tower_lsp::lsp_types::CompletionItemKind::ENUM_MEMBER),
+                        kind: CompletionCandidateKind::EnumMember,
                         detail: Some(format!("{}::{}", bt.name, value)),
-                        ..Default::default()
+                        documentation: None,
+                        insert_text: None,
+                        sort_text: None,
                     });
                 }
             }
@@ -1241,15 +1272,17 @@ fn find_workspace_field(text: &str, field_name: &str) -> Option<(ResolvedType, R
     None
 }
 
-fn workspace_field_items(text: &str) -> Vec<tower_lsp::lsp_types::CompletionItem> {
+fn workspace_field_items(text: &str) -> Vec<CompletionCandidate> {
     text.lines()
         .filter_map(|line| {
             let (name_part, ty) = parse_field_line(line.trim())?;
-            Some(tower_lsp::lsp_types::CompletionItem {
+            Some(CompletionCandidate {
                 label: name_part.trim_matches('"').to_string(),
-                kind: Some(tower_lsp::lsp_types::CompletionItemKind::FIELD),
+                kind: CompletionCandidateKind::Field,
                 detail: Some(ty.to_string()),
-                ..Default::default()
+                documentation: None,
+                insert_text: None,
+                sort_text: None,
             })
         })
         .collect()

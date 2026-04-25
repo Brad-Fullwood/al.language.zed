@@ -396,33 +396,18 @@ fn finalize_completion_items(items: &mut Vec<CompletionEntry>) {
 }
 
 /// Convert a tower-lsp CompletionItem to our transport-agnostic type.
-fn from_lsp_completion(item: tower_lsp::lsp_types::CompletionItem) -> CompletionEntry {
+fn from_lsp_completion(item: resolution::CompletionCandidate) -> CompletionEntry {
     let kind = match item.kind {
-        Some(tower_lsp::lsp_types::CompletionItemKind::KEYWORD) => CompletionKind::Keyword,
-        Some(tower_lsp::lsp_types::CompletionItemKind::SNIPPET) => CompletionKind::Snippet,
-        Some(tower_lsp::lsp_types::CompletionItemKind::FIELD) => CompletionKind::Field,
-        Some(tower_lsp::lsp_types::CompletionItemKind::PROPERTY) => CompletionKind::Property,
-        Some(tower_lsp::lsp_types::CompletionItemKind::METHOD) => CompletionKind::Method,
-        Some(tower_lsp::lsp_types::CompletionItemKind::FUNCTION) => CompletionKind::Function,
-        Some(tower_lsp::lsp_types::CompletionItemKind::VARIABLE) => CompletionKind::Variable,
-        Some(tower_lsp::lsp_types::CompletionItemKind::CLASS) => CompletionKind::Class,
-        Some(tower_lsp::lsp_types::CompletionItemKind::MODULE) => CompletionKind::Module,
-        Some(tower_lsp::lsp_types::CompletionItemKind::ENUM) => CompletionKind::Enum,
-        Some(tower_lsp::lsp_types::CompletionItemKind::ENUM_MEMBER) => CompletionKind::EnumMember,
-        Some(tower_lsp::lsp_types::CompletionItemKind::VALUE) => CompletionKind::Value,
-        Some(tower_lsp::lsp_types::CompletionItemKind::STRUCT) => CompletionKind::Struct,
-        Some(tower_lsp::lsp_types::CompletionItemKind::REFERENCE) => CompletionKind::Reference,
-        _ => CompletionKind::Text,
+        resolution::CompletionCandidateKind::Variable => CompletionKind::Variable,
+        resolution::CompletionCandidateKind::Method => CompletionKind::Method,
+        resolution::CompletionCandidateKind::Field => CompletionKind::Field,
+        resolution::CompletionCandidateKind::EnumMember => CompletionKind::EnumMember,
     };
-    let documentation = item.documentation.map(|d| match d {
-        tower_lsp::lsp_types::Documentation::String(s) => s,
-        tower_lsp::lsp_types::Documentation::MarkupContent(m) => m.value,
-    });
     CompletionEntry {
         label: item.label,
         kind,
         detail: item.detail,
-        documentation,
+        documentation: item.documentation,
         insert_text: item.insert_text,
         sort_text: item.sort_text,
     }
