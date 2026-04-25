@@ -280,12 +280,21 @@ impl FileIndex {
         }
 
         // Index procedure/event names for O(1) go-to-definition.
+        // Inline the AlSymbolKind::Function/Event predicate here to avoid an
+        // upward dependency from file_index (core infrastructure) into the
+        // queries module (higher-level LSP feature code).
         let doc_symbols = al_syntax::extract_document_symbols(&result.tree, &content);
         let mut proc_names = Vec::new();
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
-                    if crate::queries::is_procedure_symbol(child.kind.into()) {
+                    let kind: crate::queries::AlSymbolKind = child.kind.into();
+                    let is_proc = matches!(
+                        kind,
+                        crate::queries::AlSymbolKind::Function
+                            | crate::queries::AlSymbolKind::Event
+                    );
+                    if is_proc {
                         let proc_key = child.name.to_lowercase();
                         let info = CachedProcedureInfo {
                             file: path.clone(),

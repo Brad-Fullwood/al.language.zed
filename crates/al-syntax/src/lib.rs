@@ -117,19 +117,28 @@ pub fn extract_object_name(node: tree_sitter::Node, source: &[u8]) -> Option<Str
 pub fn count_net_delimiters(line: &str, open: char, close: char) -> i32 {
     let mut depth = 0i32;
     let mut in_string = false;
-    for ch in line.chars() {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        // Stop counting once we hit a `//` comment outside any string —
+        // delimiters in comments do not affect line continuation.
+        if !in_string && ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            break;
+        }
         if ch == '\'' {
             in_string = !in_string;
+            i += 1;
             continue;
         }
-        if in_string {
-            continue;
+        if !in_string {
+            if ch == open {
+                depth += 1;
+            } else if ch == close {
+                depth -= 1;
+            }
         }
-        if ch == open {
-            depth += 1;
-        } else if ch == close {
-            depth -= 1;
-        }
+        i += 1;
     }
     depth
 }

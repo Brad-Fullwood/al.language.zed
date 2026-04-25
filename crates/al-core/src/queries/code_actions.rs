@@ -62,16 +62,16 @@ pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<Cod
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
     };
-    let lsp_range: tower_lsp::lsp_types::Range = range.into();
     let mut actions = Vec::new();
 
     // Add procedure documentation template
-    if let Some(action) = source_action_add_doc_comment(workspace, uri, &text, lsp_range) {
+    if let Some(action) = source_action_add_doc_comment(workspace, uri, &text, range) {
         actions.push(action);
     }
 
     // Add region wrapper
     if range.start != range.end {
+        let lsp_range: tower_lsp::lsp_types::Range = range.into();
         if let Some(action) = source_action_add_region(uri, &text, lsp_range) {
             actions.push(action);
         }
@@ -258,20 +258,23 @@ fn detect_indent(text: &str, line: u32) -> String {
     }
 }
 
-#[allow(deprecated)]
 fn source_action_add_doc_comment(
     workspace: &Workspace,
     uri: &Url,
     text: &str,
-    range: tower_lsp::lsp_types::Range,
+    range: Range,
 ) -> Option<CodeActionEntry> {
     let (_, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
-    let doc_symbols = al_syntax::extract_document_symbols(&tree, text);
+    let doc_symbols: Vec<super::AlDocumentSymbol> =
+        al_syntax::extract_document_symbols(&tree, text)
+            .into_iter()
+            .map(Into::into)
+            .collect();
 
     for sym in &doc_symbols {
         if let Some(children) = &sym.children {
             for child in children {
-                if child.kind != tower_lsp::lsp_types::SymbolKind::FUNCTION {
+                if child.kind != super::AlSymbolKind::Function {
                     continue;
                 }
                 if range.start.line >= child.range.start.line
@@ -672,9 +675,12 @@ fn find_outermost_if_at_point(
     Some(node)
 }
 
-/// Walk an if-else chain, collecting branches.
-/// Each branch is (variable_text, value_text, body_text).
-/// Sets common_var to None if variables differ across branches.
+/// Walk an if-else chain iteratively, collecting branches.
+///
+/// Each branch is (variable_text, value_text, body_text).  Sets
+/// `common_var` to `None` if variables differ across branches.  An iterative
+/// loop avoids unbounded recursion on deeply nested if/else chains
+/// (CLAUDE.md).
 fn walk_if_chain(
     node: tree_sitter::Node,
     source: &[u8],
@@ -682,50 +688,53 @@ fn walk_if_chain(
     else_body: &mut Option<String>,
     common_var: &mut Option<String>,
 ) {
-    if node.kind() != "if_statement" {
-        return;
-    }
-
-    // Extract condition: expect `<var> = <value>`
-    if let Some(condition) = node.child_by_field_name("condition") {
-        if let Some((var, val)) = extract_equality_operands(condition, source) {
-            match common_var {
-                Some(ref cv) if !cv.eq_ignore_ascii_case(&var) => {
-                    *common_var = None;
-                    return;
-                }
-                None if branches.is_empty() => {
-                    *common_var = Some(var.clone());
-                }
-                _ => {}
-            }
-
-            let body = node
-                .child_by_field_name("consequence")
-                .and_then(|n| n.utf8_text(source).ok())
-                .unwrap_or("")
-                .to_string();
-            branches.push((var, val, body));
-        } else {
-            // Condition is not a simple equality — can't convert
-            *common_var = None;
+    let mut current = node;
+    loop {
+        if current.kind() != "if_statement" {
             return;
         }
-    }
 
-    // Follow the else branch
-    if let Some(alt) = node.child_by_field_name("alternative") {
-        // The alternative is a `statement` node wrapping the actual node
+        // Extract condition: expect `<var> = <value>`.
+        if let Some(condition) = current.child_by_field_name("condition") {
+            if let Some((var, val)) = extract_equality_operands(condition, source) {
+                match common_var {
+                    Some(ref cv) if !cv.eq_ignore_ascii_case(&var) => {
+                        *common_var = None;
+                        return;
+                    }
+                    None if branches.is_empty() => {
+                        *common_var = Some(var.clone());
+                    }
+                    _ => {}
+                }
+
+                let body = current
+                    .child_by_field_name("consequence")
+                    .and_then(|n| n.utf8_text(source).ok())
+                    .unwrap_or("")
+                    .to_string();
+                branches.push((var, val, body));
+            } else {
+                *common_var = None;
+                return;
+            }
+        }
+
+        // Follow the else branch.
+        let Some(alt) = current.child_by_field_name("alternative") else {
+            return;
+        };
+        // The alternative is a `statement` node wrapping the actual node.
         let inner = if alt.kind() == "statement" && alt.child_count() == 1 {
             alt.child(0).unwrap_or(alt)
         } else {
             alt
         };
         if inner.kind() == "if_statement" {
-            walk_if_chain(inner, source, branches, else_body, common_var);
+            current = inner;
         } else {
-            // Terminal else body
             *else_body = alt.utf8_text(source).ok().map(|s| s.to_string());
+            return;
         }
     }
 }

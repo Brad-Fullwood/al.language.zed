@@ -175,6 +175,13 @@ impl Workspace {
     /// Uses double-checked locking to prevent the TOCTOU race where two concurrent
     /// callers both see `None` and both build the graph. The write lock is acquired
     /// before building, and re-checked inside the lock so at most one build runs.
+    ///
+    /// **Lock ordering invariant:** This function takes locks in the order
+    /// `call_graph` → `insight_graph` (fast path holds a `call_graph` read guard
+    /// while calling `get_or_build_insight_graph`, slow path holds a `call_graph`
+    /// write guard during the entire build before touching `insight_graph`).
+    /// Any new code that touches both locks MUST follow this ordering or the
+    /// daemon can deadlock.
     pub fn get_or_build_call_graph(
         &self,
     ) -> (

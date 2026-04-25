@@ -150,8 +150,21 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             single_stmt_depth = 0;
         }
 
-        // Case label: close previous label body before this new label
-        let is_case_label = case_depth > 0 && trimmed.ends_with(':') && !trimmed.ends_with("::");
+        // Case label: close previous label body before this new label.
+        // Be precise: a case label is "<token>:" with no whitespace before the
+        // colon — not `Trigger:` inside a field declaration on the same line,
+        // and not `OnValidate:` on a trigger header. Reject lines containing
+        // anything other than the label token, optional inner spaces (for
+        // multi-word string labels like `"Foo Bar"`) and the trailing colon.
+        let is_case_label = case_depth > 0
+            && trimmed.ends_with(':')
+            && !trimmed.ends_with("::")
+            // The colon must directly follow the last non-space character —
+            // no `;` or `=` etc. before it.
+            && !trimmed
+                .trim_end_matches(':')
+                .chars()
+                .any(|c| matches!(c, ';' | '=' | '(' | ')' | ','));
         if is_case_label && in_case_label_body {
             // Drain any single-stmt from within the previous label body
             if single_stmt_depth > 0 {
