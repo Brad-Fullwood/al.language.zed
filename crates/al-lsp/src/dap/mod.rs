@@ -106,30 +106,34 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
             }
         });
 
-    // Capture EditorServices stderr to the DAP log if enabled
-    if let Some(child_stderr) = child.stderr.take() {
-        let capture_stderr = capture_log.clone();
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(child_stderr);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        eprint!("{}", line); // Also print to our stderr
-                        if let Some(ref log) = capture_stderr {
-                            if let Ok(mut f) = log.lock() {
-                                use std::io::Write as _;
-                                let _ = write!(f, "### ES-STDERR: {}", line);
+    // Capture EditorServices stderr to the DAP log if enabled.
+    // Retain the JoinHandle so we can abort the task on shutdown — letting
+    // the spawned task outlive the proxy session leaks resources and may
+    // continue writing to a now-closed log file.
+    let stderr_task: Option<tokio::task::JoinHandle<()>> =
+        child.stderr.take().map(|child_stderr| {
+            let capture_stderr = capture_log.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(child_stderr);
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            eprint!("{}", line); // Also print to our stderr
+                            if let Some(ref log) = capture_stderr {
+                                if let Ok(mut f) = log.lock() {
+                                    use std::io::Write as _;
+                                    let _ = write!(f, "### ES-STDERR: {}", line);
+                                }
                             }
                         }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
                 }
-            }
+            })
         });
-    }
 
     let seq_counter = AtomicI64::new(1);
     let toolchain = toolchain.clone();
@@ -211,6 +215,9 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
 
     let _ = child.kill().await;
     let _ = child.wait().await;
+    if let Some(task) = stderr_task {
+        task.abort();
+    }
     Ok(())
 }
 

@@ -34,6 +34,9 @@ pub struct AlServer {
     /// Handle to the background workspace initialisation task.
     /// ISSUE-026 fix: workspace init runs async so initialized() returns promptly.
     pub(crate) init_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// JoinHandle for the most recent al.reindex background task.
+    /// Stored so a second al.reindex can abort an in-flight previous run.
+    pub(crate) reindex_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Guard against double-initialization (ISSUE-073).
     /// Zed may send `initialized` twice when opening multiple worktrees.
     /// CAS ensures workspace init runs only once per server instance.
@@ -75,6 +78,7 @@ impl AlServer {
             root_uri: RwLock::new(None),
             diag_task: Mutex::new(None),
             init_task: Mutex::new(None),
+            reindex_task: Mutex::new(None),
             init_done: AtomicBool::new(false),
             workspace_ready: Arc::new(AtomicBool::new(false)),
             init_notify: Arc::new(Notify::new()),
@@ -463,6 +467,10 @@ impl LanguageServer for AlServer {
         }
         // Abort background workspace init if still running
         if let Some(task) = self.init_task.lock().await.take() {
+            task.abort();
+        }
+        // Abort in-flight al.reindex task if still running
+        if let Some(task) = self.reindex_task.lock().await.take() {
             task.abort();
         }
         al_core::semantic::shutdown_bridge(&self.workspace).await;
@@ -997,12 +1005,18 @@ impl LanguageServer for AlServer {
                     let ws = Arc::clone(&self.workspace);
                     let client = self.client.clone();
                     let uri_cloned = uri.clone();
-                    tokio::spawn(async move {
+                    let handle = tokio::spawn(async move {
                         workspace::initialize_workspace(ws, client.clone(), Some(uri_cloned)).await;
                         client
                             .show_message(MessageType::INFO, "Workspace reindex complete")
                             .await;
                     });
+                    // Cancel any previous in-flight reindex so rapid clicks
+                    // don't run two full scans concurrently.
+                    let mut slot = self.reindex_task.lock().await;
+                    if let Some(prev) = slot.replace(handle) {
+                        prev.abort();
+                    }
                 } else {
                     self.client
                         .show_message(MessageType::WARNING, "No workspace root — cannot reindex")
