@@ -901,7 +901,13 @@ fn parse_attr_args_from_text(attr_text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Recursively walk the AST registering procedure/trigger declarations.
+/// Iteratively walk the AST registering procedure/trigger declarations.
+///
+/// Uses an explicit stack to avoid unbounded recursion on deeply nested AL
+/// (CLAUDE.md requires iterative tree-sitter traversal). When a procedure
+/// or trigger node is found, it is dispatched but its body is NOT pushed
+/// onto the stack — nested procedures inside a procedure body are not legal
+/// AL anyway.
 fn register_procedures_from_tree(
     node: tree_sitter::Node,
     source: &[u8],
@@ -911,29 +917,24 @@ fn register_procedures_from_tree(
     _symbols: &SymbolIndex,
     insight: &mut InsightGraph,
 ) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        match child.kind() {
-            "procedure_declaration" | "trigger_declaration" => {
-                register_single_procedure(
-                    child,
-                    source,
-                    object_kind,
-                    object_name,
-                    obj_idx,
-                    insight,
-                );
-            }
-            _ => {
-                register_procedures_from_tree(
-                    child,
-                    source,
-                    object_kind,
-                    object_name,
-                    obj_idx,
-                    _symbols,
-                    insight,
-                );
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        let mut cursor = current.walk();
+        for child in current.children(&mut cursor) {
+            match child.kind() {
+                "procedure_declaration" | "trigger_declaration" => {
+                    register_single_procedure(
+                        child,
+                        source,
+                        object_kind,
+                        object_name,
+                        obj_idx,
+                        insight,
+                    );
+                }
+                _ => {
+                    stack.push(child);
+                }
             }
         }
     }

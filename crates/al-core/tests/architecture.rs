@@ -131,6 +131,29 @@ fn test_resolution_source_is_readable() {
     );
 }
 
+/// Reproduces: 2e506b918924b167 — `register_procedures_from_tree` in
+/// `insight/calls.rs` was a self-recursive tree-sitter walker. Same risk
+/// as collect_call_sites_from_block: must be iterative.
+#[test]
+fn test_register_procedures_from_tree_is_iterative() {
+    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/insight/calls.rs"))
+        .expect("failed to read insight/calls.rs");
+
+    let fn_pos = source
+        .find("fn register_procedures_from_tree")
+        .expect("could not find register_procedures_from_tree");
+    let window_end = (fn_pos + 2000).min(source.len());
+    let window = &source[fn_pos..window_end];
+    let after_decl = &window[window.find('{').unwrap_or(0)..];
+
+    assert!(
+        !after_decl.contains("register_procedures_from_tree("),
+        "register_procedures_from_tree in insight/calls.rs is recursive. \
+         CLAUDE.md requires iterative tree-sitter traversal — rewrite using \
+         an explicit `Vec<Node>` stack."
+    );
+}
+
 /// Reproduces: 27f075b6af883ba3 — `collect_call_sites_from_block` in
 /// `insight/calls.rs` was a self-recursive tree-sitter walker. CLAUDE.md
 /// requires iterative traversal (explicit stack) for tree-sitter nodes to
