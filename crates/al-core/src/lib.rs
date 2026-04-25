@@ -84,6 +84,7 @@ pub mod symbols {
 pub mod semantic_types {
     pub use al_semantic::{
         AnalyzeRequest, CompileResult, CompletionItem, DiagnosticEntry, SemanticBridge,
+        SemanticError,
     };
     pub mod cache {
         pub use al_semantic::cache::{read_builtins, read_error_codes};

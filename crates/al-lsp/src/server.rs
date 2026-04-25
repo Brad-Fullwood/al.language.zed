@@ -45,6 +45,10 @@ pub struct AlServer {
     /// Notified when workspace initialization completes.
     /// Handlers that need the workspace ready await this before proceeding.
     pub(crate) init_notify: Arc<Notify>,
+    /// Set the first time we report a persistent semantic-bridge failure
+    /// (`Timeout` / `Poisoned`) to the user, so subsequent file opens with
+    /// the same broken bridge don't spam `window/showMessage(WARNING)`.
+    pub(crate) semantic_failure_reported: AtomicBool,
 }
 
 impl AlServer {
@@ -74,7 +78,20 @@ impl AlServer {
             init_done: AtomicBool::new(false),
             workspace_ready: Arc::new(AtomicBool::new(false)),
             init_notify: Arc::new(Notify::new()),
+            semantic_failure_reported: AtomicBool::new(false),
         }
+    }
+
+    /// Atomically check whether we've already shown the user a bridge-broken
+    /// notification this session, and if not, set the flag.
+    ///
+    /// Returns `true` exactly once per server session, so callers can fire a
+    /// `window/showMessage(WARNING)` without spamming the user across many
+    /// open files when the bridge is poisoned.
+    pub(crate) fn should_report_semantic_failure(&self) -> bool {
+        !self
+            .semantic_failure_reported
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Await workspace initialization.
@@ -901,14 +918,37 @@ impl LanguageServer for AlServer {
                     ) {
                         let mut changes = std::collections::HashMap::new();
                         changes.insert(uri.clone(), edits);
-                        // SILENT: apply_edit failure is logged by tower-lsp internally
-                        self.client
+                        match self
+                            .client
                             .apply_edit(WorkspaceEdit {
                                 changes: Some(changes),
                                 ..Default::default()
                             })
                             .await
-                            .ok();
+                        {
+                            Ok(resp) if resp.applied => {}
+                            Ok(resp) => {
+                                let reason = resp
+                                    .failure_reason
+                                    .unwrap_or_else(|| "edit rejected by editor".to_string());
+                                tracing::warn!(uri = %uri, reason = %reason, "al.formatFile: apply_edit not applied");
+                                self.client
+                                    .show_message(
+                                        MessageType::WARNING,
+                                        format!("Format failed: {reason}"),
+                                    )
+                                    .await;
+                            }
+                            Err(e) => {
+                                tracing::warn!(uri = %uri, error = %e, "al.formatFile: apply_edit transport error");
+                                self.client
+                                    .show_message(
+                                        MessageType::WARNING,
+                                        format!("Format failed: {e}"),
+                                    )
+                                    .await;
+                            }
+                        }
                     }
                 }
                 Ok(None)

@@ -240,7 +240,26 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
         }
         Err(error) => {
             let semantic_elapsed = semantic_start.elapsed();
-            tracing::debug!(uri = %uri, %error, elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis failed");
+            tracing::warn!(uri = %uri, %error, elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis failed");
+
+            // For persistent-failure states (Timeout / Poisoned), surface a
+            // user-visible window/showMessage(WARNING) so the user knows the
+            // semantic pipeline is broken. Throttle to once per session via
+            // `should_report_semantic_failure` so opening many files with a
+            // poisoned bridge does not spam the editor.
+            let is_persistent = matches!(
+                &error,
+                al_core::semantic_types::SemanticError::Timeout(_)
+                    | al_core::semantic_types::SemanticError::Poisoned
+            );
+            if is_persistent && server.should_report_semantic_failure() {
+                if let Some(sink) = server.workspace.notify_sink.get() {
+                    sink(&format!(
+                        "AL semantic analysis is unavailable: {error}. \
+                         Restart the editor to retry."
+                    ));
+                }
+            }
             vec![]
         }
     }
