@@ -98,18 +98,37 @@ pub fn signature_help(
     let col_utf16 = lsp_pos.character as usize;
     let line = text.lines().nth(line_idx)?;
     // Convert UTF-16 column offset to a byte offset for slicing the &str.
-    let col_byte = {
+    //
+    // If the LSP client sends a column past the last UTF-16 unit on the line,
+    // we silently clamp to `line.len()`. That's safe but could place the
+    // cursor at the wrong call context if AL identifiers contain
+    // multi-codepoint sequences (e.g. emoji, surrogate pairs in a quoted
+    // identifier). Surface the clamp via a debug-level trace so the edge
+    // case is observable in `RUST_LOG=al_core=debug` mode.
+    let (col_byte, clamped_remaining) = {
         let mut utf16_remaining = col_utf16;
         let mut byte_off = line.len(); // default: end of line
+        let mut found = false;
         for (byte_idx, ch) in line.char_indices() {
             if utf16_remaining == 0 {
                 byte_off = byte_idx;
+                found = true;
                 break;
             }
             utf16_remaining = utf16_remaining.saturating_sub(ch.len_utf16());
         }
-        byte_off
+        let leftover = if found { 0 } else { utf16_remaining };
+        (byte_off, leftover)
     };
+    if clamped_remaining > 0 {
+        tracing::debug!(
+            uri = %uri,
+            line = line_idx,
+            col_utf16,
+            clamped_remaining,
+            "signature_help: UTF-16 column past end of line; clamped to line.len()"
+        );
+    }
     let prefix = &line[..col_byte];
 
     let (func_name, active_param) = al_syntax::find_call_context(prefix)?;
