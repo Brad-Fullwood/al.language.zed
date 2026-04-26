@@ -165,11 +165,9 @@ pub(super) fn dispatch_document_symbols(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
-    let result = al_core::queries::symbols::document_symbols(workspace, &uri).map(|symbols| {
-        tower_lsp::lsp_types::DocumentSymbolResponse::Nested(
-            symbols.into_iter().map(Into::into).collect(),
-        )
-    });
+    // Serialize the transport-agnostic AlDocumentSymbol vec directly. The daemon
+    // returns JSON, so there is no need to round-trip through tower_lsp types.
+    let result = al_core::queries::symbols::document_symbols(workspace, &uri);
     let value = result.and_then(|r| serde_json::to_value(r).ok()); // SILENT: serialization of valid structs should not fail
     Response {
         id,
