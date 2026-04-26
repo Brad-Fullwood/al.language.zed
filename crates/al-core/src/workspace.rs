@@ -233,16 +233,39 @@ impl Workspace {
             return (insight, guard);
         }
 
-        // Build enriched InsightGraph: symbols + workspace nodes
-        let mut graph = InsightGraph::new();
-        graph.build_from_index(&self.symbols);
-        // Register workspace objects, procedures, events, and subscribers
-        crate::insight::calls::register_workspace_nodes(
-            &self.file_index,
-            &self.symbols,
-            &mut graph,
-        );
-        let insight = Arc::new(graph);
+        // Build enriched InsightGraph + CallGraph. This is a CPU-intensive
+        // pass over every workspace file and the symbol index; on a daemon
+        // running in tokio's multi-threaded scheduler we MUST yield the
+        // worker via block_in_place so other handlers (diagnostics, hover,
+        // hover-followups) keep responding while the build runs. Guarded
+        // by try_handle + flavor check because block_in_place panics on
+        // current_thread runtimes (e.g. CLI tests).
+        let build = || {
+            let mut graph = InsightGraph::new();
+            graph.build_from_index(&self.symbols);
+            // Register workspace objects, procedures, events, and subscribers
+            crate::insight::calls::register_workspace_nodes(
+                &self.file_index,
+                &self.symbols,
+                &mut graph,
+            );
+            let insight = Arc::new(graph);
+
+            let mut cg = CallGraph::build_from_insight(&insight);
+            crate::insight::calls::populate_workspace_call_edges(
+                &self.file_index,
+                &self.symbols,
+                &insight,
+                &mut cg,
+            );
+            (insight, cg)
+        };
+        let (insight, cg) = match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(build)
+            }
+            _ => build(),
+        };
 
         // Cache the enriched InsightGraph (replaces symbol-only version).
         // Recover from poisoned lock so the enriched graph is not silently
@@ -253,15 +276,6 @@ impl Workspace {
             .unwrap_or_else(|e| e.into_inner());
         *ig_guard = Some(Arc::clone(&insight));
         drop(ig_guard);
-
-        // Build CallGraph and populate Tier 1 call edges
-        let mut cg = CallGraph::build_from_insight(&insight);
-        crate::insight::calls::populate_workspace_call_edges(
-            &self.file_index,
-            &self.symbols,
-            &insight,
-            &mut cg,
-        );
 
         *write_guard = Some(cg);
         drop(write_guard);
