@@ -300,15 +300,20 @@ fn find_unused_fields(
     collect_fields_from_text(file_text, &mut fields);
 
     for (field_name, line) in &fields {
-        // Check if this field name appears in any OTHER file
+        // Check if this field name appears in any OTHER file as an actual
+        // member access (e.g. `Rec."Field Name"` or `SalesLine.Amount`),
+        // not just a bare identifier match. Bare identifier matches produce
+        // false negatives for short common field names like `Name` or `No.`
+        // which appear as variable names, parameters, or in comments
+        // throughout the codebase. Member access is signalled by a `.` (or
+        // `."`) immediately preceding the field name.
         let referenced = all_files
             .iter()
-            .any(|(other_path, other_text, other_tree)| {
+            .any(|(other_path, other_text, _other_tree)| {
                 if *other_path == file_path {
                     return false; // The defining file doesn't count
                 }
-                let refs = al_syntax::find_variable_references(other_tree, other_text, field_name);
-                !refs.is_empty()
+                contains_member_access(other_text, field_name)
             });
 
         if !referenced {
@@ -322,6 +327,44 @@ fn find_unused_fields(
             });
         }
     }
+}
+
+/// Returns true if `text` contains a `.<field>` or `."<field>"` member-access
+/// pattern, case-insensitive. Skips line-comments (`//`) so a field name in a
+/// comment does not count as a reference.
+fn contains_member_access(text: &str, field_name: &str) -> bool {
+    let name_lower = field_name.to_lowercase();
+    let plain = format!(".{}", name_lower);
+    let quoted = format!(".\"{}\"", name_lower);
+    for line in text.lines() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let lower = line.to_lowercase();
+        if !lower.contains(&plain) && !lower.contains(&quoted) {
+            continue;
+        }
+        // Ensure that what follows is a token boundary so `.Name` does NOT
+        // match `.NameOfSomething`. The quoted form is naturally bounded.
+        if lower.contains(&quoted) {
+            return true;
+        }
+        // Walk all occurrences of `.<name>` and require a non-identifier
+        // character (or end-of-line) immediately after.
+        let mut search = lower.as_str();
+        while let Some(pos) = search.find(&plain) {
+            let after = pos + plain.len();
+            let next_ok = match search[after..].chars().next() {
+                None => true,
+                Some(c) => !c.is_alphanumeric() && c != '_',
+            };
+            if next_ok {
+                return true;
+            }
+            search = &search[after..];
+        }
+    }
+    false
 }
 
 /// Extract field names from AL table source text.
@@ -778,6 +821,54 @@ mod tests {
                 .iter()
                 .any(|u| u.name == "Name" && u.kind == UnusedKind::Procedure),
             "Procedure 'Name' must be flagged as unused despite Rec.Name field accesses. Got: {:?}",
+            unused
+        );
+    }
+
+    /// Regression for 936cc2d1497178b1: an unused table field with a common
+    /// name (here `Description`) must be detected as unused even when other
+    /// files contain bare identifiers `Description` (e.g. as variable names).
+    /// The field-reference scan must require an actual member-access pattern
+    /// (`.Description` or `."Description"`).
+    #[test]
+    fn unused_field_detected_despite_bare_identifier_in_other_files() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/MyTable.al",
+                r#"table 50300 "My Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; "Description"; Text[100]) { }
+    }
+}"#,
+            ),
+            (
+                "/src/Caller.al",
+                // Has a local variable named `Description` but never accesses
+                // the table field via `.Description`. Old behaviour
+                // (find_variable_references) would have matched the bare
+                // identifier and falsely reported the field as referenced.
+                r#"codeunit 50301 "Caller"
+{
+    procedure DoIt()
+    var
+        Description: Text[100];
+    begin
+        Description := 'hello';
+        Message(Description);
+    end;
+}"#,
+            ),
+        ]);
+
+        let unused = dead_code(&ws);
+        assert!(
+            unused.iter().any(|u| u.name == "Description"
+                && u.kind == UnusedKind::Field
+                && u.object == "My Table"),
+            "Field 'Description' must be flagged as unused when only a bare identifier appears elsewhere. Got: {:?}",
             unused
         );
     }
