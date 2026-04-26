@@ -49,7 +49,20 @@ fn read_cache<T: DeserializeOwned>(version: &str, name: &str) -> Option<T> {
 fn write_cache<T: Serialize + ?Sized>(version: &str, name: &str, data: &T, count: usize) {
     let version = sanitize_version(version);
     let dir = cache_dir();
-    if let Err(e) = std::fs::create_dir_all(&dir) {
+    // On Unix, create with 0o700 (owner-only) to mirror the al-symbols cache:
+    // semantic results may include error messages with file paths from the
+    // workspace, which are minor information leaks if world-readable.
+    #[cfg(unix)]
+    let dir_create = {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+    };
+    #[cfg(not(unix))]
+    let dir_create = std::fs::create_dir_all(&dir);
+    if let Err(e) = dir_create {
         warn!(error = %e, "Failed to create cache directory");
         return;
     }
