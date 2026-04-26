@@ -107,7 +107,16 @@ impl BcClient {
             .timeout(Duration::from_secs(300))  // 5 min for large uploads
             .build()
             .unwrap_or_else(|e| {
-                warn!(error = %e, "Failed to build TLS-configured HTTP client; falling back to default (may not support HTTPS)");
+                // reqwest::Client::builder().build() failures are essentially
+                // unreachable on a healthy install (TLS backend missing or
+                // OS-level config corruption). Falling back to Client::default()
+                // means the user might silently lose timeout / TLS-permissive
+                // settings on every BC request — surface at error level so the
+                // root cause appears in the log even though we don't propagate.
+                tracing::error!(
+                    error = %e,
+                    "Failed to build TLS-configured HTTP client; falling back to Client::default(). Subsequent BC requests may fail with TLS handshake errors or hang past the configured 300s timeout."
+                );
                 Client::default()
             });
 
