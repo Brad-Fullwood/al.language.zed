@@ -690,25 +690,32 @@ pub fn suggest_translations(
 /// Generate the `.g.xlf` file for a workspace and write it to the Translations directory.
 ///
 /// Creates `<project_root>/Translations/<AppName>.g.xlf`.
-/// Returns the path to the generated file and the number of units generated.
-pub fn build_xliff(workspace: &Workspace, project_root: &Path) -> Option<(PathBuf, usize)> {
+/// Returns:
+/// - `Ok(Some((path, count)))` on success.
+/// - `Ok(None)` when no translatable units exist (not an error).
+/// - `Err(io::Error)` when directory creation or file write fails — previously
+///   these were silently swallowed via `.ok()?`, masking real disk problems.
+pub fn build_xliff(
+    workspace: &Workspace,
+    project_root: &Path,
+) -> std::io::Result<Option<(PathBuf, usize)>> {
     // Read app name from app.json
     let app_name = read_app_name(project_root).unwrap_or_else(|| "App".to_string());
 
     let units = extract_translation_units(workspace);
     if units.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let xlf_content = generate_xliff(&app_name, "en-US", "en-US", &units);
 
     let translations_dir = project_root.join("Translations");
-    std::fs::create_dir_all(&translations_dir).ok()?;
+    std::fs::create_dir_all(&translations_dir)?;
 
     let xlf_path = translations_dir.join(format!("{}.g.xlf", app_name));
-    std::fs::write(&xlf_path, xlf_content).ok()?;
+    std::fs::write(&xlf_path, xlf_content)?;
 
-    Some((xlf_path, units.len()))
+    Ok(Some((xlf_path, units.len())))
 }
 
 fn read_app_name(project_root: &Path) -> Option<String> {

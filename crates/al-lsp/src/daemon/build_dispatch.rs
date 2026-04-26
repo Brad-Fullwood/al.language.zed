@@ -1387,7 +1387,7 @@ pub(super) async fn dispatch_xlf_generate(
     };
 
     match al_core::xliff::build_xliff(workspace, &project_root) {
-        Some((path, count)) => Response {
+        Ok(Some((path, count))) => Response {
             id,
             result: Some(serde_json::json!({
                 "path": path.to_string_lossy().as_ref(),
@@ -1395,7 +1395,7 @@ pub(super) async fn dispatch_xlf_generate(
             })),
             error: None,
         },
-        None => Response {
+        Ok(None) => Response {
             id,
             result: Some(serde_json::json!({
                 "path": null,
@@ -1404,6 +1404,7 @@ pub(super) async fn dispatch_xlf_generate(
             })),
             error: None,
         },
+        Err(e) => rpc_error(id, -32000, &format!("xlf-build failed: {e}")),
     }
 }
 
