@@ -290,8 +290,10 @@ async fn handle_connection(
             continue;
         }
 
-        // Update idle timer
-        *last_activity.lock().await = Instant::now();
+        // (idle-timer update is deferred until after dispatch_request returns
+        // so a long-running query keeps the daemon alive — otherwise the timer
+        // updates only at request-arrival, and a 35s build can be killed by
+        // the 30s idle reaper.)
 
         // JSON-RPC 2.0 §5: on parse error the response id MUST be null because
         // the request id is unknown. The typed Response struct uses u64, so we
@@ -370,6 +372,10 @@ async fn handle_connection(
                 let resp = dispatch_request(&workspace, req, &shutdown).await;
                 let elapsed = start.elapsed();
                 tracing::debug!(method = %method, id = req_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
+                // Mark activity AFTER dispatch returns so the idle reaper
+                // can't kill the daemon mid-request — a long-running build /
+                // download keeps the timer fresh until completion.
+                *last_activity.lock().await = Instant::now();
                 resp
             }
         };
