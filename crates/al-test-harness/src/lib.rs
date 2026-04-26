@@ -374,8 +374,18 @@ impl LspClient {
                         break;
                     }
                 }
-                Ok(None) => break, // Channel closed
-                Err(_) => break,   // Timeout
+                Ok(None) => {
+                    tracing::warn!(uri, "wait_for_diagnostics: notification channel closed before publishDiagnostics");
+                    break;
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        uri,
+                        timeout_ms = timeout.as_millis(),
+                        "wait_for_diagnostics: timed out — server did not publish diagnostics in time"
+                    );
+                    break;
+                }
             }
         }
     }
