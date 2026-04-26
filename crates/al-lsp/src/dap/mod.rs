@@ -128,7 +128,10 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                                 let _ = write!(f, "### ES-STDERR: {}", line);
                             }
                         }
-                        Err(_) => break,
+                        Err(e) => {
+                            warn!("ES stderr read error: {e}");
+                            break;
+                        }
                     }
                 }
             })
