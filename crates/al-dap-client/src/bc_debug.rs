@@ -366,22 +366,25 @@ impl BcDebugSession {
         let resp_text = negotiate_resp.text().await.map_err(|e| {
             DapError::ConnectionFailed(format!("Failed to read negotiate response: {e}"))
         })?;
+        let redacted = redact_connection_token(&resp_text);
         debug!(
             "Negotiate response (HTTP {}): {}",
             status,
-            &resp_text[..resp_text.len().min(500)]
+            &redacted[..redacted.len().min(500)]
         );
 
         if !status.is_success() {
             return Err(DapError::ConnectionFailed(format!(
-                "SignalR negotiate failed (HTTP {status}): {resp_text}"
+                "SignalR negotiate failed (HTTP {status}): {}",
+                redact_connection_token(&resp_text)
             )));
         }
 
         let negotiate: serde_json::Value = serde_json::from_str(&resp_text).map_err(|e| {
+            let redacted = redact_connection_token(&resp_text);
             DapError::ConnectionFailed(format!(
                 "Bad negotiate JSON: {e}: {}",
-                &resp_text[..resp_text.len().min(200)]
+                &redacted[..redacted.len().min(200)]
             ))
         })?;
 
@@ -1007,6 +1010,27 @@ fn percent_encode_url(s: &str) -> String {
     out
 }
 
+/// Replace the value of `connectionToken` (SignalR session credential) in a
+/// JSON response body with a `<redacted>` placeholder before logging or
+/// surfacing in errors. Falls back to the original text if the body is not
+/// valid JSON or has no such field.
+fn redact_connection_token(body: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.to_string();
+    };
+    if let Some(map) = v.as_object_mut() {
+        for key in ["connectionToken", "ConnectionToken", "accessToken"] {
+            if map.contains_key(key) {
+                map.insert(
+                    key.to_string(),
+                    serde_json::Value::String("<redacted>".to_string()),
+                );
+            }
+        }
+    }
+    v.to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1014,6 +1038,30 @@ fn percent_encode_url(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_connection_token_replaces_field() {
+        let body = r#"{"connectionToken":"secret-abc","url":"/signalr"}"#;
+        let redacted = redact_connection_token(body);
+        assert!(!redacted.contains("secret-abc"));
+        assert!(redacted.contains("<redacted>"));
+        assert!(redacted.contains("/signalr"));
+    }
+
+    #[test]
+    fn redact_connection_token_passthrough_on_invalid_json() {
+        let body = "not-json garbage";
+        assert_eq!(redact_connection_token(body), "not-json garbage");
+    }
+
+    #[test]
+    fn redact_connection_token_no_field_unchanged_logically() {
+        let body = r#"{"foo":"bar"}"#;
+        let out = redact_connection_token(body);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["foo"], "bar");
+        assert!(parsed.get("connectionToken").is_none());
+    }
 
     fn cloud_config(tenant: &str, env_name: &str) -> BcDebugConfig {
         BcDebugConfig {
