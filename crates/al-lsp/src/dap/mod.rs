@@ -236,7 +236,13 @@ async fn patch_outgoing(
 ) -> Vec<u8> {
     let mut msg: serde_json::Value = match serde_json::from_slice(body) {
         Ok(v) => v,
-        Err(_) => return body.to_vec(),
+        Err(e) => {
+            tracing::debug!(
+                "patch_outgoing: cannot parse DAP body (len={} bytes), passing through raw: {e}",
+                body.len()
+            );
+            return body.to_vec();
+        }
     };
 
     let command = msg.get("command").and_then(|v| v.as_str()).unwrap_or("");
