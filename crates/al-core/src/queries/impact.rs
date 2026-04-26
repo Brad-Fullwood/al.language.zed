@@ -62,15 +62,42 @@ pub struct ImpactEntry {
 /// - A qualified procedure: `"Sales-Post.PostDocument"`
 ///
 /// Returns a list of impact entries describing how each consumer references the symbol.
+///
+/// Uses targeted index lookups (`get_extensions_of`, `get_by_kind`) for the
+/// extends/source-table checks. The member-scoped checks (event subscriber,
+/// parameter types, table relations) still require iterating all entries
+/// because no reverse-index exists from member-name to consumer; that scan is
+/// gated behind `member_part.is_some()` to avoid running it for object-only
+/// queries.
 #[must_use]
 pub fn impact(workspace: &Workspace, symbol: &str) -> Vec<ImpactEntry> {
     let (object_part, member_part) = parse_symbol(symbol);
     let mut results = Vec::new();
 
-    // Search symbol index (packages)
-    let all_entries = workspace.symbols.search("", usize::MAX);
-    for entry in &all_entries {
-        check_entry_for_impact(entry, &object_part, member_part.as_deref(), &mut results);
+    // Bounded: only extensions of the named object via the by_extends index.
+    for entry in workspace.symbols.get_extensions_of(&object_part) {
+        check_extends(&entry, &object_part, &mut results);
+    }
+
+    // Bounded: only kinds that can carry a SourceTable property.
+    const SOURCE_TABLE_KINDS: &[ObjectKind] = &[
+        ObjectKind::Page,
+        ObjectKind::PageExtension,
+        ObjectKind::Report,
+        ObjectKind::ReportExtension,
+        ObjectKind::Query,
+    ];
+    for kind in SOURCE_TABLE_KINDS {
+        for entry in workspace.symbols.get_by_kind(*kind) {
+            check_source_table(&entry, &object_part, &mut results);
+        }
+    }
+
+    // Member-scoped scan (full pass — no reverse index available).
+    if let Some(member) = &member_part {
+        for entry in workspace.symbols.all_entries() {
+            check_member_consumers(&entry, &object_part, member, &mut results);
+        }
     }
 
     // Search workspace files
@@ -112,16 +139,13 @@ fn find_unquoted_dot(s: &str) -> Option<usize> {
     None
 }
 
-/// Check a single symbol entry for references to the target symbol.
-fn check_entry_for_impact(
-    entry: &Arc<SymbolEntry>,
-    target_object: &str,
-    target_member: Option<&str>,
-    results: &mut Vec<ImpactEntry>,
-) {
+/// Push an Extends impact for an entry already known to extend `target_object`.
+///
+/// `entry` comes from `get_extensions_of(target_object)`, so the by_extends index
+/// has already done a case-insensitive name match. The double-check below is
+/// retained as a defence against stale index state.
+fn check_extends(entry: &Arc<SymbolEntry>, target_object: &str, results: &mut Vec<ImpactEntry>) {
     let target_lower = target_object.to_lowercase();
-
-    // Check if this object extends the target
     if let Some(ref extends_name) = entry.extends {
         if extends_name.to_lowercase() == target_lower {
             results.push(ImpactEntry {
@@ -135,8 +159,15 @@ fn check_entry_for_impact(
             });
         }
     }
+}
 
-    // Check properties for SourceTable references
+/// Check a Page/Report/Query entry for a SourceTable property pointing at `target_object`.
+fn check_source_table(
+    entry: &Arc<SymbolEntry>,
+    target_object: &str,
+    results: &mut Vec<ImpactEntry>,
+) {
+    let target_lower = target_object.to_lowercase();
     for prop in &entry.properties {
         if prop.name.eq_ignore_ascii_case("SourceTable")
             && prop
@@ -155,79 +186,85 @@ fn check_entry_for_impact(
             });
         }
     }
+}
 
-    // Check methods for references to target
-    if let Some(member) = target_member {
-        let member_lower = member.to_lowercase();
-        for method in &entry.methods {
-            // Check EventSubscriber attributes targeting the object+member
-            for attr in &method.attributes {
-                if attr.name == "EventSubscriber" {
-                    let target_obj_arg = attr.arguments.get(1).map(|s| {
-                        let s = s.trim();
-                        if let Some(pos) = s.find("::") {
-                            s[pos + 2..]
-                                .trim_matches('"')
-                                .trim_matches('\'')
-                                .to_lowercase()
-                        } else {
-                            s.trim_matches('"').trim_matches('\'').to_lowercase()
-                        }
-                    });
-                    let target_event_arg = attr
-                        .arguments
-                        .get(2)
-                        .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_lowercase());
-
-                    if target_obj_arg.as_deref() == Some(&target_lower)
-                        && target_event_arg.as_deref() == Some(&member_lower)
-                    {
-                        results.push(ImpactEntry {
-                            kind: entry.kind,
-                            id: entry.id,
-                            name: entry.name.clone(),
-                            proc: Some(method.name.clone()),
-                            field: None,
-                            impact_type: ImpactType::Subscribe,
-                            package: Some(entry.package.clone()),
-                        });
+/// Member-scoped checks: event subscribers, parameter types, table relations.
+fn check_member_consumers(
+    entry: &Arc<SymbolEntry>,
+    target_object: &str,
+    member: &str,
+    results: &mut Vec<ImpactEntry>,
+) {
+    let target_lower = target_object.to_lowercase();
+    let member_lower = member.to_lowercase();
+    for method in &entry.methods {
+        // Check EventSubscriber attributes targeting the object+member
+        for attr in &method.attributes {
+            if attr.name == "EventSubscriber" {
+                let target_obj_arg = attr.arguments.get(1).map(|s| {
+                    let s = s.trim();
+                    if let Some(pos) = s.find("::") {
+                        s[pos + 2..]
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_lowercase()
+                    } else {
+                        s.trim_matches('"').trim_matches('\'').to_lowercase()
                     }
-                }
-            }
+                });
+                let target_event_arg = attr
+                    .arguments
+                    .get(2)
+                    .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_lowercase());
 
-            // Check parameter types referencing the target object
-            for param in &method.parameters {
-                if param.type_name.to_lowercase().contains(&target_lower) {
+                if target_obj_arg.as_deref() == Some(&target_lower)
+                    && target_event_arg.as_deref() == Some(&member_lower)
+                {
                     results.push(ImpactEntry {
                         kind: entry.kind,
                         id: entry.id,
                         name: entry.name.clone(),
                         proc: Some(method.name.clone()),
                         field: None,
-                        impact_type: ImpactType::Read,
+                        impact_type: ImpactType::Subscribe,
                         package: Some(entry.package.clone()),
                     });
-                    break;
                 }
             }
         }
 
-        // Check fields for TableRelation to target
-        for field in &entry.fields {
-            for prop in &field.properties {
-                if prop.name.eq_ignore_ascii_case("TableRelation")
-                    && prop.value.to_lowercase().contains(&target_lower)
-                {
-                    results.push(ImpactEntry {
-                        kind: entry.kind,
-                        id: entry.id,
-                        name: entry.name.clone(),
-                        proc: None,
-                        field: Some(field.name.clone()),
-                        impact_type: ImpactType::Filter,
-                        package: Some(entry.package.clone()),
-                    });
-                }
+        // Check parameter types referencing the target object
+        for param in &method.parameters {
+            if param.type_name.to_lowercase().contains(&target_lower) {
+                results.push(ImpactEntry {
+                    kind: entry.kind,
+                    id: entry.id,
+                    name: entry.name.clone(),
+                    proc: Some(method.name.clone()),
+                    field: None,
+                    impact_type: ImpactType::Read,
+                    package: Some(entry.package.clone()),
+                });
+                break;
+            }
+        }
+    }
+
+    // Check fields for TableRelation to target
+    for field in &entry.fields {
+        for prop in &field.properties {
+            if prop.name.eq_ignore_ascii_case("TableRelation")
+                && prop.value.to_lowercase().contains(&target_lower)
+            {
+                results.push(ImpactEntry {
+                    kind: entry.kind,
+                    id: entry.id,
+                    name: entry.name.clone(),
+                    proc: None,
+                    field: Some(field.name.clone()),
+                    impact_type: ImpactType::Filter,
+                    package: Some(entry.package.clone()),
+                });
             }
         }
     }
@@ -435,6 +472,35 @@ mod tests {
         let (obj, member) = parse_symbol("Customer");
         assert_eq!(obj, "Customer");
         assert!(member.is_none());
+    }
+
+    /// Regression: impact() must not call `search("", usize::MAX)` — extensions
+    /// of the target object must come from the by_extends index, so unrelated
+    /// objects in the index (here: an unrelated `Item` extension) do not
+    /// contaminate results.
+    #[test]
+    fn impact_extends_uses_targeted_lookup() {
+        let ws = Workspace::new();
+        ws.symbols.add_entries(&[
+            make_table(18, "Customer"),
+            make_table_ext(50100, "Cust Ext", "Customer"),
+            make_table(27, "Item"),
+            make_table_ext(50101, "Item Ext", "Item"),
+        ]);
+
+        let results = impact(&ws, "Customer");
+
+        let extends_results: Vec<_> = results
+            .iter()
+            .filter(|r| r.impact_type == ImpactType::Extends)
+            .collect();
+        assert_eq!(
+            extends_results.len(),
+            1,
+            "Targeted lookup must only return extensions of Customer, not Item. Got: {:?}",
+            extends_results
+        );
+        assert_eq!(extends_results[0].name, "Cust Ext");
     }
 
     #[test]
