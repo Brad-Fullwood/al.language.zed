@@ -121,7 +121,15 @@ fn analyze_proc_text(
 
     for (offset, line) in proc_text.lines().enumerate() {
         let line_num = start_line + offset as u32;
-        let lower = line.trim().to_lowercase();
+        // Skip the line if it is a comment (`// ...`). Strip AL string literal
+        // content (`'...'`) so that text like `if x = 'FindFirst()' then ...`
+        // does not generate a false-positive FindInLoop violation.
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        let cleaned = strip_string_literals(line);
+        let lower = cleaned.trim().to_lowercase();
 
         if is_loop_start(&lower) {
             // If the loop header ends with "begin" (e.g. "for ... do begin" or
@@ -218,6 +226,32 @@ fn contains_get_call(lower: &str) -> bool {
     } else {
         false
     }
+}
+
+/// Replace AL string literal contents (`'...'` and `"..."`) with spaces so
+/// that text-pattern matchers do not see method-call-like substrings buried
+/// inside literals (e.g. `if x = 'FindFirst()' then ...`). Quotes themselves
+/// are preserved so token shape is unchanged for downstream loop/begin/end
+/// detection.
+fn strip_string_literals(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_single = false;
+    let mut in_double = false;
+    for ch in line.chars() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                out.push(ch);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                out.push(ch);
+            }
+            _ if in_single || in_double => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn is_loop_start(lower: &str) -> bool {
@@ -376,6 +410,38 @@ mod tests {
         assert!(
             v.iter().any(|x| x.kind == SqlAntiPattern::FindInLoop),
             "FindFirst after nested begin..end inside loop should be flagged: {:?}",
+            v
+        );
+    }
+
+    /// Regression for 0d6373b97a0caab2: a FindFirst() substring buried inside
+    /// a string literal or a // comment must not trigger a false-positive
+    /// FindInLoop violation. The text scanner now strips literal contents
+    /// and skips comment lines.
+    #[test]
+    fn no_false_positive_for_findfirst_in_string_literal_or_comment() {
+        let ws = workspace_with(vec![(
+            "/src/Strings.al",
+            r#"codeunit 50100 "Strings CU"
+{
+    procedure DoIt()
+    var
+        i: Integer;
+        msg: Text;
+    begin
+        for i := 1 to 10 do begin
+            msg := 'FindFirst() should not match';
+            // .FindFirst() in a comment should not match either
+            Message(msg);
+        end;
+    end;
+}"#,
+        )]);
+
+        let v = detect_sql_patterns(&ws);
+        assert!(
+            !v.iter().any(|x| x.kind == SqlAntiPattern::FindInLoop),
+            "FindFirst inside string literal/comment must not be flagged. Got: {:?}",
             v
         );
     }
