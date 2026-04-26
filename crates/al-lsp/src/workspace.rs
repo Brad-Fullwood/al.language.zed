@@ -38,8 +38,18 @@ pub(crate) async fn initialize_workspace(
         .log_message(MessageType::INFO, "AL workspace: initializing...")
         .await;
 
-    // 1. Discover toolchain
-    match al_core::toolchain::find_toolchain() {
+    // 1. Discover toolchain.
+    // find_toolchain() does sync filesystem traversal (PATH walk, ALTool
+    // probe) which can take tens of ms — must run on a blocking thread so
+    // we don't stall the tokio runtime during init.
+    let toolchain_result = tokio::task::spawn_blocking(al_core::toolchain::find_toolchain)
+        .await
+        .unwrap_or_else(|join_err| {
+            Err(al_core::errors::DiscoveryError::Io(std::io::Error::other(
+                format!("find_toolchain task panicked: {join_err}"),
+            )))
+        });
+    match toolchain_result {
         Ok(tc) => {
             info!(version = %tc.version, "Found AL toolchain");
             *workspace.toolchain.write().await = Some(tc.clone());
