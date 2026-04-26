@@ -133,12 +133,24 @@ pub fn signature_help(
 
     let (func_name, active_param) = al_syntax::find_call_context(prefix)?;
 
-    // Search document symbols in current file
     let tree = {
         let (_, t) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
         t
     };
-    let doc_symbols = al_syntax::extract_document_symbols(&tree, &text);
+    // Search document symbols in current file. Prefer the cached symbols
+    // populated by the file index to avoid a full AST walk on every
+    // signature-help request; fall back to fresh extraction for documents
+    // that aren't stored on disk.
+    let file_path = uri.to_file_path().ok();
+    let doc_symbols: Vec<super::AlDocumentSymbol> = file_path
+        .as_ref()
+        .and_then(|p| workspace.file_index.get_cached_symbols(p))
+        .unwrap_or_else(|| {
+            al_syntax::extract_document_symbols(&tree, &text)
+                .into_iter()
+                .map(Into::into)
+                .collect()
+        });
     for sym in &doc_symbols {
         if let Some(children) = &sym.children {
             for child in children {

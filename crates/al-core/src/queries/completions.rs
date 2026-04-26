@@ -284,7 +284,19 @@ fn add_default_completions(
     }
 
     if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) {
-        let doc_symbols = al_syntax::extract_document_symbols(&tree, &file_text);
+        // Prefer cached symbols populated by the file index; fall back to a
+        // fresh extraction only for documents not stored on disk. Avoids the
+        // full AST walk on every keystroke.
+        let file_path = uri.to_file_path().ok();
+        let doc_symbols: Vec<super::AlDocumentSymbol> = file_path
+            .as_ref()
+            .and_then(|p| workspace.file_index.get_cached_symbols(p))
+            .unwrap_or_else(|| {
+                al_syntax::extract_document_symbols(&tree, &file_text)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            });
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
                 for child in children {
