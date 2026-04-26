@@ -1067,7 +1067,21 @@ impl App {
             // Ask the daemon for the workspace file path for this object.
             // Reconnect if the persistent client has been dropped.
             if self.daemon_client.is_none() {
-                self.daemon_client = DaemonClient::connect(&self.project_root).ok();
+                match DaemonClient::connect(&self.project_root) {
+                    Ok(c) => self.daemon_client = Some(c),
+                    Err(e) => {
+                        // App has no status bar field (status lives on
+                        // sub-views). Write to stderr so the user sees the
+                        // cause after the TUI exits — otherwise the
+                        // double-click silently does nothing and a missing
+                        // daemon looks indistinguishable from a missing
+                        // workspace path.
+                        eprintln!(
+                            "al-explorer: daemon connect failed (project_root={}): {e}",
+                            self.project_root.display()
+                        );
+                    }
+                }
             }
             if let Some(client) = self.daemon_client.as_mut() {
                 let loc_result = client.request(
