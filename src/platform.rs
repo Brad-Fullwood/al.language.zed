@@ -84,7 +84,17 @@ pub fn detect_platform(env_map: &HashMap<String, String>) -> Platform {
         }
     }
 
-    // Using std::fs::metadata for WASI compatibility (may not be available in all WASI runtimes)
+    // macOS HOME paths conventionally start with /Users/. Prefer this env-var
+    // heuristic over a filesystem probe, which may be denied by the WASI
+    // sandbox depending on how Zed's WASM runtime is configured.
+    if let Some(home) = env_map.get("HOME") {
+        if home.starts_with("/Users/") {
+            return Platform::MacOS;
+        }
+    }
+
+    // Last-resort filesystem probe. May silently fall through to Linux on a
+    // WASI runtime that denies filesystem access.
     if std::fs::metadata("/System/Library").is_ok() {
         return Platform::MacOS;
     }
