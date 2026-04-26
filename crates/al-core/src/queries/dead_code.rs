@@ -197,6 +197,10 @@ fn find_unused_procedures(
 fn text_contains_call_outside_declaration(text: &str, proc_name: &str) -> bool {
     let name_lower = proc_name.to_lowercase();
     let call_pat = format!("{}(", name_lower);
+    // Match the EXACT declaration `procedure <name>(` so a procedure with a
+    // common name (e.g. `Get`, `Post`) does not match unrelated declarations
+    // like `procedure GetSomethingElse(` and silently skip a real call site.
+    let decl_pat = format!("procedure {}(", name_lower);
     for line in text.lines() {
         let trimmed = line.trim_start();
         // Skip line-comments — `// MyProc(` should not be treated as a call.
@@ -204,8 +208,9 @@ fn text_contains_call_outside_declaration(text: &str, proc_name: &str) -> bool {
             continue;
         }
         let lower = line.to_lowercase();
-        // Skip the declaration line itself
-        if lower.contains("procedure ") && lower.contains(&name_lower) {
+        // Skip the declaration line itself, but only if it's THIS procedure's
+        // declaration (matched by the `procedure name(` token boundary).
+        if lower.contains(&decl_pat) {
             continue;
         }
         if lower.contains(&call_pat) {
@@ -773,6 +778,49 @@ mod tests {
                 .iter()
                 .any(|u| u.name == "Name" && u.kind == UnusedKind::Procedure),
             "Procedure 'Name' must be flagged as unused despite Rec.Name field accesses. Got: {:?}",
+            unused
+        );
+    }
+
+    /// Regression for fbaec79d6e62960f: a real call to a procedure with a
+    /// short name like `Post` must not be skipped just because another file
+    /// declares a procedure whose name *contains* `Post` (e.g.
+    /// `procedure PostDocument()`). Previously the skip predicate matched
+    /// any "procedure ..." line containing the substring `post`.
+    #[test]
+    fn dead_code_does_not_skip_real_call_when_other_procedure_name_contains_target() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/Target.al",
+                r#"codeunit 50300 "Target"
+{
+    procedure Post()
+    begin
+    end;
+}"#,
+            ),
+            (
+                "/src/Caller.al",
+                r#"codeunit 50301 "Caller"
+{
+    procedure PostDocument()
+    var
+        target: Codeunit "Target";
+    begin
+        target.Post();
+    end;
+}"#,
+            ),
+        ]);
+
+        let unused = dead_code(&ws);
+
+        // `Post` IS called from the second file — must not be flagged unused.
+        assert!(
+            !unused
+                .iter()
+                .any(|u| u.name == "Post" && u.kind == UnusedKind::Procedure),
+            "Procedure 'Post' is called from another file; must NOT be flagged unused. Got: {:?}",
             unused
         );
     }
