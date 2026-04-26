@@ -191,8 +191,16 @@ pub(crate) async fn initialize_workspace(
             }
             // Mark as shown only after user explicitly responded (Yes or No).
             // Run the sentinel write on the blocking pool so the async
-            // executor thread is not stalled on disk I/O.
-            tokio::task::spawn_blocking(mark_settings_prompt_shown);
+            // executor thread is not stalled on disk I/O. Await the join
+            // handle so a runtime shutdown mid-write surfaces in the log
+            // instead of silently leaving the sentinel unwritten — the
+            // user would otherwise see the prompt again on next launch.
+            match tokio::task::spawn_blocking(mark_settings_prompt_shown).await {
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::warn!("settings prompt sentinel write task did not complete: {e}");
+                }
+            }
         }
         // If show_message_request returned Ok(None) or Err, do NOT mark —
         // the prompt was dismissed/lost, so retry next time.
