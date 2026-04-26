@@ -34,7 +34,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     let node_range: Range = al_syntax::ts_range_to_lsp(&node.range(), source).into();
 
     // Access path resolution (e.g., Rec.Name, Enum::Value)
-    if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos) {
+    if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos.into()) {
         tracing::debug!(receiver = %access.receiver, member = %access.member, "hover: access path found");
         if let Some(receiver) = resolution::resolve_expression_type(
             workspace,
@@ -42,7 +42,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             &text,
             &tree,
             &access.receiver,
-            lsp_pos,
+            lsp_pos.into(),
         ) {
             if let Some(member) =
                 resolution::resolve_member(workspace, uri, &receiver, &access.member)

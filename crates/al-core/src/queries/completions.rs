@@ -80,7 +80,8 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
         CompletionContext::MemberAccess => {
             if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri)
             {
-                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, lsp_pos)
+                if let Some((receiver_expr, _)) =
+                    resolution::receiver_chain_before(&text, lsp_pos.into())
                 {
                     if let Some(receiver) = resolution::resolve_expression_type(
                         workspace,
@@ -88,7 +89,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                         &file_text,
                         &tree,
                         &receiver_expr,
-                        lsp_pos,
+                        lsp_pos.into(),
                     ) {
                         let lsp_items =
                             resolution::completion_items_for_receiver(workspace, &receiver);
@@ -100,7 +101,8 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
         CompletionContext::EnumAccess => {
             if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri)
             {
-                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, lsp_pos)
+                if let Some((receiver_expr, _)) =
+                    resolution::receiver_chain_before(&text, lsp_pos.into())
                 {
                     let enum_type = resolution::resolve_expression_type(
                         workspace,
@@ -108,7 +110,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                         &file_text,
                         &tree,
                         &receiver_expr,
-                        lsp_pos,
+                        lsp_pos.into(),
                     )
                     .unwrap_or_else(|| resolution::ResolvedType {
                         type_name: receiver_expr.clone(),

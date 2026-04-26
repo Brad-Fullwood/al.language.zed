@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use tower_lsp::lsp_types::{Position, Range, Url};
+use crate::queries::{AlSymbolKind, Position, Range};
 use tree_sitter::Tree;
+use url::Url;
 
 use crate::workspace::Workspace;
 
@@ -76,7 +77,7 @@ pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Opt
         return Some(path);
     }
 
-    let Some(node) = al_syntax::find_node_at_position(tree, text, position) else {
+    let Some(node) = al_syntax::find_node_at_position(tree, text, position.into()) else {
         tracing::debug!(
             line = position.line,
             character = position.character,
@@ -387,7 +388,7 @@ pub(crate) fn resolve_expression_type(
     }
 
     let resolver = al_syntax::TypeResolver::new(tree, text);
-    if let Some(decl) = resolver.resolve_type(expr, position) {
+    if let Some(decl) = resolver.resolve_type(expr, position.into()) {
         tracing::debug!(
             expr = %expr,
             type_name = %decl.type_name,
@@ -776,7 +777,7 @@ pub(crate) fn resolve_workspace_object_definition(
     let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
     Some((
         uri,
-        al_syntax::ts_range_to_lsp(&obj.range, file_source.as_bytes()),
+        al_syntax::ts_range_to_lsp(&obj.range, file_source.as_bytes()).into(),
     ))
 }
 
@@ -822,10 +823,7 @@ pub(crate) fn completion_items_for_receiver(
         if let Some(path) = resolve_object_path(workspace, None, subtype) {
             if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(&path) {
                 let resolver = al_syntax::TypeResolver::new(&tree, &file_text);
-                for var in resolver.variables_at(Position {
-                    line: 0,
-                    character: 0,
-                }) {
+                for var in resolver.variables_at(Position::default().into()) {
                     if var.scope != al_syntax::VariableScope::Global {
                         continue;
                     }
@@ -846,9 +844,7 @@ pub(crate) fn completion_items_for_receiver(
                 for symbol in al_syntax::extract_document_symbols(&tree, &file_text) {
                     if let Some(children) = symbol.children {
                         for child in children {
-                            if child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
-                                || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT
-                            {
+                            if crate::queries::is_procedure_symbol(AlSymbolKind::from(child.kind)) {
                                 workspace_symbols += 1;
                                 items.push(CompletionCandidate {
                                     label: child.name,
@@ -973,7 +969,7 @@ pub(crate) fn enum_completion_items(
                 }
                 if let Some(children) = symbol.children {
                     for child in children {
-                        if child.kind == tower_lsp::lsp_types::SymbolKind::ENUM_MEMBER {
+                        if AlSymbolKind::from(child.kind) == AlSymbolKind::EnumMember {
                             workspace_values += 1;
                             items.push(CompletionCandidate {
                                 label: child.name,
@@ -1110,8 +1106,7 @@ fn workspace_member(
     for symbol in al_syntax::extract_document_symbols(&tree, &content) {
         if let Some(children) = symbol.children {
             for child in children {
-                if (child.kind == tower_lsp::lsp_types::SymbolKind::FUNCTION
-                    || child.kind == tower_lsp::lsp_types::SymbolKind::EVENT)
+                if crate::queries::is_procedure_symbol(AlSymbolKind::from(child.kind))
                     && child.name.eq_ignore_ascii_case(member_name)
                 {
                     tracing::debug!(
@@ -1130,7 +1125,7 @@ fn workspace_member(
 
                         uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                         kind: ResolvedMemberKind::Procedure {
-                            range: Some(child.selection_range),
+                            range: Some(child.selection_range.into()),
                             signature: child
                                 .detail
                                 .clone()
@@ -1144,7 +1139,7 @@ fn workspace_member(
                     });
                 }
 
-                if child.kind == tower_lsp::lsp_types::SymbolKind::ENUM_MEMBER
+                if AlSymbolKind::from(child.kind) == AlSymbolKind::EnumMember
                     && child.name.eq_ignore_ascii_case(member_name)
                 {
                     tracing::debug!(
@@ -1162,7 +1157,7 @@ fn workspace_member(
 
                         uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                         kind: ResolvedMemberKind::EnumValue {
-                            range: Some(child.selection_range),
+                            range: Some(child.selection_range.into()),
                         },
                     });
                 }
@@ -1171,10 +1166,7 @@ fn workspace_member(
     }
 
     let resolver = al_syntax::TypeResolver::new(&tree, &content);
-    for var in resolver.variables_at(Position {
-        line: 0,
-        character: 0,
-    }) {
+    for var in resolver.variables_at(Position::default().into()) {
         if var.scope == al_syntax::VariableScope::Global
             && var.name.eq_ignore_ascii_case(member_name)
         {
@@ -1193,7 +1185,7 @@ fn workspace_member(
                 }),
                 uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                 kind: ResolvedMemberKind::Variable {
-                    range: Some(al_syntax::ts_range_to_lsp(&var.range, content.as_bytes())),
+                    range: Some(al_syntax::ts_range_to_lsp(&var.range, content.as_bytes()).into()),
                     scope: "global variable",
                 },
             });

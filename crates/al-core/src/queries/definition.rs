@@ -20,14 +20,14 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     let clean_name = super::node_clean_name(node, source)?;
 
     // Access path resolution
-    if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos) {
+    if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos.into()) {
         if let Some(receiver) = resolution::resolve_expression_type(
             workspace,
             uri,
             &text,
             &tree,
             &access.receiver,
-            lsp_pos,
+            lsp_pos.into(),
         ) {
             if let Some(member) =
                 resolution::resolve_member(workspace, uri, &receiver, &access.member)
