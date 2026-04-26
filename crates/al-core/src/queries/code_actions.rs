@@ -571,7 +571,13 @@ fn source_action_if_to_case(
 
     // Find the if_statement node at the cursor position.
     // LSP positions use UTF-16 code units for character offset; tree-sitter uses byte offsets.
-    let cursor_line = text.lines().nth(range.start.line as usize).unwrap_or("");
+    // Bounds-check the line index: a stale range from the client (sent before
+    // the document was edited) could point past the end of the document. Without
+    // the check, lines().nth() returns None and unwrap_or("") silently makes
+    // col_bytes = 0, yielding a Point at (start_line, 0) that does not
+    // correspond to the user's cursor — the action would either misfire or
+    // attach to the wrong if_statement at the document start.
+    let cursor_line = text.lines().nth(range.start.line as usize)?;
     let col_bytes =
         crate::resolution::utf16_col_to_byte_offset(cursor_line, range.start.character as usize);
     let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
@@ -4821,6 +4827,51 @@ codeunit 50100 "My Codeunit"
             combined.contains("./layouts/MyReport.rdlc"),
             "Must not drop the layout path, got: {:?}",
             combined
+        );
+    }
+
+    /// Regression for 0eee797d18d6a56e: a stale Range pointing past the end
+    /// of the document used to silently fall through to a synthesised
+    /// `Point::new(start_line, 0)` (because `lines().nth(...)` returned None
+    /// and `unwrap_or("")` made the col_bytes calculation produce 0). The
+    /// action could then attach to whatever if-statement happened to live
+    /// at the document start. With the bounds check, the action returns no
+    /// matches.
+    #[test]
+    fn source_action_if_to_case_returns_none_for_out_of_range_line() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "Test"
+{
+    procedure DoIt(x: Integer)
+    begin
+        if x = 1 then
+            Message('one');
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/IfRange.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+
+        // Line just past end of document.
+        let total_lines = al_code.lines().count() as u32;
+        let range = Range {
+            start: super::super::Position {
+                line: total_lines + 5,
+                character: 0,
+            },
+            end: super::super::Position {
+                line: total_lines + 5,
+                character: 0,
+            },
+        };
+
+        // Call the if_to_case helper directly so we don't depend on the rest of
+        // source_actions() which may panic on truly extreme stale ranges.
+        let action = source_action_if_to_case(&ws, &uri, al_code, range);
+        assert!(
+            action.is_none(),
+            "Out-of-range line must not yield an if-to-case action; got: {:?}",
+            action
         );
     }
 }
