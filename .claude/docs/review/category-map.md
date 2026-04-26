@@ -20,7 +20,9 @@ category that no one reviewed.
 | Documentation accuracy | every domain worker (their docs only) + `review-worker-tests` (CLAUDE.md) | `pr-review-toolkit:comment-analyzer` |
 | Tooling, CI, release | `review-spec-arch` | — |
 | Observability | `review-spec-perf` | every domain worker |
-| Build correctness | `review-spec-arch` | — |
+| Build correctness | `review-spec-arch` | `review-spec-runtime` (binary actually links + launches) |
+| Runtime / launch / IPC correctness | `review-spec-runtime` | every domain worker (flags suspect deserialize sites) |
+| Cross-process wire format | `review-spec-runtime` | `review-worker-server`, `review-worker-client` |
 | Miscellaneous | any reviewer | — |
 
 ## Reviewer scope table
@@ -45,3 +47,4 @@ category that no one reviewed.
 | `review-spec-concurrency` | everywhere DashMap, `.lock()`, `Arc<Mutex<>>`, `.await`, tower-lsp types appear | unrelated code |
 | `review-spec-grammar` | `tree-sitter-al/grammar.js`, `queries/*.scm`, `data/*.json`, `analysis/`, `generator/` | Rust code |
 | `review-spec-refactor` | cross-crate — everything; git log aware | nothing off-limits |
+| `review-spec-runtime` | every binary's launch path, daemon socket protocol, JSON-RPC payloads, cross-binary handshake; **actually launches binaries** | application source code (read-only) |

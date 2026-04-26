@@ -13,8 +13,13 @@ Central).
 
 Read the run's `manifest.json`, the project's `CLAUDE.md`, the review spec
 at `docs/ultrareview_original.md`, and the shared cross-cutting-concerns
-doc. Produce 13 per-reviewer brief files — 7 domain workers, 6 specialists
+doc. Produce 14 per-reviewer brief files — 7 domain workers, 7 specialists
 — at `.agentic/<run-id>/review/briefs/`.
+
+The seventh specialist is the **runtime reviewer**: it actually launches
+every binary and exercises the daemon ↔ client wire format. Static
+reviewers cannot see daemon-protocol drift; the runtime reviewer is what
+catches launch crashes and serde mismatches across process boundaries.
 
 Each brief must follow the schema at
 `.claude/docs/review/brief-schema.md`. Each brief must:
@@ -57,6 +62,7 @@ Each brief must follow the schema at
 - `spec-concurrency.md`
 - `spec-grammar.md`
 - `spec-refactor.md`
+- `spec-runtime.md`
 
 Diff/incremental mode: if `manifest.changed_files` is populated, for
 each reviewer intersect their natural scope with the changed files.

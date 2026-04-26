@@ -31,12 +31,14 @@ Dispatch ONE subagent: `review-coordinator`. Prompt:
 > Run the Review Department's Phase 1 for run `<run-id>`. Read the
 > `manifest.json`, `CLAUDE.md`, `docs/ultrareview_original.md`,
 > `docs/ARCHITECTURE.md`, the cross-cutting-concerns doc, and the
-> category-map doc. Produce 13 briefs at
-> `.agentic/<run-id>/review/briefs/` per the brief-schema. Reply with
-> files written and any ambiguities. Do NOT write findings.
+> category-map doc. Produce 14 briefs at
+> `.agentic/<run-id>/review/briefs/` per the brief-schema (7 domain +
+> 7 specialist, including spec-runtime.md). Reply with files written
+> and any ambiguities. Do NOT write findings.
 
-Wait for completion. Verify 13 brief files exist. Set
-`phases.review-p1 = complete`.
+Wait for completion. Verify 14 brief files exist (in particular,
+`spec-runtime.md` MUST be present — runtime coverage is non-optional).
+Set `phases.review-p1 = complete`.
 
 ## Phase 2 — Deep domain review (7 parallel)
 
@@ -67,17 +69,25 @@ failure pauses progress; the orchestrator reports the bad file.
 
 Set `phases.review-p2 = complete`.
 
-## Phase 3 — Specialist cross-cutting pass (6 parallel + pr-review-toolkit reinforcements)
+## Phase 3 — Specialist cross-cutting pass (7 parallel + pr-review-toolkit reinforcements)
 
 Set `phases.review-p3 = in_progress`.
 
-Dispatch SIX specialist subagents in parallel:
+Dispatch SEVEN specialist subagents in parallel:
 - review-spec-arch → spec-arch.md
 - review-spec-security → spec-security.md
 - review-spec-perf → spec-perf.md
 - review-spec-concurrency → spec-concurrency.md
 - review-spec-grammar → spec-grammar.md (MAY skip if submodule bare)
 - review-spec-refactor → spec-refactor.md
+- review-spec-runtime → spec-runtime.md
+  **MANDATORY every cycle.** This is the only agent that launches binaries
+  and exercises the daemon ↔ client wire format. Skipping it risks
+  re-shipping a regression that static review cannot see (e.g. a daemon
+  emitting `kind: "table"` that no client can deserialize). If the brief
+  is missing or the agent is unavailable, log a `kind: gap, severity:
+  critical` finding for the orchestrator and continue — never silently
+  drop runtime coverage.
 
 Plus, in the same parallel dispatch, FOUR pr-review-toolkit agents
 (installed at user scope) as reinforcements. Each dispatched with a

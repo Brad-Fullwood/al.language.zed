@@ -21,10 +21,12 @@ full run-directory contract. Review writes only into
 │   ├── spec-perf.md
 │   ├── spec-concurrency.md
 │   ├── spec-grammar.md         # may say "skipped: submodule bare"
-│   └── spec-refactor.md
+│   ├── spec-refactor.md
+│   └── spec-runtime.md         # MANDATORY — actually launches binaries
 ├── findings/
 │   ├── domain-*.jsonl          # 7 files
-│   └── spec-*.jsonl            # 6 files
+│   ├── spec-*.jsonl            # 7 files (incl. spec-runtime.jsonl)
+│   └── spec-runtime-summary.md # which binaries were launched + status
 ├── verified/
 │   ├── verified.jsonl
 │   ├── misdiagnosed.jsonl
@@ -56,9 +58,10 @@ full run-directory contract. Review writes only into
 
 1. `manifest.json` (written by orchestrator, Phase 0).
 2. `briefs/*.md` (written by `review-coordinator`, Phase 1).
-3. `findings/*.jsonl` (written by 7 domain + 6 specialist workers,
+3. `findings/*.jsonl` (written by 7 domain + 7 specialist workers,
    Phases 2 and 3, in parallel). Each worker writes only its own file;
-   no shared writes.
+   no shared writes. `spec-runtime.jsonl` is the runtime reviewer's
+   output and is never optional.
 4. `verified/*.jsonl` (written by validators in Phase 4).
 5. `scratch/<id>/` (written by test-runner in Phase 4 as needed).
 6. `report/FINAL.md`, `report/findings.jsonl`, `report/resolved.jsonl`,
