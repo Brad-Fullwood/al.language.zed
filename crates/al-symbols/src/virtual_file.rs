@@ -275,7 +275,9 @@ fn enforce_readonly(path: &Path) {
         if let Ok(meta) = fs::metadata(path) {
             let mut perms = meta.permissions();
             perms.set_mode(0o444);
-            let _ = fs::set_permissions(path, perms);
+            if let Err(e) = fs::set_permissions(path, perms) {
+                tracing::debug!(path = %path.display(), error = %e, "enforce_readonly: chmod 0o444 failed (virtual file may stay writable)");
+            }
         }
     }
     #[cfg(not(unix))]
@@ -283,7 +285,9 @@ fn enforce_readonly(path: &Path) {
         if let Ok(meta) = fs::metadata(path) {
             let mut perms = meta.permissions();
             perms.set_readonly(true);
-            let _ = fs::set_permissions(path, perms);
+            if let Err(e) = fs::set_permissions(path, perms) {
+                tracing::debug!(path = %path.display(), error = %e, "enforce_readonly: set_readonly failed (virtual file may stay writable)");
+            }
         }
     }
 }
