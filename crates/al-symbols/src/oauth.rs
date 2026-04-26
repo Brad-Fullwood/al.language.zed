@@ -521,11 +521,28 @@ fn pkce_challenge(verifier: &str) -> String {
 
 fn generate_random_string(len: usize) -> Result<String, OAuthError> {
     const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let bytes = random_bytes(len)?;
-    Ok(bytes
-        .iter()
-        .map(|b| CHARS[(*b as usize) % CHARS.len()] as char)
-        .collect())
+    // Rejection sampling threshold: largest multiple of CHARS.len() (62) that
+    // fits in a u8. 256 - (256 % 62) = 248. Bytes >= 248 would skew the
+    // distribution toward chars 0..7 if folded with %, so we discard them
+    // and draw fresh bytes.  Worst case ratio is 248/256 ≈ 96.875% accept,
+    // so the loop terminates in expected O(len) draws.
+    const ACCEPT_LT: u8 = (u8::MAX as usize - (u8::MAX as usize % CHARS.len())) as u8;
+    let mut out = String::with_capacity(len);
+    while out.len() < len {
+        let need = len - out.len();
+        // Draw a buffer larger than `need` to amortise the syscall cost when
+        // ~3% of bytes will be rejected.
+        let bytes = random_bytes(need + need / 16 + 1)?;
+        for b in bytes {
+            if b < ACCEPT_LT {
+                out.push(CHARS[(b as usize) % CHARS.len()] as char);
+                if out.len() == len {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Generate `n` cryptographically random bytes using the OS entropy source.
