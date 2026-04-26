@@ -132,30 +132,34 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                     sort_text: None,
                 });
             }
-            // Single pass over `all` — collect up to 50 per kind without 4 separate Vec clones
-            let wanted_kinds = [
+            // Use get_by_kind for each wanted kind directly. Previously this
+            // was a single all_entries() pass with per-kind counters and an
+            // early-exit that required ALL four counters to hit 50 — so if
+            // (say) Interface had fewer than 50 entries, the loop kept
+            // scanning every other entry in the index after the other three
+            // were already full. The targeted lookups bound work to the
+            // requested kind sets and the per-kind cap.
+            const TYPE_COMPLETION_CAP: usize = 50;
+            for kind in [
                 al_symbols::ObjectKind::Table,
                 al_symbols::ObjectKind::Enum,
                 al_symbols::ObjectKind::Codeunit,
                 al_symbols::ObjectKind::Interface,
-            ];
-            let mut counts = [0usize; 4];
-            for arc in workspace.symbols.all_entries() {
-                if let Some(idx) = wanted_kinds.iter().position(|&k| k == arc.kind) {
-                    if counts[idx] < 50 {
-                        counts[idx] += 1;
-                        items.push(CompletionEntry {
-                            label: format!("\"{}\"", arc.name),
-                            kind: CompletionKind::Class,
-                            detail: Some(format!("{} {}", arc.kind, arc.id)),
-                            documentation: None,
-                            insert_text: None,
-                            sort_text: None,
-                        });
-                    }
-                }
-                if counts.iter().all(|&c| c >= 50) {
-                    break;
+            ] {
+                for arc in workspace
+                    .symbols
+                    .get_by_kind(kind)
+                    .iter()
+                    .take(TYPE_COMPLETION_CAP)
+                {
+                    items.push(CompletionEntry {
+                        label: format!("\"{}\"", arc.name),
+                        kind: CompletionKind::Class,
+                        detail: Some(format!("{} {}", arc.kind, arc.id)),
+                        documentation: None,
+                        insert_text: None,
+                        sort_text: None,
+                    });
                 }
             }
         }
