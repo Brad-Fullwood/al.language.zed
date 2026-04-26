@@ -761,6 +761,19 @@ impl<'a> TypeResolver<'a> {
             return;
         };
 
+        // Build a line_starts table so we can compute real byte offsets
+        // for the synthetic VariableDecl ranges (mirrors collect_dataitem_vars).
+        // Without this start_byte = end_byte = 0 makes downstream byte-range
+        // checks (e.g. `is_inside`, hover.byte_offset filtering) treat every
+        // action-trigger var as a zero-width match at file offset 0.
+        let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len() + 1);
+        line_starts.push(0);
+        let mut cursor = 0usize;
+        for line in &lines {
+            cursor += line.len() + 1; // +1 for the elided '\n'
+            line_starts.push(cursor);
+        }
+
         // Parse variable declarations between `var` and `begin`
         for line_idx in (var_start + 1)..begin_at {
             if line_idx >= lines.len() {
@@ -780,6 +793,9 @@ impl<'a> TypeResolver<'a> {
                 }
                 let (type_name, type_subtype) = parse_type_text(type_part);
                 let col = line.find(var_name).unwrap_or(0);
+                let line_start = line_starts.get(line_idx).copied().unwrap_or(0);
+                let start_byte = line_start + col;
+                let end_byte = line_start + col + trimmed.len();
                 result.push(VariableDecl {
                     name: var_name.to_string(),
                     type_name,
@@ -787,8 +803,8 @@ impl<'a> TypeResolver<'a> {
                     is_var: false,
                     scope: VariableScope::Local,
                     range: tree_sitter::Range {
-                        start_byte: 0,
-                        end_byte: 0,
+                        start_byte,
+                        end_byte,
                         start_point: tree_sitter::Point {
                             row: line_idx,
                             column: col,
