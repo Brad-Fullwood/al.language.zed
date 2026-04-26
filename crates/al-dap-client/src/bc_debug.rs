@@ -461,11 +461,11 @@ impl BcDebugSession {
         tokio::spawn(async move {
             while let Some(msg) = ws_rx.recv().await {
                 let framed = format!("{msg}\x1e"); // SignalR record separator
-                if ws_sink
+                if let Err(e) = ws_sink
                     .send(tokio_tungstenite::tungstenite::Message::Text(framed.into()))
                     .await
-                    .is_err()
                 {
+                    error!("BC SignalR send failed: {e} — debug stream dead");
                     break;
                 }
             }
