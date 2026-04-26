@@ -143,7 +143,28 @@ pub async fn compile_project_with_analyzers(
         }
     }
     if !analyzer_paths.is_empty() {
-        cmd.arg(format!("/analyzer:{}", analyzer_paths.join(",")));
+        // /analyzer:p1,p2,p3 splits on comma, so a path containing a literal
+        // comma silently truncates the analyzer list and turns the rest into
+        // a phantom analyzer that ALTool then can't load. Drop any such
+        // path with a warn — recovering by encoding (\\,) is fragile because
+        // not all platforms honour it.
+        let safe_paths: Vec<String> = analyzer_paths
+            .into_iter()
+            .filter(|p| {
+                if p.contains(',') {
+                    tracing::warn!(
+                        path = %p,
+                        "Analyzer DLL path contains a comma — skipping (would corrupt /analyzer arg list)"
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+        if !safe_paths.is_empty() {
+            cmd.arg(format!("/analyzer:{}", safe_paths.join(",")));
+        }
     }
 
     cmd.stdout(std::process::Stdio::piped());
