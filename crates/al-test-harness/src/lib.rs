@@ -876,6 +876,19 @@ pub async fn read_loop(
             None => continue,
         };
 
+        // Guard against pathological / malicious headers — a corrupt
+        // Content-Length: 4294967295 would otherwise allocate ~4 GiB
+        // before we ever look at the bytes. 64 MiB is well above any
+        // legitimate LSP message we have ever observed (largest real
+        // payloads are document-symbol responses on huge files, ~5 MiB).
+        const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+        if content_length > MAX_BODY_BYTES {
+            eprintln!(
+                "al-test-harness read_loop: Content-Length {content_length} exceeds {MAX_BODY_BYTES} cap, dropping connection"
+            );
+            return;
+        }
+
         // Read body
         let mut body = vec![0u8; content_length];
         match tokio::io::AsyncReadExt::read_exact(&mut reader, &mut body).await {
