@@ -2138,7 +2138,14 @@ pub(super) fn dispatch_deps_graph(
         .try_read()
         .ok()
         .and_then(|p| p.as_ref().map(|p| p.root.join("app.json")))
-        .and_then(|path| tokio::task::block_in_place(|| std::fs::read_to_string(path)).ok())
+        .and_then(|path| {
+            tokio::task::block_in_place(|| std::fs::read_to_string(&path))
+                .map_err(|e| {
+                    tracing::warn!(path = %path.display(), error = %e, "failed to read app.json — proceeding with empty manifest");
+                    e
+                })
+                .ok()
+        })
         .unwrap_or_default();
 
     // Build package list from loaded symbols — name, publisher, version, deps
