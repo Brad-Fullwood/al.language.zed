@@ -47,6 +47,16 @@ async fn open_all_test_files(client: &mut LspClient) {
         if path.exists() {
             let content = std::fs::read_to_string(&path).unwrap();
             client.open_file(file, &content).await;
+        } else {
+            // Don't silently skip — surface missing fixtures so a stale
+            // AL_TEST_PROJECT_PATH or a renamed object is loud, not invisible.
+            // (eprintln! shows up in `cargo test -- --nocapture` and is
+            // captured by CI logs.)
+            eprintln!(
+                "data_driven: missing test fixture {} (resolved {})",
+                file,
+                path.display()
+            );
         }
     }
 }
