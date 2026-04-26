@@ -1071,6 +1071,7 @@ fn make_response(
         "seq": s,
         "type": "response",
         "request_seq": request_seq,
+        "requestSeq": request_seq,
         "success": success,
         "command": command,
     });
@@ -1247,4 +1248,29 @@ fn bc_stack_to_dap(frames: serde_json::Value) -> Vec<serde_json::Value> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// DAP responses must carry both the spec-mandated `request_seq` (snake_case)
+    /// and the `requestSeq` (camelCase) variant some clients accept. Without the
+    /// camelCase key, clients that only look for `requestSeq` cannot correlate
+    /// any response back to its request.
+    #[test]
+    fn make_response_includes_both_request_seq_keys() {
+        let seq = AtomicU64::new(0);
+        let resp = make_response(&seq, 42, "initialize", true, None, None);
+        assert_eq!(
+            resp.get("request_seq").and_then(|v| v.as_i64()),
+            Some(42),
+            "response missing snake_case `request_seq`"
+        );
+        assert_eq!(
+            resp.get("requestSeq").and_then(|v| v.as_i64()),
+            Some(42),
+            "response missing camelCase `requestSeq`"
+        );
+    }
 }
