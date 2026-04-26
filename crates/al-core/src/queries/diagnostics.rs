@@ -49,7 +49,11 @@ pub struct SyntaxDiagnostic {
 /// to a direct parse on a cache miss so callers that pre-populate the store
 /// (e.g. `did_open` / `did_change`) get a zero-cost cache hit.
 ///
-/// Lint results are filtered by `config.is_lint_rule_enabled`.
+/// Lint results are filtered by `config.is_lint_rule_enabled`. Note:
+/// `al_syntax::lint()` is currently a stub that always returns an empty
+/// `Vec` — all AL diagnostics surfaced today come from the syntax-error
+/// pass on the parse tree, not from native lint rules. The lint-filter
+/// branch remains for forward-compatibility with the planned rule engine.
 ///
 /// Returns a transport-agnostic `Vec<SyntaxDiagnostic>`. The caller is
 /// responsible for converting to LSP `Diagnostic` values.

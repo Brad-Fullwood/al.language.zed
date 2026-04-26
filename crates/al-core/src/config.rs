@@ -70,13 +70,16 @@ pub struct AlConfig {
     pub semantic_folding: bool,
 
     // -----------------------------------------------------------------------
-    // Native lint
+    // Native lint (placeholder — see notes)
     // -----------------------------------------------------------------------
-    /// Master toggle for native lint rules (AL-L001–AL-L018). Default: true.
+    /// Retained for future use — native lint rules are not yet implemented;
+    /// `al_syntax::lint()` always returns an empty `Vec`. All AL diagnostics
+    /// currently come from the .NET CodeAnalysis bridge (`al-semantic`), not
+    /// from this toggle. Setting it to `false` has no observable effect today.
     pub enable_native_lint: bool,
 
     /// Per-rule enable/disable overrides. Key is rule code (e.g. "AL-L001").
-    /// Rules absent from this map default to enabled when `enable_native_lint` is true.
+    /// Inert until native lint rules are implemented (see `enable_native_lint`).
     pub native_lint_rules: HashMap<String, bool>,
 
     // -----------------------------------------------------------------------
