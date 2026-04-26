@@ -502,7 +502,10 @@ impl LspClient {
                     vec![]
                 }
             }
-            Err(_) => vec![],
+            Err(e) => {
+                tracing::warn!(uri = %uri, line, character, error = %e, "completion request failed");
+                vec![]
+            }
         }
     }
 
@@ -543,7 +546,10 @@ impl LspClient {
 
         match self.request("textDocument/references", params).await {
             Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(_) => vec![],
+            Err(e) => {
+                tracing::warn!(uri = %uri, line, character, error = %e, "references request failed");
+                vec![]
+            }
         }
     }
 
@@ -554,7 +560,10 @@ impl LspClient {
 
         match self.request("textDocument/documentSymbol", params).await {
             Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(_) => vec![],
+            Err(e) => {
+                tracing::warn!(uri = %uri, error = %e, "documentSymbol request failed");
+                vec![]
+            }
         }
     }
 
@@ -581,7 +590,10 @@ impl LspClient {
 
         match self.request("textDocument/foldingRange", params).await {
             Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(_) => vec![],
+            Err(e) => {
+                tracing::warn!(uri = %uri, error = %e, "foldingRange request failed");
+                vec![]
+            }
         }
     }
 
@@ -595,7 +607,10 @@ impl LspClient {
 
         match self.request("textDocument/formatting", params).await {
             Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(_) => vec![],
+            Err(e) => {
+                tracing::warn!(uri = %uri, error = %e, "formatting request failed");
+                vec![]
+            }
         }
     }
 
@@ -642,7 +657,10 @@ impl LspClient {
 
         match self.request("textDocument/codeAction", params).await {
             Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(_) => vec![],
+            Err(e) => {
+                tracing::warn!(uri = %uri, error = %e, "codeAction request failed");
+                vec![]
+            }
         }
     }
 
@@ -664,7 +682,10 @@ impl LspClient {
 
         match self.request("textDocument/inlayHint", params).await {
             Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(_) => vec![],
+            Err(e) => {
+                tracing::warn!(uri = %uri, error = %e, "inlayHint request failed");
+                vec![]
+            }
         }
     }
 
@@ -697,7 +718,10 @@ impl LspClient {
 
         match self.request("workspace/symbol", params).await {
             Ok(result) => result.as_array().cloned().unwrap_or_default(),
-            Err(_) => vec![],
+            Err(e) => {
+                tracing::warn!(query, error = %e, "workspace/symbol request failed");
+                vec![]
+            }
         }
     }
 
