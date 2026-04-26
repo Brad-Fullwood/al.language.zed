@@ -235,15 +235,25 @@ async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
             };
         }
+        // Pre-extend size check: refuse to grow `buf` past `max_bytes` so the
+        // limit is enforced before the allocation, not after. Previously the
+        // two post-extend checks (newline branch + no-newline branch) made
+        // the invariant non-obvious and left a window where buf could
+        // momentarily exceed max_bytes.
+        let prospective_take = if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            pos // bytes up to (but excluding) the newline
+        } else {
+            available.len()
+        };
+        if buf.len().saturating_add(prospective_take) > max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("line exceeds {max_bytes} byte limit"),
+            ));
+        }
         if let Some(pos) = available.iter().position(|&b| b == b'\n') {
             buf.extend_from_slice(&available[..pos]);
             reader.consume(pos + 1);
-            if buf.len() > max_bytes {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("line exceeds {max_bytes} byte limit"),
-                ));
-            }
             return String::from_utf8(buf)
                 .map(Some)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
@@ -251,12 +261,6 @@ async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
         let len = available.len();
         buf.extend_from_slice(available);
         reader.consume(len);
-        if buf.len() > max_bytes {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("line exceeds {max_bytes} byte limit"),
-            ));
-        }
     }
 }
 
