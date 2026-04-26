@@ -213,7 +213,10 @@ pub(crate) async fn initialize_workspace(
         if config.enable_native_lint
             && config.diagnostics_scope == al_core::config::DiagnosticsScope::Project
         {
-            drop(config); // release lock before async work
+            // Snapshot lint config fields before iterating so we don't hold the
+            // RwLock read guard across `client.publish_diagnostics().await`.
+            let lint_overrides = config.native_lint_rules.clone();
+            drop(config);
             let file_paths: Vec<std::path::PathBuf> = workspace
                 .file_index
                 .files
@@ -221,7 +224,8 @@ pub(crate) async fn initialize_workspace(
                 .map(|entry| entry.key().clone())
                 .collect();
             let file_count = file_paths.len();
-            let config = workspace.config.read().await;
+            let is_lint_enabled =
+                |code: &str| *lint_overrides.get(code).unwrap_or(&true);
             for (i, path) in file_paths.into_iter().enumerate() {
                 if i > 0 && i % 10 == 0 {
                     tokio::task::yield_now().await;
@@ -238,7 +242,7 @@ pub(crate) async fn initialize_workspace(
                         }
                         let lint_result = al_core::syntax::lint(&tree, &text);
                         for lint in &lint_result {
-                            if config.is_lint_rule_enabled(&lint.code) {
+                            if is_lint_enabled(&lint.code) {
                                 lsp_diags
                                     .push(crate::diagnostics::lint_to_diagnostic(lint, source));
                             }
@@ -249,7 +253,6 @@ pub(crate) async fn initialize_workspace(
                     }
                 }
             }
-            drop(config);
             info!(
                 file_count,
                 "Published project-scoped diagnostics for all .al files"
