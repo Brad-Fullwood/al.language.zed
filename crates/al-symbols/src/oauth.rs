@@ -305,8 +305,12 @@ async fn wait_for_auth_callback(
         body.len(),
         body
     );
-    let _ = write_half.write_all(response.as_bytes()).await;
-    let _ = write_half.shutdown().await;
+    if let Err(e) = write_half.write_all(response.as_bytes()).await {
+        tracing::warn!("OAuth callback: failed to write HTTP response to browser: {e}");
+    }
+    if let Err(e) = write_half.shutdown().await {
+        tracing::debug!("OAuth callback: shutdown of browser socket failed: {e}");
+    }
 
     // Check for error
     if let Some(err) = params.get("error") {
