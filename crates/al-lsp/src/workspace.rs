@@ -116,8 +116,8 @@ pub(crate) async fn initialize_workspace(
 
             *workspace.project.write().await = Some(project.clone());
 
-            // 5. Scan workspace for .al files
-            let count = workspace.file_index.scan(&project.root);
+            // 5. Scan workspace for .al files (blocking std::fs walk; isolate via block_in_place)
+            let count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root));
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
             }
@@ -129,7 +129,8 @@ pub(crate) async fn initialize_workspace(
                 .await;
 
             // Still try to scan for .al files in the workspace root
-            let count = workspace.file_index.scan(&workspace_root);
+            let count =
+                tokio::task::block_in_place(|| workspace.file_index.scan(&workspace_root));
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
             }
