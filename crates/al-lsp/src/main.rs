@@ -227,7 +227,10 @@ async fn main() {
                 std::process::exit(1);
             }
         };
-        let _ = al_lsp::dap::run_dap_server(&toolchain).await;
+        if let Err(e) = al_lsp::dap::run_dap_server(&toolchain).await {
+            tracing::error!(error = %e, "DAP server exited with error");
+            std::process::exit(1);
+        }
     } else if args.iter().any(|a| a == "daemon") {
         // Daemon mode — JSON-RPC over Unix socket
         let project_arg = args
