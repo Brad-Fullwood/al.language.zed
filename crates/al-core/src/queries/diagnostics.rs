@@ -30,8 +30,7 @@ pub enum SyntaxDiagnosticSeverity {
 pub struct SyntaxDiagnostic {
     /// Human-readable diagnostic message.
     pub message: String,
-    /// Source range (0-indexed lines, UTF-8 byte column offsets — callers convert
-    /// to UTF-16 when building LSP responses).
+    /// Source range (0-indexed lines, UTF-16 code unit columns — LSP-ready).
     pub range: crate::queries::Range,
     pub severity: SyntaxDiagnosticSeverity,
     /// Diagnostic code, e.g. `"syntax"` or `"AL-L001"`.
@@ -83,12 +82,14 @@ fn collect_diagnostics_from_tree(
 ) -> Vec<SyntaxDiagnostic> {
     let mut diags = Vec::new();
 
+    let source = text.as_bytes();
+
     // Syntax errors from the parse tree.
     for err in al_syntax::AlParser::errors_from_tree(tree) {
         let ts_range = err.range;
         diags.push(SyntaxDiagnostic {
             message: err.message,
-            range: ts_range_to_query_range(ts_range),
+            range: ts_range_to_query_range(ts_range, source),
             severity: SyntaxDiagnosticSeverity::Error,
             code: "syntax".to_string(),
             source: "al".to_string(),
@@ -108,7 +109,7 @@ fn collect_diagnostics_from_tree(
         };
         diags.push(SyntaxDiagnostic {
             message: lint.message,
-            range: ts_range_to_query_range(lint.range),
+            range: ts_range_to_query_range(lint.range, source),
             severity,
             code: lint.code,
             source: "al-lint".to_string(),
@@ -120,19 +121,34 @@ fn collect_diagnostics_from_tree(
 
 /// Convert a tree-sitter `Range` to the crate-local `queries::Range`.
 ///
-/// tree-sitter ranges use byte-offset columns. The LSP layer must convert
-/// these to UTF-16 code unit columns before emitting LSP `Diagnostic` values.
-fn ts_range_to_query_range(r: tree_sitter::Range) -> crate::queries::Range {
+/// tree-sitter ranges use byte-offset columns; this helper converts them to
+/// UTF-16 code unit columns so callers get LSP-ready ranges directly.
+fn ts_range_to_query_range(r: tree_sitter::Range, source: &[u8]) -> crate::queries::Range {
+    let start_line = source_line(source, r.start_point.row);
+    let end_line = if r.end_point.row == r.start_point.row {
+        start_line
+    } else {
+        source_line(source, r.end_point.row)
+    };
     crate::queries::Range {
         start: crate::queries::Position {
             line: r.start_point.row as u32,
-            character: r.start_point.column as u32,
+            character: al_syntax::byte_col_to_utf16_col(start_line, r.start_point.column),
         },
         end: crate::queries::Position {
             line: r.end_point.row as u32,
-            character: r.end_point.column as u32,
+            character: al_syntax::byte_col_to_utf16_col(end_line, r.end_point.column),
         },
     }
+}
+
+/// Return the bytes of `row` (0-indexed) decoded as UTF-8, or `""` on bad UTF-8 / OOB.
+fn source_line(source: &[u8], row: usize) -> &str {
+    source
+        .split(|&b| b == b'\n')
+        .nth(row)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .unwrap_or("")
 }
 
 // ---------------------------------------------------------------------------
@@ -217,5 +233,38 @@ mod tests {
         // A cache-miss on an empty string produces no syntax errors.
         // The important thing is: no panic.
         let _ = diags;
+    }
+
+    /// Regression: `ts_range_to_query_range` must convert byte columns to UTF-16
+    /// code units. `é` is 2 UTF-8 bytes but 1 UTF-16 code unit; `好` is 3 bytes
+    /// but 1 UTF-16 code unit.
+    #[test]
+    fn test_ts_range_to_query_range_converts_to_utf16() {
+        let line = "// é好X";
+        let source = line.as_bytes();
+        // Column of 'X' as a tree-sitter byte column.
+        let byte_col_x = line.find('X').unwrap();
+        assert_eq!(byte_col_x, 8); // 2 (//) + 1 ( ) + 2 (é) + 3 (好) = 8 bytes
+        let ts_range = tree_sitter::Range {
+            start_byte: byte_col_x,
+            end_byte: byte_col_x + 1,
+            start_point: tree_sitter::Point {
+                row: 0,
+                column: byte_col_x,
+            },
+            end_point: tree_sitter::Point {
+                row: 0,
+                column: byte_col_x + 1,
+            },
+        };
+        let q = ts_range_to_query_range(ts_range, source);
+        // Expected UTF-16 column of 'X': 2 (//) + 1 ( ) + 1 (é) + 1 (好) = 5
+        assert_eq!(
+            q.start.character, 5,
+            "expected UTF-16 column 5 for 'X', got {} — looks like raw byte column",
+            q.start.character
+        );
+        assert_eq!(q.end.character, 6, "end column should be 6 in UTF-16");
+        assert_eq!(q.start.line, 0);
     }
 }
