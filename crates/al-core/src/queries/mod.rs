@@ -13,6 +13,7 @@ pub mod completions;
 pub mod dead_code;
 pub mod definition;
 pub mod deps;
+pub mod diagnostics;
 pub mod duplicates;
 pub mod folding;
 pub mod format;

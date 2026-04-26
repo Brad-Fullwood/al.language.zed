@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 
-use al_core::syntax::AlParser;
 use tower_lsp::lsp_types::*;
 
 use crate::server::AlServer;
@@ -52,35 +51,16 @@ pub(crate) async fn compute_diagnostics(
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    // Phase 1: Instant syntax + lint.
+    // Phase 1: Instant syntax + lint via shared al-core query.
     {
-        let tree = match al_core::parsing::get_or_parse(&server.workspace.documents, uri) {
-            Some((_cached_text, t)) => t,
-            None => {
-                let result = AlParser::parse_quick(text);
-                let version = server.workspace.documents.get_version(uri).unwrap_or(0);
-                server
-                    .workspace
-                    .documents
-                    .cache_tree(uri, version, result.tree.clone());
-                result.tree
-            }
-        };
-
-        let source_bytes = text.as_bytes();
-
-        for err in &AlParser::errors_from_tree(&tree) {
-            diagnostics.push(syntax_error_to_diagnostic(err, source_bytes));
-        }
-
-        let lint_results = al_core::syntax::lint(&tree, text);
         let config_guard = server.workspace.config.read().await;
-        for lint in lint_results {
-            if config_guard.is_lint_rule_enabled(&lint.code) {
-                diagnostics.push(lint_to_diagnostic(&lint, source_bytes));
-            }
-        }
+        let syntax_diags = al_core::queries::diagnostics::syntax_diagnostics(
+            &server.workspace,
+            uri,
+            &config_guard,
+        );
         drop(config_guard);
+        diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
     }
 
     // Phase 2: Async semantic analysis via .NET bridge.
@@ -101,58 +81,22 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     tracing::debug!(uri = %uri, text_len = text.len(), "publish_diagnostics: entry");
     let mut diagnostics = Vec::new();
 
-    // Phase 1: Instant syntax + lint.
+    // Phase 1: Instant syntax + lint via shared al-core query.
     // Reuse the parse tree already cached by update_workspace_index to avoid a
     // redundant parse on every did_open / did_change (ISSUE-056 fix).
     {
         let parse_start = std::time::Instant::now();
-
-        // get_or_parse returns the cached tree when the version matches, so when called
-        // immediately after update_workspace_index this is a zero-cost cache hit.
-        let tree = match al_core::parsing::get_or_parse(&server.workspace.documents, uri) {
-            Some((_cached_text, t)) => t,
-            None => {
-                // Document not in store yet — parse directly and cache.
-                // This path should not occur in normal LSP flows (did_open stores before calling us)
-                // but is kept as a safe fallback.
-                tracing::warn!(uri = %uri, "publish_diagnostics: document not in store, parsing directly");
-                let result = AlParser::parse_quick(text);
-                let version = server.workspace.documents.get_version(uri).unwrap_or(0);
-                server
-                    .workspace
-                    .documents
-                    .cache_tree(uri, version, result.tree.clone());
-                result.tree
-            }
-        };
-
-        let parse_elapsed = parse_start.elapsed();
-
-        // Extract errors from the (possibly cached) tree without re-parsing.
-        let errors = AlParser::errors_from_tree(&tree);
-        let error_count = errors.len();
-        tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: diagnostics from tree");
-
-        let source_bytes = text.as_bytes();
-
-        // Syntax errors from tree-sitter
-        for err in &errors {
-            diagnostics.push(syntax_error_to_diagnostic(err, source_bytes));
-        }
-
-        // Native lint rules — filtered by per-rule config
-        let lint_start = std::time::Instant::now();
-        let lint_results = al_core::syntax::lint(&tree, text);
-        let lint_elapsed = lint_start.elapsed();
-        let lint_count = lint_results.len();
-        tracing::debug!(uri = %uri, lint_count, lint_us = lint_elapsed.as_micros() as u64, "publish_diagnostics: linted");
         let config_guard = server.workspace.config.read().await;
-        for lint in lint_results {
-            if config_guard.is_lint_rule_enabled(&lint.code) {
-                diagnostics.push(lint_to_diagnostic(&lint, source_bytes));
-            }
-        }
+        let syntax_diags = al_core::queries::diagnostics::syntax_diagnostics(
+            &server.workspace,
+            uri,
+            &config_guard,
+        );
         drop(config_guard);
+        let parse_elapsed = parse_start.elapsed();
+        let error_count = syntax_diags.len();
+        tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: diagnostics from query");
+        diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
     }
 
     // Publish phase 1 immediately
@@ -262,6 +206,48 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
             }
             vec![]
         }
+    }
+}
+
+/// Convert a transport-agnostic `SyntaxDiagnostic` (from al-core) to an LSP `Diagnostic`.
+///
+/// tree-sitter column offsets are byte positions; the existing `ts_range_to_lsp` helper
+/// in al-syntax converts them to UTF-16 code unit columns (which LSP requires). Since
+/// `SyntaxDiagnostic.range` is already a `queries::Range` using byte columns, we re-use
+/// the raw values and let the LSP layer handle UTF-16 via the existing helpers at call sites
+/// that need it. For `schedule_diagnostics` the source text is available, so we perform
+/// the conversion there via `syntax_error_to_diagnostic` / `lint_to_diagnostic`.
+///
+/// This helper is a thin shim used where the source bytes are not readily available, i.e.
+/// where the caller only has the pre-computed `SyntaxDiagnostic`.
+pub(crate) fn syntax_diag_to_lsp(
+    diag: &al_core::queries::diagnostics::SyntaxDiagnostic,
+) -> Diagnostic {
+    use al_core::queries::diagnostics::SyntaxDiagnosticSeverity;
+
+    let severity = match diag.severity {
+        SyntaxDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
+        SyntaxDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
+        SyntaxDiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
+        SyntaxDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
+    };
+
+    Diagnostic {
+        range: Range {
+            start: Position {
+                line: diag.range.start.line,
+                character: diag.range.start.character,
+            },
+            end: Position {
+                line: diag.range.end.line,
+                character: diag.range.end.character,
+            },
+        },
+        severity: Some(severity),
+        code: Some(NumberOrString::String(diag.code.clone())),
+        source: Some(diag.source.clone()),
+        message: diag.message.clone(),
+        ..Default::default()
     }
 }
 

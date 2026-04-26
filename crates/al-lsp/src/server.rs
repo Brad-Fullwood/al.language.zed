@@ -213,7 +213,7 @@ impl AlServer {
     /// the most recent keystroke triggers a diagnostics run. The actual diagnostics
     /// publish runs after `DIAGNOSTICS_DEBOUNCE` of silence. This prevents bridge
     /// calls (up to bridge timeout = 5s) from blocking hover/completion.
-    async fn schedule_diagnostics(&self, uri: Url, text: String) {
+    async fn schedule_diagnostics(&self, uri: Url, _text: String) {
         // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
         // workspace files and Zed logs a warning for every publishDiagnostics on them.
         if crate::diagnostics::is_cache_path(&uri) {
@@ -229,23 +229,20 @@ impl AlServer {
         // Read config before spawning so per-rule lint filtering works inside the closure.
         let config = self.workspace.config.read().await.clone();
 
+        // Clone Arc<Workspace> so the spawned closure can call the workspace-aware
+        // syntax_diagnostics query (cache hit after on_document_change).
+        let workspace = Arc::clone(&self.workspace);
         let client = self.client.clone();
         let handle = tokio::spawn(async move {
             tokio::time::sleep(DIAGNOSTICS_DEBOUNCE).await;
             // Emit syntax-only diagnostics from the debounced task.
             // Bridge diagnostics (semantic) are emitted on did_open and lintFile command.
-            let parse_result = al_core::syntax::AlParser::parse_quick(&text);
-            let mut lsp_diags: Vec<Diagnostic> = Vec::new();
-            let source = text.as_bytes();
-            for err in &parse_result.errors {
-                lsp_diags.push(crate::diagnostics::syntax_error_to_diagnostic(err, source));
-            }
-            let lint_result = al_core::syntax::lint(&parse_result.tree, &text);
-            for lint in &lint_result {
-                if config.is_lint_rule_enabled(&lint.code) {
-                    lsp_diags.push(crate::diagnostics::lint_to_diagnostic(lint, source));
-                }
-            }
+            let diags =
+                al_core::queries::diagnostics::syntax_diagnostics(&workspace, &uri, &config);
+            let lsp_diags: Vec<Diagnostic> = diags
+                .iter()
+                .map(crate::diagnostics::syntax_diag_to_lsp)
+                .collect();
             client.publish_diagnostics(uri, lsp_diags, None).await;
         });
 
