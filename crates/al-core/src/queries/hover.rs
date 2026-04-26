@@ -272,8 +272,13 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             for (type_name, method) in &method_hits {
                 by_type.entry(type_name).or_default().push(method);
             }
-            // Pick the first type (stable iteration order not guaranteed, but sufficient for hover)
-            if let Some((&type_name, overloads)) = by_type.iter().next() {
+            // Sort by type name for deterministic results — HashMap iteration
+            // order is randomised per process, so without sorting hover would
+            // jump between types for the same identifier across LSP restarts.
+            let mut sorted_types: Vec<(&str, &Vec<&al_semantic::BuiltinMethod>)> =
+                by_type.iter().map(|(k, v)| (*k, v)).collect();
+            sorted_types.sort_by_key(|(k, _)| *k);
+            if let Some((type_name, overloads)) = sorted_types.into_iter().next() {
                 let mut content = String::new();
                 for (i, method) in overloads.iter().enumerate() {
                     if i > 0 {
