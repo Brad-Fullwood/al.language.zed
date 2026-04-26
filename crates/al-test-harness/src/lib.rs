@@ -754,21 +754,24 @@ impl LspClient {
     /// Build a file:// URI from a relative path. Public for test assertions.
     pub fn file_uri(&self, relative_path: &str) -> String {
         let full_path = self.root_path.join(relative_path);
-        // Use percent-encoding for path components to match how tower-lsp's
-        // Url type encodes URIs (e.g., spaces become %20).
-        let encoded: String = full_path
-            .to_str()
-            .unwrap_or("")
-            .bytes()
-            .flat_map(|b| {
-                if b == b' ' {
-                    vec![b'%', b'2', b'0']
-                } else {
-                    vec![b]
-                }
-            })
-            .map(|b| b as char)
-            .collect();
+        // Encode bytes that would otherwise mis-parse in a URI path, matching
+        // tower-lsp Url's encoding closely enough for assertion equality. Path
+        // separators ('/') and unreserved characters pass through; everything
+        // else is percent-encoded.
+        let mut encoded = String::new();
+        for b in full_path.to_str().unwrap_or("").bytes() {
+            let unreserved = b.is_ascii_alphanumeric()
+                || b == b'-'
+                || b == b'_'
+                || b == b'.'
+                || b == b'~'
+                || b == b'/';
+            if unreserved {
+                encoded.push(b as char);
+            } else {
+                encoded.push_str(&format!("%{:02X}", b));
+            }
+        }
         format!("file://{}", encoded)
     }
 
