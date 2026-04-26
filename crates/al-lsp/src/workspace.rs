@@ -147,7 +147,10 @@ pub(crate) async fn initialize_workspace(
     let should_prompt =
         tokio::task::spawn_blocking(|| !settings_prompt_shown() && !zed_has_al_settings())
             .await
-            .unwrap_or(false);
+            .unwrap_or_else(|e| {
+                tracing::warn!("settings prompt check panicked: {e}");
+                false
+            });
     if should_prompt {
         if let Ok(Some(action)) = client
             .show_message_request(

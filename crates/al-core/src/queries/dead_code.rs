@@ -98,7 +98,10 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
 
         // 2. Find unused table fields (only for table objects)
         let obj_kind_lower = obj_info.kind.to_lowercase();
-        if obj_kind_lower == "table" {
+        let is_table = al_syntax::language_data::object_type_by_keyword(&obj_kind_lower)
+            .map(|ot| ot.node_kind == "kw_table")
+            .unwrap_or(false);
+        if is_table {
             find_unused_fields(
                 file_path,
                 file_text,

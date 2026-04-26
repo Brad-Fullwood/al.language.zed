@@ -92,7 +92,7 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     let activity_clone = Arc::clone(&last_activity);
     let ws_clone = Arc::clone(&workspace);
     let shutdown_idle = Arc::clone(&shutdown_signal);
-    tokio::spawn(async move {
+    let idle_timeout_handle = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
             let elapsed = activity_clone.lock().await.elapsed();
@@ -213,6 +213,9 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
             }
         }
     }
+
+    // Stop the idle-timeout watcher so it doesn't fire after the accept loop exits.
+    idle_timeout_handle.abort();
 
     Ok(())
 }

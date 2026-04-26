@@ -123,10 +123,9 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                         Ok(_) => {
                             eprint!("{}", line); // Also print to our stderr
                             if let Some(ref log) = capture_stderr {
-                                if let Ok(mut f) = log.lock() {
-                                    use std::io::Write as _;
-                                    let _ = write!(f, "### ES-STDERR: {}", line);
-                                }
+                                let mut f = log.lock().unwrap_or_else(|e| e.into_inner());
+                                use std::io::Write as _;
+                                let _ = write!(f, "### ES-STDERR: {}", line);
                             }
                         }
                         Err(_) => break,
