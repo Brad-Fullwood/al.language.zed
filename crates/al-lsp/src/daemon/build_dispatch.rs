@@ -931,7 +931,7 @@ pub(super) fn get_project_tenants(workspace: &Workspace) -> Vec<String> {
     tenants
 }
 
-pub(super) fn dispatch_download_symbols(
+pub(super) async fn dispatch_download_symbols(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
@@ -985,9 +985,8 @@ pub(super) fn dispatch_download_symbols(
     // Release the lock before async work
     let _ = project;
 
-    let result: Vec<serde_json::Value> = tokio::task::block_in_place(|| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(async {
+    let result: Vec<serde_json::Value> = {
+        async {
             if source == "server" {
                 if project_configs.is_empty() {
                     return vec![serde_json::json!({
@@ -1058,8 +1057,9 @@ pub(super) fn dispatch_download_symbols(
                     })
                     .collect()
             }
-        })
-    });
+        }
+        .await
+    };
 
     let success = result
         .iter()

@@ -446,7 +446,9 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "setup" => build_dispatch::dispatch_setup(workspace, id),
         "clearCache" => build_dispatch::dispatch_clear_cache(id),
         "authenticate" => build_dispatch::dispatch_authenticate(workspace, id, &params).await,
-        "downloadSymbols" => build_dispatch::dispatch_download_symbols(workspace, id, &params),
+        "downloadSymbols" => {
+            build_dispatch::dispatch_download_symbols(workspace, id, &params).await
+        }
         "debug" => debug_dispatch::dispatch_debug(workspace, id, &params).await,
         "snapshot" => build_dispatch::dispatch_snapshot(id, &params).await,
         "profiling" => build_dispatch::dispatch_profiling(id, &params).await,
