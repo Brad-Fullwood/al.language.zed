@@ -43,11 +43,16 @@ impl AppSourceIndex {
             .metadata()?
             .modified()
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        // SAFETY: .app files are opened read-only. Concurrent modification is
-        // prevented by the staleness check at the call site (package version
-        // comparison via `modified` timestamp). On Linux, MAP_PRIVATE means a
-        // concurrent file replacement serves stale data rather than UB. On
-        // Windows, the file cannot be replaced while it is mapped.
+        // SAFETY: .app files are opened read-only. memmap2::Mmap uses
+        // MAP_SHARED on Linux (not MAP_PRIVATE — earlier comment versions of
+        // this file had that wrong), so concurrent file replacement may
+        // produce stale or partial data, but never UB; corruption surfaces as
+        // a ZIP-decode error and is caught by the InvalidData branch below.
+        // On Windows, the file cannot be replaced while it is mapped, so the
+        // race doesn't exist there. Concurrent modification is prevented at
+        // the call site by the staleness check (package version comparison
+        // via `modified` timestamp) — we never re-mmap a file we've already
+        // accepted as fresh.
         let mmap = unsafe { Mmap::map(&file)? };
         let zip_offset = crate::app_reader::find_zip_offset(&mmap).ok_or_else(|| {
             io::Error::new(
