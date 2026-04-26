@@ -733,8 +733,29 @@ fn create_secure_dir(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 fn load_cached_token(path: &PathBuf) -> Option<CachedToken> {
-    let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    // Distinguish the two failure modes:
+    // - file missing / unreadable: expected on first run, debug-level only
+    // - file readable but JSON deserialise fails: corrupt or schema drift,
+    //   warn so the user knows why their cached token isn't being honoured
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::debug!(path = %path.display(), error = %e, "OAuth token cache: read failed");
+            return None;
+        }
+    };
+    match serde_json::from_str(&content) {
+        Ok(tok) => Some(tok),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "OAuth token cache: JSON deserialize failed — re-authentication will be required"
+            );
+            None
+        }
+    }
 }
 
 fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
