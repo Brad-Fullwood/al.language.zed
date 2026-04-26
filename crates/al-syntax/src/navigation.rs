@@ -192,11 +192,11 @@ pub fn find_variable_references(tree: &Tree, text: &str, name: &str) -> Vec<tree
     let root = tree.root_node();
     let source = text.as_bytes();
     let mut refs = Vec::new();
-    find_refs_recursive(root, source, name, &mut refs);
+    find_refs_iterative(root, source, name, &mut refs);
     refs
 }
 
-fn find_refs_recursive(
+fn find_refs_iterative(
     root: Node,
     source: &[u8],
     target_name: &str,
@@ -235,11 +235,17 @@ pub fn find_call_references(tree: &Tree, text: &str, name: &str) -> usize {
     let root = tree.root_node();
     let source = text.as_bytes();
     let mut count = 0usize;
-    count_call_refs_recursive(root, source, name, &mut count);
+    count_call_refs_iterative(root, source, name, &mut count);
     count
 }
 
-fn count_call_refs_recursive(root: Node, source: &[u8], target_name: &str, count: &mut usize) {
+/// Count call-site references to `target_name` in the AST rooted at `root`.
+///
+/// The `_recursive` suffix is historical — the actual traversal is iterative
+/// (delegated to `walk_tree`) and bounded by the AST depth. AL parse trees
+/// reach at most ~30 levels deep for procedures + nested expressions, so
+/// stack usage is constant w.r.t. document size.
+fn count_call_refs_iterative(root: Node, source: &[u8], target_name: &str, count: &mut usize) {
     walk_tree(root, &mut |node| {
         // Check if this node is an identifier matching the target name
         if matches!(node.kind(), "identifier" | "quoted_identifier") {
