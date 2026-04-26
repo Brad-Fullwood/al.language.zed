@@ -465,7 +465,17 @@ impl ProfilerView {
                 continue;
             }
 
-            // Each sample is 1ms in Chrome profiles by default; use hitCount as self-time estimate
+            // hitCount in Chrome's CPU profile format is the number of times
+            // the sampler observed this node at the top of the stack. It is
+            // NOT a millisecond duration — the actual durations live in the
+            // top-level `timeDeltas` array, which we don't aggregate yet.
+            //
+            // Treating hit_count as ms is a deliberately rough approximation
+            // that's only accurate when the sampling interval happens to be
+            // 1 ms (BC's default in the alcpuprofile producer). It's good
+            // enough for ranking hotspots — which is all this view shows —
+            // but mis-reports raw "self_time_ms" for any other interval.
+            // TODO(profiler): aggregate timeDeltas per node for true ms.
             let self_time_ms = hit_count as f64;
             rows.push(HotspotRow {
                 procedure: function_name,
