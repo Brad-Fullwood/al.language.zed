@@ -83,7 +83,7 @@ fn count_cyclomatic_decisions(node: Node, _source: &[u8], count: &mut u32) {
                 // Each case arm adds a branch
                 let mut cursor = current.walk();
                 for child in current.children(&mut cursor) {
-                    if child.kind() == "case_arm" || child.kind() == "case_element" {
+                    if child.kind() == "case_branch" {
                         *count += 1;
                     }
                 }
@@ -178,7 +178,7 @@ fn count_case_arms(case_node: Node) -> u32 {
     let mut cursor = case_node.walk();
     case_node
         .children(&mut cursor)
-        .filter(|c| c.kind() == "case_arm" || c.kind() == "case_element")
+        .filter(|c| c.kind() == "case_branch")
         .count() as u32
 }
 
@@ -270,5 +270,45 @@ mod tests {
 }"#;
         let metrics = complexity_for(src);
         assert_eq!(metrics[0].name, "ProcessOrder");
+    }
+
+    /// Regression: cyclomatic complexity must count `case_branch` arms.
+    /// Before this fix the matcher looked for `case_arm`/`case_element`,
+    /// which the grammar never emits — so case statements added nothing
+    /// to cyclomatic complexity.
+    #[test]
+    fn case_branch_arms_increment_cyclomatic() {
+        // Use begin/end blocks per arm so the grammar produces three distinct
+        // `case_branch` nodes (statement_list bodies otherwise greedily swallow
+        // following labels as `:` binary expressions).
+        let src = r#"codeunit 50100 T
+{
+    procedure P()
+    var
+        x: Integer;
+    begin
+        case x of
+            1:
+                begin
+                    Message('a');
+                end;
+            2:
+                begin
+                    Message('b');
+                end;
+            3:
+                begin
+                    Message('c');
+                end;
+        end;
+    end;
+}"#;
+        let metrics = complexity_for(src);
+        assert_eq!(metrics.len(), 1);
+        assert!(
+            metrics[0].cyclomatic >= 4,
+            "expected at least base 1 + 3 case arms = 4, got {} — case_branch is not being counted",
+            metrics[0].cyclomatic
+        );
     }
 }
