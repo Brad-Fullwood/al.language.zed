@@ -121,6 +121,7 @@ dependencies = [
  "tower-lsp",
  "tracing",
  "tracing-subscriber",
+ "tree-sitter",
  "url",
  "walkdir",
 ]

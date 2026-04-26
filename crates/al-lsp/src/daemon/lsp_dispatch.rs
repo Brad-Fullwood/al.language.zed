@@ -374,9 +374,20 @@ pub(super) fn dispatch_object(
 }
 
 /// Convert a workspace CachedObjectInfo to JSON matching SymbolEntry shape.
+///
+/// `info.kind` is the tree-sitter node kind (lowercase, e.g. "table"). The wire
+/// schema for SymbolEntry uses the al-symbols ObjectKind enum, whose serde
+/// representation is PascalCase. Normalize via `ObjectKind::from_str` so the
+/// payload deserializes cleanly on al-cli / al-explorer.
 fn workspace_object_to_json(info: &al_core::file_index::CachedObjectInfo) -> serde_json::Value {
+    let kind_value = info
+        .kind
+        .parse::<al_core::symbols::ObjectKind>()
+        .ok()
+        .and_then(|k| serde_json::to_value(k).ok())
+        .unwrap_or_else(|| serde_json::Value::String(info.kind.clone()));
     serde_json::json!({
-        "kind": info.kind,
+        "kind": kind_value,
         "id": info.id.unwrap_or(0),
         "name": info.name,
         "package": WORKSPACE_PACKAGE,
@@ -653,5 +664,74 @@ mod tests {
             "expected error message to mention serialization failure, got: {}",
             err.message
         );
+    }
+
+    /// Workspace-object payloads must deserialize as `al_symbols::SymbolEntry` so
+    /// downstream daemon clients (al-cli, al-explorer) accept them. The `kind`
+    /// field arrives from tree-sitter as a lowercase string but the wire schema
+    /// is the PascalCase `ObjectKind` enum — regression test for the
+    /// daemon→explorer launch failure observed in cycle 4.
+    #[test]
+    fn workspace_object_to_json_round_trips_through_symbol_entry() {
+        let info = al_core::file_index::CachedObjectInfo {
+            kind: "table".to_string(),
+            id: Some(50_000),
+            name: "Customer".to_string(),
+            range: tree_sitter::Range {
+                start_byte: 0,
+                end_byte: 0,
+                start_point: tree_sitter::Point { row: 0, column: 0 },
+                end_point: tree_sitter::Point { row: 0, column: 0 },
+            },
+        };
+        let json = workspace_object_to_json(&info);
+        let entry: al_symbols::SymbolEntry =
+            serde_json::from_value(json).expect("workspace object must deserialize as SymbolEntry");
+        assert_eq!(entry.kind, al_symbols::ObjectKind::Table);
+        assert_eq!(entry.name, "Customer");
+        assert_eq!(entry.id, 50_000);
+    }
+
+    #[test]
+    fn workspace_object_to_json_handles_all_object_kinds() {
+        // Every tree-sitter node kind we may emit must round-trip cleanly. If a
+        // new ObjectKind variant is added without the lowercase normaliser
+        // covering it, this test fires before users see a launch crash.
+        let kinds = [
+            "table",
+            "tableextension",
+            "page",
+            "pageextension",
+            "codeunit",
+            "report",
+            "reportextension",
+            "xmlport",
+            "query",
+            "enum",
+            "enumextension",
+            "interface",
+            "permissionset",
+            "permissionsetextension",
+            "profile",
+            "pagecustomization",
+            "controladdin",
+            "entitlement",
+        ];
+        for k in kinds {
+            let info = al_core::file_index::CachedObjectInfo {
+                kind: k.to_string(),
+                id: Some(1),
+                name: "X".to_string(),
+                range: tree_sitter::Range {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_point: tree_sitter::Point { row: 0, column: 0 },
+                    end_point: tree_sitter::Point { row: 0, column: 0 },
+                },
+            };
+            let json = workspace_object_to_json(&info);
+            let _: al_symbols::SymbolEntry = serde_json::from_value(json)
+                .unwrap_or_else(|e| panic!("kind {k:?} must deserialize: {e}"));
+        }
     }
 }
