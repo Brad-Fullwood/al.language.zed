@@ -590,7 +590,7 @@ fn collect_return_type_hints(
 
 fn add_parameter_hints(
     arg_list: tree_sitter::Node<'_>,
-    _source: &[u8],
+    source: &[u8],
     param_names: &[String],
     hints: &mut Vec<AlInlayHint>,
 ) {
@@ -609,10 +609,17 @@ fn add_parameter_hints(
         if arg_idx >= param_names.len() {
             break;
         }
+        let row = child.start_position().row;
+        let line_text = source_line(source, row);
+        // tree-sitter's column is a UTF-8 byte offset within the line, but
+        // LSP / al-core Position uses UTF-16 code units. Convert before
+        // emitting the hint, otherwise non-ASCII identifiers (Cyrillic,
+        // accented chars in labels, etc.) misalign by the byte/UTF-16 delta.
+        let character = al_syntax::byte_col_to_utf16_col(line_text, child.start_position().column);
         hints.push(AlInlayHint {
             position: Position {
-                line: child.start_position().row as u32,
-                character: child.start_position().column as u32,
+                line: row as u32,
+                character,
             },
             label: AlInlayHintLabel::String(format!("{}:", param_names[arg_idx])),
             kind: Some(AlInlayHintKind::Parameter),
