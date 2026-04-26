@@ -131,8 +131,23 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
     // name_lower → set of (uri_string, line, col) to deduplicate locations
     let mut seen: HashMap<String, std::collections::HashSet<(String, u32, u32)>> = HashMap::new();
 
-    /// Walk a single file's parse tree once, recording every identifier node
-    /// into `seen` keyed by its lowercased text.
+    /// Walk a single file's parse tree once, recording the *name* of every
+    /// call site (`Foo()`, `obj.Foo()`, `T::Foo()`) into `seen`.
+    ///
+    /// Previously this counted every `identifier` / `quoted_identifier` /
+    /// `name` node, which conflated declaration sites, type references and
+    /// bare field references with actual call sites — a procedure declared
+    /// once and never called appeared as "1 reference" because of the
+    /// declaration itself, and any field with the same name doubled the
+    /// count.
+    ///
+    /// AL grammar shapes (mirrors `al_syntax::is_call_reference`):
+    /// - bare call `Foo()`: `identifier → name → primary_expression`,
+    ///   whose `postfix_expression` parent has a `call_suffix` child;
+    /// - method call `obj.Foo()`: `identifier → name → member_call_suffix`
+    ///   as the `member` field;
+    /// - scope call `T::Foo()`: `identifier → name → scope_call_suffix`
+    ///   as the `member` field.
     fn record_file(
         uri_str: &str,
         text: &str,
@@ -141,23 +156,84 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
     ) {
         let source_bytes = text.as_bytes();
         al_syntax::walk_tree(tree.root_node(), &mut |node| {
-            if matches!(node.kind(), "identifier" | "quoted_identifier" | "name") {
-                if let Ok(node_text) = node.utf8_text(source_bytes) {
-                    let name_lower = node_text.trim_matches('"').to_lowercase();
-                    if name_lower.is_empty() {
-                        return;
-                    }
-                    let ts_range = node.range();
-                    let lsp_range = crate::syntax::ts_range_to_lsp(&ts_range, source_bytes);
-                    let key = (
-                        uri_str.to_string(),
-                        lsp_range.start.line,
-                        lsp_range.start.character,
-                    );
-                    seen.entry(name_lower).or_default().insert(key);
+            if !matches!(node.kind(), "identifier" | "quoted_identifier") {
+                return;
+            }
+            if !is_call_site(node) {
+                return;
+            }
+            let Ok(node_text) = node.utf8_text(source_bytes) else {
+                return;
+            };
+            let name_lower = node_text.trim_matches('"').to_lowercase();
+            if name_lower.is_empty() {
+                return;
+            }
+            let ts_range = node.range();
+            let lsp_range = crate::syntax::ts_range_to_lsp(&ts_range, source_bytes);
+            let key = (
+                uri_str.to_string(),
+                lsp_range.start.line,
+                lsp_range.start.character,
+            );
+            seen.entry(name_lower).or_default().insert(key);
+        });
+    }
+
+    /// Walk parents of an `identifier` / `quoted_identifier` node to decide
+    /// whether it sits in a call position. Mirrors the private
+    /// `al_syntax::is_call_reference` so we don't expose it just for this.
+    fn is_call_site(node: tree_sitter::Node<'_>) -> bool {
+        let Some(name_parent) = node.parent() else {
+            return false;
+        };
+        let outer = if name_parent.kind() == "name" {
+            let Some(p) = name_parent.parent() else {
+                return false;
+            };
+            p
+        } else {
+            name_parent
+        };
+        match outer.kind() {
+            "primary_expression" => {
+                let Some(postfix) = outer.parent() else {
+                    return false;
+                };
+                if postfix.kind() != "postfix_expression" {
+                    return false;
+                }
+                let mut cursor = postfix.walk();
+                let has_call = postfix
+                    .children(&mut cursor)
+                    .any(|c| c.kind() == "call_suffix");
+                has_call
+            }
+            "member_call_suffix" | "scope_call_suffix" => {
+                let inner = if name_parent.kind() == "name" {
+                    name_parent
+                } else {
+                    node
+                };
+                field_name_of(outer, inner).as_deref() == Some("member")
+            }
+            _ => false,
+        }
+    }
+
+    fn field_name_of(
+        parent: tree_sitter::Node<'_>,
+        child: tree_sitter::Node<'_>,
+    ) -> Option<String> {
+        let child_id = child.id();
+        for i in 0..parent.child_count() {
+            if let Some(c) = parent.child(i) {
+                if c.id() == child_id {
+                    return parent.field_name_for_child(i as u32).map(|s| s.to_string());
                 }
             }
-        });
+        }
+        None
     }
 
     // Current (open) document — read from the document store.
