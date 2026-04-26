@@ -72,9 +72,7 @@ pub async fn acquire_token(
     let client_id = match std::env::var("BC_CLIENT_ID") {
         Ok(v) if !v.trim().is_empty() => v,
         Ok(_) => {
-            warn!(
-                "BC_CLIENT_ID is set but blank/whitespace; falling back to default client_id"
-            );
+            warn!("BC_CLIENT_ID is set but blank/whitespace; falling back to default client_id");
             DEFAULT_CLIENT_ID.into()
         }
         Err(_) => DEFAULT_CLIENT_ID.into(),

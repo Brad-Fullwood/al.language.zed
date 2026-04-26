@@ -12,7 +12,10 @@ fn log_dir() -> PathBuf {
         .join("al-lsp")
         .join("logs");
     if let Err(e) = fs::create_dir_all(&dir) {
-        eprintln!("al-lsp: failed to create log directory {}: {e}", dir.display());
+        eprintln!(
+            "al-lsp: failed to create log directory {}: {e}",
+            dir.display()
+        );
     }
     dir
 }

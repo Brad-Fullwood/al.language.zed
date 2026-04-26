@@ -129,8 +129,7 @@ pub(crate) async fn initialize_workspace(
                 .await;
 
             // Still try to scan for .al files in the workspace root
-            let count =
-                tokio::task::block_in_place(|| workspace.file_index.scan(&workspace_root));
+            let count = tokio::task::block_in_place(|| workspace.file_index.scan(&workspace_root));
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
             }
@@ -228,8 +227,7 @@ pub(crate) async fn initialize_workspace(
                 .map(|entry| entry.key().clone())
                 .collect();
             let file_count = file_paths.len();
-            let is_lint_enabled =
-                |code: &str| *lint_overrides.get(code).unwrap_or(&true);
+            let is_lint_enabled = |code: &str| *lint_overrides.get(code).unwrap_or(&true);
             for (i, path) in file_paths.into_iter().enumerate() {
                 if i > 0 && i % 10 == 0 {
                     tokio::task::yield_now().await;
