@@ -76,6 +76,13 @@ impl BcServerClient {
         message_sink: MessageSink,
         insecure_tls: bool,
     ) -> Result<Self, BcServerError> {
+        if insecure_tls {
+            warn!(
+                "TLS certificate verification DISABLED for BC server connection — \
+                 this is unsafe and should only be used against trusted local servers \
+                 with self-signed certificates."
+            );
+        }
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(insecure_tls)
             .timeout(std::time::Duration::from_secs(300)) // 5 min for large packages
