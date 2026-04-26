@@ -1106,7 +1106,11 @@ impl App {
                             // ISSUE-078: use `zed <path>:<line>:<col>` CLI instead of
                             // zed:// URL which is unreliable on Linux.
                             let file_spec = format!("{}:{}:1", path_str, line);
-                            let _ = std::process::Command::new("zed").arg(&file_spec).spawn();
+                            if let Err(e) =
+                                std::process::Command::new("zed").arg(&file_spec).spawn()
+                            {
+                                eprintln!("al-explorer: failed to spawn 'zed {file_spec}': {e}");
+                            }
                         }
                     }
                     Err(_) => {
