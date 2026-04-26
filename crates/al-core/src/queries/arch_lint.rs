@@ -163,9 +163,19 @@ fn apply_rule(
             }
         }
         ArchRuleKind::ForbiddenPattern => {
-            let text_lower = text.to_lowercase();
             for forbidden in &rule.values {
-                if text_lower.contains(&forbidden.to_lowercase()) {
+                let forbidden_lower = forbidden.to_lowercase();
+                // Find the first line that actually contains the pattern so
+                // editor jump-to-diagnostic lands somewhere useful, instead
+                // of always reporting line: Some(1).
+                let line_no = text.lines().enumerate().find_map(|(idx, line)| {
+                    if line.to_lowercase().contains(&forbidden_lower) {
+                        Some((idx + 1) as u32)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(line) = line_no {
                     violations.push(ArchViolation {
                         rule_id: rule.id.clone(),
                         message: format!(
@@ -174,7 +184,7 @@ fn apply_rule(
                         ),
                         object: obj_info.name.clone(),
                         file: Some(file_path.to_string()),
-                        line: Some(1),
+                        line: Some(line),
                     });
                 }
             }
