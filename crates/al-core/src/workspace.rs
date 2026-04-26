@@ -132,6 +132,13 @@ impl Workspace {
     /// async query path. We tolerate the (rare) duplicate-build race in
     /// exchange for not blocking the executor: the second-arriving thread
     /// returns the first thread's stored graph.
+    ///
+    /// Cold-cache cost can reach 50–200 ms on large BC workspaces. The build
+    /// is therefore wrapped in `tokio::task::block_in_place` when called from
+    /// inside a multi-threaded Tokio runtime so the worker thread is yielded
+    /// to the blocking pool for the duration. Outside a Tokio runtime (tests,
+    /// daemon utilities) `try_handle()` returns `Err` and we fall back to a
+    /// direct call.
     pub fn get_or_build_insight_graph(&self) -> Arc<InsightGraph> {
         // Fast path: read lock.
         if let Ok(guard) = self.insight_graph.read() {
@@ -140,8 +147,21 @@ impl Workspace {
             }
         }
         // Build outside any lock so the executor thread is not parked.
-        let mut graph = InsightGraph::new();
-        graph.build_from_index(&self.symbols);
+        // block_in_place yields the worker to the blocking pool when we are
+        // inside a multi-threaded Tokio runtime; otherwise the closure runs
+        // inline (block_in_place panics in current_thread mode, so we guard
+        // with try_handle and runtime flavor detection).
+        let build = || {
+            let mut g = InsightGraph::new();
+            g.build_from_index(&self.symbols);
+            g
+        };
+        let graph = match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(build)
+            }
+            _ => build(),
+        };
         let arc = Arc::new(graph);
         // Briefly take the write lock to store. If another thread won the
         // race, return their result and discard ours.
