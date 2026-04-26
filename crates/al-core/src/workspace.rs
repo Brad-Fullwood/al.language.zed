@@ -480,6 +480,11 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
     } else {
         workspace.symbols.invalidate_all_composed();
     }
+
+    // Edits change call edges and reference counts in the insight graph;
+    // drop the cached graph so the next /insight query rebuilds against
+    // the new file_index state.
+    workspace.invalidate_insight_graph();
 }
 
 /// Invalidate the composed symbol cache when a file is closed.
@@ -497,6 +502,9 @@ pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
     } else {
         workspace.symbols.invalidate_all_composed();
     }
+    // Same reason as on_document_change: file leaving the index changes
+    // the call/reference graph topology.
+    workspace.invalidate_insight_graph();
 }
 
 #[cfg(test)]
