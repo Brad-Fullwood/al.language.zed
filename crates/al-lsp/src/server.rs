@@ -1,6 +1,5 @@
 //! AlServer state and LSP lifecycle.
 
-use al_core::syntax::AlParser;
 use al_core::workspace::Workspace;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -121,29 +120,6 @@ impl AlServer {
             .is_err()
         {
             tracing::warn!("await_ready: timed out after 30s waiting for workspace initialization");
-        }
-    }
-
-    /// Update workspace index (object name mapping) for a file.
-    /// Also caches the parse tree to avoid double-parsing in diagnostics.
-    pub(crate) fn update_workspace_index(&self, uri: &Url, text: &str) {
-        let result = AlParser::parse_quick(text);
-
-        // Cache the tree so publish_diagnostics can reuse it
-        let version = self.workspace.documents.get_version(uri).unwrap_or(0);
-        self.workspace
-            .documents
-            .cache_tree(uri, version, result.tree.clone());
-
-        if let Ok(path) = uri.to_file_path() {
-            self.workspace
-                .file_index
-                .add_file(path.clone(), text.to_string());
-            // Invalidate only the composed view for the object in this file (ISSUE-146).
-            // add_file already updated object_info, so we can read the name immediately.
-            invalidate_composed_for_file(&self.workspace, &path);
-        } else {
-            self.workspace.symbols.invalidate_all_composed();
         }
     }
 
@@ -283,21 +259,6 @@ impl AlServer {
 /// Used by both `initialize` and `did_change_configuration` to normalise the input.
 fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
     value.get("al").cloned().unwrap_or(value)
-}
-
-/// Invalidate the composed symbol cache for the object declared in `path`.
-///
-/// If `path` maps to a known object, only that object's composed entry is evicted;
-/// otherwise the full composed cache is cleared as a safe fallback (ISSUE-146).
-///
-/// Called by both `update_workspace_index` (on edit) and `did_close` (on close)
-/// so the logic is defined in one place.
-fn invalidate_composed_for_file(workspace: &al_core::workspace::Workspace, path: &std::path::Path) {
-    if let Some(info) = workspace.file_index.object_info.get(path) {
-        workspace.symbols.invalidate_composed(&info.name);
-    } else {
-        workspace.symbols.invalidate_all_composed();
-    }
 }
 
 #[tower_lsp::async_trait]
@@ -487,7 +448,7 @@ impl LanguageServer for AlServer {
         self.workspace
             .documents
             .open(uri.clone(), params.text_document.text);
-        self.update_workspace_index(&uri, &text);
+        al_core::workspace::on_document_change(&self.workspace, &uri, &text);
 
         diagnostics::publish_diagnostics(self, &uri, &text).await;
     }
@@ -513,7 +474,7 @@ impl LanguageServer for AlServer {
         self.workspace.documents.apply_changes(&uri, &changes);
 
         if let Some(text) = self.workspace.documents.get_text(&uri) {
-            self.update_workspace_index(&uri, &text);
+            al_core::workspace::on_document_change(&self.workspace, &uri, &text);
             // ISSUE-025 fix: diagnostics are debounced and run async.
             // Each keystroke cancels the previous pending task to avoid bridge calls
             // (up to bridge timeout = 5s) blocking hover/completion.
@@ -537,9 +498,10 @@ impl LanguageServer for AlServer {
         tracing::info!(uri = %uri, "did_close");
         self.workspace.documents.close(&uri);
 
+        // Targeted composed invalidation — only evict the object from this file (ISSUE-146)
+        al_core::workspace::on_document_close(&self.workspace, &uri);
+
         if let Ok(path) = uri.to_file_path() {
-            // Targeted composed invalidation — only evict the object from this file (ISSUE-146)
-            invalidate_composed_for_file(&self.workspace, &path);
             // Don't remove from file_index if project-scoped diagnostics — the file still exists
             let scope = self.workspace.config.read().await.diagnostics_scope;
             if scope != al_core::config::DiagnosticsScope::Project {
@@ -548,7 +510,6 @@ impl LanguageServer for AlServer {
             }
             // If project-scoped, diagnostics persist (file is still in the project)
         } else {
-            self.workspace.symbols.invalidate_all_composed();
             self.client.publish_diagnostics(uri, vec![], None).await;
         }
     }

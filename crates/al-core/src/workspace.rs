@@ -418,3 +418,112 @@ impl Default for Workspace {
         Self::new()
     }
 }
+
+/// Update workspace index and document cache when a file is opened or changed.
+///
+/// Parses the text exactly once, warms the document cache with the resulting
+/// tree, then updates the file index via [`FileIndex::add_file_with_tree`] —
+/// avoiding the double-parse that occurred when `al-lsp` called `parse_quick`
+/// followed by `file_index.add_file` (which also called `parse_quick` internally).
+///
+/// If `uri` is not a `file://` URI, the full composed symbol cache is invalidated
+/// as a safe fallback.
+pub fn on_document_change(workspace: &Workspace, uri: &tower_lsp::lsp_types::Url, text: &str) {
+    let result = al_syntax::AlParser::parse_quick(text);
+
+    // Warm the document cache so diagnostics / hover can reuse this parse tree.
+    let version = workspace.documents.get_version(uri).unwrap_or(0);
+    workspace
+        .documents
+        .cache_tree(uri, version, result.tree.clone());
+
+    if let Ok(path) = uri.to_file_path() {
+        workspace
+            .file_index
+            .add_file_with_tree(path.clone(), text.to_string(), result.tree);
+        // Invalidate only the composed view for the object in this file.
+        // add_file_with_tree already updated object_info, so we can read the name immediately.
+        if let Some(info) = workspace.file_index.object_info.get(&path) {
+            workspace.symbols.invalidate_composed(&info.name);
+        } else {
+            workspace.symbols.invalidate_all_composed();
+        }
+    } else {
+        workspace.symbols.invalidate_all_composed();
+    }
+}
+
+/// Invalidate the composed symbol cache when a file is closed.
+///
+/// Only handles symbol cache invalidation — the decision about whether to remove
+/// the file from the file index (based on `diagnostics_scope`) is left to the
+/// caller (`al-lsp`), which has access to config and transport concerns.
+pub fn on_document_close(workspace: &Workspace, uri: &tower_lsp::lsp_types::Url) {
+    if let Ok(path) = uri.to_file_path() {
+        if let Some(info) = workspace.file_index.object_info.get(&path) {
+            workspace.symbols.invalidate_composed(&info.name);
+        } else {
+            workspace.symbols.invalidate_all_composed();
+        }
+    } else {
+        workspace.symbols.invalidate_all_composed();
+    }
+}
+
+#[cfg(test)]
+mod workspace_lifecycle_tests {
+    use super::*;
+    use tower_lsp::lsp_types::Url;
+
+    fn make_workspace() -> Workspace {
+        Workspace::new()
+    }
+
+    /// Positive test: on_document_change populates the document cache and file index.
+    #[test]
+    fn on_document_change_populates_cache_and_index() {
+        let workspace = make_workspace();
+        let uri = Url::from_file_path("/tmp/test_on_doc_change/TestTable.al").unwrap();
+        let text = r#"table 50100 "Test Table" {
+    fields {
+        field(1; "No."; Code[20]) { }
+    }
+}"#;
+
+        // Open the document first so get_version works.
+        workspace.documents.open(uri.clone(), text.to_string());
+
+        on_document_change(&workspace, &uri, text);
+
+        // File index must have the file.
+        let path = uri.to_file_path().unwrap();
+        assert!(
+            workspace.file_index.files.contains_key(&path),
+            "file_index.files must contain the file after on_document_change"
+        );
+        // Object info must be populated.
+        assert!(
+            workspace.file_index.object_info.contains_key(&path),
+            "file_index.object_info must be populated after on_document_change"
+        );
+        let info = workspace.file_index.object_info.get(&path).unwrap();
+        assert_eq!(info.name.to_lowercase(), "test table");
+    }
+
+    /// Negative test: on_document_change with a non-file URI falls back gracefully.
+    ///
+    /// Uses a URI whose scheme guarantees `to_file_path()` returns `Err` (e.g. http://),
+    /// so the fallback path `invalidate_all_composed` is exercised and no file is added.
+    #[test]
+    fn on_document_change_non_file_uri_does_not_panic() {
+        let workspace = make_workspace();
+        // http: URIs are never valid file paths — to_file_path() always returns Err.
+        let uri = Url::parse("http://example.com/Untitled-1.al").unwrap();
+        let text = r#"codeunit 50200 "Test" { }"#;
+
+        // Must not panic; composed cache is invalidated as a fallback.
+        on_document_change(&workspace, &uri, text);
+        // No file was added to the index (non-file URI).
+        assert!(workspace.file_index.is_empty());
+    }
+}

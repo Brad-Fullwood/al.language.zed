@@ -270,9 +270,36 @@ impl FileIndex {
 
         // Parse once; cache the tree for cross-file queries and extract object metadata.
         let result = al_syntax::AlParser::parse_quick(&content);
+        self.index_from_result(path, content, &result.tree);
+    }
+
+    /// Add a file to the index using a pre-parsed tree, skipping the internal parse.
+    ///
+    /// Used by `on_document_change` in `al-core::workspace` to avoid a double-parse:
+    /// the caller parses once to warm the document cache, then passes the same tree here.
+    ///
+    /// The caller is responsible for removing old object-name mappings via
+    /// `path_to_object` and cleaning up stale procedure entries before calling this.
+    pub fn add_file_with_tree(&self, path: PathBuf, content: String, tree: tree_sitter::Tree) {
+        // Remove the old object-name mapping for this path (if any).
+        if let Some((_, old_obj_name)) = self.path_to_object.remove(&path) {
+            self.objects.remove(&old_obj_name);
+        }
+        // Remove stale procedure entries for this file before re-indexing.
+        self.remove_procedures_for_file(&path);
+
+        self.index_from_result(path, content, &tree);
+    }
+
+    /// Core indexing body: populate all index maps from a parsed tree.
+    ///
+    /// Called by both `add_file_with_meta` (after an internal parse) and
+    /// `add_file_with_tree` (after a caller-supplied parse). The tree must
+    /// correspond to `content`.
+    fn index_from_result(&self, path: PathBuf, content: String, tree: &tree_sitter::Tree) {
         // Cache the tree unconditionally — all files benefit from it.
-        self.file_trees.insert(path.clone(), result.tree.clone());
-        if let Some(obj_info) = al_syntax::find_object_declaration(&result.tree, &content) {
+        self.file_trees.insert(path.clone(), tree.clone());
+        if let Some(obj_info) = al_syntax::find_object_declaration(tree, &content) {
             let obj_name = obj_info.name.to_lowercase();
             self.objects.insert(obj_name.clone(), path.clone());
             self.path_to_object.insert(path.clone(), obj_name);
@@ -294,7 +321,7 @@ impl FileIndex {
         // Inline the AlSymbolKind::Function/Event predicate here to avoid an
         // upward dependency from file_index (core infrastructure) into the
         // queries module (higher-level LSP feature code).
-        let doc_symbols = al_syntax::extract_document_symbols(&result.tree, &content);
+        let doc_symbols = al_syntax::extract_document_symbols(tree, &content);
         let mut proc_names = Vec::new();
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {
