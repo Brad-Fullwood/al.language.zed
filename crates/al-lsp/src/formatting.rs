@@ -62,5 +62,24 @@ pub(crate) fn handle_range_formatting(
         ..Default::default()
     };
 
-    al_core::syntax::format_range(&text, range.start.line, range.end.line, &format_options)
+    al_core::syntax::format_range(&text, range.start.line, range.end.line, &format_options).map(
+        |edits| {
+            edits
+                .into_iter()
+                .map(|e| TextEdit {
+                    range: Range {
+                        start: Position {
+                            line: e.start_line,
+                            character: e.start_character,
+                        },
+                        end: Position {
+                            line: e.end_line,
+                            character: e.end_character,
+                        },
+                    },
+                    new_text: e.new_text,
+                })
+                .collect()
+        },
+    )
 }

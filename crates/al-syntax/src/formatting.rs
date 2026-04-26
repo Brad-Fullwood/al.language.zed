@@ -332,8 +332,21 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
 
 /// Format a range of lines within AL source code.
 ///
+/// Transport-agnostic text edit emitted by `format_range`.
+///
+/// Lines are 0-based; `end_character` is in UTF-16 code units. Callers
+/// (al-lsp) convert to `tower_lsp::lsp_types::TextEdit` at the boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatTextEdit {
+    pub start_line: u32,
+    pub start_character: u32,
+    pub end_line: u32,
+    pub end_character: u32,
+    pub new_text: String,
+}
+
 /// Formats the entire document (to derive correct indent context) but returns
-/// `TextEdit`s covering only the requested line range.
+/// `FormatTextEdit`s covering only the requested line range.
 ///
 /// `start_line` and `end_line` are 0-based, inclusive.
 /// Returns `None` if `start_line` is out of bounds.
@@ -343,7 +356,7 @@ pub fn format_range(
     start_line: u32,
     end_line: u32,
     options: &FormatOptions,
-) -> Option<Vec<tower_lsp::lsp_types::TextEdit>> {
+) -> Option<Vec<FormatTextEdit>> {
     let formatted_full = format_al(text, options);
 
     let orig_lines: Vec<&str> = text.lines().collect();
@@ -373,17 +386,11 @@ pub fn format_range(
         .map(|l| crate::byte_col_to_utf16_col(l, l.len()))
         .unwrap_or(0);
 
-    Some(vec![tower_lsp::lsp_types::TextEdit {
-        range: tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position {
-                line: start_line,
-                character: 0,
-            },
-            end: tower_lsp::lsp_types::Position {
-                line: end_line,
-                character: end_char,
-            },
-        },
+    Some(vec![FormatTextEdit {
+        start_line,
+        start_character: 0,
+        end_line,
+        end_character: end_char,
         new_text,
     }])
 }
@@ -775,8 +782,8 @@ end;
         let edits = edits.unwrap();
         assert!(!edits.is_empty());
         let edit = &edits[0];
-        assert_eq!(edit.range.start.line, 2);
-        assert_eq!(edit.range.end.line, 5);
+        assert_eq!(edit.start_line, 2);
+        assert_eq!(edit.end_line, 5);
         assert!(edit.new_text.contains("    procedure DoSomething()"));
         assert!(edit.new_text.contains("    begin"));
         assert!(edit.new_text.contains("        Message(\'Hello\');"));
