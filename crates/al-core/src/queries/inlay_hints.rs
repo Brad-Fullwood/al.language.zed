@@ -6,21 +6,16 @@
 //! Also provides return type hints for procedure declarations when
 //! `al.inlayhints.returnTypes` is enabled.
 
-use tower_lsp::lsp_types::{self, InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 use url::Url;
 
+use crate::queries::{AlInlayHint, AlInlayHintKind, AlInlayHintLabel, Position, Range};
 use crate::workspace::Workspace;
 
 /// Get inlay hints for a range within a document.
 ///
-/// Returns transport-agnostic `AlInlayHint` values; al-lsp converts to
-/// `tower_lsp::lsp_types::InlayHint` at the boundary.
+/// Returns transport-agnostic `AlInlayHint` values; al-lsp converts at the boundary.
 #[must_use]
-pub fn inlay_hints(
-    workspace: &Workspace,
-    uri: &Url,
-    range: lsp_types::Range,
-) -> Option<Vec<super::AlInlayHint>> {
+pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: Range) -> Option<Vec<AlInlayHint>> {
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
     let root = tree.root_node();
     let source = text.as_bytes();
@@ -68,7 +63,7 @@ pub fn inlay_hints(
     if hints.is_empty() {
         None
     } else {
-        Some(hints.into_iter().map(Into::into).collect())
+        Some(hints)
     }
 }
 
@@ -81,7 +76,7 @@ fn collect_inlay_hints(
     workspace: &Workspace,
     doc_symbols: &[super::AlDocumentSymbol],
     range: &Range,
-    hints: &mut Vec<InlayHint>,
+    hints: &mut Vec<AlInlayHint>,
 ) {
     // Construct the TypeResolver ONCE and re-use it for every argument node.
     // Previously we built a fresh resolver inside infer_argument_type for
@@ -196,7 +191,7 @@ fn infer_argument_type(
         });
     }
     let var_name = expr.trim_matches('"');
-    if let Some(decl) = resolver.resolve_type(var_name, position) {
+    if let Some(decl) = resolver.resolve_type(var_name, position.into()) {
         return Some(InferredType {
             base: decl.type_name,
             subtype: decl.type_subtype,
@@ -420,7 +415,7 @@ fn lookup_via_receiver(
     position: Position,
     arg_types: &[Option<InferredType>],
 ) -> Option<Vec<String>> {
-    let decl = resolver.resolve_type(receiver_name, position)?;
+    let decl = resolver.resolve_type(receiver_name, position.into())?;
 
     // Builtins filtered by receiver type — use semantic_cache for O(1) type lookup
     let cache = workspace
@@ -528,7 +523,7 @@ fn collect_return_type_hints(
     root: tree_sitter::Node<'_>,
     source: &[u8],
     range: &Range,
-    hints: &mut Vec<InlayHint>,
+    hints: &mut Vec<AlInlayHint>,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -565,15 +560,12 @@ fn collect_return_type_hints(
 
                         if let Some(pos) = hint_pos {
                             if pos.line >= range.start.line && pos.line <= range.end.line {
-                                hints.push(InlayHint {
+                                hints.push(AlInlayHint {
                                     position: pos,
-                                    label: InlayHintLabel::String(format!(": {rt_text}")),
-                                    kind: Some(InlayHintKind::TYPE),
-                                    text_edits: None,
-                                    tooltip: None,
+                                    label: AlInlayHintLabel::String(format!(": {rt_text}")),
+                                    kind: Some(AlInlayHintKind::Type),
                                     padding_left: Some(true),
                                     padding_right: None,
-                                    data: None,
                                 });
                             }
                         }
@@ -591,7 +583,7 @@ fn add_parameter_hints(
     arg_list: tree_sitter::Node<'_>,
     _source: &[u8],
     param_names: &[String],
-    hints: &mut Vec<InlayHint>,
+    hints: &mut Vec<AlInlayHint>,
 ) {
     let expr_parent = arg_list
         .children(&mut arg_list.walk())
@@ -608,18 +600,15 @@ fn add_parameter_hints(
         if arg_idx >= param_names.len() {
             break;
         }
-        hints.push(InlayHint {
+        hints.push(AlInlayHint {
             position: Position {
                 line: child.start_position().row as u32,
                 character: child.start_position().column as u32,
             },
-            label: InlayHintLabel::String(format!("{}:", param_names[arg_idx])),
-            kind: Some(InlayHintKind::PARAMETER),
-            text_edits: None,
-            tooltip: None,
+            label: AlInlayHintLabel::String(format!("{}:", param_names[arg_idx])),
+            kind: Some(AlInlayHintKind::Parameter),
             padding_left: None,
             padding_right: Some(true),
-            data: None,
         });
         arg_idx += 1;
     }
@@ -668,9 +657,9 @@ mod tests {
             "Expected one return type hint, got: {hints:?}"
         );
         let h = &hints[0];
-        assert_eq!(h.kind, Some(InlayHintKind::TYPE));
+        assert_eq!(h.kind, Some(AlInlayHintKind::Type));
         match &h.label {
-            InlayHintLabel::String(s) => assert_eq!(s, ": Boolean"),
+            AlInlayHintLabel::String(s) => assert_eq!(s, ": Boolean"),
             _ => panic!("Unexpected label type"),
         }
     }
@@ -709,7 +698,7 @@ mod tests {
 
         assert_eq!(hints.len(), 1);
         match &hints[0].label {
-            InlayHintLabel::String(s) => {
+            AlInlayHintLabel::String(s) => {
                 assert!(s.contains("Record"), "Expected Record in hint: {s}")
             }
             _ => panic!("Unexpected label type"),

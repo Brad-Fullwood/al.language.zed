@@ -233,9 +233,15 @@ pub(super) fn dispatch_inlay_hints(
         .get("endLine")
         .and_then(|v| v.as_u64())
         .unwrap_or(u32::MAX as u64) as u32;
-    let range = tower_lsp::lsp_types::Range {
-        start: tower_lsp::lsp_types::Position::new(start_line, 0),
-        end: tower_lsp::lsp_types::Position::new(end_line, u32::MAX),
+    let range = al_core::queries::Range {
+        start: al_core::queries::Position {
+            line: start_line,
+            character: 0,
+        },
+        end: al_core::queries::Position {
+            line: end_line,
+            character: u32::MAX,
+        },
     };
     let hints = al_core::queries::inlay_hints::inlay_hints(workspace, &uri, range).map(|h| {
         h.into_iter()

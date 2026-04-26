@@ -226,6 +226,6 @@ pub(crate) fn handle_inlay_hint(
     uri: &Url,
     range: Range,
 ) -> Option<Vec<InlayHint>> {
-    al_core::queries::inlay_hints::inlay_hints(&server.workspace, uri, range)
+    al_core::queries::inlay_hints::inlay_hints(&server.workspace, uri, range.into())
         .map(|hints| hints.into_iter().map(Into::into).collect())
 }
