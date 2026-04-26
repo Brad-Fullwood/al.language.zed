@@ -117,7 +117,15 @@ async fn main() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600));
+        if let Err(e) = std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o600))
+        {
+            // Tracing isn't initialised yet (we're configuring it). eprintln
+            // gets the message into the user's terminal at startup.
+            eprintln!(
+                "al-lsp: cannot tighten log file permissions on {}: {e}",
+                log_path.display()
+            );
+        }
     }
 
     let file_layer = tracing_subscriber::fmt::layer()
