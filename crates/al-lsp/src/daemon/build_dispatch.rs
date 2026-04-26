@@ -2304,7 +2304,16 @@ pub(super) fn dispatch_sort_members(
     if changed && !dry_run {
         if let Some(uri) = file_uri_from_params(params) {
             if let Ok(path) = uri.to_file_path() {
-                let _ = tokio::task::block_in_place(|| std::fs::write(&path, &sorted));
+                if let Err(e) = tokio::task::block_in_place(|| std::fs::write(&path, &sorted)) {
+                    return Response {
+                        id,
+                        result: None,
+                        error: Some(RpcError {
+                            code: error_codes::INTERNAL_ERROR,
+                            message: format!("Failed to write sorted file: {e}"),
+                        }),
+                    };
+                }
                 workspace.documents.open(uri, sorted.clone());
             }
         }
