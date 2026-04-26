@@ -328,7 +328,13 @@ pub async fn initialize_core_workspace(
     let mut package_count = 0usize;
     let mut total_symbols = 0usize;
 
-    match crate::project::find_project(project_root) {
+    // Bridge sync filesystem walks (find_project + file_index.scan) onto the
+    // Tokio blocking pool so they don't stall the worker for the hundreds of
+    // stat()/read_dir() calls a real BC workspace performs. block_in_place
+    // is used because we hold a `&Workspace` borrow that cannot be moved into
+    // spawn_blocking. The al-lsp runtime is multi-threaded.
+    let project_result = tokio::task::block_in_place(|| crate::project::find_project(project_root));
+    match project_result {
         Ok(project) => {
             tracing::info!(
                 name = %project.app_json.name,
@@ -371,8 +377,10 @@ pub async fn initialize_core_workspace(
                 .write()
                 .unwrap_or_else(|e| e.into_inner()) = pkg_info; // SILENT: recover from RwLock poison
 
-            // Scan workspace .al files.
-            file_count = workspace.file_index.scan(&project.root);
+            // Scan workspace .al files. file_index.scan walks the tree
+            // synchronously (read_dir + read_to_string per file) so wrap
+            // it in block_in_place — we still hold the &Workspace borrow.
+            file_count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root));
 
             // Store project info.
             *workspace.project.write().await = Some(project);
@@ -387,8 +395,9 @@ pub async fn initialize_core_workspace(
         Err(e) => {
             tracing::warn!(error = %e, root = %project_root.display(), "workspace: project discovery failed");
 
-            // Still scan for .al files even without a project.
-            file_count = workspace.file_index.scan(project_root);
+            // Still scan for .al files even without a project. Same
+            // block_in_place bridge as the happy path above.
+            file_count = tokio::task::block_in_place(|| workspace.file_index.scan(project_root));
         }
     }
 
