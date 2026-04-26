@@ -320,7 +320,13 @@ fn ensure_readonly_settings(cache_root: &Path) {
         }
 
         if let Ok(text) = serde_json::to_string_pretty(&settings) {
-            let _ = fs::write(&settings_path, text);
+            if let Err(e) = fs::write(&settings_path, text) {
+                tracing::warn!(
+                    path = %settings_path.display(),
+                    error = %e,
+                    "failed to write virtual AL settings file"
+                );
+            }
         }
     });
 }

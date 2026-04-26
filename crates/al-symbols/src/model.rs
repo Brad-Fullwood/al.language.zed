@@ -92,7 +92,7 @@ impl FromStr for ObjectKind {
             "pagecustomization" | "page_customization" | "page-customization" => {
                 Ok(ObjectKind::PageCustomization)
             }
-            "controladdin" | "control_addin" | "control-addin" | "controlad-in" => {
+            "controladdin" | "control_addin" | "control-addin" => {
                 Ok(ObjectKind::ControlAddIn)
             }
             "entitlement" => Ok(ObjectKind::Entitlement),

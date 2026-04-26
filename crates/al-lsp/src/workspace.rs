@@ -702,9 +702,22 @@ fn settings_prompt_shown() -> bool {
 fn mark_settings_prompt_shown() {
     if let Some(path) = sentinel_path() {
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(
+                    path = %parent.display(),
+                    error = %e,
+                    "failed to create settings-sentinel parent dir"
+                );
+                return;
+            }
         }
-        let _ = std::fs::write(&path, b"");
+        if let Err(e) = std::fs::write(&path, b"") {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to write settings-sentinel file"
+            );
+        }
     }
 }
 

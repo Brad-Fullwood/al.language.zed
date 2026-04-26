@@ -195,13 +195,13 @@ pub fn cmd_suggest_event(
         };
         serde_json::json!({ "type": "event", "object": obj, "event": evt })
     } else if let Some(ref obj) = object {
-        let mut src = serde_json::json!({ "type": "procedure", "object": obj });
+        let mut src = serde_json::Map::new();
+        src.insert("type".to_string(), serde_json::json!("procedure"));
+        src.insert("object".to_string(), serde_json::json!(obj));
         if let Some(ref proc_name) = procedure {
-            src.as_object_mut()
-                .unwrap()
-                .insert("procedure".to_string(), serde_json::json!(proc_name));
+            src.insert("procedure".to_string(), serde_json::json!(proc_name));
         }
-        src
+        serde_json::Value::Object(src)
     } else if let Some(ref tbl) = table {
         serde_json::json!({ "type": "table", "table": tbl })
     } else {
@@ -209,22 +209,18 @@ pub fn cmd_suggest_event(
         return ExitCode::FAILURE;
     };
 
-    let mut query = serde_json::json!({ "source": source });
+    let mut query_map = serde_json::Map::new();
+    query_map.insert("source".to_string(), source);
     // If --table is provided alongside --object, it becomes a filter
     if object.is_some() {
         if let Some(ref tbl) = table {
-            query
-                .as_object_mut()
-                .unwrap()
-                .insert("filterTable".to_string(), serde_json::json!(tbl));
+            query_map.insert("filterTable".to_string(), serde_json::json!(tbl));
         }
     }
     if let Some(ref f) = field {
-        query
-            .as_object_mut()
-            .unwrap()
-            .insert("filterField".to_string(), serde_json::json!(f));
+        query_map.insert("filterField".to_string(), serde_json::json!(f));
     }
+    let query = serde_json::Value::Object(query_map);
 
     let mut client = match connect(None) {
         Ok(c) => c,

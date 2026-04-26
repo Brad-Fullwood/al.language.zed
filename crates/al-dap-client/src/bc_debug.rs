@@ -917,7 +917,9 @@ impl BcDebugSession {
 
     /// Terminate the debug session.
     pub async fn terminate(&self) -> Result<()> {
-        let _ = self.invoke("TerminateSession", vec![]).await;
+        if let Err(e) = self.invoke("TerminateSession", vec![]).await {
+            tracing::debug!(error = %e, "TerminateSession RPC errored — session may already be closed");
+        }
         Ok(())
     }
 

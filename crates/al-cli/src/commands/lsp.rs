@@ -1399,7 +1399,13 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
         }
     ]);
 
-    let content = serde_json::to_string_pretty(&configs).unwrap();
+    let content = match serde_json::to_string_pretty(&configs) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to serialize debug configurations: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     match std::fs::write(&debug_path, &content) {
         Ok(_) => {
             if json {
