@@ -264,11 +264,19 @@ fn source_action_add_doc_comment(
     range: Range,
 ) -> Option<CodeActionEntry> {
     let (_, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
-    let doc_symbols: Vec<super::AlDocumentSymbol> =
-        al_syntax::extract_document_symbols(&tree, text)
-            .into_iter()
-            .map(Into::into)
-            .collect();
+    // Reuse the file-index's cached symbol extraction when the file has
+    // already been processed — extract_document_symbols re-walks the tree
+    // and is wasted work on every keystroke-triggered code action.
+    let file_path = uri.to_file_path().ok();
+    let doc_symbols: Vec<super::AlDocumentSymbol> = file_path
+        .as_ref()
+        .and_then(|p| workspace.file_index.get_cached_symbols(p))
+        .unwrap_or_else(|| {
+            al_syntax::extract_document_symbols(&tree, text)
+                .into_iter()
+                .map(Into::into)
+                .collect()
+        });
 
     for sym in &doc_symbols {
         if let Some(children) = &sym.children {
