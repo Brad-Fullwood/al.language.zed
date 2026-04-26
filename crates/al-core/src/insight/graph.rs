@@ -101,9 +101,14 @@ pub enum NodeKey {
 }
 
 /// The insight graph: a directed graph of AL objects, procedures, events, and subscribers.
+///
+/// Internal fields are `pub(crate)` so the rest of `al-core` (queries, search,
+/// index helpers) can read the underlying `petgraph` directly, but external
+/// crates must go through the read-only accessors below. This stops downstream
+/// crates from building on a transient internal layout.
 pub struct InsightGraph {
     /// The underlying petgraph.
-    pub graph: DiGraph<InsightNode, InsightEdge>,
+    pub(crate) graph: DiGraph<InsightNode, InsightEdge>,
     /// Lookup table: NodeKey -> Vec<NodeIndex>.
     ///
     /// Multiple packages can define objects with the same (kind, name), so each
@@ -111,7 +116,7 @@ pub struct InsightGraph {
     /// cross-package collisions in `ensure_node` while still letting
     /// `get_node` return the first (and usually only) match for callers that
     /// only care about name resolution.
-    pub index: HashMap<NodeKey, Vec<NodeIndex>>,
+    pub(crate) index: HashMap<NodeKey, Vec<NodeIndex>>,
 }
 
 impl InsightGraph {
