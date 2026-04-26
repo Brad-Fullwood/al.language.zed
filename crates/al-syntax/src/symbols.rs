@@ -1024,8 +1024,9 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
         }
 
         let line_no = node.start_position().row as u32 + offset as u32;
-        let start_col = line.find(name_part).unwrap_or_default() as u32;
-        let end_col = start_col + name_part.len() as u32;
+        let start_byte = line.find(name_part).unwrap_or_default();
+        let start_col = crate::byte_col_to_utf16_col(line, start_byte);
+        let end_col = crate::byte_col_to_utf16_col(line, start_byte + name_part.len());
         symbols.push(DocumentSymbol {
             name,
             detail: Some("Label".to_string()),

@@ -136,6 +136,20 @@ impl BcServerClient {
                 }
                 let bytes = response.bytes().await?;
 
+                // Re-check actual size: a server may omit Content-Length or lie
+                // about it; the cap also has to apply to the buffered response.
+                if bytes.len() as u64 > MAX_PACKAGE_BYTES {
+                    return Err(BcServerError::ServerError {
+                        status,
+                        message: format!(
+                            "Package '{name}' body {got} bytes exceeds {max} byte limit",
+                            name = dep.name,
+                            got = bytes.len(),
+                            max = MAX_PACKAGE_BYTES,
+                        ),
+                    });
+                }
+
                 // Save to .alpackages/
                 std::fs::create_dir_all(dest)?;
                 let filename = format!(

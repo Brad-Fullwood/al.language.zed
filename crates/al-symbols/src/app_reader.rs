@@ -141,8 +141,9 @@ fn read_symbol_reference(
 
     let file = archive.by_name(&sr_name)?;
     let mut json_bytes = Vec::new();
-    // 512 MB limit guards against decompression bombs in the symbol reference.
-    file.take(536_870_912).read_to_end(&mut json_bytes)?;
+    // Cap matches the outer .app file limit; protects against decompression
+    // bombs even when callers feed read_app_bytes directly with un-capped input.
+    file.take(MAX_APP_FILE_SIZE).read_to_end(&mut json_bytes)?;
 
     let sr = parse_symbol_reference_json(&json_bytes)?;
     Ok(sr.into_entries(package_name))

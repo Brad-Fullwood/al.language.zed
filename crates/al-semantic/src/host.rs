@@ -96,6 +96,10 @@ impl DotNetHost {
                 c_int::MAX
             ))
         })?;
+        // SAFETY: ca_bytes is live for the duration of the call (owned by ca_path,
+        // which is kept on the stack until init_fn returns). ca_len is computed
+        // from ca_bytes.len() above, so the (ptr, len) pair is valid. init_fn is
+        // a C ABI function pointer obtained from the CLR via get_function_pointer.
         let result = unsafe { init_fn(ca_bytes.as_ptr(), ca_len) };
 
         if result != 0 {
@@ -143,6 +147,10 @@ impl DotNetHost {
         })?;
 
         let mut response_len: c_int = 0;
+        // SAFETY: request_bytes is live for the duration of the call (owned by
+        // the local Vec). request_len matches request_bytes.len(). response_len
+        // is a unique mutable reference to a stack value. handle_request_fn is a
+        // C ABI function pointer obtained from the CLR via get_function_pointer.
         let response_ptr = unsafe {
             (self.handle_request_fn)(request_bytes.as_ptr(), request_len, &mut response_len)
         };
@@ -154,18 +162,41 @@ impl DotNetHost {
         }
 
         if response_len < 0 {
+            // SAFETY: response_ptr is non-null (checked above). free_buffer_fn was
+            // obtained from the same CLR load as handle_request_fn and frees the
+            // same allocator's buffer.
             unsafe { (self.free_buffer_fn)(response_ptr) };
             return Err(SemanticError::HostInit(format!(
                 "HandleRequest returned negative response length: {response_len}"
             )));
         }
 
-        // Copy the response bytes before freeing
+        // Copy the response bytes before freeing. ClrBuf ensures the buffer is
+        // freed even if to_vec panics (e.g. on OOM), avoiding a leak.
+        struct ClrBuf {
+            ptr: *mut u8,
+            free: FreeBufferFn,
+        }
+        impl Drop for ClrBuf {
+            fn drop(&mut self) {
+                if !self.ptr.is_null() {
+                    // SAFETY: self.ptr was returned by handle_request_fn from the
+                    // same CLR module that exported self.free; valid until freed.
+                    unsafe { (self.free)(self.ptr) };
+                    self.ptr = std::ptr::null_mut();
+                }
+            }
+        }
+        let _buf = ClrBuf {
+            ptr: response_ptr,
+            free: self.free_buffer_fn,
+        };
+        // SAFETY: response_ptr is non-null (checked above), response_len is
+        // non-negative (checked), and the buffer is valid for response_len bytes
+        // until ClrBuf::drop runs at the end of this scope.
         let response_bytes = unsafe {
             let slice = std::slice::from_raw_parts(response_ptr, response_len as usize);
-            let bytes = slice.to_vec();
-            (self.free_buffer_fn)(response_ptr);
-            bytes
+            slice.to_vec()
         };
 
         let response: serde_json::Value = serde_json::from_slice(&response_bytes).map_err(|e| {

@@ -239,15 +239,23 @@ impl AlServer {
             // Bridge diagnostics (semantic) are emitted on did_open and lintFile command.
             //
             // syntax_diagnostics is CPU-bound (tree-sitter parse + lint walk).
-            // Yield to the blocking pool so other LSP requests on this worker
+            // Off-load to the blocking pool so concurrent async LSP requests
             // are not stalled for the duration of the parse on large files.
             let diag_uri = uri.clone();
-            let lsp_diags: Vec<Diagnostic> = tokio::task::block_in_place(|| {
+            let lsp_diags: Vec<Diagnostic> = match tokio::task::spawn_blocking(move || {
                 al_core::queries::diagnostics::syntax_diagnostics(&workspace, &diag_uri, &config)
                     .iter()
                     .map(crate::diagnostics::syntax_diag_to_lsp)
                     .collect()
-            });
+            })
+            .await
+            {
+                Ok(diags) => diags,
+                Err(e) => {
+                    tracing::warn!("debounced diagnostics task panicked: {e}");
+                    return;
+                }
+            };
             client.publish_diagnostics(uri, lsp_diags, None).await;
         });
 
