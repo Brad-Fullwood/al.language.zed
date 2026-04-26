@@ -170,13 +170,22 @@ pub struct SemanticBridge {
     /// buffer is shared and not safe to access from multiple threads at once).
     host: Arc<std::sync::Mutex<DotNetHost>>,
     version: String,
-    /// Set to true after a timeout — all future calls return `Poisoned` immediately
-    /// rather than blocking on a potentially hung Mutex.
-    timed_out: std::sync::atomic::AtomicBool,
+    /// Unix timestamp (seconds) when the most recent timeout fired, or 0 if
+    /// no timeout has occurred. Combined with `TIMEOUT_COOLDOWN`, this drives
+    /// the retry-after-cooldown behaviour: a single transient timeout no
+    /// longer permanently disables semantic analysis for the rest of the
+    /// process's life.
+    last_timeout_secs: std::sync::atomic::AtomicU64,
 }
 
 /// Default timeout for bridge calls.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Cooldown after a timeout: bridge calls are short-circuited to `Poisoned`
+/// for this duration, then we let them through again. A still-hung Mutex
+/// will simply re-trip the timeout and reset the cooldown; a transient
+/// timeout (slow GC, paging) gets a chance to recover.
+const TIMEOUT_COOLDOWN: Duration = Duration::from_secs(60);
 
 impl SemanticBridge {
     /// Initialize the .NET bridge with explicit paths.
@@ -192,7 +201,7 @@ impl SemanticBridge {
         Ok(Self {
             host: Arc::new(std::sync::Mutex::new(host)),
             version: version.to_string(),
-            timed_out: std::sync::atomic::AtomicBool::new(false),
+            last_timeout_secs: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -226,10 +235,21 @@ impl SemanticBridge {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, SemanticError> {
-        // If a previous call timed out, the Mutex may be held indefinitely by
-        // the hung CLR call. Bail immediately to avoid blocking the entire server.
-        if self.timed_out.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(SemanticError::Poisoned);
+        // If a previous call timed out, short-circuit during the cooldown
+        // window to avoid piling up new calls on a potentially-hung Mutex.
+        // After the cooldown elapses, we let calls through again so a
+        // transient stall can self-heal without a process restart.
+        let last = self
+            .last_timeout_secs
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if last != 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now.saturating_sub(last) < TIMEOUT_COOLDOWN.as_secs() {
+                return Err(SemanticError::Poisoned);
+            }
         }
 
         let host = self.host.clone();
@@ -252,9 +272,14 @@ impl SemanticBridge {
                 "Bridge call panicked: {join_err}"
             ))),
             Err(_) => {
-                // Mark as poisoned so future calls fail fast instead of blocking.
-                self.timed_out
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                // Stamp the timeout time so the cooldown window kicks in;
+                // future calls fail fast for TIMEOUT_COOLDOWN, then retry.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.last_timeout_secs
+                    .store(now, std::sync::atomic::Ordering::Relaxed);
                 Err(SemanticError::Timeout(DEFAULT_TIMEOUT))
             }
         }
