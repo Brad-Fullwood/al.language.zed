@@ -72,9 +72,15 @@ pub fn obsolescence_timeline(workspace: &Workspace) -> Vec<ObsoleteEntry> {
         scan_file_for_obsolete(file_path, file_text, file_tree, &all, &mut results);
     }
 
-    // Also scan symbol packages for obsolete entries
-    let symbols = workspace.symbols.search("", usize::MAX);
-    for sym in &symbols {
+    // Also scan symbol packages for obsolete entries.
+    //
+    // No reverse index exists today from "has Obsolete attribute" → entries,
+    // so we still walk the full set. Use `all_entries()` to make that
+    // intent explicit (it replaces the misleading `search("", usize::MAX)`
+    // call). We skip entries with no methods up-front so the inner loop is
+    // not entered for the majority of symbols (tables, enums, etc).
+    let symbols = workspace.symbols.all_entries();
+    for sym in symbols.iter().filter(|s| !s.methods.is_empty()) {
         for method in &sym.methods {
             for attr in &method.attributes {
                 if attr.name.eq_ignore_ascii_case("Obsolete") {
