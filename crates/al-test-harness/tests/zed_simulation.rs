@@ -60,8 +60,11 @@ async fn test_fixture_project_initializes() {
 async fn test_fixture_workspace_symbols_after_init() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
 
-    // Give extra time for workspace scanning + possible NuGet downloads on first run
-    tokio::time::sleep(tokio::time::Duration::from_millis(5000)).await;
+    // initialize() (called inside LspClient::spawn) already polls
+    // workspace/symbol until the index is ready. The hard-coded 5s sleep
+    // was redundant on warm runs and not enough on cold runs (where NuGet
+    // downloads can take 30s+) — relying on the symbol-poll barrier is
+    // both faster and more correct.
 
     // Search for objects that should be in the workspace
     let symbols = client.workspace_symbol("IJL").await;
