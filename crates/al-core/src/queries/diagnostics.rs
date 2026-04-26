@@ -59,13 +59,17 @@ pub fn syntax_diagnostics(
     config: &AlConfig,
 ) -> Vec<SyntaxDiagnostic> {
     // Phase 1: get (or create) the parse tree.
-    let (text, tree) = match crate::parsing::get_or_parse(&workspace.documents, uri) {
-        Some((t, tree)) => (t, tree),
-        None => {
-            // Document not in store — parse directly.
-            let result = al_syntax::AlParser::parse_quick("");
-            return collect_diagnostics_from_tree(&result.tree, "", config);
-        }
+    let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
+        // Document not in DocumentStore. Callers (did_open / did_change) are
+        // expected to pre-populate the store, so a cache miss is unexpected.
+        // Surface it via tracing rather than silently parsing an empty string,
+        // which would always return zero diagnostics and mask real issues.
+        tracing::warn!(
+            target: "al_core::diagnostics",
+            uri = %uri,
+            "syntax_diagnostics: document not in DocumentStore, returning empty diagnostics"
+        );
+        return Vec::new();
     };
 
     collect_diagnostics_from_tree(&tree, &text, config)
