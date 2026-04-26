@@ -2,11 +2,36 @@
 
 use al_core::workspace::Workspace;
 use al_daemon_client::jsonrpc::{error_codes, Response, RpcError};
+use serde::Serialize;
 
 use super::{extract_position, extract_uri, invalid_params};
 
 /// Sentinel package name for workspace-local objects (not from .app packages).
 const WORKSPACE_PACKAGE: &str = "(workspace)";
+
+/// Build a `Response` whose `result` is `value` serialised to JSON. On
+/// serialisation failure log the error and return an `RpcError` so the
+/// client surfaces the problem instead of silently receiving `null`.
+fn ok_response<T: Serialize>(id: u64, value: &T, method: &str) -> Response {
+    match serde_json::to_value(value) {
+        Ok(v) => Response {
+            id,
+            result: Some(v),
+            error: None,
+        },
+        Err(e) => {
+            tracing::error!(method, error = %e, "serialization failed for LSP result");
+            Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("serialization failed for {method}: {e}"),
+                }),
+            }
+        }
+    }
+}
 
 pub(super) async fn dispatch_hover(
     workspace: &Workspace,
@@ -40,11 +65,13 @@ pub(super) fn dispatch_definition(
         return invalid_params(id);
     };
     let result = al_core::queries::definition::definition(workspace, &uri, position);
-    let value = result.map(|locations| serde_json::to_value(&locations).unwrap_or_default()); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: value,
-        error: None,
+    match result {
+        Some(locations) => ok_response(id, &locations, "textDocument/definition"),
+        None => Response {
+            id,
+            result: None,
+            error: None,
+        },
     }
 }
 
@@ -65,12 +92,7 @@ pub(super) fn dispatch_references(
         .unwrap_or(true);
     let locations =
         al_core::queries::references::references(workspace, &uri, position, include_declaration);
-    let value = serde_json::to_value(&locations).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-    }
+    ok_response(id, &locations, "textDocument/references")
 }
 
 pub(super) fn dispatch_implementations(
@@ -86,12 +108,7 @@ pub(super) fn dispatch_implementations(
     };
     let locations =
         al_core::queries::implementation::find_implementations(workspace, &uri, position);
-    let value = serde_json::to_value(&locations).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-    }
+    ok_response(id, &locations, "textDocument/implementation")
 }
 
 pub(super) async fn dispatch_completions(
@@ -106,12 +123,7 @@ pub(super) async fn dispatch_completions(
         return invalid_params(id);
     };
     let entries = al_core::queries::completions::completions_full(workspace, &uri, position).await;
-    let value = serde_json::to_value(&entries).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-    }
+    ok_response(id, &entries, "textDocument/completion")
 }
 
 pub(super) fn dispatch_signature_help(
@@ -149,11 +161,13 @@ pub(super) fn dispatch_rename(
         return invalid_params(id);
     };
     let result = al_core::queries::rename::rename(workspace, &uri, position, new_name);
-    let value = result.map(|we| serde_json::to_value(&we).unwrap_or_default()); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: value,
-        error: None,
+    match result {
+        Some(we) => ok_response(id, &we, "textDocument/rename"),
+        None => Response {
+            id,
+            result: None,
+            error: None,
+        },
     }
 }
 
@@ -207,12 +221,7 @@ pub(super) fn dispatch_semantic_tokens(
         return invalid_params(id);
     };
     let tokens = al_core::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
-    let value = serde_json::to_value(&tokens).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-    }
+    ok_response(id, &tokens, "textDocument/semanticTokens/full")
 }
 
 pub(super) fn dispatch_inlay_hints(
@@ -272,12 +281,7 @@ pub(super) fn dispatch_code_actions(
         end: position,
     };
     let actions = al_core::queries::code_actions::source_actions(workspace, &uri, range);
-    let value = serde_json::to_value(&actions).unwrap_or_default(); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: Some(value),
-        error: None,
-    }
+    ok_response(id, &actions, "textDocument/codeAction")
 }
 
 // ---------------------------------------------------------------------------
@@ -595,5 +599,55 @@ pub(super) fn dispatch_deps(workspace: &Workspace, id: u64) -> Response {
                 message: "No project loaded".to_string(),
             }),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ok_response` succeeds and produces an Ok JSON value for serialisable input.
+    #[test]
+    fn ok_response_serializes_value() {
+        let resp = ok_response(7, &vec!["a", "b"], "test/method");
+        assert_eq!(resp.id, 7);
+        assert!(resp.error.is_none());
+        assert_eq!(
+            resp.result,
+            Some(serde_json::json!(["a", "b"])),
+            "expected serialised array"
+        );
+    }
+
+    /// Custom `Serialize` impl that always returns an error — used to drive the
+    /// serialisation-failure path in `ok_response`.
+    struct AlwaysFails;
+
+    impl serde::Serialize for AlwaysFails {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom("intentional failure"))
+        }
+    }
+
+    /// `ok_response` returns an `INTERNAL_ERROR` instead of silently emitting `null`
+    /// when serialisation fails.
+    #[test]
+    fn ok_response_returns_rpc_error_on_serialization_failure() {
+        let resp = ok_response(11, &AlwaysFails, "test/method");
+        assert_eq!(resp.id, 11);
+        assert!(
+            resp.result.is_none(),
+            "expected no result on serialisation failure"
+        );
+        let err = resp.error.expect("expected an RpcError");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("serialization failed"),
+            "expected error message to mention serialization failure, got: {}",
+            err.message
+        );
     }
 }
