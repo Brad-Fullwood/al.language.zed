@@ -278,6 +278,18 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             let mut sorted_types: Vec<(&str, &Vec<&al_semantic::BuiltinMethod>)> =
                 by_type.iter().map(|(k, v)| (*k, v)).collect();
             sorted_types.sort_by_key(|(k, _)| *k);
+            // Log the candidate set + selection so it's clear which type
+            // hover picked when an ambiguous method name has multiple
+            // owners (e.g. several builtins all expose `Count()`).
+            if sorted_types.len() > 1 {
+                let candidates: Vec<&str> = sorted_types.iter().map(|(t, _)| *t).collect();
+                tracing::debug!(
+                    method = clean_name,
+                    selected = ?sorted_types.first().map(|(t, _)| *t),
+                    candidates = ?candidates,
+                    "hover: multiple types own this method, picking lexicographically first"
+                );
+            }
             if let Some((type_name, overloads)) = sorted_types.into_iter().next() {
                 let mut content = String::new();
                 for (i, method) in overloads.iter().enumerate() {
