@@ -1,6 +1,9 @@
 //! Two-phase diagnostics — instant syntax + async analyzer.
 //!
-//! Phase 1 (instant): parse with tree-sitter, collect syntax errors, run native lint.
+//! Phase 1 (instant): parse with tree-sitter and collect syntax errors. Native
+//!                     lint rules are not yet implemented — `al_syntax::lint()`
+//!                     returns an empty `Vec` — so this phase only surfaces
+//!                     parse-error diagnostics today.
 //! Phase 2 (async):   send to .NET SemanticBridge for CodeAnalysis diagnostics.
 
 use std::path::PathBuf;
