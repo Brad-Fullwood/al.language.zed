@@ -177,12 +177,24 @@ impl SymbolCache {
         // Restrict the directory to user-only read/write/execute (0o700) on
         // Unix; on other platforms fall back to the OS default since chmod
         // semantics are not portable.
-        fs::create_dir_all(&self.cache_dir)?;
+        //
+        // Use DirBuilder.mode() so the directory is created with 0o700 from the
+        // start; `create_dir_all + set_permissions` would leave a TOCTOU window
+        // where the dir exists with the umask default (typically 0o755).
         #[cfg(unix)]
         {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            builder.mode(0o700);
+            builder.create(&self.cache_dir)?;
+            // Ensure existing dirs (created earlier with default mode) are
+            // tightened too.
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(&self.cache_dir, fs::Permissions::from_mode(0o700));
         }
+        #[cfg(not(unix))]
+        fs::create_dir_all(&self.cache_dir)?;
         self.cleanup_stale_tmp();
 
         // Write to a temp file in the same directory, then atomically rename.

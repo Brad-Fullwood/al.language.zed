@@ -2238,13 +2238,28 @@ fn pad_center(s: String, width: usize) -> String {
     format!("{:^width$}", s, width = width)
 }
 
-/// Scan a text file for the first line whose content (lowercased) contains `member_name`.
+/// Scan a text file for the first line containing `member_name` as a whole word.
+///
+/// Match must be surrounded by non-identifier characters (or start/end of line)
+/// so a 1-character field name doesn't accidentally match every line that
+/// happens to contain that letter.
 fn find_member_line_in_file(path: &std::path::Path, member_name: &str) -> Option<u32> {
     let content = std::fs::read_to_string(path).ok()?;
     let lower = member_name.to_lowercase();
+    let is_ident_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     for (i, line) in content.lines().enumerate() {
-        if line.to_lowercase().contains(&lower) {
-            return Some(i as u32);
+        let line_lower = line.to_lowercase();
+        let bytes = line_lower.as_bytes();
+        let mut start = 0;
+        while let Some(found) = line_lower[start..].find(&lower) {
+            let abs = start + found;
+            let before_ok = abs == 0 || !is_ident_byte(bytes[abs - 1]);
+            let end = abs + lower.len();
+            let after_ok = end == bytes.len() || !is_ident_byte(bytes[end]);
+            if before_ok && after_ok {
+                return Some(i as u32);
+            }
+            start = abs + 1;
         }
     }
     None

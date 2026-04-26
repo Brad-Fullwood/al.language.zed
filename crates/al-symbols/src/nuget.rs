@@ -193,18 +193,28 @@ impl NuGetClient {
 
     /// Download all dependencies concurrently, trying each feed in order for each package.
     ///
-    /// All downloads are launched in parallel using `futures::future::join_all`.
-    /// Returns one result per dependency in the same order as the input slice.
+    /// Downloads run concurrently, limited to `MAX_CONCURRENT_DOWNLOADS`
+    /// permits to avoid overwhelming the NuGet feed (and consuming hundreds of
+    /// MB of RAM on workspaces with many BC dependencies). Returns one result
+    /// per dependency in the same order as the input slice.
     pub async fn download_all(
         &self,
         deps: &[AppDependency],
         dest: &Path,
     ) -> Vec<Result<PathBuf, NuGetError>> {
+        const MAX_CONCURRENT_DOWNLOADS: usize = 4;
         let refs = resolve_dependencies(deps);
-        let futures: Vec<_> = refs
-            .iter()
-            .map(|pkg_ref| self.download(pkg_ref, dest))
-            .collect();
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DOWNLOADS));
+        let futures = refs.iter().map(|pkg_ref| {
+            let sem = std::sync::Arc::clone(&semaphore);
+            async move {
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .expect("download_all semaphore is never closed");
+                self.download(pkg_ref, dest).await
+            }
+        });
         futures::future::join_all(futures).await
     }
 }
