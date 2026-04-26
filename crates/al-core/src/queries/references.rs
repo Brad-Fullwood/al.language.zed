@@ -18,7 +18,9 @@ pub fn references(
         return Vec::new();
     };
 
-    let Some(node) = al_syntax::find_node_at_position(&tree, &text, lsp_pos) else {
+    let Some(node) =
+        al_syntax::find_node_at_position(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))
+    else {
         return Vec::new();
     };
     let Some(clean_name) = super::node_clean_name(node, text.as_bytes()) else {
@@ -30,7 +32,7 @@ pub fn references(
     let source_bytes = text.as_bytes();
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
     for r in &refs {
-        let range: Range = al_syntax::ts_range_to_lsp(r, source_bytes).into();
+        let range: Range = crate::syntax::ts_range_to_lsp(r, source_bytes).into();
         if !include_declaration && range.start == position {
             continue;
         }
@@ -67,7 +69,7 @@ pub fn references(
             if let Ok(file_uri) = Url::from_file_path(&file_path) {
                 locations.push(Location {
                     uri: file_uri,
-                    range: al_syntax::ts_range_to_lsp(r, file_source_bytes).into(),
+                    range: crate::syntax::ts_range_to_lsp(r, file_source_bytes).into(),
                 });
             }
         }

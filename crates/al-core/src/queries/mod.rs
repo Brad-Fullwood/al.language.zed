@@ -361,6 +361,46 @@ impl From<Range> for tower_lsp::lsp_types::Range {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Conversions between al-syntax native types and al-core agnostic types
+// ---------------------------------------------------------------------------
+
+impl From<al_syntax::types::SyntaxPosition> for Position {
+    fn from(p: al_syntax::types::SyntaxPosition) -> Self {
+        Self {
+            line: p.line,
+            character: p.character,
+        }
+    }
+}
+
+impl From<Position> for al_syntax::types::SyntaxPosition {
+    fn from(p: Position) -> Self {
+        Self {
+            line: p.line,
+            character: p.character,
+        }
+    }
+}
+
+impl From<al_syntax::types::SyntaxRange> for Range {
+    fn from(r: al_syntax::types::SyntaxRange) -> Self {
+        Self {
+            start: r.start.into(),
+            end: r.end.into(),
+        }
+    }
+}
+
+impl From<Range> for al_syntax::types::SyntaxRange {
+    fn from(r: Range) -> Self {
+        Self {
+            start: r.start.into(),
+            end: r.end.into(),
+        }
+    }
+}
+
 impl From<tower_lsp::lsp_types::Location> for Location {
     fn from(l: tower_lsp::lsp_types::Location) -> Self {
         Self {
@@ -448,6 +488,38 @@ impl From<tower_lsp::lsp_types::SymbolKind> for AlSymbolKind {
     }
 }
 
+impl From<al_syntax::types::SyntaxSymbolKind> for AlSymbolKind {
+    fn from(k: al_syntax::types::SyntaxSymbolKind) -> Self {
+        use al_syntax::types::SyntaxSymbolKind as S;
+        match k {
+            S::File => AlSymbolKind::File,
+            S::Module => AlSymbolKind::Module,
+            S::Namespace => AlSymbolKind::Namespace,
+            S::Class => AlSymbolKind::Class,
+            S::Method => AlSymbolKind::Method,
+            S::Property => AlSymbolKind::Property,
+            S::Field => AlSymbolKind::Field,
+            S::Constructor => AlSymbolKind::Constructor,
+            S::Enum => AlSymbolKind::Enum,
+            S::EnumMember => AlSymbolKind::EnumMember,
+            S::Interface => AlSymbolKind::Interface,
+            S::Function => AlSymbolKind::Function,
+            S::Variable => AlSymbolKind::Variable,
+            S::Constant => AlSymbolKind::Constant,
+            S::String => AlSymbolKind::String,
+            S::Number => AlSymbolKind::Number,
+            S::Boolean => AlSymbolKind::Boolean,
+            S::Array => AlSymbolKind::Array,
+            S::Object => AlSymbolKind::Object,
+            S::Struct => AlSymbolKind::Struct,
+            S::Event => AlSymbolKind::Event,
+            S::Operator => AlSymbolKind::Operator,
+            S::TypeParameter => AlSymbolKind::TypeParameter,
+            S::Key => AlSymbolKind::Struct,
+        }
+    }
+}
+
 #[allow(deprecated)]
 impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
     fn from(s: AlDocumentSymbol) -> Self {
@@ -464,9 +536,8 @@ impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
     }
 }
 
-#[allow(deprecated)]
-impl From<tower_lsp::lsp_types::DocumentSymbol> for AlDocumentSymbol {
-    fn from(s: tower_lsp::lsp_types::DocumentSymbol) -> Self {
+impl From<al_syntax::types::SyntaxDocumentSymbol> for AlDocumentSymbol {
+    fn from(s: al_syntax::types::SyntaxDocumentSymbol) -> Self {
         Self {
             name: s.name,
             detail: s.detail,
@@ -501,18 +572,19 @@ impl From<AlFoldingRange> for tower_lsp::lsp_types::FoldingRange {
     }
 }
 
-impl From<tower_lsp::lsp_types::FoldingRangeKind> for AlFoldingRangeKind {
-    fn from(k: tower_lsp::lsp_types::FoldingRangeKind) -> Self {
+impl From<al_syntax::types::SyntaxFoldingRangeKind> for AlFoldingRangeKind {
+    fn from(k: al_syntax::types::SyntaxFoldingRangeKind) -> Self {
+        use al_syntax::types::SyntaxFoldingRangeKind as S;
         match k {
-            tower_lsp::lsp_types::FoldingRangeKind::Comment => AlFoldingRangeKind::Comment,
-            tower_lsp::lsp_types::FoldingRangeKind::Imports => AlFoldingRangeKind::Imports,
-            tower_lsp::lsp_types::FoldingRangeKind::Region => AlFoldingRangeKind::Region,
+            S::Comment => AlFoldingRangeKind::Comment,
+            S::Imports => AlFoldingRangeKind::Imports,
+            S::Region => AlFoldingRangeKind::Region,
         }
     }
 }
 
-impl From<tower_lsp::lsp_types::FoldingRange> for AlFoldingRange {
-    fn from(r: tower_lsp::lsp_types::FoldingRange) -> Self {
+impl From<al_syntax::types::SyntaxFoldingRange> for AlFoldingRange {
+    fn from(r: al_syntax::types::SyntaxFoldingRange) -> Self {
         Self {
             start_line: r.start_line,
             start_character: r.start_character,

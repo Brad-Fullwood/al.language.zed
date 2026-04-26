@@ -1,12 +1,11 @@
 //! Document symbol extraction from tree-sitter trees.
-// DocumentSymbol has a deprecated `deprecated` field that must be populated when constructing the struct.
-#![allow(deprecated)]
 
-use tower_lsp::lsp_types::{DocumentSymbol, SymbolKind};
+use crate::ts_range_to_syntax as ts_range_to_lsp;
+use crate::types::{
+    SyntaxDocumentSymbol as DocumentSymbol, SyntaxRange, SyntaxSymbolKind as SymbolKind,
+};
 use tracing::debug;
 use tree_sitter::{Node, Tree};
-
-use crate::ts_range_to_lsp;
 
 /// Extract document symbols for the outline view.
 ///
@@ -44,20 +43,20 @@ pub fn extract_document_symbols(tree: &Tree, text: &str) -> Vec<DocumentSymbol> 
     symbols
 }
 
-/// Convert an LSP symbol kind string (as stored in object_types.json) to a
-/// tower_lsp SymbolKind value.
+/// Convert a symbol kind string (as stored in object_types.json) to a
+/// `SyntaxSymbolKind` value.
 ///
-/// This is LSP infrastructure mapping — not AL language knowledge.
+/// This is an infrastructure mapping — not AL language knowledge.
 fn lsp_symbol_kind_from_str(s: &str) -> SymbolKind {
     match s {
-        "File" => SymbolKind::FILE,
-        "Module" => SymbolKind::MODULE,
-        "Namespace" => SymbolKind::NAMESPACE,
-        "Class" => SymbolKind::CLASS,
-        "Struct" => SymbolKind::STRUCT,
-        "Interface" => SymbolKind::INTERFACE,
-        "Enum" => SymbolKind::ENUM,
-        _ => SymbolKind::OBJECT,
+        "File" => SymbolKind::File,
+        "Module" => SymbolKind::Module,
+        "Namespace" => SymbolKind::Namespace,
+        "Class" => SymbolKind::Class,
+        "Struct" => SymbolKind::Struct,
+        "Interface" => SymbolKind::Interface,
+        "Enum" => SymbolKind::Enum,
+        _ => SymbolKind::Object,
     }
 }
 
@@ -70,7 +69,7 @@ fn object_kind_to_symbol_kind(kind: &str) -> SymbolKind {
         .iter()
         .find(|ot| ot.node_kind == kind)
         .map(|ot| lsp_symbol_kind_from_str(&ot.lsp_symbol_kind))
-        .unwrap_or(SymbolKind::OBJECT)
+        .unwrap_or(SymbolKind::Object)
 }
 
 /// Extract the object kind as a human-readable (lowercase) string.
@@ -146,8 +145,6 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         name,
         detail,
         kind: sym_kind,
-        tags: None,
-        deprecated: None,
         range,
         selection_range,
         children: if children.is_empty() {
@@ -175,9 +172,7 @@ fn extract_namespace_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
     Some(DocumentSymbol {
         name,
         detail: Some(keyword.to_string()),
-        kind: SymbolKind::NAMESPACE,
-        tags: None,
-        deprecated: None,
+        kind: SymbolKind::Namespace,
         range,
         selection_range: range,
         children: None,
@@ -256,8 +251,6 @@ fn extract_named_symbol(
         name,
         detail,
         kind,
-        tags: None,
-        deprecated: None,
         range,
         selection_range,
         children: None,
@@ -294,15 +287,15 @@ fn extract_procedure_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol>
         Some(params.to_string())
     };
 
-    extract_named_symbol(node, source, SymbolKind::FUNCTION, detail)
+    extract_named_symbol(node, source, SymbolKind::Function, detail)
 }
 
 fn extract_trigger_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    extract_named_symbol(node, source, SymbolKind::EVENT, Some("trigger".to_string()))
+    extract_named_symbol(node, source, SymbolKind::Event, Some("trigger".to_string()))
 }
 
 fn extract_event_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
-    extract_named_symbol(node, source, SymbolKind::EVENT, Some("event".to_string()))
+    extract_named_symbol(node, source, SymbolKind::Event, Some("event".to_string()))
 }
 
 fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
@@ -321,16 +314,16 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     }
 
     let sym_kind = match keyword.to_lowercase().as_str() {
-        "fields" => SymbolKind::STRUCT,
-        "keys" => SymbolKind::KEY,
-        "actions" => SymbolKind::NAMESPACE,
-        "layout" => SymbolKind::NAMESPACE,
-        "views" => SymbolKind::NAMESPACE,
-        "dataset" => SymbolKind::NAMESPACE,
-        "requestpage" => SymbolKind::CLASS,
-        "rendering" => SymbolKind::NAMESPACE,
-        "fieldgroups" => SymbolKind::STRUCT,
-        _ => SymbolKind::NAMESPACE,
+        "fields" => SymbolKind::Struct,
+        "keys" => SymbolKind::Key,
+        "actions" => SymbolKind::Namespace,
+        "layout" => SymbolKind::Namespace,
+        "views" => SymbolKind::Namespace,
+        "dataset" => SymbolKind::Namespace,
+        "requestpage" => SymbolKind::Class,
+        "rendering" => SymbolKind::Namespace,
+        "fieldgroups" => SymbolKind::Struct,
+        _ => SymbolKind::Namespace,
     };
 
     let range = ts_range_to_lsp(&node.range(), source);
@@ -346,8 +339,6 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         name: keyword,
         detail: None,
         kind: sym_kind,
-        tags: None,
-        deprecated: None,
         range,
         selection_range,
         children: if children.is_empty() {
@@ -419,9 +410,7 @@ fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<Document
     Some(DocumentSymbol {
         name,
         detail,
-        kind: SymbolKind::ENUM_MEMBER,
-        tags: None,
-        deprecated: None,
+        kind: SymbolKind::EnumMember,
         range,
         selection_range: ts_range_to_lsp(&name_node_range, source),
         children: None,
@@ -435,12 +424,12 @@ fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
         .map(|e| e.lsp_symbol_kind.as_str())
         .unwrap_or("Namespace")
     {
-        "Field" => SymbolKind::FIELD,
-        "Event" => SymbolKind::EVENT,
-        "Struct" => SymbolKind::STRUCT,
-        "Class" => SymbolKind::CLASS,
-        "Constant" => SymbolKind::CONSTANT,
-        _ => SymbolKind::NAMESPACE,
+        "Field" => SymbolKind::Field,
+        "Event" => SymbolKind::Event,
+        "Struct" => SymbolKind::Struct,
+        "Class" => SymbolKind::Class,
+        "Constant" => SymbolKind::Constant,
+        _ => SymbolKind::Namespace,
     }
 }
 
@@ -555,7 +544,7 @@ fn extract_triggers_from_braced_block(
                             if let Ok(name_text) = name_node.utf8_text(source) {
                                 let name = name_text.trim_matches('"').to_string();
                                 if !name.is_empty() {
-                                    let range = crate::ts_range_to_lsp(
+                                    let range = ts_range_to_lsp(
                                         &tree_sitter::Range {
                                             start_byte: trigger_kw_range.start_byte,
                                             end_byte: name_node.range().end_byte,
@@ -565,13 +554,11 @@ fn extract_triggers_from_braced_block(
                                         source,
                                     );
                                     let selection_range =
-                                        crate::ts_range_to_lsp(&name_node.range(), source);
+                                        ts_range_to_lsp(&name_node.range(), source);
                                     symbols.push(DocumentSymbol {
                                         name,
                                         detail: Some("trigger".to_string()),
-                                        kind: SymbolKind::EVENT,
-                                        tags: None,
-                                        deprecated: None,
+                                        kind: SymbolKind::Event,
                                         range,
                                         selection_range,
                                         children: None,
@@ -626,7 +613,7 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
 
     // Compute range from keyword start to body end (or paren end if no body)
     let end_node = body_node.or(paren_node).unwrap_or(kw_node);
-    let range = crate::ts_range_to_lsp(
+    let range = ts_range_to_lsp(
         &tree_sitter::Range {
             start_byte: kw_node.start_byte(),
             end_byte: end_node.end_byte(),
@@ -653,8 +640,6 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
         name,
         detail: Some(kw_text.to_string()),
         kind: sym_kind,
-        tags: None,
-        deprecated: None,
         range,
         selection_range,
         children: if nested.is_empty() {
@@ -707,9 +692,7 @@ fn extract_enum_value_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol
     Some(DocumentSymbol {
         name,
         detail: Some(format!("value({})", id)),
-        kind: SymbolKind::ENUM_MEMBER,
-        tags: None,
-        deprecated: None,
+        kind: SymbolKind::EnumMember,
         range,
         selection_range,
         children: None,
@@ -742,9 +725,7 @@ fn extract_key_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         } else {
             Some(fields.to_string())
         },
-        kind: SymbolKind::KEY,
-        tags: None,
-        deprecated: None,
+        kind: SymbolKind::Key,
         range,
         selection_range,
         children: None,
@@ -845,9 +826,7 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
     Some(DocumentSymbol {
         name,
         detail: Some("dataitem".to_string()),
-        kind: SymbolKind::STRUCT,
-        tags: None,
-        deprecated: None,
+        kind: SymbolKind::Struct,
         range,
         selection_range,
         children: if children.is_empty() {
@@ -884,9 +863,7 @@ fn collect_var_symbols_recursive(root: Node, source: &[u8], symbols: &mut Vec<Do
                     symbols.push(DocumentSymbol {
                         name,
                         detail: detail.clone(),
-                        kind: SymbolKind::VARIABLE,
-                        tags: None,
-                        deprecated: None,
+                        kind: SymbolKind::Variable,
                         range,
                         selection_range,
                         children: None,
@@ -901,9 +878,7 @@ fn collect_var_symbols_recursive(root: Node, source: &[u8], symbols: &mut Vec<Do
                         symbols.push(DocumentSymbol {
                             name,
                             detail,
-                            kind: SymbolKind::VARIABLE,
-                            tags: None,
-                            deprecated: None,
+                            kind: SymbolKind::Variable,
                             range: ts_range_to_lsp(&child.range(), source),
                             selection_range: ts_range_to_lsp(&name_node.range(), source),
                             children: None,
@@ -924,10 +899,7 @@ fn collect_var_symbols_recursive(root: Node, source: &[u8], symbols: &mut Vec<Do
     }
 }
 
-fn extract_regular_variable_names(
-    node: Node,
-    source: &[u8],
-) -> Vec<(String, tower_lsp::lsp_types::Range)> {
+fn extract_regular_variable_names(node: Node, source: &[u8]) -> Vec<(String, SyntaxRange)> {
     let Some(sep_start) = node.child_by_field_name("sep").map(|sep| sep.start_byte()) else {
         return Vec::new();
     };
@@ -949,7 +921,7 @@ fn collect_variable_name_nodes(
     node: Node,
     sep_start: usize,
     source: &[u8],
-    names: &mut Vec<(String, tower_lsp::lsp_types::Range)>,
+    names: &mut Vec<(String, SyntaxRange)>,
 ) {
     let mut stack = vec![node];
     while let Some(current) = stack.pop() {
@@ -1002,7 +974,7 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
 
     let mut seen: std::collections::HashSet<String> = symbols
         .iter()
-        .filter(|symbol| symbol.kind == SymbolKind::VARIABLE)
+        .filter(|symbol| symbol.kind == SymbolKind::Variable)
         .map(|symbol| symbol.name.to_lowercase())
         .collect();
 
@@ -1030,16 +1002,14 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
         symbols.push(DocumentSymbol {
             name,
             detail: Some("Label".to_string()),
-            kind: SymbolKind::VARIABLE,
-            tags: None,
-            deprecated: None,
+            kind: SymbolKind::Variable,
             range: ts_range_to_lsp(&node.range(), source),
-            selection_range: tower_lsp::lsp_types::Range {
-                start: tower_lsp::lsp_types::Position {
+            selection_range: SyntaxRange {
+                start: crate::types::SyntaxPosition {
                     line: line_no,
                     character: start_col,
                 },
-                end: tower_lsp::lsp_types::Position {
+                end: crate::types::SyntaxPosition {
                     line: line_no,
                     character: end_col,
                 },
@@ -1072,7 +1042,7 @@ mod tests {
         assert_eq!(symbols.len(), 1, "Should have one top-level object");
         let obj = &symbols[0];
         assert_eq!(obj.name, "My Codeunit");
-        assert_eq!(obj.kind, SymbolKind::CLASS);
+        assert_eq!(obj.kind, SymbolKind::Class);
         let children = obj.children.as_ref().expect("Should have children");
         assert!(
             children.len() >= 2,
@@ -1093,10 +1063,10 @@ mod tests {
         let symbols = extract_document_symbols(&result.tree, src);
         assert_eq!(symbols.len(), 1);
         let obj = &symbols[0];
-        assert_eq!(obj.kind, SymbolKind::ENUM);
+        assert_eq!(obj.kind, SymbolKind::Enum);
         let children = obj.children.as_ref().expect("Should have enum values");
         assert_eq!(children.len(), 2);
-        assert_eq!(children[0].kind, SymbolKind::ENUM_MEMBER);
+        assert_eq!(children[0].kind, SymbolKind::EnumMember);
     }
 
     #[test]
@@ -1117,7 +1087,7 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         let obj = &symbols[0];
         assert_eq!(obj.name, "My Table");
-        assert_eq!(obj.kind, SymbolKind::CLASS);
+        assert_eq!(obj.kind, SymbolKind::Class);
     }
 
     #[test]
@@ -1140,7 +1110,7 @@ mod tests {
 
         let vars: Vec<&DocumentSymbol> = children
             .iter()
-            .filter(|child| child.kind == SymbolKind::VARIABLE)
+            .filter(|child| child.kind == SymbolKind::Variable)
             .collect();
 
         assert_eq!(vars.len(), 3, "Expected one symbol per declared variable");

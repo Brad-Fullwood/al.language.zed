@@ -71,7 +71,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
     };
-    let context = detect_context(&text, lsp_pos);
+    let context = detect_context(&text, crate::syntax::lsp_pos_to_syntax(lsp_pos));
     tracing::debug!(context = ?context, line = lsp_pos.line, character = lsp_pos.character, "completion: detected context");
 
     let mut items = Vec::new();
@@ -80,8 +80,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
         CompletionContext::MemberAccess => {
             if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri)
             {
-                if let Some((receiver_expr, _)) =
-                    resolution::receiver_chain_before(&text, lsp_pos.into())
+                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, position)
                 {
                     if let Some(receiver) = resolution::resolve_expression_type(
                         workspace,
@@ -89,7 +88,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                         &file_text,
                         &tree,
                         &receiver_expr,
-                        lsp_pos.into(),
+                        position,
                     ) {
                         let lsp_items =
                             resolution::completion_items_for_receiver(workspace, &receiver);
@@ -101,8 +100,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
         CompletionContext::EnumAccess => {
             if let Some((file_text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri)
             {
-                if let Some((receiver_expr, _)) =
-                    resolution::receiver_chain_before(&text, lsp_pos.into())
+                if let Some((receiver_expr, _)) = resolution::receiver_chain_before(&text, position)
                 {
                     let enum_type = resolution::resolve_expression_type(
                         workspace,
@@ -110,7 +108,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                         &file_text,
                         &tree,
                         &receiver_expr,
-                        lsp_pos.into(),
+                        position,
                     )
                     .unwrap_or_else(|| resolution::ResolvedType {
                         type_name: receiver_expr.clone(),
@@ -208,7 +206,7 @@ pub async fn completions_full(
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return items;
     };
-    let ctx = al_syntax::context::detect_context(&text, lsp_pos);
+    let ctx = al_syntax::context::detect_context(&text, crate::syntax::lsp_pos_to_syntax(lsp_pos));
     if !matches!(ctx, al_syntax::context::CompletionContext::MemberAccess) {
         return items;
     }
@@ -315,7 +313,7 @@ fn add_default_completions(
         }
 
         let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &file_text);
-        let vars = resolver.variables_at(position);
+        let vars = resolver.variables_at(crate::syntax::lsp_pos_to_syntax(position));
         for var in &vars {
             let subtype = var
                 .type_subtype

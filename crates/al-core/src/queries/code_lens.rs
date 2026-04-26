@@ -148,7 +148,7 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
                         return;
                     }
                     let ts_range = node.range();
-                    let lsp_range = al_syntax::ts_range_to_lsp(&ts_range, source_bytes);
+                    let lsp_range = crate::syntax::ts_range_to_lsp(&ts_range, source_bytes);
                     let key = (
                         uri_str.to_string(),
                         lsp_range.start.line,

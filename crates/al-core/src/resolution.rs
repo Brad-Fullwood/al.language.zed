@@ -777,7 +777,7 @@ pub(crate) fn resolve_workspace_object_definition(
     let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
     Some((
         uri,
-        al_syntax::ts_range_to_lsp(&obj.range, file_source.as_bytes()).into(),
+        crate::syntax::ts_range_to_lsp(&obj.range, file_source.as_bytes()).into(),
     ))
 }
 
@@ -1185,7 +1185,9 @@ fn workspace_member(
                 }),
                 uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                 kind: ResolvedMemberKind::Variable {
-                    range: Some(al_syntax::ts_range_to_lsp(&var.range, content.as_bytes()).into()),
+                    range: Some(
+                        crate::syntax::ts_range_to_lsp(&var.range, content.as_bytes()).into(),
+                    ),
                     scope: "global variable",
                 },
             });

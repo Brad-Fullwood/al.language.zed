@@ -13,6 +13,7 @@ pub mod symbols;
 pub mod tokens;
 pub mod traversal;
 pub mod type_resolver;
+pub mod types;
 
 pub use context::{detect_context, extract_last_identifier, find_call_context, CompletionContext};
 pub use folding::extract_folding_ranges;
@@ -30,6 +31,10 @@ pub use symbols::extract_document_symbols;
 pub use tokens::{extract_semantic_tokens, SemanticToken};
 pub use traversal::{walk_tree, walk_tree_until};
 pub use type_resolver::{object_kind_to_al_type, TypeResolver, VariableDecl, VariableScope};
+pub use types::{
+    SyntaxDocumentSymbol, SyntaxFoldingRange, SyntaxFoldingRangeKind, SyntaxPosition, SyntaxRange,
+    SyntaxSymbolKind,
+};
 
 /// Convert a byte-offset column (as produced by tree-sitter) within a UTF-8 line to a
 /// UTF-16 code unit column (as required by the LSP specification).
@@ -201,11 +206,11 @@ pub fn get_source_line(source: &[u8], row: usize) -> &str {
         .unwrap_or("")
 }
 
-/// Convert a tree-sitter Range to an LSP Range.
+/// Convert a tree-sitter Range to a transport-agnostic [`types::SyntaxRange`].
 ///
 /// `source` must be the complete source bytes of the file so that tree-sitter byte-offset
-/// columns (`point.column`) can be converted to LSP UTF-16 code unit columns correctly.
-pub fn ts_range_to_lsp(range: &tree_sitter::Range, source: &[u8]) -> tower_lsp::lsp_types::Range {
+/// columns (`point.column`) can be converted to UTF-16 code unit columns correctly.
+pub fn ts_range_to_syntax(range: &tree_sitter::Range, source: &[u8]) -> types::SyntaxRange {
     let get_line = |row: usize| -> &str { get_source_line(source, row) };
 
     let start_line = get_line(range.start_point.row);
@@ -215,12 +220,12 @@ pub fn ts_range_to_lsp(range: &tree_sitter::Range, source: &[u8]) -> tower_lsp::
         get_line(range.end_point.row)
     };
 
-    tower_lsp::lsp_types::Range {
-        start: tower_lsp::lsp_types::Position {
+    types::SyntaxRange {
+        start: types::SyntaxPosition {
             line: range.start_point.row as u32,
             character: byte_col_to_utf16_col(start_line, range.start_point.column),
         },
-        end: tower_lsp::lsp_types::Position {
+        end: types::SyntaxPosition {
             line: range.end_point.row as u32,
             character: byte_col_to_utf16_col(end_line, range.end_point.column),
         },

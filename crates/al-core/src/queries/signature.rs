@@ -282,7 +282,7 @@ fn resolve_receiver_signature(
     }
 
     let resolver = al_syntax::TypeResolver::new(tree, text);
-    let decl = resolver.resolve_type(receiver_name, position)?;
+    let decl = resolver.resolve_type(receiver_name, crate::syntax::lsp_pos_to_syntax(position))?;
     let subtype = decl.type_subtype.as_deref()?;
 
     let obj_key = subtype.to_lowercase();

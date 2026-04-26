@@ -15,19 +15,20 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
-    let node = al_syntax::find_node_at_position(&tree, &text, lsp_pos)?;
+    let node =
+        al_syntax::find_node_at_position(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))?;
     let source = text.as_bytes();
     let clean_name = super::node_clean_name(node, source)?;
 
     // Access path resolution
-    if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos.into()) {
+    if let Some(access) = resolution::access_path_at(&tree, &text, position) {
         if let Some(receiver) = resolution::resolve_expression_type(
             workspace,
             uri,
             &text,
             &tree,
             &access.receiver,
-            lsp_pos.into(),
+            position,
         ) {
             if let Some(member) =
                 resolution::resolve_member(workspace, uri, &receiver, &access.member)
@@ -93,8 +94,9 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     }
 
     let resolver = al_syntax::TypeResolver::new(&tree, &text);
-    if let Some(decl) = resolver.resolve_type(clean_name, lsp_pos) {
-        let def_range: Range = al_syntax::ts_range_to_lsp(&decl.range, text.as_bytes()).into();
+    if let Some(decl) = resolver.resolve_type(clean_name, crate::syntax::lsp_pos_to_syntax(lsp_pos))
+    {
+        let def_range: Range = crate::syntax::ts_range_to_lsp(&decl.range, text.as_bytes()).into();
         if def_range.start != position {
             return Some(vec![Location {
                 uri: uri.clone(),
@@ -107,7 +109,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let first = &refs[0];
-        let def_range: Range = al_syntax::ts_range_to_lsp(first, text.as_bytes()).into();
+        let def_range: Range = crate::syntax::ts_range_to_lsp(first, text.as_bytes()).into();
         if def_range.start != position {
             return Some(vec![Location {
                 uri: uri.clone(),
@@ -129,7 +131,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                     if let Ok(file_uri) = Url::from_file_path(&file_path) {
                         return Some(vec![Location {
                             uri: file_uri,
-                            range: al_syntax::ts_range_to_lsp(
+                            range: crate::syntax::ts_range_to_lsp(
                                 &obj_info.range,
                                 file_text_entry.value().as_bytes(),
                             )

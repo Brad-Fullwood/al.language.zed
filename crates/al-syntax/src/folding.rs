@@ -1,6 +1,8 @@
 //! Folding range extraction from tree-sitter trees.
 
-use tower_lsp::lsp_types::{FoldingRange, FoldingRangeKind};
+use crate::types::{
+    SyntaxFoldingRange as FoldingRange, SyntaxFoldingRangeKind as FoldingRangeKind,
+};
 use tree_sitter::{Node, Tree};
 
 use crate::{byte_col_to_utf16_col, get_source_line, traversal::walk_tree};
@@ -78,7 +80,6 @@ fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<Folding
                         end_line: end.row as u32,
                         end_character: Some(byte_col_to_utf16_col(end_line_str, end.column)),
                         kind: Some(FoldingRangeKind::Comment),
-                        collapsed_text: None,
                     });
                 }
             }
@@ -104,7 +105,6 @@ fn add_range(node: Node, kind: FoldingRangeKind, source: &[u8], ranges: &mut Vec
         end_line: end.row as u32,
         end_character: Some(byte_col_to_utf16_col(end_line_str, end.column)),
         kind: Some(kind),
-        collapsed_text: None,
     });
 }
 
@@ -130,7 +130,6 @@ fn extract_comment_block_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
                         end_line: block_end,
                         end_character: None,
                         kind: Some(FoldingRangeKind::Comment),
-                        collapsed_text: None,
                     });
                 }
             }
@@ -147,7 +146,6 @@ fn extract_comment_block_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
                 end_line: block_end,
                 end_character: None,
                 kind: Some(FoldingRangeKind::Comment),
-                collapsed_text: None,
             });
         }
     }

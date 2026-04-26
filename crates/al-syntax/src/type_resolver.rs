@@ -3,7 +3,7 @@
 //! Extracts variable declarations and their types from the current scope
 //! by walking the tree-sitter AST. Handles local variables, global variables,
 //! parameters, and trigger-implicit variables (Rec, xRec, etc.).
-use tower_lsp::lsp_types::Position;
+use crate::types::SyntaxPosition as Position;
 use tracing::{debug, trace};
 use tree_sitter::{Node, Tree};
 

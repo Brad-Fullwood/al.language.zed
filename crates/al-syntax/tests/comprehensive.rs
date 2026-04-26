@@ -4,11 +4,13 @@
 //! formatting, and lint rules with realistic AL code.
 
 use al_syntax::tokens::token_types;
+use al_syntax::types::{
+    SyntaxFoldingRangeKind as FoldingRangeKind, SyntaxSymbolKind as SymbolKind,
+};
 use al_syntax::{
     extract_document_symbols, extract_folding_ranges, extract_semantic_tokens, format_al, lint,
     AlParser, FormatOptions,
 };
-use tower_lsp::lsp_types::{FoldingRangeKind, SymbolKind};
 
 // ---------------------------------------------------------------------------
 // Realistic AL code fixtures
@@ -297,7 +299,7 @@ fn symbols_page_hierarchy() {
     assert_eq!(symbols.len(), 1, "Should have one top-level page object");
     let page = &symbols[0];
     assert_eq!(page.name, "Customer Card Ext");
-    assert_eq!(page.kind, SymbolKind::CLASS);
+    assert_eq!(page.kind, SymbolKind::Class);
 
     // Page should have children (layout, actions sections and their contents)
     let children = page.children.as_ref().expect("Page should have children");
@@ -313,12 +315,12 @@ fn symbols_codeunit_procedures() {
     assert_eq!(symbols.len(), 1);
     let cu = &symbols[0];
     assert_eq!(cu.name, "Sales Helper");
-    assert_eq!(cu.kind, SymbolKind::CLASS);
+    assert_eq!(cu.kind, SymbolKind::Class);
 
     let children = cu.children.as_ref().expect("Codeunit should have children");
     let proc_names: Vec<&str> = children
         .iter()
-        .filter(|c| c.kind == SymbolKind::FUNCTION)
+        .filter(|c| c.kind == SymbolKind::Function)
         .map(|c| c.name.as_str())
         .collect();
 
@@ -350,14 +352,14 @@ fn symbols_table_structure() {
     assert_eq!(symbols.len(), 1);
     let table = &symbols[0];
     assert_eq!(table.name, "My Custom Table");
-    assert_eq!(table.kind, SymbolKind::CLASS);
+    assert_eq!(table.kind, SymbolKind::Class);
 
     let children = table.children.as_ref().expect("Table should have children");
 
     // Should have triggers
     let triggers: Vec<&str> = children
         .iter()
-        .filter(|c| c.kind == SymbolKind::EVENT)
+        .filter(|c| c.kind == SymbolKind::Event)
         .map(|c| c.name.as_str())
         .collect();
     assert!(
@@ -381,12 +383,12 @@ fn symbols_enum_values() {
     assert_eq!(symbols.len(), 1);
     let en = &symbols[0];
     assert_eq!(en.name, "My Status");
-    assert_eq!(en.kind, SymbolKind::ENUM);
+    assert_eq!(en.kind, SymbolKind::Enum);
 
     let children = en.children.as_ref().expect("Enum should have children");
     let value_names: Vec<&str> = children
         .iter()
-        .filter(|c| c.kind == SymbolKind::ENUM_MEMBER)
+        .filter(|c| c.kind == SymbolKind::EnumMember)
         .map(|c| c.name.as_str())
         .collect();
 
@@ -868,7 +870,7 @@ fn find_procedure_at_position() {
     let result = parser.parse(CODEUNIT_CODE);
 
     // Position inside ProcessOrders body (line ~10)
-    let pos = tower_lsp::lsp_types::Position {
+    let pos = al_syntax::types::SyntaxPosition {
         line: 10,
         character: 12,
     };

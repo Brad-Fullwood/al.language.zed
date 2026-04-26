@@ -2,7 +2,7 @@
 //!
 //! Extracted from al-lsp so both the LSP and CLI can use them.
 
-use tower_lsp::lsp_types::Position;
+use crate::types::SyntaxPosition as Position;
 use tracing::debug;
 
 /// Detected completion context from cursor position.

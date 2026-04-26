@@ -19,7 +19,8 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
-    let node = al_syntax::find_node_at_position(&tree, &text, lsp_pos)?;
+    let node =
+        al_syntax::find_node_at_position(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))?;
     let source = text.as_bytes();
     // Non-UTF8 node text means the node isn't a valid identifier — skip silently
     let node_text = node.utf8_text(source).unwrap_or("");
@@ -31,10 +32,10 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     }
 
     tracing::debug!(name = %clean_name, node_kind = %node.kind(), line = lsp_pos.line, character = lsp_pos.character, "hover: looking up symbol");
-    let node_range: Range = al_syntax::ts_range_to_lsp(&node.range(), source).into();
+    let node_range: Range = crate::syntax::ts_range_to_lsp(&node.range(), source).into();
 
     // Access path resolution (e.g., Rec.Name, Enum::Value)
-    if let Some(access) = resolution::access_path_at(&tree, &text, lsp_pos.into()) {
+    if let Some(access) = resolution::access_path_at(&tree, &text, position) {
         tracing::debug!(receiver = %access.receiver, member = %access.member, "hover: access path found");
         if let Some(receiver) = resolution::resolve_expression_type(
             workspace,
@@ -42,7 +43,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             &text,
             &tree,
             &access.receiver,
-            lsp_pos.into(),
+            position,
         ) {
             if let Some(member) =
                 resolution::resolve_member(workspace, uri, &receiver, &access.member)
@@ -145,7 +146,9 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     }
 
     // 1. Check if we're on a procedure name or a local parameter
-    if let Some(proc_info) = al_syntax::find_procedure_at(&tree, &text, lsp_pos) {
+    if let Some(proc_info) =
+        al_syntax::find_procedure_at(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))
+    {
         if proc_info.name.eq_ignore_ascii_case(clean_name) {
             let mut content = format_procedure_hover(&proc_info);
             if let Some(doc) =
@@ -174,7 +177,9 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     // 2b. Check local/global variable declarations via TypeResolver
     {
         let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &text);
-        if let Some(decl) = resolver.resolve_type(clean_name, lsp_pos) {
+        if let Some(decl) =
+            resolver.resolve_type(clean_name, crate::syntax::lsp_pos_to_syntax(lsp_pos))
+        {
             let label = super::scope_label(&decl.scope);
             let var_prefix = if decl.is_var { "var " } else { "" };
             let subtype = decl

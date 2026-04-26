@@ -169,7 +169,6 @@ dependencies = [
  "ropey",
  "serde",
  "serde_json",
- "tower-lsp",
  "tracing",
  "tree-sitter",
 ]

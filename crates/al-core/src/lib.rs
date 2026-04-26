@@ -38,9 +38,41 @@ pub mod xliff;
 pub mod syntax {
     pub use al_syntax::{
         find_object_declaration, format_al, format_range, lint, lint_rules, sort_members,
-        ts_range_to_lsp, AlParser, BlankLinesBetweenProcedures, BraceStyle, FormatOptions,
+        ts_range_to_syntax, AlParser, BlankLinesBetweenProcedures, BraceStyle, FormatOptions,
         KeywordCasing, LintDiagnostic, LintRuleInfo, LintSeverity, ParseResult, SyntaxError,
     };
+
+    /// Convert a tree-sitter Range to an LSP Range.
+    ///
+    /// This helper lives in al-core (a transport-aware crate) because converting to
+    /// `tower_lsp::lsp_types::Range` is a transport-layer concern. al-syntax only
+    /// converts to its own `SyntaxRange`; al-core bridges the gap here.
+    pub fn ts_range_to_lsp(
+        range: &tree_sitter::Range,
+        source: &[u8],
+    ) -> tower_lsp::lsp_types::Range {
+        let sr = al_syntax::ts_range_to_syntax(range, source);
+        tower_lsp::lsp_types::Range {
+            start: tower_lsp::lsp_types::Position::new(sr.start.line, sr.start.character),
+            end: tower_lsp::lsp_types::Position::new(sr.end.line, sr.end.character),
+        }
+    }
+
+    /// Convert a `tower_lsp::lsp_types::Position` to an `al_syntax::types::SyntaxPosition`.
+    ///
+    /// This bridge exists in al-core because the orphan rule prevents implementing
+    /// `From<tower_lsp::lsp_types::Position> for al_syntax::types::SyntaxPosition` in al-syntax
+    /// (al-syntax no longer depends on tower-lsp) and in al-core (both types are external).
+    #[inline]
+    pub fn lsp_pos_to_syntax(
+        pos: tower_lsp::lsp_types::Position,
+    ) -> al_syntax::types::SyntaxPosition {
+        al_syntax::types::SyntaxPosition {
+            line: pos.line,
+            character: pos.character,
+        }
+    }
+
     pub mod complexity {
         pub use al_syntax::complexity::{compute_complexity, ProcedureComplexity};
     }

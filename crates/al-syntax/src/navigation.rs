@@ -1,7 +1,7 @@
 //! AST navigation helpers for AL tree-sitter trees.
 
 use crate::traversal::walk_tree;
-pub use tower_lsp::lsp_types::Position;
+pub use crate::types::SyntaxPosition as Position;
 use tree_sitter::{Node, Tree};
 
 /// Find the most specific node at a given LSP position.
