@@ -457,7 +457,7 @@ impl Default for Workspace {
 ///
 /// If `uri` is not a `file://` URI, the full composed symbol cache is invalidated
 /// as a safe fallback.
-pub fn on_document_change(workspace: &Workspace, uri: &tower_lsp::lsp_types::Url, text: &str) {
+pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
     let result = al_syntax::AlParser::parse_quick(text);
 
     // Warm the document cache so diagnostics / hover can reuse this parse tree.
@@ -487,7 +487,7 @@ pub fn on_document_change(workspace: &Workspace, uri: &tower_lsp::lsp_types::Url
 /// Only handles symbol cache invalidation — the decision about whether to remove
 /// the file from the file index (based on `diagnostics_scope`) is left to the
 /// caller (`al-lsp`), which has access to config and transport concerns.
-pub fn on_document_close(workspace: &Workspace, uri: &tower_lsp::lsp_types::Url) {
+pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
     if let Ok(path) = uri.to_file_path() {
         if let Some(info) = workspace.file_index.object_info.get(&path) {
             workspace.symbols.invalidate_composed(&info.name);
@@ -502,7 +502,7 @@ pub fn on_document_close(workspace: &Workspace, uri: &tower_lsp::lsp_types::Url)
 #[cfg(test)]
 mod workspace_lifecycle_tests {
     use super::*;
-    use tower_lsp::lsp_types::Url;
+    use url::Url;
 
     fn make_workspace() -> Workspace {
         Workspace::new()
