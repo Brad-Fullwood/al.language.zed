@@ -438,19 +438,14 @@ async fn zed_fidelity_diagnostic_items_have_required_fields() {
     // Custom lint rules have been removed so CODEUNIT_AL may produce no diagnostics.
     // This test validates that any diagnostics that ARE published have the correct
     // structure — it does not require diagnostics to be present.
+    // open_file already blocks until publishDiagnostics arrives (5s timeout
+    // in the harness), so a separate polling loop just adds 5s of dead time
+    // to the test on every fixture run. Drain immediately afterwards.
     client.open_file("src/zed_diag_items.al", CODEUNIT_AL).await;
 
-    // Collect any diagnostics published within 5s.
     let mut all_diags: Vec<serde_json::Value> = vec![];
-    for _ in 0..10 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        let diag_map = client.drain_diagnostics();
-        for diags in diag_map.into_values() {
-            all_diags.extend(diags);
-        }
-        if !all_diags.is_empty() {
-            break;
-        }
+    for diags in client.drain_diagnostics().into_values() {
+        all_diags.extend(diags);
     }
 
     // Validate structure of each diagnostic received (loop is a no-op if empty).
