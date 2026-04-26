@@ -188,9 +188,18 @@ impl InsightGraph {
     ///
     /// Populates Object, Procedure, Event, and Subscriber nodes with
     /// Extends, Contains, Publishes, and SubscribesTo edges.
+    ///
+    /// Cold builds for a full BC workspace (~600 tables, thousands of fields)
+    /// can take 50–200 ms. The work is wrapped in a `tracing::info_span` and
+    /// emits a one-shot log line with elapsed time and final node/edge
+    /// counts so latency is observable from `RUST_LOG=al_core::insight=info`.
     pub fn build_from_index(&mut self, symbols: &al_symbols::SymbolIndex) {
+        let span = tracing::info_span!("insight_graph.build", entries = symbols.len());
+        let _enter = span.enter();
+        let started = std::time::Instant::now();
+
         // Iterate all symbols
-        let all_entries = symbols.search("", usize::MAX);
+        let all_entries = symbols.all_entries();
 
         for entry in &all_entries {
             self.add_object_and_members(entry);
@@ -200,6 +209,15 @@ impl InsightGraph {
         for entry in &all_entries {
             self.resolve_relationships(entry, symbols);
         }
+
+        let elapsed = started.elapsed();
+        tracing::info!(
+            entries = all_entries.len(),
+            nodes = self.node_count(),
+            edges = self.edge_count(),
+            elapsed_ms = elapsed.as_millis() as u64,
+            "insight_graph.build complete"
+        );
     }
 
     /// Add an object node and all its procedure/event/subscriber nodes.
