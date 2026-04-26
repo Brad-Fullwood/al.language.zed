@@ -145,29 +145,32 @@ pub fn add_data_classification(
 
 fn collect_al_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    collect_recursive(dir, &mut files);
-    files.sort();
-    files
-}
-
-fn collect_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if !name.starts_with('.') && name != "target" {
-                collect_recursive(&path, files);
+    // Iterative directory walk via an explicit stack. Avoids stack overflow on
+    // deeply nested directory trees and the (real-world rare but possible)
+    // pathological symlink junction cycles, both of which would overflow a
+    // recursive walker.
+    let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if !name.starts_with('.') && name != "target" {
+                    stack.push(path);
+                }
+            } else if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("al"))
+            {
+                files.push(path);
             }
-        } else if path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("al"))
-        {
-            files.push(path);
         }
     }
+    files.sort();
+    files
 }
 
 /// Detect if source text contains a page/page extension/report/requestpage declaration.
