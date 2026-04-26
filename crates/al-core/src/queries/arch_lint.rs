@@ -20,6 +20,20 @@ pub struct ArchViolation {
 }
 
 /// Kind of architectural rule.
+///
+/// **NamingConvention pattern support is intentionally narrow.** The first
+/// entry in `values` is interpreted as a literal token chosen from the
+/// supported set below — *not* as a general regular expression. Adding the
+/// `regex` crate is out of scope for this query module; tighten the supported
+/// token set as concrete rules emerge.
+///
+/// Currently supported NamingConvention `values[0]` tokens:
+/// - `"[A-Z]"` — object name must start with an uppercase character.
+///
+/// Any other value is silently ignored (no violation emitted). This is
+/// documented behaviour, not a bug; see CLAUDE.md "no hardcoded language
+/// values" — we deliberately avoid baking AL naming conventions into the
+/// linter and instead rely on `.alarch.json` to enumerate them explicitly.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ArchRuleKind {
@@ -124,8 +138,11 @@ fn apply_rule(
 
     match rule.kind {
         ArchRuleKind::NamingConvention => {
+            // Pattern is a literal token, NOT a regex. See ArchRuleKind doc.
+            // Only "[A-Z]" is currently meaningful (must start uppercase).
+            // Any other value is a no-op until a richer matcher is wired in.
             if let Some(name_pattern) = rule.values.first() {
-                if name_pattern.contains("[A-Z]")
+                if name_pattern == "[A-Z]"
                     && !obj_info
                         .name
                         .chars()
@@ -264,5 +281,50 @@ mod tests {
         let json = r#"{"rules":[{"id":"X","description":"Test","kind":"namingConvention","pattern":"codeunit","values":["^[A-Z]"]}]}"#;
         let cfg = ArchConfig::from_json(json).unwrap();
         assert_eq!(cfg.rules.len(), 1);
+    }
+
+    /// Regression for 2039244ed8d4aa5d: NamingConvention's pattern field is a
+    /// literal token, not a regex. A pattern that *contains* `[A-Z]` (e.g.
+    /// `^[A-Z][a-z]+`) used to silently match against the substring search
+    /// `name_pattern.contains("[A-Z]")` and behave as if the user had set
+    /// `[A-Z]`. Now the comparison is exact, so an unsupported pattern is a
+    /// no-op and lowercase object names are NOT flagged under such a rule.
+    #[test]
+    fn naming_convention_pattern_is_literal_not_regex() {
+        let ws = workspace_with(vec![(
+            "/src/lowercase.al",
+            "codeunit 50100 lowercase\n{\n}\n",
+        )]);
+
+        // Unsupported (regex-looking) pattern — must NOT emit a violation.
+        let unsupported = ArchConfig {
+            rules: vec![ArchRule {
+                id: "N1".to_string(),
+                description: "must start uppercase".to_string(),
+                kind: ArchRuleKind::NamingConvention,
+                pattern: String::new(),
+                values: vec!["^[A-Z][a-z]+".to_string()],
+            }],
+        };
+        assert!(
+            arch_lint(&ws, &unsupported).is_empty(),
+            "Unsupported regex-style pattern must be a no-op, not silently behave as [A-Z]"
+        );
+
+        // Supported literal — DOES emit a violation for the lowercase name.
+        let supported = ArchConfig {
+            rules: vec![ArchRule {
+                id: "N2".to_string(),
+                description: "must start uppercase".to_string(),
+                kind: ArchRuleKind::NamingConvention,
+                pattern: String::new(),
+                values: vec!["[A-Z]".to_string()],
+            }],
+        };
+        let violations = arch_lint(&ws, &supported);
+        assert!(
+            !violations.is_empty(),
+            "Literal [A-Z] pattern must flag a lowercase object name"
+        );
     }
 }
