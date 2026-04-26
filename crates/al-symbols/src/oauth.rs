@@ -69,7 +69,16 @@ pub async fn acquire_token(
     tenant: &str,
     on_message: impl Fn(&str),
 ) -> Result<String, OAuthError> {
-    let client_id = std::env::var("BC_CLIENT_ID").unwrap_or_else(|_| DEFAULT_CLIENT_ID.into());
+    let client_id = match std::env::var("BC_CLIENT_ID") {
+        Ok(v) if !v.trim().is_empty() => v,
+        Ok(_) => {
+            warn!(
+                "BC_CLIENT_ID is set but blank/whitespace; falling back to default client_id"
+            );
+            DEFAULT_CLIENT_ID.into()
+        }
+        Err(_) => DEFAULT_CLIENT_ID.into(),
+    };
     let cache_path = token_cache_path(tenant);
 
     // 1. Try cached token

@@ -56,11 +56,19 @@ fn write_cache<T: Serialize + ?Sized>(version: &str, name: &str, data: &T, count
     let path = dir.join(format!("{name}-{version}.json"));
     match serde_json::to_string(data) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(&path, json) {
-                warn!(error = %e, "Failed to write {name} cache");
-            } else {
-                info!(version, entries = count, "Cached {name} to disk");
+            // Write to a tmp file then atomically rename so concurrent readers
+            // never see a partial JSON document (e.g. process killed mid-write).
+            let tmp_path = path.with_extension("json.tmp");
+            if let Err(e) = std::fs::write(&tmp_path, &json) {
+                warn!(error = %e, "Failed to write {name} cache (tmp)");
+                return;
             }
+            if let Err(e) = std::fs::rename(&tmp_path, &path) {
+                warn!(error = %e, "Failed to rename {name} cache into place");
+                let _ = std::fs::remove_file(&tmp_path);
+                return;
+            }
+            info!(version, entries = count, "Cached {name} to disk");
         }
         Err(e) => warn!(error = %e, "Failed to serialize {name} for cache"),
     }

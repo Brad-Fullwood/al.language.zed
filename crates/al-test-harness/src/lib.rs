@@ -272,8 +272,11 @@ impl LspClient {
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
             if tokio::time::Instant::now() >= deadline {
-                tracing::warn!("Timed out waiting for workspace init");
-                break;
+                return Err(format!(
+                    "Timed out after {init_timeout_secs}s waiting for workspace init \
+                     (workspace/symbol returned empty); set AL_TEST_INIT_TIMEOUT to extend"
+                )
+                .into());
             }
             // Use empty query to check if any workspace symbols are loaded.
             // Track the id before the request so we can clean up the pending
