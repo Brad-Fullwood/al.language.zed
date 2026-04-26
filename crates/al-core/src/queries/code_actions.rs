@@ -71,8 +71,7 @@ pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<Cod
 
     // Add region wrapper
     if range.start != range.end {
-        let lsp_range: tower_lsp::lsp_types::Range = range.into();
-        if let Some(action) = source_action_add_region(uri, &text, lsp_range) {
+        if let Some(action) = source_action_add_region(uri, &text, range) {
             actions.push(action);
         }
     }
@@ -336,11 +335,7 @@ fn source_action_add_doc_comment(
     None
 }
 
-fn source_action_add_region(
-    uri: &Url,
-    text: &str,
-    range: tower_lsp::lsp_types::Range,
-) -> Option<CodeActionEntry> {
+fn source_action_add_region(uri: &Url, text: &str, range: Range) -> Option<CodeActionEntry> {
     let indent = detect_indent(text, range.start.line);
     let region_start = TextEdit {
         range: Range {
