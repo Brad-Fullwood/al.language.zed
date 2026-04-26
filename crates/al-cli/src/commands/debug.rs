@@ -42,7 +42,10 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            let abs_file = file_to_uri(file).unwrap_or_else(|| file.clone());
+            let abs_file = match file_to_uri(file) {
+                Some(uri) => uri,
+                None => return ExitCode::FAILURE,
+            };
             let params = serde_json::json!({
                 "cmd": "breakpoint",
                 "file": abs_file,
