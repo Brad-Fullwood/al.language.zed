@@ -33,6 +33,19 @@ fn ok_response<T: Serialize>(id: u64, value: &T, method: &str) -> Response {
     }
 }
 
+/// `ok_response` variant for `Option<T>` results. `None` is encoded as a
+/// JSON-RPC `null` result (no error). `Some(v)` defers to `ok_response`.
+fn ok_response_opt<T: Serialize>(id: u64, value: Option<T>, method: &str) -> Response {
+    match value {
+        Some(v) => ok_response(id, &v, method),
+        None => Response {
+            id,
+            result: None,
+            error: None,
+        },
+    }
+}
+
 pub(super) async fn dispatch_hover(
     workspace: &Workspace,
     id: u64,
@@ -45,12 +58,7 @@ pub(super) async fn dispatch_hover(
         return invalid_params(id);
     };
     let result = al_core::queries::hover::hover_full(workspace, &uri, position).await;
-    let value = result.and_then(|r| serde_json::to_value(&r).ok()); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: value,
-        error: None,
-    }
+    ok_response_opt(id, result, "textDocument/hover")
 }
 
 pub(super) fn dispatch_definition(
@@ -138,12 +146,7 @@ pub(super) fn dispatch_signature_help(
         return invalid_params(id);
     };
     let result = al_core::queries::signature::signature_help(workspace, &uri, position);
-    let value = result.and_then(|sh| serde_json::to_value(&sh).ok()); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: value,
-        error: None,
-    }
+    ok_response_opt(id, result, "textDocument/signatureHelp")
 }
 
 pub(super) fn dispatch_rename(
@@ -182,12 +185,7 @@ pub(super) fn dispatch_document_symbols(
     // Serialize the transport-agnostic AlDocumentSymbol vec directly. The daemon
     // returns JSON, so there is no need to round-trip through tower_lsp types.
     let result = al_core::queries::symbols::document_symbols(workspace, &uri);
-    let value = result.and_then(|r| serde_json::to_value(r).ok()); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: value,
-        error: None,
-    }
+    ok_response_opt(id, result, "textDocument/documentSymbol")
 }
 
 pub(super) fn dispatch_folding_ranges(
@@ -204,12 +202,7 @@ pub(super) fn dispatch_folding_ranges(
             .map(tower_lsp::lsp_types::FoldingRange::from)
             .collect::<Vec<_>>()
     });
-    let value = result.and_then(|r| serde_json::to_value(r).ok()); // SILENT: serialization of valid structs should not fail
-    Response {
-        id,
-        result: value,
-        error: None,
-    }
+    ok_response_opt(id, result, "textDocument/foldingRange")
 }
 
 pub(super) fn dispatch_semantic_tokens(
@@ -255,13 +248,24 @@ pub(super) fn dispatch_inlay_hints(
             .map(tower_lsp::lsp_types::InlayHint::from)
             .collect::<Vec<_>>()
     });
-    let value = hints
-        .and_then(|h| serde_json::to_value(&h).ok()) // SILENT: serialization of valid structs should not fail
-        .unwrap_or(serde_json::json!([]));
-    Response {
-        id,
-        result: Some(value),
-        error: None,
+    let hints = hints.unwrap_or_default();
+    match serde_json::to_value(&hints) {
+        Ok(v) => Response {
+            id,
+            result: Some(v),
+            error: None,
+        },
+        Err(e) => {
+            tracing::error!(method = "textDocument/inlayHint", error = %e, "serialization failed");
+            Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: format!("serialization failed for textDocument/inlayHint: {e}"),
+                }),
+            }
+        }
     }
 }
 
