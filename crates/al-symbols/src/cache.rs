@@ -93,8 +93,21 @@ impl SymbolCache {
             return None;
         }
 
-        // Deserialize the objects
-        let objects: Vec<crate::model::SymbolEntry> = serde_json::from_slice(objects_data).ok()?;
+        // Deserialize the objects. A failure here means the on-disk format is
+        // incompatible with the current SymbolEntry struct (schema migration,
+        // truncated file, corruption). Logging at warn surfaces the cause —
+        // previously this returned None and silently re-parsed the .app.
+        let objects: Vec<crate::model::SymbolEntry> = match serde_json::from_slice(objects_data) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    path = %cache_path.display(),
+                    error = %e,
+                    "symbol cache: failed to deserialize SymbolEntry list — falling back to .app re-parse"
+                );
+                return None;
+            }
+        };
 
         // Reconstruct the SymbolPackage from cached manifest fields + objects.
         let pkg = SymbolPackage {
