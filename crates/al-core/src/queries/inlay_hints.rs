@@ -100,7 +100,10 @@ fn collect_inlay_hints(
                 if let Some((func_name, receiver_name)) = call_info {
                     let position = Position {
                         line: node.start_position().row as u32,
-                        character: node.start_position().column as u32,
+                        character: al_syntax::byte_col_to_utf16_col(
+                            source_line(source, node.start_position().row),
+                            node.start_position().column,
+                        ),
                     };
                     let arg_types = infer_argument_types(node, source, &resolver, position);
                     let param_names = lookup_parameter_names(
@@ -549,12 +552,18 @@ fn collect_return_type_hints(
                             .child_by_field_name("parameters")
                             .map(|p| Position {
                                 line: p.end_position().row as u32,
-                                character: p.end_position().column as u32,
+                                character: al_syntax::byte_col_to_utf16_col(
+                                    source_line(source, p.end_position().row),
+                                    p.end_position().column,
+                                ),
                             })
                             .or_else(|| {
                                 node.child_by_field_name("name").map(|n| Position {
                                     line: n.end_position().row as u32,
-                                    character: n.end_position().column as u32,
+                                    character: al_syntax::byte_col_to_utf16_col(
+                                        source_line(source, n.end_position().row),
+                                        n.end_position().column,
+                                    ),
                                 })
                             });
 
@@ -612,6 +621,15 @@ fn add_parameter_hints(
         });
         arg_idx += 1;
     }
+}
+
+/// Decode `row` (0-indexed) of `source` as UTF-8, or `""` on bad UTF-8 / OOB.
+fn source_line(source: &[u8], row: usize) -> &str {
+    source
+        .split(|&b| b == b'\n')
+        .nth(row)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .unwrap_or("")
 }
 
 #[cfg(test)]

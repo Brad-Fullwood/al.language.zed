@@ -848,7 +848,9 @@ fn source_action_implement_interface(
 
     // Find the codeunit object declaration at the cursor position.
     // LSP positions use UTF-16 code units; tree-sitter uses byte offsets.
-    let cursor_line = text.lines().nth(range.start.line as usize).unwrap_or("");
+    let Some(cursor_line) = text.lines().nth(range.start.line as usize) else {
+        return Vec::new();
+    };
     let col_bytes =
         crate::resolution::utf16_col_to_byte_offset(cursor_line, range.start.character as usize);
     let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
@@ -1191,7 +1193,7 @@ fn source_action_eliminate_with(
 
     // Find with_statement at cursor.
     // LSP positions use UTF-16 code units; tree-sitter uses byte offsets.
-    let cursor_line = text.lines().nth(range.start.line as usize).unwrap_or("");
+    let cursor_line = text.lines().nth(range.start.line as usize)?;
     let col_bytes =
         crate::resolution::utf16_col_to_byte_offset(cursor_line, range.start.character as usize);
     let point = tree_sitter::Point::new(range.start.line as usize, col_bytes);
