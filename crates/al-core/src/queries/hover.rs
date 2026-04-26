@@ -254,10 +254,11 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             });
         }
 
-        // Search all types for a method with this name via SemanticCache (O(n) over types,
-        // replacing the previous O(n*m) double-loop over workspace.builtins).
-        // Note: this is still O(n) over all types — a future improvement would add a
-        // reverse index from method name to type in SemanticCache for O(1) lookup.
+        // Search all types for a method with this name via SemanticCache.
+        // SemanticCache::find_methods_by_name uses the pre-built `method_index`
+        // (lowercased method name → list of (type_key, method_idx)) so the
+        // lookup is O(1) plus O(k) for the k overloads. This replaces the
+        // earlier O(n*m) double-loop over workspace.builtins.
         let method_hits = cache.find_methods_by_name(clean_name);
         if !method_hits.is_empty() {
             // Group by type name so we can emit a single hover per type with all overloads
