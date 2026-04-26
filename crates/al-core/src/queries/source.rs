@@ -260,50 +260,37 @@ fn try_package_source(
 }
 
 /// Find a procedure/trigger node in a tree-sitter tree and return (node, signature).
+///
+/// Iterative tree-sitter traversal — explicit stack avoids stack overflow on
+/// deeply nested AL (per project convention; see CLAUDE.md "Tree-sitter Traversal").
 fn find_procedure_node<'a>(
     root: &'a tree_sitter::Node<'a>,
     source: &str,
     name: &str,
 ) -> Option<(tree_sitter::Node<'a>, String)> {
-    let mut cursor = root.walk();
-    find_procedure_recursive(&mut cursor, source, name)
-}
-
-fn find_procedure_recursive<'a>(
-    cursor: &mut tree_sitter::TreeCursor<'a>,
-    source: &str,
-    name: &str,
-) -> Option<(tree_sitter::Node<'a>, String)> {
-    loop {
-        let node = cursor.node();
+    let mut stack: Vec<tree_sitter::Node<'a>> = vec![*root];
+    while let Some(node) = stack.pop() {
         let kind = node.kind();
-
         if kind == "procedure_declaration" || kind == "trigger_declaration" {
-            // Find the method/trigger name child
             if let Some(name_node) = node.child_by_field_name("name") {
                 let node_name = name_node.utf8_text(source.as_bytes()).unwrap_or("");
                 let clean = node_name.trim_matches('"');
                 if clean.eq_ignore_ascii_case(name) {
-                    // Build signature from the first line up to the first newline or ')'
                     let text = node.utf8_text(source.as_bytes()).unwrap_or("");
                     let sig = extract_signature_from_text(text);
                     return Some((node, sig));
                 }
             }
         }
-
-        // Recurse into children
-        if cursor.goto_first_child() {
-            if let Some(result) = find_procedure_recursive(cursor, source, name) {
-                return Some(result);
-            }
-            cursor.goto_parent();
-        }
-
-        if !cursor.goto_next_sibling() {
-            return None;
+        // Push children in reverse so leftmost child is processed first (preserves
+        // original pre-order traversal semantics).
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        for child in children.into_iter().rev() {
+            stack.push(child);
         }
     }
+    None
 }
 
 /// Extract signature from the beginning of a procedure text.
@@ -688,6 +675,34 @@ mod tests {
 
         let outline = render_outline(&entry);
         assert_eq!(outline, "codeunit 50100 \"Empty CU\"\n{\n}\n");
+    }
+
+    /// Regression for the recursive→iterative conversion of find_procedure_node:
+    /// a deeply nested if-then-begin chain used to risk stack overflow under recursion.
+    /// The iterative version must locate a procedure regardless of nesting depth.
+    #[test]
+    fn find_procedure_node_handles_deep_nesting() {
+        const DEPTH: usize = 200;
+        let mut body = String::new();
+        for _ in 0..DEPTH {
+            body.push_str("if true then begin\n");
+        }
+        body.push_str("Message('hi');\n");
+        for _ in 0..DEPTH {
+            body.push_str("end;\n");
+        }
+        let src = format!(
+            "codeunit 50100 \"Deep\"\n{{\n    procedure Target()\n    begin\n        {}\n    end;\n}}\n",
+            body
+        );
+
+        let parsed = al_syntax::AlParser::parse_quick(&src);
+        let root = parsed.tree.root_node();
+        let result = find_procedure_node(&root, &src, "Target");
+        assert!(
+            result.is_some(),
+            "Target procedure should be found in deeply nested source"
+        );
     }
 
     #[test]
