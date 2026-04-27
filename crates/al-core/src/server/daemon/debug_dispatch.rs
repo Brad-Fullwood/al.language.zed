@@ -1,6 +1,6 @@
 //! Debug session dispatcher.
 
-use al_core::workspace::Workspace;
+use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{Response, RpcError};
 
 fn no_session(id: u64) -> Response {
@@ -24,9 +24,9 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
 fn resolve_debug_config(
     workspace: &Workspace,
     params: &serde_json::Value,
-) -> Option<al_core::dap::bc_debug::BcDebugConfig> {
-    use al_core::dap::bc_debug::BcDebugConfig;
-    use al_core::launch::find_launch_config;
+) -> Option<crate::dap::bc_debug::BcDebugConfig> {
+    use crate::dap::bc_debug::BcDebugConfig;
+    use crate::launch::find_launch_config;
 
     let project_root = workspace
         .project
@@ -48,7 +48,7 @@ fn resolve_debug_config(
         None => debug_file.configs.first(),
     }?;
 
-    use al_core::launch::{AuthMethod, EnvironmentType};
+    use crate::launch::{AuthMethod, EnvironmentType};
 
     let environment_type = match bc_cfg.environment_type {
         EnvironmentType::OnPrem => "OnPrem".to_string(),
@@ -82,8 +82,8 @@ pub(super) async fn dispatch_debug(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    use al_core::dap::bc_debug::BcDebugConfig;
-    use al_core::native_debug::NativeDebugSession;
+    use crate::dap::bc_debug::BcDebugConfig;
+    use crate::native_debug::NativeDebugSession;
     use al_protocol::jsonrpc::error_codes;
 
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {

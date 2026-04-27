@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
+[[bin]]
+name = "al-lsp"
+path = "src/bin/al-lsp.rs"
+
 [dependencies]
 al-protocol = { path = "../al-protocol" }
 netcorehost = "0.17"
@@ -31,6 +35,9 @@ memmap2 = { workspace = true }
 rayon = "1"
 getrandom = { workspace = true }
 futures = { workspace = true }
+# Folded in from al-lsp (stage 7):
+tracing-subscriber = { workspace = true }
+walkdir = "2"
 
 [features]
 default = ["nuget"]

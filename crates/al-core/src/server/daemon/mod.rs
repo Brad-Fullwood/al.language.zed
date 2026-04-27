@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use al_core::workspace::Workspace;
+use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Request, Response, RpcError};
 use al_protocol::socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -571,11 +571,11 @@ pub(crate) fn extract_uri(params: &serde_json::Value) -> Option<url::Url> {
     url::Url::parse(uri_str).ok() // SILENT: bad client input is not user-affecting
 }
 
-pub(crate) fn extract_position(params: &serde_json::Value) -> Option<al_core::queries::Position> {
+pub(crate) fn extract_position(params: &serde_json::Value) -> Option<crate::queries::Position> {
     // Cap to u32::MAX to prevent silent truncation of attacker-controlled values.
     let line = u32::try_from(params.get("line")?.as_u64()?).ok()?;
     let character = u32::try_from(params.get("character")?.as_u64()?).ok()?;
-    Some(al_core::queries::Position { line, character })
+    Some(crate::queries::Position { line, character })
 }
 
 pub(crate) fn invalid_params(id: u64) -> Response {
@@ -625,16 +625,14 @@ pub(crate) fn require_project_root(workspace: &Workspace, id: u64) -> Result<Pat
 pub(crate) fn parse_object_kind(
     id: u64,
     kind_str: &str,
-) -> Result<al_core::symbols::ObjectKind, Response> {
-    kind_str
-        .parse::<al_core::symbols::ObjectKind>()
-        .map_err(|_| {
-            rpc_error(
-                id,
-                error_codes::INVALID_PARAMS,
-                &format!("Unknown object kind: {kind_str}"),
-            )
-        })
+) -> Result<crate::symbols::ObjectKind, Response> {
+    kind_str.parse::<crate::symbols::ObjectKind>().map_err(|_| {
+        rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            &format!("Unknown object kind: {kind_str}"),
+        )
+    })
 }
 
 /// Get document text, loading from disk if needed. Returns the text or a file-not-found Response.
@@ -680,7 +678,7 @@ pub(crate) fn file_uri_from_params(params: &serde_json::Value) -> Option<url::Ur
     None
 }
 
-pub(crate) fn lint_diag_to_json(d: &al_core::syntax::LintDiagnostic) -> serde_json::Value {
+pub(crate) fn lint_diag_to_json(d: &crate::syntax::LintDiagnostic) -> serde_json::Value {
     serde_json::json!({
         "code": d.code,
         "message": d.message,
@@ -698,7 +696,7 @@ pub(crate) fn lint_diag_to_json(d: &al_core::syntax::LintDiagnostic) -> serde_js
 
 async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path) {
     // Delegate common steps (find project, load packages, scan, toolchain) to al-core.
-    let result = al_core::workspace::initialize_core_workspace(workspace, project_root).await;
+    let result = crate::workspace::initialize_core_workspace(workspace, project_root).await;
 
     tracing::info!(
         files = result.file_count,

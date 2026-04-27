@@ -2,7 +2,7 @@
 
 use tower_lsp::lsp_types::*;
 
-use crate::server::AlServer;
+use super::AlServer;
 
 /// Handle textDocument/hover.
 pub(crate) async fn handle_hover(
@@ -11,7 +11,7 @@ pub(crate) async fn handle_hover(
     position: Position,
 ) -> Option<Hover> {
     let core_pos = position.into();
-    let result = al_core::queries::hover::hover_full(&server.workspace, uri, core_pos).await?;
+    let result = crate::queries::hover::hover_full(&server.workspace, uri, core_pos).await?;
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,

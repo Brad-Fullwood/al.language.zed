@@ -378,8 +378,8 @@ pub async fn shutdown_bridge(workspace: &Workspace) {
 
 #[cfg(test)]
 mod tests {
-    use crate::semantic::MethodParameter;
     use super::*;
+    use crate::semantic::MethodParameter;
 
     fn sample_builtins() -> Vec<BuiltinType> {
         vec![

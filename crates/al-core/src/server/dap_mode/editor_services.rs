@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use al_core::toolchain::AlToolchain;
+use crate::toolchain::AlToolchain;
 use tracing::info;
 
 use super::DapError;

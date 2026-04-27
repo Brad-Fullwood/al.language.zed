@@ -7,12 +7,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use al_core::workspace::Workspace;
+use crate::workspace::Workspace;
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
 use tracing::{debug, info, warn};
 
-use crate::server::AlServer;
+use super::AlServer;
 
 /// Where to download symbol packages from.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,10 +42,10 @@ pub(crate) async fn initialize_workspace(
     // find_toolchain() does sync filesystem traversal (PATH walk, ALTool
     // probe) which can take tens of ms — must run on a blocking thread so
     // we don't stall the tokio runtime during init.
-    let toolchain_result = tokio::task::spawn_blocking(al_core::toolchain::find_toolchain)
+    let toolchain_result = tokio::task::spawn_blocking(crate::toolchain::find_toolchain)
         .await
         .unwrap_or_else(|join_err| {
-            Err(al_core::errors::DiscoveryError::Io(std::io::Error::other(
+            Err(crate::errors::DiscoveryError::Io(std::io::Error::other(
                 format!("find_toolchain task panicked: {join_err}"),
             )))
         });
@@ -71,7 +71,7 @@ pub(crate) async fn initialize_workspace(
         .and_then(|u| u.to_file_path().ok()) // SILENT: non-file URIs legitimately have no path
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    match al_core::project::find_project(&workspace_root) {
+    match crate::project::find_project(&workspace_root) {
         Ok(mut project) => {
             info!(
                 name = %project.app_json.name,
@@ -105,7 +105,7 @@ pub(crate) async fn initialize_workspace(
 
             // Load .alpackages / cached packages (disk cache for fast warm starts)
             if !project.packages.is_empty() {
-                let cache = al_core::symbols::cache::SymbolCache::default_location();
+                let cache = crate::symbols::cache::SymbolCache::default_location();
                 let loaded = workspace
                     .symbols
                     .load_packages_cached(&project.packages, &cache);
@@ -224,7 +224,7 @@ pub(crate) async fn initialize_workspace(
     {
         let config = workspace.config.read().await;
         if config.enable_native_lint
-            && config.diagnostics_scope == al_core::config::DiagnosticsScope::Project
+            && config.diagnostics_scope == crate::config::DiagnosticsScope::Project
         {
             // Snapshot lint config fields before iterating so we don't hold the
             // RwLock read guard across `client.publish_diagnostics().await`.
@@ -246,17 +246,19 @@ pub(crate) async fn initialize_workspace(
                     // Use cached parse tree from file_index instead of re-parsing.
                     if let Some((text, tree)) = workspace.file_index.get_cached_parse(&path) {
                         let source = text.as_bytes();
-                        let errors = al_core::syntax::AlParser::errors_from_tree(&tree);
+                        let errors = crate::syntax::AlParser::errors_from_tree(&tree);
                         let mut lsp_diags = Vec::new();
                         for err in &errors {
-                            lsp_diags
-                                .push(crate::diagnostics::syntax_error_to_diagnostic(err, source));
+                            lsp_diags.push(crate::server::diagnostics::syntax_error_to_diagnostic(
+                                err, source,
+                            ));
                         }
-                        let lint_result = al_core::syntax::lint(&tree, &text);
+                        let lint_result = crate::syntax::lint(&tree, &text);
                         for lint in &lint_result {
                             if is_lint_enabled(&lint.code) {
-                                lsp_diags
-                                    .push(crate::diagnostics::lint_to_diagnostic(lint, source));
+                                lsp_diags.push(crate::server::diagnostics::lint_to_diagnostic(
+                                    lint, source,
+                                ));
                             }
                         }
                         if !lsp_diags.is_empty() {
@@ -284,16 +286,16 @@ async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
         .unwrap_or_else(|e| e.into_inner())
         .is_empty()
     {
-        if let Some(cached) = al_core::semantic::cache::read_builtins(version) {
+        if let Some(cached) = crate::semantic::cache::read_builtins(version) {
             info!(
                 count = cached.len(),
                 "Loaded built-in types from disk cache"
             );
-            al_core::semantic::set_builtins(workspace, cached, version);
+            crate::semantic::set_builtins(workspace, cached, version);
         }
     }
     if workspace.error_codes.is_empty() {
-        if let Some(cached) = al_core::semantic::cache::read_error_codes(version) {
+        if let Some(cached) = crate::semantic::cache::read_error_codes(version) {
             info!(count = cached.len(), "Loaded error codes from disk cache");
             for ec in cached {
                 workspace
@@ -310,7 +312,7 @@ fn log_source_availability(packages: &[PathBuf]) {
     let no_source: Vec<String> = packages
         .iter()
         .filter_map(|path| {
-            if al_core::symbols::virtual_file::app_has_source(path) {
+            if crate::symbols::virtual_file::app_has_source(path) {
                 return None;
             }
             let stem = path
@@ -394,8 +396,8 @@ async fn prompt_download_symbols(
 ///
 /// Uses the first available server config. Returns downloaded .app file paths.
 async fn download_symbols_from_server(
-    project: &al_core::project::AlProject,
-    deps: &[al_core::project::AppDependency],
+    project: &crate::project::AlProject,
+    deps: &[crate::project::AppDependency],
     lsp_client: &tower_lsp::Client,
 ) -> Vec<PathBuf> {
     let configs = &project.server_configs;
@@ -414,7 +416,7 @@ async fn download_symbols_from_server(
     let dest = project.root.join(".alpackages");
     // Wire auth messages to LSP showMessage so the user sees device code prompts
     let lsp = lsp_client.clone();
-    let message_sink: al_core::symbols::bc_server::MessageSink = std::sync::Arc::new(move |msg| {
+    let message_sink: crate::symbols::bc_server::MessageSink = std::sync::Arc::new(move |msg| {
         let c = lsp.clone();
         let m = msg.to_string();
         tokio::spawn(async move {
@@ -423,14 +425,14 @@ async fn download_symbols_from_server(
         });
     });
     let auth = match config.authentication {
-        al_core::launch::AuthMethod::Windows => al_core::symbols::bc_server::AuthMethod::Windows,
-        al_core::launch::AuthMethod::UserPassword => {
-            al_core::symbols::bc_server::AuthMethod::UserPassword
+        crate::launch::AuthMethod::Windows => crate::symbols::bc_server::AuthMethod::Windows,
+        crate::launch::AuthMethod::UserPassword => {
+            crate::symbols::bc_server::AuthMethod::UserPassword
         }
-        al_core::launch::AuthMethod::AAD => al_core::symbols::bc_server::AuthMethod::AAD,
+        crate::launch::AuthMethod::AAD => crate::symbols::bc_server::AuthMethod::AAD,
     };
     let insecure_tls = config.accept_invalid_certs;
-    let client = match al_core::symbols::bc_server::BcServerClient::new(
+    let client = match crate::symbols::bc_server::BcServerClient::new(
         auth,
         config.tenant.clone(),
         message_sink,
@@ -442,8 +444,8 @@ async fn download_symbols_from_server(
             return Vec::new();
         }
     };
-    // al_core::project::AppDependency is re-exported from al-symbols — clone directly.
-    let url_deps: Vec<(String, al_core::symbols::nuget::AppDependency)> = deps
+    // crate::project::AppDependency is re-exported from al-symbols — clone directly.
+    let url_deps: Vec<(String, crate::symbols::nuget::AppDependency)> = deps
         .iter()
         .filter_map(|dep| config.dev_packages_url(dep).map(|url| (url, dep.clone())))
         .collect();
@@ -478,11 +480,11 @@ async fn download_symbols_from_server(
 /// Called from both the LSP workspace initializer and the daemon download dispatcher
 /// so the mapping is defined exactly once.
 pub(crate) fn map_nuget_feeds(
-    feeds: &[al_core::project::NuGetFeed],
-) -> Vec<al_core::symbols::nuget::NuGetFeed> {
+    feeds: &[crate::project::NuGetFeed],
+) -> Vec<crate::symbols::nuget::NuGetFeed> {
     feeds
         .iter()
-        .map(|f| al_core::symbols::nuget::NuGetFeed {
+        .map(|f| crate::symbols::nuget::NuGetFeed {
             index_url: f.index_url.clone(),
         })
         .collect()
@@ -492,7 +494,7 @@ pub(crate) fn map_nuget_feeds(
 ///
 /// Returns paths to successfully downloaded .app files.
 async fn download_packages_nuget(
-    deps: &[al_core::project::AppDependency],
+    deps: &[crate::project::AppDependency],
     dest: &Path,
 ) -> Vec<PathBuf> {
     info!(
@@ -501,10 +503,10 @@ async fn download_packages_nuget(
         "Downloading symbol packages from NuGet"
     );
 
-    // al_core::project::AppDependency is re-exported from al-symbols — pass directly.
-    let feeds = map_nuget_feeds(&al_core::project::nuget_feeds());
+    // crate::project::AppDependency is re-exported from al-symbols — pass directly.
+    let feeds = map_nuget_feeds(&crate::project::nuget_feeds());
 
-    let client = al_core::symbols::nuget::NuGetClient::new(feeds);
+    let client = crate::symbols::nuget::NuGetClient::new(feeds);
     let results = client.download_all(deps, dest).await;
 
     let mut downloaded = Vec::new();
@@ -591,7 +593,7 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
     }
 
     // Reload symbol index (with cache for fast subsequent starts)
-    let cache = al_core::symbols::cache::SymbolCache::default_location();
+    let cache = crate::symbols::cache::SymbolCache::default_location();
     let loaded = server
         .workspace
         .symbols
@@ -633,7 +635,7 @@ pub(crate) fn handle_workspace_symbol(
     // reads from cached object_info, not re-parsing files on every request).
     const MAX_LSP_SYMBOLS: usize = 10_000;
     let ws_results =
-        al_core::queries::search::workspace_search(&server.workspace, query, MAX_LSP_SYMBOLS);
+        crate::queries::search::workspace_search(&server.workspace, query, MAX_LSP_SYMBOLS);
 
     let mut results = Vec::new();
 
@@ -649,7 +651,7 @@ pub(crate) fn handle_workspace_symbol(
                     deprecated: None,
                     location: Location {
                         uri: file_uri,
-                        range: al_core::syntax_lsp::ts_range_to_lsp(
+                        range: crate::syntax_lsp::ts_range_to_lsp(
                             &r.info.range,
                             file_text_entry.value().as_bytes(),
                         ),
@@ -663,11 +665,8 @@ pub(crate) fn handle_workspace_symbol(
     // Child symbols: procedures, triggers, events.
     let remaining = MAX_LSP_SYMBOLS.saturating_sub(results.len());
     if remaining > 0 {
-        let child_results = al_core::queries::search::workspace_search_children(
-            &server.workspace,
-            query,
-            remaining,
-        );
+        let child_results =
+            crate::queries::search::workspace_search_children(&server.workspace, query, remaining);
         for r in child_results {
             if let Ok(file_uri) = Url::from_file_path(&r.file_path) {
                 #[allow(deprecated)]

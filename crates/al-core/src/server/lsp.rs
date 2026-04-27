@@ -1,6 +1,6 @@
 //! AlServer state and LSP lifecycle.
 
-use al_core::workspace::Workspace;
+use crate::workspace::Workspace;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -8,13 +8,13 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use crate::completions;
-use crate::definition;
-use crate::diagnostics;
-use crate::formatting;
-use crate::handlers;
-use crate::hover;
-use crate::workspace;
+use super::completions;
+use super::definition;
+use super::diagnostics;
+use super::formatting;
+use super::handlers;
+use super::hover;
+use super::workspace;
 
 /// Debounce delay for diagnostics: wait this long after the last keystroke before running.
 /// ISSUE-025 fix: prevents bridge calls (up to 5s) from blocking hover/completion.
@@ -142,7 +142,7 @@ impl AlServer {
                     Ok(types) => {
                         tracing::info!(count = types.len(), "Loaded built-in types via bridge");
                         let version = bridge.version().to_string();
-                        al_core::semantic::set_builtins(&self.workspace, types, &version);
+                        crate::semantic::set_builtins(&self.workspace, types, &version);
                     }
                     Err(error) => {
                         tracing::warn!(%error, "Failed to load built-in types via bridge");
@@ -199,11 +199,11 @@ impl AlServer {
 
     /// Get the semantic bridge, initializing it lazily if needed.
     ///
-    /// Delegates to `al_core::semantic::get_or_init_bridge`.
+    /// Delegates to `crate::semantic::get_or_init_bridge`.
     pub(crate) async fn get_or_init_bridge(
         &self,
-    ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<al_core::semantic::SemanticBridge>>> {
-        al_core::semantic::get_or_init_bridge(&self.workspace).await
+    ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<crate::semantic::SemanticBridge>>> {
+        crate::semantic::get_or_init_bridge(&self.workspace).await
     }
 
     /// Schedule debounced diagnostics for `uri` with the given document text.
@@ -215,7 +215,7 @@ impl AlServer {
     async fn schedule_diagnostics(&self, uri: Url, _text: String) {
         // ISSUE-072: skip diagnostics for virtual symbol cache files — they are not
         // workspace files and Zed logs a warning for every publishDiagnostics on them.
-        if crate::diagnostics::is_cache_path(&uri) {
+        if crate::server::diagnostics::is_cache_path(&uri) {
             tracing::debug!(uri = %uri, "schedule_diagnostics: skipping cache file");
             return;
         }
@@ -242,9 +242,9 @@ impl AlServer {
             // are not stalled for the duration of the parse on large files.
             let diag_uri = uri.clone();
             let lsp_diags: Vec<Diagnostic> = match tokio::task::spawn_blocking(move || {
-                al_core::queries::diagnostics::syntax_diagnostics(&workspace, &diag_uri, &config)
+                crate::queries::diagnostics::syntax_diagnostics(&workspace, &diag_uri, &config)
                     .iter()
-                    .map(crate::diagnostics::syntax_diag_to_lsp)
+                    .map(crate::server::diagnostics::syntax_diag_to_lsp)
                     .collect()
             })
             .await
@@ -333,11 +333,11 @@ impl LanguageServer for AlServer {
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
                             legend: SemanticTokensLegend {
-                                token_types: al_core::syntax::tokens::token_types::LEGEND
+                                token_types: crate::syntax::tokens::token_types::LEGEND
                                     .iter()
                                     .map(|s| SemanticTokenType::new(s))
                                     .collect(),
-                                token_modifiers: al_core::syntax::tokens::token_modifiers::LEGEND
+                                token_modifiers: crate::syntax::tokens::token_modifiers::LEGEND
                                     .iter()
                                     .map(|s| SemanticTokenModifier::new(s))
                                     .collect(),
@@ -443,7 +443,7 @@ impl LanguageServer for AlServer {
         if let Some(task) = self.reindex_task.lock().await.take() {
             task.abort();
         }
-        al_core::semantic::shutdown_bridge(&self.workspace).await;
+        crate::semantic::shutdown_bridge(&self.workspace).await;
         Ok(())
     }
 
@@ -457,7 +457,7 @@ impl LanguageServer for AlServer {
         self.workspace
             .documents
             .open(uri.clone(), params.text_document.text);
-        al_core::workspace::on_document_change(&self.workspace, &uri, &text);
+        crate::workspace::on_document_change(&self.workspace, &uri, &text);
 
         diagnostics::publish_diagnostics(self, &uri, &text).await;
     }
@@ -467,11 +467,11 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, change_count = params.content_changes.len(), "did_change");
 
         // Convert LSP types → al-core types at the boundary
-        let changes: Vec<al_core::documents::TextChange> = params
+        let changes: Vec<crate::documents::TextChange> = params
             .content_changes
             .iter()
-            .map(|c| al_core::documents::TextChange {
-                range: c.range.map(|r| al_core::documents::TextRange {
+            .map(|c| crate::documents::TextChange {
+                range: c.range.map(|r| crate::documents::TextRange {
                     start_line: r.start.line,
                     start_character: r.start.character,
                     end_line: r.end.line,
@@ -483,7 +483,7 @@ impl LanguageServer for AlServer {
         self.workspace.documents.apply_changes(&uri, &changes);
 
         if let Some(text) = self.workspace.documents.get_text(&uri) {
-            al_core::workspace::on_document_change(&self.workspace, &uri, &text);
+            crate::workspace::on_document_change(&self.workspace, &uri, &text);
             // ISSUE-025 fix: diagnostics are debounced and run async.
             // Each keystroke cancels the previous pending task to avoid bridge calls
             // (up to bridge timeout = 5s) blocking hover/completion.
@@ -491,7 +491,7 @@ impl LanguageServer for AlServer {
             // Only schedule per-keystroke diagnostics when trigger is Continuous.
             // In OnSave mode, diagnostics are deferred to did_save to avoid per-keystroke work.
             let trigger = self.workspace.config.read().await.diagnostics_trigger;
-            if trigger == al_core::config::DiagnosticsTrigger::Continuous {
+            if trigger == crate::config::DiagnosticsTrigger::Continuous {
                 self.schedule_diagnostics(uri, text).await;
             } else {
                 // Cancel any lingering debounced task from a previous Continuous session.
@@ -508,12 +508,12 @@ impl LanguageServer for AlServer {
         self.workspace.documents.close(&uri);
 
         // Targeted composed invalidation — only evict the object from this file (ISSUE-146)
-        al_core::workspace::on_document_close(&self.workspace, &uri);
+        crate::workspace::on_document_close(&self.workspace, &uri);
 
         if let Ok(path) = uri.to_file_path() {
             // Don't remove from file_index if project-scoped diagnostics — the file still exists
             let scope = self.workspace.config.read().await.diagnostics_scope;
-            if scope != al_core::config::DiagnosticsScope::Project {
+            if scope != crate::config::DiagnosticsScope::Project {
                 self.workspace.file_index.remove_file(&path);
                 self.client.publish_diagnostics(uri, vec![], None).await;
             }
@@ -815,7 +815,7 @@ impl LanguageServer for AlServer {
         self.await_ready().await;
         let uri = &params.text_document.uri;
         let start = std::time::Instant::now();
-        let entries = al_core::queries::code_lens::code_lens(&self.workspace, uri);
+        let entries = crate::queries::code_lens::code_lens(&self.workspace, uri);
         let elapsed = start.elapsed();
         let count = entries.len();
         tracing::debug!(uri = %uri, lenses = count, elapsed_us = elapsed.as_micros() as u64, "code_lens");
@@ -856,7 +856,7 @@ impl LanguageServer for AlServer {
                 Ok(None)
             }
             "al.clearSymbolCache" => {
-                let cache_dir = al_core::symbols::virtual_file::cache_dir();
+                let cache_dir = crate::symbols::virtual_file::cache_dir();
                 match tokio::fs::remove_dir_all(&cache_dir).await {
                     Ok(()) => {
                         tracing::info!(path = ?cache_dir, "Cleared symbol cache");
@@ -1006,7 +1006,7 @@ impl LanguageServer for AlServer {
 
                 match (toolchain, project_root) {
                     (Some(tc), Some(root)) => {
-                        match al_core::build::compile_project(&tc, &root, None).await {
+                        match crate::build::compile_project(&tc, &root, None).await {
                             Ok(result) => {
                                 // Group compile diagnostics by file and publish per-file.
                                 let mut by_file: std::collections::HashMap<
@@ -1015,13 +1015,13 @@ impl LanguageServer for AlServer {
                                 > = std::collections::HashMap::new();
                                 for d in &result.diagnostics {
                                     let severity = match d.severity {
-                                        al_core::build::DiagnosticSeverity::Error => {
+                                        crate::build::DiagnosticSeverity::Error => {
                                             DiagnosticSeverity::ERROR
                                         }
-                                        al_core::build::DiagnosticSeverity::Warning => {
+                                        crate::build::DiagnosticSeverity::Warning => {
                                             DiagnosticSeverity::WARNING
                                         }
-                                        al_core::build::DiagnosticSeverity::Info => {
+                                        crate::build::DiagnosticSeverity::Info => {
                                             DiagnosticSeverity::INFORMATION
                                         }
                                     };
@@ -1089,11 +1089,12 @@ impl LanguageServer for AlServer {
                 Ok(None)
             }
             "al.applyRecommendedSettings" => {
-                let result =
-                    tokio::task::spawn_blocking(crate::workspace::apply_recommended_settings)
-                        .await
-                        .map_err(|e| e.to_string())
-                        .and_then(|r| r.map_err(|e| e.to_string()));
+                let result = tokio::task::spawn_blocking(
+                    crate::server::workspace::apply_recommended_settings,
+                )
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()));
                 match result {
                     Ok(()) => {
                         self.client

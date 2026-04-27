@@ -19,8 +19,8 @@ mod editor_services;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use al_core::dap::framing::{read_dap_body, write_dap_frame};
-use al_core::toolchain::AlToolchain;
+use crate::dap::framing::{read_dap_body, write_dap_frame};
+use crate::toolchain::AlToolchain;
 use thiserror::Error;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tracing::{debug, error, info, warn};

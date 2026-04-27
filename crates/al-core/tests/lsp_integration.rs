@@ -381,7 +381,7 @@ fn syntax_error_to_lsp_diagnostic_conversion() {
     let diagnostics: Vec<Diagnostic> = result
         .errors
         .iter()
-        .map(|e| al_lsp::diagnostics::syntax_error_to_diagnostic(e, src_bytes))
+        .map(|e| al_core::server::diagnostics::syntax_error_to_diagnostic(e, src_bytes))
         .collect();
 
     assert!(!diagnostics.is_empty());
@@ -419,7 +419,7 @@ fn lint_diagnostics_convert_to_lsp() {
     let src_bytes = code.as_bytes();
     let diagnostics: Vec<Diagnostic> = lints
         .iter()
-        .map(|l| al_lsp::diagnostics::lint_to_diagnostic(l, src_bytes))
+        .map(|l| al_core::server::diagnostics::lint_to_diagnostic(l, src_bytes))
         .collect();
     assert!(diagnostics.is_empty(), "no lint diagnostics expected");
 }
@@ -961,7 +961,7 @@ end;
 fn fixture_app_json_is_valid_json() {
     let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
-        .join("fixtures")
+        .join("lsp_fixtures")
         .join("app.json");
     let content = std::fs::read_to_string(&fixture_path).expect("Should read app.json fixture");
     let value: serde_json::Value =
@@ -976,7 +976,7 @@ fn fixture_app_json_is_valid_json() {
 fn fixture_test_al_parses_correctly() {
     let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
-        .join("fixtures")
+        .join("lsp_fixtures")
         .join("test.al");
     let content = std::fs::read_to_string(&fixture_path).expect("Should read test.al fixture");
 

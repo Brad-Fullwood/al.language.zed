@@ -1,7 +1,7 @@
 //! Two-phase diagnostics — instant syntax + async analyzer.
 //!
 //! Phase 1 (instant): parse with tree-sitter and collect syntax errors. Native
-//!                     lint rules are not yet implemented — `al_core::syntax::lint()`
+//!                     lint rules are not yet implemented — `crate::syntax::lint()`
 //!                     returns an empty `Vec` — so this phase only surfaces
 //!                     parse-error diagnostics today.
 //! Phase 2 (async):   send to .NET SemanticBridge for CodeAnalysis diagnostics.
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use tower_lsp::lsp_types::*;
 
-use crate::server::AlServer;
+use super::AlServer;
 
 /// Wrap diagnostics in a full pull-diagnostics report.
 pub(crate) fn full_diagnostic_report(items: Vec<Diagnostic>) -> DocumentDiagnosticReportResult {
@@ -32,7 +32,7 @@ pub(crate) fn full_diagnostic_report(items: Vec<Diagnostic>) -> DocumentDiagnost
 /// diagnostics must not be published for them (ISSUE-072).
 pub(crate) fn is_cache_path(uri: &Url) -> bool {
     if let Ok(path) = uri.to_file_path() {
-        let cache_root = al_core::symbols::virtual_file::cache_dir();
+        let cache_root = crate::symbols::virtual_file::cache_dir();
         path.starts_with(&cache_root)
     } else {
         false
@@ -57,11 +57,8 @@ pub(crate) async fn compute_diagnostics(
     // Phase 1: Instant syntax + lint via shared al-core query.
     {
         let config_guard = server.workspace.config.read().await;
-        let syntax_diags = al_core::queries::diagnostics::syntax_diagnostics(
-            &server.workspace,
-            uri,
-            &config_guard,
-        );
+        let syntax_diags =
+            crate::queries::diagnostics::syntax_diagnostics(&server.workspace, uri, &config_guard);
         drop(config_guard);
         diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
     }
@@ -90,11 +87,8 @@ pub(crate) async fn publish_diagnostics(server: &AlServer, uri: &Url, text: &str
     {
         let parse_start = std::time::Instant::now();
         let config_guard = server.workspace.config.read().await;
-        let syntax_diags = al_core::queries::diagnostics::syntax_diagnostics(
-            &server.workspace,
-            uri,
-            &config_guard,
-        );
+        let syntax_diags =
+            crate::queries::diagnostics::syntax_diagnostics(&server.workspace, uri, &config_guard);
         drop(config_guard);
         let parse_elapsed = parse_start.elapsed();
         let error_count = syntax_diags.len();
@@ -158,7 +152,7 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     };
     drop(config_guard);
 
-    let req = al_core::semantic::AnalyzeRequest {
+    let req = crate::semantic::AnalyzeRequest {
         file: file_path,
         source: text.to_string(),
         analyzers,
@@ -196,8 +190,8 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
             // poisoned bridge does not spam the editor.
             let is_persistent = matches!(
                 &error,
-                al_core::semantic::SemanticError::Timeout(_)
-                    | al_core::semantic::SemanticError::Poisoned
+                crate::semantic::SemanticError::Timeout(_)
+                    | crate::semantic::SemanticError::Poisoned
             );
             if is_persistent && server.should_report_semantic_failure() {
                 if let Some(sink) = server.workspace.notify_sink.get() {
@@ -224,9 +218,9 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
 /// This helper is a thin shim used where the source bytes are not readily available, i.e.
 /// where the caller only has the pre-computed `SyntaxDiagnostic`.
 pub(crate) fn syntax_diag_to_lsp(
-    diag: &al_core::queries::diagnostics::SyntaxDiagnostic,
+    diag: &crate::queries::diagnostics::SyntaxDiagnostic,
 ) -> Diagnostic {
-    use al_core::queries::diagnostics::SyntaxDiagnosticSeverity;
+    use crate::queries::diagnostics::SyntaxDiagnosticSeverity;
 
     let severity = match diag.severity {
         SyntaxDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
@@ -258,9 +252,9 @@ pub(crate) fn syntax_diag_to_lsp(
 ///
 /// `source` is the full file content as bytes, needed to convert tree-sitter byte-offset
 /// columns to LSP UTF-16 code unit columns.
-pub fn syntax_error_to_diagnostic(err: &al_core::syntax::SyntaxError, source: &[u8]) -> Diagnostic {
+pub fn syntax_error_to_diagnostic(err: &crate::syntax::SyntaxError, source: &[u8]) -> Diagnostic {
     Diagnostic {
-        range: al_core::syntax_lsp::ts_range_to_lsp(&err.range, source),
+        range: crate::syntax_lsp::ts_range_to_lsp(&err.range, source),
         severity: Some(DiagnosticSeverity::ERROR),
         code: Some(NumberOrString::String("syntax".to_string())),
         source: Some("al".to_string()),
@@ -273,16 +267,16 @@ pub fn syntax_error_to_diagnostic(err: &al_core::syntax::SyntaxError, source: &[
 ///
 /// `source` is the full file content as bytes, needed to convert tree-sitter byte-offset
 /// columns to LSP UTF-16 code unit columns.
-pub fn lint_to_diagnostic(lint: &al_core::syntax::LintDiagnostic, source: &[u8]) -> Diagnostic {
+pub fn lint_to_diagnostic(lint: &crate::syntax::LintDiagnostic, source: &[u8]) -> Diagnostic {
     let severity = match lint.severity {
-        al_core::syntax::LintSeverity::Error => DiagnosticSeverity::ERROR,
-        al_core::syntax::LintSeverity::Warning => DiagnosticSeverity::WARNING,
-        al_core::syntax::LintSeverity::Info => DiagnosticSeverity::INFORMATION,
-        al_core::syntax::LintSeverity::Hint => DiagnosticSeverity::HINT,
+        crate::syntax::LintSeverity::Error => DiagnosticSeverity::ERROR,
+        crate::syntax::LintSeverity::Warning => DiagnosticSeverity::WARNING,
+        crate::syntax::LintSeverity::Info => DiagnosticSeverity::INFORMATION,
+        crate::syntax::LintSeverity::Hint => DiagnosticSeverity::HINT,
     };
 
     Diagnostic {
-        range: al_core::syntax_lsp::ts_range_to_lsp(&lint.range, source),
+        range: crate::syntax_lsp::ts_range_to_lsp(&lint.range, source),
         severity: Some(severity),
         code: Some(NumberOrString::String(lint.code.clone())),
         source: Some("al-lint".to_string()),
@@ -298,8 +292,8 @@ pub fn lint_to_diagnostic(lint: &al_core::syntax::LintDiagnostic, source: &[u8])
 /// Convert a `TestDiagnostic` (from al-core's test runner) to an LSP `Diagnostic`.
 ///
 /// Lines in `TestDiagnostic` are 1-based; LSP positions are 0-based.
-pub fn test_diag_to_lsp(td: &al_core::queries::test_diagnostics::TestDiagnostic) -> Diagnostic {
-    use al_core::queries::test_diagnostics::DiagnosticSeverity as TDSev;
+pub fn test_diag_to_lsp(td: &crate::queries::test_diagnostics::TestDiagnostic) -> Diagnostic {
+    use crate::queries::test_diagnostics::DiagnosticSeverity as TDSev;
 
     let severity = match td.severity {
         TDSev::Error => DiagnosticSeverity::ERROR,
@@ -328,9 +322,9 @@ pub fn test_diag_to_lsp(td: &al_core::queries::test_diagnostics::TestDiagnostic)
 /// Pass an empty `diagnostics` slice to clear test diagnostics.
 pub async fn publish_test_diagnostics(
     client: &tower_lsp::Client,
-    diagnostics: &[al_core::queries::test_diagnostics::TestDiagnostic],
+    diagnostics: &[crate::queries::test_diagnostics::TestDiagnostic],
 ) {
-    use al_core::queries::test_diagnostics::group_by_file;
+    use crate::queries::test_diagnostics::group_by_file;
 
     let grouped = group_by_file(diagnostics.to_vec());
 
@@ -348,7 +342,7 @@ pub async fn publish_test_diagnostics(
 }
 
 /// Convert a semantic diagnostic entry to an LSP Diagnostic.
-pub fn semantic_to_diagnostic(entry: &al_core::semantic::DiagnosticEntry) -> Diagnostic {
+pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagnostic {
     let severity = match entry.severity.to_lowercase().as_str() {
         "error" => DiagnosticSeverity::ERROR,
         "warning" => DiagnosticSeverity::WARNING,
@@ -383,9 +377,9 @@ mod tests {
     #[test]
     fn test_syntax_error_to_diagnostic() {
         let src = "codeunit 50100 T { }";
-        let err = al_core::syntax::SyntaxError {
+        let err = crate::syntax::SyntaxError {
             message: "Missing semicolon".to_string(),
-            range: al_core::syntax::AlParser::parse_quick(src)
+            range: crate::syntax::AlParser::parse_quick(src)
                 .tree
                 .root_node()
                 .range(),
@@ -400,14 +394,14 @@ mod tests {
     #[test]
     fn test_lint_to_diagnostic_warning() {
         let src = "codeunit 50100 T { }";
-        let lint = al_core::syntax::LintDiagnostic {
+        let lint = crate::syntax::LintDiagnostic {
             code: "AL-L001".to_string(),
             message: "Empty begin..end block".to_string(),
-            range: al_core::syntax::AlParser::parse_quick(src)
+            range: crate::syntax::AlParser::parse_quick(src)
                 .tree
                 .root_node()
                 .range(),
-            severity: al_core::syntax::LintSeverity::Warning,
+            severity: crate::syntax::LintSeverity::Warning,
         };
 
         let diag = lint_to_diagnostic(&lint, src.as_bytes());
@@ -423,14 +417,14 @@ mod tests {
     #[test]
     fn test_lint_to_diagnostic_hint() {
         let src = "codeunit 50100 T { }";
-        let lint = al_core::syntax::LintDiagnostic {
+        let lint = crate::syntax::LintDiagnostic {
             code: "AL-L006".to_string(),
             message: "Empty trigger".to_string(),
-            range: al_core::syntax::AlParser::parse_quick(src)
+            range: crate::syntax::AlParser::parse_quick(src)
                 .tree
                 .root_node()
                 .range(),
-            severity: al_core::syntax::LintSeverity::Hint,
+            severity: crate::syntax::LintSeverity::Hint,
         };
 
         let diag = lint_to_diagnostic(&lint, src.as_bytes());
@@ -440,14 +434,14 @@ mod tests {
     #[test]
     fn test_lint_to_diagnostic_info() {
         let src = "codeunit 50100 T { }";
-        let lint = al_core::syntax::LintDiagnostic {
+        let lint = crate::syntax::LintDiagnostic {
             code: "AL-L007".to_string(),
             message: "TODO comment".to_string(),
-            range: al_core::syntax::AlParser::parse_quick(src)
+            range: crate::syntax::AlParser::parse_quick(src)
                 .tree
                 .root_node()
                 .range(),
-            severity: al_core::syntax::LintSeverity::Info,
+            severity: crate::syntax::LintSeverity::Info,
         };
 
         let diag = lint_to_diagnostic(&lint, src.as_bytes());
@@ -456,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_semantic_to_diagnostic() {
-        let entry = al_core::semantic::DiagnosticEntry {
+        let entry = crate::semantic::DiagnosticEntry {
             file: std::path::PathBuf::from("/src/test.al"),
             line: 10,
             column: 5,
@@ -483,7 +477,7 @@ mod tests {
     // T1503: test diagnostic conversion
     #[test]
     fn test_diag_fail_maps_to_error() {
-        use al_core::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
+        use crate::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
             file: "/src/Tests.al".to_string(),
             line: 10,
@@ -502,7 +496,7 @@ mod tests {
 
     #[test]
     fn test_diag_skip_maps_to_warning() {
-        use al_core::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
+        use crate::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
             file: "/src/Tests.al".to_string(),
             line: 5,
@@ -518,7 +512,7 @@ mod tests {
 
     #[test]
     fn test_diag_line_zero_stays_zero() {
-        use al_core::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
+        use crate::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
         let td = TestDiagnostic {
             file: "".to_string(),
             line: 0,
@@ -533,7 +527,7 @@ mod tests {
 
     #[test]
     fn test_semantic_severity_mapping() {
-        let make = |sev: &str| al_core::semantic::DiagnosticEntry {
+        let make = |sev: &str| crate::semantic::DiagnosticEntry {
             file: std::path::PathBuf::from("test.al"),
             line: 1,
             column: 1,

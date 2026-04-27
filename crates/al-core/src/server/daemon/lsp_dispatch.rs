@@ -1,6 +1,6 @@
 //! LSP method dispatchers — hover, definition, references, completions, etc.
 
-use al_core::workspace::Workspace;
+use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 use serde::Serialize;
 
@@ -57,7 +57,7 @@ pub(super) async fn dispatch_hover(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let result = al_core::queries::hover::hover_full(workspace, &uri, position).await;
+    let result = crate::queries::hover::hover_full(workspace, &uri, position).await;
     ok_response_opt(id, result, "textDocument/hover")
 }
 
@@ -72,7 +72,7 @@ pub(super) fn dispatch_definition(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let result = al_core::queries::definition::definition(workspace, &uri, position);
+    let result = crate::queries::definition::definition(workspace, &uri, position);
     match result {
         Some(locations) => ok_response(id, &locations, "textDocument/definition"),
         None => Response {
@@ -99,7 +99,7 @@ pub(super) fn dispatch_references(
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
     let locations =
-        al_core::queries::references::references(workspace, &uri, position, include_declaration);
+        crate::queries::references::references(workspace, &uri, position, include_declaration);
     ok_response(id, &locations, "textDocument/references")
 }
 
@@ -114,8 +114,7 @@ pub(super) fn dispatch_implementations(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let locations =
-        al_core::queries::implementation::find_implementations(workspace, &uri, position);
+    let locations = crate::queries::implementation::find_implementations(workspace, &uri, position);
     ok_response(id, &locations, "textDocument/implementation")
 }
 
@@ -130,7 +129,7 @@ pub(super) async fn dispatch_completions(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let entries = al_core::queries::completions::completions_full(workspace, &uri, position).await;
+    let entries = crate::queries::completions::completions_full(workspace, &uri, position).await;
     ok_response(id, &entries, "textDocument/completion")
 }
 
@@ -145,7 +144,7 @@ pub(super) fn dispatch_signature_help(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let result = al_core::queries::signature::signature_help(workspace, &uri, position);
+    let result = crate::queries::signature::signature_help(workspace, &uri, position);
     ok_response_opt(id, result, "textDocument/signatureHelp")
 }
 
@@ -163,7 +162,7 @@ pub(super) fn dispatch_rename(
     let Some(new_name) = params.get("newName").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let result = al_core::queries::rename::rename(workspace, &uri, position, new_name);
+    let result = crate::queries::rename::rename(workspace, &uri, position, new_name);
     match result {
         Some(we) => ok_response(id, &we, "textDocument/rename"),
         None => Response {
@@ -184,7 +183,7 @@ pub(super) fn dispatch_document_symbols(
     };
     // Serialize the transport-agnostic AlDocumentSymbol vec directly. The daemon
     // returns JSON, so there is no need to round-trip through tower_lsp types.
-    let result = al_core::queries::symbols::document_symbols(workspace, &uri);
+    let result = crate::queries::symbols::document_symbols(workspace, &uri);
     ok_response_opt(id, result, "textDocument/documentSymbol")
 }
 
@@ -196,7 +195,7 @@ pub(super) fn dispatch_folding_ranges(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
-    let result = al_core::queries::folding::folding_ranges(workspace, &uri).map(|ranges| {
+    let result = crate::queries::folding::folding_ranges(workspace, &uri).map(|ranges| {
         ranges
             .into_iter()
             .map(tower_lsp::lsp_types::FoldingRange::from)
@@ -213,7 +212,7 @@ pub(super) fn dispatch_semantic_tokens(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
-    let tokens = al_core::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
+    let tokens = crate::queries::semantic_tokens::semantic_tokens_full(workspace, &uri);
     ok_response(id, &tokens, "textDocument/semanticTokens/full")
 }
 
@@ -233,17 +232,17 @@ pub(super) fn dispatch_inlay_hints(
         .get("endLine")
         .and_then(|v| v.as_u64())
         .unwrap_or(u32::MAX as u64) as u32;
-    let range = al_core::queries::Range {
-        start: al_core::queries::Position {
+    let range = crate::queries::Range {
+        start: crate::queries::Position {
             line: start_line,
             character: 0,
         },
-        end: al_core::queries::Position {
+        end: crate::queries::Position {
             line: end_line,
             character: u32::MAX,
         },
     };
-    let hints = al_core::queries::inlay_hints::inlay_hints(workspace, &uri, range).map(|h| {
+    let hints = crate::queries::inlay_hints::inlay_hints(workspace, &uri, range).map(|h| {
         h.into_iter()
             .map(tower_lsp::lsp_types::InlayHint::from)
             .collect::<Vec<_>>()
@@ -280,11 +279,11 @@ pub(super) fn dispatch_code_actions(
     let Some(position) = extract_position(params) else {
         return invalid_params(id);
     };
-    let range = al_core::queries::Range {
+    let range = crate::queries::Range {
         start: position,
         end: position,
     };
-    let actions = al_core::queries::code_actions::source_actions(workspace, &uri, range);
+    let actions = crate::queries::code_actions::source_actions(workspace, &uri, range);
     ok_response(id, &actions, "textDocument/codeAction")
 }
 
@@ -311,7 +310,7 @@ pub(super) fn dispatch_search(
         .collect();
     // Workspace file objects — use al-core search to avoid duplicating the filter logic.
     let remaining = limit.saturating_sub(value.len());
-    let ws_results = al_core::queries::search::workspace_search(workspace, query, remaining);
+    let ws_results = crate::queries::search::workspace_search(workspace, query, remaining);
     for r in ws_results {
         value.push(workspace_object_to_json(&r.info));
     }
@@ -379,10 +378,10 @@ pub(super) fn dispatch_object(
 /// schema for SymbolEntry uses the al-symbols ObjectKind enum, whose serde
 /// representation is PascalCase. Normalize via `ObjectKind::from_str` so the
 /// payload deserializes cleanly on al-cli / al-explorer.
-fn workspace_object_to_json(info: &al_core::file_index::CachedObjectInfo) -> serde_json::Value {
+fn workspace_object_to_json(info: &crate::file_index::CachedObjectInfo) -> serde_json::Value {
     let kind_value = info
         .kind
-        .parse::<al_core::symbols::ObjectKind>()
+        .parse::<crate::symbols::ObjectKind>()
         .ok()
         .and_then(|k| serde_json::to_value(k).ok())
         .unwrap_or_else(|| serde_json::Value::String(info.kind.clone()));
@@ -666,14 +665,14 @@ mod tests {
         );
     }
 
-    /// Workspace-object payloads must deserialize as `al_core::symbols::SymbolEntry` so
+    /// Workspace-object payloads must deserialize as `crate::symbols::SymbolEntry` so
     /// downstream daemon clients (al-cli, al-explorer) accept them. The `kind`
     /// field arrives from tree-sitter as a lowercase string but the wire schema
     /// is the PascalCase `ObjectKind` enum — regression test for the
     /// daemon→explorer launch failure observed in cycle 4.
     #[test]
     fn workspace_object_to_json_round_trips_through_symbol_entry() {
-        let info = al_core::file_index::CachedObjectInfo {
+        let info = crate::file_index::CachedObjectInfo {
             kind: "table".to_string(),
             id: Some(50_000),
             name: "Customer".to_string(),
@@ -685,9 +684,9 @@ mod tests {
             },
         };
         let json = workspace_object_to_json(&info);
-        let entry: al_core::symbols::SymbolEntry =
+        let entry: crate::symbols::SymbolEntry =
             serde_json::from_value(json).expect("workspace object must deserialize as SymbolEntry");
-        assert_eq!(entry.kind, al_core::symbols::ObjectKind::Table);
+        assert_eq!(entry.kind, crate::symbols::ObjectKind::Table);
         assert_eq!(entry.name, "Customer");
         assert_eq!(entry.id, 50_000);
     }
@@ -718,7 +717,7 @@ mod tests {
             "entitlement",
         ];
         for k in kinds {
-            let info = al_core::file_index::CachedObjectInfo {
+            let info = crate::file_index::CachedObjectInfo {
                 kind: k.to_string(),
                 id: Some(1),
                 name: "X".to_string(),
@@ -730,7 +729,7 @@ mod tests {
                 },
             };
             let json = workspace_object_to_json(&info);
-            let _: al_core::symbols::SymbolEntry = serde_json::from_value(json)
+            let _: crate::symbols::SymbolEntry = serde_json::from_value(json)
                 .unwrap_or_else(|e| panic!("kind {k:?} must deserialize: {e}"));
         }
     }

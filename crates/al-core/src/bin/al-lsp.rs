@@ -240,7 +240,7 @@ async fn main() {
                 std::process::exit(1);
             }
         };
-        if let Err(e) = al_lsp::dap::run_dap_server(&toolchain).await {
+        if let Err(e) = al_core::server::dap_mode::run_dap_server(&toolchain).await {
             tracing::error!(error = %e, "DAP server exited with error");
             std::process::exit(1);
         }
@@ -264,12 +264,12 @@ async fn main() {
             }
         };
         tracing::info!(project = %project_root.display(), "Starting daemon mode");
-        if let Err(e) = al_lsp::daemon::run_daemon(project_root).await {
+        if let Err(e) = al_core::server::daemon::run_daemon(project_root).await {
             tracing::error!(error = %e, "Daemon failed");
             std::process::exit(1);
         }
     } else {
         // LSP mode (default)
-        al_lsp::server::run_lsp().await;
+        al_core::server::run_lsp().await;
     }
 }

@@ -2,8 +2,8 @@
 
 use tower_lsp::lsp_types::*;
 
-use crate::formatting;
-use crate::server::AlServer;
+use super::formatting;
+use super::AlServer;
 
 // ---------------------------------------------------------------------------
 // Document symbols
@@ -14,7 +14,7 @@ pub(crate) fn handle_document_symbol(
     server: &AlServer,
     uri: &Url,
 ) -> Option<DocumentSymbolResponse> {
-    let symbols = al_core::queries::symbols::document_symbols(&server.workspace, uri)?;
+    let symbols = crate::queries::symbols::document_symbols(&server.workspace, uri)?;
     Some(DocumentSymbolResponse::Nested(
         symbols.into_iter().map(Into::into).collect(),
     ))
@@ -25,7 +25,7 @@ pub(crate) fn handle_document_symbol(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<FoldingRange>> {
-    al_core::queries::folding::folding_ranges(&server.workspace, uri)
+    crate::queries::folding::folding_ranges(&server.workspace, uri)
         .map(|ranges| ranges.into_iter().map(Into::into).collect())
 }
 
@@ -34,7 +34,7 @@ pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<F
 // ---------------------------------------------------------------------------
 
 pub(crate) fn handle_semantic_tokens(server: &AlServer, uri: &Url) -> Option<SemanticTokensResult> {
-    let tokens = al_core::queries::semantic_tokens::semantic_tokens_full(&server.workspace, uri);
+    let tokens = crate::queries::semantic_tokens::semantic_tokens_full(&server.workspace, uri);
     if tokens.is_empty() {
         return None;
     }
@@ -64,7 +64,7 @@ pub(crate) fn handle_signature_help(
     position: Position,
 ) -> Option<SignatureHelp> {
     let core_pos = position.into();
-    let result = al_core::queries::signature::signature_help(&server.workspace, uri, core_pos)?;
+    let result = crate::queries::signature::signature_help(&server.workspace, uri, core_pos)?;
     Some(SignatureHelp {
         signatures: result
             .signatures
@@ -115,22 +115,21 @@ pub(crate) fn handle_code_action(
             NumberOrString::String(s) => s.clone(),
             NumberOrString::Number(n) => n.to_string(),
         });
-        let diag_info = al_core::queries::code_actions::DiagnosticInfo {
+        let diag_info = crate::queries::code_actions::DiagnosticInfo {
             range: diag.range.into(),
             message: diag.message.clone(),
             code,
         };
         if let Some(entry) =
-            al_core::queries::code_actions::quick_fix_for_diagnostic(uri, &text, &diag_info)
+            crate::queries::code_actions::quick_fix_for_diagnostic(uri, &text, &diag_info)
         {
             actions.push(core_action_to_lsp(entry, Some(diag)));
         }
     }
 
     // Source actions via al-core
-    let core_range: al_core::queries::Range = range.into();
-    for entry in al_core::queries::code_actions::source_actions(&server.workspace, uri, core_range)
-    {
+    let core_range: crate::queries::Range = range.into();
+    for entry in crate::queries::code_actions::source_actions(&server.workspace, uri, core_range) {
         actions.push(core_action_to_lsp(entry, None));
     }
 
@@ -179,7 +178,7 @@ pub(crate) fn handle_code_action(
 }
 
 /// Convert an `al-core` transport-agnostic `WorkspaceEdit` to a tower-lsp `WorkspaceEdit`.
-pub(crate) fn core_workspace_edit_to_lsp(we: al_core::queries::WorkspaceEdit) -> WorkspaceEdit {
+pub(crate) fn core_workspace_edit_to_lsp(we: crate::queries::WorkspaceEdit) -> WorkspaceEdit {
     let mut changes = std::collections::HashMap::new();
     for (uri, edits) in we.changes {
         let lsp_edits: Vec<TextEdit> = edits
@@ -198,13 +197,13 @@ pub(crate) fn core_workspace_edit_to_lsp(we: al_core::queries::WorkspaceEdit) ->
 }
 
 fn core_action_to_lsp(
-    entry: al_core::queries::code_actions::CodeActionEntry,
+    entry: crate::queries::code_actions::CodeActionEntry,
     diag: Option<&Diagnostic>,
 ) -> CodeActionOrCommand {
     let kind = match entry.kind {
-        al_core::queries::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
-        al_core::queries::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
-        al_core::queries::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
+        crate::queries::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
+        crate::queries::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
+        crate::queries::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
     };
     let edit = entry.edit.map(core_workspace_edit_to_lsp);
     CodeActionOrCommand::CodeAction(CodeAction {
@@ -226,6 +225,6 @@ pub(crate) fn handle_inlay_hint(
     uri: &Url,
     range: Range,
 ) -> Option<Vec<InlayHint>> {
-    al_core::queries::inlay_hints::inlay_hints(&server.workspace, uri, range.into())
+    crate::queries::inlay_hints::inlay_hints(&server.workspace, uri, range.into())
         .map(|hints| hints.into_iter().map(Into::into).collect())
 }

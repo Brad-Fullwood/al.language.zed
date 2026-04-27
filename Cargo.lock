@@ -68,9 +68,11 @@ dependencies = [
  "tokio-tungstenite",
  "tower-lsp",
  "tracing",
+ "tracing-subscriber",
  "tree-sitter",
  "url",
  "urlencoding",
+ "walkdir",
  "zip 2.4.2",
 ]
 
@@ -83,28 +85,6 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "al-lsp"
-version = "0.1.0"
-dependencies = [
- "al-core",
- "al-protocol",
- "dashmap 6.1.0",
- "dirs",
- "reqwest",
- "ropey",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tower-lsp",
- "tracing",
- "tracing-subscriber",
- "tree-sitter",
- "url",
- "walkdir",
 ]
 
 [[package]]
@@ -3414,9 +3394,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-subscriber"
-version = "0.3.22"
+version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f30143827ddab0d256fd843b7a66d164e9f271cfa0dde49142c5ca0ca291f1e"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
  "matchers",
  "nu-ansi-term",

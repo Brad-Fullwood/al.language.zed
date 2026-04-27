@@ -2,7 +2,7 @@
 
 use tower_lsp::lsp_types::*;
 
-use crate::server::AlServer;
+use super::AlServer;
 
 /// Handle textDocument/definition.
 pub(crate) fn handle_definition(
@@ -11,7 +11,7 @@ pub(crate) fn handle_definition(
     position: Position,
 ) -> Option<GotoDefinitionResponse> {
     let core_pos = position.into();
-    let locations = al_core::queries::definition::definition(&server.workspace, uri, core_pos)?;
+    let locations = crate::queries::definition::definition(&server.workspace, uri, core_pos)?;
     if locations.len() == 1 {
         // Safety: len == 1 guarantees next() returns Some.
         let loc = locations.into_iter().next()?;
@@ -31,7 +31,7 @@ pub(crate) fn handle_references(
     include_declaration: bool,
 ) -> Option<Vec<Location>> {
     let core_pos = position.into();
-    let locations = al_core::queries::references::references(
+    let locations = crate::queries::references::references(
         &server.workspace,
         uri,
         core_pos,
@@ -52,8 +52,8 @@ pub(crate) fn handle_rename(
     new_name: String,
 ) -> Option<WorkspaceEdit> {
     let core_pos = position.into();
-    let result = al_core::queries::rename::rename(&server.workspace, uri, core_pos, &new_name)?;
-    Some(crate::handlers::core_workspace_edit_to_lsp(result))
+    let result = crate::queries::rename::rename(&server.workspace, uri, core_pos, &new_name)?;
+    Some(super::handlers::core_workspace_edit_to_lsp(result))
 }
 
 /// Handle textDocument/prepareRename.
@@ -64,7 +64,7 @@ pub(crate) fn handle_prepare_rename(
 ) -> Option<PrepareRenameResponse> {
     let core_pos = position.into();
     let (range, placeholder) =
-        al_core::queries::rename::prepare_rename(&server.workspace, uri, core_pos)?;
+        crate::queries::rename::prepare_rename(&server.workspace, uri, core_pos)?;
     Some(PrepareRenameResponse::RangeWithPlaceholder {
         range: range.into(),
         placeholder,

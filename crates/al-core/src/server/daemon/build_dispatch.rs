@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use al_core::workspace::Workspace;
+use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
 use super::{
@@ -94,7 +94,7 @@ pub(super) fn dispatch_lint(
             let Some((content, tree)) = workspace.file_index.get_cached_parse(path) else {
                 continue;
             };
-            let diagnostics = al_core::syntax::lint(&tree, &content);
+            let diagnostics = crate::syntax::lint(&tree, &content);
             if !diagnostics.is_empty() {
                 let diags: Vec<serde_json::Value> =
                     diagnostics.iter().map(lint_diag_to_json).collect();
@@ -119,16 +119,16 @@ pub(super) fn dispatch_lint(
         Err(resp) => return resp,
     };
 
-    let result = al_core::syntax::AlParser::parse_quick(&text);
-    let mut diagnostics = al_core::syntax::lint(&result.tree, &text);
+    let result = crate::syntax::AlParser::parse_quick(&text);
+    let mut diagnostics = crate::syntax::lint(&result.tree, &text);
 
     // Add parse errors
     for err in &result.errors {
-        diagnostics.push(al_core::syntax::LintDiagnostic {
+        diagnostics.push(crate::syntax::LintDiagnostic {
             code: "parse-error".to_string(),
             message: err.message.clone(),
             range: err.range,
-            severity: al_core::syntax::LintSeverity::Error,
+            severity: crate::syntax::LintSeverity::Error,
         });
     }
 
@@ -171,9 +171,9 @@ pub(super) fn dispatch_format(
         .try_read()
         .ok()
         .and_then(|g| g.as_ref().map(|p| p.root.clone()))
-        .map(|root| al_core::queries::format::AlFormatConfig::load_options(&root))
+        .map(|root| crate::queries::format::AlFormatConfig::load_options(&root))
         .unwrap_or_default();
-    let formatted = al_core::syntax::format_al(&content, &options);
+    let formatted = crate::syntax::format_al(&content, &options);
     let changed = formatted != content;
 
     if check {
@@ -228,8 +228,8 @@ pub(super) fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::
         return file_not_found(id);
     };
 
-    let result = al_core::syntax::AlParser::parse_quick(&text);
-    let diagnostics = al_core::syntax::lint(&result.tree, &text);
+    let result = crate::syntax::AlParser::parse_quick(&text);
+    let diagnostics = crate::syntax::lint(&result.tree, &text);
     let filtered: Vec<_> = diagnostics
         .iter()
         .filter(|d| {
@@ -260,7 +260,7 @@ pub(super) fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::
 }
 
 pub(super) fn dispatch_rules(id: u64) -> Response {
-    let rules = al_core::syntax::lint_rules();
+    let rules = crate::syntax::lint_rules();
     let value: Vec<serde_json::Value> = rules
         .iter()
         .map(|r| {
@@ -294,10 +294,10 @@ pub(super) fn dispatch_parse(
     };
 
     let start = std::time::Instant::now();
-    let result = al_core::syntax::AlParser::parse_quick(&text);
+    let result = crate::syntax::AlParser::parse_quick(&text);
     let elapsed = start.elapsed();
 
-    let node_count = al_core::parsing::count_nodes(&result.tree);
+    let node_count = crate::parsing::count_nodes(&result.tree);
 
     Response {
         id,
@@ -359,18 +359,13 @@ pub(super) fn dispatch_source(
     let kind_filter = params
         .get("kind")
         .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<al_core::symbols::ObjectKind>().ok());
+        .and_then(|s| s.parse::<crate::symbols::ObjectKind>().ok());
 
     let proc_filter = params.get("proc").and_then(|v| v.as_str());
     let trigger_filter = params.get("trigger").and_then(|v| v.as_str());
 
-    match al_core::queries::source::source(
-        workspace,
-        name,
-        kind_filter,
-        proc_filter,
-        trigger_filter,
-    ) {
+    match crate::queries::source::source(workspace, name, kind_filter, proc_filter, trigger_filter)
+    {
         Some(result) => Response {
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
@@ -396,7 +391,7 @@ pub(super) fn dispatch_permissions(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let entries = al_core::permissions::collect_permissions(workspace);
+    let entries = crate::permissions::collect_permissions(workspace);
     let format = params
         .get("format")
         .and_then(|v| v.as_str())
@@ -414,7 +409,7 @@ pub(super) fn dispatch_permissions(
 
     match format {
         "xml" => {
-            let output = al_core::permissions::render_xml(&entries, role_id, name);
+            let output = crate::permissions::render_xml(&entries, role_id, name);
             Response {
                 id,
                 result: Some(serde_json::json!({
@@ -426,7 +421,7 @@ pub(super) fn dispatch_permissions(
             }
         }
         _ => {
-            let output = al_core::permissions::render_al(&entries, name, perm_id);
+            let output = crate::permissions::render_al(&entries, name, perm_id);
             Response {
                 id,
                 result: Some(serde_json::json!({
@@ -500,7 +495,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
     drop(project);
 
     let result: Result<serde_json::Value, String> = async {
-        let guard = al_core::semantic::get_or_init_bridge(workspace)
+        let guard = crate::semantic::get_or_init_bridge(workspace)
             .await
             .ok_or("Failed to initialize semantic bridge")?;
         let bridge = guard.as_ref().ok_or("Semantic bridge unavailable")?;
@@ -516,7 +511,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
             .map(|p| p.display().to_string())
             .or_else(|| {
                 if compile_result.success {
-                    al_core::build::find_app_file(&project_root).map(|p| p.display().to_string())
+                    crate::build::find_app_file(&project_root).map(|p| p.display().to_string())
                 } else {
                     None
                 }
@@ -623,7 +618,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
         Some(code_analyzers)
     };
 
-    match al_core::build::compile_project_with_analyzers(
+    match crate::build::compile_project_with_analyzers(
         &toolchain,
         &project_root,
         None,
@@ -675,7 +670,7 @@ pub(super) fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Respo
         };
     }
 
-    let config = al_core::scaffold::ScaffoldConfig {
+    let config = crate::scaffold::ScaffoldConfig {
         name: params
             .get("name")
             .and_then(|v| v.as_str())
@@ -686,10 +681,10 @@ pub(super) fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Respo
             .and_then(|v| v.as_str())
             .unwrap_or("Default Publisher")
             .to_string(),
-        ..al_core::scaffold::ScaffoldConfig::default()
+        ..crate::scaffold::ScaffoldConfig::default()
     };
 
-    match al_core::scaffold::create_project(&dir, &config) {
+    match crate::scaffold::create_project(&dir, &config) {
         Ok(result) => Response {
             id,
             // SILENT: serialization of valid struct should not fail
@@ -762,7 +757,7 @@ pub(super) fn dispatch_builtin_types(workspace: &Workspace, id: u64) -> Response
 }
 
 pub(super) fn dispatch_setup(workspace: &Workspace, id: u64) -> Response {
-    let report = al_core::toolchain::doctor(workspace);
+    let report = crate::toolchain::doctor(workspace);
     Response {
         id,
         result: Some(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null)),
@@ -806,7 +801,7 @@ pub(super) async fn dispatch_authenticate(
             let tenants = get_project_tenants(workspace);
             let mut statuses = Vec::new();
             for tenant in &tenants {
-                let cache_path = al_core::symbols::oauth::token_cache_path(tenant);
+                let cache_path = crate::symbols::oauth::token_cache_path(tenant);
                 let cached = tokio::fs::read_to_string(&cache_path)
                     .await
                     .ok()
@@ -849,7 +844,7 @@ pub(super) async fn dispatch_authenticate(
                         continue;
                     }
                 }
-                let cache_path = al_core::symbols::oauth::token_cache_path(tenant);
+                let cache_path = crate::symbols::oauth::token_cache_path(tenant);
                 if tokio::fs::remove_file(&cache_path).await.is_ok() {
                     cleared += 1;
                 }
@@ -882,7 +877,7 @@ pub(super) async fn dispatch_authenticate(
             let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
             let msgs_clone = messages.clone();
 
-            match al_core::symbols::oauth::acquire_token(&client, &tenant, move |msg| {
+            match crate::symbols::oauth::acquire_token(&client, &tenant, move |msg| {
                 if let Ok(mut guard) = msgs_clone.lock() {
                     guard.push(msg.to_string());
                 }
@@ -995,17 +990,15 @@ pub(super) async fn dispatch_download_symbols(
                 }
                 let cfg = &project_configs[0];
                 let auth = match cfg.authentication {
-                    al_core::launch::AuthMethod::Windows => {
-                        al_core::symbols::bc_server::AuthMethod::Windows
+                    crate::launch::AuthMethod::Windows => {
+                        crate::symbols::bc_server::AuthMethod::Windows
                     }
-                    al_core::launch::AuthMethod::UserPassword => {
-                        al_core::symbols::bc_server::AuthMethod::UserPassword
+                    crate::launch::AuthMethod::UserPassword => {
+                        crate::symbols::bc_server::AuthMethod::UserPassword
                     }
-                    al_core::launch::AuthMethod::AAD => {
-                        al_core::symbols::bc_server::AuthMethod::AAD
-                    }
+                    crate::launch::AuthMethod::AAD => crate::symbols::bc_server::AuthMethod::AAD,
                 };
-                let client = match al_core::symbols::bc_server::BcServerClient::new(
+                let client = match crate::symbols::bc_server::BcServerClient::new(
                     auth,
                     cfg.tenant.clone(),
                     std::sync::Arc::new(|msg| tracing::info!("{msg}")),
@@ -1014,7 +1007,7 @@ pub(super) async fn dispatch_download_symbols(
                     Ok(c) => c,
                     Err(e) => return vec![serde_json::json!({ "error": e.to_string() })],
                 };
-                let url_deps: Vec<(String, al_core::symbols::nuget::AppDependency)> = all_deps
+                let url_deps: Vec<(String, crate::symbols::nuget::AppDependency)> = all_deps
                     .iter()
                     .filter_map(|dep| cfg.dev_packages_url(dep).map(|url| (url, dep.clone())))
                     .collect();
@@ -1037,8 +1030,8 @@ pub(super) async fn dispatch_download_symbols(
                     .collect()
             } else {
                 let nuget_feeds =
-                    crate::workspace::map_nuget_feeds(&al_core::project::nuget_feeds());
-                let client = al_core::symbols::nuget::NuGetClient::new(nuget_feeds);
+                    crate::server::workspace::map_nuget_feeds(&crate::project::nuget_feeds());
+                let client = crate::symbols::nuget::NuGetClient::new(nuget_feeds);
                 let nuget_results = client.download_all(&all_deps, &dest).await;
                 nuget_results
                     .into_iter()
@@ -1103,7 +1096,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
     };
 
     let bc = parse_bc_server_params(params, "snapshots");
-    let config = al_core::snapshot::SnapshotConfig {
+    let config = crate::snapshot::SnapshotConfig {
         server_url: bc.server_url,
         company: bc.company,
         output_dir: bc.output_dir,
@@ -1115,7 +1108,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
     match cmd {
         "start" => {
             let description = params.get("description").and_then(|v| v.as_str());
-            match al_core::snapshot::start_snapshot(&config, description).await {
+            match crate::snapshot::start_snapshot(&config, description).await {
                 Ok(snapshot_id) => Response {
                     id,
                     result: Some(serde_json::json!({
@@ -1137,7 +1130,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
         }
 
         "list" => {
-            match al_core::snapshot::list_snapshots(&config).await {
+            match crate::snapshot::list_snapshots(&config).await {
                 Ok(snapshots) => {
                     let items: Vec<serde_json::Value> = snapshots
                         .iter()
@@ -1178,7 +1171,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                 }
             };
 
-            match al_core::snapshot::download_snapshot(&config, &snapshot_id).await {
+            match crate::snapshot::download_snapshot(&config, &snapshot_id).await {
                 Ok(path) => Response {
                     id,
                     result: Some(serde_json::json!({
@@ -1231,7 +1224,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
     };
 
     let bc = parse_bc_server_params(params, "profiles");
-    let config = al_core::profiling::ProfilingConfig {
+    let config = crate::profiling::ProfilingConfig {
         server_url: bc.server_url,
         company: bc.company,
         output_dir: bc.output_dir,
@@ -1241,7 +1234,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
     };
 
     match cmd {
-        "start" => match al_core::profiling::start_profiling(&config).await {
+        "start" => match crate::profiling::start_profiling(&config).await {
             Ok(session_id) => Response {
                 id,
                 result: Some(serde_json::json!({
@@ -1268,7 +1261,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                 .unwrap_or("profiling-session")
                 .to_string();
 
-            match al_core::profiling::stop_profiling(&config, &session_id).await {
+            match crate::profiling::stop_profiling(&config, &session_id).await {
                 Ok(path) => Response {
                     id,
                     result: Some(serde_json::json!({
@@ -1318,7 +1311,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
             let top_n = params.get("topN").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             let top_n = top_n.min(1000);
 
-            match al_core::profiling::analyze_profile_file(&profile_path, top_n).await {
+            match crate::profiling::analyze_profile_file(&profile_path, top_n).await {
                 Ok(result) => {
                     let hotspots: Vec<serde_json::Value> = result
                         .hotspots
@@ -1386,7 +1379,7 @@ pub(super) async fn dispatch_xlf_generate(
         }
     };
 
-    match al_core::xliff::build_xliff(workspace, &project_root) {
+    match crate::xliff::build_xliff(workspace, &project_root) {
         Ok(Some((path, count))) => Response {
             id,
             result: Some(serde_json::json!({
@@ -1475,11 +1468,11 @@ pub(super) async fn dispatch_xlf_refresh(
         }
     };
 
-    let gen_units_map = al_core::xliff::parse_xliff(&gen_content);
-    let gen_units: Vec<al_core::xliff::TranslationUnit> = gen_units_map.into_values().collect();
-    let lang_units = al_core::xliff::parse_xliff(&lang_content);
+    let gen_units_map = crate::xliff::parse_xliff(&gen_content);
+    let gen_units: Vec<crate::xliff::TranslationUnit> = gen_units_map.into_values().collect();
+    let lang_units = crate::xliff::parse_xliff(&lang_content);
 
-    let (updated_units, refresh_result) = al_core::xliff::refresh_xliff(&gen_units, &lang_units);
+    let (updated_units, refresh_result) = crate::xliff::refresh_xliff(&gen_units, &lang_units);
 
     // Write updated units back to the language xlf
     // We need the app name for the XLIFF header
@@ -1489,7 +1482,7 @@ pub(super) async fn dispatch_xlf_refresh(
         .unwrap_or("App")
         .trim_end_matches(".g")
         .to_string();
-    let new_xlf = al_core::xliff::generate_xliff(&app_name, "en-US", "en-US", &updated_units);
+    let new_xlf = crate::xliff::generate_xliff(&app_name, "en-US", "en-US", &updated_units);
     if let Err(e) = tokio::task::block_in_place(|| std::fs::write(&xlf_path, new_xlf)) {
         return rpc_error(
             id,
@@ -1534,9 +1527,9 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
             )
         }
     };
-    let units_map = al_core::xliff::parse_xliff(&xlf_content);
-    let all_units: Vec<al_core::xliff::TranslationUnit> = units_map.into_values().collect();
-    let untranslated = al_core::xliff::find_untranslated(&all_units);
+    let units_map = crate::xliff::parse_xliff(&xlf_content);
+    let all_units: Vec<crate::xliff::TranslationUnit> = units_map.into_values().collect();
+    let untranslated = crate::xliff::find_untranslated(&all_units);
     let items: Vec<serde_json::Value> = untranslated
         .iter()
         .map(|u| {
@@ -1591,10 +1584,10 @@ pub(super) async fn dispatch_xlf_suggest(
         }
     };
 
-    let units_map = al_core::xliff::parse_xliff(&xlf_content);
-    let all_units: Vec<al_core::xliff::TranslationUnit> = units_map.into_values().collect();
-    let untranslated = al_core::xliff::find_untranslated(&all_units);
-    let suggestions = al_core::xliff::suggest_translations(&untranslated, workspace);
+    let units_map = crate::xliff::parse_xliff(&xlf_content);
+    let all_units: Vec<crate::xliff::TranslationUnit> = units_map.into_values().collect();
+    let untranslated = crate::xliff::find_untranslated(&all_units);
+    let suggestions = crate::xliff::suggest_translations(&untranslated, workspace);
 
     Response {
         id,
@@ -1629,7 +1622,7 @@ pub(super) fn dispatch_fix_application_area(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    match al_core::queries::bulk_fix::add_application_area(&project_root, value, dry_run) {
+    match crate::queries::bulk_fix::add_application_area(&project_root, value, dry_run) {
         Ok(result) => Response {
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
@@ -1664,7 +1657,7 @@ pub(super) fn dispatch_fix_tooltips(
             .symbols
             .get_by_name(table_name)
             .into_iter()
-            .filter(|e| e.kind == al_core::symbols::ObjectKind::Table)
+            .filter(|e| e.kind == crate::symbols::ObjectKind::Table)
             .flat_map(|e| {
                 e.fields
                     .iter()
@@ -1683,7 +1676,7 @@ pub(super) fn dispatch_fix_tooltips(
         Vec::new()
     };
 
-    match al_core::queries::bulk_fix::add_tooltips(&project_root, &tooltips, dry_run) {
+    match crate::queries::bulk_fix::add_tooltips(&project_root, &tooltips, dry_run) {
         Ok(result) => Response {
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
@@ -1712,7 +1705,7 @@ pub(super) fn dispatch_fix_data_classification(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    match al_core::queries::bulk_fix::add_data_classification(&project_root, value, dry_run) {
+    match crate::queries::bulk_fix::add_data_classification(&project_root, value, dry_run) {
         Ok(result) => Response {
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
@@ -1748,8 +1741,8 @@ pub(super) fn dispatch_metrics(
         for entry in workspace.file_index.files.iter() {
             let path = entry.key().to_string_lossy().to_string();
             let text = entry.value();
-            let parsed = al_core::syntax::AlParser::parse_quick(text);
-            let metrics = al_core::syntax::complexity::compute_complexity(&parsed.tree, text);
+            let parsed = crate::syntax::AlParser::parse_quick(text);
+            let metrics = crate::syntax::complexity::compute_complexity(&parsed.tree, text);
             if !metrics.is_empty() {
                 let hotspots: Vec<serde_json::Value> = metrics
                     .iter()
@@ -1783,8 +1776,8 @@ pub(super) fn dispatch_metrics(
         return file_not_found(id);
     };
 
-    let parsed = al_core::syntax::AlParser::parse_quick(&text);
-    let metrics = al_core::syntax::complexity::compute_complexity(&parsed.tree, &text);
+    let parsed = crate::syntax::AlParser::parse_quick(&text);
+    let metrics = crate::syntax::complexity::compute_complexity(&parsed.tree, &text);
 
     let hotspots: Vec<serde_json::Value> = metrics
         .iter()
@@ -1805,7 +1798,7 @@ pub(super) fn dispatch_metrics(
 }
 
 fn procedure_complexity_to_json(
-    m: &al_core::syntax::complexity::ProcedureComplexity,
+    m: &crate::syntax::complexity::ProcedureComplexity,
 ) -> serde_json::Value {
     serde_json::json!({
         "name": m.name,
@@ -1820,7 +1813,7 @@ fn procedure_complexity_to_json(
 // ---------------------------------------------------------------------------
 
 pub(super) fn dispatch_tests_discover(workspace: &Workspace, id: u64) -> Response {
-    let tests = al_core::queries::tests::discover_tests(workspace);
+    let tests = crate::queries::tests::discover_tests(workspace);
     let value = serde_json::to_value(&tests).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -1830,7 +1823,7 @@ pub(super) fn dispatch_tests_discover(workspace: &Workspace, id: u64) -> Respons
 }
 
 pub(super) fn dispatch_tests_coverage(workspace: &Workspace, id: u64) -> Response {
-    let report = al_core::queries::test_coverage::test_coverage(workspace);
+    let report = crate::queries::test_coverage::test_coverage(workspace);
     let value = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -1857,9 +1850,9 @@ pub(super) async fn dispatch_tests_run(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    use al_core::launch::find_launch_config;
-    use al_core::queries::test_diagnostics::results_to_diagnostics;
-    use al_core::test_runner::TestRunnerClient;
+    use crate::launch::find_launch_config;
+    use crate::queries::test_diagnostics::results_to_diagnostics;
+    use crate::test_runner::TestRunnerClient;
 
     // -- Resolve project root from workspace -----------------------------------
     let project_root = match workspace
@@ -1991,7 +1984,7 @@ pub(super) fn dispatch_generate(
             .search(table_name, 10)
             .into_iter()
             .find(|e| {
-                e.kind == al_core::symbols::ObjectKind::Table
+                e.kind == crate::symbols::ObjectKind::Table
                     && e.name.eq_ignore_ascii_case(table_name)
             })
     } else {
@@ -2010,7 +2003,7 @@ pub(super) fn dispatch_generate(
                 .and_then(|v| v.as_str())
                 .unwrap_or("List");
             let page_type = page_type_str
-                .parse::<al_core::generators::PageType>()
+                .parse::<crate::generators::PageType>()
                 .unwrap_or_default();
 
             let Some(source) = table_entry else {
@@ -2020,13 +2013,13 @@ pub(super) fn dispatch_generate(
                     &format!("Table '{}' not found in symbol index", table_name),
                 );
             };
-            let config = al_core::generators::GeneratePageConfig {
+            let config = crate::generators::GeneratePageConfig {
                 object_id,
                 page_name,
                 page_type,
                 source_table: (*source).clone(),
             };
-            let code = al_core::generators::generate_page(&config);
+            let code = crate::generators::generate_page(&config);
             Response {
                 id,
                 result: Some(serde_json::json!({ "code": code, "kind": "page" })),
@@ -2046,12 +2039,12 @@ pub(super) fn dispatch_generate(
                     &format!("Table '{}' not found in symbol index", table_name),
                 );
             };
-            let config = al_core::generators::GenerateReportConfig {
+            let config = crate::generators::GenerateReportConfig {
                 object_id,
                 report_name,
                 source_table: (*source).clone(),
             };
-            let code = al_core::generators::generate_report(&config);
+            let code = crate::generators::generate_report(&config);
             Response {
                 id,
                 result: Some(serde_json::json!({ "code": code, "kind": "report" })),
@@ -2065,12 +2058,12 @@ pub(super) fn dispatch_generate(
                 .unwrap_or("NewTests")
                 .to_string();
             let subject = table_entry.map(|e| (*e).clone());
-            let config = al_core::generators::GenerateTestConfig {
+            let config = crate::generators::GenerateTestConfig {
                 object_id,
                 test_name,
                 subject,
             };
-            let code = al_core::generators::generate_test(&config);
+            let code = crate::generators::generate_test(&config);
             Response {
                 id,
                 result: Some(serde_json::json!({ "code": code, "kind": "test" })),
@@ -2093,7 +2086,7 @@ pub(super) fn dispatch_generate(
 // ---------------------------------------------------------------------------
 
 pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
-    let entries = al_core::queries::obsolescence::obsolescence_timeline(workspace);
+    let entries = crate::queries::obsolescence::obsolescence_timeline(workspace);
     let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -2103,7 +2096,7 @@ pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
 }
 
 pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64) -> Response {
-    let entries = al_core::queries::audit::data_classification_audit(workspace);
+    let entries = crate::queries::audit::data_classification_audit(workspace);
     let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -2113,7 +2106,7 @@ pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64)
 }
 
 pub(super) fn dispatch_permission_set_audit(workspace: &Workspace, id: u64) -> Response {
-    let entries = al_core::queries::audit::permission_set_audit(workspace);
+    let entries = crate::queries::audit::permission_set_audit(workspace);
     let value = serde_json::to_value(&entries).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -2154,7 +2147,7 @@ pub(super) fn dispatch_deps_graph(
     #[allow(clippy::type_complexity)]
     let packages: Vec<(String, String, String, Vec<(String, String, String)>)> = Vec::new();
 
-    let graph = al_core::queries::deps::build_dependency_graph(&app_json, &packages);
+    let graph = crate::queries::deps::build_dependency_graph(&app_json, &packages);
 
     if format == "dot" {
         let dot = graph.to_dot();
@@ -2181,14 +2174,14 @@ pub(super) fn dispatch_breaking_changes(
     // Compare baseline (empty) against current workspace symbols to find
     // all changes relative to a clean slate.  Callers can pass baseline
     // symbols in params.baselineSymbols in a future iteration.
-    let current: Vec<al_core::symbols::SymbolEntry> = workspace
+    let current: Vec<crate::symbols::SymbolEntry> = workspace
         .symbols
         .all_entries()
         .into_iter()
         .map(|a| (*a).clone())
         .collect();
-    let baseline: Vec<al_core::symbols::SymbolEntry> = Vec::new();
-    let changes = al_core::queries::breaking_changes::analyze_breaking_changes(&baseline, &current);
+    let baseline: Vec<crate::symbols::SymbolEntry> = Vec::new();
+    let changes = crate::queries::breaking_changes::analyze_breaking_changes(&baseline, &current);
     let value = serde_json::to_value(&changes).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -2208,9 +2201,9 @@ pub(super) fn dispatch_arch_lint(workspace: &Workspace, id: u64) -> Response {
         .ok()
         .and_then(|p| p.as_ref().map(|p| p.root.join(".alarch.json")))
         .and_then(|path| tokio::task::block_in_place(|| std::fs::read_to_string(path).ok()))
-        .and_then(|json| al_core::queries::arch_lint::ArchConfig::from_json(&json).ok())
+        .and_then(|json| crate::queries::arch_lint::ArchConfig::from_json(&json).ok())
         .unwrap_or_default();
-    let violations = al_core::queries::arch_lint::arch_lint(workspace, &config);
+    let violations = crate::queries::arch_lint::arch_lint(workspace, &config);
     let value = serde_json::to_value(&violations).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -2233,7 +2226,7 @@ pub(super) fn dispatch_find_duplicates(
         .and_then(|v| v.as_f64())
         .unwrap_or(0.8) as f32;
     let duplicates =
-        al_core::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity);
+        crate::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity);
     let value = serde_json::to_value(&duplicates).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -2249,14 +2242,14 @@ pub(super) fn dispatch_upgrade_report(
 ) -> Response {
     // Use empty baseline to find all symbols that are new/changed relative
     // to a fresh install.  In practice callers supply a previous .app snapshot.
-    let current: Vec<al_core::symbols::SymbolEntry> = workspace
+    let current: Vec<crate::symbols::SymbolEntry> = workspace
         .symbols
         .all_entries()
         .into_iter()
         .map(|a| (*a).clone())
         .collect();
-    let baseline: Vec<al_core::symbols::SymbolEntry> = Vec::new();
-    let issues = al_core::queries::upgrade::upgrade_report(&baseline, &current);
+    let baseline: Vec<crate::symbols::SymbolEntry> = Vec::new();
+    let issues = crate::queries::upgrade::upgrade_report(&baseline, &current);
     let value = serde_json::to_value(&issues).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -2270,7 +2263,7 @@ pub(super) fn dispatch_sql_patterns(
     id: u64,
     _params: &serde_json::Value,
 ) -> Response {
-    let findings = al_core::queries::sql_patterns::detect_sql_patterns(workspace);
+    let findings = crate::queries::sql_patterns::detect_sql_patterns(workspace);
     let value = serde_json::to_value(&findings).unwrap_or(serde_json::Value::Null);
     Response {
         id,
@@ -2298,7 +2291,7 @@ pub(super) fn dispatch_sort_members(
         return invalid_params(id);
     };
 
-    let sorted = match al_core::syntax::sort_members(&content) {
+    let sorted = match crate::syntax::sort_members(&content) {
         Some(s) => s,
         None => content.clone(),
     };
@@ -2358,8 +2351,8 @@ pub(super) fn dispatch_organize_files(
         let text = entry.value().clone();
 
         // Parse object info from text
-        let parsed = al_core::syntax::AlParser::parse_quick(&text);
-        let obj = match al_core::syntax::find_object_declaration(&parsed.tree, &text) {
+        let parsed = crate::syntax::AlParser::parse_quick(&text);
+        let obj = match crate::syntax::find_object_declaration(&parsed.tree, &text) {
             Some(o) => o,
             None => continue,
         };
@@ -2434,7 +2427,7 @@ pub(super) fn dispatch_profiler_hints(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let hints = al_core::queries::profiler_hints::profiler_hints(workspace, &hotspots);
+    let hints = crate::queries::profiler_hints::profiler_hints(workspace, &hotspots);
     let value = serde_json::to_value(&hints).unwrap_or(serde_json::Value::Null);
     Response {
         id,
