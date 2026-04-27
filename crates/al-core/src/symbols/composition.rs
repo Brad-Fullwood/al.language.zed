@@ -69,8 +69,8 @@ fn compose(base: Arc<SymbolEntry>, extensions: Vec<Arc<SymbolEntry>>) -> Compose
 
 #[cfg(test)]
 mod tests {
-    use crate::symbols::model::*;
     use super::*;
+    use crate::symbols::model::*;
 
     fn make_table(
         id: i32,

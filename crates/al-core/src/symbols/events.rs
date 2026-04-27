@@ -196,8 +196,8 @@ fn clean_quotes(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::symbols::model::*;
     use super::*;
+    use crate::symbols::model::*;
 
     fn make_codeunit_with_events() -> Vec<SymbolEntry> {
         vec![

@@ -46,7 +46,6 @@ name = "al-core"
 version = "0.1.0"
 dependencies = [
  "al-protocol",
- "al-semantic",
  "cc",
  "dashmap 6.1.0",
  "dirs",
@@ -54,6 +53,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.2.17",
  "memmap2",
+ "netcorehost",
  "petgraph",
  "quick-xml",
  "rayon",
@@ -113,19 +113,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "al-semantic"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "netcorehost",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
 ]
 
 [[package]]

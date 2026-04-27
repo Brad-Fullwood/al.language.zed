@@ -10,7 +10,7 @@ use netcorehost::hostfxr::{HostfxrContext, InitializedForRuntimeConfig};
 use netcorehost::pdcstr;
 use tracing::{debug, info};
 
-use crate::SemanticError;
+use super::SemanticError;
 
 /// Function pointer types matching the C# [UnmanagedCallersOnly] signatures.
 /// `extern "system"` is required by netcorehost's ManagedFunctionPtr trait.

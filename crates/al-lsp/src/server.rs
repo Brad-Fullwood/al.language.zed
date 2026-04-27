@@ -202,8 +202,7 @@ impl AlServer {
     /// Delegates to `al_core::semantic::get_or_init_bridge`.
     pub(crate) async fn get_or_init_bridge(
         &self,
-    ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<al_core::semantic_types::SemanticBridge>>>
-    {
+    ) -> Option<tokio::sync::RwLockReadGuard<'_, Option<al_core::semantic::SemanticBridge>>> {
         al_core::semantic::get_or_init_bridge(&self.workspace).await
     }
 

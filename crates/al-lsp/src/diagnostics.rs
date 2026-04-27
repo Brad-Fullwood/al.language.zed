@@ -158,7 +158,7 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     };
     drop(config_guard);
 
-    let req = al_core::semantic_types::AnalyzeRequest {
+    let req = al_core::semantic::AnalyzeRequest {
         file: file_path,
         source: text.to_string(),
         analyzers,
@@ -196,8 +196,8 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
             // poisoned bridge does not spam the editor.
             let is_persistent = matches!(
                 &error,
-                al_core::semantic_types::SemanticError::Timeout(_)
-                    | al_core::semantic_types::SemanticError::Poisoned
+                al_core::semantic::SemanticError::Timeout(_)
+                    | al_core::semantic::SemanticError::Poisoned
             );
             if is_persistent && server.should_report_semantic_failure() {
                 if let Some(sink) = server.workspace.notify_sink.get() {
@@ -348,7 +348,7 @@ pub async fn publish_test_diagnostics(
 }
 
 /// Convert a semantic diagnostic entry to an LSP Diagnostic.
-pub fn semantic_to_diagnostic(entry: &al_core::semantic_types::DiagnosticEntry) -> Diagnostic {
+pub fn semantic_to_diagnostic(entry: &al_core::semantic::DiagnosticEntry) -> Diagnostic {
     let severity = match entry.severity.to_lowercase().as_str() {
         "error" => DiagnosticSeverity::ERROR,
         "warning" => DiagnosticSeverity::WARNING,
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_semantic_to_diagnostic() {
-        let entry = al_core::semantic_types::DiagnosticEntry {
+        let entry = al_core::semantic::DiagnosticEntry {
             file: std::path::PathBuf::from("/src/test.al"),
             line: 10,
             column: 5,
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn test_semantic_severity_mapping() {
-        let make = |sev: &str| al_core::semantic_types::DiagnosticEntry {
+        let make = |sev: &str| al_core::semantic::DiagnosticEntry {
             file: std::path::PathBuf::from("test.al"),
             line: 1,
             column: 1,

@@ -278,8 +278,8 @@ fn simple_hash(path: &Path) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::symbols::model::*;
     use super::*;
+    use crate::symbols::model::*;
     use std::io::Write;
     use tempfile::TempDir;
 

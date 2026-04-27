@@ -37,7 +37,7 @@ pub enum AlError {
 
     /// Semantic bridge errors (.NET CLR failure, bridge crash, etc.)
     #[error(transparent)]
-    Semantic(#[from] al_semantic::SemanticError),
+    Semantic(#[from] crate::semantic::SemanticError),
 
     /// Document not found in store.
     #[error("document not open: {0}")]
@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn from_semantic_error() {
-        let sem_err = al_semantic::SemanticError::Timeout(Duration::from_secs(5));
+        let sem_err = crate::semantic::SemanticError::Timeout(Duration::from_secs(5));
         let al_err: AlError = sem_err.into();
         assert!(matches!(al_err, AlError::Semantic(_)));
         let msg = al_err.to_string();
@@ -130,7 +130,7 @@ mod tests {
             Err(DiscoveryError::DotNetNotInstalled)?
         }
         fn _semantic() -> Result<(), AlError> {
-            Err(al_semantic::SemanticError::NotInitialized)?
+            Err(crate::semantic::SemanticError::NotInitialized)?
         }
         fn _io() -> Result<(), AlError> {
             Err(std::io::Error::other("test"))?

@@ -5,16 +5,13 @@
 //!
 //! Architecture: Rust → netcorehost → Bridge.dll → CodeAnalysis.dll
 
-pub mod cache;
-pub(crate) mod host;
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::host::DotNetHost;
+use super::host::DotNetHost;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -195,7 +192,7 @@ impl SemanticBridge {
     ///
     /// This loads the CLR in-process and initializes the bridge DLL.
     pub fn new(code_analysis: &Path, version: &str) -> Result<Self, SemanticError> {
-        let (bridge_dll, runtime_config) = host::find_bridge_dll()?;
+        let (bridge_dll, runtime_config) = super::host::find_bridge_dll()?;
         let host = DotNetHost::new(&bridge_dll, &runtime_config, code_analysis)?;
 
         Ok(Self {
@@ -335,7 +332,7 @@ impl SemanticBridge {
     /// Checks disk cache first. On cache miss, calls the bridge and caches the result.
     pub async fn builtin_types(&self) -> Result<Vec<BuiltinType>, SemanticError> {
         // Check cache
-        if let Some(cached) = cache::read_builtins(&self.version) {
+        if let Some(cached) = super::cache::read_builtins(&self.version) {
             return Ok(cached);
         }
 
@@ -343,7 +340,7 @@ impl SemanticBridge {
         let types: Vec<BuiltinType> = Self::parse_response(result)?;
 
         // Cache for next time
-        cache::write_builtins(&self.version, &types);
+        super::cache::write_builtins(&self.version, &types);
 
         Ok(types)
     }
@@ -355,7 +352,7 @@ impl SemanticBridge {
         let live = std::env::var("AL_ERROR_CODES_LIVE").is_ok();
 
         if !live {
-            if let Some(cached) = cache::read_error_codes(&self.version) {
+            if let Some(cached) = super::cache::read_error_codes(&self.version) {
                 return Ok(cached);
             }
         }
@@ -363,7 +360,7 @@ impl SemanticBridge {
         let result = self.call("errorCodes", serde_json::Value::Null).await?;
         let codes: Vec<ErrorCodeInfo> = Self::parse_response(result)?;
 
-        cache::write_error_codes(&self.version, &codes);
+        super::cache::write_error_codes(&self.version, &codes);
 
         Ok(codes)
     }

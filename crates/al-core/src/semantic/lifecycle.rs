@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use al_semantic::{BuiltinMethod, BuiltinType, SemanticBridge};
+use super::{BuiltinMethod, BuiltinType, SemanticBridge};
 use tokio::sync::RwLockReadGuard;
 
 use crate::workspace::Workspace;
@@ -378,8 +378,8 @@ pub async fn shutdown_bridge(workspace: &Workspace) {
 
 #[cfg(test)]
 mod tests {
+    use crate::semantic::MethodParameter;
     use super::*;
-    use al_semantic::MethodParameter;
 
     fn sample_builtins() -> Vec<BuiltinType> {
         vec![

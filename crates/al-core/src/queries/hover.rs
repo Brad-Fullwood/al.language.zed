@@ -272,7 +272,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
         let method_hits = cache.find_methods_by_name(clean_name);
         if !method_hits.is_empty() {
             // Group by type name so we can emit a single hover per type with all overloads
-            let mut by_type: std::collections::HashMap<&str, Vec<&al_semantic::BuiltinMethod>> =
+            let mut by_type: std::collections::HashMap<&str, Vec<&crate::semantic::BuiltinMethod>> =
                 std::collections::HashMap::new();
             for (type_name, method) in &method_hits {
                 by_type.entry(type_name).or_default().push(method);
@@ -280,7 +280,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             // Sort by type name for deterministic results — HashMap iteration
             // order is randomised per process, so without sorting hover would
             // jump between types for the same identifier across LSP restarts.
-            let mut sorted_types: Vec<(&str, &Vec<&al_semantic::BuiltinMethod>)> =
+            let mut sorted_types: Vec<(&str, &Vec<&crate::semantic::BuiltinMethod>)> =
                 by_type.iter().map(|(k, v)| (*k, v)).collect();
             sorted_types.sort_by_key(|(k, _)| *k);
             // Log the candidate set + selection so it's clear which type
@@ -446,7 +446,7 @@ fn format_symbol_hover(entry: &crate::symbols::SymbolEntry) -> String {
     lines.join("\n")
 }
 
-fn format_builtin_method(method: &al_semantic::BuiltinMethod) -> String {
+fn format_builtin_method(method: &crate::semantic::BuiltinMethod) -> String {
     crate::resolution::format_builtin_signature(method)
 }
 
@@ -546,15 +546,15 @@ mod tests {
 
     #[test]
     fn test_format_builtin_method() {
-        let method = al_semantic::BuiltinMethod {
+        let method = crate::semantic::BuiltinMethod {
             name: "CopyStr".to_string(),
             parameters: vec![
-                al_semantic::MethodParameter {
+                crate::semantic::MethodParameter {
                     name: "String".to_string(),
                     type_name: "Text".to_string(),
                     is_var: false,
                 },
-                al_semantic::MethodParameter {
+                crate::semantic::MethodParameter {
                     name: "Position".to_string(),
                     type_name: "Integer".to_string(),
                     is_var: false,

@@ -1323,7 +1323,7 @@ fn format_method_signature(
     }
 }
 
-pub(crate) fn format_builtin_signature(method: &al_semantic::BuiltinMethod) -> String {
+pub(crate) fn format_builtin_signature(method: &crate::semantic::BuiltinMethod) -> String {
     let params = method
         .parameters
         .iter()

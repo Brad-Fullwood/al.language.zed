@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use crate::project::AlProject;
+use crate::semantic::BuiltinType;
 use crate::symbols::SymbolIndex;
 use crate::toolchain::AlToolchain;
-use al_semantic::BuiltinType;
 use dashmap::DashMap;
 use serde::Serialize;
 use tokio::sync::RwLock;
@@ -62,7 +62,7 @@ pub struct Workspace {
     /// Discovered AL project (app.json manifest, packages).
     pub project: RwLock<Option<AlProject>>,
     /// .NET semantic bridge for CodeAnalysis features.
-    pub semantic: RwLock<Option<al_semantic::SemanticBridge>>,
+    pub semantic: RwLock<Option<crate::semantic::SemanticBridge>>,
     /// Index of all .al files in the workspace directory.
     pub file_index: FileIndex,
     /// Merged workspace configuration (settings from client + project defaults).

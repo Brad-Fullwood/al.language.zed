@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, info, warn};
 
-use crate::{BuiltinType, ErrorCodeInfo};
+use super::{BuiltinType, ErrorCodeInfo};
 
 /// Sanitize a version string for use as part of a file name.
 ///
@@ -109,8 +109,8 @@ pub fn write_error_codes(version: &str, codes: &[ErrorCodeInfo]) {
 
 #[cfg(test)]
 mod tests {
+    use crate::semantic::BuiltinMethod;
     use super::*;
-    use crate::BuiltinMethod;
 
     #[test]
     fn test_builtins_cache_roundtrip() {

@@ -67,17 +67,6 @@ pub mod syntax_lsp {
     }
 }
 
-/// Re-exports from al-semantic for al-lsp consumption.
-pub mod semantic_types {
-    pub use al_semantic::{
-        AnalyzeRequest, CompileResult, CompletionItem, DiagnosticEntry, SemanticBridge,
-        SemanticError,
-    };
-    pub mod cache {
-        pub use al_semantic::cache::{read_builtins, read_error_codes};
-    }
-}
-
 /// Re-exports from tree-sitter for al-lsp test code.
 #[cfg(test)]
 pub mod ts {

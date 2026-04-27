@@ -284,7 +284,7 @@ async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
         .unwrap_or_else(|e| e.into_inner())
         .is_empty()
     {
-        if let Some(cached) = al_core::semantic_types::cache::read_builtins(version) {
+        if let Some(cached) = al_core::semantic::cache::read_builtins(version) {
             info!(
                 count = cached.len(),
                 "Loaded built-in types from disk cache"
@@ -293,7 +293,7 @@ async fn load_caches_from_disk(workspace: &Workspace, version: &str) {
         }
     }
     if workspace.error_codes.is_empty() {
-        if let Some(cached) = al_core::semantic_types::cache::read_error_codes(version) {
+        if let Some(cached) = al_core::semantic::cache::read_error_codes(version) {
             info!(count = cached.len(), "Loaded error codes from disk cache");
             for ec in cached {
                 workspace
