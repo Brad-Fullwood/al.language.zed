@@ -31,7 +31,7 @@ async fn test_regression_inlay_hints_no_panic() {
 
     // This used to panic the daemon with:
     // "Cannot block the current thread from within a runtime"
-    let hints = client.inlay_hints("src/hints_test.al", 0, 10).await;
+    let _hints = client.inlay_hints("src/hints_test.al", 0, 10).await;
 
     // The test passing without a timeout/EOF proves the daemon didn't panic.
     // Verify server is still responsive after hints request

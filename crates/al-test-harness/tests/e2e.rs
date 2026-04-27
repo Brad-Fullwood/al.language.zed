@@ -88,12 +88,12 @@ async fn test_document_symbols_codeunit() {
         names
     );
     assert!(
-        names.iter().any(|n| *n == "HelloWorld"),
+        names.contains(&"HelloWorld"),
         "Should find HelloWorld procedure. Got: {:?}",
         names
     );
     assert!(
-        names.iter().any(|n| *n == "Add"),
+        names.contains(&"Add"),
         "Should find Add procedure. Got: {:?}",
         names
     );
@@ -161,7 +161,7 @@ async fn test_hover_on_procedure_name() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("HelloWorld")),
+        content.is_some_and(|c| c.contains("HelloWorld")),
         "Hover should mention HelloWorld. Got: {:?}",
         content
     );
@@ -184,7 +184,7 @@ async fn test_hover_on_parameter() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains('A') || c.contains("Integer")),
+        content.is_some_and(|c| c.contains('A') || c.contains("Integer")),
         "Hover on parameter A should mention parameter name or type. Got: {:?}",
         content
     );
@@ -433,7 +433,7 @@ async fn test_hover_on_local_variable() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("Msg") && c.contains("Text")),
+        content.is_some_and(|c| c.contains("Msg") && c.contains("Text")),
         "Hover on Msg should show name and type. Got: {:?}",
         content
     );
@@ -468,7 +468,7 @@ async fn test_hover_on_local_variable_with_record_type() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("Record") && c.contains("Customer")),
+        content.is_some_and(|c| c.contains("Record") && c.contains("Customer")),
         "Hover should show Record type with Customer subtype. Got: {:?}",
         content
     );
@@ -503,12 +503,12 @@ async fn test_completions_include_local_variables() {
     let labels = completion_labels(&completions);
 
     assert!(
-        labels.iter().any(|l| *l == "MyAmount"),
+        labels.contains(&"MyAmount"),
         "Completions should include local variable MyAmount. Got: {:?}",
         labels
     );
     assert!(
-        labels.iter().any(|l| *l == "MyName"),
+        labels.contains(&"MyName"),
         "Completions should include local variable MyName. Got: {:?}",
         labels
     );

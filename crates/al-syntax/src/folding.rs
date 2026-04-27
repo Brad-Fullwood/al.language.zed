@@ -222,7 +222,7 @@ codeunit 50100 Test
             .filter(|r| {
                 r.kind
                     .as_ref()
-                    .map_or(false, |k| matches!(k, FoldingRangeKind::Comment))
+                    .is_some_and(|k| matches!(k, FoldingRangeKind::Comment))
             })
             .collect();
         assert!(!comment_folds.is_empty(), "Should have comment block fold");

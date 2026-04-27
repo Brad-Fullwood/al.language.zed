@@ -604,8 +604,10 @@ mod tests {
 
     #[test]
     fn merge_empty_path_clears_option() {
-        let mut config = AlConfig::default();
-        config.package_cache_path = Some(PathBuf::from("/old/path"));
+        let mut config = AlConfig {
+            package_cache_path: Some(PathBuf::from("/old/path")),
+            ..AlConfig::default()
+        };
 
         let settings = serde_json::json!({ "packageCachePath": "" });
         config.merge(&settings);
@@ -627,15 +629,17 @@ mod tests {
 
     #[test]
     fn serde_roundtrip() {
-        let mut config = AlConfig::default();
-        config.root_namespace = Some("MyApp".to_string());
-        config.publisher = Some("Contoso".to_string());
-        config.nuget_feeds = vec![NuGetFeedConfig {
-            name: "Custom".to_string(),
-            url: "https://example.com/nuget".to_string(),
-        }];
-        config.incremental_build = true;
-        config.editor_services_log_level = LogLevel::Debug;
+        let config = AlConfig {
+            root_namespace: Some("MyApp".to_string()),
+            publisher: Some("Contoso".to_string()),
+            nuget_feeds: vec![NuGetFeedConfig {
+                name: "Custom".to_string(),
+                url: "https://example.com/nuget".to_string(),
+            }],
+            incremental_build: true,
+            editor_services_log_level: LogLevel::Debug,
+            ..AlConfig::default()
+        };
 
         let json = serde_json::to_string(&config).unwrap();
         let parsed: AlConfig = serde_json::from_str(&json).unwrap();
@@ -793,8 +797,10 @@ mod tests {
 
     #[test]
     fn merge_empty_string_clears_optional_string() {
-        let mut config = AlConfig::default();
-        config.root_namespace = Some("OldNamespace".to_string());
+        let mut config = AlConfig {
+            root_namespace: Some("OldNamespace".to_string()),
+            ..AlConfig::default()
+        };
         config.merge(&serde_json::json!({ "rootNamespace": "" }));
         assert!(config.root_namespace.is_none());
     }
@@ -838,10 +844,12 @@ mod tests {
 
     #[test]
     fn persist_and_load_roundtrip() {
-        let mut config = AlConfig::default();
-        config.enable_code_analysis = false;
-        config.root_namespace = Some("Test.Namespace".to_string());
-        config.incremental_build = true;
+        let config = AlConfig {
+            enable_code_analysis: false,
+            root_namespace: Some("Test.Namespace".to_string()),
+            incremental_build: true,
+            ..AlConfig::default()
+        };
 
         let dir = tempfile::tempdir().expect("create tempdir");
         let path = dir.path().join("al-lsp").join("settings.json");
@@ -892,8 +900,10 @@ mod tests {
 
     #[test]
     fn is_lint_rule_enabled_master_toggle_off() {
-        let mut config = AlConfig::default();
-        config.enable_native_lint = false;
+        let config = AlConfig {
+            enable_native_lint: false,
+            ..AlConfig::default()
+        };
         assert!(!config.is_lint_rule_enabled("AL-L001"));
         assert!(!config.is_lint_rule_enabled("AL-L010"));
     }

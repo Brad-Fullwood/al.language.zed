@@ -59,17 +59,6 @@ const EDITED_CODEUNIT_SYNTAX_ERROR: &str = r#"codeunit 50100 "Edit Test"
     end;
 }"#;
 
-const EDITED_CODEUNIT_FIXED: &str = r#"codeunit 50100 "Edit Test"
-{
-    procedure HelloWorld()
-    var
-        Msg: Text;
-    begin
-        Msg := 'Hello';
-        Message(Msg);
-    end;
-}"#;
-
 const EDITED_CODEUNIT_RENAME_VAR: &str = r#"codeunit 50100 "Edit Test"
 {
     procedure HelloWorld()
@@ -540,9 +529,8 @@ async fn test_edit_e01_rapid_edits_no_crash() {
     // Final change with wait — this synchronizes against publishDiagnostics
     // for the last version, which is far more reliable on a loaded CI host
     // than a fixed 500ms sleep.
-    let final_content = format!(
-        r#"codeunit 50100 "Edit Test"
-{{
+    let final_content = r#"codeunit 50100 "Edit Test"
+{
     procedure HelloWorld()
     var
         Msg: Text;
@@ -550,8 +538,8 @@ async fn test_edit_e01_rapid_edits_no_crash() {
         Msg := 'Hello edit final';
         Message(Msg);
     end;
-}}"#
-    );
+}"#
+    .to_string();
     client.change_file("src/rapid.al", &final_content).await;
 
     // Server should still be responsive
@@ -705,7 +693,7 @@ async fn test_edit_h01_edit_to_empty_file() {
     let symbols = client.document_symbols("src/edit_test.al").await;
     assert!(symbols.is_empty(), "empty file should have no symbols");
 
-    let hover = client.hover("src/edit_test.al", 0, 0).await;
+    let _hover = client.hover("src/edit_test.al", 0, 0).await;
     // May or may not return something — just shouldn't crash
 
     client.shutdown().await;
@@ -722,10 +710,10 @@ async fn test_edit_h02_edit_to_invalid_al() {
         .await;
 
     // Queries should not crash
-    let symbols = client.document_symbols("src/edit_test.al").await;
+    let _symbols = client.document_symbols("src/edit_test.al").await;
     // May have some symbols from error recovery, but shouldn't panic
 
-    let hover = client.hover("src/edit_test.al", 0, 0).await;
+    let _hover = client.hover("src/edit_test.al", 0, 0).await;
     // Just verify no crash
 
     client.shutdown().await;

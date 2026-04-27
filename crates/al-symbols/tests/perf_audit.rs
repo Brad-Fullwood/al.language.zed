@@ -388,11 +388,7 @@ fn perf_audit_index_build() {
 }
 
 fn count_controls(control: &al_symbols::ControlSymbol) -> usize {
-    1 + control
-        .children
-        .iter()
-        .map(|c| count_controls(c))
-        .sum::<usize>()
+    1 + control.children.iter().map(count_controls).sum::<usize>()
 }
 
 fn format_bytes(bytes: u64) -> String {

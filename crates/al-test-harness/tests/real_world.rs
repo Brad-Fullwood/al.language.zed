@@ -509,7 +509,7 @@ async fn test_hover_on_procedure_in_codeunit() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("Precheck")),
+        content.is_some_and(|c| c.contains("Precheck")),
         "Hover should mention Precheck. Got: {:?}",
         content
     );
@@ -534,8 +534,7 @@ async fn test_hover_on_local_procedure() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("local")
-            || c.contains("PrecheckRecord")),
+        content.is_some_and(|c| c.contains("local") || c.contains("PrecheckRecord")),
         "Hover should mention local or PrecheckRecord. Got: {:?}",
         content
     );
@@ -755,7 +754,7 @@ async fn test_diagnostics_lint_empty_begin_end() {
     // Custom lint rules have been removed; AL-L001 is no longer emitted.
     // Verify no AL-L001 code appears (rules are inactive, not just silent).
     assert!(
-        !all_codes.iter().any(|c| *c == "AL-L001"),
+        !all_codes.contains(&"AL-L001"),
         "AL-L001 should not appear with custom lint rules removed. Got codes: {:?}",
         all_codes
     );

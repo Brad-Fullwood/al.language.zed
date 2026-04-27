@@ -312,7 +312,7 @@ async fn test_c01_hover_procedure_name() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("HelloWorld")),
+        content.is_some_and(|c| c.contains("HelloWorld")),
         "hover must mention HelloWorld"
     );
 
@@ -338,7 +338,7 @@ async fn test_c02_hover_local_variable_shows_type() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("Msg") || c.contains("Text")),
+        content.is_some_and(|c| c.contains("Msg") || c.contains("Text")),
         "hover on Msg must mention name or type"
     );
 
@@ -361,7 +361,7 @@ async fn test_c03_hover_parameter() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains('A') || c.contains("Integer")),
+        content.is_some_and(|c| c.contains('A') || c.contains("Integer")),
         "hover on parameter A must mention parameter name or type. Got: {:?}",
         content
     );
@@ -421,7 +421,7 @@ async fn test_c06_hover_record_variable_shows_type() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("Record") || c.contains("Cust")),
+        content.is_some_and(|c| c.contains("Record") || c.contains("Cust")),
         "hover on Record variable must mention Record or variable name"
     );
 
@@ -572,12 +572,12 @@ async fn test_e02_completions_include_local_variables() {
     let labels = completion_labels(&completions);
 
     assert!(
-        labels.iter().any(|l| *l == "MyCounter"),
+        labels.contains(&"MyCounter"),
         "completions must include MyCounter. Got: {:?}",
         labels
     );
     assert!(
-        labels.iter().any(|l| *l == "MyName"),
+        labels.contains(&"MyName"),
         "completions must include MyName. Got: {:?}",
         labels
     );
@@ -678,17 +678,17 @@ async fn test_f01_document_symbols_codeunit() {
         names
     );
     assert!(
-        names.iter().any(|n| *n == "HelloWorld"),
+        names.contains(&"HelloWorld"),
         "symbols must include HelloWorld. Got: {:?}",
         names
     );
     assert!(
-        names.iter().any(|n| *n == "Add"),
+        names.contains(&"Add"),
         "symbols must include Add. Got: {:?}",
         names
     );
     assert!(
-        names.iter().any(|n| *n == "InternalHelper"),
+        names.contains(&"InternalHelper"),
         "symbols must include InternalHelper. Got: {:?}",
         names
     );
@@ -1732,7 +1732,7 @@ async fn test_q07_unicode_string_literals() {
 async fn test_q08_very_long_line() {
     // Build a procedure call with 500 arguments (AL doesn't actually allow this,
     // but tree-sitter should not hang on it)
-    let long_comment: String = std::iter::repeat("x").take(2000).collect();
+    let long_comment: String = "x".repeat(2000);
     let code = format!(
         "codeunit 50174 \"Long Line\"\n{{\n    procedure DoWork()\n    begin\n        // {long_comment}\n        Message('done');\n    end;\n}}\n"
     );
@@ -1887,7 +1887,7 @@ async fn test_r03_core_completions_query() {
     let labels = completion_labels(&completions);
 
     assert!(
-        labels.iter().any(|l| *l == "MyVar"),
+        labels.contains(&"MyVar"),
         "core completions query must include MyVar. Got: {:?}",
         labels
     );

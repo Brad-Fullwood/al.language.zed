@@ -606,7 +606,7 @@ mod tests {
         let refs = find_variable_references(&result.tree, src, "MyVar");
         // Case-insensitive match should find references
         assert!(
-            refs.len() >= 1,
+            !refs.is_empty(),
             "Expected at least 1 case-insensitive reference, got {}",
             refs.len()
         );

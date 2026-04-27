@@ -818,7 +818,7 @@ fn lint_returns_empty_for_deep_nesting() {
 fn lint_config_default_constructs() {
     // LintConfig is now a unit struct placeholder — verify it constructs and
     // that lint_with_config still returns empty.
-    let config = al_syntax::lint::LintConfig::default();
+    let config = al_syntax::lint::LintConfig;
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
     let diags = al_syntax::lint::lint_with_config(&result.tree, CODEUNIT_CODE, &config);

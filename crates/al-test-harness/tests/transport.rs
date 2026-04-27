@@ -594,11 +594,8 @@ fn test_adversarial_drain_notifications_ordering_is_not_externally_verifiable() 
     // A caller that relies on notification ordering after open_file() has
     // no way to verify it without a running server.
     //
-    // This is a testability gap — document it.
-    assert!(
-        true,
-        "drain_notifications ordering is a private contract — cannot be externally verified"
-    );
+    // This is a testability gap — documented here so it isn't lost.
+    // drain_notifications ordering is a private contract — cannot be externally verified.
 }
 
 // ---------------------------------------------------------------------------
@@ -646,23 +643,22 @@ async fn test_adversarial_read_loop_content_length_trailing_whitespace_is_tolera
 /// Construct a (pending_map, notification_rx) pair backed by `read_loop`
 /// running on `reader`.  This replicates what `from_transport` does internally,
 /// so we can test the loop's behavior without needing a public constructor.
+type PendingMap = std::sync::Arc<
+    tokio::sync::Mutex<
+        std::collections::HashMap<i64, tokio::sync::oneshot::Sender<serde_json::Value>>,
+    >,
+>;
+type NotifRx = tokio::sync::mpsc::UnboundedReceiver<(String, serde_json::Value)>;
+
 fn make_dispatch_pair(
     reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
-) -> (
-    std::sync::Arc<
-        tokio::sync::Mutex<
-            std::collections::HashMap<i64, tokio::sync::oneshot::Sender<serde_json::Value>>,
-        >,
-    >,
-    tokio::sync::mpsc::UnboundedReceiver<(String, serde_json::Value)>,
-) {
+) -> (PendingMap, NotifRx) {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::io::BufReader;
     use tokio::sync::{mpsc, Mutex};
 
-    let pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<serde_json::Value>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
     let (notif_tx, notif_rx) = mpsc::unbounded_channel();
     let pending_clone = pending.clone();
 

@@ -357,11 +357,11 @@ async fn zed_fidelity_document_symbols_codeunit_children() {
         "Must find codeunit name. Got: {names:?}"
     );
     assert!(
-        names.iter().any(|n| *n == "HelloWorld"),
+        names.contains(&"HelloWorld"),
         "Must find HelloWorld procedure. Got: {names:?}"
     );
     assert!(
-        names.iter().any(|n| *n == "Add"),
+        names.contains(&"Add"),
         "Must find Add procedure. Got: {names:?}"
     );
 
@@ -564,7 +564,7 @@ async fn zed_fidelity_hover_variable_includes_type() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("Text") || c.contains("Msg")),
+        content.is_some_and(|c| c.contains("Text") || c.contains("Msg")),
         "Hover on Msg should mention its name or type. Got: {content:?}"
     );
 

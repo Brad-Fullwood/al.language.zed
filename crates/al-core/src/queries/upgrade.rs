@@ -205,7 +205,8 @@ mod tests {
     #[test]
     fn upgrade_report_empty_on_identical() {
         let cu = make_codeunit("My CU", vec![]);
-        let issues = upgrade_report(&[cu.clone()], &[cu]);
+        let baseline = std::slice::from_ref(&cu);
+        let issues = upgrade_report(baseline, baseline);
         assert!(issues.is_empty(), "No issues for identical versions");
     }
 

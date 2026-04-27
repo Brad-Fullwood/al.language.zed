@@ -68,25 +68,6 @@ const TABLE_WITH_FIELDS: &str = r#"table 50100 "Test Item"
     }
 }"#;
 
-const PAGE_FOR_TABLE: &str = r#"page 50100 "Test Item Card"
-{
-    PageType = Card;
-    SourceTable = "Test Item";
-
-    layout
-    {
-        area(Content)
-        {
-            group(General)
-            {
-                field("No."; Rec."No.") { }
-                field(Description; Rec.Description) { }
-                field("Unit Price"; Rec."Unit Price") { }
-            }
-        }
-    }
-}"#;
-
 const ENUM_AL: &str = r#"enum 50100 "Item Status"
 {
     Extensible = true;
@@ -94,19 +75,6 @@ const ENUM_AL: &str = r#"enum 50100 "Item Status"
     value(0; "Active") { Caption = 'Active'; }
     value(1; "Inactive") { Caption = 'Inactive'; }
     value(2; "Blocked") { Caption = 'Blocked'; }
-}"#;
-
-const DOT_ACCESS_CU: &str = r#"codeunit 50102 "Dot Access"
-{
-    procedure TestDotAccess()
-    var
-        Item: Record "Test Item";
-        Txt: Text;
-    begin
-        Item."No." := '1001';
-        Txt := Item."Description";
-        Txt.
-    end;
 }"#;
 
 const MULTI_PARAM_CU: &str = r#"codeunit 50103 "Multi Param"
@@ -391,7 +359,7 @@ async fn test_completeness_d01_cross_file_hover_after_edit() {
     client.change_file("src/helper.al", &edited_helper).await;
 
     // Hover on "Helper" in the caller should still work
-    let hover = client.hover("src/caller.al", 4, 20).await;
+    let _hover = client.hover("src/caller.al", 4, 20).await;
     // May or may not resolve — key thing is no crash and server is responsive
     let symbols = client.workspace_symbol("Helper CU").await;
     assert!(
@@ -932,7 +900,7 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
     assert!(!comp.is_empty(), "completion capability must work");
 
     // definition
-    let def = client.definition("src/cap_test.al", 6, 14).await;
+    let _def = client.definition("src/cap_test.al", 6, 14).await;
     // May or may not resolve — just must not error
 
     // references
@@ -952,11 +920,11 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
     assert!(!folds.is_empty(), "foldingRange capability must work");
 
     // formatting
-    let fmt = client.format("src/cap_test.al").await;
+    let _fmt = client.format("src/cap_test.al").await;
     // May or may not produce edits
 
     // signatureHelp
-    let sig = client.signature_help("src/cap_test.al", 6, 20).await;
+    let _sig = client.signature_help("src/cap_test.al", 6, 20).await;
     // May or may not resolve
 
     // codeAction — native lint rules have been removed so AL-L001 quickfixes will
@@ -965,7 +933,7 @@ async fn test_completeness_j01_all_declared_capabilities_are_functional() {
     // May or may not return actions depending on context — just verify no crash.
 
     // inlayHint
-    let hints = client.inlay_hints("src/cap_test.al", 0, 15).await;
+    let _hints = client.inlay_hints("src/cap_test.al", 0, 15).await;
     // May or may not produce hints
 
     // rename
@@ -1012,7 +980,7 @@ async fn test_completeness_k01_large_file_hover_is_correct() {
     let hover_val = hover.unwrap();
     let content = hover_content(&hover_val);
     assert!(
-        content.map_or(false, |c| c.contains("Param50") || c.contains("Integer")),
+        content.is_some_and(|c| c.contains("Param50") || c.contains("Integer")),
         "hover on Param50 should mention parameter name or type. Got: {:?}",
         content
     );

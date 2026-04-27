@@ -372,8 +372,8 @@ mod tests {
     #[test]
     fn token_classification_loads() {
         let tc = token_classification();
-        assert!(tc.keyword_control.contains(&"kw_begin".to_string()));
-        assert!(tc.keyword_object.contains(&"kw_table".to_string()));
+        assert!(tc.keyword_control.contains("kw_begin"));
+        assert!(tc.keyword_object.contains("kw_table"));
     }
 
     #[test]

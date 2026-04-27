@@ -345,7 +345,8 @@ mod tests {
             )],
         );
 
-        let changes = analyze_breaking_changes(&[cu.clone()], &[cu]);
+        let baseline = std::slice::from_ref(&cu);
+        let changes = analyze_breaking_changes(baseline, baseline);
         assert!(changes.is_empty(), "No changes for identical symbols");
     }
 

@@ -935,7 +935,7 @@ mod tests {
         }
 
         // Only the latest version should remain
-        let procs = index.procedures.get(&format!("version49"));
+        let procs = index.procedures.get("version49");
         assert!(procs.is_some(), "latest procedure should be in index");
         // Earlier versions should have been cleaned up
         let old = index.procedures.get("version0");

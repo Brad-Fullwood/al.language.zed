@@ -133,7 +133,7 @@ mod tests {
             Err(al_semantic::SemanticError::NotInitialized)?
         }
         fn _io() -> Result<(), AlError> {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "test"))?
+            Err(std::io::Error::other("test"))?
         }
         assert!(_discovery().is_err());
         assert!(_semantic().is_err());

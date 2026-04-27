@@ -926,7 +926,7 @@ async fn test_definition_data_driven() {
             Some(r) => {
                 let uri = definition_uri(r);
                 let def_line = definition_start_line(r);
-                let file_ok = uri.map_or(false, |u| u.contains(expected_file));
+                let file_ok = uri.is_some_and(|u| u.contains(expected_file));
                 let line_ok = match (expected_line, def_line) {
                     (Some(exp), Some(got)) => (got as i64 - exp as i64).unsigned_abs() <= 5,
                     (None, _) => true,
@@ -944,7 +944,7 @@ async fn test_definition_data_driven() {
                 .as_ref()
                 .and_then(|r| definition_uri(r))
                 .unwrap_or("null");
-            let line_got = result.as_ref().and_then(|r| definition_start_line(r));
+            let line_got = result.as_ref().and_then(definition_start_line);
             eprintln!(
                 "DEF FAIL [{}/{}] {}:{}:{} — expected file='{}' line={:?}, got uri='{}' line={:?}",
                 i + 1,
@@ -975,7 +975,14 @@ async fn test_definition_data_driven() {
 // ===================================================================
 
 /// (file, line, col, items_that_must_be_present, items_that_must_not_be_present)
-const COMPLETION_CASES: &[(&str, u32, u32, &[&str], &[&str])] = &[
+type CompletionCase = (
+    &'static str,
+    u32,
+    u32,
+    &'static [&'static str],
+    &'static [&'static str],
+);
+const COMPLETION_CASES: &[CompletionCase] = &[
     // ── this. completions in report ──
     // this. in report body → should show global vars + procedures
     (

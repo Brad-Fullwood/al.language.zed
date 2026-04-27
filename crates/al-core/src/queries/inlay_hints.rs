@@ -683,10 +683,8 @@ mod tests {
         );
         let h = &hints[0];
         assert_eq!(h.kind, Some(AlInlayHintKind::Type));
-        match &h.label {
-            AlInlayHintLabel::String(s) => assert_eq!(s, ": Boolean"),
-            _ => panic!("Unexpected label type"),
-        }
+        let AlInlayHintLabel::String(s) = &h.label;
+        assert_eq!(s, ": Boolean");
     }
 
     #[test]
@@ -722,12 +720,8 @@ mod tests {
         collect_return_type_hints(tree.root_node(), source, &full_range(), &mut hints);
 
         assert_eq!(hints.len(), 1);
-        match &hints[0].label {
-            AlInlayHintLabel::String(s) => {
-                assert!(s.contains("Record"), "Expected Record in hint: {s}")
-            }
-            _ => panic!("Unexpected label type"),
-        }
+        let AlInlayHintLabel::String(s) = &hints[0].label;
+        assert!(s.contains("Record"), "Expected Record in hint: {s}");
     }
 
     #[test]

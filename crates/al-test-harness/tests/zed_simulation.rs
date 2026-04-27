@@ -741,7 +741,7 @@ async fn test_fixture_dataitem_variable_resolution() {
         staging_hover.is_some(),
         "StagingRec (dataitem variable) should have hover info"
     );
-    let staging_hover_text = hover_content(&staging_hover.as_ref().unwrap()).unwrap_or("");
+    let staging_hover_text = hover_content(staging_hover.as_ref().unwrap()).unwrap_or("");
     assert!(
         staging_hover_text.contains("Record")
             || staging_hover_text.contains("Item Journal Staging"),
@@ -836,7 +836,7 @@ async fn test_fixture_multilevel_member_chain() {
         ijl_hover.is_some(),
         "IJLPostTask should have hover info (codeunit variable)"
     );
-    let ijl_text = hover_content(&ijl_hover.as_ref().unwrap()).unwrap_or("");
+    let ijl_text = hover_content(ijl_hover.as_ref().unwrap()).unwrap_or("");
     assert!(
         ijl_text.contains("Codeunit") || ijl_text.contains("IJL Post Task"),
         "IJLPostTask hover should mention Codeunit type. Got: {:?}",
@@ -945,7 +945,7 @@ async fn test_fixture_builtin_system_field_hover() {
         sysid_hover.is_some(),
         "SystemId should have hover info (built-in system field)"
     );
-    let sysid_text = hover_content(&sysid_hover.as_ref().unwrap()).unwrap_or("");
+    let sysid_text = hover_content(sysid_hover.as_ref().unwrap()).unwrap_or("");
     assert!(
         sysid_text.contains("SystemId"),
         "SystemId hover should mention SystemId. Got: {:?}",
@@ -1109,7 +1109,7 @@ async fn test_fixture_builtin_method_hover() {
         findset_hover.is_some(),
         "FindSet should have hover info (built-in Record method)"
     );
-    let findset_text = hover_content(&findset_hover.as_ref().unwrap()).unwrap_or("");
+    let findset_text = hover_content(findset_hover.as_ref().unwrap()).unwrap_or("");
     assert!(
         findset_text.contains("FindSet"),
         "FindSet hover should mention FindSet. Got: {:?}",
@@ -1507,12 +1507,12 @@ async fn test_fixture_this_completions_in_page() {
     let completions = client.completion(staging_list_rel, line, col).await;
     let labels = completion_labels(&completions);
     assert!(
-        labels.iter().any(|l| *l == "ErrorMessageText"),
+        labels.contains(&"ErrorMessageText"),
         "this. in page should show ErrorMessageText. Got: {:?}",
         labels
     );
     assert!(
-        labels.iter().any(|l| *l == "RowStyle"),
+        labels.contains(&"RowStyle"),
         "this. in page should show RowStyle. Got: {:?}",
         labels
     );
@@ -1544,12 +1544,12 @@ async fn test_fixture_enum_completions_through_field_chain() {
     let completions = client.completion(staging_list_rel, line, col).await;
     let labels = completion_labels(&completions);
     assert!(
-        labels.iter().any(|l| *l == "Pending"),
+        labels.contains(&"Pending"),
         "Rec.Status:: should show Pending enum value. Got: {:?}",
         labels
     );
     assert!(
-        labels.iter().any(|l| *l == "Posted"),
+        labels.contains(&"Posted"),
         "Rec.Status:: should show Posted enum value. Got: {:?}",
         labels
     );
@@ -1589,7 +1589,7 @@ async fn test_fixture_hover_cross_file_workspace_procedure() {
         hover.is_some(),
         "SetAction should have hover info — it's a workspace procedure on Report 'IJL Process Staging'"
     );
-    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    let text = hover_content(hover.as_ref().unwrap()).unwrap_or("");
     assert!(
         text.contains("SetAction") && text.contains("NewAction"),
         "SetAction hover should show procedure signature with NewAction param. Got: {:?}",
@@ -1623,7 +1623,7 @@ async fn test_fixture_hover_workspace_procedure_with_return_type() {
         hover.is_some(),
         "GetJournalData should have hover info — it's a workspace procedure on Table 'Item Journal Staging'"
     );
-    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    let text = hover_content(hover.as_ref().unwrap()).unwrap_or("");
     assert!(
         text.contains("GetJournalData"),
         "GetJournalData hover should mention the procedure name. Got: {:?}",
@@ -1733,7 +1733,7 @@ async fn test_fixture_audit_two_level_member_chain_hover() {
         hover.is_some(),
         "Precheck should have hover info — 2-level chain: this.APIHelper (Codeunit) → Precheck"
     );
-    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    let text = hover_content(hover.as_ref().unwrap()).unwrap_or("");
     assert!(
         text.contains("Precheck"),
         "Precheck hover should mention the procedure name. Got: {:?}",
@@ -1767,7 +1767,7 @@ async fn test_fixture_audit_quoted_field_hover() {
         hover.is_some(),
         "\"Journal Data\" should have hover info — it's a field on Rec (same table)"
     );
-    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    let text = hover_content(hover.as_ref().unwrap()).unwrap_or("");
     assert!(
         text.contains("Journal Data") || text.contains("field"),
         "Journal Data hover should mention field info. Got: {:?}",
@@ -1803,7 +1803,7 @@ async fn test_fixture_audit_dataitem_field_hover() {
         hover.is_some(),
         "StagingRec.Status should have hover info — field on dataitem record"
     );
-    let text = hover_content(&hover.as_ref().unwrap()).unwrap_or("");
+    let text = hover_content(hover.as_ref().unwrap()).unwrap_or("");
     assert!(
         text.contains("Status") || text.contains("Enum") || text.contains("IJL Status"),
         "StagingRec.Status hover should mention Status field or enum type. Got: {:?}",
