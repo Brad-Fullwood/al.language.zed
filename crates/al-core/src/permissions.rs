@@ -33,8 +33,8 @@ pub fn collect_permissions(workspace: &Workspace) -> Vec<PermissionEntry> {
 
     for item in workspace.file_index.files.iter() {
         let content = item.value();
-        let result = al_syntax::AlParser::parse_quick(content);
-        if let Some(obj) = al_syntax::find_object_declaration(&result.tree, content) {
+        let result = crate::syntax::AlParser::parse_quick(content);
+        if let Some(obj) = crate::syntax::find_object_declaration(&result.tree, content) {
             if let Some((perm_type, perm_value)) = permission_for_kind(&obj.kind) {
                 entries.push(PermissionEntry {
                     object_type: perm_type.to_string(),
@@ -133,10 +133,10 @@ pub fn render_xml(entries: &[PermissionEntry], role_id: &str, role_name: &str) -
 /// Map an AL object kind string to a (permission_type, permission_value) pair.
 ///
 /// Looks up the object type in the `tree-sitter-al/data/object_types.json` data file
-/// via [`al_syntax::language_data::object_type_by_keyword`].
+/// via [`crate::syntax::language_data::object_type_by_keyword`].
 /// Returns None for object types that don't get permission entries (extensions, enums, interfaces, etc.).
 fn permission_for_kind(kind: &str) -> Option<(&'static str, &'static str)> {
-    let ot = al_syntax::language_data::object_type_by_keyword(kind)?;
+    let ot = crate::syntax::language_data::object_type_by_keyword(kind)?;
     let perm_type = ot.permission_type.as_deref()?;
     let perm_value = ot.permission_value.as_deref()?;
     Some((perm_type, perm_value))

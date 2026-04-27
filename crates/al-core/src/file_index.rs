@@ -158,7 +158,7 @@ impl FileIndex {
         // Fallback: extract from cached parse tree
         let (text, tree) = self.get_cached_parse(path)?;
         let symbols: Vec<crate::queries::AlDocumentSymbol> =
-            al_syntax::extract_document_symbols(&tree, &text)
+            crate::syntax::extract_document_symbols(&tree, &text)
                 .into_iter()
                 .map(Into::into)
                 .collect();
@@ -269,7 +269,7 @@ impl FileIndex {
         self.remove_procedures_for_file(&path);
 
         // Parse once; cache the tree for cross-file queries and extract object metadata.
-        let result = al_syntax::AlParser::parse_quick(&content);
+        let result = crate::syntax::AlParser::parse_quick(&content);
         self.index_from_result(path, content, &result.tree);
     }
 
@@ -299,7 +299,7 @@ impl FileIndex {
     fn index_from_result(&self, path: PathBuf, content: String, tree: &tree_sitter::Tree) {
         // Cache the tree unconditionally — all files benefit from it.
         self.file_trees.insert(path.clone(), tree.clone());
-        if let Some(obj_info) = al_syntax::find_object_declaration(tree, &content) {
+        if let Some(obj_info) = crate::syntax::find_object_declaration(tree, &content) {
             let obj_name = obj_info.name.to_lowercase();
             self.objects.insert(obj_name.clone(), path.clone());
             self.path_to_object.insert(path.clone(), obj_name);
@@ -321,7 +321,7 @@ impl FileIndex {
         // Inline the AlSymbolKind::Function/Event predicate here to avoid an
         // upward dependency from file_index (core infrastructure) into the
         // queries module (higher-level LSP feature code).
-        let doc_symbols = al_syntax::extract_document_symbols(tree, &content);
+        let doc_symbols = crate::syntax::extract_document_symbols(tree, &content);
         let mut proc_names = Vec::new();
         for sym in &doc_symbols {
             if let Some(children) = &sym.children {

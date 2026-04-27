@@ -37,7 +37,7 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
         };
         let source = text.as_bytes();
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
         if obj_info.kind.to_lowercase() != "codeunit" {
@@ -188,7 +188,7 @@ pub fn is_test_attribute(text: &str) -> bool {
 #[cfg(test)]
 mod test_discovery {
     use super::*;
-    use al_syntax::AlParser;
+    use crate::syntax::AlParser;
 
     #[test]
     fn test_attribute_detection() {

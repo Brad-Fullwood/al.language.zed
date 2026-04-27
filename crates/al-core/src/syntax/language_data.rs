@@ -132,20 +132,22 @@ struct PageControlsFile {
 // ── LazyLock statics ─────────────────────────────────────────────────────────
 
 static KEYWORDS: LazyLock<Keywords> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../../../tree-sitter-al/data/keywords.json"))
-        .expect("keywords.json must be valid")
+    serde_json::from_str(include_str!(
+        "../../../../tree-sitter-al/data/keywords.json"
+    ))
+    .expect("keywords.json must be valid")
 });
 
 static BUILTIN_FUNCTIONS: LazyLock<Vec<BuiltinFunction>> = LazyLock::new(|| {
     serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/builtin_functions.json"
+        "../../../../tree-sitter-al/data/builtin_functions.json"
     ))
     .expect("builtin_functions.json must be valid")
 });
 
 static OBJECT_TYPES: LazyLock<Vec<ObjectType>> = LazyLock::new(|| {
     let file: ObjectTypesFile = serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/object_types.json"
+        "../../../../tree-sitter-al/data/object_types.json"
     ))
     .expect("object_types.json must be valid");
     file.object_types
@@ -153,14 +155,14 @@ static OBJECT_TYPES: LazyLock<Vec<ObjectType>> = LazyLock::new(|| {
 
 static IMPLICIT_VARIABLES: LazyLock<Vec<ImplicitVariable>> = LazyLock::new(|| {
     serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/implicit_variables.json"
+        "../../../../tree-sitter-al/data/implicit_variables.json"
     ))
     .expect("implicit_variables.json must be valid")
 });
 
 static PAGE_CONTROLS: LazyLock<Vec<PageControlEntry>> = LazyLock::new(|| {
     let file: PageControlsFile = serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/page_controls.json"
+        "../../../../tree-sitter-al/data/page_controls.json"
     ))
     .expect("page_controls.json must be valid");
     file.page_controls
@@ -168,21 +170,21 @@ static PAGE_CONTROLS: LazyLock<Vec<PageControlEntry>> = LazyLock::new(|| {
 
 static SINGLE_STMT_OPENERS: LazyLock<Vec<SingleStmtOpener>> = LazyLock::new(|| {
     serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/single_stmt_openers.json"
+        "../../../../tree-sitter-al/data/single_stmt_openers.json"
     ))
     .expect("single_stmt_openers.json must be valid")
 });
 
 static RUNTIME_ENUMS: LazyLock<Vec<RuntimeEnum>> = LazyLock::new(|| {
     serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/runtime_enums.json"
+        "../../../../tree-sitter-al/data/runtime_enums.json"
     ))
     .expect("runtime_enums.json must be valid")
 });
 
 static TOKEN_CLASSIFICATION: LazyLock<TokenClassification> = LazyLock::new(|| {
     let raw: TokenClassificationRaw = serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/token_classification.json"
+        "../../../../tree-sitter-al/data/token_classification.json"
     ))
     .expect("token_classification.json must be valid");
     TokenClassification {

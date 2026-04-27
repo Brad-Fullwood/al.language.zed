@@ -36,7 +36,7 @@ pub fn detect_sql_patterns(workspace: &Workspace) -> Vec<SqlPatternViolation> {
             continue;
         };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(&parsed_tree, &text) else {
             continue;
         };
 

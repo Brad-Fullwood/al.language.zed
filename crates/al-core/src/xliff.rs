@@ -188,7 +188,7 @@ fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
     // Sort object type keywords by length descending so that longer keywords (extensions) are
     // tried before their shorter base-type prefixes — e.g. "tableextension" before "table".
     // This avoids false prefix matches like "pagepart" matching "page".
-    let mut sorted_types: Vec<&str> = al_syntax::language_data::object_types()
+    let mut sorted_types: Vec<&str> = crate::syntax::language_data::object_types()
         .iter()
         .map(|ot| ot.keyword.as_str())
         .collect();

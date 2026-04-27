@@ -3,7 +3,7 @@
 //! Extracts variable declarations and their types from the current scope
 //! by walking the tree-sitter AST. Handles local variables, global variables,
 //! parameters, and trigger-implicit variables (Rec, xRec, etc.).
-use crate::types::SyntaxPosition as Position;
+use super::types::SyntaxPosition as Position;
 use tracing::{debug, trace};
 use tree_sitter::{Node, Tree};
 
@@ -68,7 +68,7 @@ pub fn object_kind_to_al_type(kind: &str) -> String {
     }
 
     // For all other known object types, use the display_name from language_data.
-    if let Some(ot) = crate::language_data::object_type_by_keyword(kind) {
+    if let Some(ot) = super::language_data::object_type_by_keyword(kind) {
         return ot.display_name.clone();
     }
 
@@ -202,7 +202,7 @@ impl<'a> TypeResolver<'a> {
             .ok()
             .and_then(|s| s.lines().nth(row).map(str::to_string))
             .unwrap_or_default();
-        let column = crate::utf16_col_to_byte_offset(&line, position.character as usize);
+        let column = super::utf16_col_to_byte_offset(&line, position.character as usize);
         let point = tree_sitter::Point { row, column };
 
         let node = self
@@ -463,7 +463,7 @@ impl<'a> TypeResolver<'a> {
         let Some(source) = std::str::from_utf8(self.source).ok() else {
             return;
         };
-        let Some(obj) = crate::navigation::find_object_declaration(self.tree, source) else {
+        let Some(obj) = super::navigation::find_object_declaration(self.tree, source) else {
             return;
         };
 
@@ -511,7 +511,7 @@ impl<'a> TypeResolver<'a> {
         self.add_record_implicit_vars(root, result);
 
         // Add all implicit variables except Rec/xRec (already added above).
-        for iv in crate::language_data::implicit_variables() {
+        for iv in super::language_data::implicit_variables() {
             if iv.name.eq_ignore_ascii_case("Rec") || iv.name.eq_ignore_ascii_case("xRec") {
                 continue;
             }
@@ -821,7 +821,7 @@ impl<'a> TypeResolver<'a> {
 
     /// Extract text from a node, removing surrounding quotes.
     fn node_text_clean(&self, node: Node<'a>) -> Option<String> {
-        crate::node_text_clean(node, self.source)
+        super::node_text_clean(node, self.source)
     }
 }
 
@@ -845,8 +845,8 @@ fn parse_type_text(type_text: &str) -> (String, Option<String>) {
 
 #[cfg(test)]
 mod tests {
+    use crate::syntax::AlParser;
     use super::*;
-    use crate::AlParser;
 
     fn parse(src: &str) -> (Tree, String) {
         let mut parser = AlParser::new();

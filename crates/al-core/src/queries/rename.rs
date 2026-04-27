@@ -15,8 +15,11 @@ pub fn prepare_rename(
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
-    let node =
-        al_syntax::find_node_at_position(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))?;
+    let node = crate::syntax::find_node_at_position(
+        &tree,
+        &text,
+        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
+    )?;
     let clean_name = super::node_clean_name(node, text.as_bytes())?;
     if !matches!(
         node.kind(),
@@ -25,7 +28,7 @@ pub fn prepare_rename(
         return None;
     }
     Some((
-        crate::syntax::ts_range_to_lsp(&node.range(), text.as_bytes()).into(),
+        crate::syntax_lsp::ts_range_to_lsp(&node.range(), text.as_bytes()).into(),
         clean_name.to_string(),
     ))
 }
@@ -41,14 +44,17 @@ pub fn rename(
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
-    let node =
-        al_syntax::find_node_at_position(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))?;
+    let node = crate::syntax::find_node_at_position(
+        &tree,
+        &text,
+        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
+    )?;
     let clean_name = super::node_clean_name(node, text.as_bytes())?;
 
     let mut changes: Vec<(Url, Vec<TextEdit>)> = Vec::new();
 
     let source_bytes = text.as_bytes();
-    let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
+    let refs = crate::syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let edits: Vec<TextEdit> = refs
             .iter()
@@ -56,7 +62,7 @@ pub fn rename(
                 let matched_text = text.get(r.start_byte..r.end_byte)?;
                 let replacement = make_rename_text(node.kind(), matched_text, new_name);
                 Some(TextEdit {
-                    range: crate::syntax::ts_range_to_lsp(r, source_bytes).into(),
+                    range: crate::syntax_lsp::ts_range_to_lsp(r, source_bytes).into(),
                     new_text: replacement,
                 })
             })
@@ -78,7 +84,7 @@ pub fn rename(
         let Some((file_text, file_tree)) = workspace.file_index.get_cached_parse(&file_path) else {
             continue;
         };
-        let refs = al_syntax::find_variable_references(&file_tree, &file_text, clean_name);
+        let refs = crate::syntax::find_variable_references(&file_tree, &file_text, clean_name);
         if !refs.is_empty() {
             let file_source_bytes = file_text.as_bytes();
             let edits: Vec<TextEdit> = refs
@@ -87,7 +93,7 @@ pub fn rename(
                     let matched_text = file_text.get(r.start_byte..r.end_byte)?;
                     let replacement = make_rename_text("", matched_text, new_name);
                     Some(TextEdit {
-                        range: crate::syntax::ts_range_to_lsp(r, file_source_bytes).into(),
+                        range: crate::syntax_lsp::ts_range_to_lsp(r, file_source_bytes).into(),
                         new_text: replacement,
                     })
                 })

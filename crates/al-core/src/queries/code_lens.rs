@@ -29,7 +29,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
         return vec![];
     };
 
-    let symbols = al_syntax::extract_document_symbols(&tree, &text);
+    let symbols = crate::syntax::extract_document_symbols(&tree, &text);
 
     // Collect the names of all procedure symbols we need reference counts for.
     // This avoids building the full reference map when there are no procedures.
@@ -141,7 +141,7 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
     /// declaration itself, and any field with the same name doubled the
     /// count.
     ///
-    /// AL grammar shapes (mirrors `al_syntax::is_call_reference`):
+    /// AL grammar shapes (mirrors `crate::syntax::is_call_reference`):
     /// - bare call `Foo()`: `identifier → name → primary_expression`,
     ///   whose `postfix_expression` parent has a `call_suffix` child;
     /// - method call `obj.Foo()`: `identifier → name → member_call_suffix`
@@ -155,7 +155,7 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
         seen: &mut HashMap<String, std::collections::HashSet<(String, u32, u32)>>,
     ) {
         let source_bytes = text.as_bytes();
-        al_syntax::walk_tree(tree.root_node(), &mut |node| {
+        crate::syntax::walk_tree(tree.root_node(), &mut |node| {
             if !matches!(node.kind(), "identifier" | "quoted_identifier") {
                 return;
             }
@@ -170,7 +170,7 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
                 return;
             }
             let ts_range = node.range();
-            let lsp_range = crate::syntax::ts_range_to_lsp(&ts_range, source_bytes);
+            let lsp_range = crate::syntax_lsp::ts_range_to_lsp(&ts_range, source_bytes);
             let key = (
                 uri_str.to_string(),
                 lsp_range.start.line,
@@ -182,7 +182,7 @@ fn build_reference_counts(workspace: &Workspace, current_uri: &Url) -> HashMap<S
 
     /// Walk parents of an `identifier` / `quoted_identifier` node to decide
     /// whether it sits in a call position. Mirrors the private
-    /// `al_syntax::is_call_reference` so we don't expose it just for this.
+    /// `crate::syntax::is_call_reference` so we don't expose it just for this.
     fn is_call_site(node: tree_sitter::Node<'_>) -> bool {
         let Some(name_parent) = node.parent() else {
             return false;

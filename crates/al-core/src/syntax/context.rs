@@ -2,7 +2,7 @@
 //!
 //! Extracted from al-lsp so both the LSP and CLI can use them.
 
-use crate::types::SyntaxPosition as Position;
+use super::types::SyntaxPosition as Position;
 use tracing::debug;
 
 /// Detected completion context from cursor position.
@@ -30,7 +30,7 @@ pub fn detect_context(text: &str, position: Position) -> CompletionContext {
         };
 
         // `col` is a UTF-16 code unit offset from LSP; convert to byte offset before slicing.
-        let byte_col = crate::utf16_col_to_byte_offset(line, col);
+        let byte_col = super::utf16_col_to_byte_offset(line, col);
         let prefix = &line[..byte_col];
 
         let trimmed = prefix.trim_end();

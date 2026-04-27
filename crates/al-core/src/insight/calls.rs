@@ -1407,7 +1407,7 @@ mod tests {
     end;
 }
 "#;
-        let result = al_syntax::AlParser::parse_quick(source);
+        let result = crate::syntax::AlParser::parse_quick(source);
         let types = extract_procedure_var_types(&result.tree, source, "DoWork");
 
         assert!(types.contains_key("cust"), "Should find 'cust' variable");
@@ -1440,7 +1440,7 @@ mod tests {
     end;
 }
 "#;
-        let result = al_syntax::AlParser::parse_quick(source);
+        let result = crate::syntax::AlParser::parse_quick(source);
         let types = extract_procedure_var_types(&result.tree, source, "NonExistentProc");
         assert!(types.is_empty());
     }
@@ -1466,7 +1466,7 @@ mod tests {
     end;
 }
 "#;
-        let result = al_syntax::AlParser::parse_quick(source);
+        let result = crate::syntax::AlParser::parse_quick(source);
         let sites = extract_call_sites(&result.tree, source, "DoWork");
 
         // Should find: SalesPost.Post(), Cust.Insert(true), Cust.Modify(), Cust.Delete(false), DoSomething()
@@ -1565,7 +1565,7 @@ mod tests {
     end;
 }
 "#;
-        let result = al_syntax::AlParser::parse_quick(source);
+        let result = crate::syntax::AlParser::parse_quick(source);
 
         // Set up symbol index with Customer table having OnBeforeInsertEvent
         let index = SymbolIndex::new();
@@ -1654,7 +1654,7 @@ mod tests {
     end;
 }
 "#;
-        let result = al_syntax::AlParser::parse_quick(source);
+        let result = crate::syntax::AlParser::parse_quick(source);
         let score = fanout_score(&result.tree);
         assert!(score >= 3, "Score should be at least 3 (found {score})");
     }
@@ -1662,7 +1662,7 @@ mod tests {
     #[test]
     fn fanout_score_empty_codeunit() {
         let source = r#"codeunit 50100 "Empty CU" { }"#;
-        let result = al_syntax::AlParser::parse_quick(source);
+        let result = crate::syntax::AlParser::parse_quick(source);
         let score = fanout_score(&result.tree);
         assert_eq!(score, 0, "Empty codeunit should have fanout score 0");
     }
@@ -1690,7 +1690,7 @@ mod tests {
     end;
 }
 "#;
-        let result = al_syntax::AlParser::parse_quick(source);
+        let result = crate::syntax::AlParser::parse_quick(source);
 
         let index = SymbolIndex::new();
         let mut insight = InsightGraph::new();

@@ -10,7 +10,7 @@ use al_core::symbols::{
     EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,
     SymbolIndex,
 };
-use al_syntax::{
+use al_core::syntax::{
     AlParser, FormatOptions, SyntaxFoldingRange, SyntaxFoldingRangeKind, SyntaxSymbolKind,
 };
 use tower_lsp::lsp_types::*;
@@ -407,7 +407,7 @@ fn lint_diagnostics_convert_to_lsp() {
 
     let mut parser = make_parser();
     let result = parser.parse(code);
-    let lints = al_syntax::lint(&result.tree, code);
+    let lints = al_core::syntax::lint(&result.tree, code);
 
     assert!(
         lints.is_empty(),
@@ -492,7 +492,7 @@ fn symbol_index_get_by_kind() {
 fn document_symbols_from_codeunit() {
     let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
-    let symbols = al_syntax::extract_document_symbols(&result.tree, SIMPLE_CODEUNIT);
+    let symbols = al_core::syntax::extract_document_symbols(&result.tree, SIMPLE_CODEUNIT);
 
     assert_eq!(symbols.len(), 1, "Should have one top-level object");
 
@@ -522,7 +522,7 @@ fn document_symbols_from_codeunit() {
 fn document_symbols_from_page() {
     let mut parser = make_parser();
     let result = parser.parse(PAGE_AL);
-    let symbols = al_syntax::extract_document_symbols(&result.tree, PAGE_AL);
+    let symbols = al_core::syntax::extract_document_symbols(&result.tree, PAGE_AL);
 
     assert_eq!(symbols.len(), 1);
     let obj = &symbols[0];
@@ -534,7 +534,7 @@ fn document_symbols_from_page() {
 fn document_symbols_from_codeunit_with_events() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
-    let symbols = al_syntax::extract_document_symbols(&result.tree, CODEUNIT_AL);
+    let symbols = al_core::syntax::extract_document_symbols(&result.tree, CODEUNIT_AL);
 
     assert_eq!(symbols.len(), 1);
     let obj = &symbols[0];
@@ -558,7 +558,7 @@ fn document_symbols_from_codeunit_with_events() {
 fn semantic_tokens_cover_all_token_types() {
     let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
-    let tokens = al_syntax::extract_semantic_tokens(&result.tree, SIMPLE_CODEUNIT);
+    let tokens = al_core::syntax::extract_semantic_tokens(&result.tree, SIMPLE_CODEUNIT);
 
     assert!(!tokens.is_empty(), "Should produce semantic tokens");
 
@@ -566,13 +566,13 @@ fn semantic_tokens_cover_all_token_types() {
     // Keywords are now deferred to tree-sitter highlights.scm; no KEYWORD semantic tokens.
     let has_string = tokens
         .iter()
-        .any(|t| t.token_type == al_syntax::tokens::token_types::STRING);
+        .any(|t| t.token_type == al_core::syntax::tokens::token_types::STRING);
     let has_number = tokens
         .iter()
-        .any(|t| t.token_type == al_syntax::tokens::token_types::NUMBER);
+        .any(|t| t.token_type == al_core::syntax::tokens::token_types::NUMBER);
     let has_function = tokens
         .iter()
-        .any(|t| t.token_type == al_syntax::tokens::token_types::FUNCTION);
+        .any(|t| t.token_type == al_core::syntax::tokens::token_types::FUNCTION);
 
     assert!(
         has_string,
@@ -600,7 +600,7 @@ fn semantic_tokens_cover_all_token_types() {
 fn semantic_tokens_delta_encoding_is_valid() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
-    let tokens = al_syntax::extract_semantic_tokens(&result.tree, CODEUNIT_AL);
+    let tokens = al_core::syntax::extract_semantic_tokens(&result.tree, CODEUNIT_AL);
 
     // Reconstruct absolute positions and verify ordering
     let mut abs_line: u32 = 0;
@@ -632,7 +632,7 @@ fn semantic_tokens_delta_encoding_is_valid() {
 fn folding_ranges_cover_structural_elements() {
     let mut parser = make_parser();
     let result = parser.parse(SIMPLE_CODEUNIT);
-    let ranges = al_syntax::extract_folding_ranges(&result.tree, SIMPLE_CODEUNIT);
+    let ranges = al_core::syntax::extract_folding_ranges(&result.tree, SIMPLE_CODEUNIT);
 
     assert!(
         !ranges.is_empty(),
@@ -666,7 +666,7 @@ codeunit 50100 Test
 
     let mut parser = make_parser();
     let result = parser.parse(code);
-    let ranges = al_syntax::extract_folding_ranges(&result.tree, code);
+    let ranges = al_core::syntax::extract_folding_ranges(&result.tree, code);
 
     let comment_ranges: Vec<&SyntaxFoldingRange> = ranges
         .iter()
@@ -687,10 +687,10 @@ codeunit 50100 Test
 fn formatting_idempotent() {
     // Format once
     let opts = FormatOptions::default();
-    let first = al_syntax::format_al(SIMPLE_CODEUNIT, &opts);
+    let first = al_core::syntax::format_al(SIMPLE_CODEUNIT, &opts);
 
     // Format again
-    let second = al_syntax::format_al(&first, &opts);
+    let second = al_core::syntax::format_al(&first, &opts);
 
     assert_eq!(
         first, second,
@@ -701,8 +701,8 @@ fn formatting_idempotent() {
 #[test]
 fn formatting_page_idempotent() {
     let opts = FormatOptions::default();
-    let first = al_syntax::format_al(PAGE_AL, &opts);
-    let second = al_syntax::format_al(&first, &opts);
+    let first = al_core::syntax::format_al(PAGE_AL, &opts);
+    let second = al_core::syntax::format_al(&first, &opts);
 
     assert_eq!(first, second, "Page formatting should be idempotent");
 }
@@ -710,8 +710,8 @@ fn formatting_page_idempotent() {
 #[test]
 fn formatting_codeunit_idempotent() {
     let opts = FormatOptions::default();
-    let first = al_syntax::format_al(CODEUNIT_AL, &opts);
-    let second = al_syntax::format_al(&first, &opts);
+    let first = al_core::syntax::format_al(CODEUNIT_AL, &opts);
+    let second = al_core::syntax::format_al(&first, &opts);
 
     assert_eq!(first, second, "Codeunit formatting should be idempotent");
 }
@@ -719,7 +719,7 @@ fn formatting_codeunit_idempotent() {
 #[test]
 fn formatting_produces_valid_parseable_output() {
     let opts = FormatOptions::default();
-    let formatted = al_syntax::format_al(SIMPLE_CODEUNIT, &opts);
+    let formatted = al_core::syntax::format_al(SIMPLE_CODEUNIT, &opts);
 
     let mut parser = make_parser();
     let result = parser.parse(&formatted);
@@ -740,7 +740,7 @@ fn lint_returns_empty_for_codeunit() {
     // Native lint rules have been removed — lint() always returns empty.
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
-    let lints = al_syntax::lint(&result.tree, CODEUNIT_AL);
+    let lints = al_core::syntax::lint(&result.tree, CODEUNIT_AL);
     assert!(
         lints.is_empty(),
         "lint() must return empty Vec (rules removed): {:?}",
@@ -761,7 +761,7 @@ fn lint_returns_empty_for_naming_violation() {
 
     let mut parser = make_parser();
     let result = parser.parse(code);
-    let lints = al_syntax::lint(&result.tree, code);
+    let lints = al_core::syntax::lint(&result.tree, code);
     assert!(
         lints.is_empty(),
         "lint() must return empty Vec (naming rule removed): {:?}",
@@ -788,7 +788,7 @@ fn lint_returns_empty_for_clean_code() {
 
     let mut parser = make_parser();
     let result = parser.parse(code);
-    let lints = al_syntax::lint(&result.tree, code);
+    let lints = al_core::syntax::lint(&result.tree, code);
     assert!(
         lints.is_empty(),
         "lint() must return empty Vec: {:?}",
@@ -804,7 +804,7 @@ fn lint_returns_empty_for_clean_code() {
 fn find_object_declaration_in_page() {
     let mut parser = make_parser();
     let result = parser.parse(PAGE_AL);
-    let obj = al_syntax::find_object_declaration(&result.tree, PAGE_AL);
+    let obj = al_core::syntax::find_object_declaration(&result.tree, PAGE_AL);
 
     assert!(obj.is_some(), "Should find object declaration in page");
     let obj = obj.unwrap();
@@ -817,7 +817,7 @@ fn find_object_declaration_in_page() {
 fn find_object_declaration_in_codeunit() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
-    let obj = al_syntax::find_object_declaration(&result.tree, CODEUNIT_AL);
+    let obj = al_core::syntax::find_object_declaration(&result.tree, CODEUNIT_AL);
 
     assert!(obj.is_some(), "Should find object declaration in codeunit");
     let obj = obj.unwrap();
@@ -835,14 +835,14 @@ fn find_variable_references_in_codeunit() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_AL);
 
-    let refs = al_syntax::find_variable_references(&result.tree, CODEUNIT_AL, "SalesHeader");
+    let refs = al_core::syntax::find_variable_references(&result.tree, CODEUNIT_AL, "SalesHeader");
     assert!(
         refs.len() >= 3,
         "SalesHeader should appear in multiple places (parameter + usage), got {}",
         refs.len()
     );
 
-    let refs = al_syntax::find_variable_references(&result.tree, CODEUNIT_AL, "TotalAmount");
+    let refs = al_core::syntax::find_variable_references(&result.tree, CODEUNIT_AL, "TotalAmount");
     assert!(
         refs.len() >= 2,
         "TotalAmount should appear in declaration + usage, got {}",
@@ -898,7 +898,7 @@ fn workspace_scans_al_files() {
     let result = parser.parse(&content);
     assert!(result.errors.is_empty(), "Test file should parse cleanly");
 
-    let obj = al_syntax::find_object_declaration(&result.tree, &content);
+    let obj = al_core::syntax::find_object_declaration(&result.tree, &content);
     assert!(obj.is_some());
     assert_eq!(obj.unwrap().name, "My Table");
 
@@ -923,7 +923,7 @@ end;
 
     // Step 1: Format
     let opts = FormatOptions::default();
-    let formatted = al_syntax::format_al(unformatted, &opts);
+    let formatted = al_core::syntax::format_al(unformatted, &opts);
     assert_ne!(formatted, unformatted, "Formatting should change the code");
 
     // Step 2: Parse the formatted code
@@ -935,11 +935,11 @@ end;
     );
 
     // Step 3: Lint the formatted code
-    let lints = al_syntax::lint(&result.tree, &formatted);
+    let lints = al_core::syntax::lint(&result.tree, &formatted);
     // Should not have any critical lint issues
-    let errors: Vec<&al_syntax::LintDiagnostic> = lints
+    let errors: Vec<&al_core::syntax::LintDiagnostic> = lints
         .iter()
-        .filter(|l| l.severity == al_syntax::LintSeverity::Error)
+        .filter(|l| l.severity == al_core::syntax::LintSeverity::Error)
         .collect();
     assert!(
         errors.is_empty(),
@@ -948,7 +948,7 @@ end;
     );
 
     // Step 4: Extract symbols
-    let symbols = al_syntax::extract_document_symbols(&result.tree, &formatted);
+    let symbols = al_core::syntax::extract_document_symbols(&result.tree, &formatted);
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0].name, "Test");
 }
@@ -989,7 +989,7 @@ fn fixture_test_al_parses_correctly() {
         result.errors
     );
 
-    let obj = al_syntax::find_object_declaration(&result.tree, &content);
+    let obj = al_core::syntax::find_object_declaration(&result.tree, &content);
     assert!(obj.is_some());
     let obj = obj.unwrap();
     assert_eq!(obj.kind, "codeunit");
@@ -1007,7 +1007,7 @@ fn fixture_test_al_parses_correctly() {
 
 /// Helper: simulate the lint JSON serialization performed by `lint_diag_to_json`
 /// in `al-lsp/src/daemon/mod.rs`.
-fn lint_diag_to_json_test(d: &al_syntax::LintDiagnostic) -> serde_json::Value {
+fn lint_diag_to_json_test(d: &al_core::syntax::LintDiagnostic) -> serde_json::Value {
     serde_json::json!({
         "code": d.code,
         "message": d.message,
@@ -1053,7 +1053,7 @@ fn json_schema_format_output_has_required_fields() {
     // dispatch_format returns {"formatted": string, "changed": bool}
     let content = "codeunit 50100 Test\n{\nprocedure Foo()\nbegin\nend;\n}\n";
     let opts = FormatOptions::default();
-    let formatted = al_syntax::format_al(content, &opts);
+    let formatted = al_core::syntax::format_al(content, &opts);
     let changed = formatted != content;
 
     let json = serde_json::json!({
@@ -1081,7 +1081,7 @@ fn json_schema_format_check_output_shape() {
     // dispatch_format with check=true returns {"changed": bool} only
     let content = "codeunit 50100 Test\n{\nprocedure Foo()\nbegin\nend;\n}\n";
     let opts = FormatOptions::default();
-    let formatted = al_syntax::format_al(content, &opts);
+    let formatted = al_core::syntax::format_al(content, &opts);
     let changed = formatted != content;
 
     let json = serde_json::json!({ "changed": changed });
@@ -1098,7 +1098,7 @@ fn json_schema_format_changed_is_false_for_already_formatted_input() {
     // A well-formatted codeunit should have changed=false
     let formatted_content = "codeunit 50100 Test\n{\n    procedure Foo()\n    begin\n    end;\n}\n";
     let opts = FormatOptions::default();
-    let formatted = al_syntax::format_al(formatted_content, &opts);
+    let formatted = al_core::syntax::format_al(formatted_content, &opts);
     let changed = formatted != formatted_content;
 
     let json = serde_json::json!({ "formatted": formatted, "changed": changed });

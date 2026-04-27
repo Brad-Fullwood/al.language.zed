@@ -23,7 +23,7 @@
 use serde::Deserialize;
 use std::path::Path;
 
-use al_syntax::formatting::{
+use crate::syntax::formatting::{
     BlankLinesBetweenProcedures, BraceStyle, FormatOptions, KeywordCasing,
 };
 
@@ -275,7 +275,7 @@ begin
 Message('hello');
 end;
 }"#;
-        let formatted = al_syntax::format_al(al_code, &opts);
+        let formatted = crate::syntax::format_al(al_code, &opts);
         // Must contain at least the object keyword lowercased
         assert!(formatted.contains("codeunit") || formatted.contains("CODEUNIT"));
         // Must not be empty

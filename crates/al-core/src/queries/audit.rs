@@ -59,7 +59,8 @@ pub fn data_classification_audit(workspace: &Workspace) -> Vec<DataClassificatio
             continue;
         };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &file_text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(&parsed_tree, &file_text)
+        else {
             continue;
         };
 
@@ -228,7 +229,7 @@ pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntr
         let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
             continue;
         };
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(&parsed_tree, &text) else {
             continue;
         };
 
@@ -244,7 +245,7 @@ pub fn permission_set_audit(workspace: &Workspace) -> Vec<PermissionCoverageEntr
         let Some((text, parsed_tree)) = workspace.file_index.get_cached_parse(path) else {
             continue;
         };
-        let Some(obj_info) = al_syntax::find_object_declaration(&parsed_tree, &text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(&parsed_tree, &text) else {
             continue;
         };
 

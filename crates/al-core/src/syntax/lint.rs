@@ -76,8 +76,8 @@ pub fn lint_with_config(_tree: &Tree, _text: &str, _config: &LintConfig) -> Vec<
 
 #[cfg(test)]
 mod tests {
+    use crate::syntax::parser::AlParser;
     use super::*;
-    use crate::parser::AlParser;
 
     #[test]
     fn lint_returns_empty() {

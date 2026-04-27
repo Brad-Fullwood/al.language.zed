@@ -383,7 +383,7 @@ pub fn format_range(
 
     let end_char = orig_lines
         .get(end)
-        .map(|l| crate::byte_col_to_utf16_col(l, l.len()))
+        .map(|l| super::byte_col_to_utf16_col(l, l.len()))
         .unwrap_or(0);
 
     Some(vec![FormatTextEdit {
@@ -434,15 +434,15 @@ fn extract_formatted_region<'a>(
 /// Count net parentheses on a line: `(` adds +1, `)` adds -1.
 /// Delegates to the crate-level `count_net_delimiters` which skips string literals.
 fn count_net_parens(line: &str) -> i32 {
-    crate::count_net_delimiters(line, '(', ')')
+    super::count_net_delimiters(line, '(', ')')
 }
 
 /// Returns true if trimmed_lower represents a single-statement control flow opener.
 ///
 /// Single-statement openers are loaded from `tree-sitter-al/data/single_stmt_openers.json`
-/// via [`crate::language_data::single_stmt_openers`].
+/// via [`super::language_data::single_stmt_openers`].
 fn is_single_statement_opener(trimmed_lower: &str) -> bool {
-    crate::language_data::single_stmt_openers().iter().any(|o| {
+    super::language_data::single_stmt_openers().iter().any(|o| {
         trimmed_lower.starts_with(o.prefix.as_str()) && trimmed_lower.ends_with(o.suffix.as_str())
     })
 }

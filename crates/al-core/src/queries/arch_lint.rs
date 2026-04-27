@@ -86,7 +86,7 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
             continue;
         };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
 
@@ -127,7 +127,7 @@ fn apply_rule(
     file_path: &str,
     text: &str,
     tree: &tree_sitter::Tree,
-    obj_info: &al_syntax::ObjectInfo,
+    obj_info: &crate::syntax::ObjectInfo,
     obj_kind_lower: &str,
     rule: &ArchRule,
     violations: &mut Vec<ArchViolation>,
@@ -215,7 +215,7 @@ fn apply_rule(
                 .first()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10);
-            let metrics = al_syntax::complexity::compute_complexity(tree, text);
+            let metrics = crate::syntax::complexity::compute_complexity(tree, text);
             for m in &metrics {
                 if m.cyclomatic > max {
                     violations.push(ArchViolation {

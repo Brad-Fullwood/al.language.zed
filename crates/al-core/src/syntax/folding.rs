@@ -1,11 +1,11 @@
 //! Folding range extraction from tree-sitter trees.
 
-use crate::types::{
+use super::types::{
     SyntaxFoldingRange as FoldingRange, SyntaxFoldingRangeKind as FoldingRangeKind,
 };
 use tree_sitter::{Node, Tree};
 
-use crate::{byte_col_to_utf16_col, get_source_line, traversal::walk_tree};
+use super::{byte_col_to_utf16_col, get_source_line, traversal::walk_tree};
 
 /// Extract folding ranges from a parsed tree.
 ///
@@ -153,8 +153,8 @@ fn extract_comment_block_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
 
 #[cfg(test)]
 mod tests {
+    use crate::syntax::AlParser;
     use super::*;
-    use crate::AlParser;
 
     #[test]
     fn test_folding_codeunit() {

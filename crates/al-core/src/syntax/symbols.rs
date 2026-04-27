@@ -1,7 +1,7 @@
 //! Document symbol extraction from tree-sitter trees.
 
-use crate::ts_range_to_syntax as ts_range_to_lsp;
-use crate::types::{
+use super::ts_range_to_syntax as ts_range_to_lsp;
+use super::types::{
     SyntaxDocumentSymbol as DocumentSymbol, SyntaxRange, SyntaxSymbolKind as SymbolKind,
 };
 use tracing::debug;
@@ -65,7 +65,7 @@ fn lsp_symbol_kind_from_str(s: &str) -> SymbolKind {
 /// Uses language_data::object_types() so new AL object types are picked up
 /// without any code changes here.
 fn object_kind_to_symbol_kind(kind: &str) -> SymbolKind {
-    crate::language_data::object_types()
+    super::language_data::object_types()
         .iter()
         .find(|ot| ot.node_kind == kind)
         .map(|ot| lsp_symbol_kind_from_str(&ot.lsp_symbol_kind))
@@ -77,7 +77,7 @@ fn object_kind_to_symbol_kind(kind: &str) -> SymbolKind {
 /// Uses language_data::object_types() so new AL object types are handled
 /// without any code changes here.
 fn object_kind_display(kind: &str) -> String {
-    crate::language_data::object_types()
+    super::language_data::object_types()
         .iter()
         .find(|ot| ot.node_kind == kind)
         .map(|ot| ot.keyword.clone())
@@ -94,7 +94,7 @@ fn extract_object_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
 
     // Grammar doesn't assign a field name to the object name;
     // use the shared extract_object_name helper.
-    let name = crate::extract_object_name(node, source).unwrap_or_else(|| "(unnamed)".to_string());
+    let name = super::extract_object_name(node, source).unwrap_or_else(|| "(unnamed)".to_string());
     // Also track the name node range for the selection_range below.
     let name_node_range = {
         let mut found_range = None;
@@ -420,7 +420,7 @@ fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<Document
 /// Map a page control keyword's `lsp_symbol_kind` string (from page_controls.json) to a
 /// tower-lsp [`SymbolKind`].
 fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
-    match crate::language_data::page_control_by_keyword(keyword)
+    match super::language_data::page_control_by_keyword(keyword)
         .map(|e| e.lsp_symbol_kind.as_str())
         .unwrap_or("Namespace")
     {
@@ -581,7 +581,7 @@ fn extract_triggers_from_braced_block(
 fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
     let kw_text = kw_node.utf8_text(source).ok()?;
 
-    if !crate::language_data::is_page_control_keyword(kw_text) {
+    if !super::language_data::is_page_control_keyword(kw_text) {
         return None;
     }
 
@@ -960,11 +960,11 @@ fn is_variable_name_node(kind: &str) -> bool {
 }
 
 fn extract_node_text(node: Option<Node>, source: &[u8]) -> Option<String> {
-    crate::node_text_clean(node?, source)
+    super::node_text_clean(node?, source)
 }
 
 fn clean_node_text(node: Node, source: &[u8]) -> Option<String> {
-    crate::node_text_clean(node, source)
+    super::node_text_clean(node, source)
 }
 
 fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
@@ -997,19 +997,19 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
 
         let line_no = node.start_position().row as u32 + offset as u32;
         let start_byte = line.find(name_part).unwrap_or_default();
-        let start_col = crate::byte_col_to_utf16_col(line, start_byte);
-        let end_col = crate::byte_col_to_utf16_col(line, start_byte + name_part.len());
+        let start_col = super::byte_col_to_utf16_col(line, start_byte);
+        let end_col = super::byte_col_to_utf16_col(line, start_byte + name_part.len());
         symbols.push(DocumentSymbol {
             name,
             detail: Some("Label".to_string()),
             kind: SymbolKind::Variable,
             range: ts_range_to_lsp(&node.range(), source),
             selection_range: SyntaxRange {
-                start: crate::types::SyntaxPosition {
+                start: super::types::SyntaxPosition {
                     line: line_no,
                     character: start_col,
                 },
-                end: crate::types::SyntaxPosition {
+                end: super::types::SyntaxPosition {
                     line: line_no,
                     character: end_col,
                 },
@@ -1021,8 +1021,8 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
 
 #[cfg(test)]
 mod tests {
+    use crate::syntax::AlParser;
     use super::*;
-    use crate::AlParser;
 
     #[test]
     fn test_extract_symbols_codeunit() {

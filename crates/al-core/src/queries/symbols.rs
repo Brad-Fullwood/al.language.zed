@@ -11,6 +11,6 @@ use crate::workspace::Workspace;
 /// `tower_lsp::lsp_types::DocumentSymbol` at the boundary.
 pub fn document_symbols(workspace: &Workspace, uri: &Url) -> Option<Vec<AlDocumentSymbol>> {
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
-    let symbols = al_syntax::extract_document_symbols(&tree, &text);
+    let symbols = crate::syntax::extract_document_symbols(&tree, &text);
     Some(symbols.into_iter().map(Into::into).collect())
 }

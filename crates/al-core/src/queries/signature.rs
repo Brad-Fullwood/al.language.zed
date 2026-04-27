@@ -9,7 +9,7 @@ use crate::resolution;
 use crate::workspace::Workspace;
 
 /// A parameter in a signature help display (label + optional docs).
-/// Distinct from al_syntax::ParameterInfo which holds parsed name/type/is_var.
+/// Distinct from crate::syntax::ParameterInfo which holds parsed name/type/is_var.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SignatureParameterInfo {
     pub label: String,
@@ -131,7 +131,7 @@ pub fn signature_help(
     }
     let prefix = &line[..col_byte];
 
-    let (func_name, active_param) = al_syntax::find_call_context(prefix)?;
+    let (func_name, active_param) = crate::syntax::find_call_context(prefix)?;
 
     let tree = {
         let (_, t) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
@@ -146,7 +146,7 @@ pub fn signature_help(
         .as_ref()
         .and_then(|p| workspace.file_index.get_cached_symbols(p))
         .unwrap_or_else(|| {
-            al_syntax::extract_document_symbols(&tree, &text)
+            crate::syntax::extract_document_symbols(&tree, &text)
                 .into_iter()
                 .map(Into::into)
                 .collect()
@@ -276,13 +276,16 @@ fn resolve_receiver_signature(
     let before_paren = prefix[..paren_pos].trim_end();
     let dot_pos = before_paren.rfind('.')?;
     let receiver_text = before_paren[..dot_pos].trim();
-    let receiver_name = al_syntax::extract_last_identifier(receiver_text);
+    let receiver_name = crate::syntax::extract_last_identifier(receiver_text);
     if receiver_name.is_empty() {
         return None;
     }
 
-    let resolver = al_syntax::TypeResolver::new(tree, text);
-    let decl = resolver.resolve_type(receiver_name, crate::syntax::lsp_pos_to_syntax(position))?;
+    let resolver = crate::syntax::TypeResolver::new(tree, text);
+    let decl = resolver.resolve_type(
+        receiver_name,
+        crate::syntax_lsp::lsp_pos_to_syntax(position),
+    )?;
     let subtype = decl.type_subtype.as_deref()?;
 
     let obj_key = subtype.to_lowercase();

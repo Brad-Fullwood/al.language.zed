@@ -12,7 +12,7 @@ use crate::workspace::Workspace;
 #[must_use]
 pub fn folding_ranges(workspace: &Workspace, uri: &Url) -> Option<Vec<AlFoldingRange>> {
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
-    let ranges = al_syntax::extract_folding_ranges(&tree, &text);
+    let ranges = crate::syntax::extract_folding_ranges(&tree, &text);
     Some(ranges.into_iter().map(Into::into).collect())
 }
 

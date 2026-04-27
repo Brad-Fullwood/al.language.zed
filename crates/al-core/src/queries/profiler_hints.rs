@@ -208,7 +208,7 @@ fn resolve_source_locations(workspace: &Workspace, hints: &mut [ProfilerHint]) {
         };
 
         // Extract the AL object name declared in this file (e.g. "Alpha Codeunit").
-        let object_name = al_syntax::find_object_declaration(&parsed_tree, &text)
+        let object_name = crate::syntax::find_object_declaration(&parsed_tree, &text)
             .map(|o| o.name.to_lowercase())
             .unwrap_or_default();
 
@@ -366,11 +366,11 @@ fn collect_profiler_lenses(
                     if let Some(hint) = by_proc.get(&name_lc) {
                         let start_row = name_node.start_position().row as u32;
                         let row_text = source_line(source, name_node.start_position().row);
-                        let start_col = al_syntax::byte_col_to_utf16_col(
+                        let start_col = crate::syntax::byte_col_to_utf16_col(
                             row_text,
                             name_node.start_position().column,
                         );
-                        let end_col = al_syntax::byte_col_to_utf16_col(
+                        let end_col = crate::syntax::byte_col_to_utf16_col(
                             row_text,
                             name_node.end_position().column,
                         );
@@ -484,8 +484,8 @@ fn source_line(source: &[u8], row: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::syntax::AlParser;
     use crate::workspace::Workspace;
-    use al_syntax::AlParser;
     use std::path::PathBuf;
 
     fn workspace_with(files: Vec<(&str, &str)>) -> Workspace {

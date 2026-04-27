@@ -472,7 +472,7 @@ impl Default for Workspace {
 /// If `uri` is not a `file://` URI, the full composed symbol cache is invalidated
 /// as a safe fallback.
 pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
-    let result = al_syntax::AlParser::parse_quick(text);
+    let result = crate::syntax::AlParser::parse_quick(text);
 
     // Warm the document cache so diagnostics / hover can reuse this parse tree.
     let version = workspace.documents.get_version(uri).unwrap_or(0);

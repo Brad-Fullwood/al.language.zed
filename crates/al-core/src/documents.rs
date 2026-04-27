@@ -253,7 +253,9 @@ mod tests {
         let uri = test_uri("tree");
         store.open(uri.clone(), "content".to_string());
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&al_syntax::parser::language()).unwrap();
+        parser
+            .set_language(&crate::syntax::parser::language())
+            .unwrap();
         let tree = parser.parse("content", None).unwrap();
         store.cache_tree(&uri, 0, tree);
         assert!(store.get_cached_tree(&uri).is_some());

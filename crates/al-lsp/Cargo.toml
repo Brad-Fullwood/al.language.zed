@@ -25,6 +25,5 @@ url = "2"
 al-protocol = { path = "../al-protocol" }
 
 [dev-dependencies]
-al-syntax = { path = "../al-syntax" }
 al-symbols = { path = "../al-symbols" }
 tree-sitter = "0.25"

@@ -281,11 +281,11 @@ fn search_workspace_files(
         let Some((file_text, tree)) = workspace.file_index.get_cached_parse(path) else {
             continue;
         };
-        let refs = al_syntax::find_variable_references(&tree, &file_text, search_name);
+        let refs = crate::syntax::find_variable_references(&tree, &file_text, search_name);
 
         if !refs.is_empty() {
             // Determine the object info from this file
-            if let Some(obj_info) = al_syntax::find_object_declaration(&tree, &file_text) {
+            if let Some(obj_info) = crate::syntax::find_object_declaration(&tree, &file_text) {
                 let kind = obj_info
                     .kind
                     .parse::<ObjectKind>()

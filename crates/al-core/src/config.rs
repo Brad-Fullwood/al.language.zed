@@ -73,7 +73,7 @@ pub struct AlConfig {
     // Native lint (placeholder — see notes)
     // -----------------------------------------------------------------------
     /// Retained for future use — native lint rules are not yet implemented;
-    /// `al_syntax::lint()` always returns an empty `Vec`. All AL diagnostics
+    /// `crate::syntax::lint()` always returns an empty `Vec`. All AL diagnostics
     /// currently come from the .NET CodeAnalysis bridge (`al-semantic`), not
     /// from this toggle. Setting it to `false` has no observable effect today.
     pub enable_native_lint: bool,

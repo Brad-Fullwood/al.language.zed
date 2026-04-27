@@ -649,7 +649,7 @@ pub(crate) fn handle_workspace_symbol(
                     deprecated: None,
                     location: Location {
                         uri: file_uri,
-                        range: al_core::syntax::ts_range_to_lsp(
+                        range: al_core::syntax_lsp::ts_range_to_lsp(
                             &r.info.range,
                             file_text_entry.value().as_bytes(),
                         ),

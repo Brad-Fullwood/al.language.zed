@@ -19,8 +19,11 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
-    let node =
-        al_syntax::find_node_at_position(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))?;
+    let node = crate::syntax::find_node_at_position(
+        &tree,
+        &text,
+        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
+    )?;
     let source = text.as_bytes();
     // Non-UTF8 node text means the node isn't a valid identifier — skip silently
     let node_text = node.utf8_text(source).unwrap_or("");
@@ -32,7 +35,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     }
 
     tracing::debug!(name = %clean_name, node_kind = %node.kind(), line = lsp_pos.line, character = lsp_pos.character, "hover: looking up symbol");
-    let node_range: Range = crate::syntax::ts_range_to_lsp(&node.range(), source).into();
+    let node_range: Range = crate::syntax_lsp::ts_range_to_lsp(&node.range(), source).into();
 
     // Access path resolution (e.g., Rec.Name, Enum::Value)
     if let Some(access) = resolution::access_path_at(&tree, &text, position) {
@@ -146,9 +149,11 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     }
 
     // 1. Check if we're on a procedure name or a local parameter
-    if let Some(proc_info) =
-        al_syntax::find_procedure_at(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))
-    {
+    if let Some(proc_info) = crate::syntax::find_procedure_at(
+        &tree,
+        &text,
+        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
+    ) {
         if proc_info.name.eq_ignore_ascii_case(clean_name) {
             let mut content = format_procedure_hover(&proc_info);
             if let Some(doc) =
@@ -176,9 +181,9 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
 
     // 2b. Check local/global variable declarations via TypeResolver
     {
-        let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &text);
+        let resolver = crate::syntax::type_resolver::TypeResolver::new(&tree, &text);
         if let Some(decl) =
-            resolver.resolve_type(clean_name, crate::syntax::lsp_pos_to_syntax(lsp_pos))
+            resolver.resolve_type(clean_name, crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos))
         {
             let label = super::scope_label(&decl.scope);
             let var_prefix = if decl.is_var { "var " } else { "" };
@@ -208,7 +213,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
     }
 
     // 3b. Check built-in global functions (Message, Error, Confirm, etc.)
-    if let Some(builtin) = al_syntax::language_data::builtin_function_by_name(clean_name) {
+    if let Some(builtin) = crate::syntax::language_data::builtin_function_by_name(clean_name) {
         let mut content = format!("```al\n{}\n```", builtin.signature);
         if !builtin.description.is_empty() {
             content.push_str("\n\n");
@@ -387,7 +392,7 @@ pub async fn hover_full(
     })
 }
 
-fn format_procedure_hover(proc: &al_syntax::ProcedureInfo) -> String {
+fn format_procedure_hover(proc: &crate::syntax::ProcedureInfo) -> String {
     let local = if proc.is_local { "local " } else { "" };
     let params: Vec<String> = proc.parameters.iter().map(|p| p.to_string()).collect();
     let params_str = params.join("; ");
@@ -448,7 +453,7 @@ fn format_builtin_method(method: &al_semantic::BuiltinMethod) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_syntax::ProcedureInfo;
+    use crate::syntax::ProcedureInfo;
 
     #[test]
     fn test_format_procedure_hover_simple() {
@@ -480,12 +485,12 @@ mod tests {
                 end_point: tree_sitter::Point { row: 0, column: 0 },
             },
             parameters: vec![
-                al_syntax::ParameterInfo {
+                crate::syntax::ParameterInfo {
                     name: "Input".to_string(),
                     type_name: "Integer".to_string(),
                     is_var: false,
                 },
-                al_syntax::ParameterInfo {
+                crate::syntax::ParameterInfo {
                     name: "Result".to_string(),
                     type_name: "Decimal".to_string(),
                     is_var: true,

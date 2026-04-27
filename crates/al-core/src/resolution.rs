@@ -77,7 +77,7 @@ pub(crate) fn access_path_at(tree: &Tree, text: &str, position: Position) -> Opt
         return Some(path);
     }
 
-    let Some(node) = al_syntax::find_node_at_position(tree, text, position.into()) else {
+    let Some(node) = crate::syntax::find_node_at_position(tree, text, position.into()) else {
         tracing::debug!(
             line = position.line,
             character = position.character,
@@ -342,7 +342,7 @@ fn inside_quoted_identifier(line: &str, idx: usize) -> bool {
 }
 
 /// Re-export from al-syntax to avoid duplication.
-pub(crate) use al_syntax::utf16_col_to_byte_offset;
+pub(crate) use crate::syntax::utf16_col_to_byte_offset;
 
 fn is_access_char(ch: u8) -> bool {
     is_identifier_char(ch) || ch == b'"'
@@ -387,7 +387,7 @@ pub(crate) fn resolve_expression_type(
         return result;
     }
 
-    let resolver = al_syntax::TypeResolver::new(tree, text);
+    let resolver = crate::syntax::TypeResolver::new(tree, text);
     if let Some(decl) = resolver.resolve_type(expr, position.into()) {
         tracing::debug!(
             expr = %expr,
@@ -773,11 +773,11 @@ pub(crate) fn resolve_workspace_object_definition(
 ) -> Option<(Url, Range)> {
     let path = resolve_object_path(workspace, None, name)?;
     let (file_source, tree) = workspace.file_index.get_cached_parse(&path)?;
-    let obj = al_syntax::find_object_declaration(&tree, &file_source)?;
+    let obj = crate::syntax::find_object_declaration(&tree, &file_source)?;
     let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
     Some((
         uri,
-        crate::syntax::ts_range_to_lsp(&obj.range, file_source.as_bytes()).into(),
+        crate::syntax_lsp::ts_range_to_lsp(&obj.range, file_source.as_bytes()).into(),
     ))
 }
 
@@ -822,9 +822,9 @@ pub(crate) fn completion_items_for_receiver(
     if let Some(subtype) = receiver.type_subtype.as_deref() {
         if let Some(path) = resolve_object_path(workspace, None, subtype) {
             if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(&path) {
-                let resolver = al_syntax::TypeResolver::new(&tree, &file_text);
+                let resolver = crate::syntax::TypeResolver::new(&tree, &file_text);
                 for var in resolver.variables_at(Position::default().into()) {
-                    if var.scope != al_syntax::VariableScope::Global {
+                    if var.scope != crate::syntax::VariableScope::Global {
                         continue;
                     }
                     workspace_vars += 1;
@@ -841,7 +841,7 @@ pub(crate) fn completion_items_for_receiver(
                     });
                 }
 
-                for symbol in al_syntax::extract_document_symbols(&tree, &file_text) {
+                for symbol in crate::syntax::extract_document_symbols(&tree, &file_text) {
                     if let Some(children) = symbol.children {
                         for child in children {
                             if crate::queries::is_procedure_symbol(AlSymbolKind::from(child.kind)) {
@@ -963,7 +963,7 @@ pub(crate) fn enum_completion_items(
     // Check workspace enum objects
     if let Some(path) = workspace.file_index.objects.get(&enum_name.to_lowercase()) {
         if let Some((file_text, tree)) = workspace.file_index.get_cached_parse(path.value()) {
-            for symbol in al_syntax::extract_document_symbols(&tree, &file_text) {
+            for symbol in crate::syntax::extract_document_symbols(&tree, &file_text) {
                 if !symbol.name.eq_ignore_ascii_case(enum_name) {
                     continue;
                 }
@@ -1050,9 +1050,9 @@ pub(crate) fn format_type_detail(type_name: &str, subtype: Option<&str>) -> Stri
 
 fn workspace_object_type(workspace: &Workspace, path: &Path) -> Option<ResolvedType> {
     let (file_text, tree) = workspace.file_index.get_cached_parse(path)?;
-    let obj = al_syntax::find_object_declaration(&tree, &file_text)?;
+    let obj = crate::syntax::find_object_declaration(&tree, &file_text)?;
     Some(ResolvedType {
-        type_name: al_syntax::object_kind_to_al_type(&obj.kind),
+        type_name: crate::syntax::object_kind_to_al_type(&obj.kind),
         type_subtype: Some(obj.name),
     })
 }
@@ -1103,7 +1103,7 @@ fn workspace_member(
     );
     let (content, tree) = workspace.file_index.get_cached_parse(path)?;
 
-    for symbol in al_syntax::extract_document_symbols(&tree, &content) {
+    for symbol in crate::syntax::extract_document_symbols(&tree, &content) {
         if let Some(children) = symbol.children {
             for child in children {
                 if crate::queries::is_procedure_symbol(AlSymbolKind::from(child.kind))
@@ -1165,9 +1165,9 @@ fn workspace_member(
         }
     }
 
-    let resolver = al_syntax::TypeResolver::new(&tree, &content);
+    let resolver = crate::syntax::TypeResolver::new(&tree, &content);
     for var in resolver.variables_at(Position::default().into()) {
-        if var.scope == al_syntax::VariableScope::Global
+        if var.scope == crate::syntax::VariableScope::Global
             && var.name.eq_ignore_ascii_case(member_name)
         {
             tracing::debug!(
@@ -1186,7 +1186,7 @@ fn workspace_member(
                 uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                 kind: ResolvedMemberKind::Variable {
                     range: Some(
-                        crate::syntax::ts_range_to_lsp(&var.range, content.as_bytes()).into(),
+                        crate::syntax_lsp::ts_range_to_lsp(&var.range, content.as_bytes()).into(),
                     ),
                     scope: "global variable",
                 },
@@ -1374,7 +1374,7 @@ pub(crate) fn extract_doc_comment(text: &str, line_idx: usize) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_syntax::AlParser;
+    use crate::syntax::AlParser;
 
     #[test]
     fn access_path_detects_flat_member_chain() {

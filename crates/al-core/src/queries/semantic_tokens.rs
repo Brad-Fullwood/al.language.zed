@@ -6,8 +6,8 @@ use crate::workspace::Workspace;
 
 /// A semantic token (delta-encoded position + type + modifiers).
 ///
-/// Mirrors `al_syntax::SemanticToken` field-for-field but adds `serde::Serialize`
-/// for the daemon JSON-RPC path. `al_syntax::SemanticToken` intentionally avoids
+/// Mirrors `crate::syntax::SemanticToken` field-for-field but adds `serde::Serialize`
+/// for the daemon JSON-RPC path. `crate::syntax::SemanticToken` intentionally avoids
 /// a serde dependency, so this thin wrapper is the serialisable boundary type.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SemanticToken {
@@ -22,8 +22,8 @@ pub struct SemanticToken {
     pub token_modifiers: u32,
 }
 
-impl From<al_syntax::SemanticToken> for SemanticToken {
-    fn from(t: al_syntax::SemanticToken) -> Self {
+impl From<crate::syntax::SemanticToken> for SemanticToken {
+    fn from(t: crate::syntax::SemanticToken) -> Self {
         Self {
             delta_line: t.delta_line,
             delta_start: t.delta_start,
@@ -42,7 +42,7 @@ pub fn semantic_tokens_full(workspace: &Workspace, uri: &Url) -> Vec<SemanticTok
         tracing::debug!("document not parsed; returning empty token list");
         return Vec::new();
     };
-    let tokens: Vec<SemanticToken> = al_syntax::extract_semantic_tokens(&tree, &text)
+    let tokens: Vec<SemanticToken> = crate::syntax::extract_semantic_tokens(&tree, &text)
         .into_iter()
         .map(SemanticToken::from)
         .collect();

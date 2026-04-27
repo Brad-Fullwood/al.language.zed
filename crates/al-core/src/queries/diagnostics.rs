@@ -50,7 +50,7 @@ pub struct SyntaxDiagnostic {
 /// (e.g. `did_open` / `did_change`) get a zero-cost cache hit.
 ///
 /// Lint results are filtered by `config.is_lint_rule_enabled`. Note:
-/// `al_syntax::lint()` is currently a stub that always returns an empty
+/// `crate::syntax::lint()` is currently a stub that always returns an empty
 /// `Vec` — all AL diagnostics surfaced today come from the syntax-error
 /// pass on the parse tree, not from native lint rules. The lint-filter
 /// branch remains for forward-compatibility with the planned rule engine.
@@ -93,7 +93,7 @@ fn collect_diagnostics_from_tree(
     let source = text.as_bytes();
 
     // Syntax errors from the parse tree.
-    for err in al_syntax::AlParser::errors_from_tree(tree) {
+    for err in crate::syntax::AlParser::errors_from_tree(tree) {
         let ts_range = err.range;
         diags.push(SyntaxDiagnostic {
             message: err.message,
@@ -105,15 +105,15 @@ fn collect_diagnostics_from_tree(
     }
 
     // Lint diagnostics, filtered by config.
-    for lint in al_syntax::lint(tree, text) {
+    for lint in crate::syntax::lint(tree, text) {
         if !config.is_lint_rule_enabled(&lint.code) {
             continue;
         }
         let severity = match lint.severity {
-            al_syntax::LintSeverity::Error => SyntaxDiagnosticSeverity::Error,
-            al_syntax::LintSeverity::Warning => SyntaxDiagnosticSeverity::Warning,
-            al_syntax::LintSeverity::Info => SyntaxDiagnosticSeverity::Info,
-            al_syntax::LintSeverity::Hint => SyntaxDiagnosticSeverity::Hint,
+            crate::syntax::LintSeverity::Error => SyntaxDiagnosticSeverity::Error,
+            crate::syntax::LintSeverity::Warning => SyntaxDiagnosticSeverity::Warning,
+            crate::syntax::LintSeverity::Info => SyntaxDiagnosticSeverity::Info,
+            crate::syntax::LintSeverity::Hint => SyntaxDiagnosticSeverity::Hint,
         };
         diags.push(SyntaxDiagnostic {
             message: lint.message,
@@ -141,11 +141,11 @@ fn ts_range_to_query_range(r: tree_sitter::Range, source: &[u8]) -> crate::queri
     crate::queries::Range {
         start: crate::queries::Position {
             line: r.start_point.row as u32,
-            character: al_syntax::byte_col_to_utf16_col(start_line, r.start_point.column),
+            character: crate::syntax::byte_col_to_utf16_col(start_line, r.start_point.column),
         },
         end: crate::queries::Position {
             line: r.end_point.row as u32,
-            character: al_syntax::byte_col_to_utf16_col(end_line, r.end_point.column),
+            character: crate::syntax::byte_col_to_utf16_col(end_line, r.end_point.column),
         },
     }
 }

@@ -48,7 +48,7 @@ dependencies = [
  "al-protocol",
  "al-semantic",
  "al-symbols",
- "al-syntax",
+ "cc",
  "dashmap 6.1.0",
  "futures-util",
  "petgraph",
@@ -85,7 +85,6 @@ dependencies = [
  "al-core",
  "al-protocol",
  "al-symbols",
- "al-syntax",
  "dashmap 6.1.0",
  "dirs",
  "reqwest",
@@ -143,18 +142,6 @@ dependencies = [
  "tokio",
  "tracing",
  "zip 2.4.2",
-]
-
-[[package]]
-name = "al-syntax"
-version = "0.1.0"
-dependencies = [
- "cc",
- "ropey",
- "serde",
- "serde_json",
- "tracing",
- "tree-sitter",
 ]
 
 [[package]]

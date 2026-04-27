@@ -96,7 +96,7 @@ fn try_workspace_source(
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, &uri)?;
 
     // Find the object declaration to get kind and id
-    let obj_info = al_syntax::find_object_declaration(&tree, &text)?;
+    let obj_info = crate::syntax::find_object_declaration(&tree, &text)?;
     let kind: ObjectKind = obj_info.kind.parse().ok()?;
     let id = obj_info.id.unwrap_or(0) as i32;
 
@@ -334,7 +334,7 @@ fn extract_signature_from_text(text: &str) -> String {
 
 /// Extract a specific procedure from source text by parsing with tree-sitter.
 fn extract_procedure_from_text(source: &str, name: &str) -> Option<(String, String)> {
-    let result = al_syntax::AlParser::parse_quick(source);
+    let result = crate::syntax::AlParser::parse_quick(source);
     let root = result.tree.root_node();
     let (node, sig) = find_procedure_node(&root, source, name)?;
     let code = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
@@ -696,7 +696,7 @@ mod tests {
             body
         );
 
-        let parsed = al_syntax::AlParser::parse_quick(&src);
+        let parsed = crate::syntax::AlParser::parse_quick(&src);
         let root = parsed.tree.root_node();
         let result = find_procedure_node(&root, &src, "Target");
         assert!(

@@ -272,7 +272,7 @@ fn source_action_add_doc_comment(
         .as_ref()
         .and_then(|p| workspace.file_index.get_cached_symbols(p))
         .unwrap_or_else(|| {
-            al_syntax::extract_document_symbols(&tree, text)
+            crate::syntax::extract_document_symbols(&tree, text)
                 .into_iter()
                 .map(Into::into)
                 .collect()
@@ -1347,8 +1347,8 @@ fn qualify_line(line: &str, record_var: &str, field_names: &[String]) -> String 
         // Check LanguageData keywords first (covers if/then/else/begin/end/for/while/etc.)
         let keyword_match = lower
             .split_once(|c: char| !c.is_alphanumeric() && c != '_')
-            .map(|(word, _)| al_syntax::language_data::is_keyword(word))
-            .unwrap_or_else(|| al_syntax::language_data::is_keyword(&lower));
+            .map(|(word, _)| crate::syntax::language_data::is_keyword(word))
+            .unwrap_or_else(|| crate::syntax::language_data::is_keyword(&lower));
         // Also skip "//" (line comment start) and "end;" (not a grammar keyword but structural)
         let special_match = lower.starts_with("//") || lower.starts_with("end;");
         keyword_match || special_match

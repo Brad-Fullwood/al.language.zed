@@ -122,7 +122,7 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
             continue;
         };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
         if obj_info.kind.to_lowercase() != "codeunit" {
@@ -188,7 +188,7 @@ fn collect_all_procedures(workspace: &Workspace) -> Vec<ProcDef> {
             continue;
         };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
         let object_name = obj_info.name.clone();

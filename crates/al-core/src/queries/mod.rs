@@ -259,13 +259,13 @@ pub fn is_procedure_symbol(kind: AlSymbolKind) -> bool {
 ///
 /// Used in hover and completion detail strings. Centralised here so both
 /// callers stay in sync without a Display impl in al-syntax.
-pub(crate) fn scope_label(scope: &al_syntax::type_resolver::VariableScope) -> &'static str {
+pub(crate) fn scope_label(scope: &crate::syntax::type_resolver::VariableScope) -> &'static str {
     match scope {
-        al_syntax::type_resolver::VariableScope::Local => "local variable",
-        al_syntax::type_resolver::VariableScope::Parameter => "parameter",
-        al_syntax::type_resolver::VariableScope::Global => "global variable",
-        al_syntax::type_resolver::VariableScope::SelfImplicit => "self",
-        al_syntax::type_resolver::VariableScope::TriggerImplicit => "trigger variable",
+        crate::syntax::type_resolver::VariableScope::Local => "local variable",
+        crate::syntax::type_resolver::VariableScope::Parameter => "parameter",
+        crate::syntax::type_resolver::VariableScope::Global => "global variable",
+        crate::syntax::type_resolver::VariableScope::SelfImplicit => "self",
+        crate::syntax::type_resolver::VariableScope::TriggerImplicit => "trigger variable",
     }
 }
 
@@ -365,8 +365,8 @@ impl From<Range> for tower_lsp::lsp_types::Range {
 // Conversions between al-syntax native types and al-core agnostic types
 // ---------------------------------------------------------------------------
 
-impl From<al_syntax::types::SyntaxPosition> for Position {
-    fn from(p: al_syntax::types::SyntaxPosition) -> Self {
+impl From<crate::syntax::types::SyntaxPosition> for Position {
+    fn from(p: crate::syntax::types::SyntaxPosition) -> Self {
         Self {
             line: p.line,
             character: p.character,
@@ -374,7 +374,7 @@ impl From<al_syntax::types::SyntaxPosition> for Position {
     }
 }
 
-impl From<Position> for al_syntax::types::SyntaxPosition {
+impl From<Position> for crate::syntax::types::SyntaxPosition {
     fn from(p: Position) -> Self {
         Self {
             line: p.line,
@@ -383,8 +383,8 @@ impl From<Position> for al_syntax::types::SyntaxPosition {
     }
 }
 
-impl From<al_syntax::types::SyntaxRange> for Range {
-    fn from(r: al_syntax::types::SyntaxRange) -> Self {
+impl From<crate::syntax::types::SyntaxRange> for Range {
+    fn from(r: crate::syntax::types::SyntaxRange) -> Self {
         Self {
             start: r.start.into(),
             end: r.end.into(),
@@ -392,7 +392,7 @@ impl From<al_syntax::types::SyntaxRange> for Range {
     }
 }
 
-impl From<Range> for al_syntax::types::SyntaxRange {
+impl From<Range> for crate::syntax::types::SyntaxRange {
     fn from(r: Range) -> Self {
         Self {
             start: r.start.into(),
@@ -488,9 +488,9 @@ impl From<tower_lsp::lsp_types::SymbolKind> for AlSymbolKind {
     }
 }
 
-impl From<al_syntax::types::SyntaxSymbolKind> for AlSymbolKind {
-    fn from(k: al_syntax::types::SyntaxSymbolKind) -> Self {
-        use al_syntax::types::SyntaxSymbolKind as S;
+impl From<crate::syntax::types::SyntaxSymbolKind> for AlSymbolKind {
+    fn from(k: crate::syntax::types::SyntaxSymbolKind) -> Self {
+        use crate::syntax::types::SyntaxSymbolKind as S;
         match k {
             S::File => AlSymbolKind::File,
             S::Module => AlSymbolKind::Module,
@@ -536,8 +536,8 @@ impl From<AlDocumentSymbol> for tower_lsp::lsp_types::DocumentSymbol {
     }
 }
 
-impl From<al_syntax::types::SyntaxDocumentSymbol> for AlDocumentSymbol {
-    fn from(s: al_syntax::types::SyntaxDocumentSymbol) -> Self {
+impl From<crate::syntax::types::SyntaxDocumentSymbol> for AlDocumentSymbol {
+    fn from(s: crate::syntax::types::SyntaxDocumentSymbol) -> Self {
         Self {
             name: s.name,
             detail: s.detail,
@@ -572,9 +572,9 @@ impl From<AlFoldingRange> for tower_lsp::lsp_types::FoldingRange {
     }
 }
 
-impl From<al_syntax::types::SyntaxFoldingRangeKind> for AlFoldingRangeKind {
-    fn from(k: al_syntax::types::SyntaxFoldingRangeKind) -> Self {
-        use al_syntax::types::SyntaxFoldingRangeKind as S;
+impl From<crate::syntax::types::SyntaxFoldingRangeKind> for AlFoldingRangeKind {
+    fn from(k: crate::syntax::types::SyntaxFoldingRangeKind) -> Self {
+        use crate::syntax::types::SyntaxFoldingRangeKind as S;
         match k {
             S::Comment => AlFoldingRangeKind::Comment,
             S::Imports => AlFoldingRangeKind::Imports,
@@ -583,8 +583,8 @@ impl From<al_syntax::types::SyntaxFoldingRangeKind> for AlFoldingRangeKind {
     }
 }
 
-impl From<al_syntax::types::SyntaxFoldingRange> for AlFoldingRange {
-    fn from(r: al_syntax::types::SyntaxFoldingRange) -> Self {
+impl From<crate::syntax::types::SyntaxFoldingRange> for AlFoldingRange {
+    fn from(r: crate::syntax::types::SyntaxFoldingRange) -> Self {
         Self {
             start_line: r.start_line,
             start_character: r.start_character,

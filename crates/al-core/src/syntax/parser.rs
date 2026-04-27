@@ -1,6 +1,6 @@
 //! Tree-sitter parser wrapper for AL.
 
-use crate::traversal::walk_tree;
+use super::traversal::walk_tree;
 use tree_sitter::{Language, Parser, Tree};
 
 extern "C" {

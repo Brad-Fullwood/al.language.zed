@@ -51,7 +51,7 @@ pub fn find_duplicates(
             continue;
         };
 
-        let Some(obj_info) = al_syntax::find_object_declaration(&tree, &text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
 

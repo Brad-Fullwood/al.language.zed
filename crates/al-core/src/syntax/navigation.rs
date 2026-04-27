@@ -1,7 +1,7 @@
 //! AST navigation helpers for AL tree-sitter trees.
 
-use crate::traversal::walk_tree;
-pub use crate::types::SyntaxPosition as Position;
+use super::traversal::walk_tree;
+pub use super::types::SyntaxPosition as Position;
 use tree_sitter::{Node, Tree};
 
 /// Find the most specific node at a given LSP position.
@@ -14,7 +14,7 @@ use tree_sitter::{Node, Tree};
 pub fn find_node_at_position<'a>(tree: &'a Tree, source: &str, pos: Position) -> Option<Node<'a>> {
     let row = pos.line as usize;
     let line = source.lines().nth(row).unwrap_or("");
-    let column = crate::utf16_col_to_byte_offset(line, pos.character as usize);
+    let column = super::utf16_col_to_byte_offset(line, pos.character as usize);
     let point = tree_sitter::Point { row, column };
     let root = tree.root_node();
     root.descendant_for_point_range(point, point)
@@ -63,7 +63,7 @@ fn is_object_type_kind(kind: &str) -> bool {
     if kind == "object_keyword" {
         return true;
     }
-    crate::language_data::is_object_keyword_node(kind)
+    super::language_data::is_object_keyword_node(kind)
 }
 
 /// Find the object declaration in the tree.
@@ -110,7 +110,7 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
 
             // Extract name — grammar doesn't assign a field name to the object name,
             // so we use the shared extract_object_name helper.
-            if let Some(n) = crate::extract_object_name(child, source) {
+            if let Some(n) = super::extract_object_name(child, source) {
                 name = n;
             }
 
@@ -133,7 +133,7 @@ pub fn find_object_declaration(tree: &Tree, text: &str) -> Option<ObjectInfo> {
     }
 
     let mut id = None;
-    let name = crate::extract_object_name(child, source).unwrap_or_default();
+    let name = super::extract_object_name(child, source).unwrap_or_default();
 
     for i in 0..child.child_count() {
         let c = match child.child(i) {
@@ -407,8 +407,8 @@ fn check_is_local(node: Node, source: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::syntax::AlParser;
     use super::*;
-    use crate::AlParser;
 
     #[test]
     fn test_debug_tree_structure() {

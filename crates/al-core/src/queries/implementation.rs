@@ -21,9 +21,11 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
         return Vec::new();
     };
 
-    let Some(node) =
-        al_syntax::find_node_at_position(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))
-    else {
+    let Some(node) = crate::syntax::find_node_at_position(
+        &tree,
+        &text,
+        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
+    ) else {
         return Vec::new();
     };
     let Some(interface_name) = super::node_clean_name(node, text.as_bytes()) else {
@@ -108,7 +110,7 @@ fn find_codeunit_implementing_interface(
         let has_match = find_implements_clause_match(obj_node, source, interface_lower);
         if has_match {
             let ts_range = obj_node.range();
-            return Some(crate::syntax::ts_range_to_lsp(&ts_range, source).into());
+            return Some(crate::syntax_lsp::ts_range_to_lsp(&ts_range, source).into());
         }
     }
 

@@ -179,7 +179,7 @@ pub fn group_by_file(
 /// declaration by name.  Used when the workspace file index is not available
 /// (e.g., in tests).
 pub fn find_proc_line(source: &str, proc_name: &str) -> Option<u32> {
-    use al_syntax::AlParser;
+    use crate::syntax::AlParser;
     let result = AlParser::parse_quick(source);
     let root = result.tree.root_node();
     let source_bytes = source.as_bytes();

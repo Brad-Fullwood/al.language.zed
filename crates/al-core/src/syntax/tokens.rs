@@ -3,7 +3,7 @@
 use tracing::{debug, trace};
 use tree_sitter::{Node, Tree};
 
-use crate::prev_named_sibling;
+use super::prev_named_sibling;
 
 /// Semantic token type indices — must match the legend registered with the LSP client.
 pub mod token_types {
@@ -233,8 +233,8 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
                 // Single-line token: convert byte column to UTF-16 column.
                 let line_bytes = get_line(source, &line_starts, start.row);
                 let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
-                let utf16_col = crate::byte_col_to_utf16_col(line_str, start.column);
-                let utf16_end = crate::byte_col_to_utf16_col(line_str, end.column);
+                let utf16_col = super::byte_col_to_utf16_col(line_str, start.column);
+                let utf16_end = super::byte_col_to_utf16_col(line_str, end.column);
                 let len = utf16_end.saturating_sub(utf16_col);
                 if len > 0 {
                     tokens.push((start.row as u32, utf16_col, len, token_type));
@@ -247,7 +247,7 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
                         let byte_col = if i == 0 { start.column } else { 0 };
                         let line_bytes = get_line(source, &line_starts, row);
                         let source_line = std::str::from_utf8(line_bytes).unwrap_or(line);
-                        let utf16_col = crate::byte_col_to_utf16_col(source_line, byte_col);
+                        let utf16_col = super::byte_col_to_utf16_col(source_line, byte_col);
                         let utf16_len = line.encode_utf16().count() as u32;
                         if utf16_len > 0 {
                             tokens.push((row as u32, utf16_col, utf16_len, token_type));
@@ -270,7 +270,7 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
 /// Classify a tree-sitter node kind to a semantic token type.
 /// Returns `None` for nodes that should not be highlighted or should recurse.
 fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
-    use crate::language_data::token_classification;
+    use super::language_data::token_classification;
 
     match kind {
         // Generic keyword categories from external scanner.
@@ -343,7 +343,7 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
 }
 
 fn is_trigger_variable(text: &str) -> bool {
-    crate::language_data::implicit_variables()
+    super::language_data::implicit_variables()
         .iter()
         .any(|v| v.name.eq_ignore_ascii_case(text))
 }
@@ -550,7 +550,7 @@ fn is_object_name(node: Node, declaration: Node) -> bool {
 }
 
 fn has_ancestor_kind(node: Node, kind: &str) -> bool {
-    crate::has_ancestor_kind(node, kind)
+    super::has_ancestor_kind(node, kind)
 }
 
 /// Classify a `key_declaration` name node based on the keyword child of the declaration.
@@ -637,8 +637,8 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
 
 #[cfg(test)]
 mod tests {
+    use crate::syntax::AlParser;
     use super::*;
-    use crate::AlParser;
 
     fn decoded_tokens(tokens: &[SemanticToken]) -> Vec<(u32, u32, u32, u32)> {
         let mut decoded = Vec::with_capacity(tokens.len());

@@ -39,7 +39,7 @@ pub fn inlay_hints(workspace: &Workspace, uri: &Url, range: Range) -> Option<Vec
             .as_ref()
             .and_then(|p| workspace.file_index.get_cached_symbols(p))
             .unwrap_or_else(|| {
-                al_syntax::extract_document_symbols(&tree, &text)
+                crate::syntax::extract_document_symbols(&tree, &text)
                     .into_iter()
                     .map(Into::into)
                     .collect()
@@ -83,7 +83,7 @@ fn collect_inlay_hints(
     // every argument — N call-sites means N full-AST scans (variables_at →
     // collect_local/global/dataitem vars) per inlay-hints request, which
     // dominates latency for long procedure-heavy files.
-    let resolver = al_syntax::TypeResolver::new(tree, text);
+    let resolver = crate::syntax::TypeResolver::new(tree, text);
 
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -100,7 +100,7 @@ fn collect_inlay_hints(
                 if let Some((func_name, receiver_name)) = call_info {
                     let position = Position {
                         line: node.start_position().row as u32,
-                        character: al_syntax::byte_col_to_utf16_col(
+                        character: crate::syntax::byte_col_to_utf16_col(
                             source_line(source, node.start_position().row),
                             node.start_position().column,
                         ),
@@ -143,7 +143,7 @@ struct OverloadCandidate {
 fn infer_argument_type(
     node: tree_sitter::Node<'_>,
     source: &[u8],
-    resolver: &al_syntax::TypeResolver<'_>,
+    resolver: &crate::syntax::TypeResolver<'_>,
     position: Position,
 ) -> Option<InferredType> {
     // Non-UTF8 node text means invalid expression — skip
@@ -206,7 +206,7 @@ fn infer_argument_type(
 fn infer_argument_types(
     arg_list: tree_sitter::Node<'_>,
     source: &[u8],
-    resolver: &al_syntax::TypeResolver<'_>,
+    resolver: &crate::syntax::TypeResolver<'_>,
     position: Position,
 ) -> Vec<Option<InferredType>> {
     let expr_parent = arg_list
@@ -347,7 +347,7 @@ fn lookup_parameter_names(
     receiver_name: Option<&str>,
     text: &str,
     tree: &tree_sitter::Tree,
-    resolver: &al_syntax::TypeResolver<'_>,
+    resolver: &crate::syntax::TypeResolver<'_>,
     position: Position,
     arg_types: &[Option<InferredType>],
 ) -> Vec<String> {
@@ -414,7 +414,7 @@ fn lookup_via_receiver(
     receiver_name: &str,
     _text: &str,
     _tree: &tree_sitter::Tree,
-    resolver: &al_syntax::TypeResolver<'_>,
+    resolver: &crate::syntax::TypeResolver<'_>,
     position: Position,
     arg_types: &[Option<InferredType>],
 ) -> Option<Vec<String>> {
@@ -483,7 +483,7 @@ fn lookup_via_receiver(
 }
 
 fn lookup_embedded_builtin(func_name: &str) -> Option<Vec<String>> {
-    let func = al_syntax::language_data::builtin_function_by_name(func_name)?;
+    let func = crate::syntax::language_data::builtin_function_by_name(func_name)?;
     Some(func.parameters.iter().map(|p| p.name.clone()).collect())
 }
 
@@ -552,7 +552,7 @@ fn collect_return_type_hints(
                             .child_by_field_name("parameters")
                             .map(|p| Position {
                                 line: p.end_position().row as u32,
-                                character: al_syntax::byte_col_to_utf16_col(
+                                character: crate::syntax::byte_col_to_utf16_col(
                                     source_line(source, p.end_position().row),
                                     p.end_position().column,
                                 ),
@@ -560,7 +560,7 @@ fn collect_return_type_hints(
                             .or_else(|| {
                                 node.child_by_field_name("name").map(|n| Position {
                                     line: n.end_position().row as u32,
-                                    character: al_syntax::byte_col_to_utf16_col(
+                                    character: crate::syntax::byte_col_to_utf16_col(
                                         source_line(source, n.end_position().row),
                                         n.end_position().column,
                                     ),
@@ -615,7 +615,8 @@ fn add_parameter_hints(
         // LSP / al-core Position uses UTF-16 code units. Convert before
         // emitting the hint, otherwise non-ASCII identifiers (Cyrillic,
         // accented chars in labels, etc.) misalign by the byte/UTF-16 delta.
-        let character = al_syntax::byte_col_to_utf16_col(line_text, child.start_position().column);
+        let character =
+            crate::syntax::byte_col_to_utf16_col(line_text, child.start_position().column);
         hints.push(AlInlayHint {
             position: Position {
                 line: row as u32,
@@ -642,7 +643,7 @@ fn source_line(source: &[u8], row: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_syntax::AlParser;
+    use crate::syntax::AlParser;
 
     fn full_range() -> Range {
         Range {

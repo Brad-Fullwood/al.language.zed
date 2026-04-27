@@ -15,8 +15,11 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
-    let node =
-        al_syntax::find_node_at_position(&tree, &text, crate::syntax::lsp_pos_to_syntax(lsp_pos))?;
+    let node = crate::syntax::find_node_at_position(
+        &tree,
+        &text,
+        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
+    )?;
     let source = text.as_bytes();
     let clean_name = super::node_clean_name(node, source)?;
 
@@ -93,10 +96,12 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    let resolver = al_syntax::TypeResolver::new(&tree, &text);
-    if let Some(decl) = resolver.resolve_type(clean_name, crate::syntax::lsp_pos_to_syntax(lsp_pos))
+    let resolver = crate::syntax::TypeResolver::new(&tree, &text);
+    if let Some(decl) =
+        resolver.resolve_type(clean_name, crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos))
     {
-        let def_range: Range = crate::syntax::ts_range_to_lsp(&decl.range, text.as_bytes()).into();
+        let def_range: Range =
+            crate::syntax_lsp::ts_range_to_lsp(&decl.range, text.as_bytes()).into();
         if def_range.start != position {
             return Some(vec![Location {
                 uri: uri.clone(),
@@ -106,10 +111,10 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     }
 
     // textual fallback
-    let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
+    let refs = crate::syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let first = &refs[0];
-        let def_range: Range = crate::syntax::ts_range_to_lsp(first, text.as_bytes()).into();
+        let def_range: Range = crate::syntax_lsp::ts_range_to_lsp(first, text.as_bytes()).into();
         if def_range.start != position {
             return Some(vec![Location {
                 uri: uri.clone(),
@@ -131,7 +136,7 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
                     if let Ok(file_uri) = Url::from_file_path(&file_path) {
                         return Some(vec![Location {
                             uri: file_uri,
-                            range: crate::syntax::ts_range_to_lsp(
+                            range: crate::syntax_lsp::ts_range_to_lsp(
                                 &obj_info.range,
                                 file_text_entry.value().as_bytes(),
                             )
@@ -177,7 +182,7 @@ fn find_package_entry_for_type(
     subtype: Option<&str>,
 ) -> Option<std::sync::Arc<SymbolEntry>> {
     let obj_name = subtype.or({
-        if al_syntax::language_data::object_type_by_keyword(type_name).is_none() {
+        if crate::syntax::language_data::object_type_by_keyword(type_name).is_none() {
             Some(type_name)
         } else {
             None

@@ -3,11 +3,11 @@
 //! Tests parsing, document symbols, semantic tokens, folding ranges,
 //! formatting, and lint rules with realistic AL code.
 
-use al_syntax::tokens::token_types;
-use al_syntax::types::{
+use al_core::syntax::tokens::token_types;
+use al_core::syntax::types::{
     SyntaxFoldingRangeKind as FoldingRangeKind, SyntaxSymbolKind as SymbolKind,
 };
-use al_syntax::{
+use al_core::syntax::{
     extract_document_symbols, extract_folding_ranges, extract_semantic_tokens, format_al, lint,
     AlParser, FormatOptions,
 };
@@ -254,7 +254,7 @@ fn parse_all_object_types() {
             result.errors
         );
 
-        let obj = al_syntax::find_object_declaration(&result.tree, code);
+        let obj = al_core::syntax::find_object_declaration(&result.tree, code);
         assert!(obj.is_some(), "Should find {} declaration", kind);
     }
 }
@@ -818,10 +818,10 @@ fn lint_returns_empty_for_deep_nesting() {
 fn lint_config_default_constructs() {
     // LintConfig is now a unit struct placeholder — verify it constructs and
     // that lint_with_config still returns empty.
-    let config = al_syntax::lint::LintConfig;
+    let config = al_core::syntax::lint::LintConfig;
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
-    let diags = al_syntax::lint::lint_with_config(&result.tree, CODEUNIT_CODE, &config);
+    let diags = al_core::syntax::lint::lint_with_config(&result.tree, CODEUNIT_CODE, &config);
     assert!(
         diags.is_empty(),
         "lint_with_config() must return empty Vec: {:?}",
@@ -846,7 +846,7 @@ fn find_object_in_all_fixtures() {
 
     for (code, expected_kind, expected_id, expected_name) in &cases {
         let result = parser.parse(code);
-        let obj = al_syntax::find_object_declaration(&result.tree, code);
+        let obj = al_core::syntax::find_object_declaration(&result.tree, code);
 
         assert!(obj.is_some(), "Should find {} declaration", expected_kind);
         let obj = obj.unwrap();
@@ -870,12 +870,12 @@ fn find_procedure_at_position() {
     let result = parser.parse(CODEUNIT_CODE);
 
     // Position inside ProcessOrders body (line ~10)
-    let pos = al_syntax::types::SyntaxPosition {
+    let pos = al_core::syntax::types::SyntaxPosition {
         line: 10,
         character: 12,
     };
 
-    let proc_info = al_syntax::find_procedure_at(&result.tree, CODEUNIT_CODE, pos);
+    let proc_info = al_core::syntax::find_procedure_at(&result.tree, CODEUNIT_CODE, pos);
     assert!(proc_info.is_some(), "Should find procedure at line 10");
 
     let proc = proc_info.unwrap();
@@ -893,7 +893,7 @@ fn find_variable_references() {
     let mut parser = make_parser();
     let result = parser.parse(CODEUNIT_CODE);
 
-    let refs = al_syntax::find_variable_references(&result.tree, CODEUNIT_CODE, "SalesLine");
+    let refs = al_core::syntax::find_variable_references(&result.tree, CODEUNIT_CODE, "SalesLine");
     assert!(
         refs.len() >= 3,
         "SalesLine should appear at least 3 times (declaration + 2 usages), got {}",

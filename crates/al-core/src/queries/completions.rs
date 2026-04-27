@@ -62,7 +62,7 @@ impl serde::Serialize for CompletionKind {
     }
 }
 
-use al_syntax::context::{detect_context, CompletionContext};
+use crate::syntax::context::{detect_context, CompletionContext};
 
 /// Get completions at a position in a document.
 #[must_use]
@@ -71,7 +71,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
     };
-    let context = detect_context(&text, crate::syntax::lsp_pos_to_syntax(lsp_pos));
+    let context = detect_context(&text, crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos));
     tracing::debug!(context = ?context, line = lsp_pos.line, character = lsp_pos.character, "completion: detected context");
 
     let mut items = Vec::new();
@@ -120,7 +120,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             }
         }
         CompletionContext::TypePosition => {
-            for entry in &al_syntax::language_data::keywords().r#type {
+            for entry in &crate::syntax::language_data::keywords().r#type {
                 items.push(CompletionEntry {
                     label: entry.keyword.clone(),
                     kind: CompletionKind::Keyword,
@@ -165,7 +165,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             // Include implicit trigger variables (Rec, xRec, CurrPage, etc.) in the
             // default context. A dedicated TriggerBody detection pass would be needed
             // to offer these only inside trigger bodies, but default context is safe.
-            for var in al_syntax::language_data::implicit_variables() {
+            for var in crate::syntax::language_data::implicit_variables() {
                 items.push(CompletionEntry {
                     label: var.name.clone(),
                     kind: CompletionKind::Variable,
@@ -206,8 +206,11 @@ pub async fn completions_full(
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return items;
     };
-    let ctx = al_syntax::context::detect_context(&text, crate::syntax::lsp_pos_to_syntax(lsp_pos));
-    if !matches!(ctx, al_syntax::context::CompletionContext::MemberAccess) {
+    let ctx = crate::syntax::context::detect_context(
+        &text,
+        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
+    );
+    if !matches!(ctx, crate::syntax::context::CompletionContext::MemberAccess) {
         return items;
     }
 
@@ -269,7 +272,7 @@ fn add_default_completions(
     position: tower_lsp::lsp_types::Position,
     items: &mut Vec<CompletionEntry>,
 ) {
-    let kw_data = al_syntax::language_data::keywords();
+    let kw_data = crate::syntax::language_data::keywords();
     for entry in kw_data.control.iter().chain(kw_data.operator.iter()) {
         items.push(CompletionEntry {
             label: entry.keyword.clone(),
@@ -290,7 +293,7 @@ fn add_default_completions(
             .as_ref()
             .and_then(|p| workspace.file_index.get_cached_symbols(p))
             .unwrap_or_else(|| {
-                al_syntax::extract_document_symbols(&tree, &file_text)
+                crate::syntax::extract_document_symbols(&tree, &file_text)
                     .into_iter()
                     .map(Into::into)
                     .collect()
@@ -312,8 +315,8 @@ fn add_default_completions(
             }
         }
 
-        let resolver = al_syntax::type_resolver::TypeResolver::new(&tree, &file_text);
-        let vars = resolver.variables_at(crate::syntax::lsp_pos_to_syntax(position));
+        let resolver = crate::syntax::type_resolver::TypeResolver::new(&tree, &file_text);
+        let vars = resolver.variables_at(crate::syntax_lsp::lsp_pos_to_syntax(position));
         for var in &vars {
             let subtype = var
                 .type_subtype

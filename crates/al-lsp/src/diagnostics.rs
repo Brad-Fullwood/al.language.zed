@@ -1,7 +1,7 @@
 //! Two-phase diagnostics — instant syntax + async analyzer.
 //!
 //! Phase 1 (instant): parse with tree-sitter and collect syntax errors. Native
-//!                     lint rules are not yet implemented — `al_syntax::lint()`
+//!                     lint rules are not yet implemented — `al_core::syntax::lint()`
 //!                     returns an empty `Vec` — so this phase only surfaces
 //!                     parse-error diagnostics today.
 //! Phase 2 (async):   send to .NET SemanticBridge for CodeAnalysis diagnostics.
@@ -260,7 +260,7 @@ pub(crate) fn syntax_diag_to_lsp(
 /// columns to LSP UTF-16 code unit columns.
 pub fn syntax_error_to_diagnostic(err: &al_core::syntax::SyntaxError, source: &[u8]) -> Diagnostic {
     Diagnostic {
-        range: al_core::syntax::ts_range_to_lsp(&err.range, source),
+        range: al_core::syntax_lsp::ts_range_to_lsp(&err.range, source),
         severity: Some(DiagnosticSeverity::ERROR),
         code: Some(NumberOrString::String("syntax".to_string())),
         source: Some("al".to_string()),
@@ -282,7 +282,7 @@ pub fn lint_to_diagnostic(lint: &al_core::syntax::LintDiagnostic, source: &[u8])
     };
 
     Diagnostic {
-        range: al_core::syntax::ts_range_to_lsp(&lint.range, source),
+        range: al_core::syntax_lsp::ts_range_to_lsp(&lint.range, source),
         severity: Some(severity),
         code: Some(NumberOrString::String(lint.code.clone())),
         source: Some("al-lint".to_string()),

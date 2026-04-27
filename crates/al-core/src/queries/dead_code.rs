@@ -82,7 +82,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         .collect();
 
     for (file_path, file_text, file_tree) in &all_files {
-        let Some(obj_info) = al_syntax::find_object_declaration(file_tree, file_text) else {
+        let Some(obj_info) = crate::syntax::find_object_declaration(file_tree, file_text) else {
             continue;
         };
 
@@ -98,7 +98,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
 
         // 2. Find unused table fields (only for table objects)
         let obj_kind_lower = obj_info.kind.to_lowercase();
-        let is_table = al_syntax::language_data::object_type_by_keyword(&obj_kind_lower)
+        let is_table = crate::syntax::language_data::object_type_by_keyword(&obj_kind_lower)
             .map(|ot| ot.node_kind == "kw_table")
             .unwrap_or(false);
         if is_table {
@@ -163,7 +163,7 @@ fn find_unused_procedures(
                     // Primary: tree-sitter call references (misses action triggers due to grammar limitation).
                     // Fallback: text scan for calls inside trigger bodies that braced_block doesn't parse.
                     // ISSUE-076: prevents false positives for procedures called inside action triggers.
-                    al_syntax::find_call_references(other_tree, other_text, proc_name) > 0
+                    crate::syntax::find_call_references(other_tree, other_text, proc_name) > 0
                         || text_contains_call_outside_declaration(other_text, proc_name)
                 });
 
@@ -171,7 +171,7 @@ fn find_unused_procedures(
             // find_call_references counts call sites only (excludes the declaration itself),
             // so any non-zero count means the procedure is actually called within this file.
             // Fallback text scan handles calls in action triggers not visible to tree-sitter.
-            al_syntax::find_call_references(file_tree, file_text, proc_name) > 0
+            crate::syntax::find_call_references(file_tree, file_text, proc_name) > 0
                 || text_contains_call_outside_declaration(file_text, proc_name)
         };
 
