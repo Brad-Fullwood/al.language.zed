@@ -20,9 +20,9 @@ Plan: `~/.claude/plans/i-am-thinking-about-playful-bentley.md`
 | `al-test-harness`, `al-zed-test` | Unchanged |
 
 **Stage progress:**
-- [x] **Stage 1** — CLAUDE.md / hooks / skills updated to target layout (this commit)
-- [ ] Stage 2 — `al-daemon-client` → `al-protocol` rename
-- [ ] Stage 3 — `al-dap-client` folded into al-core
+- [x] **Stage 1** — CLAUDE.md / hooks / skills updated to target layout
+- [x] **Stage 2** — `al-daemon-client` → `al-protocol` rename
+- [x] **Stage 3** — `al-dap-client` folded into al-core (now `al_core::dap`)
 - [ ] Stage 4 — `al-syntax` folded into al-core
 - [ ] Stage 5 — `al-symbols` folded into al-core
 - [ ] Stage 6 — `al-semantic` folded into al-core

@@ -45,12 +45,12 @@ dependencies = [
 name = "al-core"
 version = "0.1.0"
 dependencies = [
- "al-dap-client",
  "al-protocol",
  "al-semantic",
  "al-symbols",
  "al-syntax",
  "dashmap 6.1.0",
+ "futures-util",
  "petgraph",
  "reqwest",
  "ropey",
@@ -59,27 +59,12 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tower-lsp",
  "tracing",
  "tree-sitter",
  "url",
  "urlencoding",
-]
-
-[[package]]
-name = "al-dap-client"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -98,7 +83,6 @@ name = "al-lsp"
 version = "0.1.0"
 dependencies = [
  "al-core",
- "al-dap-client",
  "al-protocol",
  "al-symbols",
  "al-syntax",

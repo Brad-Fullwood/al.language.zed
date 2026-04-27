@@ -1,9 +1,10 @@
-//! al-dap-client: Headless DAP control for AL debugging.
+//! Headless DAP control for AL debugging.
 //!
 //! `bc_debug` module talks directly to BC via REST + SignalR (no external binary).
 //! `client` provides low-level DAP communication for EditorServices.Host.
 //!
-//! This crate does NOT depend on al-core, al-syntax, or al-symbols.
+//! Folded into al-core in stage 3 of the crate consolidation; previously the
+//! standalone `al-dap-client` crate.
 
 pub mod bc_debug;
 pub mod client;

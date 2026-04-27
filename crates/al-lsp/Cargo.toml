@@ -22,7 +22,6 @@ dirs = "6"
 reqwest = { workspace = true }
 walkdir = "2"
 url = "2"
-al-dap-client = { path = "../al-dap-client" }
 al-protocol = { path = "../al-protocol" }
 
 [dev-dependencies]

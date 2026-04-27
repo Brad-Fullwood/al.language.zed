@@ -7,7 +7,6 @@ edition = "2021"
 al-syntax = { path = "../al-syntax" }
 al-symbols = { path = "../al-symbols" }
 al-semantic = { path = "../al-semantic" }
-al-dap-client = { path = "../al-dap-client" }
 al-protocol = { path = "../al-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,6 +21,8 @@ url = "2"
 urlencoding = "2"
 petgraph = { workspace = true }
 reqwest = { workspace = true }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
+futures-util = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

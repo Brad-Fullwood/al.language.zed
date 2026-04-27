@@ -7,6 +7,7 @@
 pub mod bc_client;
 pub mod build;
 pub mod config;
+pub mod dap;
 pub mod documents;
 pub mod errors;
 pub mod file_index;

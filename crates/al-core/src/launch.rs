@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use al_dap_client::json_util::strip_json_comments;
+use crate::dap::json_util::strip_json_comments;
 use serde::Deserialize;
 use tracing::{debug, warn};
 
@@ -14,12 +14,12 @@ use crate::project::AppDependency;
 /// BC environment type.
 ///
 /// Re-exported from al-dap-client to avoid duplication.
-pub use al_dap_client::config::EnvironmentType;
+pub use crate::dap::config::EnvironmentType;
 
 /// Authentication method for BC connections.
 ///
 /// Re-exported from al-dap-client to avoid duplication.
-pub use al_dap_client::config::AuthMethod;
+pub use crate::dap::config::AuthMethod;
 
 /// A parsed debug configuration file.
 #[derive(Debug, Clone)]

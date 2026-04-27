@@ -16,9 +16,9 @@ use tokio::io::BufWriter;
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::framing::{ensure_seq, read_dap_body, write_dap_frame};
-use crate::protocol::{DapEvent, DapMessage, DapResponse};
-use crate::{DapError, Result};
+use super::framing::{ensure_seq, read_dap_body, write_dap_frame};
+use super::protocol::{DapEvent, DapMessage, DapResponse};
+use super::{DapError, Result};
 
 /// Low-level DAP client that manages a subprocess.
 ///
@@ -136,7 +136,7 @@ impl DapClient {
         timeout: Duration,
     ) -> Result<DapResponse> {
         let seq = self.seq_counter.fetch_add(1, Ordering::Relaxed);
-        let request = crate::protocol::DapRequest {
+        let request = super::protocol::DapRequest {
             seq,
             type_: "request".to_string(),
             command: command.to_string(),

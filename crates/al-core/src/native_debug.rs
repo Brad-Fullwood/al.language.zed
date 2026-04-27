@@ -5,9 +5,9 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use al_dap_client::bc_debug::{BcDebugConfig, BcDebugSession};
-use al_dap_client::types::*;
-use al_dap_client::Result;
+use crate::dap::bc_debug::{BcDebugConfig, BcDebugSession};
+use crate::dap::types::*;
+use crate::dap::Result;
 use tracing::{info, warn};
 
 /// Wraps `BcDebugSession` with daemon-side state: breakpoint tracking, history.

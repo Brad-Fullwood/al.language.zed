@@ -205,7 +205,7 @@ async fn main() {
         }
         let fi = file_index.clone();
 
-        if let Err(e) = al_dap_client::native_dap::run_native_dap(
+        if let Err(e) = al_core::dap::native_dap::run_native_dap(
             &project_root,
             alc_path.as_deref(),
             |tenant| async move {
@@ -220,8 +220,8 @@ async fn main() {
                 let path = PathBuf::from(file_path);
                 fi.object_info
                     .get(&path)
-                    .map(|info| al_dap_client::native_dap::ResolvedObject {
-                        object_type: al_dap_client::native_dap::kind_to_object_type(&info.kind),
+                    .map(|info| al_core::dap::native_dap::ResolvedObject {
+                        object_type: al_core::dap::native_dap::kind_to_object_type(&info.kind),
                         object_id: info.id.unwrap_or(-1) as i32,
                     })
             },

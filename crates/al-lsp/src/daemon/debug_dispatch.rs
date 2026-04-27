@@ -24,9 +24,9 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
 fn resolve_debug_config(
     workspace: &Workspace,
     params: &serde_json::Value,
-) -> Option<al_dap_client::bc_debug::BcDebugConfig> {
+) -> Option<al_core::dap::bc_debug::BcDebugConfig> {
+    use al_core::dap::bc_debug::BcDebugConfig;
     use al_core::launch::find_launch_config;
-    use al_dap_client::bc_debug::BcDebugConfig;
 
     let project_root = workspace
         .project
@@ -82,8 +82,8 @@ pub(super) async fn dispatch_debug(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
+    use al_core::dap::bc_debug::BcDebugConfig;
     use al_core::native_debug::NativeDebugSession;
-    use al_dap_client::bc_debug::BcDebugConfig;
     use al_protocol::jsonrpc::error_codes;
 
     let cmd = match params.get("cmd").and_then(|v| v.as_str()) {

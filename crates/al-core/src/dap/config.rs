@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tracing::{debug, warn};
 
-use crate::json_util::strip_json_comments;
+use super::json_util::strip_json_comments;
 
 // ---------------------------------------------------------------------------
 // Public types

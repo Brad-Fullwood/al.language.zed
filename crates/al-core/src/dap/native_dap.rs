@@ -20,9 +20,9 @@ use tokio::io::{self, BufReader};
 use tokio::sync::{watch, Mutex};
 use tracing::{debug, error, info, warn};
 
-use crate::bc_debug::{publish_app, BcDebugConfig, BcDebugSession, BcEvent};
-use crate::framing::{read_dap_body, write_dap_frame};
-use crate::{DapError, Result};
+use super::bc_debug::{publish_app, BcDebugConfig, BcDebugSession, BcEvent};
+use super::framing::{read_dap_body, write_dap_frame};
+use super::{DapError, Result};
 
 // ---------------------------------------------------------------------------
 // BC ObjectTypeWrapper constants
@@ -123,7 +123,7 @@ where
     loop {
         // Drain any BC push events (e.g. stopped, output) before blocking on stdin.
         while let Ok(frame) = dap_event_rx.try_recv() {
-            use crate::framing::write_dap_frame;
+            use super::framing::write_dap_frame;
             if let Err(e) = write_dap_frame(&mut stdout, &frame).await {
                 warn!("Failed to write BC event to Zed: {e}");
             }

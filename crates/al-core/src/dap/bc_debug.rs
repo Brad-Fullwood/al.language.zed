@@ -23,7 +23,7 @@ use serde::Deserialize;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
-use crate::{DapError, Result};
+use super::{DapError, Result};
 
 /// Maximum number of pending debug events buffered before being consumed.
 const PENDING_EVENT_CAPACITY: usize = 64;
