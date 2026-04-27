@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use serde::Serialize;
 
-use al_daemon_client::DaemonClient;
+use al_protocol::DaemonClient;
 
 // ---------------------------------------------------------------------------
 // Shared helpers

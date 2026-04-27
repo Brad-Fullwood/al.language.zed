@@ -32,7 +32,7 @@ dependencies = [
 name = "al-cli"
 version = "0.1.0"
 dependencies = [
- "al-daemon-client",
+ "al-protocol",
  "clap",
  "clap_complete",
  "dirs",
@@ -45,8 +45,8 @@ dependencies = [
 name = "al-core"
 version = "0.1.0"
 dependencies = [
- "al-daemon-client",
  "al-dap-client",
+ "al-protocol",
  "al-semantic",
  "al-symbols",
  "al-syntax",
@@ -64,14 +64,6 @@ dependencies = [
  "tree-sitter",
  "url",
  "urlencoding",
-]
-
-[[package]]
-name = "al-daemon-client"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -94,7 +86,7 @@ dependencies = [
 name = "al-explorer"
 version = "0.1.0"
 dependencies = [
- "al-daemon-client",
+ "al-protocol",
  "crossterm",
  "ratatui",
  "serde",
@@ -106,8 +98,8 @@ name = "al-lsp"
 version = "0.1.0"
 dependencies = [
  "al-core",
- "al-daemon-client",
  "al-dap-client",
+ "al-protocol",
  "al-symbols",
  "al-syntax",
  "dashmap 6.1.0",
@@ -124,6 +116,14 @@ dependencies = [
  "tree-sitter",
  "url",
  "walkdir",
+]
+
+[[package]]
+name = "al-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

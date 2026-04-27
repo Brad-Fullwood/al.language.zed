@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 
-al-daemon-client = { path = "../al-daemon-client" }
+al-protocol = { path = "../al-protocol" }
 crossterm = "0.29.0"
 ratatui = "0.30.0"
 serde = { workspace = true }

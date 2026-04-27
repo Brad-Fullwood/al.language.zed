@@ -1,6 +1,6 @@
 //! JSON-RPC types for daemon protocol communication.
 //!
-//! This is the canonical definition shared by al-daemon-client, al-core, and al-lsp.
+//! This is the canonical definition shared by al-protocol, al-core, and al-lsp.
 
 use serde::{Deserialize, Serialize};
 

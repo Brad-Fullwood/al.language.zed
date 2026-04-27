@@ -8,7 +8,7 @@ name = "al"
 path = "src/main.rs"
 
 [dependencies]
-al-daemon-client = { path = "../al-daemon-client" }
+al-protocol = { path = "../al-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }

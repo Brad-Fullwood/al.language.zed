@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use al_core::workspace::Workspace;
-use al_daemon_client::jsonrpc::{error_codes, Response, RpcError};
+use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
 use super::{
     ensure_document, file_not_found, file_uri_from_params, invalid_params, lint_diag_to_json,
@@ -1374,7 +1374,7 @@ pub(super) async fn dispatch_xlf_generate(
         if !pb.is_absolute() {
             return rpc_error(
                 id,
-                al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+                al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
                 "'project' must be an absolute path",
             );
         }
@@ -1418,7 +1418,7 @@ pub(super) async fn dispatch_xlf_refresh(
         None => {
             return rpc_error(
                 id,
-                al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+                al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
                 "Missing 'xlf' param",
             )
         }
@@ -1426,7 +1426,7 @@ pub(super) async fn dispatch_xlf_refresh(
     if !xlf_path.is_absolute() {
         return rpc_error(
             id,
-            al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+            al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
             "'xlf' must be an absolute path",
         );
     }
@@ -1459,7 +1459,7 @@ pub(super) async fn dispatch_xlf_refresh(
         Err(e) => {
             return rpc_error(
                 id,
-                al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+                al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
                 &format!("Cannot read {}: {e}", generated_path.display()),
             )
         }
@@ -1469,7 +1469,7 @@ pub(super) async fn dispatch_xlf_refresh(
         Err(e) => {
             return rpc_error(
                 id,
-                al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+                al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
                 &format!("Cannot read {}: {e}", xlf_path.display()),
             )
         }
@@ -1493,7 +1493,7 @@ pub(super) async fn dispatch_xlf_refresh(
     if let Err(e) = tokio::task::block_in_place(|| std::fs::write(&xlf_path, new_xlf)) {
         return rpc_error(
             id,
-            al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+            al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
             &format!("Cannot write {}: {e}", xlf_path.display()),
         );
     }
@@ -1512,7 +1512,7 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
         None => {
             return rpc_error(
                 id,
-                al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+                al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
                 "Missing 'xlf' param",
             )
         }
@@ -1520,7 +1520,7 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
     if !std::path::Path::new(xlf_path).is_absolute() {
         return rpc_error(
             id,
-            al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+            al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
             "'xlf' must be an absolute path",
         );
     }
@@ -1529,7 +1529,7 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
         Err(e) => {
             return rpc_error(
                 id,
-                al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+                al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
                 &format!("Cannot read {xlf_path}: {e}"),
             )
         }
@@ -1567,7 +1567,7 @@ pub(super) async fn dispatch_xlf_suggest(
         None => {
             return rpc_error(
                 id,
-                al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+                al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
                 "Missing 'xlf' param",
             )
         }
@@ -1575,7 +1575,7 @@ pub(super) async fn dispatch_xlf_suggest(
     if !std::path::Path::new(xlf_path).is_absolute() {
         return rpc_error(
             id,
-            al_daemon_client::jsonrpc::error_codes::INVALID_PARAMS,
+            al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
             "'xlf' must be an absolute path",
         );
     }
@@ -1585,7 +1585,7 @@ pub(super) async fn dispatch_xlf_suggest(
         Err(e) => {
             return rpc_error(
                 id,
-                al_daemon_client::jsonrpc::error_codes::INTERNAL_ERROR,
+                al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
                 &format!("Cannot read {xlf_path}: {e}"),
             )
         }

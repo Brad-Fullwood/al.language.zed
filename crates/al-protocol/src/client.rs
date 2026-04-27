@@ -217,7 +217,7 @@ mod tests {
 
     fn unique_sock() -> PathBuf {
         let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join("al-daemon-client-test");
+        let dir = std::env::temp_dir().join("al-protocol-test");
         std::fs::create_dir_all(&dir).expect("test");
         let sock = dir.join(format!("test-{}-{}.sock", std::process::id(), n));
         let _ = std::fs::remove_file(&sock);

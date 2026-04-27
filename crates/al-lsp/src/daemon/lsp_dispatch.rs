@@ -1,7 +1,7 @@
 //! LSP method dispatchers — hover, definition, references, completions, etc.
 
 use al_core::workspace::Workspace;
-use al_daemon_client::jsonrpc::{error_codes, Response, RpcError};
+use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 use serde::Serialize;
 
 use super::{extract_position, extract_uri, invalid_params};

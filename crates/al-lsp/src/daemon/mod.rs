@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use al_core::workspace::Workspace;
-use al_daemon_client::jsonrpc::{error_codes, Request, Response, RpcError};
-use al_daemon_client::socket_path;
+use al_protocol::jsonrpc::{error_codes, Request, Response, RpcError};
+use al_protocol::socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -604,7 +604,7 @@ pub(crate) fn rpc_error(id: u64, code: i32, message: &str) -> Response {
     Response {
         id,
         result: None,
-        error: Some(al_daemon_client::jsonrpc::RpcError {
+        error: Some(al_protocol::jsonrpc::RpcError {
             code,
             message: message.to_string(),
         }),
@@ -726,9 +726,9 @@ mod tests {
         // Ensure XDG_RUNTIME_DIR is set so socket_path returns Some.
         std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
         let p = std::path::Path::new("/tmp");
-        let path1 = al_daemon_client::socket_path(p)
+        let path1 = al_protocol::socket_path(p)
             .expect("socket_path returned None with XDG_RUNTIME_DIR set");
-        let path2 = al_daemon_client::socket_path(p)
+        let path2 = al_protocol::socket_path(p)
             .expect("socket_path returned None with XDG_RUNTIME_DIR set");
         assert_eq!(path1, path2);
         assert!(path1.to_str().unwrap().ends_with(".sock"));

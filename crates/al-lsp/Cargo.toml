@@ -23,7 +23,7 @@ reqwest = { workspace = true }
 walkdir = "2"
 url = "2"
 al-dap-client = { path = "../al-dap-client" }
-al-daemon-client = { path = "../al-daemon-client" }
+al-protocol = { path = "../al-protocol" }
 
 [dev-dependencies]
 al-syntax = { path = "../al-syntax" }

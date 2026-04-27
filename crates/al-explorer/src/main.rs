@@ -18,7 +18,7 @@ use ratatui::{
 use std::{error::Error, io, sync::Arc};
 use types::{ObjectKind, SymbolEntry, SymbolIndex};
 
-use al_daemon_client::DaemonClient;
+use al_protocol::DaemonClient;
 
 // ---------------------------------------------------------------------------
 // Navigation helpers

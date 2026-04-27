@@ -1,12 +1,12 @@
-# al-daemon-client — Shared IPC Types (~450 lines)
+# al-protocol — Shared IPC Types (~450 lines)
 
 **Leaf crate** — must NOT depend on al-core or any other al-* crate. Used by al-cli, al-explorer, and al-lsp's daemon-mode tests.
 
 ## Quick Reference
 
 ```sh
-cargo test -p al-daemon-client              # all tests (~9 inline: hash stability, mock server)
-cargo check -p al-daemon-client             # compile check
+cargo test -p al-protocol              # all tests (~9 inline: hash stability, mock server)
+cargo check -p al-protocol             # compile check
 ```
 
 ## Key Types
