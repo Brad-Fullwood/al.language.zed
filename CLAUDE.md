@@ -4,6 +4,36 @@ This file is the **single source of truth** for AI agents working on this codeba
 
 ---
 
+## ⚠️ Refactor in Progress: Crate Consolidation
+
+**The workspace is mid-refactor — collapsing 10 native crates into 4.**
+Plan: `~/.claude/plans/i-am-thinking-about-playful-bentley.md`
+
+**Target layout (what this file describes):**
+
+| Crate | Status |
+|-------|--------|
+| `al-core` | Absorbing al-syntax, al-symbols, al-semantic, al-lsp, al-dap-client; ships `[[bin]] al-lsp` |
+| `al-protocol` | Renamed from al-daemon-client |
+| `al-explorer` | Absorbing al-cli (TUI default + clap subcommands) |
+| `zed-al` | Unchanged (WASM) |
+| `al-test-harness`, `al-zed-test` | Unchanged |
+
+**Stage progress:**
+- [x] **Stage 1** — CLAUDE.md / hooks / skills updated to target layout (this commit)
+- [ ] Stage 2 — `al-daemon-client` → `al-protocol` rename
+- [ ] Stage 3 — `al-dap-client` folded into al-core
+- [ ] Stage 4 — `al-syntax` folded into al-core
+- [ ] Stage 5 — `al-symbols` folded into al-core
+- [ ] Stage 6 — `al-semantic` folded into al-core
+- [ ] Stage 7 — `al-lsp` folded into al-core as `[[bin]]`
+- [ ] Stage 8 — `al-cli` folded into al-explorer
+- [ ] Stage 9 — Final docs/hooks reconciliation (this banner removed)
+
+**While the refactor is in flight:** the crate names below describe the *target* state. The repo's `Cargo.toml` reflects in-flight reality. If hooks/agents seem out of sync with on-disk crates, check this banner — the docs lead, the code is catching up.
+
+---
+
 ## Quick Reference
 
 ```sh
@@ -12,8 +42,8 @@ cargo build --workspace --exclude zed-al     # build all native crates
 cargo test  --workspace --exclude zed-al     # run all tests
 cargo clippy --workspace --exclude zed-al -- -D warnings  # lint (must pass CI)
 cargo fmt --all                               # format
-cargo test -p al-syntax                      # test a single crate
-cargo test -p al-lsp --test e2e             # single test file
+cargo test -p al-core                        # test the core crate (covers syntax/symbols/semantic/server)
+cargo test -p al-core --test e2e             # single test file
 cargo build -p zed-al --target wasm32-wasip1 --release  # WASM extension (separate target)
 make build                                    # all Rust crates + .NET bridges
 make install                                  # build + symlink into PATH + Zed
@@ -29,45 +59,62 @@ make install                                  # build + symlink into PATH + Zed
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ ENTRY POINTS (3 transports, same business logic)                    │
+│ ENTRY POINTS                                                        │
 │                                                                     │
-│  zed-al (WASM)  →  al-lsp --stdio    ┐                            │
-│  al-cli         →  al-lsp daemon      ├→  al-core (ALL logic)     │
-│  al-explorer    →  al-lsp daemon      │      ├→ al-syntax          │
-│                                       │      ├→ al-symbols         │
-│                                       │      ├→ al-semantic        │
-│                                       │      ├→ al-dap-client      │
-│                                       │      └→ al-daemon-client   │
-│                                       │                             │
-│                                       └─→ al-daemon-client (IPC)   │
+│  Zed editor      →  al-lsp (binary inside al-core) --stdio         │
+│  Zed debugger    →  al-lsp --dap                                   │
+│  al-explorer     →  al-lsp daemon (over al-protocol IPC)           │
+│  zed-al (WASM)   →  spawns al-lsp                                  │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────┐      │
+│  │  al-core — ALL logic + binaries                          │      │
+│  │  ├─ syntax    (parsing, formatting, linting, types)      │      │
+│  │  ├─ symbols   (.app reading, NuGet, symbol index)        │      │
+│  │  ├─ semantic  (.NET CLR bridge — CodeAnalysis)          │      │
+│  │  ├─ server    (LSP/daemon transport conversion)          │      │
+│  │  ├─ dap       (Debug Adapter Protocol framing + proxy)   │      │
+│  │  ├─ queries/  (transport-agnostic LSP feature impls)     │      │
+│  │  └─ bin/al-lsp.rs (the binary entry point)               │      │
+│  └─────────────────────────────────────────────────────────┘      │
+│                          ▲                                          │
+│                          │ depends on                               │
+│  ┌─────────────────────────────────────────────────────────┐      │
+│  │  al-protocol — daemon IPC types (~450 lines)             │      │
+│  └─────────────────────────────────────────────────────────┘      │
+│                          ▲                                          │
+│                          │ depends on                               │
+│  ┌─────────────────────────────────────────────────────────┐      │
+│  │  al-explorer — unified TUI + CLI client                  │      │
+│  │  ├─ TUI mode (default, no args)                          │      │
+│  │  └─ cli/  (clap subcommands for scripted use)            │      │
+│  └─────────────────────────────────────────────────────────┘      │
+│                                                                     │
+│  zed-al (WASM, isolated, no compile-time native deps)              │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Crate Responsibilities
 
-| Crate | Lines | Role | Key Types |
-|-------|-------|------|-----------|
-| **al-core** | ~32K | ALL business logic, queries, state | `Workspace`, `DocumentStore`, `SymbolIndex`, `InsightGraph` |
-| **al-syntax** | ~9K | Parsing, formatting, linting, type resolution | `AlParser`, `TypeResolver`, `LanguageData` |
-| **al-symbols** | ~6K | `.app` file reading, NuGet, symbol index | `AppReader`, `SymbolIndex`, `NugetClient` |
-| **al-semantic** | ~1K | .NET CLR bridge (CodeAnalysis) | `SemanticBridge` |
-| **al-lsp** | ~7K | LSP/daemon/DAP server (transport only) | `AlServer`, daemon handlers |
-| **al-dap-client** | ~3K | Debug Adapter Protocol client | `BcDebugSession`, DAP framing |
-| **al-daemon-client** | ~450 | Shared IPC types | `DaemonClient`, socket path |
-| **al-cli** | ~4K | CLI tool | clap commands |
-| **al-explorer** | ~2K | TUI symbol browser | ratatui app |
+| Crate | Approx Lines | Role | Key Modules / Types |
+|-------|--------------|------|---------------------|
+| **al-core** | ~55K | All business logic + LSP binary | `Workspace`, `DocumentStore`; `syntax::{AlParser, TypeResolver, LanguageData}`; `symbols::{AppReader, SymbolIndex, NugetClient}`; `semantic::SemanticBridge`; `server::AlServer`; `dap::*`; `[[bin]] al-lsp` |
+| **al-protocol** | ~450 | Daemon IPC types (shared between al-core daemon and al-explorer) | `DaemonClient`, request/response enums |
+| **al-explorer** | ~6K | Unified TUI + CLI client | ratatui app + `cli::*` clap commands |
 | **zed-al** | ~620 | WASM extension for Zed | `AlExtension` |
+| **al-test-harness** | n/a | E2E tests over the real `al-lsp` binary | `LspClient` |
+| **al-zed-test** | n/a | Live tests against real Zed | — |
 
 ### The One Rule of Architecture
 
-**All business logic lives in `al-core`.** The query functions in `al-core/src/queries/` take `&Workspace` + position and return **transport-agnostic types**. `al-lsp` converts results to LSP types at the boundary. If you're writing logic that manipulates AL code, symbols, or project state, it goes in `al-core`, not `al-lsp`.
+**Query functions in `al-core::queries::*` return transport-agnostic types — never `lsp_types::*`.**
+The `al-core::server` module converts to LSP types at the boundary. This rule is no longer compiler-enforced (al-lsp folded into al-core), so it's a coding discipline. PRs introducing `lsp_types::*` into a `queries::*` function signature will be rejected.
 
-### al-lsp Server Modes
+### al-lsp Server Modes (binary lives inside al-core)
 
 | Mode | Arg | Transport | Client |
 |------|-----|-----------|--------|
 | LSP | `--stdio` (default) | tower-lsp over stdin/stdout | Zed editor |
-| Daemon | `daemon --project <path>` | JSON-RPC over Unix socket | al-cli, al-explorer |
+| Daemon | `daemon --project <path>` | JSON-RPC over Unix socket (al-protocol types) | al-explorer |
 | DAP | `--dap` | Debug Adapter Protocol over stdio | Zed debugger |
 
 Socket path: `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock`. Daemon auto-shuts down after 30min idle.
@@ -77,22 +124,21 @@ Socket path: `$XDG_RUNTIME_DIR/al-lsp/<hash>.sock`. Daemon auto-shuts down after
 ## Dependency Rules (ENFORCED)
 
 ```
-al-lsp ──→ al-core ──→ al-syntax
-                    ──→ al-symbols
-                    ──→ al-semantic
-                    ──→ al-dap-client
-                    ──→ al-daemon-client
+al-explorer  ──→  al-protocol
+al-core      ──→  al-protocol
+zed-al       (isolated, WASM)
 ```
 
 ### Hard Constraints
 
-1. **al-syntax, al-symbols, al-semantic** must NEVER depend on each other or on al-core
-2. **al-daemon-client** must NEVER depend on al-core
-3. **zed-al** is completely isolated — no compile-time dependency on any native crate
-4. Dependencies flow **downward only** — no cycles, no upward imports
-5. **al-lsp** must not contain business logic — only transport conversion
+1. **`al-explorer` depends only on `al-protocol`.** Never on `al-core`. Pulling al-core into the client would drag in tree-sitter, the .NET CLR (semantic bridge), and tower-lsp — for a TUI binary.
+2. **`al-core` may depend on `al-protocol`.** Never the reverse — al-protocol must stay a tiny types-only crate.
+3. **`zed-al` is completely isolated** — no compile-time dependency on any native crate.
+4. **No upward dependencies, no cycles.**
 
-**Before adding a dependency**, check this table. If your change would create an upward or lateral dependency, restructure it.
+The old per-module rules (al-syntax / al-symbols / al-semantic must not depend on each other) are gone — they're modules now, not crates. Module-level discipline is enforced by code review, not the compiler.
+
+**Before adding a dependency**, check this rule. If your change would create a wrong-direction dependency, restructure it.
 
 ---
 
@@ -118,9 +164,9 @@ match kind { "table" | "page" | "codeunit" => ... }  // if matching AL object ty
 
 | Need | Source |
 |------|--------|
-| Keywords, built-in functions, types | `al-syntax::LanguageData` (loads from `tree-sitter-al/data/` JSON files) |
-| Object types, fields, events | `al-symbols` (reads `.app` packages at runtime) |
-| Semantic info, error codes | `al-semantic` bridge (queries .NET CLR at runtime) |
+| Keywords, built-in functions, types | `al_core::syntax::LanguageData` (loads from `tree-sitter-al/data/` JSON files) |
+| Object types, fields, events | `al_core::symbols` (reads `.app` packages at runtime) |
+| Semantic info, error codes | `al_core::semantic` bridge (queries .NET CLR at runtime) |
 
 If the extraction pipeline lacks what you need, **update the generator** at `tree-sitter-al/generator/tools/al-extract/` — do NOT create a hardcoded constant.
 
@@ -197,13 +243,13 @@ fn walk(node: Node) {
 ### Error Handling
 
 ```rust
-// In query functions (al-core/src/queries/): return Option or Result
+// In query functions (al_core::queries::*): return Option or Result with native types
 pub fn hover(workspace: &Workspace, uri: &Url, pos: Position) -> Option<HoverResult> { ... }
 
-// In server handlers (al-lsp): convert to LSP errors
+// In server handlers (al_core::server::*): convert to LSP errors
 // NEVER unwrap() in request handlers — return an error response
 
-// In library code (al-syntax, al-symbols): use Result with thiserror
+// In library modules (syntax, symbols): use Result with thiserror
 // NEVER panic in library code
 ```
 
@@ -225,7 +271,7 @@ drop(entry);
 
 - `.app` files: `SymbolReference.json` has **UTF-8 BOM prefix** (3 bytes: `0xEF, 0xBB, 0xBF`), uses `EnumTypes` not `Enums`, `Kind` field is integer in newer BC versions
 - NuGet feed: `dynamicssmb2.pkgs.visualstudio.com` (NOT `dynamicssmb` — easy typo)
-- tree-sitter `braced_block` **excludes action triggers** — text-based fallback in `TypeResolver::collect_action_trigger_vars()`
+- tree-sitter `braced_block` **excludes action triggers** — text-based fallback in `al_core::syntax::TypeResolver::collect_action_trigger_vars()`
 - Without ALTool/.NET SDK: syntax-only features work; no semantic analysis, compilation, or debugging
 - `tower-lsp` poisoned locks: use `.unwrap_or_else(|e| e.into_inner())` pattern (already established)
 - Semantic bridge: all .NET CLR calls are Mutex-serialized on a blocking thread with 30s timeout
@@ -237,7 +283,7 @@ drop(entry);
 
 ### E2E Tests (al-test-harness)
 
-Spawns the real `al-lsp` binary over stdio. Test fixture: `crates/al-test-harness/data/test_al_project/`.
+Spawns the real `al-lsp` binary (which lives inside al-core) over stdio. Test fixture: `crates/al-test-harness/data/test_al_project/`.
 
 ```rust
 let client = LspClient::spawn(project_root).await;  // full handshake, polls workspace/symbol (60s default, AL_TEST_INIT_TIMEOUT to override)
@@ -246,18 +292,18 @@ client.open_file("src/MyCodeunit.al").await;          // waits for publishDiagno
 
 Test files: `e2e.rs`, `regression.rs`, `real_world.rs`, `zed_fidelity.rs`, `zed_simulation.rs`, `completeness.rs`, `data_driven.rs`, `edit_lifecycle.rs`, `integration_full.rs`, `performance.rs`, `transport.rs`.
 
-### Integration Tests (al-lsp/tests/)
+### Integration Tests (al-core/tests/)
 
-Tests al-syntax + al-symbols together without LSP transport. Faster, no binary spawn.
+Tests al-core's `syntax` + `symbols` modules together without LSP transport. Faster, no binary spawn.
 
 ### Running Tests
 
 ```sh
 cargo test --workspace --exclude zed-al           # all tests
-cargo test -p al-core                             # single crate
-cargo test -p al-lsp --test e2e                  # single test file
-cargo test -p al-lsp --test e2e -- test_name     # single test
-RUST_LOG=debug cargo test -p al-lsp --test e2e   # with logging
+cargo test -p al-core                             # the core crate (most tests live here now)
+cargo test -p al-core --test e2e                  # single test file
+cargo test -p al-core --test e2e -- test_name     # single test
+RUST_LOG=debug cargo test -p al-core --test e2e   # with logging
 ```
 
 ---
@@ -280,7 +326,7 @@ RUST_LOG=debug cargo test -p al-lsp --test e2e   # with logging
 - `tree-sitter-al/generator/tools/al-gen/` — grammar rule generators
 - `tree-sitter-al/generator/tools/al-extract/` — AL syntax extraction tools
 - `tree-sitter-al/queries/` — highlight, indent, fold, text-object queries
-- `tree-sitter-al/data/` — JSON data files loaded by `al-syntax::LanguageData`
+- `tree-sitter-al/data/` — JSON data files loaded by `al_core::syntax::LanguageData`
 - `tree-sitter-al/tests/` — test corpus and reference data
 
 ### What You MUST NOT Edit
@@ -318,9 +364,8 @@ If any check fails, you'll be blocked and must fix the issues before finishing.
 After the stop gate passes, the review gate checks:
 1. **No hardcoded AL values** in changed files
 2. **Tests exist** for significant code changes (>20 lines of source without test changes triggers a warning)
-3. **No business logic in al-lsp** (tree-sitter operations in transport layer are flagged)
-4. **No LSP types in al-core** query return types
-5. **No new `.unwrap()` calls** in non-test code
+3. **No LSP types in `al_core::queries::*` return types** (the transport boundary, now a coding rule)
+4. **No new `.unwrap()` calls** in non-test code
 
 ### Test Quality Gate (runs when you write test files)
 
@@ -436,13 +481,13 @@ are fast gates; the agentic loop is the heavy workflow.
 
 These have all happened and been reverted. Don't repeat them:
 
-1. **Hardcoding AL keywords** — Use `LanguageData` / `al-symbols` / `al-semantic`
+1. **Hardcoding AL keywords** — Use `al_core::syntax::LanguageData` / `al_core::symbols` / `al_core::semantic`
 2. **Making out-of-scope changes** — Only touch files related to the task
 3. **Breaking the WASM build** — `zed-al` is isolated; don't add native dependencies to root `Cargo.toml`
 4. **Changing extension API version** — Stable Zed rejects unreleased API versions
 5. **Recursive tree-sitter traversal** — Use iterative with explicit stack
 6. **Holding DashMap refs across await** — Clone data, drop ref, then await
-7. **Adding business logic to al-lsp** — All logic goes in al-core queries
+7. **Putting `lsp_types::*` in `al_core::queries::*` signatures** — Conversion happens in `al_core::server`
 8. **Forgetting UTF-16 conversion** — LSP positions are UTF-16, Rust strings are UTF-8
 9. **Editing generated tree-sitter files** — Edit grammar.js/generators, not src/ or bindings/. Commit inside submodule, then update ref
 10. **Bundling fixes into mega-commits** — One logical change per commit

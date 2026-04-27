@@ -62,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in *.rs) if grep -qE \"const\\s+(AL_BUILTIN_FUNCTIONS|AL_OBJECT_BODY_KEYWORDS|GLOBAL_BUILTINS|AL_KEYWORDS|BUILTIN_TYPES|AL_SYSTEM_FUNCTIONS|AL_DATA_TYPES|TRIGGER_NAMES|AL_RESERVED_WORDS)\" \"$FILE\" 2>/dev/null; then echo \"BLOCKED: Hardcoded AL language values detected in $FILE. Use LanguageData or al-symbols instead.\" >&2; exit 2; fi;; esac; exit 0'"
+            "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in *.rs) if grep -qE \"const\\s+(AL_BUILTIN_FUNCTIONS|AL_OBJECT_BODY_KEYWORDS|GLOBAL_BUILTINS|AL_KEYWORDS|BUILTIN_TYPES|AL_SYSTEM_FUNCTIONS|AL_DATA_TYPES|TRIGGER_NAMES|AL_RESERVED_WORDS)\" \"$FILE\" 2>/dev/null; then echo \"BLOCKED: Hardcoded AL language values detected in $FILE. Use al_core::syntax::LanguageData or al_core::symbols instead.\" >&2; exit 2; fi;; esac; exit 0'"
           }
         ]
       },
@@ -107,7 +107,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in */Cargo.toml) cd \"$CLAUDE_PROJECT_DIR\" && for crate in al-syntax al-symbols al-semantic; do if grep -q \"al-core\" \"crates/$crate/Cargo.toml\" 2>/dev/null; then echo \"BLOCKED: $crate depends on al-core — violates dependency rules\" >&2; exit 2; fi; for other in al-syntax al-symbols al-semantic; do if [ \"$crate\" != \"$other\" ] && grep -q \"$other\" \"crates/$crate/Cargo.toml\" 2>/dev/null; then echo \"BLOCKED: $crate depends on $other — foundation crates must not depend on each other\" >&2; exit 2; fi; done; done; if grep -q \"al-core\" \"crates/al-daemon-client/Cargo.toml\" 2>/dev/null; then echo \"BLOCKED: al-daemon-client depends on al-core — violates dependency rules\" >&2; exit 2; fi;; esac; exit 0'"
+            "command": "bash -c 'FILE=\"$CLAUDE_FILE_PATH\"; if [ -z \"$FILE\" ]; then exit 0; fi; case \"$FILE\" in */Cargo.toml) cd \"$CLAUDE_PROJECT_DIR\" && if [ -f crates/al-protocol/Cargo.toml ] && grep -q \"al-core\" crates/al-protocol/Cargo.toml 2>/dev/null; then echo \"BLOCKED: al-protocol depends on al-core — violates dependency rules\" >&2; exit 2; fi; if [ -f crates/al-explorer/Cargo.toml ] && grep -qE \"^\\s*al-core\\s*=\" crates/al-explorer/Cargo.toml 2>/dev/null; then echo \"BLOCKED: al-explorer depends on al-core — clients go through al-protocol\" >&2; exit 2; fi;; esac; exit 0'"
           }
         ]
       }

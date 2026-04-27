@@ -28,4 +28,5 @@ pub fn my_query(workspace: &Workspace, uri: &Url, position: Position) -> Option<
 - **Convert UTF-16 to bytes** — `Position.character` is UTF-16. Use `rope.utf16_cu_to_byte()` or equivalent before indexing strings.
 - **Iterative tree-sitter traversal** — use explicit `Vec<Node>` stack, not recursion.
 - **Short DashMap borrows** — clone data out immediately, drop the ref, then proceed. Never hold a DashMap guard across `.await`.
-- **No hardcoded AL values** — use `workspace.builtins` / `LanguageData` / `al-symbols` index.
+- **No hardcoded AL values** — use `workspace.builtins` / `al_core::syntax::LanguageData` / `al_core::symbols` index.
+- **`al_core::server` (the transport layer) is the only place that imports `lsp_types::*`.** Now that al-lsp lives inside al-core as a binary target, the boundary is enforced by code review, not the compiler. PRs that put `lsp_types::*` in a `queries::*` signature get rejected.

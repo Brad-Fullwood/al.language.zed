@@ -1,36 +1,48 @@
 ---
 paths:
+  - "crates/al-core/src/syntax/**/*.rs"
+  - "crates/al-core/src/symbols/**/*.rs"
+  - "crates/al-core/src/semantic/**/*.rs"
   - "crates/al-syntax/src/**/*.rs"
   - "crates/al-symbols/src/**/*.rs"
   - "crates/al-semantic/src/**/*.rs"
 ---
 
-# Foundation Crate Rules
+# Foundation Module Rules
 
-You are editing a **leaf crate**. These crates must remain independent.
+You are editing the syntax / symbols / semantic foundation. Post-consolidation
+these are modules inside `al-core`; pre-consolidation they're separate crates
+(`al-syntax`, `al-symbols`, `al-semantic`). The rules apply either way — see
+the CLAUDE.md banner for current migration status.
 
-## Dependency Constraints
+## Module / Crate Constraints
 
-- al-syntax, al-symbols, and al-semantic must NEVER depend on each other
-- They must NEVER depend on al-core
-- If you need shared types, propose a shared leaf crate — don't create cross-dependencies
+- These foundations should not call each other across module boundaries:
+  - `syntax` does not import `symbols` or `semantic`
+  - `symbols` does not import `syntax` or `semantic`
+  - `semantic` does not import `syntax` or `symbols`
+- Cross-cutting orchestration goes in `al_core` higher-level modules
+  (`workspace`, `queries`, etc.), not inside these foundations
+- Pre-consolidation: the corresponding crates must NOT depend on each other
+  or on `al-core`
 
-## al-syntax Specifics
+## syntax Specifics
 
-- Use `LanguageData` (from `language_data.rs`) for any AL language knowledge
+- Use `LanguageData` for any AL language knowledge
 - NEVER add `const` arrays of keywords, builtins, types, or object kinds
 - Tree-sitter traversal must be iterative (explicit stack), not recursive
 - `Position.character` from LSP is UTF-16 — convert before using as byte offset
 
-## al-symbols Specifics
+## symbols Specifics
 
 - `.app` files have a 40-byte NAVX header before the ZIP
 - `SymbolReference.json` has UTF-8 BOM prefix
 - `EnumTypes` not `Enums` in the JSON schema
 - `Kind` is integer in newer BC versions
 
-## al-semantic Specifics
+## semantic Specifics
 
 - All .NET CLR calls must go through the Mutex in SemanticBridge
 - Never call DotNetHost methods directly from multiple threads
 - 30-second timeout on all CLR calls
+- Bridge initialisation is lazy — check `Option<SemanticBridge>` at every call site

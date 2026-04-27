@@ -6,8 +6,7 @@
 # - Scope creep (touching unrelated files)
 # - Missing tests for new behavior
 # - Hardcoded AL values that slipped through
-# - Business logic in transport layer
-# - LSP types leaking into al-core
+# - LSP types leaking into al_core::queries (transport boundary, now a coding rule)
 
 set -euo pipefail
 
@@ -36,7 +35,7 @@ for f in $ALL_CHANGED; do
   if [ -f "$f" ]; then
     # Only check added lines in the diff, not the full file (avoids false positives from reformatting)
     if git diff HEAD -- "$f" 2>/dev/null | grep '^+' | grep -v '^+++' | grep -E 'const\s+\w+\s*:\s*&\[&str\]\s*=' | grep -qiE '(begin|end|procedure|trigger|record|page|codeunit|report|table|field|action|var|local)'; then
-      ISSUES="${ISSUES}\n- HARDCODED AL VALUES in $f — use LanguageData or al-symbols instead of const &[&str] arrays"
+      ISSUES="${ISSUES}\n- HARDCODED AL VALUES in $f — use al_core::syntax::LanguageData or al_core::symbols instead of const &[&str] arrays"
     fi
   fi
 done
@@ -54,20 +53,7 @@ if [ -n "$SRC_CHANGED" ] && [ -z "$TEST_CHANGED" ]; then
   fi
 fi
 
-# 3. Check for business logic in al-lsp transport layer
-LSP_CHANGED=$(echo "$ALL_CHANGED" | grep 'crates/al-lsp/src/' | grep -v 'daemon/' || true)
-if [ -n "$LSP_CHANGED" ]; then
-  for f in $LSP_CHANGED; do
-    if [ -f "$f" ]; then
-      # Flag tree-sitter usage in transport layer (should be in al-core)
-      if grep -qE 'tree_sitter::|TreeCursor|\.walk\(\)|\.named_children' "$f" 2>/dev/null; then
-        ISSUES="${ISSUES}\n- BUSINESS LOGIC IN TRANSPORT: $f contains tree-sitter operations. Move this logic to al-core/src/queries/."
-      fi
-    fi
-  done
-fi
-
-# 4. Check for tower_lsp types leaking into al-core query returns
+# 3. Check for tower_lsp types leaking into al-core query returns
 CORE_QUERY_CHANGED=$(echo "$ALL_CHANGED" | grep 'crates/al-core/src/queries/' || true)
 if [ -n "$CORE_QUERY_CHANGED" ]; then
   for f in $CORE_QUERY_CHANGED; do
@@ -80,7 +66,7 @@ if [ -n "$CORE_QUERY_CHANGED" ]; then
   done
 fi
 
-# 5. Check for unwrap() in non-test source code
+# 4. Check for unwrap() in non-test source code
 for f in $ALL_CHANGED; do
   if [ -f "$f" ]; then
     case "$f" in
