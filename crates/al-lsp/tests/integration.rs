@@ -10,7 +10,9 @@ use al_core::symbols::{
     EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,
     SymbolIndex,
 };
-use al_syntax::{AlParser, FormatOptions};
+use al_syntax::{
+    AlParser, FormatOptions, SyntaxFoldingRange, SyntaxFoldingRangeKind, SyntaxSymbolKind,
+};
 use tower_lsp::lsp_types::*;
 
 // ---------------------------------------------------------------------------
@@ -496,12 +498,12 @@ fn document_symbols_from_codeunit() {
 
     let obj = &symbols[0];
     assert_eq!(obj.name, "Test Codeunit");
-    assert_eq!(obj.kind, SymbolKind::CLASS);
+    assert_eq!(obj.kind, SyntaxSymbolKind::Class);
 
     let children = obj.children.as_ref().expect("Should have children");
     let proc_names: Vec<&str> = children
         .iter()
-        .filter(|c| c.kind == SymbolKind::FUNCTION)
+        .filter(|c| c.kind == SyntaxSymbolKind::Function)
         .map(|c| c.name.as_str())
         .collect();
 
@@ -525,7 +527,7 @@ fn document_symbols_from_page() {
     assert_eq!(symbols.len(), 1);
     let obj = &symbols[0];
     assert_eq!(obj.name, "Customer Card Ext");
-    assert_eq!(obj.kind, SymbolKind::CLASS); // pages are CLASS
+    assert_eq!(obj.kind, SyntaxSymbolKind::Class); // pages are Class
 }
 
 #[test]
@@ -638,9 +640,9 @@ fn folding_ranges_cover_structural_elements() {
     );
 
     // Should have at least ranges for: object body, procedures, begin..end blocks
-    let region_ranges: Vec<&FoldingRange> = ranges
+    let region_ranges: Vec<&SyntaxFoldingRange> = ranges
         .iter()
-        .filter(|r| r.kind == Some(FoldingRangeKind::Region))
+        .filter(|r| r.kind == Some(SyntaxFoldingRangeKind::Region))
         .collect();
 
     assert!(
@@ -666,9 +668,9 @@ codeunit 50100 Test
     let result = parser.parse(code);
     let ranges = al_syntax::extract_folding_ranges(&result.tree, code);
 
-    let comment_ranges: Vec<&FoldingRange> = ranges
+    let comment_ranges: Vec<&SyntaxFoldingRange> = ranges
         .iter()
-        .filter(|r| r.kind == Some(FoldingRangeKind::Comment))
+        .filter(|r| r.kind == Some(SyntaxFoldingRangeKind::Comment))
         .collect();
 
     assert!(
