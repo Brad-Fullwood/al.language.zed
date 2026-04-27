@@ -10,5 +10,8 @@ fn main() {
         build.file(scanner);
     }
 
+    // Silence warnings from tree-sitter's generated parser.c — we don't control its output.
+    build.warnings(false).flag_if_supported("-w");
+
     build.compile("tree-sitter-al");
 }
