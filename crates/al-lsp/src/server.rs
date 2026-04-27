@@ -1126,15 +1126,6 @@ impl LanguageServer for AlServer {
     }
 }
 
-/// Create a test server instance (available only in tests).
-///
-/// Returns the `LspService` and `ClientSocket` directly so callers access the
-/// server via `service.inner()` — no second `AlServer` constructed and discarded.
-#[cfg(test)]
-pub(crate) fn test_server() -> (LspService<AlServer>, tower_lsp::ClientSocket) {
-    LspService::new(AlServer::new)
-}
-
 /// Run the LSP server on stdin/stdout.
 pub async fn run_lsp() {
     let stdin = tokio::io::stdin();
