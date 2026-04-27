@@ -283,7 +283,9 @@ pub fn cmd_suggest_event(
                     }
                 }
                 if partial {
-                    eprintln!("Note: Some call paths are still being analyzed. Results may be incomplete.");
+                    eprintln!(
+                        "Note: Some call paths are still being analyzed. Results may be incomplete."
+                    );
                 }
             }
             ExitCode::SUCCESS

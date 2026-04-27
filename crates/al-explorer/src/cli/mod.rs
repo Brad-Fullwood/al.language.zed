@@ -1,15 +1,20 @@
-//! AL CLI — Thin JSON-RPC client for the al-lsp daemon.
+//! AL CLI mode — thin JSON-RPC client for the al-lsp daemon.
 //!
-//! All business logic lives in the daemon (al-lsp). This binary parses CLI
-//! arguments, connects to the daemon, sends JSON-RPC requests, and formats
-//! the responses for human or --json output.
+//! All business logic lives in the daemon. This module parses CLI arguments,
+//! connects to the daemon, sends JSON-RPC requests, and formats responses for
+//! human or `--json` output. Folded into al-explorer in stage 8 of the crate
+//! consolidation; previously the standalone `al-cli` crate.
 
-mod commands;
+// edition 2024 turns collapsible_if into a hard error; the migrated code
+// pre-dates that and the patterns are intentional for readability.
+#![allow(clippy::collapsible_if)]
+
+pub mod commands;
 
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use clap_complete::{generate, Shell};
+use clap_complete::{Shell, generate};
 
 use commands::{build, debug, insight, lsp};
 
@@ -18,18 +23,21 @@ use commands::{build, debug, insight, lsp};
 // ---------------------------------------------------------------------------
 
 #[derive(Parser)]
-#[command(name = "al", about = "AL development toolkit for Business Central")]
-struct Cli {
+#[command(
+    name = "al-explorer",
+    about = "AL development toolkit for Business Central"
+)]
+pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    pub command: Commands,
 
     /// Output as JSON
     #[arg(long, global = true)]
-    json: bool,
+    pub json: bool,
 }
 
 #[derive(Subcommand)]
-enum Commands {
+pub enum Commands {
     /// Check/install ALTool, verify .NET SDK
     Setup,
     /// Diagnose issues (green/red checklist)
@@ -697,16 +705,14 @@ pub enum XlfCommands {
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Entry point — invoked from al-explorer's main when CLI args are present.
 // ---------------------------------------------------------------------------
 
-fn main() -> ExitCode {
-    let cli = Cli::parse();
-
+pub fn run(cli: Cli) -> ExitCode {
     match cli.command {
         Commands::GenerateCompletions { shell } => {
             let mut cmd = Cli::command();
-            generate(shell, &mut cmd, "al", &mut std::io::stdout());
+            generate(shell, &mut cmd, "al-explorer", &mut std::io::stdout());
             ExitCode::SUCCESS
         }
         Commands::Version => lsp::cmd_version(cli.json),

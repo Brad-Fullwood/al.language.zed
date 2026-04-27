@@ -1,4 +1,6 @@
+mod cli;
 mod types;
+use clap::Parser;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
@@ -15,6 +17,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
+use std::process::ExitCode;
 use std::{error::Error, io, sync::Arc};
 use types::{ObjectKind, SymbolEntry, SymbolIndex};
 
@@ -1149,7 +1152,23 @@ impl App {
 // Entry point
 // ---------------------------------------------------------------------------
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> ExitCode {
+    // Default behaviour with no arguments is the TUI. Any subcommand
+    // (`al-explorer search ...`, `al-explorer hover ...`) goes to the CLI.
+    if std::env::args().nth(1).is_some() {
+        let cli_args = cli::Cli::parse();
+        return cli::run(cli_args);
+    }
+    match run_tui() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_tui() -> Result<(), Box<dyn Error>> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = crossterm::terminal::disable_raw_mode();

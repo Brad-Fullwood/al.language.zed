@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-use crate::{DebugCommands, ProfileCommands, SnapshotCommands};
+use super::super::{DebugCommands, ProfileCommands, SnapshotCommands};
 
 use super::{bc_server_params, connect, file_to_uri, print_json, report_error};
 

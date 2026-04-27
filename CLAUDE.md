@@ -27,7 +27,7 @@ Plan: `~/.claude/plans/i-am-thinking-about-playful-bentley.md`
 - [x] **Stage 5** — `al-symbols` folded into al-core (now `al_core::symbols`; `nuget` feature defaults on)
 - [x] **Stage 6** — `al-semantic` folded into al-core (now `al_core::semantic` = `bridge` + `host` + `cache` + `lifecycle`)
 - [x] **Stage 7** — `al-lsp` folded into al-core (now `al_core::server` + `[[bin]] al-lsp`)
-- [ ] Stage 8 — `al-cli` folded into al-explorer
+- [x] **Stage 8** — `al-cli` folded into al-explorer (TUI default; `al-explorer <subcommand>` for scripted use)
 - [ ] Stage 9 — Final docs/hooks reconciliation (this banner removed)
 
 **While the refactor is in flight:** the crate names below describe the *target* state. The repo's `Cargo.toml` reflects in-flight reality. If hooks/agents seem out of sync with on-disk crates, check this banner — the docs lead, the code is catching up.

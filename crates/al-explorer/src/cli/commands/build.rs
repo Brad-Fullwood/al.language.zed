@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use serde_json::Value;
 
-use crate::XlfCommands;
+use super::super::XlfCommands;
 
 use super::{connect, print_json, project_root, report_error, run_command};
 
@@ -107,8 +107,8 @@ pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
                     let units = result.get("units").and_then(|v| v.as_u64()).unwrap_or(0);
                     if path.is_empty() || path == "null" {
                         eprintln!(
-                        "No translatable texts found (check features.TranslationFile in app.json)"
-                    );
+                            "No translatable texts found (check features.TranslationFile in app.json)"
+                        );
                     } else {
                         println!("Generated: {path}  ({units} units)");
                     }

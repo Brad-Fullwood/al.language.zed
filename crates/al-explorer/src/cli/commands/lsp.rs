@@ -86,7 +86,9 @@ pub fn cmd_setup(json: bool) -> ExitCode {
             println!("     alc: {alc}");
         } else {
             println!("[!!] ALTool NOT installed");
-            println!("     Install: dotnet tool install --global Microsoft.Dynamics.BusinessCentral.Development.Tools");
+            println!(
+                "     Install: dotnet tool install --global Microsoft.Dynamics.BusinessCentral.Development.Tools"
+            );
         }
         if let Some(v) = dotnet {
             println!("[OK] .NET SDK {v}");
@@ -1622,7 +1624,9 @@ pub fn cmd_add_application_area(value: &str, dry_run: bool, json: bool) -> ExitC
                 if dry_run {
                     println!("Dry run: would modify {files} file(s) with {changes} change(s)");
                 } else {
-                    println!("Applied ApplicationArea = {value} to {changes} control(s) in {files} file(s)");
+                    println!(
+                        "Applied ApplicationArea = {value} to {changes} control(s) in {files} file(s)"
+                    );
                 }
             }
             ExitCode::SUCCESS
@@ -1689,7 +1693,9 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
                 if dry_run {
                     println!("Dry run: would modify {files} file(s) with {changes} field(s)");
                 } else {
-                    println!("Applied DataClassification = {value} to {changes} field(s) in {files} file(s)");
+                    println!(
+                        "Applied DataClassification = {value} to {changes} field(s) in {files} file(s)"
+                    );
                 }
             }
             ExitCode::SUCCESS
@@ -1789,7 +1795,9 @@ pub fn cmd_test_run(
                     let passed = run.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
                     let failed = run.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
                     let skipped = run.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0);
-                    println!("Codeunit \"{cu_name}\": {passed}/{total} passed, {failed} failed, {skipped} skipped");
+                    println!(
+                        "Codeunit \"{cu_name}\": {passed}/{total} passed, {failed} failed, {skipped} skipped"
+                    );
 
                     if let Some(methods) = run.get("methods").and_then(|v| v.as_array()) {
                         for m in methods {
