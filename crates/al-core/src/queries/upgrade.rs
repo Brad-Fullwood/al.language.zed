@@ -6,7 +6,7 @@
 use serde::Serialize;
 
 use super::breaking_changes::{analyze_breaking_changes, BreakingChange, BreakingChangeKind};
-use al_symbols::SymbolEntry;
+use crate::symbols::SymbolEntry;
 
 /// Category of upgrade issue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -55,13 +55,13 @@ pub fn upgrade_report(baseline: &[SymbolEntry], current: &[SymbolEntry]) -> Vec<
     // Find data migration needs (field type changes in tables)
     let baseline_tables: std::collections::HashMap<String, &SymbolEntry> = baseline
         .iter()
-        .filter(|e| matches!(e.kind, al_symbols::ObjectKind::Table))
+        .filter(|e| matches!(e.kind, crate::symbols::ObjectKind::Table))
         .map(|e| (e.name.to_lowercase(), e))
         .collect();
 
     let current_tables: std::collections::HashMap<String, &SymbolEntry> = current
         .iter()
-        .filter(|e| matches!(e.kind, al_symbols::ObjectKind::Table))
+        .filter(|e| matches!(e.kind, crate::symbols::ObjectKind::Table))
         .map(|e| (e.name.to_lowercase(), e))
         .collect();
 
@@ -129,13 +129,13 @@ fn check_data_migration_needs(
     new_table: &SymbolEntry,
     issues: &mut Vec<UpgradeIssue>,
 ) {
-    let old_fields: std::collections::HashMap<String, &al_symbols::FieldSymbol> = old_table
+    let old_fields: std::collections::HashMap<String, &crate::symbols::FieldSymbol> = old_table
         .fields
         .iter()
         .map(|f| (f.name.to_lowercase(), f))
         .collect();
 
-    let new_fields: std::collections::HashMap<String, &al_symbols::FieldSymbol> = new_table
+    let new_fields: std::collections::HashMap<String, &crate::symbols::FieldSymbol> = new_table
         .fields
         .iter()
         .map(|f| (f.name.to_lowercase(), f))
@@ -166,7 +166,7 @@ fn check_data_migration_needs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
+    use crate::symbols::{MethodSymbol, ObjectKind, SymbolEntry};
 
     fn make_codeunit(name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn field_type_change_triggers_data_migration() {
-        use al_symbols::FieldSymbol;
+        use crate::symbols::FieldSymbol;
 
         let old_table = SymbolEntry {
             kind: ObjectKind::Table,
@@ -237,7 +237,7 @@ mod tests {
         };
 
         let new_table = SymbolEntry {
-            fields: vec![al_symbols::FieldSymbol {
+            fields: vec![crate::symbols::FieldSymbol {
                 id: 1,
                 name: "Amount".to_string(),
                 type_name: "Decimal".to_string(),

@@ -153,8 +153,8 @@ fn extract_comment_block_ranges(text: &str, ranges: &mut Vec<FoldingRange>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::syntax::AlParser;
     use super::*;
+    use crate::syntax::AlParser;
 
     #[test]
     fn test_folding_codeunit() {

@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use al_symbols::{ObjectKind, SymbolIndex};
+use crate::symbols::{ObjectKind, SymbolIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::insight::graph::{EventNodeType, InsightGraph, InsightNode, NodeKey};
@@ -261,7 +261,7 @@ fn query_table(
 
     // Scan ALL event publishers for those with a `var Record "TableName"` parameter.
     let table_lower = table_name.to_lowercase();
-    let all_events = al_symbols::get_events(&workspace.symbols, "");
+    let all_events = crate::symbols::get_events(&workspace.symbols, "");
     for pub_event in &all_events.publishers {
         let has_table_var = pub_event
             .method
@@ -275,8 +275,8 @@ fn query_table(
 
         let obj = &pub_event.object;
         let event_type_str = match pub_event.event_type {
-            al_symbols::EventType::Integration => "integration",
-            al_symbols::EventType::Business => "business",
+            crate::symbols::EventType::Integration => "integration",
+            crate::symbols::EventType::Business => "business",
         }
         .to_string();
 
@@ -702,7 +702,7 @@ fn is_record_of_table(type_name: &str, table_lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::*;
+    use crate::symbols::*;
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {

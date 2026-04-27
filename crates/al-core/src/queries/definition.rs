@@ -2,7 +2,7 @@
 
 //! Go-to-definition query.
 
-use al_symbols::SymbolEntry;
+use crate::symbols::SymbolEntry;
 use url::Url;
 
 use super::{Location, Position, Range};
@@ -198,8 +198,8 @@ fn find_package_entry_for_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::symbols::{ObjectKind, SymbolEntry};
     use crate::workspace::Workspace;
-    use al_symbols::{ObjectKind, SymbolEntry};
 
     fn test_uri() -> Url {
         Url::parse("file:///test/src/Test.al").unwrap()

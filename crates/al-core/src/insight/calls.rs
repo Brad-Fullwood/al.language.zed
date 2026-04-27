@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use al_symbols::{ObjectKind, SymbolIndex};
+use crate::symbols::{ObjectKind, SymbolIndex};
 
 use super::graph::{EventNodeType, InsightEdge, InsightGraph, InsightNode, NodeKey};
 use super::index::{CallGraph, EdgeResolutionState};
@@ -667,7 +667,7 @@ pub fn register_workspace_nodes(
     symbols: &SymbolIndex,
     insight: &mut InsightGraph,
 ) {
-    let mut workspace_entries: Vec<al_symbols::SymbolEntry> = Vec::new();
+    let mut workspace_entries: Vec<crate::symbols::SymbolEntry> = Vec::new();
 
     for entry in file_index.object_info.iter() {
         let path = entry.key();
@@ -712,7 +712,7 @@ pub fn register_workspace_nodes(
         // parameter lookups (lookup_event_params) find workspace methods.
         let methods = extract_methods_from_tree(tree.root_node(), source_bytes);
         if !methods.is_empty() {
-            workspace_entries.push(al_symbols::SymbolEntry {
+            workspace_entries.push(crate::symbols::SymbolEntry {
                 kind: ok,
                 id,
                 name: info.name.clone(),
@@ -737,7 +737,7 @@ pub fn register_workspace_nodes(
 fn extract_methods_from_tree(
     root: tree_sitter::Node,
     source: &[u8],
-) -> Vec<al_symbols::MethodSymbol> {
+) -> Vec<crate::symbols::MethodSymbol> {
     let mut methods = Vec::new();
     collect_methods_recursive(root, source, &mut methods);
     methods
@@ -746,7 +746,7 @@ fn extract_methods_from_tree(
 fn collect_methods_recursive(
     root: tree_sitter::Node,
     source: &[u8],
-    methods: &mut Vec<al_symbols::MethodSymbol>,
+    methods: &mut Vec<crate::symbols::MethodSymbol>,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -769,7 +769,7 @@ fn collect_methods_recursive(
 fn extract_method_symbol(
     proc_node: tree_sitter::Node,
     source: &[u8],
-) -> Option<al_symbols::MethodSymbol> {
+) -> Option<crate::symbols::MethodSymbol> {
     let name_node = proc_node.child_by_field_name("name")?;
     let proc_name = name_node
         .utf8_text(source)
@@ -783,12 +783,12 @@ fn extract_method_symbol(
 
     let is_local = has_local_modifier(proc_node, source);
     let attributes = collect_procedure_attributes(proc_node, source);
-    let al_attrs: Vec<al_symbols::AttributeSymbol> = attributes
+    let al_attrs: Vec<crate::symbols::AttributeSymbol> = attributes
         .iter()
         .map(|(name, args_text)| {
             // Parse attribute arguments from the raw text: [Name(arg1, arg2, ...)]
             let arguments = parse_attr_args_from_text(args_text);
-            al_symbols::AttributeSymbol {
+            crate::symbols::AttributeSymbol {
                 name: name.clone(),
                 arguments,
             }
@@ -801,7 +801,7 @@ fn extract_method_symbol(
     // Extract return type
     let return_type = extract_return_type(proc_node, source);
 
-    Some(al_symbols::MethodSymbol {
+    Some(crate::symbols::MethodSymbol {
         name: proc_name,
         parameters,
         return_type,
@@ -814,7 +814,7 @@ fn extract_method_symbol(
 fn extract_parameters_from_proc(
     proc_node: tree_sitter::Node,
     source: &[u8],
-) -> Vec<al_symbols::ParameterSymbol> {
+) -> Vec<crate::symbols::ParameterSymbol> {
     let mut params = Vec::new();
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
@@ -837,7 +837,7 @@ fn extract_parameters_from_proc(
 fn extract_single_parameter(
     param_node: tree_sitter::Node,
     source: &[u8],
-) -> Option<al_symbols::ParameterSymbol> {
+) -> Option<crate::symbols::ParameterSymbol> {
     let mut name: Option<String> = None;
     let mut type_name = String::new();
     let mut is_var = false;
@@ -857,7 +857,7 @@ fn extract_single_parameter(
         }
     }
 
-    Some(al_symbols::ParameterSymbol {
+    Some(crate::symbols::ParameterSymbol {
         name: name?,
         type_name,
         is_var,
@@ -1323,7 +1323,7 @@ fn collect_procedure_names_from_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+    use crate::symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
 
     // ------------------------------------------------------------------
     // Fixtures

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tracing::{debug, warn};
 
-use crate::app_reader;
-use crate::model::{ObjectKind, SymbolEntry, SymbolPackage};
+use super::app_reader;
+use super::model::{ObjectKind, SymbolEntry, SymbolPackage};
 
 /// Maximum number of entries kept in the default-completion cache.
 const DEFAULT_COMPLETIONS_CAP: usize = 30;
@@ -36,7 +36,7 @@ pub struct SymbolIndex {
     /// Lazy-loaded mapping of (PackageName, ObjectKind, ID) -> ZIP internal path.
     source_path_cache: DashMap<(String, ObjectKind, i32), String>,
     /// Cached composed views keyed by (ObjectKind, lowercase name).
-    composed_cache: DashMap<(ObjectKind, String), Arc<crate::model::ComposedObject>>,
+    composed_cache: DashMap<(ObjectKind, String), Arc<super::model::ComposedObject>>,
     /// Pre-computed slice of the first DEFAULT_COMPLETIONS_CAP entries for O(1)
     /// default completion responses. Populated by add_entries/add_entries_owned.
     default_completions: std::sync::RwLock<Vec<Arc<SymbolEntry>>>,
@@ -130,7 +130,7 @@ impl SymbolIndex {
     pub fn load_packages_cached(
         &self,
         paths: &[impl AsRef<Path> + Sync],
-        cache: &crate::cache::SymbolCache,
+        cache: &super::cache::SymbolCache,
     ) -> Vec<SymbolPackage> {
         use rayon::prelude::*;
 
@@ -188,10 +188,10 @@ impl SymbolIndex {
     /// Load well-known runtime enum types that are built into the AL compiler
     /// but not published in any .app package's SymbolReference.json.
     pub fn load_runtime_enums(&self) {
-        use crate::model::{EnumValueSymbol, SymbolEntry};
+        use super::model::{EnumValueSymbol, SymbolEntry};
 
         let mut entries = Vec::new();
-        for re in crate::language_data::runtime_enums() {
+        for re in super::language_data::runtime_enums() {
             // Skip if already present in the index (from a package)
             if !self.get_by_name(&re.name).is_empty() {
                 continue;
@@ -445,14 +445,14 @@ impl SymbolIndex {
     /// when workspace files change to clear stale entries.
     pub fn get_composed_cached(
         &self,
-        kind: crate::model::ObjectKind,
+        kind: super::model::ObjectKind,
         name: &str,
-    ) -> Option<Arc<crate::model::ComposedObject>> {
+    ) -> Option<Arc<super::model::ComposedObject>> {
         let key = (kind, name.to_lowercase());
         if let Some(cached) = self.composed_cache.get(&key) {
             return Some(Arc::clone(cached.value()));
         }
-        let composed = crate::composition::get_composed(self, kind, name)?;
+        let composed = super::composition::get_composed(self, kind, name)?;
         let arc = Arc::new(composed);
         self.composed_cache.insert(key, Arc::clone(&arc));
         Some(arc)
@@ -478,9 +478,9 @@ impl SymbolIndex {
 
     /// Find event publishers and subscribers matching a name pattern.
     ///
-    /// Convenience method that delegates to [`crate::events::get_events`].
-    pub fn get_events(&self, query: &str) -> crate::events::EventResults {
-        crate::events::get_events(self, query)
+    /// Convenience method that delegates to [`super::events::get_events`].
+    pub fn get_events(&self, query: &str) -> super::events::EventResults {
+        super::events::get_events(self, query)
     }
 
     /// Remove all entries whose `package` field matches `package_name` (case-insensitive).
@@ -552,8 +552,8 @@ impl SymbolIndex {
 
 #[cfg(test)]
 mod tests {
+    use crate::symbols::model::{FieldSymbol, MethodSymbol, ObjectKind, SymbolEntry};
     use super::*;
-    use crate::model::{FieldSymbol, MethodSymbol, ObjectKind, SymbolEntry};
 
     fn make_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {

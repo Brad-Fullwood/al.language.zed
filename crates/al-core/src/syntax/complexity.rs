@@ -184,8 +184,8 @@ fn count_case_arms(case_node: Node) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::syntax::AlParser;
     use super::*;
+    use crate::syntax::AlParser;
 
     fn complexity_for(src: &str) -> Vec<ProcedureComplexity> {
         let mut parser = AlParser::new();

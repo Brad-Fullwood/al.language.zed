@@ -139,10 +139,10 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
             // requested kind sets and the per-kind cap.
             const TYPE_COMPLETION_CAP: usize = 50;
             for kind in [
-                al_symbols::ObjectKind::Table,
-                al_symbols::ObjectKind::Enum,
-                al_symbols::ObjectKind::Codeunit,
-                al_symbols::ObjectKind::Interface,
+                crate::symbols::ObjectKind::Table,
+                crate::symbols::ObjectKind::Enum,
+                crate::symbols::ObjectKind::Codeunit,
+                crate::symbols::ObjectKind::Interface,
             ] {
                 for arc in workspace
                     .symbols
@@ -339,14 +339,14 @@ fn add_default_completions(
     let index_results = workspace.symbols.get_default_completions();
     for entry in &index_results {
         let kind = match entry.kind {
-            al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension => {
+            crate::symbols::ObjectKind::Table | crate::symbols::ObjectKind::TableExtension => {
                 CompletionKind::Struct
             }
-            al_symbols::ObjectKind::Codeunit => CompletionKind::Module,
-            al_symbols::ObjectKind::Page | al_symbols::ObjectKind::PageExtension => {
+            crate::symbols::ObjectKind::Codeunit => CompletionKind::Module,
+            crate::symbols::ObjectKind::Page | crate::symbols::ObjectKind::PageExtension => {
                 CompletionKind::Class
             }
-            al_symbols::ObjectKind::Enum | al_symbols::ObjectKind::EnumExtension => {
+            crate::symbols::ObjectKind::Enum | crate::symbols::ObjectKind::EnumExtension => {
                 CompletionKind::Enum
             }
             _ => CompletionKind::Reference,

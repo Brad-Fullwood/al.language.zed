@@ -37,7 +37,7 @@ pub mod test_diagnostics;
 pub mod tests;
 pub mod upgrade;
 
-use al_symbols::SymbolEntry;
+use crate::symbols::SymbolEntry;
 use url::Url;
 
 // ---------------------------------------------------------------------------
@@ -142,15 +142,15 @@ pub fn get_or_create_virtual_file(
     member_name: Option<&str>,
 ) -> Option<(Url, Range)> {
     let app_path = workspace.symbols.app_path(&entry.package);
-    match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
+    match crate::symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
         Ok(path) => {
             let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
             let range = member_name
                 .and_then(|name| {
-                    let r = al_symbols::virtual_file::find_member_range(
+                    let r = crate::symbols::virtual_file::find_member_range(
                         &path,
                         name,
-                        al_symbols::virtual_file::MemberKind::Unknown,
+                        crate::symbols::virtual_file::MemberKind::Unknown,
                     )?;
                     Some(Range {
                         start: Position {

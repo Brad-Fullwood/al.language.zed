@@ -999,8 +999,8 @@ mod tests {
     #[test]
     fn test_suggest_translations_exact_match() {
         let ws = crate::workspace::Workspace::new();
-        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
-            kind: al_symbols::ObjectKind::Table,
+        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
             package: "TestPkg".to_string(),

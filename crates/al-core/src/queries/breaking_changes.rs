@@ -6,7 +6,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
-use al_symbols::{MethodSymbol, SymbolEntry};
+use crate::symbols::{MethodSymbol, SymbolEntry};
 
 /// Kind of breaking change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -235,7 +235,7 @@ fn check_signature_change(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::{FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry};
+    use crate::symbols::{FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry};
 
     fn make_codeunit(name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {

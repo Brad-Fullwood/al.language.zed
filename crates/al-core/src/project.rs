@@ -44,7 +44,7 @@ pub struct AppManifest {
 /// A dependency entry in app.json.
 ///
 /// Canonical type from al-symbols — unified so no field-for-field conversion is needed.
-pub use al_symbols::nuget::AppDependency;
+pub use crate::symbols::nuget::AppDependency;
 
 /// A NuGet feed for BC symbol packages.
 #[derive(Debug, Clone)]

@@ -24,7 +24,7 @@ Plan: `~/.claude/plans/i-am-thinking-about-playful-bentley.md`
 - [x] **Stage 2** — `al-daemon-client` → `al-protocol` rename
 - [x] **Stage 3** — `al-dap-client` folded into al-core (now `al_core::dap`)
 - [x] **Stage 4** — `al-syntax` folded into al-core (now `al_core::syntax`; LSP-bridge helpers at `al_core::syntax_lsp`)
-- [ ] Stage 5 — `al-symbols` folded into al-core
+- [x] **Stage 5** — `al-symbols` folded into al-core (now `al_core::symbols`; `nuget` feature defaults on)
 - [ ] Stage 6 — `al-semantic` folded into al-core
 - [ ] Stage 7 — `al-lsp` folded into al-core as `[[bin]]`
 - [ ] Stage 8 — `al-cli` folded into al-explorer

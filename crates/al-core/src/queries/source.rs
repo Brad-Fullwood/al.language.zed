@@ -6,7 +6,7 @@
 //! - `package`: source extracted from .app ZIP archive
 //! - `outline`: rendered from SymbolReference.json (full signatures, no bodies)
 
-use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry};
+use crate::symbols::{MethodSymbol, ObjectKind, SymbolEntry};
 use serde::Serialize;
 
 use crate::workspace::Workspace;
@@ -175,7 +175,7 @@ fn try_package_source(
 
     // Try extracting source from .app ZIP
     if let Some(ref path) = app_path {
-        if let Ok(source_index) = al_symbols::source_index::get_or_build(path) {
+        if let Ok(source_index) = crate::symbols::source_index::get_or_build(path) {
             if let Some(full_source) = source_index.extract_source_for_entry(entry) {
                 let member_filter = proc_filter.or(trigger_filter);
                 if let Some(member_name) = member_filter {
@@ -342,16 +342,16 @@ fn extract_procedure_from_text(source: &str, name: &str) -> Option<(String, Stri
 }
 
 // ---------------------------------------------------------------------------
-// Outline rendering — delegates to al_symbols::virtual_file::render_outline
+// Outline rendering — delegates to crate::symbols::virtual_file::render_outline
 // ---------------------------------------------------------------------------
 
 /// Render a complete outline from a SymbolEntry.
 ///
-/// Delegates to [`al_symbols::virtual_file::render_outline`] which produces
+/// Delegates to [`crate::symbols::virtual_file::render_outline`] which produces
 /// valid AL syntax with full procedure signatures, fields, keys, enum values,
 /// event declarations with attributes, and global variables.
 pub fn render_outline(entry: &SymbolEntry) -> String {
-    al_symbols::virtual_file::render_outline(entry)
+    crate::symbols::virtual_file::render_outline(entry)
 }
 
 /// Render a method signature string.
@@ -368,7 +368,7 @@ pub fn render_method_signature(m: &MethodSymbol) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::*;
+    use crate::symbols::*;
 
     fn make_table_entry() -> SymbolEntry {
         SymbolEntry {

@@ -407,8 +407,8 @@ fn check_is_local(node: Node, source: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::syntax::AlParser;
     use super::*;
+    use crate::syntax::AlParser;
 
     #[test]
     fn test_debug_tree_structure() {

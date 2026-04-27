@@ -3,7 +3,7 @@
 //!
 //! Used by `al generate page/report/test` CLI commands.
 
-use al_symbols::model::{FieldSymbol, SymbolEntry};
+use crate::symbols::model::{FieldSymbol, SymbolEntry};
 
 /// The type of page to generate.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -288,7 +288,7 @@ fn sanitize_identifier(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::model::{FieldSymbol, ObjectKind, SymbolEntry};
+    use crate::symbols::model::{FieldSymbol, ObjectKind, SymbolEntry};
 
     fn make_table(name: &str, fields: Vec<FieldSymbol>) -> SymbolEntry {
         SymbolEntry {
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn generate_test_with_subject_creates_stubs() {
-        use al_symbols::model::{MethodSymbol, ObjectKind, SymbolEntry};
+        use crate::symbols::model::{MethodSymbol, ObjectKind, SymbolEntry};
 
         let subject = SymbolEntry {
             kind: ObjectKind::Codeunit,
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn flow_fields_excluded_from_page() {
-        use al_symbols::model::PropertyValue;
+        use crate::symbols::model::PropertyValue;
         let flow_field = FieldSymbol {
             id: 10,
             name: "Balance".to_string(),

@@ -41,7 +41,7 @@ pub struct SignatureHelpResult {
 /// Both `signature_help` and `resolve_receiver_signature` produce this shape —
 /// extracted here to eliminate the verbatim duplication between the two call-sites.
 fn build_signature_from_method(
-    method: &al_symbols::MethodSymbol,
+    method: &crate::symbols::MethodSymbol,
     active_param: u32,
 ) -> SignatureHelpResult {
     let params: Vec<SignatureParameterInfo> = method

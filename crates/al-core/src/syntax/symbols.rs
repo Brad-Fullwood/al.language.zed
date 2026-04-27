@@ -1021,8 +1021,8 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
 
 #[cfg(test)]
 mod tests {
-    use crate::syntax::AlParser;
     use super::*;
+    use crate::syntax::AlParser;
 
     #[test]
     fn test_extract_symbols_codeunit() {

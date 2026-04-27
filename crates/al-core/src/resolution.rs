@@ -990,7 +990,7 @@ pub(crate) fn enum_completion_items(
     for entry in workspace.symbols.get_by_name(enum_name) {
         if !matches!(
             entry.kind,
-            al_symbols::ObjectKind::Enum | al_symbols::ObjectKind::EnumExtension
+            crate::symbols::ObjectKind::Enum | crate::symbols::ObjectKind::EnumExtension
         ) {
             continue;
         }
@@ -1306,7 +1306,7 @@ fn parse_type_expr(value: &str) -> ResolvedType {
 
 fn format_method_signature(
     name: &str,
-    parameters: &[al_symbols::ParameterSymbol],
+    parameters: &[crate::symbols::ParameterSymbol],
     return_type: Option<&str>,
 ) -> String {
     let params = parameters

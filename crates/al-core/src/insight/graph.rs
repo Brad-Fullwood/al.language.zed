@@ -10,7 +10,7 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use serde::Serialize;
 
-use al_symbols::{ObjectKind, SymbolEntry};
+use crate::symbols::{ObjectKind, SymbolEntry};
 
 /// A node in the insight graph.
 #[derive(Debug, Clone, Serialize)]
@@ -198,7 +198,7 @@ impl InsightGraph {
     /// can take 50–200 ms. The work is wrapped in a `tracing::info_span` and
     /// emits a one-shot log line with elapsed time and final node/edge
     /// counts so latency is observable from `RUST_LOG=al_core::insight=info`.
-    pub fn build_from_index(&mut self, symbols: &al_symbols::SymbolIndex) {
+    pub fn build_from_index(&mut self, symbols: &crate::symbols::SymbolIndex) {
         let span = tracing::info_span!("insight_graph.build", entries = symbols.len());
         let _enter = span.enter();
         let started = std::time::Instant::now();
@@ -313,7 +313,7 @@ impl InsightGraph {
     fn resolve_relationships(
         &mut self,
         entry: &Arc<SymbolEntry>,
-        _symbols: &al_symbols::SymbolIndex,
+        _symbols: &crate::symbols::SymbolIndex,
     ) {
         // Extends edges
         if let Some(ref extends_name) = entry.extends {
@@ -427,7 +427,7 @@ impl Default for InsightGraph {
 /// Returns `(target_kind, target_object_name, target_event_name)` where `target_kind`
 /// is `None` when the object type cannot be determined from arg[0].
 fn parse_subscriber_target_full(
-    attributes: &[al_symbols::AttributeSymbol],
+    attributes: &[crate::symbols::AttributeSymbol],
 ) -> (Option<ObjectKind>, String, String) {
     for attr in attributes {
         if attr.name == "EventSubscriber" {
@@ -467,7 +467,7 @@ fn parse_subscriber_target_full(
 }
 
 /// Parse EventSubscriber attribute to extract target object and event names.
-fn parse_subscriber_target(attributes: &[al_symbols::AttributeSymbol]) -> (String, String) {
+fn parse_subscriber_target(attributes: &[crate::symbols::AttributeSymbol]) -> (String, String) {
     let (_, obj, evt) = parse_subscriber_target_full(attributes);
     (obj, evt)
 }
@@ -485,7 +485,7 @@ fn clean_quotes(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::*;
+    use crate::symbols::*;
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
@@ -946,7 +946,7 @@ mod tests {
 
     #[test]
     fn table_relation_edges() {
-        use al_symbols::{FieldSymbol, PropertyValue};
+        use crate::symbols::{FieldSymbol, PropertyValue};
 
         let index = SymbolIndex::new();
 

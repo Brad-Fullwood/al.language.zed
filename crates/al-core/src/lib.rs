@@ -26,6 +26,7 @@ pub(crate) mod resolution;
 pub mod scaffold;
 pub mod semantic;
 pub mod snapshot;
+pub mod symbols;
 pub mod syntax;
 pub mod test_runner;
 pub mod toolchain;
@@ -63,29 +64,6 @@ pub mod syntax_lsp {
             line: pos.line,
             character: pos.character,
         }
-    }
-}
-
-/// Re-exports from al-symbols for al-lsp consumption.
-pub mod symbols {
-    pub use al_symbols::{
-        EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,
-        SymbolIndex,
-    };
-    pub mod cache {
-        pub use al_symbols::cache::SymbolCache;
-    }
-    pub mod virtual_file {
-        pub use al_symbols::virtual_file::{app_has_source, cache_dir};
-    }
-    pub mod bc_server {
-        pub use al_symbols::bc_server::{AuthMethod, BcServerClient, MessageSink};
-    }
-    pub mod nuget {
-        pub use al_symbols::nuget::{AppDependency, NuGetClient, NuGetFeed};
-    }
-    pub mod oauth {
-        pub use al_symbols::oauth::{acquire_token, token_cache_path};
     }
 }
 

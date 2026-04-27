@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use crate::index::SymbolIndex;
-use crate::model::{ComposedObject, ObjectKind, SymbolEntry};
+use super::index::SymbolIndex;
+use super::model::{ComposedObject, ObjectKind, SymbolEntry};
 
 /// Get a composed view of an object by merging the base with all extensions.
 ///
@@ -69,8 +69,8 @@ fn compose(base: Arc<SymbolEntry>, extensions: Vec<Arc<SymbolEntry>>) -> Compose
 
 #[cfg(test)]
 mod tests {
+    use crate::symbols::model::*;
     use super::*;
-    use crate::model::*;
 
     fn make_table(
         id: i32,

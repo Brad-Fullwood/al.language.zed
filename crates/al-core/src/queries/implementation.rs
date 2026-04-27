@@ -38,7 +38,7 @@ pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position
     // 1. Search symbol index (from .app packages)
     let codeunits = workspace
         .symbols
-        .get_by_kind(al_symbols::model::ObjectKind::Codeunit);
+        .get_by_kind(crate::symbols::model::ObjectKind::Codeunit);
     for entry in &codeunits {
         if entry
             .implements
@@ -151,7 +151,7 @@ fn find_implements_clause_match(
 
 #[cfg(test)]
 mod tests {
-    use al_symbols::model::{ObjectKind, SymbolEntry};
+    use crate::symbols::model::{ObjectKind, SymbolEntry};
 
     fn make_codeunit_entry(name: &str, id: i32, implements: Vec<String>) -> SymbolEntry {
         SymbolEntry {
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn test_find_implementations_from_symbol_index() {
-        let index = al_symbols::index::SymbolIndex::new();
+        let index = crate::symbols::index::SymbolIndex::new();
         let entry = make_codeunit_entry("MyImpl", 50001, vec!["IFoo".to_string()]);
         index.add_entries(&[entry]);
 
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn test_find_implementations_case_insensitive() {
-        let index = al_symbols::index::SymbolIndex::new();
+        let index = crate::symbols::index::SymbolIndex::new();
         let entry = make_codeunit_entry("CaseImpl", 50002, vec!["IBar".to_string()]);
         index.add_entries(&[entry]);
 
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_no_implementations_for_unknown_interface() {
-        let index = al_symbols::index::SymbolIndex::new();
+        let index = crate::symbols::index::SymbolIndex::new();
         let entry = make_codeunit_entry("OtherImpl", 50003, vec!["IFoo".to_string()]);
         index.add_entries(&[entry]);
 

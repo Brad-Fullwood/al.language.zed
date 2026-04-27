@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use al_symbols::{ObjectKind, SymbolIndex};
+use crate::symbols::{ObjectKind, SymbolIndex};
 
 // ---------------------------------------------------------------------------
 // Public result types
@@ -241,7 +241,7 @@ fn is_record_of(type_name: &str, table_lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::{
+    use crate::symbols::{
         AttributeSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue,
         SymbolEntry, SymbolIndex, VariableSymbol,
     };

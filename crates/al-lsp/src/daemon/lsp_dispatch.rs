@@ -666,7 +666,7 @@ mod tests {
         );
     }
 
-    /// Workspace-object payloads must deserialize as `al_symbols::SymbolEntry` so
+    /// Workspace-object payloads must deserialize as `al_core::symbols::SymbolEntry` so
     /// downstream daemon clients (al-cli, al-explorer) accept them. The `kind`
     /// field arrives from tree-sitter as a lowercase string but the wire schema
     /// is the PascalCase `ObjectKind` enum — regression test for the
@@ -685,9 +685,9 @@ mod tests {
             },
         };
         let json = workspace_object_to_json(&info);
-        let entry: al_symbols::SymbolEntry =
+        let entry: al_core::symbols::SymbolEntry =
             serde_json::from_value(json).expect("workspace object must deserialize as SymbolEntry");
-        assert_eq!(entry.kind, al_symbols::ObjectKind::Table);
+        assert_eq!(entry.kind, al_core::symbols::ObjectKind::Table);
         assert_eq!(entry.name, "Customer");
         assert_eq!(entry.id, 50_000);
     }
@@ -730,7 +730,7 @@ mod tests {
                 },
             };
             let json = workspace_object_to_json(&info);
-            let _: al_symbols::SymbolEntry = serde_json::from_value(json)
+            let _: al_core::symbols::SymbolEntry = serde_json::from_value(json)
                 .unwrap_or_else(|e| panic!("kind {k:?} must deserialize: {e}"));
         }
     }

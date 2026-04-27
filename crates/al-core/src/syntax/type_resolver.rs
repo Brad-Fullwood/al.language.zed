@@ -845,8 +845,8 @@ fn parse_type_text(type_text: &str) -> (String, Option<String>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::syntax::AlParser;
     use super::*;
+    use crate::syntax::AlParser;
 
     fn parse(src: &str) -> (Tree, String) {
         let mut parser = AlParser::new();

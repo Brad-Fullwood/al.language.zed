@@ -5,9 +5,9 @@ use std::sync::OnceLock;
 
 use memmap2::Mmap;
 
-use crate::model::SymbolEntry;
-use crate::source_index;
-use crate::source_index::{is_ident_char, is_ident_start, parse_quoted_ident};
+use super::model::SymbolEntry;
+use super::source_index;
+use super::source_index::{is_ident_char, is_ident_start, parse_quoted_ident};
 
 /// Cache directory for extracted / generated virtual AL files.
 pub fn cache_dir() -> PathBuf {
@@ -98,7 +98,7 @@ pub fn app_has_source(app_path: &Path) -> bool {
         Err(_) => return false,
     };
 
-    let zip_offset = match crate::app_reader::find_zip_offset(&mmap) {
+    let zip_offset = match super::app_reader::find_zip_offset(&mmap) {
         Some(o) => o,
         None => return false,
     };
@@ -144,7 +144,7 @@ fn sanitize_filename(s: &str) -> String {
 /// with attributes, and global variables. This is the standard output for packages without
 /// embedded source — not a degraded mode.
 pub fn render_outline(entry: &SymbolEntry) -> String {
-    use crate::model::{FieldSymbol, MethodSymbol};
+    use super::model::{FieldSymbol, MethodSymbol};
 
     fn format_name(name: &str) -> String {
         let needs_quoting = name.contains(' ')

@@ -359,7 +359,7 @@ fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+    use crate::symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
 
     // ------------------------------------------------------------------
     // Fixtures

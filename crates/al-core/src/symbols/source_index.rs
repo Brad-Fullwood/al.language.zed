@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use memmap2::Mmap;
 use zip::ZipArchive;
 
-use crate::model::{ObjectKind, SymbolEntry};
+use super::model::{ObjectKind, SymbolEntry};
 
 const MAX_HEADER_BYTES: usize = 256 * 1024;
 
@@ -54,7 +54,7 @@ impl AppSourceIndex {
         // via `modified` timestamp) — we never re-mmap a file we've already
         // accepted as fresh.
         let mmap = unsafe { Mmap::map(&file)? };
-        let zip_offset = crate::app_reader::find_zip_offset(&mmap).ok_or_else(|| {
+        let zip_offset = super::app_reader::find_zip_offset(&mmap).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "ZIP signature not found in .app",

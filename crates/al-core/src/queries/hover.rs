@@ -407,7 +407,7 @@ fn format_procedure_hover(proc: &crate::syntax::ProcedureInfo) -> String {
     )
 }
 
-fn format_symbol_hover(entry: &al_symbols::SymbolEntry) -> String {
+fn format_symbol_hover(entry: &crate::symbols::SymbolEntry) -> String {
     let mut lines = Vec::new();
     let id_str = if entry.id != 0 {
         format!(" {}", entry.id)
@@ -508,22 +508,22 @@ mod tests {
 
     #[test]
     fn test_format_symbol_hover() {
-        let entry = al_symbols::SymbolEntry {
-            kind: al_symbols::ObjectKind::Table,
+        let entry = crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
             extends: None,
             implements: Vec::new(),
             namespace: String::new(),
             package: "Base Application".to_string(),
-            methods: vec![al_symbols::MethodSymbol {
+            methods: vec![crate::symbols::MethodSymbol {
                 name: "GetBalance".to_string(),
                 parameters: vec![],
                 return_type: Some("Decimal".to_string()),
                 attributes: vec![],
                 is_local: false,
             }],
-            fields: vec![al_symbols::FieldSymbol {
+            fields: vec![crate::symbols::FieldSymbol {
                 id: 1,
                 name: "No.".to_string(),
                 type_name: "Code".to_string(),

@@ -14,8 +14,8 @@ use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use crate::nuget::AppDependency;
-use crate::oauth;
+use super::nuget::AppDependency;
+use super::oauth;
 
 /// Authentication method for BC server connections.
 #[derive(Debug, Clone, PartialEq)]

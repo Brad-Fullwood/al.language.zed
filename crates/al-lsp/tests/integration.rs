@@ -1418,14 +1418,14 @@ fn suggest_event_integration_procedure_query() {
     let ws = al_core::workspace::Workspace::new();
 
     // Add a codeunit with a regular method and an integration event
-    ws.symbols.add_entries(&[al_symbols::SymbolEntry {
-        kind: al_symbols::ObjectKind::Codeunit,
+    ws.symbols.add_entries(&[al_core::symbols::SymbolEntry {
+        kind: al_core::symbols::ObjectKind::Codeunit,
         id: 80,
         name: "Sales-Post".to_string(),
         methods: vec![
-            al_symbols::MethodSymbol {
+            al_core::symbols::MethodSymbol {
                 name: "PostSalesDoc".to_string(),
-                parameters: vec![al_symbols::ParameterSymbol {
+                parameters: vec![al_core::symbols::ParameterSymbol {
                     name: "SalesHeader".to_string(),
                     type_name: "Record \"Sales Header\"".to_string(),
                     is_var: true,
@@ -1434,15 +1434,15 @@ fn suggest_event_integration_procedure_query() {
                 attributes: vec![],
                 is_local: false,
             },
-            al_symbols::MethodSymbol {
+            al_core::symbols::MethodSymbol {
                 name: "OnAfterPostSalesDoc".to_string(),
-                parameters: vec![al_symbols::ParameterSymbol {
+                parameters: vec![al_core::symbols::ParameterSymbol {
                     name: "SalesHeader".to_string(),
                     type_name: "Record \"Sales Header\"".to_string(),
                     is_var: true,
                 }],
                 return_type: None,
-                attributes: vec![al_symbols::AttributeSymbol {
+                attributes: vec![al_core::symbols::AttributeSymbol {
                     name: "IntegrationEvent".to_string(),
                     arguments: vec!["false".into(), "false".into()],
                 }],

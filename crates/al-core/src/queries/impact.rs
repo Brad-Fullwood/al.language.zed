@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use al_symbols::{ObjectKind, SymbolEntry};
+use crate::symbols::{ObjectKind, SymbolEntry};
 use serde::Serialize;
 
 use crate::workspace::Workspace;
@@ -309,8 +309,8 @@ fn search_workspace_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::symbols::*;
     use crate::workspace::Workspace;
-    use al_symbols::*;
     use std::path::PathBuf;
 
     fn workspace_with_files(files: Vec<(&str, &str)>) -> Workspace {

@@ -7,8 +7,8 @@ use std::io::{Cursor, Read};
 use thiserror::Error;
 use zip::ZipArchive;
 
-use crate::manifest::{self, NavxManifest};
-use crate::model::{SymbolPackage, SymbolReferenceJson};
+use super::manifest::{self, NavxManifest};
+use super::model::{SymbolPackage, SymbolReferenceJson};
 
 /// NAVX magic bytes.
 const NAVX_MAGIC: &[u8; 4] = b"NAVX";
@@ -135,7 +135,7 @@ fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest
 fn read_symbol_reference(
     archive: &mut ZipArchive<Cursor<&[u8]>>,
     package_name: &str,
-) -> Result<Vec<crate::model::SymbolEntry>, AppReaderError> {
+) -> Result<Vec<super::model::SymbolEntry>, AppReaderError> {
     let sr_name = find_file_in_archive(archive, "SymbolReference.json")
         .ok_or(AppReaderError::NoSymbolReference)?;
 

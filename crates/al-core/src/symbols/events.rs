@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use crate::index::SymbolIndex;
-use crate::model::{MethodSymbol, SymbolEntry};
+use super::index::SymbolIndex;
+use super::model::{MethodSymbol, SymbolEntry};
 
 /// An event publisher found in the symbol index.
 #[derive(Debug, Clone)]
@@ -196,8 +196,8 @@ fn clean_quotes(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::symbols::model::*;
     use super::*;
-    use crate::model::*;
 
     fn make_codeunit_with_events() -> Vec<SymbolEntry> {
         vec![

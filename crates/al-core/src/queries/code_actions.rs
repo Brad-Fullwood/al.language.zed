@@ -886,7 +886,7 @@ fn source_action_implement_interface(
         let iface_lower = iface_name.to_lowercase();
         let interfaces = workspace
             .symbols
-            .get_by_kind(al_symbols::model::ObjectKind::Interface);
+            .get_by_kind(crate::symbols::model::ObjectKind::Interface);
         let iface_entry = interfaces
             .iter()
             .find(|e| e.name.to_lowercase() == iface_lower);
@@ -1094,8 +1094,8 @@ fn resolve_with_field_names(
     // Look up the table in the symbol index and collect field names.
     let entries = workspace.symbols.get_by_name(&table_name);
     for entry in &entries {
-        if (entry.kind == al_symbols::ObjectKind::Table
-            || entry.kind == al_symbols::ObjectKind::TableExtension)
+        if (entry.kind == crate::symbols::ObjectKind::Table
+            || entry.kind == crate::symbols::ObjectKind::TableExtension)
             && !entry.fields.is_empty()
         {
             return entry.fields.iter().map(|f| f.name.clone()).collect();
@@ -2516,8 +2516,8 @@ fn source_action_convert_event_subscriber(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::symbols::{ObjectKind, SymbolEntry};
     use crate::workspace::Workspace;
-    use al_symbols::{ObjectKind, SymbolEntry};
 
     #[test]
     fn code_action_kind_serializes_to_lsp_string() {
@@ -3421,7 +3421,7 @@ codeunit 50100 "My Codeunit"
         );
     }
 
-    fn make_interface_entry(name: &str, methods: Vec<al_symbols::MethodSymbol>) -> SymbolEntry {
+    fn make_interface_entry(name: &str, methods: Vec<crate::symbols::MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
             kind: ObjectKind::Interface,
             id: 0,
@@ -3442,10 +3442,10 @@ codeunit 50100 "My Codeunit"
 
     fn make_method(
         name: &str,
-        params: Vec<al_symbols::ParameterSymbol>,
+        params: Vec<crate::symbols::ParameterSymbol>,
         return_type: Option<&str>,
-    ) -> al_symbols::MethodSymbol {
-        al_symbols::MethodSymbol {
+    ) -> crate::symbols::MethodSymbol {
+        crate::symbols::MethodSymbol {
             name: name.to_string(),
             parameters: params,
             return_type: return_type.map(|s| s.to_string()),
@@ -3454,8 +3454,8 @@ codeunit 50100 "My Codeunit"
         }
     }
 
-    fn make_param(name: &str, type_name: &str, is_var: bool) -> al_symbols::ParameterSymbol {
-        al_symbols::ParameterSymbol {
+    fn make_param(name: &str, type_name: &str, is_var: bool) -> crate::symbols::ParameterSymbol {
+        crate::symbols::ParameterSymbol {
             name: name.to_string(),
             type_name: type_name.to_string(),
             is_var,

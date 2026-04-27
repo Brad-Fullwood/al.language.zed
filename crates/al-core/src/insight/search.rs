@@ -499,7 +499,7 @@ pub fn export_json(graph: &InsightGraph) -> GraphJson {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use al_symbols::{MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+    use crate::symbols::{MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
 
     fn make_codeunit_with_events(
         id: i32,
@@ -514,7 +514,7 @@ mod tests {
                 return_type: None,
                 parameters: Vec::new(),
                 is_local: false,
-                attributes: vec![al_symbols::AttributeSymbol {
+                attributes: vec![crate::symbols::AttributeSymbol {
                     name: attr.to_string(),
                     arguments: vec!["false".to_string(), "false".to_string()],
                 }],
@@ -526,7 +526,7 @@ mod tests {
                 return_type: None,
                 parameters: Vec::new(),
                 is_local: false,
-                attributes: vec![al_symbols::AttributeSymbol {
+                attributes: vec![crate::symbols::AttributeSymbol {
                     name: "EventSubscriber".to_string(),
                     arguments: vec![
                         format!("ObjectType::{tkind}"),

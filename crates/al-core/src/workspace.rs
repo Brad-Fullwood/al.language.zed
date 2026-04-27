@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use crate::project::AlProject;
+use crate::symbols::SymbolIndex;
 use crate::toolchain::AlToolchain;
 use al_semantic::BuiltinType;
-use al_symbols::SymbolIndex;
 use dashmap::DashMap;
 use serde::Serialize;
 use tokio::sync::RwLock;

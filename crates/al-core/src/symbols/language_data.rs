@@ -28,7 +28,7 @@ struct ObjectTypesFile {
 
 static OBJECT_TYPES: LazyLock<Vec<ObjectType>> = LazyLock::new(|| {
     let file: ObjectTypesFile = serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/object_types.json"
+        "../../../../tree-sitter-al/data/object_types.json"
     ))
     .expect("object_types.json must be valid");
     file.object_types
@@ -36,7 +36,7 @@ static OBJECT_TYPES: LazyLock<Vec<ObjectType>> = LazyLock::new(|| {
 
 static RUNTIME_ENUMS: LazyLock<Vec<RuntimeEnum>> = LazyLock::new(|| {
     serde_json::from_str(include_str!(
-        "../../../tree-sitter-al/data/runtime_enums.json"
+        "../../../../tree-sitter-al/data/runtime_enums.json"
     ))
     .expect("runtime_enums.json must be valid")
 });

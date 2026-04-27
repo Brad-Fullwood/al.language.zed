@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use al_symbols::{ObjectKind, SymbolIndex};
+use al_core::symbols::{ObjectKind, SymbolIndex};
 
 /// Collect all .app files from known locations.
 fn collect_app_paths() -> Vec<PathBuf> {
@@ -387,7 +387,7 @@ fn perf_audit_index_build() {
     eprintln!("\n=== End Performance Audit ===\n");
 }
 
-fn count_controls(control: &al_symbols::ControlSymbol) -> usize {
+fn count_controls(control: &al_core::symbols::ControlSymbol) -> usize {
     1 + control.children.iter().map(count_controls).sum::<usize>()
 }
 

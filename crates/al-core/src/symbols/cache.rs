@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime};
 
 use tracing::debug;
 
-use crate::model::SymbolPackage;
+use super::model::SymbolPackage;
 
 /// Cache header stored alongside each cached package.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -97,7 +97,7 @@ impl SymbolCache {
         // incompatible with the current SymbolEntry struct (schema migration,
         // truncated file, corruption). Logging at warn surfaces the cause —
         // previously this returned None and silently re-parsed the .app.
-        let objects: Vec<crate::model::SymbolEntry> = match serde_json::from_slice(objects_data) {
+        let objects: Vec<super::model::SymbolEntry> = match serde_json::from_slice(objects_data) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(
@@ -278,8 +278,8 @@ fn simple_hash(path: &Path) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::symbols::model::*;
     use super::*;
-    use crate::model::*;
     use std::io::Write;
     use tempfile::TempDir;
 
