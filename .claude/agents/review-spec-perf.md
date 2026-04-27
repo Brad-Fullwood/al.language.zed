@@ -18,8 +18,8 @@ affect perceived keystroke latency.
 
 - `crates/al-core/src/queries/` — all hot LSP features (completions,
   hover, doc symbols, semantic tokens, diagnostics pipeline).
-- `crates/al-syntax/src/parser.rs`, `formatter.rs`, `type_resolver.rs`.
-- `crates/al-symbols/src/symbol_index.rs` (or equivalent indexer).
+- `crates/al-core/src/syntax/parser.rs`, `formatter.rs`, `type_resolver.rs`.
+- `crates/al-core/src/symbols/symbol_index.rs` (or equivalent indexer).
 - `crates/al-core/src/insight/` (the InsightGraph build).
 - `crates/al-core/src/documents.rs` and workspace state.
 

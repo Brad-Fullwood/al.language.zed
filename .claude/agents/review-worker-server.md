@@ -10,11 +10,11 @@ You are a domain reviewer in the Review Department. Read your brief first:
 
 ## Your scope
 
-- `crates/al-lsp/` (LSP server, daemon server, DAP server — transport
+- `crates/al-core/` (LSP server, daemon server, DAP server — transport
   only).
-- `crates/al-dap-client/` (DAP framing, EditorServices proxy, native BC
+- `crates/al-core/src/dap/` (DAP framing, EditorServices proxy, native BC
   debug).
-- `crates/al-daemon-client/` (shared IPC types).
+- `crates/al-protocol/` (shared IPC types).
 
 ~130K tokens across ~31 files.
 

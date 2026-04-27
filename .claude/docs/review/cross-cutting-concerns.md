@@ -86,7 +86,7 @@ Grep for `.lock().unwrap()` or `.read().unwrap()` on tower-lsp-held
 mutexes without the recovery idiom — that's a silent-crash risk.
 
 ```bash
-grep -rnE '\.(lock|read|write)\(\)\.unwrap\(\)' crates/al-lsp/
+grep -rnE '\.(lock|read|write)\(\)\.unwrap\(\)' crates/al-core/
 ```
 
 ## 5. DashMap reference held across `.await`

@@ -27,7 +27,7 @@ For `owner_crate: ["al-core", "al-syntax"]`:
 
 ```
 crates/al-core/
-crates/al-syntax/
+crates/al-core/src/syntax/
 ```
 
 ## Special paths always allowed
@@ -51,7 +51,7 @@ On violation, stderr message like:
 
 ```
 [dev-path-scope] BLOCK: task=<id> crate-scope=[al-core] but edit
-targets crates/al-syntax/src/parser.rs. Split this into a separate
+targets crates/al-core/src/syntax/parser.rs. Split this into a separate
 task or adjust the task's owner_crate.
 ```
 

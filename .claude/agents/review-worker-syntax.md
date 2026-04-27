@@ -10,7 +10,7 @@ You are a domain reviewer in the Review Department. Read your brief first:
 
 ## Your scope
 
-- `crates/al-syntax/src/` (~9K lines, 17 files — parsing, formatting,
+- `crates/al-core/src/syntax/` (~9K lines, 17 files — parsing, formatting,
   linting, type resolution).
 - `tree-sitter-al/queries/*.scm` and `tree-sitter-al/data/*.json` —
   only if the submodule is populated on this branch. Check

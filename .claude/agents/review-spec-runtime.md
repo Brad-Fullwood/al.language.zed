@@ -125,7 +125,7 @@ For `runtime-search.json`:
 
 - Parse with `jq '.result | type'` — must be `array`.
 - For every entry, the keys `kind`, `name`, `id` MUST be present.
-- The `kind` value MUST deserialize as `al_symbols::ObjectKind` — i.e.
+- The `kind` value MUST deserialize as `al_core::symbols::ObjectKind` — i.e.
   one of `Table | TableExtension | Page | PageExtension | Codeunit |
   Report | ReportExtension | XmlPort | Query | Enum | EnumExtension |
   Interface | PermissionSet | PermissionSetExtension | Profile |

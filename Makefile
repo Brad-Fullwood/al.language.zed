@@ -11,13 +11,12 @@
 SHELL := /bin/bash
 ROOT := $(shell pwd)
 LSP_BIN := $(ROOT)/target/debug/al-lsp
-CLI_BIN := $(ROOT)/target/debug/al
 EXPLORER_BIN := $(ROOT)/target/debug/al-explorer
 INSTALL_DIR := $(HOME)/.local/bin
 ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 
 # .NET bridge projects (quoted for paths with spaces)
-ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
+ALSEMANTIC_PROJ := "$(ROOT)/crates/al-core/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip1/release/zed_al.wasm
 
 .PHONY: build install rust wasm bridges clean
@@ -36,17 +35,18 @@ install: build
 	else \
 		echo "al-lsp already in $(INSTALL_DIR) (OK)"; \
 	fi
-	@if [ ! -L "$(INSTALL_DIR)/al" ] && [ ! -f "$(INSTALL_DIR)/al" ]; then \
-		ln -sf "$(CLI_BIN)" "$(INSTALL_DIR)/al"; \
-		echo "Symlinked al -> $(INSTALL_DIR)/al"; \
-	else \
-		echo "al already in $(INSTALL_DIR) (OK)"; \
-	fi
 	@if [ ! -L "$(INSTALL_DIR)/al-explorer" ] && [ ! -f "$(INSTALL_DIR)/al-explorer" ]; then \
 		ln -sf "$(EXPLORER_BIN)" "$(INSTALL_DIR)/al-explorer"; \
 		echo "Symlinked al-explorer -> $(INSTALL_DIR)/al-explorer"; \
 	else \
 		echo "al-explorer already in $(INSTALL_DIR) (OK)"; \
+	fi
+	@# `al` is a back-compat alias for al-explorer's CLI mode (the old al-cli binary)
+	@if [ ! -L "$(INSTALL_DIR)/al" ] && [ ! -f "$(INSTALL_DIR)/al" ]; then \
+		ln -sf "$(EXPLORER_BIN)" "$(INSTALL_DIR)/al"; \
+		echo "Symlinked al -> $(INSTALL_DIR)/al (alias for al-explorer)"; \
+	else \
+		echo "al already in $(INSTALL_DIR) (OK)"; \
 	fi
 	@mkdir -p "$(ZED_EXT_DIR)"
 	@if [ ! -L "$(ZED_EXT_DIR)/al" ] && [ ! -d "$(ZED_EXT_DIR)/al" ]; then \

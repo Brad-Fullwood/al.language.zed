@@ -4,36 +4,6 @@ This file is the **single source of truth** for AI agents working on this codeba
 
 ---
 
-## ⚠️ Refactor in Progress: Crate Consolidation
-
-**The workspace is mid-refactor — collapsing 10 native crates into 4.**
-Plan: `~/.claude/plans/i-am-thinking-about-playful-bentley.md`
-
-**Target layout (what this file describes):**
-
-| Crate | Status |
-|-------|--------|
-| `al-core` | Absorbing al-syntax, al-symbols, al-semantic, al-lsp, al-dap-client; ships `[[bin]] al-lsp` |
-| `al-protocol` | Renamed from al-daemon-client |
-| `al-explorer` | Absorbing al-cli (TUI default + clap subcommands) |
-| `zed-al` | Unchanged (WASM) |
-| `al-test-harness`, `al-zed-test` | Unchanged |
-
-**Stage progress:**
-- [x] **Stage 1** — CLAUDE.md / hooks / skills updated to target layout
-- [x] **Stage 2** — `al-daemon-client` → `al-protocol` rename
-- [x] **Stage 3** — `al-dap-client` folded into al-core (now `al_core::dap`)
-- [x] **Stage 4** — `al-syntax` folded into al-core (now `al_core::syntax`; LSP-bridge helpers at `al_core::syntax_lsp`)
-- [x] **Stage 5** — `al-symbols` folded into al-core (now `al_core::symbols`; `nuget` feature defaults on)
-- [x] **Stage 6** — `al-semantic` folded into al-core (now `al_core::semantic` = `bridge` + `host` + `cache` + `lifecycle`)
-- [x] **Stage 7** — `al-lsp` folded into al-core (now `al_core::server` + `[[bin]] al-lsp`)
-- [x] **Stage 8** — `al-cli` folded into al-explorer (TUI default; `al-explorer <subcommand>` for scripted use)
-- [ ] Stage 9 — Final docs/hooks reconciliation (this banner removed)
-
-**While the refactor is in flight:** the crate names below describe the *target* state. The repo's `Cargo.toml` reflects in-flight reality. If hooks/agents seem out of sync with on-disk crates, check this banner — the docs lead, the code is catching up.
-
----
-
 ## Quick Reference
 
 ```sh

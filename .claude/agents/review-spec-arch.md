@@ -45,13 +45,13 @@ for crate in al-syntax al-symbols al-semantic; do
 done
 
 # 2. al-daemon-client must not depend on al-core
-grep -n "^al-core " crates/al-daemon-client/Cargo.toml
+grep -n "^al-core " crates/al-protocol/Cargo.toml
 
 # 3. zed-al (root) must not depend on any native crate
 grep -nE 'path = "crates/' Cargo.toml
 
 # 4. al-lsp must not depend on tree-sitter directly (should go via al-syntax)
-grep -nE '^tree-sitter ' crates/al-lsp/Cargo.toml
+grep -nE '^tree-sitter ' crates/al-core/Cargo.toml
 ```
 
 Any hit is a `kind: bug`, `severity: critical` architecture finding.

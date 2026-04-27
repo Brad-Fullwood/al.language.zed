@@ -10,7 +10,7 @@ You are a domain reviewer in the Review Department. Read your brief first:
 
 ## Your scope
 
-- `crates/al-cli/` (the `al` CLI, ~5K lines).
+- `crates/al-explorer/` (the `al` CLI, ~5K lines).
 - `crates/al-explorer/` (ratatui TUI over the daemon, ~2.6K lines).
 - Root `src/` (the `zed-al` WASM extension for Zed, ~700 lines).
 

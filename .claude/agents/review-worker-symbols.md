@@ -10,9 +10,9 @@ You are a domain reviewer in the Review Department. Read your brief first:
 
 ## Your scope
 
-- `crates/al-symbols/src/` (~8K lines, 16 files — `.app` reading, NuGet
+- `crates/al-core/src/symbols/` (~8K lines, 16 files — `.app` reading, NuGet
   download, OAuth, symbol index, manifest parsing).
-- `crates/al-semantic/src/` (~1.1K lines, 4 files — .NET CLR bridge via
+- `crates/al-core/src/semantic/` (~1.1K lines, 4 files — .NET CLR bridge via
   `netcorehost`).
 
 ~80K tokens.

@@ -28,9 +28,9 @@ Primary targets:
 - `crates/al-core/src/workspace.rs` (the big state struct with DashMap).
 - `crates/al-core/src/queries/*.rs` (async query handlers that touch
   DashMap).
-- `crates/al-lsp/src/server.rs` (tower-lsp `.lock()` patterns).
-- `crates/al-lsp/src/daemon/*.rs` (tokio spawns + channels).
-- `crates/al-semantic/src/host.rs` (the .NET CLR host; project memory
+- `crates/al-core/src/server/lsp.rs` (tower-lsp `.lock()` patterns).
+- `crates/al-core/src/server/daemon/*.rs` (tokio spawns + channels).
+- `crates/al-core/src/semantic/host.rs` (the .NET CLR host; project memory
   says calls are Mutex-serialized on a blocking thread with 30s timeout —
   verify).
 
@@ -48,7 +48,7 @@ Primary targets:
 
 2. **tower-lsp poisoned lock without recovery.**
    ```
-   grep -rnE '\.(lock|read|write)\(\)\.unwrap\(\)' crates/al-lsp/
+   grep -rnE '\.(lock|read|write)\(\)\.unwrap\(\)' crates/al-core/
    ```
    Should use `.unwrap_or_else(|e| e.into_inner())`.
 

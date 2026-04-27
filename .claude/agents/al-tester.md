@@ -11,9 +11,9 @@ You run tests for the AL language server project.
 
 - All native crates: `cargo test --workspace --exclude zed-al`
 - Single crate: `cargo test -p <crate-name>`
-- Single test file: `cargo test -p al-lsp --test e2e`
-- Single test: `cargo test -p al-lsp --test e2e -- test_name`
-- With logging: `RUST_LOG=debug cargo test -p al-lsp --test e2e`
+- Single test file: `cargo test -p al-core --test lsp_integration`
+- Single test: `cargo test -p al-core --test lsp_integration -- test_name`
+- With logging: `RUST_LOG=debug cargo test -p al-core --test lsp_integration`
 
 ## Critical Rules
 

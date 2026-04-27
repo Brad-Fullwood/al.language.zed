@@ -9,15 +9,28 @@ You are a read-only researcher for the AL language server project (~84K lines of
 
 ## Architecture Quick Reference
 
+The workspace is consolidated into `al-core` (logic + LSP/daemon/DAP server +
+binary), `al-protocol` (shared IPC types), `al-explorer` (TUI + CLI client),
+and `zed-al` (WASM extension).
+
 ```
-al-lsp (transport) → al-core (ALL logic) → al-syntax (parsing)
-                                          → al-symbols (.app packages)
-                                          → al-semantic (.NET bridge)
+al-core
+├─ syntax    (parsing, formatting, linting, type resolution)
+├─ symbols   (.app reading, NuGet, symbol index)
+├─ semantic  (.NET CLR bridge — CodeAnalysis)
+├─ dap       (DAP framing + BC debug proxy)
+├─ queries/  (transport-agnostic LSP feature impls)
+├─ server/   (LSP/daemon transport conversion + dap_mode)
+└─ bin/al-lsp.rs
+
+al-protocol  ← consumed by al-explorer + al-core daemon
+al-explorer  ← TUI default; subcommands for scripted CLI
+zed-al       ← WASM, isolated
 ```
 
-- All business logic lives in `al-core/src/queries/`
+- All business logic lives in `al_core::queries::*`
 - Query functions take `&Workspace` + position, return transport-agnostic types
-- `al-lsp` only does transport conversion (LSP/JSON-RPC ↔ al-core types)
+- `al_core::server` is the only place that imports `lsp_types::*` (transport boundary, coding rule)
 
 ## Your Task
 

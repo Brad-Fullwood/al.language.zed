@@ -16,12 +16,12 @@ and opens Unix sockets for IPC.
 
 ## Read
 
-- `crates/al-symbols/src/oauth.rs` (~900 lines — biggest single target).
-- `crates/al-symbols/src/nuget.rs` or equivalent (NuGet HTTP client).
-- `crates/al-symbols/src/app_*.rs` (`.app` extraction).
-- `crates/al-dap-client/src/bc_client.rs` or equivalent (BC auth/TLS).
-- `crates/al-daemon-client/src/lib.rs` (socket path, IPC framing).
-- `crates/al-lsp/src/daemon/*.rs` (daemon JSON-RPC surface — validate
+- `crates/al-core/src/symbols/oauth.rs` (~900 lines — biggest single target).
+- `crates/al-core/src/symbols/nuget.rs` or equivalent (NuGet HTTP client).
+- `crates/al-core/src/symbols/app_*.rs` (`.app` extraction).
+- `crates/al-core/src/dap/bc_client.rs` or equivalent (BC auth/TLS).
+- `crates/al-protocol/src/lib.rs` (socket path, IPC framing).
+- `crates/al-core/src/server/daemon/*.rs` (daemon JSON-RPC surface — validate
   input before dispatch).
 - Every `std::process::Command::new` / `tokio::process::Command::new`
   call across the workspace (command injection surface).
@@ -48,14 +48,14 @@ Code skills; reference their guidance in findings.
 ## Checklist (automate where possible)
 
 1. **OAuth credentials at rest.** Stored encrypted, or plaintext?
-   `grep -rn "oauth" crates/al-symbols/src/ | grep -iE "store|write|save"`
+   `grep -rn "oauth" crates/al-core/src/symbols/ | grep -iE "store|write|save"`
    Plaintext-at-rest is high severity.
 
-2. **Tokens in logs.** `grep -rn "token" crates/al-symbols/src/ | grep -iE "log|debug|trace|error!|info!|tracing::"`
+2. **Tokens in logs.** `grep -rn "token" crates/al-core/src/symbols/ | grep -iE "log|debug|trace|error!|info!|tracing::"`
    Any hit where the token value (not just the event) might be logged
    is critical.
 
-3. **TLS configuration.** `grep -rn "tls\|rustls\|native_tls" crates/al-symbols/` — is TLS verified, cert pinned or system-trusted?
+3. **TLS configuration.** `grep -rn "tls\|rustls\|native_tls" crates/al-core/src/symbols/` — is TLS verified, cert pinned or system-trusted?
    `accept_invalid_certs`, `danger_accept_invalid_hostnames` → critical.
 
 4. **Zip-bomb protection.** `.app` files are ZIPs. The extraction code

@@ -9,15 +9,15 @@ This is the correct pattern for adding a new query to the AL language server.
    - Return transport-agnostic types (NOT LSP types)
    - Register in `crates/al-core/src/queries/mod.rs`
 
-2. **Wire it in al-lsp** (`crates/al-lsp/src/handlers.rs` or the relevant handler file)
+2. **Wire it in al-lsp** (`crates/al-core/src/server/handlers.rs` or the relevant handler file)
    - Convert LSP request params to al-core types
    - Call the al-core query function
    - Convert the result to LSP response types
    - Handle None/errors gracefully
 
-3. **Register the LSP capability** in `crates/al-lsp/src/server.rs` (ServerCapabilities)
+3. **Register the LSP capability** in `crates/al-core/src/server/lsp.rs` (ServerCapabilities)
 
-4. **If daemon mode needs it**, add a dispatch handler in `crates/al-lsp/src/daemon/lsp_dispatch.rs`
+4. **If daemon mode needs it**, add a dispatch handler in `crates/al-core/src/server/daemon/lsp_dispatch.rs`
 
 5. **Add tests**
    - Unit test in `crates/al-core/src/queries/` (test the query function directly)

@@ -43,7 +43,7 @@ At least one check fails. Feedback MUST be specific:
   satisfied — test_deeply_nested still returns Some."
 - "Reproduction command still outputs 'deadlock' — the fix doesn't
   cover the contested path at line 455."
-- "Scope creep: diff touches crates/al-lsp/src/server.rs which is
+- "Scope creep: diff touches crates/al-core/src/server/lsp.rs which is
   not in understand.md."
 
 Not:

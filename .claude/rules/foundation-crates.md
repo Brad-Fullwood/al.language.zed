@@ -3,28 +3,22 @@ paths:
   - "crates/al-core/src/syntax/**/*.rs"
   - "crates/al-core/src/symbols/**/*.rs"
   - "crates/al-core/src/semantic/**/*.rs"
-  - "crates/al-syntax/src/**/*.rs"
-  - "crates/al-symbols/src/**/*.rs"
-  - "crates/al-semantic/src/**/*.rs"
 ---
 
 # Foundation Module Rules
 
-You are editing the syntax / symbols / semantic foundation. Post-consolidation
-these are modules inside `al-core`; pre-consolidation they're separate crates
-(`al-syntax`, `al-symbols`, `al-semantic`). The rules apply either way — see
-the CLAUDE.md banner for current migration status.
+You are editing the syntax / symbols / semantic foundation modules of `al-core`.
 
-## Module / Crate Constraints
+## Module Constraints
 
 - These foundations should not call each other across module boundaries:
   - `syntax` does not import `symbols` or `semantic`
   - `symbols` does not import `syntax` or `semantic`
   - `semantic` does not import `syntax` or `symbols`
 - Cross-cutting orchestration goes in `al_core` higher-level modules
-  (`workspace`, `queries`, etc.), not inside these foundations
-- Pre-consolidation: the corresponding crates must NOT depend on each other
-  or on `al-core`
+  (`workspace`, `queries`, `server`, etc.), not inside these foundations
+- The `lsp_types::*` types are forbidden here — convert at the
+  `al_core::server` boundary or via `al_core::syntax_lsp` helpers
 
 ## syntax Specifics
 
@@ -42,7 +36,7 @@ the CLAUDE.md banner for current migration status.
 
 ## semantic Specifics
 
-- All .NET CLR calls must go through the Mutex in SemanticBridge
-- Never call DotNetHost methods directly from multiple threads
+- All .NET CLR calls must go through the Mutex in `SemanticBridge`
+- Never call `DotNetHost` methods directly from multiple threads
 - 30-second timeout on all CLR calls
 - Bridge initialisation is lazy — check `Option<SemanticBridge>` at every call site
