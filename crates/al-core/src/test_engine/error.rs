@@ -22,4 +22,6 @@ pub enum TestRunnerError {
     Timeout { secs: u64 },
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("test event channel closed: receiver dropped")]
+    ChannelClosed,
 }

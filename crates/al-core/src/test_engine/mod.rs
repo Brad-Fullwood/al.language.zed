@@ -5,6 +5,7 @@
 //! via either `al_core::test_engine::*` or the back-compat paths in
 //! `al_core::test_runner::*`.
 
+pub mod backends;
 pub mod error;
 pub mod result;
 pub mod session;
