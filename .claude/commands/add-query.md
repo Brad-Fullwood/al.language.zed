@@ -9,9 +9,9 @@ This is the correct pattern for adding a new query to the AL language server.
    - Return transport-agnostic types (NOT LSP types)
    - Register in `crates/al-core/src/queries/mod.rs`
 
-2. **Wire it in al-lsp** (`crates/al-core/src/server/handlers.rs` or the relevant handler file)
-   - Convert LSP request params to al-core types
-   - Call the al-core query function
+2. **Wire it in `al_core::server`** (`crates/al-core/src/server/handlers.rs` or the relevant handler file)
+   - Convert LSP request params to `al_core::queries` types (use `al_core::syntax_lsp` helpers)
+   - Call the query function
    - Convert the result to LSP response types
    - Handle None/errors gracefully
 
@@ -24,7 +24,8 @@ This is the correct pattern for adding a new query to the AL language server.
    - E2E test in `crates/al-test-harness/tests/` (test through LSP protocol)
 
 ## Key Rules
-- ALL logic goes in al-core — al-lsp only does transport conversion
-- Use `LanguageData` for any AL language knowledge — never hardcode
+- ALL logic goes in `al_core::queries::*` — `al_core::server` only does transport conversion
+- Query function signatures stay free of `lsp_types::*`
+- Use `al_core::syntax::LanguageData` for any AL language knowledge — never hardcode
 - Convert UTF-16 positions to byte offsets before string operations
 - Use iterative tree-sitter traversal (explicit stack), not recursion

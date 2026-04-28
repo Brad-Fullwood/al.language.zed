@@ -44,7 +44,7 @@ Plain text. Who calls whom. Start from the cited function.
 Example:
 - `al-core::queries::completions::completions()` calls
   - `al-core::queries::completions::collect_trigger_vars()` (this file)
-  - `al-syntax::TypeResolver::resolve()` (al-syntax)
+  - `al_core::syntax::TypeResolver::resolve()` (al_core::syntax)
   - `al-core::workspace::Workspace::symbols()` (al-core)
 
 ## Relevant CLAUDE.md sections

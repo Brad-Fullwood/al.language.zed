@@ -29,4 +29,4 @@ pub fn my_query(workspace: &Workspace, uri: &Url, position: Position) -> Option<
 - **Iterative tree-sitter traversal** — use explicit `Vec<Node>` stack, not recursion.
 - **Short DashMap borrows** — clone data out immediately, drop the ref, then proceed. Never hold a DashMap guard across `.await`.
 - **No hardcoded AL values** — use `workspace.builtins` / `al_core::syntax::LanguageData` / `al_core::symbols` index.
-- **`al_core::server` (the transport layer) is the only place that imports `lsp_types::*`.** Now that al-lsp lives inside al-core as a binary target, the boundary is enforced by code review, not the compiler. PRs that put `lsp_types::*` in a `queries::*` signature get rejected.
+- **`al_core::server` (the transport layer) is the only place that imports `lsp_types::*`.** The boundary is enforced by code review, not the compiler — the `[[bin]] al-lsp` target lives inside al-core. PRs that put `lsp_types::*` in a `queries::*` signature get rejected.

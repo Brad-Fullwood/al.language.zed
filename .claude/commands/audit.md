@@ -12,7 +12,7 @@ Run every audit check and report ALL findings:
 5. `cargo test --workspace --exclude zed-al 2>&1 | tail -20` — full test suite
 6. Unwrap audit: `grep -rn '\.unwrap()' crates/*/src/ --include='*.rs' | grep -v '/tests/' | grep -v 'mod tests' | grep -v '_test\.rs' | head -40`
 7. Hardcoded AL values: `grep -rn 'const.*\[.*str\]' crates/*/src/ --include='*.rs' | head -20`
-8. Dependency direction: for each leaf crate (al-syntax, al-symbols, al-semantic), check its Cargo.toml does not depend on al-core or the other leaves
-9. tower_lsp types in al-core: `grep -rn 'tower_lsp::lsp_types' crates/al-core/src/ --include='*.rs' | head -20`
+8. Dependency direction: verify `crates/al-protocol/Cargo.toml` does not depend on `al-core`; verify `crates/al-explorer/Cargo.toml` only depends on `al-protocol` (never `al-core`)
+9. `lsp_types` in queries: `grep -rn 'tower_lsp::lsp_types' crates/al-core/src/queries/ --include='*.rs' | head -20` — should be empty (transport boundary)
 
 Group findings by severity: critical / high / medium / low. Include specific fix recommendations.

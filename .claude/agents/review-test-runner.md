@@ -37,7 +37,7 @@ contents:
    imports the crate and exercises the specific path. You can leverage
    `al-test-harness` patterns. Keep it minimal.
 3. **Run an existing test with flags or env.** Sometimes the repro is
-   `AL_TEST_INIT_TIMEOUT=60 cargo test -p al-lsp --test e2e
+   `AL_TEST_INIT_TIMEOUT=60 cargo test -p al-core --test lsp_integration
    test_name`. Valid if the test already exists.
 
 ## Forbidden

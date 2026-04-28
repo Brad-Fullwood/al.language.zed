@@ -23,7 +23,7 @@ Plain text, one path prefix per line. Example for a task with
 crates/al-core/
 ```
 
-For `owner_crate: ["al-core", "al-syntax"]`:
+For `owner_crate: ["al-core", "al_core::syntax"]`:
 
 ```
 crates/al-core/

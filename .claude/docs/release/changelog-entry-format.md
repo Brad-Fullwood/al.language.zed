@@ -9,7 +9,7 @@ Keep-a-changelog flavour, grouped by kind.
 
 ### Fixed
 - Dropping DashMap ref before awaiting indexer rebuild. (`al-core`, a3f2b919)
-- Poisoned-lock recovery in tower-lsp handlers. (`al-lsp`, f871c402)
+- Poisoned-lock recovery in tower-lsp handlers. (`al_core::server`, f871c402)
 
 ### Changed
 - Symbol index eagerly warms on workspace open rather than on first
@@ -21,7 +21,7 @@ Keep-a-changelog flavour, grouped by kind.
 
 ### Refactored
 - `TypeResolver` now uses grammar-native trigger context instead of
-  text-based fallback. (`al-syntax`, 22cc1891)
+  text-based fallback. (`al_core::syntax`, 22cc1891)
 
 ### Docs
 - CLAUDE.md: expanded DashMap-across-await section with worked

@@ -34,8 +34,8 @@ narrow: make the failing test pass. That is all.
    Phase 8. You never run `git commit`.
 6. **No `.unwrap()` / `.expect()` on new error paths.** Use `?` with
    `anyhow::Context` or `thiserror`-defined errors.
-7. **No hardcoded AL values.** Period. Use `LanguageData`, `al-symbols`,
-   or `al-semantic`. The PostToolUse hook blocks violations with a
+7. **No hardcoded AL values.** Period. Use `LanguageData`, `al_core::symbols`,
+   or `al_core::semantic`. The PostToolUse hook blocks violations with a
    clear message.
 8. **Dependency direction preserved.** Don't add imports that would
    create a sideways or upward dep.
@@ -48,18 +48,18 @@ narrow: make the failing test pass. That is all.
 ### Dependency graph
 
 ```
-al-lsp ──→ al-core ──→ al-syntax
-                    ──→ al-symbols
-                    ──→ al-semantic
-                    ──→ al-dap-client
-                    ──→ al-daemon-client
+al-core (binary: al-lsp) ──→ al_core::syntax
+                    ──→ al_core::symbols
+                    ──→ al_core::semantic
+                    ──→ al_core::dap
+                    ──→ al-protocol
 ```
 
-- al-syntax, al-symbols, al-semantic must NEVER depend on each other
+- al_core::syntax, al_core::symbols, al_core::semantic must NEVER depend on each other
   or on al-core.
-- al-daemon-client must NEVER depend on al-core.
+- al-protocol must NEVER depend on al-core.
 - zed-al (root) must have ZERO native-crate dependencies.
-- al-lsp must NOT contain business logic.
+- al_core::server must NOT contain business logic.
 
 ### UTF-16 position idiom
 

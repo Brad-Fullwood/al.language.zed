@@ -35,22 +35,22 @@ That's ~20K tokens — intentionally light.
 Run these greps and record every hit as a finding:
 
 ```bash
-# 1. al-syntax, al-symbols, al-semantic must not depend on each other
-for crate in al-syntax al-symbols al-semantic; do
-  for forbidden in al-syntax al-symbols al-semantic al-core; do
+# 1. al_core::syntax, al_core::symbols, al_core::semantic must not depend on each other
+for crate in al_core::syntax al_core::symbols al_core::semantic; do
+  for forbidden in al_core::syntax al_core::symbols al_core::semantic al-core; do
     [[ "$crate" == "$forbidden" ]] && continue
     grep -n "^$forbidden " crates/$crate/Cargo.toml && \
       echo "VIOLATION: $crate depends on $forbidden"
   done
 done
 
-# 2. al-daemon-client must not depend on al-core
+# 2. al-protocol must not depend on al-core
 grep -n "^al-core " crates/al-protocol/Cargo.toml
 
 # 3. zed-al (root) must not depend on any native crate
 grep -nE 'path = "crates/' Cargo.toml
 
-# 4. al-lsp must not depend on tree-sitter directly (should go via al-syntax)
+# 4. al_core::server must not import tree-sitter directly (should go via al_core::syntax)
 grep -nE '^tree-sitter ' crates/al-core/Cargo.toml
 ```
 

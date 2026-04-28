@@ -20,8 +20,9 @@ AL is a living language updated every BC release. Hardcoded lists become stale i
 
 **Instead use:**
 - `tree-sitter-al/generator/tools/al-extract/` to dynamically extract values from Microsoft DLLs
-- `al-symbols` for runtime symbol data from `.app` packages
-- `al-semantic` bridge for built-in types and functions from .NET CLR
+- `al_core::syntax::LanguageData` for keywords/builtins/types loaded from JSON at runtime
+- `al_core::symbols` for runtime symbol data from `.app` packages
+- `al_core::semantic` bridge for built-in types and functions from .NET CLR
 - If the extraction pipeline doesn't have what you need, **update the generator** — do NOT hardcode
 
 **Violations include:** `const AL_BUILTIN_FUNCTIONS`, `const AL_OBJECT_BODY_KEYWORDS`, `const GLOBAL_BUILTINS`, or any `&[&str]` literal containing AL language tokens.

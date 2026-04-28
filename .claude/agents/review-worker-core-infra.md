@@ -23,7 +23,7 @@ You are a domain reviewer in the Review Department. Read your brief first:
 - Performance (indexing, cache warming, insight graph build).
 - Testing coverage gaps.
 - Architecture: does anything here depend on `tower_lsp` types or
-  `al-lsp`? That's a violation.
+  `al_core::server`? That's a violation.
 
 ## Watch especially for
 

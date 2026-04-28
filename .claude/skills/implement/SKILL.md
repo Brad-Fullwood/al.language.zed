@@ -20,7 +20,7 @@ You MUST follow these steps IN ORDER. Do not skip steps.
 
 Before writing code:
 - Which al-core query function(s) will you add/modify?
-- What transport wiring is needed in al-lsp?
+- What transport wiring is needed in al_core::server?
 - Does daemon mode need changes?
 - What types will you define? (must be transport-agnostic in al-core)
 - List every file you plan to touch
@@ -37,11 +37,11 @@ Before implementing:
 ## Step 4: Implement (al-core first)
 
 1. Add business logic in `al-core/src/queries/` — transport-agnostic types only
-2. Wire transport in `al-lsp` — thin conversion layer only
+2. Wire transport in `al_core::server` — thin conversion layer only
 3. Add daemon dispatch if needed
 
 Rules during implementation:
-- No hardcoded AL values — use LanguageData / al-symbols
+- No hardcoded AL values — use LanguageData / al_core::symbols
 - No tower_lsp types in al-core query returns
 - UTF-16 positions converted to bytes before string ops
 - Iterative tree-sitter traversal (no recursion)

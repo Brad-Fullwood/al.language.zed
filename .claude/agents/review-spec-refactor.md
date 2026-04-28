@@ -12,7 +12,7 @@ brief first: `.agentic/<run-id>/review/briefs/spec-refactor.md`.
 
 First-class — not an afterthought. This codebase has real path
 dependence (pivot from proxying MS server to custom Rust LSP; daemon
-mode added after initial design; al-semantic bridged in after the fact;
+mode added after initial design; al_core::semantic bridged in after the fact;
 grammar ownership moved in-house). You are looking for code that works
 today but wouldn't be built this way given current knowledge.
 
@@ -34,18 +34,18 @@ code was introduced and by whom.
    `*_to_lsp_<type>` conversion functions that could be one trait.
 2. **Workaround layers.** Code that exists ONLY because an earlier
    layer made the wrong choice. Flagship example:
-   `al-syntax::TypeResolver::collect_action_trigger_vars()` — text-based
+   `al_core::syntax::TypeResolver::collect_action_trigger_vars()` — text-based
    backwards scanning to recover `trigger_declaration` variables that
    the tree-sitter `braced_block` node drops. The "real" fix is a
    grammar change. `what_we_know_now`: "we own the grammar; we can fix
    upstream." Look for similar workarounds.
 3. **Crate boundary erosion.** Types or logic in crate A that belong in
    crate B. `git log --follow` tells you when they moved. Look for:
-   - business logic in `al-lsp` (should be `al-core`).
-   - `al-symbols` types used directly from `al-cli` / `al-explorer`
+   - business logic in `al_core::server` (should be `al-core`).
+   - `al_core::symbols` types used directly from `al-explorer`
      (should route through the daemon).
    - tower-lsp types in `al-core` (should be conversion at
-     `al-lsp` edge).
+     `al_core::server` edge).
 4. **Leaky-by-accident APIs.** `pub` items in `lib.rs` that were made
    public because one call site needed them, not because they were
    designed as API. `grep -r "use <crate>::<item>"` — a `pub` with a
@@ -70,7 +70,7 @@ For every finding, estimate:
 - **L** — multi-crate (2–3), ≤ 2 weeks.
 - **XL** — architectural (4+ crates OR submodule involvement), ≥ 2 weeks.
 
-Or free text like "touches al-core + al-syntax + tree-sitter-al grammar"
+Or free text like "touches al-core + al_core::syntax + tree-sitter-al grammar"
 for clarity. Dev department uses this to decide whether to bundle with
 a related bug fix.
 

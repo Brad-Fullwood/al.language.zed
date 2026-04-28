@@ -12,7 +12,7 @@ Any task satisfying AT LEAST ONE of the rules below gets
 2. `owner_crate` has more than one crate name.
 3. `category == "architecture"` AND the finding touches a CLAUDE.md
    hard constraint (dependency direction; layering; WASM-native
-   isolation; `al-lsp` business-logic ban; no-hardcoded-AL-values).
+   isolation; `al_core::server` business-logic ban; no-hardcoded-AL-values).
 4. `fix` is null, empty, or literally "design needed" / "TBD" /
    "open question".
 5. `kind == "gap"` AND the gap requires adding a new public API

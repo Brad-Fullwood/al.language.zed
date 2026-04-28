@@ -54,7 +54,7 @@ folding ranges, selection ranges, diagnostics aggregation.
 - Holding `tower_lsp` poisoned locks without recovery.
 - Query functions that take `&Workspace` but return LSP types — that's
   business logic bleeding into transport; the return type should be
-  transport-agnostic and `al-lsp` should convert at the edge. Flag as
+  transport-agnostic and `al_core::server` should convert at the edge. Flag as
   `category: architecture`.
 
 ## Finding output

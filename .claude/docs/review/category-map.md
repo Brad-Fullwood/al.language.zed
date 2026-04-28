@@ -31,11 +31,11 @@ category that no one reviewed.
 |---|---|---|
 | `review-worker-core-queries` | `crates/al-core/src/queries/` (28 files) | ~160K |
 | `review-worker-core-infra` | `crates/al-core/src/` minus `queries/` (~36 files) | ~140K |
-| `review-worker-server` | `al-lsp`, `al-dap-client`, `al-daemon-client` | ~130K |
+| `review-worker-server` | `crates/al-core/src/server/`, `crates/al-core/src/dap/`, `crates/al-core/src/bin/al-lsp.rs`, `crates/al-protocol/` | ~130K |
 | `review-worker-tests` | `al-test-harness`, `al-zed-test` | ~121K |
-| `review-worker-syntax` | `al-syntax` + tree-sitter-al queries (if populated) | ~73K |
-| `review-worker-symbols` | `al-symbols`, `al-semantic` | ~80K |
-| `review-worker-client` | `al-cli`, `al-explorer`, root `src/` (zed-al) | ~76K |
+| `review-worker-syntax` | `crates/al-core/src/syntax/` + tree-sitter-al queries (if populated) | ~73K |
+| `review-worker-symbols` | `crates/al-core/src/symbols/`, `crates/al-core/src/semantic/` | ~80K |
+| `review-worker-client` | `crates/al-explorer/` (TUI + CLI mode), root `src/` (zed-al) | ~76K |
 
 ## Specialist scope
 

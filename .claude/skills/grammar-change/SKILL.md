@@ -16,7 +16,7 @@ tree-sitter-al is a **git submodule** with its own repository. Changes require a
 - `tree-sitter-al/generator/tools/al-gen/` — grammar rule generators
 - `tree-sitter-al/generator/tools/al-extract/` — AL syntax extraction tools
 - `tree-sitter-al/queries/` — highlight, indent, fold, text-object queries
-- `tree-sitter-al/data/` — JSON data files loaded by `al-syntax::LanguageData`
+- `tree-sitter-al/data/` — JSON data files loaded by `al_core::syntax::LanguageData`
 - `tree-sitter-al/tests/` — test corpus and reference data
 
 **You MUST NOT edit:**
@@ -41,7 +41,7 @@ For query changes (`queries/*.scm`):
 - Verify highlights render correctly in Zed
 
 For data changes (`data/*.json`):
-- These are loaded by `al-syntax::LanguageData` at runtime
+- These are loaded by `al_core::syntax::LanguageData` at runtime
 - Validate JSON is well-formed after editing
 
 ## Step 3: Regenerate (if grammar.js changed)
@@ -64,7 +64,7 @@ Fix any test failures before proceeding. If you added new grammar rules, ensure 
 
 ```bash
 cargo check --workspace --exclude zed-al
-cargo test -p al-syntax
+cargo test -p al_core::syntax
 ```
 
 Grammar changes can break the Rust parser bindings. Fix any compilation or test failures.
@@ -125,4 +125,4 @@ Then reinstall the dev extension in Zed: `Ctrl+Shift+P` → "zed: install dev ex
 5. **Not cleaning Zed grammar cache** — Zed caches compiled WASMs; stale cache means old highlights
 6. **Committing only in the parent** — the submodule changes won't be available to other clones
 7. **Not running `tree-sitter test`** — grammar regressions are hard to debug later
-8. **Not checking Rust builds** — `al-syntax` binds to the generated parser; grammar changes can break it
+8. **Not checking Rust builds** — `al_core::syntax` binds to the generated parser; grammar changes can break it

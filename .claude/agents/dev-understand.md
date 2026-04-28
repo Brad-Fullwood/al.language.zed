@@ -49,7 +49,7 @@ Which types' public API is involved? Which traits?
 
 What else breaks if this is done wrong? Specific crates + tests.
 
-- `al-lsp` integration test `test_completion_under_load` depends on
+- `al-core` lsp_integration test `test_completion_under_load` depends on
   the exact ordering of DashMap snapshot iteration.
 
 ## Tests that must stay green
@@ -57,7 +57,7 @@ What else breaks if this is done wrong? Specific crates + tests.
 Specific commands:
 
 - `cargo test -p al-core`
-- `cargo test -p al-lsp --test e2e test_completion_basic`
+- `cargo test -p al-core --test lsp_integration test_completion_basic`
 - (full suite: `cargo test --workspace --exclude zed-al` — run every
   5 tasks per orchestrator config)
 

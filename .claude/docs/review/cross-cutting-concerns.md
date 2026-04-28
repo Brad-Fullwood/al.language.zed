@@ -2,35 +2,35 @@
 
 This is the shared preamble inlined into every Review Department agent's
 brief at Phase 1. It is the set of failure modes that cannot be caught by
-a reviewer staying inside a single crate — they span crates, or they
-require knowledge about the project's history.
+a reviewer staying inside a single crate — they span crates or modules,
+or they require knowledge about the project's history.
 
 ## 1. Dependency direction rules (CLAUDE.md hard constraints)
 
 The dependency graph MUST flow downward only:
 
 ```
-al-lsp ──→ al-core ──→ al-syntax
-                    ──→ al-symbols
-                    ──→ al-semantic
-                    ──→ al-dap-client
-                    ──→ al-daemon-client
+al-explorer  ──→  al-protocol
+al-core      ──→  al-protocol
+zed-al       (isolated, WASM)
+
+inside al-core:
+  server ──→ queries / syntax / symbols / semantic / dap / workspace / ...
+  queries ──→ syntax / symbols / semantic
 ```
 
 Hard constraints (any violation is `severity: critical` or `high`):
 
-1. `al-syntax`, `al-symbols`, `al-semantic` must NEVER depend on each
-   other or on `al-core`.
-2. `al-daemon-client` must NEVER depend on `al-core`.
-3. `zed-al` (WASM extension in root `src/`) must have ZERO compile-time
-   dependency on any native crate.
+1. `al-protocol` must NEVER depend on `al-core`.
+2. `al-explorer` must depend ONLY on `al-protocol` (never on `al-core` directly — pulling al-core into a TUI/CLI client drags in tree-sitter, the .NET CLR, and tower-lsp for nothing).
+3. `zed-al` (WASM extension in root `src/`) must have ZERO compile-time dependency on any native crate.
 4. No cycles. No upward imports.
-5. `al-lsp` must NOT contain business logic — only transport conversion.
-   Tree-sitter operations, symbol lookups, etc. belong in `al-core`
-   queries returning transport-agnostic types.
+5. `al_core::server` must NOT contain business logic — only transport conversion. Tree-sitter operations, symbol lookups, etc. belong in `al_core::queries::*` returning transport-agnostic types.
+6. `lsp_types::*` lives only in `al_core::server` — never in `al_core::queries::*` function signatures. Use `al_core::syntax_lsp` helpers at the boundary.
 
 **How to check:** read each workspace member's `Cargo.toml`
-`[dependencies]` section and trace paths.
+`[dependencies]` section and trace paths. Inside al-core, grep for
+`tower_lsp::lsp_types` outside `src/server/` and `src/syntax_lsp.rs`.
 
 ## 2. No hardcoded AL language values
 
@@ -39,9 +39,9 @@ built-in functions, triggers, data types, object types, or permission
 values. AL is a living language; hardcoded lists go stale immediately.
 
 Use instead:
-- `al-syntax::LanguageData` — loads from `tree-sitter-al/data/` JSON.
-- `al-symbols` — reads `.app` packages at runtime.
-- `al-semantic` — queries .NET CLR at runtime.
+- `al_core::syntax::LanguageData` — loads from `tree-sitter-al/data/` JSON.
+- `al_core::symbols` — reads `.app` packages at runtime.
+- `al_core::semantic` — queries .NET CLR at runtime.
 
 Grep pattern to find violations:
 
@@ -75,7 +75,7 @@ let byte_offset = position.character as usize;
 grep -rnE 'position\.character\s+as\s+usize' crates/ | grep -v utf16_cu_to_byte
 ```
 
-Concentrated in `al-core/src/queries/*.rs` and `al-lsp/src/workspace.rs`.
+Concentrated in `al-core/src/queries/*.rs` and `al-core/src/server/workspace.rs`.
 
 ## 4. tower-lsp poisoned lock pattern
 
@@ -148,14 +148,14 @@ Grep for `fn walk(` or similar taking a `Node` and calling itself.
 - **NAVX header is 40 bytes** before the ZIP starts.
 - **BC NuGet feed**: `dynamicssmb2.pkgs.visualstudio.com` (NOT `dynamicssmb`).
 
-Concentrated entirely in `al-symbols/src/`.
+Concentrated entirely in `crates/al-core/src/symbols/`.
 
 ## 8. Commit standards
 
-- No `WIP` commits on `dev` (lists three in recent history;
-  `c086d03 WIP` and `1c576d9 WIP` are known offenders).
-- Conventional commits: `feat(crate):`, `fix(crate):`, `refactor(crate):`,
-  `chore:`, `docs:`.
+- No `WIP` commits on `dev`.
+- Conventional commits: `feat(crate-or-module):`, `fix(...):`, `refactor(...):`,
+  `chore:`, `docs:`. For changes inside al-core, scope can be the module
+  name (`fix(al-core/server)`, `feat(al-core/queries)`, etc.).
 - One logical change per commit.
 
 ## 9. Workspace-level exclusions
@@ -178,14 +178,17 @@ decisions made before current knowledge was available are candidates
 for refactor findings (kind: `refactor`). Relevant history:
 
 - Pivoted from proxying Microsoft's server to a custom Rust LSP.
-- Daemon mode added after initial design (al-cli/al-explorer went from
-  direct al-symbols to LSP-routed).
-- al-semantic bridged in via netcorehost later than original architecture
-  planned.
+- Daemon mode added after initial design (al-explorer went from
+  direct symbol-index access to LSP-routed).
+- The semantic bridge was added via `netcorehost` later than the original
+  architecture planned.
 - Grammar ownership moved in-house (from "use Microsoft's CodeAnalysis
   for everything" to "tree-sitter grammar + .NET bridge for semantics").
-- Test infrastructure consolidated into al-test-harness after
+- Test infrastructure consolidated into `al-test-harness` after
   inconsistent ad-hoc tests.
+- 10 native crates were consolidated into 4 (`al-core`, `al-protocol`,
+  `al-explorer`, `zed-al`) — the LSP transport, syntax, symbols, semantic
+  modules all live inside `al-core` now.
 
 When reviewing, prefer "would we build it this way knowing what we know
 now?" for the refactor lens, not "is this code currently broken?"

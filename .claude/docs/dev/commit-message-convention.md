@@ -29,13 +29,13 @@ Architectural changes (category `architecture`, any kind) use
 
 The owner crate without the `al-` prefix:
 - `al-core` → `core`
-- `al-syntax` → `syntax`
-- `al-symbols` → `symbols`
-- `al-semantic` → `semantic`
-- `al-lsp` → `lsp`
-- `al-dap-client` → `dap`
-- `al-daemon-client` → `daemon`
-- `al-cli` → `cli`
+- `al_core::syntax` → `syntax`
+- `al_core::symbols` → `symbols`
+- `al_core::semantic` → `semantic`
+- `al_core::server` → `lsp`
+- `al_core::dap` → `dap`
+- `al-protocol` → `daemon`
+- `al-explorer` → `cli`
 - `al-explorer` → `explorer`
 - `al-test-harness` → `tests`
 - `al-zed-test` → `zed-tests`

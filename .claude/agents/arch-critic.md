@@ -68,7 +68,7 @@ Action:
    to verify the claim.
 4. **Hard-constraint check.** Does the recommended option break any
    CLAUDE.md hard constraint (dep direction, hardcoded values,
-   al-lsp business logic, WASM native dep)?
+   transport business logic, WASM native dep)?
 5. **Execution plan granularity.** Each step should be one commit.
    If step 3 is "rewrite 4 files and add 2 new ones," it's too big.
 6. **Test strategy.** Does the option say HOW tests prove correctness?

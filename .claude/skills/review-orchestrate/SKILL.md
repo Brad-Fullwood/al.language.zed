@@ -101,7 +101,7 @@ tailored task:
   comment rot, docstrings that restate the name. Output to
   `spec-comments.jsonl`.
 - `pr-review-toolkit:type-design-analyzer` — scan `al-core` and
-  `al-syntax` for invariant expression, encapsulation, and type
+  `al_core::syntax` for invariant expression, encapsulation, and type
   design quality. Output to `spec-type-design.jsonl`.
 - `pr-review-toolkit:pr-test-analyzer` — scan both `tests/` trees for
   behavioural coverage gaps. Output to `spec-test-behavior.jsonl`.

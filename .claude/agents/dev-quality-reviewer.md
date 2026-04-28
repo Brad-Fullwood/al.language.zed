@@ -31,7 +31,7 @@ scoped brief.
    design's "Boundary impact" section.
 5. **WASM native dep** — if the diff touched root `Cargo.toml` and
    added a `path = "crates/..."` entry in `[dependencies]`.
-6. **Business logic in `al-lsp`** — if the diff added tree-sitter or
+6. **Business logic in `al_core::server`** — if the diff added tree-sitter or
    symbol-lookup code to `crates/al-core/src/server/`.
 
 ### Warnings (fail review; task rework)

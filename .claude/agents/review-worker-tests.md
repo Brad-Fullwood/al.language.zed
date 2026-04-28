@@ -50,7 +50,7 @@ You are a domain reviewer in the Review Department. Read your brief first:
 - Tests that only assert a response was received (too weak).
 - Tests that skip-without-error when ALTool/.NET SDK is absent (they
   should fail loudly in CI, skip only in dev).
-- E2E tests leaving `al-lsp` processes running on failure paths.
+- E2E tests leaving `al-lsp` (binary) processes running on failure paths.
 
 ## Output
 

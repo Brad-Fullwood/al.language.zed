@@ -1,6 +1,6 @@
 ---
 name: review-worker-syntax
-description: Phase 2 domain reviewer for al-syntax (parsing, formatting, linting, type resolution) and — when the submodule is populated — the hand-written tree-sitter-al query files. Writes to domain-syntax.jsonl.
+description: Phase 2 domain reviewer for al_core::syntax (parsing, formatting, linting, type resolution) and — when the submodule is populated — the hand-written tree-sitter-al query files. Writes to domain-syntax.jsonl.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
@@ -28,17 +28,17 @@ You are a domain reviewer in the Review Department. Read your brief first:
 - Testing (formatter regression corpus coverage).
 - Performance (parse cost, formatter speed).
 - **Grammar — shares with `review-spec-grammar`**: you look at how
-  `al-syntax` CONSUMES grammar outputs (node kinds, field names, query
+  `al_core::syntax` CONSUMES grammar outputs (node kinds, field names, query
   captures). `review-spec-grammar` looks at the grammar definitions
   themselves. Where a grammar fix would obviate a text-based workaround
-  in `al-syntax` (e.g. `collect_action_trigger_vars()` text-fallback
+  in `al_core::syntax` (e.g. `collect_action_trigger_vars()` text-fallback
   for action trigger contexts), raise it as a `kind: refactor` finding
   with `what_we_know_now` = "the grammar ownership is now in-house; we
   can fix this upstream instead of working around it downstream."
 
 ## Watch especially for
 
-- Hardcoded AL language values. The `al-syntax::LanguageData` abstraction
+- Hardcoded AL language values. The `al_core::syntax::LanguageData` abstraction
   exists; use it. Any `const X: &[&str] = &[...]` with AL keywords or
   types is a critical finding.
 - Recursive tree-sitter traversal (must be iterative with explicit stack).

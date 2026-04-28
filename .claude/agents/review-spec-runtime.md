@@ -1,6 +1,6 @@
 ---
 name: review-spec-runtime
-description: Phase 3 specialist — runtime smoke + integration auditor. Actually launches every binary in the workspace, captures crashes/panics/deserialize errors, and exercises cross-component flows (al-lsp daemon ↔ al-cli, ↔ al-explorer). Writes to spec-runtime.jsonl. This is the agent that catches bugs static review cannot — wire-format mismatches, init crashes, missing-dep panics, daemon protocol drift.
+description: Phase 3 specialist — runtime smoke + integration auditor. Actually launches every binary in the workspace, captures crashes/panics/deserialize errors, and exercises cross-component flows (al-lsp daemon ↔ al-explorer). Writes to spec-runtime.jsonl. This is the agent that catches bugs static review cannot — wire-format mismatches, init crashes, missing-dep panics, daemon protocol drift.
 tools: Read, Grep, Glob, Bash, Write
 model: sonnet
 ---
@@ -55,7 +55,7 @@ cargo build -p zed-al --target wasm32-wasip1 --release 2>&1 | tail -20
 
 ### 2. Smoke-launch every binary
 
-For each binary in `crates/al-cli`, `crates/al-explorer`, `crates/al-lsp`:
+For each binary in `crates/al-explorer`, `crates/al-core/src/server`:
 
 a. **Help/version** — should always succeed:
    ```bash
@@ -76,7 +76,7 @@ b. **Default-arg launch in a clean directory** — should not crash before
    `ENXIO`, `No such device` → `kind: bug` (severity: critical if
    the binary cannot start at all, high otherwise).
 
-c. **al-lsp `--stdio`** — feed an `initialize` request and expect a
+c. **al-lsp binary `--stdio`** — feed an `initialize` request and expect a
    well-formed response with `capabilities`. Use the LSP harness
    pattern:
    ```bash
@@ -85,7 +85,7 @@ c. **al-lsp `--stdio`** — feed an `initialize` request and expect a
    grep -E "panic|error" /tmp/runtime-lsp-stderr.txt | head
    ```
 
-d. **al-lsp `daemon`** — launch and verify the socket appears:
+d. **al-lsp binary `daemon`** — launch and verify the socket appears:
    ```bash
    ./target/debug/al-lsp daemon --project /tmp/empty-al-project &
    PID=$!
@@ -98,7 +98,7 @@ d. **al-lsp `daemon`** — launch and verify the socket appears:
 
 ### 3. Cross-component handshake
 
-Spin up the daemon, then have al-cli ask it for symbols, then have
+Spin up the daemon, then have al-explorer ask it for symbols, then have
 al-explorer parse the same payload:
 
 ```bash
@@ -108,7 +108,7 @@ pkill -f "al-lsp.*daemon" 2>/dev/null; sleep 1
 DPID=$!
 sleep 4
 
-# al-cli through the daemon
+# al-explorer through the daemon
 timeout 10 ./target/debug/al --search "" --limit 50 2>&1 | head -40 > /tmp/runtime-cli.txt
 
 # Now exercise the JSON-RPC directly to detect serde drift

@@ -106,8 +106,9 @@ it to learn run mode, branch, shas, etc.
   "dirty_files": [],
   "changed_files": [],              // populated only in diff/incremental mode
   "crate_inventory": {
-    "al-core": { "files": 64, "lines": 36115 },
-    "al-lsp":  { "files": 18, "lines":  9949 }
+    "al-core":     { "files": 110, "lines": 55000 },
+    "al-protocol": { "files":   4, "lines":   450 },
+    "al-explorer": { "files":  10, "lines":  6000 }
     // ...
   },
   "submodules": {

@@ -45,7 +45,7 @@ link to the finding detail below. Ordered by `impact × reproducibility × statu
 ## Strategic recommendations
 
 Bulleted list. Cross-cutting patterns the reviewers noticed:
-- Dep-rule drift in al-syntax
+- Dep-rule drift in al_core::syntax
 - UTF-16 handling inconsistent across al-core queries
 - ... etc.
 

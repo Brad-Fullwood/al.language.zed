@@ -15,7 +15,7 @@ run_id: <run-id>
 status: approved | needs-revision | blocked
 iterations: <int>
 reviewed_by: arch-critic
-owner_crate: ["al-core", "al-syntax"]
+owner_crate: ["al-core", "al_core::syntax"]
 recommended_option: A | B | C | D
 ---
 ```

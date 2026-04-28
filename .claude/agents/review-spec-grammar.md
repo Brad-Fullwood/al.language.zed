@@ -53,7 +53,7 @@ If the submodule is populated, proceed to the full review.
 5. **Preprocessor.** If AL has `#pragma` / `#region`, verify handling.
 6. **Action-trigger context drop.** Known issue: tree-sitter currently
    drops action triggers into `braced_block`, losing the
-   `trigger_declaration` structure. `al-syntax::TypeResolver::collect_action_trigger_vars()`
+   `trigger_declaration` structure. `al_core::syntax::TypeResolver::collect_action_trigger_vars()`
    has a text-based fallback. Question for your review: **is there a
    grammar fix** that would obviate the workaround? If yes, file as
    `kind: refactor` with `what_we_know_now` = "we own the grammar; a
@@ -71,7 +71,7 @@ If the submodule is populated, proceed to the full review.
 8. **Data files.**
    - Stale lists (keywords added in recent BC not here).
    - Inconsistent shape across files (schema drift).
-   - Missing fields that Rust code at `al-syntax::LanguageData` expects
+   - Missing fields that Rust code at `al_core::syntax::LanguageData` expects
      (check field names).
    - Fields that aren't used downstream (dead data).
 9. **al-extract.**
@@ -83,7 +83,7 @@ If the submodule is populated, proceed to the full review.
    - Output format stability, schema versioning.
    - CLI argument handling.
 10. **Grammar → consumer drift.** Node kinds or field names used in
-    Rust (`al-syntax`, `al-core/queries`) that no longer exist in the
+    Rust (`al_core::syntax`, `al-core/queries`) that no longer exist in the
     grammar. Grep: `node.kind() == "..."`, `child_by_field_name("...")`,
     then verify those names exist in `grammar.js`.
 

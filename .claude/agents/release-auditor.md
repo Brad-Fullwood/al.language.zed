@@ -61,8 +61,8 @@ happens, something went around the hook).
 ### 7. Dep rules
 
 Run the equivalent of `/dep-check`. Look for:
-- al-syntax, al-symbols, al-semantic depending on each other or al-core.
-- al-daemon-client depending on al-core.
+- al_core::syntax, al_core::symbols, al_core::semantic depending on each other or al-core.
+- al-protocol depending on al-core.
 - zed-al depending on native crates.
 
 Any hit = HARD abort.

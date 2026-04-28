@@ -1,6 +1,6 @@
 ---
 name: review-worker-symbols
-description: Phase 2 domain reviewer for al-symbols (.app reader, NuGet client, symbol index, OAuth, manifest) and al-semantic (.NET CLR bridge via netcorehost). Writes to domain-symbols.jsonl.
+description: Phase 2 domain reviewer for al_core::symbols (.app reader, NuGet client, symbol index, OAuth, manifest) and al_core::semantic (.NET CLR bridge via netcorehost). Writes to domain-symbols.jsonl.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
@@ -43,7 +43,7 @@ You are a domain reviewer in the Review Department. Read your brief first:
 - BC NuGet feed URL: MUST be `dynamicssmb2.pkgs.visualstudio.com` (NOT
   `dynamicssmb`).
 - OAuth token storage at rest — is it encrypted, or in plaintext on disk?
-- `unsafe` in `al-semantic` for netcorehost FFI — does every unsafe
+- `unsafe` in `al_core::semantic` for netcorehost FFI — does every unsafe
   block have a `// SAFETY:` comment?
 - .NET CLR calls Mutex-serialized on a blocking thread with 30s timeout
   (project memory) — confirm the timeout is actually enforced.

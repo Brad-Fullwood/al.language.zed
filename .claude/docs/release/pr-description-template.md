@@ -48,7 +48,7 @@ Commands the reviewer should run. Derived from the findings'
 reproduction fields and the tests each task added.
 
 - `cargo test -p al-core --test queries_completions`
-- `cargo test -p al-lsp --test e2e test_completion_under_load`
+- `cargo test -p al-core --test lsp_integration test_completion_under_load`
 - Full workspace: `cargo test --workspace --exclude zed-al`
 - Manual: open `crates/al-test-harness/data/test_al_project/` in Zed,
   type `Customer.` at line 42 of `src/Inventory.al`, observe

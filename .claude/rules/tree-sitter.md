@@ -13,7 +13,7 @@ You are editing the **tree-sitter-al submodule**.
 - `generator/tools/al-gen/` — grammar rule generators
 - `generator/tools/al-extract/` — AL syntax extraction from Microsoft DLLs
 - `queries/` — highlight, indent, fold, text-object queries
-- `data/` — JSON data files loaded at runtime by `al-syntax::LanguageData`
+- `data/` — JSON data files loaded at runtime by `al_core::syntax::LanguageData`
 - `tests/` — test corpus and reference data
 
 ## What You Must NOT Edit
