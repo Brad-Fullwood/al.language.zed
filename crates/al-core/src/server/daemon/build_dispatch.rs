@@ -1948,6 +1948,29 @@ pub(super) async fn dispatch_tests_run(
     // -- Convert to diagnostics (T1503) ----------------------------------------
     let diagnostics = results_to_diagnostics(std::slice::from_ref(&result), workspace);
 
+    // Persist per-method records so CodeLens / tests.last_results /
+    // test-runner TUI all see the same history regardless of which entry
+    // point the user used. Errors are logged, not propagated — we still
+    // want to return the test result to the caller.
+    if let Err(e) = ensure_result_store(workspace, &project_root).await {
+        tracing::warn!(error = %e, "test_results store init failed; persistence skipped");
+    } else if let Some(store) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
+        for m in &result.methods {
+            let rec = crate::test_engine::persistence::TestRunRecord {
+                timestamp: crate::test_engine::persistence::now_secs(),
+                codeunit_id: result.id,
+                codeunit_name: result.name.clone(),
+                method_name: m.name.clone(),
+                status: m.status.clone(),
+                duration_ms: m.duration_ms,
+                error: m.error.clone(),
+            };
+            if let Err(e) = store.append(rec).await {
+                tracing::warn!(error = %e, "failed to persist test result");
+            }
+        }
+    }
+
     let result_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
     let diag_json = serde_json::to_value(&diagnostics).unwrap_or(serde_json::json!([]));
 
