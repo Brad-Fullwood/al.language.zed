@@ -473,6 +473,9 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "tests.last_results" => {
             build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
         }
+        // p2: routing + affected-tests endpoints
+        "tests.affected" => build_dispatch::dispatch_tests_affected(workspace, id, &params),
+        "tests.classify" => build_dispatch::dispatch_tests_classify(workspace, id),
         // WP16: Object generation
         "generate" => build_dispatch::dispatch_generate(workspace, id, &params),
         // WP17: Analysis differentiators

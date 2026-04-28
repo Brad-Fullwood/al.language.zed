@@ -441,6 +441,16 @@ Examples:
     },
     /// Show test coverage summary
     TestCoverage,
+    /// Show which tests are affected by a set of changed files (p2)
+    #[command(name = "test-affected")]
+    TestAffected {
+        /// File paths considered changed (space-separated)
+        #[arg(num_args = 1..)]
+        files: Vec<String>,
+    },
+    /// Show the routing decision for every discovered test (p2)
+    #[command(name = "test-classify")]
+    TestClassify,
     /// Run all discovered tests, optionally writing JUnit/Cobertura output (p1-6)
     #[command(name = "test-run-all")]
     TestRunAll {
@@ -877,6 +887,8 @@ pub fn run(cli: Cli) -> ExitCode {
             cli.json,
         ),
         Commands::TestCoverage => lsp::cmd_tests_coverage(cli.json),
+        Commands::TestAffected { files } => lsp::cmd_test_affected(&files, cli.json),
+        Commands::TestClassify => lsp::cmd_test_classify(cli.json),
         Commands::TestRunAll {
             parallel,
             timeout_ms,

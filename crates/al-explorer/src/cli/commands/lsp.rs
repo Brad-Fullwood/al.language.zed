@@ -1825,6 +1825,78 @@ pub fn cmd_test_run(
     }
 }
 
+/// `al-explorer test-affected <files...>` — show which tests touch any of the given files.
+pub fn cmd_test_affected(files: &[String], json: bool) -> ExitCode {
+    let params = serde_json::json!({ "changedFiles": files });
+    run_command("tests.affected", Some(params), json, None, |result| {
+        let affected = result
+            .get("affected")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if affected.is_empty() {
+            eprintln!("No tests touch the given files");
+            return;
+        }
+        for t in &affected {
+            let cu_name = t
+                .get("codeunitName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let cu_id = t.get("codeunitId").and_then(|v| v.as_i64()).unwrap_or(0);
+            let method = t.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
+            let line = t.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+            println!("  Codeunit {cu_id} \"{cu_name}\" :: {method} (line {line})");
+        }
+        eprintln!("\n{} affected test(s)", affected.len());
+    })
+}
+
+/// `al-explorer test-classify` — show the routing decision for every test.
+pub fn cmd_test_classify(json: bool) -> ExitCode {
+    run_command(
+        "tests.classify",
+        Some(serde_json::json!({})),
+        json,
+        None,
+        |result| {
+            let classifications = result
+                .get("classifications")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if classifications.is_empty() {
+                eprintln!("No test codeunits discovered");
+                return;
+            }
+            for c in &classifications {
+                let cu = c
+                    .get("codeunitName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let method = c.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
+                let decision = c.get("decision").and_then(|v| v.as_str()).unwrap_or("?");
+                let reasons = c
+                    .get("reasons")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|r| r.get("message").and_then(|m| m.as_str()))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                if reasons.is_empty() {
+                    println!("  [{decision:>12}] {cu} :: {method}");
+                } else {
+                    println!("  [{decision:>12}] {cu} :: {method} -- {reasons}");
+                }
+            }
+            eprintln!("\n{} test(s) classified", classifications.len());
+        },
+    )
+}
+
 /// `al test-run-all [--parallel] [--junit-out X] [--cobertura-out Y] [--filter PATTERN] [--timeout-ms N]`
 ///
 /// Runs every discovered test codeunit through the daemon's `tests.run_auto`

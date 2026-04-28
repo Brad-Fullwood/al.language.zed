@@ -10,6 +10,7 @@ pub mod error;
 pub mod output;
 pub mod persistence;
 pub mod result;
+pub mod router;
 pub mod session;
 
 pub use error::TestRunnerError;

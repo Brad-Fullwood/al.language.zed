@@ -2329,6 +2329,73 @@ async fn write_cobertura_to_path(
 }
 
 // ---------------------------------------------------------------------------
+// p2: tests.affected / tests.classify
+// ---------------------------------------------------------------------------
+
+/// `tests.affected` — given a list of changed file paths, return the tests
+/// whose source files are in that set.
+///
+/// Params:
+/// - `changedFiles`: `[str]` (required)
+///
+/// Response: `{ "affected": [AffectedTest] }`
+pub(super) fn dispatch_tests_affected(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let Some(arr) = params.get("changedFiles").and_then(|v| v.as_array()) else {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "Missing 'changedFiles' (array of paths)",
+        );
+    };
+    let paths: Vec<String> = arr
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    let affected = crate::queries::tests::affected_tests(workspace, &paths);
+    Response {
+        id,
+        result: Some(serde_json::json!({ "affected": affected })),
+        error: None,
+    }
+}
+
+/// `tests.classify` — return the routing decision the engine would make
+/// for every discovered test in the workspace, with reasons.
+pub(super) fn dispatch_tests_classify(workspace: &Workspace, id: u64) -> Response {
+    use crate::test_engine::router;
+    let results = router::classify_all(workspace);
+    let json: Vec<serde_json::Value> = results
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "codeunitId": r.codeunit_id,
+                "codeunitName": r.codeunit_name,
+                "methodName": r.method_name,
+                "decision": r.decision.as_str(),
+                "reasons": r
+                    .reasons
+                    .into_iter()
+                    .map(|reason| serde_json::json!({
+                        "message": reason.message,
+                        "file": reason.file,
+                        "line": reason.line,
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Response {
+        id,
+        result: Some(serde_json::json!({ "classifications": json })),
+        error: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WP16: Object wizards / code generation
 // ---------------------------------------------------------------------------
 
@@ -3083,5 +3150,72 @@ mod p1_5_tests {
         assert_eq!(results.len(), 1, "the appended record must be visible");
         assert_eq!(results[0]["methodName"], "TestRoundtrip");
         assert_eq!(results[0]["status"], "pass");
+    }
+
+    // -----------------------------------------------------------------------
+    // p2 dispatcher tests — affected + classify
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn affected_missing_changed_files_returns_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_affected(&ws, 1, &serde_json::json!({}));
+        let err = resp.error.expect("expected error");
+        assert!(err.message.contains("changedFiles"));
+    }
+
+    #[test]
+    fn affected_empty_list_returns_empty_response() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_affected(&ws, 2, &serde_json::json!({ "changedFiles": [] }));
+        assert!(resp.error.is_none());
+        let arr = resp
+            .result
+            .as_ref()
+            .and_then(|v| v.get("affected"))
+            .and_then(|v| v.as_array())
+            .expect("affected array");
+        assert!(arr.is_empty());
+    }
+
+    #[test]
+    fn classify_empty_workspace_returns_empty_classifications() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_classify(&ws, 3);
+        assert!(resp.error.is_none());
+        let arr = resp
+            .result
+            .as_ref()
+            .and_then(|v| v.get("classifications"))
+            .and_then(|v| v.as_array())
+            .expect("classifications array");
+        assert!(arr.is_empty(), "no test codeunits → no classifications");
+    }
+
+    #[test]
+    fn freeze_routing_decision_wire_format() {
+        // Wire format freeze for the routing strings — used by CLI,
+        // TUI, and CodeLens. DO NOT rename without bumping schema_version.
+        use crate::test_engine::router::RoutingDecision;
+        assert_eq!(RoutingDecision::Interp.as_str(), "interp");
+        assert_eq!(RoutingDecision::InterpRecord.as_str(), "interpRecord");
+        assert_eq!(RoutingDecision::LiveBc.as_str(), "liveBc");
+        assert_eq!(RoutingDecision::Snapshot.as_str(), "snapshot");
+    }
+
+    #[test]
+    fn freeze_affected_test_wire_format() {
+        use crate::queries::tests::AffectedTest;
+        let v = AffectedTest {
+            codeunit_id: 50100,
+            codeunit_name: "X".into(),
+            method_name: "M".into(),
+            file: "src/X.al".into(),
+            line: 7,
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        for key in ["codeunitId", "codeunitName", "methodName", "file", "line"] {
+            assert!(json.get(key).is_some(), "AffectedTest key `{key}` missing");
+        }
     }
 }

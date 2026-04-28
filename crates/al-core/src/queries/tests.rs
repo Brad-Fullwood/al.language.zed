@@ -63,6 +63,66 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
     results
 }
 
+/// One discovered test affected by a set of changed files.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AffectedTest {
+    /// The test codeunit's object ID.
+    pub codeunit_id: i32,
+    /// The test codeunit's display name.
+    pub codeunit_name: String,
+    /// The test method name.
+    pub method_name: String,
+    /// File of the test procedure.
+    pub file: String,
+    /// 1-based line number of the procedure declaration.
+    pub line: u32,
+}
+
+/// Return tests whose source file appears in `changed_paths`.
+///
+/// Phase 2 simplification: a test is "affected" iff its own file is
+/// in the changed list. Phase 3 will deepen this to walk the
+/// CallGraph backwards from each changed procedure to its test
+/// callers (`callers_of` is already cheap on the existing graph).
+pub fn affected_tests(workspace: &Workspace, changed_paths: &[String]) -> Vec<AffectedTest> {
+    if changed_paths.is_empty() {
+        return Vec::new();
+    }
+    // Normalise both sides to absolute path strings for comparison.
+    let normalised_changed: std::collections::HashSet<String> = changed_paths
+        .iter()
+        .map(|p| {
+            std::path::Path::new(p)
+                .canonicalize()
+                .ok()
+                .map(|c| c.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.clone())
+        })
+        .collect();
+
+    let mut affected = Vec::new();
+    for cu in discover_tests(workspace) {
+        let cu_canonical = std::path::Path::new(&cu.file)
+            .canonicalize()
+            .ok()
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_else(|| cu.file.clone());
+        if normalised_changed.contains(&cu_canonical) || normalised_changed.contains(&cu.file) {
+            for proc in cu.tests {
+                affected.push(AffectedTest {
+                    codeunit_id: cu.id,
+                    codeunit_name: cu.name.clone(),
+                    method_name: proc.name,
+                    file: cu.file.clone(),
+                    line: proc.line,
+                });
+            }
+        }
+    }
+    affected
+}
+
 /// Check if the codeunit has `Subtype = Test`.
 pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
     let mut cursor = root.walk();
