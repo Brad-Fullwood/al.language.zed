@@ -11,6 +11,7 @@
 //!  - `eval_stmt`  statement evaluation
 //!  - `dispatch`   procedure dispatch (intra-file + cross-codeunit)
 
+pub mod eval_expr;
 pub mod scope;
 pub mod value;
 
