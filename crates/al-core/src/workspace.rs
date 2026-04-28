@@ -95,6 +95,11 @@ pub struct Workspace {
     /// `None` means no profile is active.
     pub profiler_session:
         std::sync::RwLock<Option<crate::queries::profiler_hints::ProfilerSession>>,
+    /// Accumulated test results from the last (or current) test run.
+    ///
+    /// Uses `std::sync::RwLock` (not `tokio::sync::RwLock`) so sync query code
+    /// can access it without `.await`. Real storage implementation lands in p1-4.
+    pub test_results: std::sync::RwLock<Option<crate::test_engine::TestResultStore>>,
 }
 
 impl Workspace {
@@ -118,6 +123,7 @@ impl Workspace {
             insight_graph: std::sync::RwLock::new(None),
             call_graph: std::sync::RwLock::new(None),
             profiler_session: std::sync::RwLock::new(None),
+            test_results: std::sync::RwLock::new(None),
         }
     }
 

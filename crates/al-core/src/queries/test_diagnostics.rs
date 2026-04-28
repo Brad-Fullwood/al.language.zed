@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::queries::tests::{collect_test_procedures, TestCodeunit};
-use crate::test_runner::{TestCodeunitResult, TestStatus};
+use crate::test_engine::result::{TestCodeunitResult, TestStatus};
 use crate::workspace::Workspace;
 
 // ---------------------------------------------------------------------------
@@ -197,7 +197,7 @@ pub fn find_proc_line(source: &str, proc_name: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_runner::{TestCodeunitResult, TestMethodResult, TestStatus};
+    use crate::test_engine::result::{TestCodeunitResult, TestMethodResult, TestStatus};
 
     fn make_result(
         id: i32,

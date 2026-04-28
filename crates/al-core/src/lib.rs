@@ -29,6 +29,7 @@ pub mod server;
 pub mod snapshot;
 pub mod symbols;
 pub mod syntax;
+pub mod test_engine;
 pub mod test_runner;
 pub mod toolchain;
 pub mod workspace;
