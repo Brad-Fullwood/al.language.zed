@@ -10,6 +10,11 @@ pub mod library_assert;
 use crate::test_runtime::interpreter::scope::Eval;
 use crate::test_runtime::interpreter::value::Value;
 
+/// Built-in stub procedure: takes positional Value args, returns an Eval.
+pub type StubFn = fn(&[Value]) -> Eval;
+/// Procedure-name resolver for a library catalog.
+pub type ResolveFn = fn(&str) -> Option<StubFn>;
+
 /// One library codeunit's stub catalog. Codeunit IDs map across BC
 /// versions (e.g. Library Assert is 130 in older BC, 130002 in newer);
 /// `codeunit_ids` lists every ID that should resolve to this catalog.
@@ -17,7 +22,7 @@ use crate::test_runtime::interpreter::value::Value;
 pub struct StubCatalog {
     pub codeunit_name: &'static str,
     pub codeunit_ids: &'static [i32],
-    pub resolve: fn(&str) -> Option<fn(&[Value]) -> Eval>,
+    pub resolve: ResolveFn,
 }
 
 /// All built-in stub catalogs. Phase 2 ships Library Assert; Phase 3
@@ -30,7 +35,7 @@ pub const CATALOGS: &[StubCatalog] = &[StubCatalog {
 
 /// Look up a `(codeunit_name_or_id, procedure_name)` pair across all
 /// catalogs. Returns the first matching procedure, or None.
-pub fn resolve(receiver: &str, procedure: &str) -> Option<fn(&[Value]) -> Eval> {
+pub fn resolve(receiver: &str, procedure: &str) -> Option<StubFn> {
     for cat in CATALOGS {
         let name_match = receiver.eq_ignore_ascii_case(cat.codeunit_name);
         let id_match = receiver

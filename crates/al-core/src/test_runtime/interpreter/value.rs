@@ -24,6 +24,12 @@ pub type AlTime = i64;
 pub type AlDateTime = i64;
 
 /// One AL runtime value.
+///
+/// `PartialEq` derives field-wise comparison, with one exception: `Decimal`
+/// uses bitwise f64 equality through a hand-written `Eq`/`Ord` impl below
+/// so the type works as a `BTreeMap` key (used by the mock record store).
+/// NaN is treated as equal to itself for total ordering purposes — matches
+/// AL's nullable-decimal semantics where you'd never compare NaN anyway.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     /// Uninitialised slot (before assignment).
@@ -93,6 +99,99 @@ pub struct RecordValue {
     /// Opaque handle into the mock table store. `None` means "no current
     /// record" (e.g. after `Reset` and before `FindFirst`).
     pub handle: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Total ordering for BTreeMap keys.
+//
+// Variants are ordered by their declaration index, then within each variant
+// by an obvious natural order. Decimal uses `f64::total_cmp` so NaN sorts
+// consistently. `Variant`/`Array`/`List`/`Dict`/`Blob`/`ErrorInfo` are
+// never used as primary-key components in BC, so their orderings are
+// implementation-defined (length-then-content) — adequate for BTreeMap
+// stability without committing to an external contract.
+// ---------------------------------------------------------------------------
+
+impl Eq for Value {}
+
+impl Ord for Value {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        use Value::*;
+        fn variant_index(v: &Value) -> u8 {
+            match v {
+                Null => 0,
+                Empty => 1,
+                Integer(_) => 2,
+                Decimal(_) => 3,
+                Boolean(_) => 4,
+                Char(_) => 5,
+                Text(_) => 6,
+                Code(_) => 7,
+                Date(_) => 8,
+                Time(_) => 9,
+                DateTime(_) => 10,
+                Duration(_) => 11,
+                Guid(_) => 12,
+                Option { .. } => 13,
+                Record(_) => 14,
+                RecordRef(_) => 15,
+                Variant(_) => 16,
+                Array(_) => 17,
+                List(_) => 18,
+                Dict(_) => 19,
+                Blob(_) => 20,
+                ErrorInfo(_) => 21,
+            }
+        }
+        let mine = variant_index(self);
+        let theirs = variant_index(other);
+        if mine != theirs {
+            return mine.cmp(&theirs);
+        }
+        match (self, other) {
+            (Null, Null) | (Empty, Empty) => Ordering::Equal,
+            (Integer(a), Integer(b)) => a.cmp(b),
+            (Decimal(a), Decimal(b)) => a.total_cmp(b),
+            (Boolean(a), Boolean(b)) => a.cmp(b),
+            (Char(a), Char(b)) => a.cmp(b),
+            (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
+            (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
+            (Duration(a), Duration(b)) => a.cmp(b),
+            (Guid(a), Guid(b)) => a.cmp(b),
+            (
+                Option {
+                    type_name: at,
+                    member: am,
+                    ordinal: ao,
+                },
+                Option {
+                    type_name: bt,
+                    member: bm,
+                    ordinal: bo,
+                },
+            ) => (ao, at, am).cmp(&(bo, bt, bm)),
+            (Record(a), Record(b)) | (RecordRef(a), RecordRef(b)) => {
+                (a.table_id, &a.table_name, a.handle).cmp(&(b.table_id, &b.table_name, b.handle))
+            }
+            (Variant(a), Variant(b)) => a.cmp(b),
+            (Array(a), Array(b)) | (List(a), List(b)) => a.cmp(b),
+            (Dict(a), Dict(b)) => a
+                .iter()
+                .collect::<Vec<_>>()
+                .cmp(&b.iter().collect::<Vec<_>>()),
+            (Blob(a), Blob(b)) => a.cmp(b),
+            (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
+            // Different variants handled by the index check above.
+            _ => Ordering::Equal,
+        }
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Captured `Error()` / `asserterror` payload.
