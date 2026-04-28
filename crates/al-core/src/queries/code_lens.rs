@@ -693,7 +693,7 @@ codeunit 50100 MyCodeunit
     // Test CodeLens integration tests
     // ---------------------------------------------------------------------------
 
-    use crate::test_engine::{TestResultStore, TestRunRecord, TestStatus};
+    use crate::test_engine::{TestRunRecord, TestStatus};
 
     const TEST_CODEUNIT_SRC: &str = r#"codeunit 50200 "My Tests"
 {
