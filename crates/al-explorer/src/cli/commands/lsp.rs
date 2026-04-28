@@ -1825,6 +1825,99 @@ pub fn cmd_test_run(
     }
 }
 
+/// `al test-run-all [--parallel] [--junit-out X] [--cobertura-out Y] [--filter PATTERN] [--timeout-ms N]`
+///
+/// Runs every discovered test codeunit through the daemon's `tests.run_auto`
+/// endpoint. Streams a per-codeunit summary then a final totals line; exits
+/// non-zero if any test failed.
+pub fn cmd_test_run_all(
+    parallel: bool,
+    timeout_ms: Option<u64>,
+    junit_out: Option<&str>,
+    cobertura_out: Option<&str>,
+    filter: Option<&str>,
+    json: bool,
+) -> ExitCode {
+    let mut params = serde_json::json!({ "parallel": parallel });
+    if let Some(ms) = timeout_ms {
+        params["timeoutMs"] = serde_json::Value::from(ms);
+    }
+    if let Some(p) = junit_out {
+        params["junitOut"] = serde_json::Value::String(p.to_string());
+    }
+    if let Some(p) = cobertura_out {
+        params["coberturaOut"] = serde_json::Value::String(p.to_string());
+    }
+    if let Some(p) = filter {
+        params["filter"] = serde_json::Value::String(p.to_string());
+    }
+
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    match client.request("tests.run_auto", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+                if let Some(failed) = result
+                    .get("totals")
+                    .and_then(|t| t.get("failed"))
+                    .and_then(|v| v.as_u64())
+                    && failed > 0
+                {
+                    return ExitCode::FAILURE;
+                }
+                return ExitCode::SUCCESS;
+            }
+
+            // Pretty per-codeunit summary
+            let summaries = result
+                .get("summaries")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for cu in &summaries {
+                let cu_name = cu.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let total = cu.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                let passed = cu.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
+                let failed = cu.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+                let skipped = cu.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0);
+                let icon = if failed > 0 { "✗" } else { "✓" };
+                println!(
+                    "{icon} {cu_name}: {passed}/{total} passed, {failed} failed, {skipped} skipped"
+                );
+            }
+
+            let totals = result.get("totals");
+            let total = totals
+                .and_then(|t| t.get("total"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let passed = totals
+                .and_then(|t| t.get("passed"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let failed = totals
+                .and_then(|t| t.get("failed"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let skipped = totals
+                .and_then(|t| t.get("skipped"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            eprintln!("\nTotal: {passed}/{total} passed, {failed} failed, {skipped} skipped");
+            if failed > 0 {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WP16: Code generation command
 // ---------------------------------------------------------------------------

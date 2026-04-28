@@ -441,6 +441,25 @@ Examples:
     },
     /// Show test coverage summary
     TestCoverage,
+    /// Run all discovered tests, optionally writing JUnit/Cobertura output (p1-6)
+    #[command(name = "test-run-all")]
+    TestRunAll {
+        /// Run codeunits in parallel
+        #[arg(long)]
+        parallel: bool,
+        /// Per-test timeout in milliseconds (default 30_000)
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        /// Path to write JUnit XML report
+        #[arg(long)]
+        junit_out: Option<String>,
+        /// Path to write Cobertura XML coverage report
+        #[arg(long)]
+        cobertura_out: Option<String>,
+        /// Optional method-name filter (logged only in Phase 1)
+        #[arg(long)]
+        filter: Option<String>,
+    },
     /// Generate an AL object scaffold (page, report, test)
     Generate {
         /// Object kind: page, report, test
@@ -858,6 +877,20 @@ pub fn run(cli: Cli) -> ExitCode {
             cli.json,
         ),
         Commands::TestCoverage => lsp::cmd_tests_coverage(cli.json),
+        Commands::TestRunAll {
+            parallel,
+            timeout_ms,
+            junit_out,
+            cobertura_out,
+            filter,
+        } => lsp::cmd_test_run_all(
+            parallel,
+            timeout_ms,
+            junit_out.as_deref(),
+            cobertura_out.as_deref(),
+            filter.as_deref(),
+            cli.json,
+        ),
         Commands::Generate {
             kind,
             id,
