@@ -17,25 +17,58 @@ use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 /// Evaluate a tree-sitter expression node against the active stack.
 pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     match node.kind() {
-        // Literal forms ----------------------------------------------
-        "integer_literal" | "decimal_literal" | "boolean_literal" | "string_literal" => {
-            eval_literal(node, source)
-        }
-        // Parenthesised expression — recurse on the inner expression.
-        "parenthesized_expression" => match named_child(node, 0) {
-            Some(inner) => eval_expr(inner, source, stack),
-            None => Eval::Error(simple_error("empty parenthesized expression")),
+        // Literal forms — the AL grammar uses `integer`, `decimal`, `string`
+        // as the actual node kinds (not `integer_literal` etc.).
+        "integer_literal" | "integer" => match utf8_text(node, source)
+            .and_then(|t| t.trim_end_matches(['l', 'L']).parse::<i64>().ok())
+        {
+            Some(n) => Eval::Normal(Value::Integer(n)),
+            None => Eval::Error(simple_error(&format!(
+                "malformed integer literal: {}",
+                utf8_text(node, source).unwrap_or("?")
+            ))),
         },
-        // Identifier — load from scope.
-        "identifier" | "variable_reference" => match utf8_text(node, source) {
-            Some(name) => match stack.lookup(name) {
-                Some(v) => Eval::Normal(v.clone()),
-                None => Eval::Error(simple_error(&format!("unbound identifier: {name}"))),
-            },
+        "decimal_literal" | "decimal" => {
+            match utf8_text(node, source).and_then(|t| t.parse::<f64>().ok()) {
+                Some(n) => Eval::Normal(Value::Decimal(n)),
+                None => Eval::Error(simple_error("malformed decimal literal")),
+            }
+        }
+        "boolean_literal" => eval_literal(node, source),
+        "string_literal" | "string" | "verbatim_string" => {
+            let text = utf8_text(node, source).unwrap_or("");
+            let trimmed = text.trim_start_matches('\'').trim_end_matches('\'');
+            let unescaped = trimmed.replace("''", "'");
+            Eval::Normal(Value::Text(unescaped))
+        }
+        // The AL grammar uses `expression` as the binary expression node:
+        //   expression = unary_expression (binary_operator unary_expression)*
+        // When there are 3+ named children, it's a binary (or assignment) expression.
+        // When there is 1 named child, it's a transparent wrapper.
+        "expression" => eval_expression_node(node, source, stack),
+        // Grammar wrappers — pass through to the single inner child.
+        "parenthesized_expression" | "postfix_expression" | "primary_expression" => {
+            match named_child(node, 0) {
+                Some(inner) => eval_expr(inner, source, stack),
+                None => Eval::Error(simple_error("empty expression wrapper")),
+            }
+        }
+        // Identifier — load from scope, or resolve boolean keywords.
+        "identifier" | "variable_reference" | "name" => match utf8_text(node, source) {
+            Some(name) => {
+                // Boolean keywords may appear as identifiers in some grammar versions.
+                match name.to_ascii_lowercase().as_str() {
+                    "true" => return Eval::Normal(Value::Boolean(true)),
+                    "false" => return Eval::Normal(Value::Boolean(false)),
+                    _ => {}
+                }
+                match stack.lookup(name) {
+                    Some(v) => Eval::Normal(v.clone()),
+                    None => Eval::Error(simple_error(&format!("unbound identifier: {name}"))),
+                }
+            }
             None => Eval::Error(simple_error("invalid identifier text")),
         },
-        // Binary forms — `+`, `-`, `*`, `/`, `mod`, `div`, `=`, `<>`, etc.
-        "binary_expression" => eval_binary(node, source, stack),
         // Unary `-` / `not`.
         "unary_expression" => eval_unary(node, source, stack),
         // Anything else: signal a clear error rather than silently
@@ -95,15 +128,29 @@ fn eval_literal(node: Node<'_>, source: &[u8]) -> Eval {
 }
 
 fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
-    let Some(operand) = named_child(node, 0) else {
-        return Eval::Error(simple_error("unary expression missing operand"));
+    // Grammar: unary_expression = (unary_operator unary_expression) | postfix_expression
+    //   - 2 named children: [unary_operator, unary_expression]
+    //   - 1 named child:    [postfix_expression] — transparent wrapper
+    let named_count = node.named_child_count();
+    if named_count <= 1 {
+        // Transparent wrapper around postfix_expression.
+        return match named_child(node, 0) {
+            Some(inner) => eval_expr(inner, source, stack),
+            None => Eval::Error(simple_error("unary expression: empty node")),
+        };
+    }
+    // 2-child form: operator + operand.
+    let op_node = match named_child(node, 0) {
+        Some(n) => n,
+        None => return Eval::Error(simple_error("unary expression missing operator")),
     };
-    let operator_text = node
-        .child(0)
-        .and_then(|c| utf8_text(c, source))
-        .unwrap_or("");
+    let operand_node = match named_child(node, 1) {
+        Some(n) => n,
+        None => return Eval::Error(simple_error("unary expression missing operand")),
+    };
+    let operator_text = utf8_text(op_node, source).unwrap_or("").trim();
 
-    let value = match eval_expr(operand, source, stack) {
+    let value = match eval_expr(operand_node, source, stack) {
         Eval::Normal(v) => v,
         other => return other,
     };
@@ -119,32 +166,144 @@ fn eval_unary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     }
 }
 
-fn eval_binary(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
-    let Some(left_node) = named_child(node, 0) else {
-        return Eval::Error(simple_error("binary missing left operand"));
-    };
-    let Some(right_node) = named_child(node, 1) else {
-        return Eval::Error(simple_error("binary missing right operand"));
-    };
-    // tree-sitter exposes the operator as an unnamed child between the
-    // two named operands; scan children to find the first non-named token.
-    let operator = (0..node.child_count())
-        .filter_map(|i| node.child(i))
-        .find(|c| !c.is_named())
-        .and_then(|c| utf8_text(c, source))
-        .unwrap_or("")
-        .to_string();
+/// Handle the AL `expression` node.
+///
+/// The grammar defines:
+///   expression = unary_expression (binary_operator unary_expression)*
+///
+/// The tree is FLAT: all operators and operands are direct named children.
+/// Named children alternate: operand, operator, operand, operator, operand, ...
+///
+/// We collect all named children into a list, then find the `:=` operator
+/// (assignment, lowest precedence) and process accordingly. For pure
+/// computation, we evaluate left-to-right.
+fn eval_expression_node(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+    let named_count = node.named_child_count();
 
-    let left = match eval_expr(left_node, source, stack) {
+    // Collect all named children.
+    let children: Vec<Node<'_>> = (0..named_count)
+        .filter_map(|i| node.named_child(i))
+        .collect();
+
+    if children.is_empty() {
+        return Eval::Error(simple_error("expression: no children"));
+    }
+    if children.len() == 1 {
+        // Transparent wrapper.
+        return eval_expr(children[0], source, stack);
+    }
+
+    // Find `:=` (assignment) operator in the children.
+    // Operators are at odd indices: [operand, op, operand, op, operand, ...]
+    let assign_idx = children
+        .iter()
+        .enumerate()
+        .find(|(idx, c)| {
+            let node = *c;
+            *idx % 2 == 1
+                && node.kind() == "binary_operator"
+                && node.utf8_text(source).is_ok_and(|t| t.trim() == ":=")
+        })
+        .map(|(idx, _)| idx);
+
+    if let Some(op_idx) = assign_idx {
+        // Assignment: LHS is children[op_idx - 1], RHS is children[op_idx + 1..] as a chain.
+        let lhs_node = children[op_idx - 1];
+        let rhs_children = &children[(op_idx + 1)..];
+
+        // Evaluate the RHS sub-expression (may be a chain like `1 div 0`).
+        let rhs_val = match eval_expr_chain(rhs_children, source, stack) {
+            Eval::Normal(v) => v,
+            other => return other,
+        };
+
+        // Resolve the LHS name.
+        let lhs_name = extract_identifier_name(lhs_node, source)
+            .or_else(|| {
+                lhs_node
+                    .utf8_text(source)
+                    .ok()
+                    .map(|s| s.trim_matches('"').to_ascii_lowercase())
+            })
+            .unwrap_or_default();
+
+        if lhs_name.is_empty() {
+            return Eval::Error(simple_error("expression: cannot resolve LHS name for :="));
+        }
+        if let Some(slot) = stack.lookup_mut(&lhs_name) {
+            *slot = rhs_val;
+        } else if let Some(frame) = stack.top_mut() {
+            frame.bind(&lhs_name, rhs_val);
+        } else {
+            return Eval::Error(simple_error("expression: no active scope for :="));
+        }
+        return Eval::Normal(Value::Empty);
+    }
+
+    // No assignment — evaluate as a binary expression chain left-to-right.
+    eval_expr_chain(&children, source, stack)
+}
+
+/// Evaluate a flat alternating chain [operand, op, operand, op, operand, ...]
+/// left-to-right, returning the final computed value.
+///
+/// This is a helper for `eval_expression_node`. Returns `Eval` directly.
+fn eval_expr_chain(children: &[Node<'_>], source: &[u8], stack: &mut ScopeStack) -> Eval {
+    if children.is_empty() {
+        return Eval::Error(simple_error("expression chain: empty"));
+    }
+    if children.len() == 1 {
+        return eval_expr(children[0], source, stack);
+    }
+
+    // Evaluate first operand.
+    let mut acc = match eval_expr(children[0], source, stack) {
         Eval::Normal(v) => v,
         other => return other,
     };
-    let right = match eval_expr(right_node, source, stack) {
-        Eval::Normal(v) => v,
-        other => return other,
-    };
 
-    apply_binary(&operator, left, right)
+    // Process operator-operand pairs.
+    let mut i = 1;
+    while i + 1 < children.len() {
+        let op_node = children[i];
+        let rhs_node = children[i + 1];
+        let operator = utf8_text(op_node, source).unwrap_or("").trim().to_string();
+
+        let rhs = match eval_expr(rhs_node, source, stack) {
+            Eval::Normal(v) => v,
+            other => return other,
+        };
+
+        acc = match apply_binary(&operator, acc, rhs) {
+            Eval::Normal(v) => v,
+            other => return other,
+        };
+        i += 2;
+    }
+    Eval::Normal(acc)
+}
+
+/// Extract the lowercase identifier name from a wrapper node.
+fn extract_identifier_name(node: Node<'_>, source: &[u8]) -> Option<String> {
+    // Walk named children looking for an identifier/name node.
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "identifier" | "name" | "variable_reference" => {
+                return child
+                    .utf8_text(source)
+                    .ok()
+                    .map(|s| s.trim_matches('"').to_ascii_lowercase());
+            }
+            "unary_expression" | "postfix_expression" | "primary_expression" => {
+                if let Some(name) = extract_identifier_name(child, source) {
+                    return Some(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Apply a binary operator to two values. Made `pub(crate)` so unit tests

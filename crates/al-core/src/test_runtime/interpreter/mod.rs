@@ -11,9 +11,12 @@
 //!  - `eval_stmt`  statement evaluation
 //!  - `dispatch`   procedure dispatch (intra-file + cross-codeunit)
 
+pub mod dispatch;
 pub mod eval_expr;
+pub mod eval_stmt;
 pub mod scope;
 pub mod value;
 
+pub use dispatch::{DispatchCtx, DispatchMode};
 pub use scope::{CallFrame, Eval, ScopeStack};
 pub use value::{ErrorInfo, RecordValue, Value};
