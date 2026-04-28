@@ -1,23 +1,18 @@
-//! Test engine — skeleton for AL codeunit test execution.
+//! Test engine — orchestration of AL codeunit test execution.
 //!
-//! This module will grow in subsequent tasks (p1-2 through p1-5). For now it
-//! defines the public surface and re-exports all types so callers can import
-//! via either `al_core::test_engine::*` or the back-compat paths in
-//! `al_core::test_runner::*`.
+//! See `.agentic/<run-id>/arch/designs/plan.md` for the multi-phase roadmap.
+//! Phase 1 ships: result types, TestSession trait + LiveBcMode backend,
+//! JUnit/Cobertura output, persisted result history. Future phases add
+//! the router, interpreter, snapshot replay, mutation testing.
 
 pub mod backends;
 pub mod error;
 pub mod output;
+pub mod persistence;
 pub mod result;
 pub mod session;
 
 pub use error::TestRunnerError;
+pub use persistence::{PersistenceError, TestResultStore, TestRunRecord};
 pub use result::{TestCodeunitResult, TestMethodResult, TestStatus};
 pub use session::{RunOptions, TestEvent, TestId, TestSession};
-
-/// Placeholder — real implementation lands in p1-4 (persistence.rs).
-///
-/// The actual fields and append-only JSON storage are defined when the
-/// persistence layer is implemented. This stub allows `Workspace::test_results`
-/// to exist and compile now.
-pub struct TestResultStore;
