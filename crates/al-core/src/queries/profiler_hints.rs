@@ -384,9 +384,11 @@ fn collect_profiler_lenses(
                                 character: end_col,
                             },
                         };
+                        let title = profiler_lens_title(hint);
                         lenses.push(CodeLensEntry {
                             range,
-                            title: profiler_lens_title(hint),
+                            kind: crate::queries::code_lens::CodeLensKind::Profiler(title.clone()),
+                            title,
                         });
                     }
                 }

@@ -143,6 +143,29 @@ impl TestResultStore {
         read_records_no_lock(&self.path).await
     }
 
+    /// Synchronous best-effort read of all records — for callers (LSP code
+    /// lens, TUI watchers) that run outside a tokio context. Errors and
+    /// malformed lines yield an empty `Vec`; this is the fast path used
+    /// when momentarily-stale results are acceptable.
+    pub fn all_records(&self) -> Vec<TestRunRecord> {
+        let file = match std::fs::File::open(&self.path) {
+            Ok(f) => f,
+            Err(_) => return Vec::new(),
+        };
+        let reader = std::io::BufReader::new(file);
+        let mut out = Vec::new();
+        for line in std::io::BufRead::lines(reader).map_while(Result::ok) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(rec) = serde_json::from_str::<TestRunRecord>(trimmed) {
+                out.push(rec);
+            }
+        }
+        out
+    }
+
     /// Most recent record for a given (codeunit_id, method_name) pair, if any.
     pub async fn last_for(
         &self,

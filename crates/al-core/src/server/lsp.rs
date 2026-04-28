@@ -822,16 +822,24 @@ impl LanguageServer for AlServer {
         if entries.is_empty() {
             return Ok(None);
         }
+        use crate::queries::code_lens::CodeLensKind;
         let lenses: Vec<CodeLens> = entries
             .into_iter()
-            .map(|e| CodeLens {
-                range: e.range.into(),
-                command: Some(Command {
-                    title: e.title,
-                    command: "al.findReferences".to_string(),
-                    arguments: None,
-                }),
-                data: None,
+            .map(|e| {
+                let command_id = match &e.kind {
+                    CodeLensKind::Reference(_) => "al.findReferences",
+                    CodeLensKind::Profiler(_) => "al.showProfiler",
+                    CodeLensKind::Test(_) => "al.runTest",
+                };
+                CodeLens {
+                    range: e.range.into(),
+                    command: Some(Command {
+                        title: e.title,
+                        command: command_id.to_string(),
+                        arguments: None,
+                    }),
+                    data: None,
+                }
             })
             .collect();
         Ok(Some(lenses))
