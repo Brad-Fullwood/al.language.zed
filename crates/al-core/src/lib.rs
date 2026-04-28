@@ -31,6 +31,8 @@ pub mod symbols;
 pub mod syntax;
 pub mod test_engine;
 pub mod test_runner;
+pub mod test_runtime;
+pub mod test_snapshots;
 pub mod toolchain;
 pub mod workspace;
 pub mod xliff;
