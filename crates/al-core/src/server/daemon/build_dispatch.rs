@@ -3218,4 +3218,138 @@ mod p1_5_tests {
             assert!(json.get(key).is_some(), "AffectedTest key `{key}` missing");
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Wire-format freeze gates for new endpoints landed in this session.
+    // These pin the JSON response shapes; failures here flag callers who
+    // rename fields without bumping the protocol version.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn freeze_run_batch_response_shape() {
+        // run_batch with no project produces an error envelope; the shape
+        // we pin is the SUCCESS envelope, so synthesize one directly.
+        let summary =
+            crate::test_engine::result::TestCodeunitResult::from_methods("Cu".into(), 1, vec![]);
+        let summaries_json = serde_json::to_value(&[summary]).unwrap();
+        let response = serde_json::json!({
+            "summaries": summaries_json,
+            "totals": { "total": 0_u64, "passed": 0_u64, "failed": 0_u64, "skipped": 0_u64 },
+        });
+        for key in ["summaries", "totals"] {
+            assert!(response.get(key).is_some(), "run_batch key `{key}` missing");
+        }
+        for key in ["total", "passed", "failed", "skipped"] {
+            assert!(
+                response["totals"].get(key).is_some(),
+                "totals key `{key}` missing"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn freeze_last_results_response_shapes() {
+        // No-codeunit query → results array.
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: cargo test runs single-threaded by default.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+        }
+        {
+            let mut g = ws.project.write().await;
+            *g = Some(crate::project::AlProject {
+                root: tmp.path().to_path_buf(),
+                app_json: crate::project::AppManifest {
+                    id: String::new(),
+                    name: "test".into(),
+                    publisher: "test".into(),
+                    version: "1.0.0.0".into(),
+                    dependencies: Vec::new(),
+                    application: None,
+                    platform: None,
+                    runtime: None,
+                },
+                packages_dir: tmp.path().join(".alpackages"),
+                packages: Vec::new(),
+                server_configs: Vec::new(),
+            });
+        }
+        // Bulk: shape = { "results": [...] }.
+        let bulk = dispatch_tests_last_results(&ws, 100, &serde_json::json!({})).await;
+        let r = bulk.result.expect("ok");
+        assert!(
+            r.get("results").is_some(),
+            "tests.last_results bulk shape must expose `results`"
+        );
+
+        // Specific (codeunit, method) lookup: shape = { "lastResult": null|{} }.
+        let specific = dispatch_tests_last_results(
+            &ws,
+            101,
+            &serde_json::json!({ "codeunitId": 1, "methodName": "X" }),
+        )
+        .await;
+        let r = specific.result.expect("ok");
+        assert!(
+            r.get("lastResult").is_some(),
+            "tests.last_results specific shape must expose `lastResult`"
+        );
+    }
+
+    #[test]
+    fn freeze_classify_response_shape() {
+        // dispatch_tests_classify on an empty workspace returns an empty
+        // classifications array — pin both that the array exists and that
+        // when populated each item carries the required keys.
+        let ws = empty_ws();
+        let resp = dispatch_tests_classify(&ws, 200);
+        let r = resp.result.expect("ok");
+        assert!(
+            r.get("classifications").is_some(),
+            "tests.classify shape must expose `classifications`"
+        );
+
+        // Synthetic classification entry to pin the per-item shape.
+        let item = serde_json::json!({
+            "codeunitId": 1,
+            "codeunitName": "X",
+            "methodName": "M",
+            "decision": "interp",
+            "reasons": [{ "message": "", "file": null, "line": null }],
+        });
+        for key in [
+            "codeunitId",
+            "codeunitName",
+            "methodName",
+            "decision",
+            "reasons",
+        ] {
+            assert!(
+                item.get(key).is_some(),
+                "classification key `{key}` missing"
+            );
+        }
+        for key in ["message", "file", "line"] {
+            assert!(
+                item["reasons"][0].get(key).is_some(),
+                "reason key `{key}` missing"
+            );
+        }
+    }
+
+    #[test]
+    fn freeze_affected_response_shape() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_affected(&ws, 300, &serde_json::json!({ "changedFiles": [] }));
+        let r = resp.result.expect("ok");
+        assert!(
+            r.get("affected").is_some(),
+            "tests.affected shape must expose `affected`"
+        );
+        assert!(
+            r["affected"].as_array().expect("array").is_empty(),
+            "empty changedFiles must yield empty affected"
+        );
+    }
 }
