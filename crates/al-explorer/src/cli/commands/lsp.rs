@@ -1852,6 +1852,69 @@ pub fn cmd_test_affected(files: &[String], json: bool) -> ExitCode {
     })
 }
 
+/// `al-explorer test-results [--codeunit ID] [--method NAME]` — show persisted test history.
+pub fn cmd_test_results(codeunit: Option<i64>, method: Option<&str>, json: bool) -> ExitCode {
+    let mut params = serde_json::json!({});
+    if let Some(id) = codeunit {
+        params["codeunitId"] = serde_json::Value::from(id);
+    }
+    if let Some(m) = method {
+        params["methodName"] = serde_json::Value::String(m.to_string());
+    }
+    run_command("tests.last_results", Some(params), json, None, |result| {
+        // Single (codeunit, method) lookup short-circuits to lastResult.
+        if let Some(last) = result.get("lastResult") {
+            if last.is_null() {
+                eprintln!("No prior runs recorded for that (codeunit, method) pair.");
+                return;
+            }
+            print_history_row(last);
+            return;
+        }
+        let results = result
+            .get("results")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if results.is_empty() {
+            eprintln!("No test history recorded yet — run tests first.");
+            return;
+        }
+        for r in &results {
+            print_history_row(r);
+        }
+        eprintln!("\n{} record(s)", results.len());
+    })
+}
+
+fn print_history_row(r: &serde_json::Value) {
+    let cu = r
+        .get("codeunitName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let cu_id = r.get("codeunitId").and_then(|v| v.as_i64()).unwrap_or(0);
+    let method = r.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
+    let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+    let icon = match status {
+        "pass" => "✓",
+        "fail" => "✗",
+        "skip" => "⊘",
+        _ => "?",
+    };
+    let dur = r
+        .get("durationMs")
+        .and_then(|v| v.as_u64())
+        .map(|n| format!("{n}ms"))
+        .unwrap_or_else(|| "—".to_string());
+    let ts = r.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
+    println!("  {icon} [{cu_id} {cu}::{method}] {status} {dur}  (ts={ts})");
+    if let Some(err) = r.get("error").and_then(|v| v.as_str()) {
+        if !err.is_empty() {
+            println!("      {err}");
+        }
+    }
+}
+
 /// `al-explorer test-classify` — show the routing decision for every test.
 pub fn cmd_test_classify(json: bool) -> ExitCode {
     run_command(

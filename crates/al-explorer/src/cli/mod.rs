@@ -451,6 +451,16 @@ Examples:
     /// Show the routing decision for every discovered test (p2)
     #[command(name = "test-classify")]
     TestClassify,
+    /// Show persisted test result history (p2)
+    #[command(name = "test-results")]
+    TestResults {
+        /// Filter to a specific codeunit ID
+        #[arg(long)]
+        codeunit: Option<i64>,
+        /// Filter to a specific method name (requires --codeunit)
+        #[arg(long)]
+        method: Option<String>,
+    },
     /// Run all discovered tests, optionally writing JUnit/Cobertura output (p1-6)
     #[command(name = "test-run-all")]
     TestRunAll {
@@ -889,6 +899,9 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::TestCoverage => lsp::cmd_tests_coverage(cli.json),
         Commands::TestAffected { files } => lsp::cmd_test_affected(&files, cli.json),
         Commands::TestClassify => lsp::cmd_test_classify(cli.json),
+        Commands::TestResults { codeunit, method } => {
+            lsp::cmd_test_results(codeunit, method.as_deref(), cli.json)
+        }
         Commands::TestRunAll {
             parallel,
             timeout_ms,
