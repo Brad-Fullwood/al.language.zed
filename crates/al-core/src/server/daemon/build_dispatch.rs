@@ -2925,4 +2925,163 @@ mod p1_5_tests {
             .expect("expected results array");
         assert!(results.is_empty(), "fresh history must be empty");
     }
+
+    // -----------------------------------------------------------------------
+    // p1-7 freeze gate: existing wire formats must not drift.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn freeze_test_codeunit_result_wire_format() {
+        use crate::test_engine::result::{TestCodeunitResult, TestMethodResult, TestStatus};
+        let v = TestCodeunitResult::from_methods(
+            "X".to_string(),
+            42,
+            vec![TestMethodResult {
+                name: "M".to_string(),
+                status: TestStatus::Pass,
+                error: None,
+                duration_ms: Some(10),
+            }],
+        );
+        let json = serde_json::to_value(&v).unwrap();
+        for key in [
+            "name", "id", "methods", "total", "passed", "failed", "skipped",
+        ] {
+            assert!(
+                json.get(key).is_some(),
+                "wire-format key `{key}` missing — DO NOT rename without bumping schema_version"
+            );
+        }
+        let m = &json["methods"][0];
+        for key in ["name", "status", "durationMs"] {
+            assert!(m.get(key).is_some(), "TestMethodResult key `{key}` missing");
+        }
+        assert_eq!(json["methods"][0]["status"], "pass");
+    }
+
+    #[test]
+    fn freeze_test_coverage_report_wire_format() {
+        use crate::queries::test_coverage::{CoverageReport, CoveredProcedure, TestCoverageEntry};
+        let r = CoverageReport {
+            coverage: vec![TestCoverageEntry {
+                codeunit: "TestCU".to_string(),
+                test_procedure: "TestProc".to_string(),
+                covers: vec![CoveredProcedure {
+                    name: "DoWork".to_string(),
+                    object: "MyCU".to_string(),
+                    file: "src/MyCU.al".to_string(),
+                    line: 10,
+                }],
+            }],
+            untested: Vec::new(),
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        for key in ["coverage", "untested"] {
+            assert!(
+                json.get(key).is_some(),
+                "CoverageReport key `{key}` missing"
+            );
+        }
+        let entry = &json["coverage"][0];
+        for key in ["codeunit", "testProcedure", "covers"] {
+            assert!(
+                entry.get(key).is_some(),
+                "TestCoverageEntry key `{key}` missing"
+            );
+        }
+        let cov = &entry["covers"][0];
+        for key in ["name", "object", "file", "line"] {
+            assert!(
+                cov.get(key).is_some(),
+                "CoveredProcedure key `{key}` missing"
+            );
+        }
+    }
+
+    #[test]
+    fn freeze_test_codeunit_discovery_wire_format() {
+        use crate::queries::tests::{TestCodeunit, TestProcedure};
+        let v = TestCodeunit {
+            id: 50100,
+            name: "MyTests".to_string(),
+            file: "src/MyTests.al".to_string(),
+            tests: vec![TestProcedure {
+                name: "TestA".to_string(),
+                line: 5,
+            }],
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        for key in ["id", "name", "file", "tests"] {
+            assert!(json.get(key).is_some(), "TestCodeunit key `{key}` missing");
+        }
+        let proc = &json["tests"][0];
+        for key in ["name", "line"] {
+            assert!(proc.get(key).is_some(), "TestProcedure key `{key}` missing");
+        }
+    }
+
+    #[tokio::test]
+    async fn run_batch_persistence_roundtrip_via_dispatchers() {
+        // Bypass live BC: persist a record directly through the same store
+        // the dispatchers use, then call dispatch_tests_last_results and
+        // assert the record appears.
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: tests run on a single thread by default in cargo test.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+        }
+        {
+            let mut guard = ws.project.write().await;
+            *guard = Some(crate::project::AlProject {
+                root: tmp.path().to_path_buf(),
+                app_json: crate::project::AppManifest {
+                    id: String::new(),
+                    name: "test".into(),
+                    publisher: "test".into(),
+                    version: "1.0.0.0".into(),
+                    dependencies: Vec::new(),
+                    application: None,
+                    platform: None,
+                    runtime: None,
+                },
+                packages_dir: tmp.path().join(".alpackages"),
+                packages: Vec::new(),
+                server_configs: Vec::new(),
+            });
+        }
+
+        ensure_result_store(&ws, tmp.path()).await.unwrap();
+        let store = ws
+            .test_results
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .expect("store should be initialised");
+        store
+            .append(crate::test_engine::persistence::TestRunRecord {
+                timestamp: 1_700_000_000,
+                codeunit_id: 50200,
+                codeunit_name: "Persisted".into(),
+                method_name: "TestRoundtrip".into(),
+                status: crate::test_engine::result::TestStatus::Pass,
+                duration_ms: Some(7),
+                error: None,
+            })
+            .await
+            .unwrap();
+
+        let resp =
+            dispatch_tests_last_results(&ws, 99, &serde_json::json!({"codeunitId": 50200})).await;
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let results = resp
+            .result
+            .as_ref()
+            .and_then(|v| v.get("results"))
+            .and_then(|v| v.as_array())
+            .expect("results array");
+        assert_eq!(results.len(), 1, "the appended record must be visible");
+        assert_eq!(results[0]["methodName"], "TestRoundtrip");
+        assert_eq!(results[0]["status"], "pass");
+    }
 }
