@@ -467,6 +467,12 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "tests.discover" => build_dispatch::dispatch_tests_discover(workspace, id),
         "tests.run" => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
         "tests.coverage" => build_dispatch::dispatch_tests_coverage(workspace, id),
+        // p1-5: Phase 1 test_engine endpoints
+        "tests.run_batch" => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
+        "tests.run_auto" => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
+        "tests.last_results" => {
+            build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
+        }
         // WP16: Object generation
         "generate" => build_dispatch::dispatch_generate(workspace, id, &params),
         // WP17: Analysis differentiators

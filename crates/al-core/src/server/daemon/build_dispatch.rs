@@ -1962,6 +1962,373 @@ pub(super) async fn dispatch_tests_run(
 }
 
 // ---------------------------------------------------------------------------
+// p1-5: New test_engine endpoints — additive; existing tests.run is frozen.
+// ---------------------------------------------------------------------------
+
+/// `tests.run_batch` — run multiple codeunits, optionally in parallel,
+/// optionally writing JUnit/Cobertura output to disk.
+///
+/// Params:
+/// - `codeunitIds`: `[i32]` (required)
+/// - `codeunitNames`: `[str]` (parallel-indexed; falls back to ID-as-string)
+/// - `parallel`: bool (default false)
+/// - `timeoutMs`: u64 (default 30_000)
+/// - `junitOut`: str (path to write JUnit XML)
+/// - `coberturaOut`: str (path to write Cobertura XML)
+/// - `filter`: str (forwarded; currently logged only)
+pub(super) async fn dispatch_tests_run_batch(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    use crate::launch::find_launch_config;
+    use crate::test_engine::backends::live_bc::LiveBcMode;
+    use crate::test_engine::output::{cobertura, junit};
+    use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
+    use std::path::PathBuf;
+    use tokio::sync::mpsc;
+
+    // -- Resolve project root + launch config ---------------------------------
+    let project_root = match workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|p| p.root.clone())
+    {
+        Some(root) => root,
+        None => return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT),
+    };
+    let launch_cfg = match find_launch_config(&project_root) {
+        Some(cfg) => cfg,
+        None => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                "No launch config found — create .vscode/launch.json or .zed/debug.json",
+            );
+        }
+    };
+    let server_config = match launch_cfg.configs.first() {
+        Some(c) => c.clone(),
+        None => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                "No BC server config found in launch config",
+            );
+        }
+    };
+
+    // -- Parse params ----------------------------------------------------------
+    let codeunit_ids = match params.get("codeunitIds").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "Missing 'codeunitIds' (array of i32)",
+            );
+        }
+    };
+    let names_arr = params
+        .get("codeunitNames")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut tests: Vec<TestId> = Vec::with_capacity(codeunit_ids.len());
+    for (i, v) in codeunit_ids.iter().enumerate() {
+        let cu_id = match v.as_i64() {
+            Some(n) => n as i32,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INVALID_PARAMS,
+                    "Each codeunitIds entry must be an integer",
+                );
+            }
+        };
+        let cu_name = names_arr
+            .get(i)
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| cu_id.to_string());
+        tests.push(TestId {
+            codeunit_id: cu_id,
+            codeunit_name: cu_name,
+            method_name: None,
+        });
+    }
+    let opts = RunOptions {
+        timeout_ms: params.get("timeoutMs").and_then(|v| v.as_u64()),
+        parallel: params
+            .get("parallel")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        junit_out: params
+            .get("junitOut")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from),
+        cobertura_out: params
+            .get("coberturaOut")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from),
+        filter: params
+            .get("filter")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    };
+
+    // -- Run via LiveBcMode ----------------------------------------------------
+    let mode = LiveBcMode::new(server_config);
+    let (tx, mut rx) = mpsc::channel::<TestEvent>(256);
+    let opts_for_run = opts.clone();
+    let run_handle = tokio::spawn(async move { mode.run(tests, opts_for_run, tx).await });
+
+    let mut events: Vec<TestEvent> = Vec::new();
+    let mut summaries: Vec<crate::test_engine::result::TestCodeunitResult> = Vec::new();
+    while let Some(ev) = rx.recv().await {
+        if let TestEvent::SuiteComplete { ref summary, .. } = ev {
+            summaries.push(summary.clone());
+        }
+        events.push(ev);
+    }
+    if let Err(e) = run_handle.await {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("test run task panicked: {e}"),
+        );
+    }
+
+    // -- Persist results -------------------------------------------------------
+    if let Err(e) = ensure_result_store(workspace, &project_root).await {
+        tracing::warn!(error = %e, "test_results store init failed; persistence skipped");
+    } else if let Some(store_arc) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
+        for summary in &summaries {
+            for m in &summary.methods {
+                let rec = crate::test_engine::persistence::TestRunRecord {
+                    timestamp: crate::test_engine::persistence::now_secs(),
+                    codeunit_id: summary.id,
+                    codeunit_name: summary.name.clone(),
+                    method_name: m.name.clone(),
+                    status: m.status.clone(),
+                    duration_ms: m.duration_ms,
+                    error: m.error.clone(),
+                };
+                if let Err(e) = store_arc.append(rec).await {
+                    tracing::warn!(error = %e, "failed to persist test result");
+                }
+            }
+        }
+    }
+
+    // -- Optional JUnit / Cobertura outputs -----------------------------------
+    if let Some(path) = &opts.junit_out {
+        if let Err(e) = write_junit_to_path(&summaries, path).await {
+            tracing::warn!(error = %e, path = %path.display(), "junit write failed");
+        }
+    }
+    if let Some(path) = &opts.cobertura_out {
+        let coverage = crate::queries::test_coverage::test_coverage(workspace);
+        if let Err(e) = write_cobertura_to_path(&coverage, path).await {
+            tracing::warn!(error = %e, path = %path.display(), "cobertura write failed");
+        }
+    }
+
+    // -- Build response --------------------------------------------------------
+    let total: usize = summaries.iter().map(|s| s.total).sum();
+    let passed: usize = summaries.iter().map(|s| s.passed).sum();
+    let failed: usize = summaries.iter().map(|s| s.failed).sum();
+    let skipped: usize = summaries.iter().map(|s| s.skipped).sum();
+    let summaries_json = serde_json::to_value(&summaries).unwrap_or(serde_json::Value::Null);
+
+    // Suppress unused warning on imports until junit/cobertura helpers below.
+    let _ = (
+        junit::write_junit::<&mut Vec<u8>>,
+        cobertura::write_cobertura::<&mut Vec<u8>>,
+    );
+
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "summaries": summaries_json,
+            "totals": {
+                "total": total,
+                "passed": passed,
+                "failed": failed,
+                "skipped": skipped,
+            },
+        })),
+        error: None,
+    }
+}
+
+/// `tests.run_auto` — discover all tests in the workspace and run them
+/// through `LiveBcMode`. Parameters are the same as `tests.run_batch`
+/// minus `codeunitIds` (which is auto-populated from
+/// `queries::tests::discover_tests`).
+pub(super) async fn dispatch_tests_run_auto(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let discovered = crate::queries::tests::discover_tests(workspace);
+    let mut codeunit_ids: Vec<serde_json::Value> = Vec::with_capacity(discovered.len());
+    let mut codeunit_names: Vec<serde_json::Value> = Vec::with_capacity(discovered.len());
+    for cu in &discovered {
+        codeunit_ids.push(serde_json::Value::from(cu.id));
+        codeunit_names.push(serde_json::Value::from(cu.name.clone()));
+    }
+    let mut params = params.clone();
+    if let Some(map) = params.as_object_mut() {
+        map.insert(
+            "codeunitIds".to_string(),
+            serde_json::Value::Array(codeunit_ids),
+        );
+        map.insert(
+            "codeunitNames".to_string(),
+            serde_json::Value::Array(codeunit_names),
+        );
+    }
+    dispatch_tests_run_batch(workspace, id, &params).await
+}
+
+/// `tests.last_results` — read the persisted test history for the project.
+///
+/// Optional params:
+/// - `codeunitId`: i32 — filter to one codeunit
+/// - `methodName`: str — when combined with codeunitId, return the most
+///   recent record for that pair as `lastResult`.
+pub(super) async fn dispatch_tests_last_results(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let project_root = match workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|p| p.root.clone())
+    {
+        Some(root) => root,
+        None => return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT),
+    };
+
+    if let Err(e) = ensure_result_store(workspace, &project_root).await {
+        return rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("failed to open test results store: {e}"),
+        );
+    }
+    let store = match workspace.test_results.read().ok().and_then(|g| g.clone()) {
+        Some(s) => s,
+        None => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                "test results store unavailable",
+            );
+        }
+    };
+
+    // Single (codeunit, method) lookup short-circuits to lastResult.
+    if let (Some(cu), Some(method)) = (
+        params.get("codeunitId").and_then(|v| v.as_i64()),
+        params.get("methodName").and_then(|v| v.as_str()),
+    ) {
+        return match store.last_for(cu as i32, method).await {
+            Ok(opt) => Response {
+                id,
+                result: Some(serde_json::json!({ "lastResult": opt })),
+                error: None,
+            },
+            Err(e) => rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("failed to read test results: {e}"),
+            ),
+        };
+    }
+
+    // Otherwise return all (optionally filtered by codeunitId).
+    let all = match store.read_all().await {
+        Ok(v) => v,
+        Err(e) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("failed to read test results: {e}"),
+            );
+        }
+    };
+    let filtered: Vec<_> = match params.get("codeunitId").and_then(|v| v.as_i64()) {
+        Some(cu) => all
+            .into_iter()
+            .filter(|r| r.codeunit_id == cu as i32)
+            .collect(),
+        None => all,
+    };
+    Response {
+        id,
+        result: Some(serde_json::json!({ "results": filtered })),
+        error: None,
+    }
+}
+
+// --- helpers used by p1-5 dispatchers ---------------------------------------
+
+async fn ensure_result_store(
+    workspace: &Workspace,
+    project_root: &std::path::Path,
+) -> Result<(), crate::test_engine::PersistenceError> {
+    {
+        let guard = workspace.test_results.read().map_err(|_| {
+            crate::test_engine::PersistenceError::Io(std::io::Error::other(
+                "test_results lock poisoned",
+            ))
+        })?;
+        if guard.is_some() {
+            return Ok(());
+        }
+    }
+    let store = crate::test_engine::TestResultStore::open_for_project(project_root).await?;
+    let mut guard = workspace.test_results.write().map_err(|_| {
+        crate::test_engine::PersistenceError::Io(std::io::Error::other(
+            "test_results lock poisoned",
+        ))
+    })?;
+    *guard = Some(std::sync::Arc::new(store));
+    Ok(())
+}
+
+async fn write_junit_to_path(
+    summaries: &[crate::test_engine::result::TestCodeunitResult],
+    path: &std::path::Path,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut buf = Vec::new();
+    crate::test_engine::output::junit::write_junit(summaries, &mut buf)?;
+    tokio::fs::write(path, buf).await
+}
+
+async fn write_cobertura_to_path(
+    report: &crate::queries::test_coverage::CoverageReport,
+    path: &std::path::Path,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut buf = Vec::new();
+    crate::test_engine::output::cobertura::write_cobertura(report, &mut buf)?;
+    tokio::fs::write(path, buf).await
+}
+
+// ---------------------------------------------------------------------------
 // WP16: Object wizards / code generation
 // ---------------------------------------------------------------------------
 
@@ -2433,5 +2800,129 @@ pub(super) fn dispatch_profiler_hints(
         id,
         result: Some(value),
         error: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// p1-5 dispatcher tests — parameter validation + no-project paths
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod p1_5_tests {
+    use super::*;
+    use crate::workspace::Workspace;
+
+    fn empty_ws() -> Workspace {
+        Workspace::new()
+    }
+
+    #[tokio::test]
+    async fn run_batch_no_project_returns_error() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_run_batch(&ws, 1, &serde_json::json!({})).await;
+        assert!(
+            resp.error.is_some(),
+            "expected error response with no project"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_auto_no_project_returns_error() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_run_auto(&ws, 2, &serde_json::json!({})).await;
+        assert!(resp.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn last_results_no_project_returns_error() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_last_results(&ws, 3, &serde_json::json!({})).await;
+        assert!(resp.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn run_batch_missing_codeunit_ids_is_invalid_params() {
+        // Set a project root so we get past the NO_PROJECT check, then
+        // miss codeunitIds — must return INVALID_PARAMS, not crash.
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Write a minimal launch.json so find_launch_config succeeds.
+        let dot_zed = tmp.path().join(".zed");
+        std::fs::create_dir_all(&dot_zed).unwrap();
+        std::fs::write(
+            dot_zed.join("debug.json"),
+            r#"[{"name":"local","type":"al","request":"launch","environmentType":"OnPrem","server":"http://localhost","serverInstance":"BC","authentication":"UserPassword"}]"#,
+        )
+        .unwrap();
+        {
+            let mut guard = ws.project.write().await;
+            *guard = Some(crate::project::AlProject {
+                root: tmp.path().to_path_buf(),
+                app_json: crate::project::AppManifest {
+                    id: String::new(),
+                    name: "test".into(),
+                    publisher: "test".into(),
+                    version: "1.0.0.0".into(),
+                    dependencies: Vec::new(),
+                    application: None,
+                    platform: None,
+                    runtime: None,
+                },
+                packages_dir: tmp.path().join(".alpackages"),
+                packages: Vec::new(),
+                server_configs: Vec::new(),
+            });
+        }
+        let resp = dispatch_tests_run_batch(&ws, 4, &serde_json::json!({})).await;
+        let err = resp
+            .error
+            .expect("expected error response for missing codeunitIds");
+        assert!(
+            err.message.contains("codeunitIds"),
+            "error must mention the missing parameter; got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn last_results_returns_empty_when_no_history() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Override XDG_DATA_HOME so the store path is sandboxed.
+        // SAFETY: tests run on a single thread by default in cargo test.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+        }
+        {
+            let mut guard = ws.project.write().await;
+            *guard = Some(crate::project::AlProject {
+                root: tmp.path().to_path_buf(),
+                app_json: crate::project::AppManifest {
+                    id: String::new(),
+                    name: "test".into(),
+                    publisher: "test".into(),
+                    version: "1.0.0.0".into(),
+                    dependencies: Vec::new(),
+                    application: None,
+                    platform: None,
+                    runtime: None,
+                },
+                packages_dir: tmp.path().join(".alpackages"),
+                packages: Vec::new(),
+                server_configs: Vec::new(),
+            });
+        }
+        let resp = dispatch_tests_last_results(&ws, 5, &serde_json::json!({})).await;
+        assert!(
+            resp.error.is_none(),
+            "fresh project should succeed, got error: {:?}",
+            resp.error
+        );
+        let results = resp
+            .result
+            .as_ref()
+            .and_then(|v| v.get("results"))
+            .and_then(|v| v.as_array())
+            .expect("expected results array");
+        assert!(results.is_empty(), "fresh history must be empty");
     }
 }

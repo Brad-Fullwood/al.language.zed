@@ -98,8 +98,11 @@ pub struct Workspace {
     /// Accumulated test results from the last (or current) test run.
     ///
     /// Uses `std::sync::RwLock` (not `tokio::sync::RwLock`) so sync query code
-    /// can access it without `.await`. Real storage implementation lands in p1-4.
-    pub test_results: std::sync::RwLock<Option<crate::test_engine::TestResultStore>>,
+    /// can access it without `.await`. Wrapped in `Arc` so multiple async
+    /// tasks (daemon dispatchers, code-lens queries) can share the underlying
+    /// store cheaply without cloning records.
+    pub test_results:
+        std::sync::RwLock<Option<std::sync::Arc<crate::test_engine::TestResultStore>>>,
 }
 
 impl Workspace {
