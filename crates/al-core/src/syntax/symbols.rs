@@ -313,6 +313,13 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         return extract_enum_value_from_section(node, source);
     }
 
+    // Report/query `dataitem(Name; "SourceTable") { }` is also an object_section
+    // (the grammar's key_declaration rule only matches `key(...)` in tables).
+    // The dataitem name is the first identifier in the parenthesized block.
+    if keyword.eq_ignore_ascii_case("dataitem") {
+        return extract_dataitem_from_section(node, source);
+    }
+
     let sym_kind = match keyword.to_lowercase().as_str() {
         "fields" => SymbolKind::Struct,
         "keys" => SymbolKind::Key,
@@ -414,6 +421,73 @@ fn extract_enum_value_from_section(node: Node, source: &[u8]) -> Option<Document
         range,
         selection_range: ts_range_to_lsp(&name_node_range, source),
         children: None,
+    })
+}
+
+/// Extract a report/query dataitem symbol from an `object_section` node whose keyword is "dataitem".
+///
+/// Grammar shape: `dataitem(StagingRec; "Item Journal Staging") { ... }`
+///
+/// The grammar parses this as:
+///   object_section
+///     metadata_keyword("dataitem")
+///     parenthesized_block("(StagingRec; \"Item Journal Staging\")")
+///     object_body("{ ... }")
+///
+/// Children of the parenthesized_block: `(`, identifier(name), `;`, quoted_identifier(source), `)`.
+/// We take the first identifier/quoted_identifier as the dataitem name and recurse into the
+/// body for nested triggers/sections.
+fn extract_dataitem_from_section(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
+    let range = ts_range_to_lsp(&node.range(), source);
+
+    let mut paren_node = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "parenthesized_block" {
+            paren_node = Some(child);
+            break;
+        }
+    }
+
+    let paren = paren_node?;
+
+    let mut name = String::new();
+    let mut name_node_range = paren.range();
+    let mut paren_cursor = paren.walk();
+    for child in paren.children(&mut paren_cursor) {
+        if matches!(
+            child.kind(),
+            "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
+        ) {
+            if let Ok(text) = child.utf8_text(source) {
+                name = text.trim_matches('"').trim().to_string();
+                name_node_range = child.range();
+                break;
+            }
+        }
+    }
+
+    if name.is_empty() {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    if let Some(body) = node.child_by_field_name("body") {
+        extract_section_body_children(body, source, &mut children);
+        extract_triggers_from_braced_block(body, source, &mut children);
+    }
+
+    Some(DocumentSymbol {
+        name,
+        detail: Some("dataitem".to_string()),
+        kind: SymbolKind::Class,
+        range,
+        selection_range: ts_range_to_lsp(&name_node_range, source),
+        children: if children.is_empty() {
+            None
+        } else {
+            Some(children)
+        },
     })
 }
 
