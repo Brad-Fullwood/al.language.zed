@@ -33,6 +33,41 @@ impl LiveBcMode {
 // Helper: send one event, returning ChannelClosed on failure.
 // ---------------------------------------------------------------------------
 
+/// Match `name` against a simple-glob `pattern`. Supports `*` (zero-or-more
+/// of any char) and is case-insensitive — matches AL's identifier rules.
+/// No-asterisk patterns require an exact case-insensitive match.
+fn method_matches(name: &str, pattern: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    let p = pattern.to_ascii_lowercase();
+    if !p.contains('*') {
+        return n == p;
+    }
+    // Iteratively consume `*`-separated literal chunks left-to-right.
+    let mut cursor = 0usize;
+    let mut first_chunk = true;
+    let leading_star = p.starts_with('*');
+    let trailing_star = p.ends_with('*');
+    let chunks: Vec<&str> = p.split('*').filter(|s| !s.is_empty()).collect();
+    for chunk in &chunks {
+        if first_chunk && !leading_star {
+            if !n[cursor..].starts_with(chunk) {
+                return false;
+            }
+            cursor += chunk.len();
+        } else {
+            match n[cursor..].find(chunk) {
+                Some(idx) => cursor += idx + chunk.len(),
+                None => return false,
+            }
+        }
+        first_chunk = false;
+    }
+    if !trailing_star && cursor != n.len() {
+        return false;
+    }
+    true
+}
+
 async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<(), TestRunnerError> {
     tx.send(event).await.map_err(|_| {
         tracing::warn!("test event channel closed; receiver dropped — aborting run");
@@ -240,11 +275,22 @@ impl TestSession for LiveBcMode {
         opts: RunOptions,
         tx: mpsc::Sender<TestEvent>,
     ) -> Result<(), TestRunnerError> {
-        if let Some(ref filter) = opts.filter {
-            tracing::debug!(filter = %filter, "method name filter requested (not applied in this phase)");
-        }
-
         let timeout_dur = Duration::from_millis(opts.timeout_ms.unwrap_or(30_000));
+
+        // Apply method-name filter (simple `*` wildcard, case-insensitive).
+        // A None method (whole-codeunit run) is always kept — the filter
+        // can't disambiguate at this layer without first discovering
+        // method names.
+        let tests = match opts.filter.as_deref() {
+            None => tests,
+            Some(pattern) => tests
+                .into_iter()
+                .filter(|t| match &t.method_name {
+                    None => true,
+                    Some(m) => method_matches(m, pattern),
+                })
+                .collect(),
+        };
 
         // Group tests by codeunit_id → (codeunit_name, Vec<method_name>).
         let mut groups: HashMap<i32, (String, Vec<Option<String>>)> = HashMap::new();
@@ -378,6 +424,62 @@ mod tests {
     // -----------------------------------------------------------------------
     // Test 1: construction from config
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // method_matches — pure-function tests, no MockServer needed
+    // -----------------------------------------------------------------------
+
+    use super::method_matches;
+
+    #[test]
+    fn method_matches_exact_case_insensitive() {
+        assert!(method_matches("TestAlpha", "TestAlpha"));
+        assert!(method_matches("TestAlpha", "testalpha"));
+        assert!(method_matches("TESTALPHA", "TestAlpha"));
+        // Negative: a non-glob pattern must match the whole name.
+        assert!(!method_matches("TestAlpha", "Alpha"));
+        assert!(!method_matches("TestAlphaExtra", "TestAlpha"));
+    }
+
+    #[test]
+    fn method_matches_leading_wildcard() {
+        assert!(method_matches("TestAlpha", "*Alpha"));
+        assert!(method_matches("Alpha", "*Alpha"));
+        // Negative.
+        assert!(!method_matches("AlphaTest", "*Alpha"));
+    }
+
+    #[test]
+    fn method_matches_trailing_wildcard() {
+        assert!(method_matches("TestAlpha", "Test*"));
+        assert!(method_matches("Test", "Test*"));
+        // Negative.
+        assert!(!method_matches("UnitTest", "Test*"));
+    }
+
+    #[test]
+    fn method_matches_middle_wildcard() {
+        assert!(method_matches("TestAlphaCase", "Test*Case"));
+        assert!(method_matches("TestCase", "Test*Case"));
+        // Negative: pattern with middle wildcard requires both anchors.
+        assert!(!method_matches("Test", "Test*Case"));
+        assert!(!method_matches("Case", "Test*Case"));
+    }
+
+    #[test]
+    fn method_matches_double_star() {
+        assert!(method_matches("AlphaBeta", "*Beta*"));
+        assert!(method_matches("BetaAlpha", "*Beta*"));
+        assert!(method_matches("XBetaY", "*Beta*"));
+        // Negative.
+        assert!(!method_matches("Gamma", "*Beta*"));
+    }
+
+    #[test]
+    fn method_matches_just_star_matches_anything() {
+        assert!(method_matches("anything", "*"));
+        assert!(method_matches("", "*"));
+    }
 
     /// Positive: LiveBcMode can be constructed from a BcServerConfig without panicking.
     #[tokio::test]
