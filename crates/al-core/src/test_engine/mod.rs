@@ -7,6 +7,7 @@
 
 pub mod backends;
 pub mod error;
+pub mod output;
 pub mod result;
 pub mod session;
 
