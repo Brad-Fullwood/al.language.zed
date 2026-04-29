@@ -316,7 +316,6 @@ mod tests {
     // Observed: thread panic "attempt to subtract with overflow"
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-06 PANIC: FOR downto with i64::MIN start causes i -= 1 overflow panic"]
     fn w2_06_for_downto_i64_min_overflow_panic() {
         // FOR i := -9223372036854775808 DOWNTO -9223372036854775809
         // — the DOWNTO condition `i < end` is never satisfied on the first
@@ -932,7 +931,6 @@ mod tests {
     // overflows before the loop-exit check.
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-20 PANIC: FOR upward loop with i64::MAX end causes i += 1 overflow panic"]
     fn w2_20_for_upward_i64_max_overflow_panic() {
         let end_val = i64::MAX;
         let start_val = i64::MAX; // single-iteration loop: body runs once, then i += 1 panics

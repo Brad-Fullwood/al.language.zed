@@ -295,9 +295,15 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
         }
 
         if is_downto {
-            i -= 1;
+            match i.checked_sub(1) {
+                Some(next) => i = next,
+                None => break, // i == i64::MIN: next iteration would not run anyway
+            }
         } else {
-            i += 1;
+            match i.checked_add(1) {
+                Some(next) => i = next,
+                None => break, // i == i64::MAX: next iteration would not run anyway
+            }
         }
     }
     Eval::Normal(Value::Empty)
