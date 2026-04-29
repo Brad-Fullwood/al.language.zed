@@ -310,44 +310,68 @@ fn extract_identifier_name(node: Node<'_>, source: &[u8]) -> Option<String> {
 /// (and Phase 3's mock dispatch) can reuse the operator semantics.
 pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
     let op = operator.to_ascii_lowercase();
+    // Wrap a Decimal result, returning Eval::Error if it produced NaN or
+    // infinity. AL semantics: arithmetic that overflows or produces an
+    // undefined value is a runtime error, not a silent NaN.
+    fn checked_decimal(d: f64) -> Eval {
+        if d.is_nan() || d.is_infinite() {
+            Eval::Error(simple_error("decimal arithmetic produced NaN or infinity"))
+        } else {
+            Eval::Normal(Value::Decimal(d))
+        }
+    }
     match (&op[..], left, right) {
-        // Integer arithmetic
-        ("+", Value::Integer(a), Value::Integer(b)) => Eval::Normal(Value::Integer(a + b)),
-        ("-", Value::Integer(a), Value::Integer(b)) => Eval::Normal(Value::Integer(a - b)),
-        ("*", Value::Integer(a), Value::Integer(b)) => Eval::Normal(Value::Integer(a * b)),
+        // Integer arithmetic — checked to avoid panics on overflow.
+        ("+", Value::Integer(a), Value::Integer(b)) => match a.checked_add(b) {
+            Some(n) => Eval::Normal(Value::Integer(n)),
+            None => Eval::Error(simple_error("integer overflow")),
+        },
+        ("-", Value::Integer(a), Value::Integer(b)) => match a.checked_sub(b) {
+            Some(n) => Eval::Normal(Value::Integer(n)),
+            None => Eval::Error(simple_error("integer overflow")),
+        },
+        ("*", Value::Integer(a), Value::Integer(b)) => match a.checked_mul(b) {
+            Some(n) => Eval::Normal(Value::Integer(n)),
+            None => Eval::Error(simple_error("integer overflow")),
+        },
         ("div", Value::Integer(a), Value::Integer(b))
         | ("/", Value::Integer(a), Value::Integer(b)) => {
             if b == 0 {
                 Eval::Error(simple_error("division by zero"))
             } else if op == "/" {
-                Eval::Normal(Value::Decimal(a as f64 / b as f64))
+                checked_decimal(a as f64 / b as f64)
             } else {
-                Eval::Normal(Value::Integer(a / b))
+                // i64::MIN / -1 overflows → checked_div returns None.
+                match a.checked_div(b) {
+                    Some(n) => Eval::Normal(Value::Integer(n)),
+                    None => Eval::Error(simple_error("integer overflow")),
+                }
             }
         }
         ("mod", Value::Integer(a), Value::Integer(b)) => {
             if b == 0 {
                 Eval::Error(simple_error("modulo by zero"))
             } else {
-                Eval::Normal(Value::Integer(a % b))
+                match a.checked_rem(b) {
+                    Some(n) => Eval::Normal(Value::Integer(n)),
+                    None => Eval::Error(simple_error("integer overflow")),
+                }
             }
         }
-        // Decimal arithmetic (Decimal × Decimal and mixed)
-        ("+", Value::Decimal(a), Value::Decimal(b)) => Eval::Normal(Value::Decimal(a + b)),
-        ("-", Value::Decimal(a), Value::Decimal(b)) => Eval::Normal(Value::Decimal(a - b)),
-        ("*", Value::Decimal(a), Value::Decimal(b)) => Eval::Normal(Value::Decimal(a * b)),
-        ("/", Value::Decimal(a), Value::Decimal(b)) if b != 0.0 => {
-            Eval::Normal(Value::Decimal(a / b))
-        }
+        // Decimal arithmetic (Decimal × Decimal and mixed) — guard NaN/Inf.
+        ("+", Value::Decimal(a), Value::Decimal(b)) => checked_decimal(a + b),
+        ("-", Value::Decimal(a), Value::Decimal(b)) => checked_decimal(a - b),
+        ("*", Value::Decimal(a), Value::Decimal(b)) => checked_decimal(a * b),
+        ("/", Value::Decimal(a), Value::Decimal(b)) if b != 0.0 => checked_decimal(a / b),
         ("/", Value::Decimal(_), Value::Decimal(_)) => {
             Eval::Error(simple_error("division by zero"))
         }
         ("+", Value::Integer(a), Value::Decimal(b))
-        | ("+", Value::Decimal(b), Value::Integer(a)) => Eval::Normal(Value::Decimal(a as f64 + b)),
-        ("-", Value::Integer(a), Value::Decimal(b)) => Eval::Normal(Value::Decimal(a as f64 - b)),
-        ("-", Value::Decimal(a), Value::Integer(b)) => Eval::Normal(Value::Decimal(a - b as f64)),
+        | ("+", Value::Decimal(b), Value::Integer(a)) => checked_decimal(a as f64 + b),
+        ("-", Value::Integer(a), Value::Decimal(b)) => checked_decimal(a as f64 - b),
+        ("-", Value::Decimal(a), Value::Integer(b)) => checked_decimal(a - b as f64),
         ("*", Value::Integer(a), Value::Decimal(b))
-        | ("*", Value::Decimal(b), Value::Integer(a)) => Eval::Normal(Value::Decimal(a as f64 * b)),
+        | ("*", Value::Decimal(b), Value::Integer(a)) => checked_decimal(a as f64 * b),
 
         // String concatenation (AL `+` on Text/Code).
         ("+", Value::Text(a), Value::Text(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),

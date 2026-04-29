@@ -575,8 +575,13 @@ fn eval_asserterror(
             // Error was raised — asserterror succeeded.
             Eval::Normal(Value::Empty)
         }
-        Eval::Normal(_) | Eval::Exit(_) => {
-            // No error was raised — asserterror fails.
+        // Exit unwinds the procedure; asserterror does NOT swallow it. It's
+        // distinct from "no error was raised" — the procedure has decided to
+        // return early, which AL semantics treat as control flow that
+        // bypasses the assertion entirely. Propagate unchanged.
+        exit @ Eval::Exit(_) => exit,
+        Eval::Normal(_) => {
+            // Body completed without raising an error — assertion fails.
             Eval::Error(ErrorInfo {
                 message: "asserterror: expected an error to be raised, but none was".to_string(),
                 error_type: Some("AssertError".to_string()),

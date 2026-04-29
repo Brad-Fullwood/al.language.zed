@@ -234,7 +234,13 @@ fn builtin_copystr(args: &[Value]) -> Eval {
         return simple_error("CopyStr: position must be >= 1");
     }
     let chars: Vec<char> = s.chars().collect();
-    let start = (pos - 1).min(chars.len());
+    if pos > chars.len() {
+        return simple_error(format!(
+            "CopyStr: position {pos} is beyond string length {}",
+            chars.len()
+        ));
+    }
+    let start = pos - 1;
     let end = (start + len).min(chars.len());
     Eval::Normal(Value::Text(chars[start..end].iter().collect()))
 }
@@ -275,6 +281,11 @@ fn builtin_indexof(args: &[Value]) -> Eval {
         | [Value::Code(s), Value::Code(n)] => (s.as_str(), n.as_str()),
         _ => return simple_error("IndexOf expects (Text, Text)"),
     };
+    // AL convention: an empty needle yields 0 (not found), not the
+    // Rust default of 1 from `str::find("") == Some(0)`.
+    if needle.is_empty() {
+        return Eval::Normal(Value::Integer(0));
+    }
     let result = s
         .find(needle)
         .map(|i| {
@@ -309,14 +320,52 @@ fn render_value(v: &Value) -> String {
     }
 }
 
-/// Substitute %1, %2, … placeholders in `fmt` with rendered arg values.
+/// Substitute `%N` placeholders in `fmt` with rendered arg values.
+///
+/// `N` is greedily matched as digits — `%10` is the 10th arg, not "%1
+/// followed by literal 0". This avoids the naive replace-loop bug where
+/// running a pass for each index would corrupt multi-digit placeholders
+/// (e.g. the `%1` pass would eat the `%1` prefix of `%10`).
 fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
-    let mut result = fmt.to_string();
-    for (i, arg) in args.iter().enumerate() {
-        let placeholder = format!("%{}", i + 1);
-        result = result.replace(&placeholder, &render_value(arg));
+    let mut out = String::with_capacity(fmt.len());
+    let bytes = fmt.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 1 < bytes.len() {
+            // %% → literal %
+            if bytes[i + 1] == b'%' {
+                out.push('%');
+                i += 2;
+                continue;
+            }
+            // Greedily consume digits.
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 1 {
+                if let Ok(idx_str) = std::str::from_utf8(&bytes[i + 1..j]) {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if idx >= 1 {
+                            if let Some(arg) = args.get(idx - 1) {
+                                out.push_str(&render_value(arg));
+                            } else {
+                                // Out-of-range placeholder: keep the literal so
+                                // callers can spot the mistake.
+                                out.push('%');
+                                out.push_str(idx_str);
+                            }
+                            i = j;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
     }
-    result
+    out
 }
 
 // ---------------------------------------------------------------------------

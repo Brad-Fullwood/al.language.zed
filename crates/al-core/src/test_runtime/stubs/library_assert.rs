@@ -107,6 +107,30 @@ pub fn are_nearly_equal(args: &[Value]) -> Eval {
     let (Some(ef), Some(af), Some(pf)) = (to_f64(e), to_f64(a), to_f64(p)) else {
         return err("Assert.AreNearlyEqual: non-numeric argument");
     };
+    // Two identical NaN sentinels are treated as equal — they represent
+    // the same invalid state (matches the Value::Eq impl which uses
+    // total_cmp). Mixed NaN / non-NaN pairs are an error.
+    if ef.is_nan() || af.is_nan() {
+        return if ef.is_nan() && af.is_nan() {
+            ok()
+        } else {
+            err("Assert.AreNearlyEqual: cannot compare NaN with a numeric value")
+        };
+    }
+    if pf.is_nan() {
+        return err("Assert.AreNearlyEqual: precision must not be NaN");
+    }
+    // Same-signed Inf is treated as equal; opposite-signed or one-sided
+    // Inf is an error.
+    if ef.is_infinite() || af.is_infinite() {
+        return if ef == af {
+            ok()
+        } else {
+            err(format!(
+                "Assert.AreNearlyEqual: cannot compare {ef} and {af} (infinity)"
+            ))
+        };
+    }
     if (ef - af).abs() <= pf {
         ok()
     } else {
