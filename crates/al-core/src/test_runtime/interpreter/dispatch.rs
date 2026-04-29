@@ -1,4 +1,4 @@
-//! Procedure-call dispatch for the AL interpreter — Phase 2.
+//! Procedure-call dispatch for the AL interpreter — Phase 2b.
 //!
 //! `dispatch_call` is the single entry point for any procedure call that the
 //! statement evaluator encounters. Priority order:
@@ -8,18 +8,21 @@
 //! 2. **Inline builtins** — core AL global procedures implemented here in Rust
 //!    (Error, Message, StrSubstNo, Format, StrLen, CopyStr, LowerCase,
 //!    UpperCase, IndexOf).
-//! 3. **Workspace procedures** — NOT yet wired; returns a descriptive
-//!    `Eval::Error` for Phase 2. Phase 2b will tie this to
-//!    `syntax::TypeResolver` + `symbols::SymbolIndex`.
+//! 3. **Workspace procedures** — looks up the procedure in the workspace file
+//!    index by receiver/object name, finds the `procedure_declaration` node,
+//!    and executes its body via `eval_stmt`. Recursion depth is capped at 100.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::test_runtime::interpreter::scope::Eval;
+use crate::test_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 use crate::test_runtime::mock::record::MockRecord;
 use crate::test_runtime::stubs;
 use crate::workspace::Workspace;
+
+/// Maximum allowed recursion depth before the interpreter returns an error.
+const MAX_RECURSION_DEPTH: usize = 100;
 
 // ---------------------------------------------------------------------------
 // DispatchMode and DispatchCtx
@@ -40,13 +43,16 @@ pub enum DispatchMode {
 /// catalog for `InterpRecord` runs). Cheap to reborrow; pass `&mut DispatchCtx`
 /// everywhere.
 pub struct DispatchCtx {
-    /// The owning workspace — used for workspace-procedure lookup (Phase 2b).
+    /// The owning workspace — used for workspace-procedure lookup.
     pub workspace: Arc<Workspace>,
     /// In-memory record store keyed by table ID. Only populated when
     /// `mode == WithRecords`. Phase 2 does not populate this.
     pub records: HashMap<i32, MockRecord>,
     /// Which dispatch mode is active.
     pub mode: DispatchMode,
+    /// Current call depth — incremented on each workspace-procedure call and
+    /// decremented on return. Capped at `MAX_RECURSION_DEPTH`.
+    pub recursion_depth: usize,
 }
 
 impl DispatchCtx {
@@ -56,6 +62,7 @@ impl DispatchCtx {
             workspace,
             records: HashMap::new(),
             mode: DispatchMode::PureLogic,
+            recursion_depth: 0,
         }
     }
 
@@ -65,6 +72,7 @@ impl DispatchCtx {
             workspace,
             records,
             mode: DispatchMode::WithRecords,
+            recursion_depth: 0,
         }
     }
 }
@@ -84,7 +92,7 @@ pub fn dispatch_call(
     receiver: Option<&str>,
     procedure: &str,
     args: Vec<Value>,
-    _ctx: &mut DispatchCtx,
+    ctx: &mut DispatchCtx,
 ) -> Eval {
     // ── 1. Stub catalogs (Library Assert etc.) ────────────────────────────────
     if let Some(recv) = receiver {
@@ -103,26 +111,317 @@ pub fn dispatch_call(
 
     // ── 2. Inline builtins ────────────────────────────────────────────────────
     match procedure.to_ascii_lowercase().as_str() {
-        "error" => builtin_error(&args),
-        "message" => builtin_message(&args),
-        "strsubstno" => builtin_strsubstno(&args),
-        "format" => builtin_format(&args),
-        "strlen" => builtin_strlen(&args),
-        "copystr" => builtin_copystr(&args),
-        "lowercase" => builtin_lowercase(&args),
-        "uppercase" => builtin_uppercase(&args),
-        "indexof" => builtin_indexof(&args),
-        // ── 3. Workspace procedures (Phase 2b placeholder) ───────────────────
-        _other => Eval::Error(ErrorInfo {
-            message: format!(
-                "workspace procedure dispatch not yet wired: {}{}",
-                receiver.map(|r| format!("{r}.")).unwrap_or_default(),
-                procedure
-            ),
-            error_type: None,
-            source: None,
-        }),
+        "error" => return builtin_error(&args),
+        "message" => return builtin_message(&args),
+        "strsubstno" => return builtin_strsubstno(&args),
+        "format" => return builtin_format(&args),
+        "strlen" => return builtin_strlen(&args),
+        "copystr" => return builtin_copystr(&args),
+        "lowercase" => return builtin_lowercase(&args),
+        "uppercase" => return builtin_uppercase(&args),
+        "indexof" => return builtin_indexof(&args),
+        _ => {}
     }
+
+    // ── 3. Workspace procedure lookup ────────────────────────────────────────
+    dispatch_workspace_procedure(receiver, procedure, args, ctx)
+}
+
+/// Look up a procedure in the workspace and execute it.
+///
+/// Search order:
+/// 1. If `receiver` is `Some(name)`, search the `file_index` for a codeunit
+///    object whose name matches `name` (case-insensitive).
+/// 2. If `receiver` is `None`, search every file in the index (same as all
+///    visible procedures in the current object — Phase 2b allows any file).
+///
+/// When the procedure node is found:
+/// - Parse parameter declarations; type-check each arg.
+/// - Push a new `CallFrame`, execute the body, pop and return.
+/// - Increment/decrement `ctx.recursion_depth`; error if > MAX.
+fn dispatch_workspace_procedure(
+    receiver: Option<&str>,
+    procedure: &str,
+    args: Vec<Value>,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    // Recursion guard.
+    if ctx.recursion_depth > MAX_RECURSION_DEPTH {
+        return simple_error("recursion depth exceeded");
+    }
+
+    // Collect candidate file paths: if a receiver is given, restrict to
+    // files whose object name matches.  Otherwise consider every file.
+    let candidate_paths: Vec<std::path::PathBuf> = if let Some(recv) = receiver {
+        // Find by exact object name (case-insensitive).
+        match ctx.workspace.file_index.find_by_object_name(recv) {
+            Some(path) => vec![path],
+            None => {
+                return simple_error(format!("object '{}' not found in workspace", recv));
+            }
+        }
+    } else {
+        // No receiver — search all workspace files.
+        ctx.workspace
+            .file_index
+            .files
+            .iter()
+            .map(|e| e.key().clone())
+            .collect()
+    };
+
+    // Search each candidate file for a matching procedure_declaration.
+    for path in &candidate_paths {
+        let Some((text, tree)) = ctx.workspace.file_index.get_cached_parse(path) else {
+            continue;
+        };
+
+        let source = text.as_bytes();
+        let root = tree.root_node();
+
+        // Find the object name for the CallFrame.
+        let object_name = ctx
+            .workspace
+            .file_index
+            .object_info
+            .get(path)
+            .map(|info| info.name.clone())
+            .unwrap_or_default();
+
+        // Walk the tree to find a procedure_declaration with the matching name.
+        // Iterative traversal (rule: no recursion).
+        let mut stack_nodes = vec![root];
+        let mut found_proc: Option<(tree_sitter::Node<'_>, Vec<ParamDecl>)> = None;
+
+        'outer: while let Some(node) = stack_nodes.pop() {
+            if node.kind() == "procedure_declaration" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    if let Ok(name_text) = name_node.utf8_text(source) {
+                        let clean = name_text.trim_matches('"');
+                        if clean.eq_ignore_ascii_case(procedure) {
+                            // Collect parameter declarations.
+                            let params = collect_params(node, source);
+                            found_proc = Some((node, params));
+                            break 'outer;
+                        }
+                    }
+                }
+                // Don't descend into procedure bodies when just searching by name.
+                continue;
+            }
+            // Push children (iterative walk).
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                stack_nodes.push(child);
+            }
+        }
+
+        let Some((proc_node, params)) = found_proc else {
+            continue;
+        };
+
+        // Type-check arguments against declared parameter types.
+        for (i, param) in params.iter().enumerate() {
+            let arg = match args.get(i) {
+                Some(v) => v,
+                None => {
+                    // Missing argument — use default value for the type.
+                    // (AL allows calling with fewer args if trailing params have defaults;
+                    // Phase 2b: treat as type-check pass since we can't check unknown.)
+                    continue;
+                }
+            };
+            if let Some(err) = check_param_type(arg, &param.type_name) {
+                return Eval::Error(ErrorInfo {
+                    message: format!("type mismatch for parameter '{}': {}", param.name, err),
+                    error_type: None,
+                    source: None,
+                });
+            }
+        }
+
+        // Find the procedure body (begin_end_block or statement_list child).
+        // NB: cursor must outlive the iterator, so we use an explicit loop.
+        let body_node = {
+            let mut cursor = proc_node.walk();
+            let mut found_body = None;
+            for child in proc_node.named_children(&mut cursor) {
+                if child.kind() == "begin_end_block" || child.kind() == "statement_list" {
+                    found_body = Some(child);
+                    break;
+                }
+            }
+            found_body
+        };
+
+        let Some(body) = body_node else {
+            return simple_error(format!("procedure '{}' has no body", procedure));
+        };
+
+        // Build the call frame.
+        let mut frame = CallFrame::new(object_name.as_str(), procedure);
+        for (i, param) in params.iter().enumerate() {
+            let val = args.get(i).cloned().unwrap_or(Value::Empty);
+            frame.bind(&param.name, val);
+        }
+
+        // Execute.
+        ctx.recursion_depth += 1;
+        let mut scope = ScopeStack::new();
+        scope.push(frame);
+        // We need the text/tree to stay alive during eval. They were cloned above.
+        let result =
+            crate::test_runtime::interpreter::eval_stmt::eval_stmt(body, source, &mut scope, ctx);
+        ctx.recursion_depth -= 1;
+
+        // Unwrap Exit into Normal (exit only unwinds the current procedure).
+        return match result {
+            Eval::Exit(v) => Eval::Normal(v),
+            other => other,
+        };
+    }
+
+    // Procedure not found in any candidate file.
+    simple_error(format!(
+        "procedure not found: {}{}",
+        receiver.map(|r| format!("{r}.")).unwrap_or_default(),
+        procedure
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Parameter-declaration helpers
+// ---------------------------------------------------------------------------
+
+/// A parsed parameter declaration from a `procedure_declaration` node.
+#[derive(Debug, Clone)]
+struct ParamDecl {
+    name: String,
+    type_name: String,
+}
+
+/// Extract parameter declarations from a `procedure_declaration` node.
+///
+/// Handles the AL grammar shape:
+///   `parameter_list`  →  `(` `parameter`* `)`
+///   `parameter`       →  [`kw_var`] `name_or_keyword` `:` `type_reference`
+fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) -> Vec<ParamDecl> {
+    let mut params = Vec::new();
+
+    // Find the parameter_list child (via field "parameters" or by kind).
+    let param_list = if let Some(n) = proc_node.child_by_field_name("parameters") {
+        Some(n)
+    } else {
+        let mut cursor = proc_node.walk();
+        let mut found = None;
+        for child in proc_node.named_children(&mut cursor) {
+            if child.kind() == "parameter_list" {
+                found = Some(child);
+                break;
+            }
+        }
+        found
+    };
+
+    let Some(param_list) = param_list else {
+        return params;
+    };
+
+    let mut cursor2 = param_list.walk();
+    for child in param_list.named_children(&mut cursor2) {
+        // Accept both "parameter" and "parameter_declaration" node kinds.
+        if child.kind() != "parameter" && child.kind() != "parameter_declaration" {
+            continue;
+        }
+        // Name: from field "name" or the first identifier-like named child.
+        let name_node = if let Some(n) = child.child_by_field_name("name") {
+            Some(n)
+        } else {
+            let mut tc = child.walk();
+            let mut found_name = None;
+            for nc in child.named_children(&mut tc) {
+                if matches!(nc.kind(), "identifier" | "name" | "name_or_keyword") {
+                    found_name = Some(nc);
+                    break;
+                }
+            }
+            found_name
+        };
+        let Some(name_node) = name_node else {
+            continue;
+        };
+        let Ok(name_text) = name_node.utf8_text(source) else {
+            continue;
+        };
+        let name = name_text.trim_matches('"').to_string();
+
+        // Type: from field "type" or the type_reference child.
+        let type_node = if let Some(n) = child.child_by_field_name("type") {
+            Some(n)
+        } else {
+            let mut tc = child.walk();
+            let mut found_type = None;
+            for nc in child.named_children(&mut tc) {
+                if matches!(
+                    nc.kind(),
+                    "type_reference" | "type" | "builtin_type" | "primitive_type"
+                ) {
+                    found_type = Some(nc);
+                    break;
+                }
+            }
+            found_type
+        };
+        let type_name = type_node
+            .and_then(|n| n.utf8_text(source).ok())
+            .map(|t| t.trim().to_string())
+            .unwrap_or_default();
+
+        params.push(ParamDecl { name, type_name });
+    }
+
+    params
+}
+
+/// Check whether a `Value` matches the declared AL type name.
+///
+/// Returns `Some(error_message)` on mismatch, `None` on pass.
+/// Unknown type names are accepted (Phase 2b: allow through).
+fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
+    if type_name.is_empty() {
+        return None;
+    }
+    let lower = type_name.to_lowercase();
+    match lower.as_str() {
+        "integer" | "biginteger" => {
+            if !matches!(arg, Value::Integer(_)) {
+                return Some(format!("expected Integer, got {}", arg.type_name()));
+            }
+        }
+        "decimal" => {
+            if !matches!(arg, Value::Decimal(_) | Value::Integer(_)) {
+                return Some(format!("expected Decimal, got {}", arg.type_name()));
+            }
+        }
+        "boolean" => {
+            if !matches!(arg, Value::Boolean(_)) {
+                return Some(format!("expected Boolean, got {}", arg.type_name()));
+            }
+        }
+        t if t.starts_with("text") => {
+            if !matches!(arg, Value::Text(_) | Value::Code(_)) {
+                return Some(format!("expected Text, got {}", arg.type_name()));
+            }
+        }
+        t if t.starts_with("code") => {
+            if !matches!(arg, Value::Text(_) | Value::Code(_)) {
+                return Some(format!("expected Code, got {}", arg.type_name()));
+            }
+        }
+        // All other type names: pass through (Phase 2b can't check complex types).
+        _ => {}
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -234,9 +533,11 @@ fn builtin_copystr(args: &[Value]) -> Eval {
         return simple_error("CopyStr: position must be >= 1");
     }
     let chars: Vec<char> = s.chars().collect();
+    // AL runtime raises an error when position exceeds the string length.
     if pos > chars.len() {
         return simple_error(format!(
-            "CopyStr: position {pos} is beyond string length {}",
+            "CopyStr: position {} is beyond the string length {}",
+            pos,
             chars.len()
         ));
     }
@@ -272,7 +573,7 @@ fn builtin_uppercase(args: &[Value]) -> Eval {
 }
 
 /// `IndexOf(s, needle)` — return the 1-based index of `needle` in `s`,
-/// or 0 if not found.
+/// or 0 if not found. Empty needle always returns 0 (AL convention).
 fn builtin_indexof(args: &[Value]) -> Eval {
     let (s, needle) = match args {
         [Value::Text(s), Value::Text(n)]
@@ -281,8 +582,7 @@ fn builtin_indexof(args: &[Value]) -> Eval {
         | [Value::Code(s), Value::Code(n)] => (s.as_str(), n.as_str()),
         _ => return simple_error("IndexOf expects (Text, Text)"),
     };
-    // AL convention: an empty needle yields 0 (not found), not the
-    // Rust default of 1 from `str::find("") == Some(0)`.
+    // AL convention: empty needle → 0 (not found).
     if needle.is_empty() {
         return Eval::Normal(Value::Integer(0));
     }
@@ -320,52 +620,19 @@ fn render_value(v: &Value) -> String {
     }
 }
 
-/// Substitute `%N` placeholders in `fmt` with rendered arg values.
+/// Substitute %1, %2, … placeholders in `fmt` with rendered arg values.
 ///
-/// `N` is greedily matched as digits — `%10` is the 10th arg, not "%1
-/// followed by literal 0". This avoids the naive replace-loop bug where
-/// running a pass for each index would corrupt multi-digit placeholders
-/// (e.g. the `%1` pass would eat the `%1` prefix of `%10`).
+/// Replaces in decreasing placeholder-number order so that `%10` is handled
+/// before `%1`, preventing `%1` from consuming the `%1` prefix of `%10`.
 fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
-    let mut out = String::with_capacity(fmt.len());
-    let bytes = fmt.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 1 < bytes.len() {
-            // %% → literal %
-            if bytes[i + 1] == b'%' {
-                out.push('%');
-                i += 2;
-                continue;
-            }
-            // Greedily consume digits.
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i + 1 {
-                if let Ok(idx_str) = std::str::from_utf8(&bytes[i + 1..j]) {
-                    if let Ok(idx) = idx_str.parse::<usize>() {
-                        if idx >= 1 {
-                            if let Some(arg) = args.get(idx - 1) {
-                                out.push_str(&render_value(arg));
-                            } else {
-                                // Out-of-range placeholder: keep the literal so
-                                // callers can spot the mistake.
-                                out.push('%');
-                                out.push_str(idx_str);
-                            }
-                            i = j;
-                            continue;
-                        }
-                    }
-                }
-            }
-        }
-        out.push(bytes[i] as char);
-        i += 1;
+    let mut result = fmt.to_string();
+    // Iterate in reverse order (highest index first) so that e.g. %10 is
+    // replaced before %1 — otherwise `%1` would corrupt `%10`.
+    for i in (0..args.len()).rev() {
+        let placeholder = format!("%{}", i + 1);
+        result = result.replace(&placeholder, &render_value(&args[i]));
     }
-    out
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -510,8 +777,8 @@ mod tests {
             e.message
         );
         assert!(
-            e.message.contains("not yet wired"),
-            "expected 'not yet wired' in error, got: {}",
+            e.message.contains("not found"),
+            "expected 'not found' in error, got: {}",
             e.message
         );
     }
@@ -684,6 +951,95 @@ mod tests {
             ok(result),
             Value::Integer(0),
             "IndexOf with empty needle should return 0"
+        );
+    }
+
+    // ── Workspace procedure dispatch (Phase 2b) ───────────────────────────────
+
+    fn workspace_with_helper() -> Arc<Workspace> {
+        let ws = Arc::new(Workspace::new());
+        let source = r#"codeunit 50999 "Helper"
+{
+    procedure Add(a: Integer; b: Integer): Integer
+    begin
+        exit(a + b);
+    end;
+
+    procedure Forever()
+    begin
+        Forever();
+    end;
+}
+"#;
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/test/Helper.al"),
+            source.to_string(),
+        );
+        ws
+    }
+
+    #[test]
+    fn workspace_dispatch_add_helper_positive() {
+        // Positive: dispatch Add(2, 3) into Helper codeunit → Integer(5).
+        let ws = workspace_with_helper();
+        let mut ctx = DispatchCtx::new_pure(ws);
+        let result = dispatch_call(
+            Some("Helper"),
+            "Add",
+            vec![Value::Integer(2), Value::Integer(3)],
+            &mut ctx,
+        );
+        assert_eq!(
+            ok(result),
+            Value::Integer(5),
+            "Helper.Add(2, 3) should return 5"
+        );
+    }
+
+    #[test]
+    fn workspace_dispatch_unknown_procedure_not_found_negative() {
+        // Negative: dispatching an unknown procedure name → Eval::Error containing "not found".
+        let ws = workspace_with_helper();
+        let mut ctx = DispatchCtx::new_pure(ws);
+        let result = dispatch_call(Some("Helper"), "NoSuchProc", vec![], &mut ctx);
+        let e = err(result);
+        assert!(
+            e.message.contains("not found"),
+            "expected 'not found' in error message, got: {}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn workspace_dispatch_type_mismatch_negative() {
+        // Negative: passing Text where Integer is declared → Eval::Error containing "type".
+        let ws = workspace_with_helper();
+        let mut ctx = DispatchCtx::new_pure(ws);
+        let result = dispatch_call(
+            Some("Helper"),
+            "Add",
+            vec![Value::Text("hello".into()), Value::Integer(3)],
+            &mut ctx,
+        );
+        let e = err(result);
+        assert!(
+            e.message.to_lowercase().contains("type"),
+            "expected 'type' in error message, got: {}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn workspace_dispatch_deep_recursion_negative() {
+        // Negative: Forever() calls itself until recursion_depth > 100 → Eval::Error("recursion depth exceeded").
+        let ws = workspace_with_helper();
+        let mut ctx = DispatchCtx::new_pure(ws);
+        let result = dispatch_call(Some("Helper"), "Forever", vec![], &mut ctx);
+        let e = err(result);
+        assert!(
+            e.message.contains("recursion depth exceeded"),
+            "expected 'recursion depth exceeded' in error, got: {}",
+            e.message
         );
     }
 }

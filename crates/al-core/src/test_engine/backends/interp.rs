@@ -325,6 +325,7 @@ fn run_procedure_interp(
         workspace: ws_arc,
         records: HashMap::new(),
         mode: DispatchMode::PureLogic,
+        recursion_depth: 0,
     };
 
     eval_stmt(body, source, &mut stack, &mut ctx)

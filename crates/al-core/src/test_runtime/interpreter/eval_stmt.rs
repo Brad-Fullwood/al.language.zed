@@ -545,12 +545,29 @@ fn eval_exit(
     _ctx: &mut DispatchCtx,
 ) -> Eval {
     if let Some(expr) = named_stmt_child(node, 0) {
-        match eval_expr(expr, source, stack) {
+        // The AL grammar represents `exit(value)` as:
+        //   exit_statement → argument_list → [expression_list →] expression
+        // Unwrap containers to reach the actual expression.
+        let inner = unwrap_exit_expr(expr);
+        match eval_expr(inner, source, stack) {
             Eval::Normal(v) => Eval::Exit(v),
             other => other,
         }
     } else {
         Eval::Exit(Value::Empty)
+    }
+}
+
+/// Unwrap `argument_list` / `expression_list` wrappers that the grammar inserts
+/// around the `exit(value)` argument, returning the innermost expression node.
+fn unwrap_exit_expr(node: Node<'_>) -> Node<'_> {
+    match node.kind() {
+        "argument_list" | "expression_list" => {
+            // Get first named child; if absent, return the node itself so
+            // eval_expr produces a meaningful error rather than panicking.
+            node.named_child(0).map(unwrap_exit_expr).unwrap_or(node)
+        }
+        _ => node,
     }
 }
 
@@ -575,10 +592,8 @@ fn eval_asserterror(
             // Error was raised — asserterror succeeded.
             Eval::Normal(Value::Empty)
         }
-        // Exit unwinds the procedure; asserterror does NOT swallow it. It's
-        // distinct from "no error was raised" — the procedure has decided to
-        // return early, which AL semantics treat as control flow that
-        // bypasses the assertion entirely. Propagate unchanged.
+        // Exit unwinds the procedure; asserterror does NOT swallow it. AL
+        // semantics treat Exit as control flow that bypasses the assertion.
         exit @ Eval::Exit(_) => exit,
         Eval::Normal(_) => {
             // Body completed without raising an error — assertion fails.
@@ -601,13 +616,64 @@ fn eval_expression_stmt(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    match node.kind() {
+    // Resolve any transparent wrappers before checking for call patterns.
+    let effective = resolve_to_call_node(node);
+    match effective.kind() {
         // Member call: receiver.Procedure(args)
         "member_access_expression" | "method_call_expression" | "call_expression" => {
-            eval_call(node, source, stack, ctx)
+            eval_call(effective, source, stack, ctx)
+        }
+        // The AL grammar expresses bare calls as `postfix_expression`:
+        //   primary_expression + call_suffix   → ForwardCall(args)
+        //   primary_expression + member_call_suffix → Recv.Call(args)
+        //   primary_expression + scope_call_suffix  → Codeunit::Call(args)
+        // We detect calls by checking for a call_suffix / member_call_suffix child.
+        "postfix_expression" => {
+            if is_call_postfix(effective) {
+                eval_call(effective, source, stack, ctx)
+            } else {
+                // Not a call — fall back to full expression evaluation.
+                eval_expr(node, source, stack)
+            }
         }
         // Everything else: delegate to the expression evaluator.
         _ => eval_expr(node, source, stack),
+    }
+}
+
+/// Descend through transparent expression/unary_expression wrappers to find
+/// the innermost meaningful node. Stops at the first non-wrapper kind.
+///
+/// The AL grammar wraps calls as:
+///   expression(unary_expression(postfix_expression(primary_expression, call_suffix)))
+/// We need to reach `postfix_expression` for call detection.
+fn resolve_to_call_node(node: Node<'_>) -> Node<'_> {
+    match node.kind() {
+        "expression" | "unary_expression" => {
+            // If exactly one named child, descend.
+            if node.named_child_count() == 1 {
+                if let Some(inner) = node.named_child(0) {
+                    return resolve_to_call_node(inner);
+                }
+            }
+            node
+        }
+        _ => node,
+    }
+}
+
+/// Return true if this postfix_expression ends with a call_suffix,
+/// member_call_suffix, or scope_call_suffix (i.e., it is a call, not just
+/// a field access).
+fn is_call_postfix(node: Node<'_>) -> bool {
+    let count = node.child_count();
+    if let Some(last) = (0..count).rev().find_map(|i| node.child(i)) {
+        matches!(
+            last.kind(),
+            "call_suffix" | "member_call_suffix" | "scope_call_suffix"
+        )
+    } else {
+        false
     }
 }
 
@@ -641,16 +707,81 @@ fn eval_call(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
 ///
 /// Returns `(None, name, args)` for a bare call or `(Some(recv), name, args)`
 /// for a member call.
+///
+/// Handles two grammar shapes:
+/// 1. Legacy: flat children `identifier [arg_list]` or `recv . proc arg_list`.
+/// 2. Postfix: `primary_expression { call_suffix | member_call_suffix }`.
 fn extract_call_parts<'a>(
     node: Node<'a>,
     source: &[u8],
 ) -> (Option<String>, String, Option<Node<'a>>) {
-    // Strategy: scan named children.
-    // We expect something like:
-    //   member: identifier "." identifier args_list
-    //   or just: identifier args_list
-    //
-    // The grammar may vary; we use a heuristic.
+    // ── Shape 2: postfix_expression ──────────────────────────────────────────
+    // Children: primary_expression, [member_call_suffix | scope_call_suffix | call_suffix]
+    // member_call_suffix has: "." identifier argument_list
+    // scope_call_suffix  has: "::" identifier argument_list
+    // call_suffix        has: argument_list  (bare call, name is in primary_expression)
+    if node.kind() == "postfix_expression" {
+        let child_count = node.child_count();
+        // Find the suffix (last meaningful child).
+        let suffix = (0..child_count)
+            .rev()
+            .find_map(|i| node.child(i))
+            .filter(|n| {
+                matches!(
+                    n.kind(),
+                    "call_suffix" | "member_call_suffix" | "scope_call_suffix"
+                )
+            });
+
+        if let Some(sfx) = suffix {
+            // Get the argument_list from inside the suffix.
+            let args = find_argument_list(sfx);
+
+            match sfx.kind() {
+                "member_call_suffix" | "scope_call_suffix" => {
+                    // Receiver is the primary_expression; proc name is the identifier in the suffix.
+                    let receiver_text = node
+                        .child(0)
+                        .and_then(|n| n.utf8_text(source).ok())
+                        .map(|t| t.trim_matches('"').to_string());
+                    let proc_name = sfx
+                        .named_children(&mut sfx.walk())
+                        .find(|n| n.kind() == "identifier" || n.kind() == "name")
+                        .and_then(|n| n.utf8_text(source).ok())
+                        .map(|t| t.trim_matches('"').to_string())
+                        .unwrap_or_default();
+                    return (receiver_text, proc_name, args);
+                }
+                "call_suffix" => {
+                    // Bare call: name is the text of the primary_expression.
+                    let name = node
+                        .child(0)
+                        .and_then(|n| {
+                            // Unwrap primary_expression → identifier if needed.
+                            if n.kind() == "primary_expression" {
+                                n.named_child(0)
+                                    .and_then(|id| id.utf8_text(source).ok())
+                                    .map(|t| t.trim_matches('"').to_string())
+                                    .or_else(|| {
+                                        n.utf8_text(source)
+                                            .ok()
+                                            .map(|t| t.trim_matches('"').to_string())
+                                    })
+                            } else {
+                                n.utf8_text(source)
+                                    .ok()
+                                    .map(|t| t.trim_matches('"').to_string())
+                            }
+                        })
+                        .unwrap_or_default();
+                    return (None, name, args);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ── Shape 1 (legacy flat shape) ──────────────────────────────────────────
     let child_count = node.child_count();
     let parts: Vec<(bool, Node)> = (0..child_count)
         .filter_map(|i| node.child(i))
@@ -690,16 +821,56 @@ fn extract_call_parts<'a>(
     }
 }
 
+/// Find the `argument_list` node inside a call suffix.
+fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
+    // First try field "call" (as defined in the grammar for call_suffix).
+    if let Some(n) = node.child_by_field_name("call") {
+        return Some(n);
+    }
+    // Fallback: scan named children for an argument_list node.
+    let mut cursor = node.walk();
+    let mut found = None;
+    for child in node.named_children(&mut cursor) {
+        if matches!(
+            child.kind(),
+            "argument_list" | "call_arguments" | "procedure_call_arguments"
+        ) {
+            found = Some(child);
+            break;
+        }
+    }
+    found
+}
+
 /// Evaluate an argument list node, returning a Vec of Values or an ErrorInfo.
+///
+/// Handles both flat shapes (direct `expression` children) and the grammar shape
+/// where `argument_list` wraps a single `expression_list` containing the
+/// comma-separated `expression` items.
 fn eval_args(
     args_node: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
 ) -> Result<Vec<Value>, ErrorInfo> {
-    let mut cursor = args_node.walk();
     let mut out = Vec::new();
-    for child in args_node.named_children(&mut cursor) {
+    eval_args_into(args_node, source, stack, &mut out)?;
+    Ok(out)
+}
+
+fn eval_args_into(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    out: &mut Vec<Value>,
+) -> Result<(), ErrorInfo> {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
         if is_punctuation(child.kind()) {
+            continue;
+        }
+        // Unwrap expression_list — it is a named container for comma-separated args.
+        if child.kind() == "expression_list" {
+            eval_args_into(child, source, stack, out)?;
             continue;
         }
         match eval_expr(child, source, stack) {
@@ -708,7 +879,7 @@ fn eval_args(
             Eval::Exit(v) => out.push(v),
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
