@@ -1,61 +1,158 @@
-//! Bridge: `BcDebugSession` → `DebuggerSession` trait.
+//! Live BC debug session adapter for the snapshot recorder.
 //!
-//! Adapts the live-BC SignalR debugger client to the trait the snapshot
-//! recorder/replayer drives. Phase-4 ships a minimal stub: every method
-//! returns `ReplayerError::Session("bc bridge not yet wired …")`.
+//! [`BcDebugSessionAdapter`] wraps a [`BcDebugSession`] and implements
+//! [`DebuggerSession`] so the snapshot recorder can drive a real BC instance
+//! without knowing about SignalR internals.
 //!
-//! Why a stub: dev's `DebuggerSession::add_breakpoint(file, line)` addresses
-//! breakpoints by source path, but `BcDebugSession::add_breakpoint` takes
-//! `(object_type, object_number, line, column, condition)`. Translating
-//! between the two requires parsing the AL source to extract object
-//! declaration metadata. That's a deliberately separate change so the
-//! daemon endpoints + CLI can ship and the trait surface can be exercised
-//! against `FakeSession` in unit tests.
+//! ## Object metadata extraction
+//!
+//! `add_breakpoint(file, line)` must translate a file path + line number into a
+//! BC `{ObjectType, ObjectNumber}` pair before calling the SignalR hub. It does
+//! this by reading the AL source, parsing it with the tree-sitter parser, and
+//! calling `syntax::find_object_declaration`.
+//!
+//! ## wait_for_break gap
+//!
+//! The `BcDebugSession` exposes server-push events via
+//! `try_drain_push_events()` (non-blocking) and `flush_pending_events()` (after
+//! an invoke). Neither API blocks until a `Break` event arrives — that would
+//! require holding the `event_rx` lock continuously, which would starve any
+//! concurrent `invoke()` call.
+//!
+//! TODO: Add a `wait_for_break()` method to `BcDebugSession` that uses a
+//! `tokio::sync::Notify` set by `handle_server_callback` when a `Break` event
+//! arrives, without holding `event_rx` open.
+//!
+//! Until then, `wait_for_break` polls `try_drain_push_events` with a short sleep
+//! and returns `Err(ReplayerError::NotYetWired(...))` — callers must document
+//! this limitation.
+
+use std::sync::Arc;
+
+use tracing::debug;
+
+use crate::dap::bc_debug::{BcDebugConfig, BcDebugSession};
+use crate::dap::native_dap::kind_to_object_type;
+use crate::syntax::{find_object_declaration, AlParser};
 
 use super::replayer::{DebuggerSession, ReplayerError};
-use crate::dap::bc_debug::BcDebugSession;
 
-/// Adapter that lets a `BcDebugSession` reference satisfy the
-/// `DebuggerSession` trait. Newtype to keep future evolution explicit.
-pub struct BcDebugSessionAdapter<'a> {
-    #[allow(dead_code)]
-    session: &'a BcDebugSession,
+/// Adapter that wraps a live [`BcDebugSession`] and exposes [`DebuggerSession`].
+pub struct BcDebugSessionAdapter {
+    session: Arc<BcDebugSession>,
+    config: BcDebugConfig,
 }
 
-impl<'a> BcDebugSessionAdapter<'a> {
-    /// Wrap a `BcDebugSession` reference.
-    pub fn new(session: &'a BcDebugSession) -> Self {
-        Self { session }
+impl BcDebugSessionAdapter {
+    /// Create a new adapter from an already-connected session and its config.
+    pub fn new(session: Arc<BcDebugSession>, config: BcDebugConfig) -> Self {
+        Self { session, config }
     }
 }
 
-fn not_yet_wired(method: &str) -> ReplayerError {
-    ReplayerError::Session(format!(
-        "BcDebugSessionAdapter::{method} is not yet wired \
-         (Phase 4 ships the daemon + CLI scaffolding; the live-BC \
-         bridge needs AL source → object metadata extraction)"
-    ))
+/// Parse an AL source file to extract the object kind and numeric ID.
+///
+/// Returns `(kind_lowercase, object_id)` or an error if the file cannot be
+/// read or the object declaration cannot be found.
+pub fn extract_object_metadata(file: &str) -> Result<(String, i32), ReplayerError> {
+    let source = std::fs::read_to_string(file)?;
+    let result = AlParser::parse_quick(&source);
+    let obj = find_object_declaration(&result.tree, &source)
+        .ok_or_else(|| ReplayerError::Parse(format!("no object declaration found in {file}")))?;
+    let id = obj
+        .id
+        .ok_or_else(|| ReplayerError::Parse(format!("object in {file} has no numeric ID")))?
+        as i32;
+    Ok((obj.kind, id))
 }
 
-impl<'a> DebuggerSession for BcDebugSessionAdapter<'a> {
-    async fn add_breakpoint(&self, _file: &str, _line: u32) -> Result<u32, ReplayerError> {
-        Err(not_yet_wired("add_breakpoint"))
+impl DebuggerSession for BcDebugSessionAdapter {
+    async fn add_breakpoint(&self, file: &str, line: u32) -> Result<u32, ReplayerError> {
+        let (kind, object_id) = extract_object_metadata(file)?;
+        let object_type = kind_to_object_type(&kind);
+
+        debug!(
+            file = file,
+            line = line,
+            kind = %kind,
+            object_type = object_type,
+            object_id = object_id,
+            "BcDebugSessionAdapter: add_breakpoint"
+        );
+
+        let response = self
+            .session
+            .add_breakpoint(object_type, object_id, line as i64, 0, "")
+            .await
+            .map_err(|e| ReplayerError::Session(format!("add_breakpoint failed: {e}")))?;
+
+        // BC returns a JSON object with the assigned breakpoint ID.
+        // The field is typically "Id" (PascalCase, Newtonsoft.Json convention).
+        let bp_id = response
+            .get("Id")
+            .or_else(|| response.get("id"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+
+        Ok(bp_id)
     }
 
     async fn configuration_done(&self) -> Result<(), ReplayerError> {
-        Err(not_yet_wired("configuration_done"))
+        self.session
+            .configuration_done(&self.config)
+            .await
+            .map_err(|e| ReplayerError::Session(format!("configuration_done failed: {e}")))
     }
 
+    /// Wait for the next BC `Break` event.
+    ///
+    /// # Current limitation
+    ///
+    /// `BcDebugSession` does not yet expose a blocking break-wait API (see module
+    /// doc for the design gap). This method polls `try_drain_push_events` up to
+    /// 300 times with a 100 ms delay (30 s total) looking for a `Break` event.
+    /// If none arrives within that window it returns
+    /// `Err(ReplayerError::NotYetWired(...))`.
+    ///
+    /// TODO: Replace the polling loop once `BcDebugSession::wait_break_notify()`
+    /// is implemented.
     async fn wait_for_break(&self) -> Result<bool, ReplayerError> {
-        Err(not_yet_wired("wait_for_break"))
+        use crate::dap::bc_debug::BcEvent;
+        const MAX_POLLS: usize = 300;
+        const POLL_DELAY: tokio::time::Duration = tokio::time::Duration::from_millis(100);
+
+        for _ in 0..MAX_POLLS {
+            let events = self.session.try_drain_push_events().await;
+            for event in events {
+                match event {
+                    BcEvent::Break { .. } => return Ok(true),
+                    BcEvent::Detached { .. } | BcEvent::FatalError { .. } => return Ok(false),
+                    BcEvent::Other { .. } => {}
+                }
+            }
+            tokio::time::sleep(POLL_DELAY).await;
+        }
+
+        Err(ReplayerError::NotYetWired(
+            "wait_for_break: BcDebugSession has no blocking break-wait API; \
+             timed out after 30s without a Break event. \
+             TODO: add BcDebugSession::wait_break_notify() using tokio::sync::Notify."
+                .to_string(),
+        ))
     }
 
     async fn get_variables(&self) -> Result<serde_json::Value, ReplayerError> {
-        Err(not_yet_wired("get_variables"))
+        self.session
+            .get_variables(0)
+            .await
+            .map_err(|e| ReplayerError::Session(format!("get_variables failed: {e}")))
     }
 
     async fn continue_execution(&self) -> Result<(), ReplayerError> {
-        Err(not_yet_wired("continue_execution"))
+        self.session
+            .continue_execution(serde_json::json!({}))
+            .await
+            .map_err(|e| ReplayerError::Session(format!("continue_execution failed: {e}")))
     }
 }
 
@@ -67,13 +164,83 @@ impl<'a> DebuggerSession for BcDebugSessionAdapter<'a> {
 mod tests {
     use super::*;
 
-    /// Compile-time check that the adapter satisfies the trait bound —
-    /// failing this means the trait surface drifted.
-    #[allow(dead_code)]
-    fn _bound_check<S: DebuggerSession>() {}
-
+    /// Positive: parse a minimal codeunit file and assert the correct
+    /// `(object_type, object_id)` metadata is extracted.
     #[test]
-    fn adapter_satisfies_debugger_session_bound() {
-        _bound_check::<BcDebugSessionAdapter<'static>>();
+    fn extract_object_metadata_codeunit() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("MyCu.al");
+        std::fs::write(&file, r#"codeunit 50100 "My Cu" { }"#).unwrap();
+
+        let (kind, id) = extract_object_metadata(file.to_str().unwrap())
+            .expect("should parse codeunit metadata");
+
+        // kind must map to the BC CODEUNIT object type integer
+        let bc_type = kind_to_object_type(&kind);
+        assert_eq!(
+            bc_type,
+            crate::dap::native_dap::bc_object_type::CODEUNIT,
+            "codeunit kind={kind} should map to BC CODEUNIT"
+        );
+        assert_eq!(id, 50100, "object id should be 50100");
+    }
+
+    /// Positive: parse a table file and assert TABLE type + correct ID.
+    #[test]
+    fn extract_object_metadata_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("MyTable.al");
+        std::fs::write(&file, r#"table 1234 "My Table" { fields { } }"#).unwrap();
+
+        let (kind, id) =
+            extract_object_metadata(file.to_str().unwrap()).expect("should parse table metadata");
+
+        let bc_type = kind_to_object_type(&kind);
+        assert_eq!(
+            bc_type,
+            crate::dap::native_dap::bc_object_type::TABLE,
+            "table kind={kind} should map to BC TABLE"
+        );
+        assert_eq!(id, 1234);
+    }
+
+    /// Negative: missing file returns Io error.
+    #[test]
+    fn extract_object_metadata_missing_file_returns_error() {
+        let result = extract_object_metadata("/nonexistent/path/to/file.al");
+        assert!(result.is_err(), "should fail for missing file");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ReplayerError::Io(_)),
+            "expected Io error, got: {err}"
+        );
+    }
+
+    /// Negative: file with no AL object declaration returns Parse error.
+    #[test]
+    fn extract_object_metadata_no_declaration_returns_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Empty.al");
+        std::fs::write(&file, "// just a comment\n").unwrap();
+
+        let result = extract_object_metadata(file.to_str().unwrap());
+        assert!(result.is_err(), "should fail when no object declaration");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ReplayerError::Parse(_)),
+            "expected Parse error, got: {err}"
+        );
+    }
+
+    /// Confirm that `wait_for_break` documents its gap: without a live session
+    /// the trait method is expected to return `NotYetWired` — test the error type
+    /// is well-formed.
+    #[test]
+    fn replayer_error_not_yet_wired_display() {
+        let err = ReplayerError::NotYetWired("test gap".to_string());
+        assert!(
+            err.to_string().contains("not yet wired"),
+            "display should mention 'not yet wired': {err}"
+        );
     }
 }

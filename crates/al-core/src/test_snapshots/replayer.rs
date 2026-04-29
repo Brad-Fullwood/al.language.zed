@@ -30,6 +30,12 @@ pub enum ReplayerError {
     Recorder(#[from] RecorderError),
     #[error("Session error: {0}")]
     Session(String),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Parse error: {0}")]
+    Parse(String),
+    #[error("not yet wired: {0}")]
+    NotYetWired(String),
 }
 
 // ---------------------------------------------------------------------------
