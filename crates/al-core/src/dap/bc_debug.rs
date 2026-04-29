@@ -338,6 +338,12 @@ pub struct BcDebugSession {
     /// for its own completion. Callers drain this buffer after each invoke.
     /// Unbounded so that Break events are never silently dropped.
     pending_events: Mutex<VecDeque<SignalRMessage>>,
+    /// Receives `true` when a Break event arrives and `false` when the session
+    /// ends (Detached or FatalError). Populated by the WebSocket reader task,
+    /// which sends without holding any lock — no deadlock risk. The channel is
+    /// unbounded so events are never lost even if they arrive before the
+    /// receiver calls `wait_for_break_event`.
+    break_event_rx: Mutex<mpsc::UnboundedReceiver<bool>>,
 }
 
 impl BcDebugSession {
@@ -456,6 +462,10 @@ impl BcDebugSession {
         let (ws_tx, mut ws_rx) = mpsc::channel::<String>(32);
         // Unbounded event channel — losing a Break event would leave the debugger silent.
         let (event_tx, event_rx) = mpsc::unbounded_channel::<SignalRMessage>();
+        // Dedicated channel for Break/Detached/FatalError notifications.
+        // Using an unbounded channel ensures events buffered before wait_for_break_event
+        // is called are never lost.
+        let (break_event_tx, break_event_rx) = mpsc::unbounded_channel::<bool>();
 
         // Writer task: send messages from channel to WebSocket
         tokio::spawn(async move {
@@ -505,6 +515,21 @@ impl BcDebugSession {
                                 "SignalR recv: type={} target={:?} id={:?}",
                                 msg.type_, msg.target, msg.invocation_id
                             );
+                            // Notify wait_for_break_event before forwarding the full
+                            // message so it can unblock immediately on Break/end events.
+                            if msg.type_ == 1 {
+                                match msg.target.as_deref() {
+                                    Some("Break") => {
+                                        let _ = break_event_tx.send(true);
+                                    }
+                                    Some(
+                                        "OnDetachedFromConnection" | "OnFatalDebuggerException",
+                                    ) => {
+                                        let _ = break_event_tx.send(false);
+                                    }
+                                    _ => {}
+                                }
+                            }
                             if event_tx.send(msg).is_err() {
                                 break;
                             }
@@ -524,6 +549,7 @@ impl BcDebugSession {
             connection_id,
             is_stopped: Mutex::new(false),
             pending_events: Mutex::new(VecDeque::with_capacity(PENDING_EVENT_CAPACITY)),
+            break_event_rx: Mutex::new(break_event_rx),
         })
     }
 
@@ -710,6 +736,22 @@ impl BcDebugSession {
             // type 3 completions without a pending invoke are unexpected — ignore
         }
         out
+    }
+
+    // ----- Break-event wait -----
+
+    /// Block until a `Break`, `Detached`, or `FatalError` event arrives from BC.
+    ///
+    /// Returns `true` if execution stopped at a breakpoint (`Break` event) and
+    /// `false` if the session ended cleanly or fatally. Uses the dedicated
+    /// `break_event_rx` channel populated by the WebSocket reader task, so:
+    ///
+    /// - No polling loop — the caller yields until BC pushes an event.
+    /// - No race: the channel is unbounded, so a `Break` that arrives before
+    ///   this method is called is buffered and returned on the first `recv`.
+    pub async fn wait_for_break_event(&self) -> bool {
+        let mut rx = self.break_event_rx.lock().await;
+        rx.recv().await.unwrap_or(false)
     }
 
     // ----- Public debug operations -----

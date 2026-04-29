@@ -11,21 +11,12 @@
 //! this by reading the AL source, parsing it with the tree-sitter parser, and
 //! calling `syntax::find_object_declaration`.
 //!
-//! ## wait_for_break gap
+//! ## wait_for_break design
 //!
-//! The `BcDebugSession` exposes server-push events via
-//! `try_drain_push_events()` (non-blocking) and `flush_pending_events()` (after
-//! an invoke). Neither API blocks until a `Break` event arrives — that would
-//! require holding the `event_rx` lock continuously, which would starve any
-//! concurrent `invoke()` call.
-//!
-//! TODO: Add a `wait_for_break()` method to `BcDebugSession` that uses a
-//! `tokio::sync::Notify` set by `handle_server_callback` when a `Break` event
-//! arrives, without holding `event_rx` open.
-//!
-//! Until then, `wait_for_break` polls `try_drain_push_events` with a short sleep
-//! and returns `Err(ReplayerError::NotYetWired(...))` — callers must document
-//! this limitation.
+//! `wait_for_break` delegates to `BcDebugSession::wait_for_break_event()`, which
+//! blocks on a dedicated unbounded channel populated by the WebSocket reader task.
+//! No polling loop, no sleep, no 30-second cap. Events buffered before the call
+//! are returned immediately from the channel.
 
 use std::sync::Arc;
 
@@ -106,39 +97,11 @@ impl DebuggerSession for BcDebugSessionAdapter {
 
     /// Wait for the next BC `Break` event.
     ///
-    /// # Current limitation
-    ///
-    /// `BcDebugSession` does not yet expose a blocking break-wait API (see module
-    /// doc for the design gap). This method polls `try_drain_push_events` up to
-    /// 300 times with a 100 ms delay (30 s total) looking for a `Break` event.
-    /// If none arrives within that window it returns
-    /// `Err(ReplayerError::NotYetWired(...))`.
-    ///
-    /// TODO: Replace the polling loop once `BcDebugSession::wait_break_notify()`
-    /// is implemented.
+    /// Delegates to [`BcDebugSession::wait_for_break_event`], which blocks on a
+    /// dedicated channel populated by the WebSocket reader task. Returns `true`
+    /// if execution stopped at a breakpoint and `false` if the session ended.
     async fn wait_for_break(&self) -> Result<bool, ReplayerError> {
-        use crate::dap::bc_debug::BcEvent;
-        const MAX_POLLS: usize = 300;
-        const POLL_DELAY: tokio::time::Duration = tokio::time::Duration::from_millis(100);
-
-        for _ in 0..MAX_POLLS {
-            let events = self.session.try_drain_push_events().await;
-            for event in events {
-                match event {
-                    BcEvent::Break { .. } => return Ok(true),
-                    BcEvent::Detached { .. } | BcEvent::FatalError { .. } => return Ok(false),
-                    BcEvent::Other { .. } => {}
-                }
-            }
-            tokio::time::sleep(POLL_DELAY).await;
-        }
-
-        Err(ReplayerError::NotYetWired(
-            "wait_for_break: BcDebugSession has no blocking break-wait API; \
-             timed out after 30s without a Break event. \
-             TODO: add BcDebugSession::wait_break_notify() using tokio::sync::Notify."
-                .to_string(),
-        ))
+        Ok(self.session.wait_for_break_event().await)
     }
 
     async fn get_variables(&self) -> Result<serde_json::Value, ReplayerError> {
@@ -232,9 +195,9 @@ mod tests {
         );
     }
 
-    /// Confirm that `wait_for_break` documents its gap: without a live session
-    /// the trait method is expected to return `NotYetWired` — test the error type
-    /// is well-formed.
+    /// Confirm `ReplayerError::NotYetWired` displays correctly — the variant is
+    /// kept for callers that may still produce it, even though `wait_for_break`
+    /// no longer does.
     #[test]
     fn replayer_error_not_yet_wired_display() {
         let err = ReplayerError::NotYetWired("test gap".to_string());
