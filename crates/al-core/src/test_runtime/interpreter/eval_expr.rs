@@ -47,12 +47,13 @@ pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval 
         // When there is 1 named child, it's a transparent wrapper.
         "expression" => eval_expression_node(node, source, stack),
         // Grammar wrappers — pass through to the single inner child.
-        "parenthesized_expression" | "postfix_expression" | "primary_expression" => {
-            match named_child(node, 0) {
-                Some(inner) => eval_expr(inner, source, stack),
-                None => Eval::Error(simple_error("empty expression wrapper")),
-            }
-        }
+        "parenthesized_expression"
+        | "postfix_expression"
+        | "primary_expression"
+        | "case_label_expression" => match named_child(node, 0) {
+            Some(inner) => eval_expr(inner, source, stack),
+            None => Eval::Error(simple_error("empty expression wrapper")),
+        },
         // Identifier — load from scope, or resolve boolean keywords.
         "identifier" | "variable_reference" | "name" => match utf8_text(node, source) {
             Some(name) => {

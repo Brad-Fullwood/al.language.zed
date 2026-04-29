@@ -207,20 +207,21 @@ fn eval_while(
 // ---------------------------------------------------------------------------
 
 fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
-    // Expected children (by field name or positional):
-    // variable, start_value, end_value, body
+    // Grammar fields: iterator (variable), assign (:= op), from (start), direction
+    // (kw_to/kw_downto), to (end), body.  Named non-kw children positionally:
+    //   0=iterator  1=assign(:=)  2=from  3=to  4=body
     let var_node = node
-        .child_by_field_name("variable")
+        .child_by_field_name("iterator")
         .or_else(|| named_stmt_child(node, 0));
     let start_node = node
-        .child_by_field_name("start")
-        .or_else(|| named_stmt_child(node, 1));
-    let end_node = node
-        .child_by_field_name("end")
+        .child_by_field_name("from")
         .or_else(|| named_stmt_child(node, 2));
+    let end_node = node
+        .child_by_field_name("to")
+        .or_else(|| named_stmt_child(node, 3));
     let body_node = node
         .child_by_field_name("body")
-        .or_else(|| named_stmt_child(node, 3));
+        .or_else(|| named_stmt_child(node, 4));
 
     let var_name = match var_node {
         Some(n) => match n.utf8_text(source) {
@@ -430,7 +431,7 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         other => return other,
     };
 
-    // Walk named children looking for case_arm / case_else.
+    // Walk named children looking for case_branch / case_else.
     let mut cursor = node.walk();
     let children: Vec<Node> = node.named_children(&mut cursor).collect();
 
@@ -439,29 +440,33 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     for child in &children[1..] {
         match child.kind() {
             "case_arm" | "case_branch" => {
-                // Arm children: [values..., body]. The last named child is the body;
-                // the preceding ones are the match values (possibly multiple).
-                let arm_child_count = child.named_child_count();
-                if arm_child_count < 2 {
-                    continue;
-                }
-                let arm_body = match child.named_child(arm_child_count - 1) {
+                // Grammar: case_branch has fields 'labels' (case_label_list),
+                // 'sep' (:), 'body', and an optional trailing semicolon (named).
+                // Use field lookups to avoid being shifted by the semicolon node.
+                let arm_body = match child
+                    .child_by_field_name("body")
+                    .or_else(|| child.named_child(1))
+                {
                     Some(n) => n,
                     None => continue,
                 };
 
-                // Try each value before the body.
+                // The labels are in a case_label_list node; iterate its
+                // case_label_expression children.
+                let label_list = child
+                    .child_by_field_name("labels")
+                    .or_else(|| child.named_child(0));
+
                 let mut matched = false;
-                for vi in 0..(arm_child_count - 1) {
-                    if let Some(val_node) = child.named_child(vi) {
-                        // Case arms can list multiple comma-separated values or ranges.
-                        if let Eval::Normal(v) = eval_expr(val_node, source, stack) {
+                if let Some(ll) = label_list {
+                    let mut lc = ll.walk();
+                    for lbl in ll.named_children(&mut lc) {
+                        if let Eval::Normal(v) = eval_expr(lbl, source, stack) {
                             if values_equal_for_case(&selector, &v) {
                                 matched = true;
                                 break;
                             }
                         }
-                        // If we can't evaluate a value, skip this arm value.
                     }
                 }
 
@@ -470,8 +475,12 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
                 }
             }
             "case_else" | "else_clause" => {
-                // else body is the last named child of the case_else node.
-                if let Some(b) = child.named_child(0) {
+                // Grammar field 'else_body' on case_statement; here we take the
+                // first named child of the case_else/else_clause node.
+                if let Some(b) = child
+                    .child_by_field_name("else_body")
+                    .or_else(|| child.named_child(0))
+                {
                     else_body = Some(b);
                 }
             }

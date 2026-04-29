@@ -258,7 +258,6 @@ mod tests {
     // Observed: second identifier is unbound → Eval::Error("unbound identifier: iso88591")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-05 UNIMPLEMENTED: multi-var declarations — second variable unbound in frame"]
     fn w2_05_multi_var_declaration_second_var_unbound() {
         // We use a wrapper that declares two vars on one line, mirroring BCApps.
         let wrapper = r#"codeunit 50100 "W2"
@@ -513,7 +512,6 @@ mod tests {
     // Observed: Eval::Error("unsupported expression kind in Phase 2a: operator")
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-10 TYPE_ERROR: 'operator' node kind from FOR body not handled in eval_expr"]
     fn w2_10_for_upward_loop_accumulates_pass() {
         // x := 0; for i := 1 to 10 do x := x + i;  → x should be 55
         let wrapper = r#"codeunit 50100 "W2"
@@ -796,7 +794,7 @@ mod tests {
     // Observed: s == "" (no arm matched, ELSE absent, Normal(Empty) returned).
     // ══════════════════════════════════════════════════════════════════════════
     #[test]
-    #[ignore = "W2-17 TYPE_ERROR: CASE arm value evaluation fails silently — no arm matches"]
+    #[ignore = "W2-17 GRAMMAR: multi-arm CASE without begin/end parsed as one arm with statement_list body; second arm absorbed as expression with ':' operator — grammar fix needed in tree-sitter-al"]
     fn w2_17_case_on_integer_literal_pass() {
         let wrapper = r#"codeunit 50100 "W2"
 {
