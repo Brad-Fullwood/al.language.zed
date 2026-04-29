@@ -476,6 +476,16 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         // p2: routing + affected-tests endpoints
         "tests.affected" => build_dispatch::dispatch_tests_affected(workspace, id, &params),
         "tests.classify" => build_dispatch::dispatch_tests_classify(workspace, id),
+        // Phase 4: snapshot record/replay/diff
+        "tests.snapshot_record" => {
+            build_dispatch::dispatch_tests_snapshot_record(workspace, id, &params).await
+        }
+        "tests.snapshot_replay" => {
+            build_dispatch::dispatch_tests_snapshot_replay(id, &params).await
+        }
+        "tests.snapshot_diff" => build_dispatch::dispatch_tests_snapshot_diff(id, &params).await,
+        // Phase 5: mutation testing
+        "tests.mutate" => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
         // WP16: Object generation
         "generate" => build_dispatch::dispatch_generate(workspace, id, &params),
         // WP17: Analysis differentiators

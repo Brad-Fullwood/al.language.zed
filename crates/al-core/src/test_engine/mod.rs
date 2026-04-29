@@ -7,6 +7,7 @@
 
 pub mod backends;
 pub mod error;
+pub mod mutate;
 pub mod output;
 pub mod persistence;
 pub mod result;

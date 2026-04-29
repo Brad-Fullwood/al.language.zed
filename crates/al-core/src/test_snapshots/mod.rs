@@ -18,6 +18,7 @@
 //!   reference snapshot.
 //! - [`diff`] — field-level diff of two snapshots.
 
+pub mod bc_debug_bridge;
 pub mod diff;
 pub mod format;
 pub mod recorder;

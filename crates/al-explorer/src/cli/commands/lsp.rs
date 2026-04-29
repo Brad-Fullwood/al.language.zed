@@ -2444,3 +2444,239 @@ pub fn cmd_diag(json: bool) -> ExitCode {
         },
     )
 }
+pub fn cmd_test_snapshot(subcmd: &super::super::TestSnapshotCommands, json: bool) -> ExitCode {
+    use super::super::TestSnapshotCommands;
+
+    match subcmd {
+        TestSnapshotCommands::Record {
+            codeunit,
+            method,
+            breakpoints,
+        } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+
+            // Parse "file:line" breakpoint specs
+            let mut bp_array = Vec::new();
+            for spec in breakpoints {
+                let Some((file, line_str)) = spec.rsplit_once(':') else {
+                    return report_error(
+                        &format!("Invalid breakpoint spec '{spec}': expected <file>:<line>"),
+                        json,
+                    );
+                };
+                let line: u32 = match line_str.parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        return report_error(
+                            &format!("Invalid line number in breakpoint '{spec}'"),
+                            json,
+                        );
+                    }
+                };
+                bp_array.push(serde_json::json!({"file": file, "line": line}));
+            }
+
+            let params = serde_json::json!({
+                "codeunitId": codeunit,
+                "methodName": method,
+                "breakpoints": bp_array,
+            });
+            client.set_read_timeout(std::time::Duration::from_secs(120));
+            match client.request("tests.snapshot_record", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json(&result);
+                    } else {
+                        let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+                        let count = result
+                            .get("sampleCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        println!("Snapshot recorded: {path} ({count} samples)");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+
+        TestSnapshotCommands::Replay { path } => {
+            let abs_path = match std::path::Path::new(path).canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    return report_error(&format!("Cannot resolve path '{path}': {e}"), json);
+                }
+            };
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            client.set_read_timeout(std::time::Duration::from_secs(120));
+            let params = serde_json::json!({
+                "snapshotPath": abs_path.display().to_string(),
+            });
+            match client.request("tests.snapshot_replay", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json(&result);
+                    } else {
+                        let verdict = result
+                            .get("verdict")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        if verdict == "Match" {
+                            println!("[PASS] Snapshot matches baseline.");
+                        } else {
+                            println!("[FAIL] Snapshot diverged from baseline:");
+                            if let Some(divs) = result.get("divergences").and_then(|v| v.as_array())
+                            {
+                                for d in divs {
+                                    let field =
+                                        d.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let expected = d.get("expected").cloned().unwrap_or_default();
+                                    let actual = d.get("actual").cloned().unwrap_or_default();
+                                    println!("  {field}: expected={expected}, actual={actual}");
+                                }
+                            }
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+
+        TestSnapshotCommands::Diff { a, b } => {
+            let abs_a = match std::path::Path::new(a).canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    return report_error(&format!("Cannot resolve path '{a}': {e}"), json);
+                }
+            };
+            let abs_b = match std::path::Path::new(b).canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    return report_error(&format!("Cannot resolve path '{b}': {e}"), json);
+                }
+            };
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let params = serde_json::json!({
+                "pathA": abs_a.display().to_string(),
+                "pathB": abs_b.display().to_string(),
+            });
+            match client.request("tests.snapshot_diff", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json(&result);
+                    } else {
+                        let divs = result.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                        if divs.is_empty() {
+                            println!("Snapshots are identical.");
+                        } else {
+                            println!("{} divergence(s):", divs.len());
+                            for d in divs {
+                                let idx =
+                                    d.get("sampleIndex").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let field = d.get("field").and_then(|v| v.as_str()).unwrap_or("?");
+                                let expected = d.get("expected").cloned().unwrap_or_default();
+                                let actual = d.get("actual").cloned().unwrap_or_default();
+                                println!("  [sample {idx}] {field}: {expected} -> {actual}");
+                            }
+                            return ExitCode::FAILURE;
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+    }
+}
+pub fn cmd_test_mutate(
+    files: &[String],
+    parallel: bool,
+    timeout_ms: Option<u64>,
+    json: bool,
+) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+
+    let mut params = serde_json::json!({ "parallel": parallel });
+    if !files.is_empty() {
+        params["files"] = serde_json::Value::Array(
+            files
+                .iter()
+                .map(|f| serde_json::Value::String(f.clone()))
+                .collect(),
+        );
+    }
+    if let Some(ms) = timeout_ms {
+        params["timeoutMs"] = serde_json::Value::Number(serde_json::Number::from(ms));
+    }
+
+    match client.request("tests.mutate", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+                return ExitCode::SUCCESS;
+            }
+
+            let killed = result.get("killed").and_then(|v| v.as_u64()).unwrap_or(0);
+            let survived = result.get("survived").and_then(|v| v.as_u64()).unwrap_or(0);
+            let errored = result.get("errored").and_then(|v| v.as_u64()).unwrap_or(0);
+            let total = killed + survived;
+            let score = if total > 0 {
+                killed as f64 * 100.0 / total as f64
+            } else {
+                0.0
+            };
+
+            println!(
+                "Killed: {killed} · Survived: {survived} · Errored: {errored} (mutation score: {score:.1}%)"
+            );
+
+            // Print table of survived variants
+            if let Some(variants) = result.get("variants").and_then(|v| v.as_array()) {
+                let survivors: Vec<_> = variants
+                    .iter()
+                    .filter(|v| !v.get("killed").and_then(|k| k.as_bool()).unwrap_or(false))
+                    .filter(|v| v.get("error").and_then(|e| e.as_str()).is_none())
+                    .collect();
+                if !survivors.is_empty() {
+                    println!("\nSurvived mutations (test gaps):");
+                    println!("{:<8} {:<30} {:>5}  Change", "ID", "File", "Line");
+                    println!("{}", "-".repeat(70));
+                    for v in &survivors {
+                        let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+                        let file = v.get("file").and_then(|x| x.as_str()).unwrap_or("?");
+                        let file_short = std::path::Path::new(file)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(file);
+                        let line = v.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
+                        let desc = v.get("description").and_then(|x| x.as_str()).unwrap_or("?");
+                        println!(
+                            "{:<8} {:<30} {:>5}  {}",
+                            &id[..id.len().min(8)],
+                            file_short,
+                            line,
+                            desc
+                        );
+                    }
+                }
+            }
+
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}

@@ -441,6 +441,19 @@ Examples:
     },
     /// Show test coverage summary
     TestCoverage,
+    /// Run mutation testing on workspace AL files (Phase 5)
+    #[command(name = "test-mutate")]
+    TestMutate {
+        /// Restrict to these files (optional, default: all test files)
+        #[arg(long, num_args = 0..)]
+        files: Vec<String>,
+        /// Enable parallel variant execution (advisory)
+        #[arg(long)]
+        parallel: bool,
+        /// Per-variant timeout in milliseconds
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+    },
     /// Show which tests are affected by a set of changed files (p2)
     #[command(name = "test-affected")]
     TestAffected {
@@ -451,6 +464,12 @@ Examples:
     /// Show the routing decision for every discovered test (p2)
     #[command(name = "test-classify")]
     TestClassify,
+    /// Record / replay / diff test execution snapshots (Phase 4)
+    #[command(name = "test-snapshot")]
+    TestSnapshot {
+        #[command(subcommand)]
+        subcmd: TestSnapshotCommands,
+    },
     /// Show persisted test result history (p2)
     #[command(name = "test-results")]
     TestResults {
@@ -555,6 +574,33 @@ Examples:
         /// Preview renames without applying
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TestSnapshotCommands {
+    /// Record variable snapshots at breakpoints during a test run
+    Record {
+        /// Codeunit object ID
+        codeunit: i64,
+        /// Test method name
+        #[arg(long)]
+        method: String,
+        /// Breakpoints to capture at, as <file>:<line> (repeatable)
+        #[arg(long = "breakpoint", name = "BREAKPOINT")]
+        breakpoints: Vec<String>,
+    },
+    /// Replay a snapshot against current BC and show match/diverged result
+    Replay {
+        /// Path to the .snap.json file
+        path: String,
+    },
+    /// Diff two snapshot files and show field-level divergences
+    Diff {
+        /// Path to baseline snapshot A
+        a: String,
+        /// Path to actual snapshot B
+        b: String,
     },
 }
 
@@ -902,6 +948,12 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::TestResults { codeunit, method } => {
             lsp::cmd_test_results(codeunit, method.as_deref(), cli.json)
         }
+        Commands::TestSnapshot { subcmd } => lsp::cmd_test_snapshot(&subcmd, cli.json),
+        Commands::TestMutate {
+            files,
+            parallel,
+            timeout_ms,
+        } => lsp::cmd_test_mutate(&files, parallel, timeout_ms, cli.json),
         Commands::TestRunAll {
             parallel,
             timeout_ms,

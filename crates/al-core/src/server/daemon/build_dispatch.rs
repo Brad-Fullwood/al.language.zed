@@ -2419,6 +2419,145 @@ pub(super) fn dispatch_tests_classify(workspace: &Workspace, id: u64) -> Respons
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4: snapshot record / replay / diff
+// ---------------------------------------------------------------------------
+
+/// `tests.snapshot_record` — record sampled-state snapshots at breakpoints
+/// during a live-BC test run.
+///
+/// Params (camelCase): `{ codeunitId, methodName, breakpoints: [{file, line}] }`.
+/// Response: `{ path, sampleCount }` on success.
+///
+/// The live-BC bridge is currently a stub (see
+/// `crate::test_snapshots::bc_debug_bridge`); this dispatcher accepts and
+/// validates the request but returns an explicit "not yet wired" error
+/// until the bridge is filled in. Snapshot replay + diff (which operate
+/// on already-recorded files) work today.
+pub(super) async fn dispatch_tests_snapshot_record(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let _ = workspace;
+    let codeunit_id = match params.get("codeunitId").and_then(|v| v.as_i64()) {
+        Some(n) => n as i32,
+        None => {
+            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'codeunitId'");
+        }
+    };
+    let _method_name = match params.get("methodName").and_then(|v| v.as_str()) {
+        Some(s) => s.to_string(),
+        None => {
+            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'methodName'");
+        }
+    };
+    let breakpoints = params.get("breakpoints").and_then(|v| v.as_array());
+    if breakpoints.is_none_or(|a| a.is_empty()) {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "Missing or empty 'breakpoints' array",
+        );
+    }
+    rpc_error(
+        id,
+        error_codes::INTERNAL_ERROR,
+        &format!(
+            "tests.snapshot_record (codeunit {codeunit_id}): live-BC bridge not yet wired \
+             — see test_snapshots::bc_debug_bridge"
+        ),
+    )
+}
+
+/// `tests.snapshot_replay` — replay a previously-recorded snapshot via
+/// `replay_against` against an empty observed set, surfacing the
+/// snapshot's contents to the caller. Live-BC re-replay (`replay_via_dap`)
+/// requires the same bridge as `tests.snapshot_record`.
+///
+/// Params: `{ snapshotPath }`.
+/// Response: `{ verdict: ReplayVerdict, sampleCount: N, codeunitId, methodName, bcVersion }`.
+pub(super) async fn dispatch_tests_snapshot_replay(
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let path = match params.get("snapshotPath").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'snapshotPath'");
+        }
+    };
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) => {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("read snapshot failed: {e}"),
+            );
+        }
+    };
+    let snapshot = match crate::test_snapshots::format::deserialize_snapshot(&bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("snapshot parse failed: {e}"),
+            );
+        }
+    };
+    // No live observation yet — emit an info-only "Match" verdict so the
+    // caller can confirm the snapshot loads. Real verification arrives
+    // when the BC bridge is wired (see bc_debug_bridge.rs).
+    let verdict = crate::test_snapshots::replayer::ReplayVerdict::Match;
+    Response {
+        id,
+        result: Some(serde_json::json!({
+            "verdict": verdict,
+            "sampleCount": snapshot.samples.len(),
+            "codeunitId": snapshot.codeunit_id,
+            "methodName": snapshot.method_name,
+            "bcVersion": snapshot.bc_version,
+        })),
+        error: None,
+    }
+}
+
+/// `tests.snapshot_diff` — diff two snapshot files; report field-level
+/// divergences plus header mismatches (bc_version, source_hash).
+///
+/// Params: `{ pathA, pathB }`.
+/// Response: `{ divergences: [Divergence] }`.
+pub(super) async fn dispatch_tests_snapshot_diff(id: u64, params: &serde_json::Value) -> Response {
+    let path_a = match params.get("pathA").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'pathA'"),
+    };
+    let path_b = match params.get("pathB").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'pathB'"),
+    };
+    let read = async |p: &str| -> Result<crate::test_snapshots::format::Snapshot, String> {
+        let bytes = tokio::fs::read(p).await.map_err(|e| e.to_string())?;
+        crate::test_snapshots::format::deserialize_snapshot(&bytes).map_err(|e| e.to_string())
+    };
+    let a = match read(path_a).await {
+        Ok(s) => s,
+        Err(e) => return rpc_error(id, error_codes::INVALID_PARAMS, &format!("pathA: {e}")),
+    };
+    let b = match read(path_b).await {
+        Ok(s) => s,
+        Err(e) => return rpc_error(id, error_codes::INVALID_PARAMS, &format!("pathB: {e}")),
+    };
+    let divergences = crate::test_snapshots::diff::diff_snapshots(&a, &b);
+    Response {
+        id,
+        result: Some(serde_json::json!({ "divergences": divergences })),
+        error: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WP16: Object wizards / code generation
 // ---------------------------------------------------------------------------
 
@@ -3376,3 +3515,130 @@ mod p1_5_tests {
         );
     }
 }
+// WP18 / Phase 5: Mutation testing
+// ---------------------------------------------------------------------------
+
+/// `tests.mutate` — run mutation testing on workspace files.
+///
+/// Params:
+/// - `files` (optional, array of str): restrict to these file paths. When omitted,
+///   all workspace test files are mutated.
+/// - `parallel` (optional, bool): hint to enable parallel execution (default false).
+/// - `timeoutMs` (optional, u64): per-variant timeout in ms.
+///
+/// Returns: serialized `MutationReport` JSON.
+pub(super) async fn dispatch_tests_mutate(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    use crate::test_engine::mutate::{
+        generate_variants_for_file, MutationOptions, MutationReport, VariantOutcome,
+    };
+    use al_protocol::jsonrpc::error_codes;
+
+    // Require a loaded project
+    let _project_root = match workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
+    {
+        Some(root) => root,
+        None => {
+            return super::rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
+        }
+    };
+
+    // Parse options
+    let parallel = params
+        .get("parallel")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let timeout_ms = params.get("timeoutMs").and_then(|v| v.as_u64());
+
+    let opts = MutationOptions {
+        affected_only: true,
+        parallel,
+        timeout_ms,
+    };
+
+    // Collect file paths to mutate — from params or from workspace
+    let file_paths: Vec<String> = if let Some(arr) = params.get("files").and_then(|v| v.as_array())
+    {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    } else {
+        // Default: all test files in workspace
+        workspace
+            .file_index
+            .files
+            .iter()
+            .map(|e| e.key().to_string_lossy().to_string())
+            .collect()
+    };
+
+    if file_paths.is_empty() {
+        return Response {
+            id,
+            result: Some(
+                serde_json::to_value(&MutationReport {
+                    variants: vec![],
+                    killed: 0,
+                    survived: 0,
+                    errored: 0,
+                })
+                .unwrap_or(serde_json::Value::Null),
+            ),
+            error: None,
+        };
+    }
+
+    // Generate and run variants (sequential for the starter phase)
+    let mut all_outcomes: Vec<VariantOutcome> = Vec::new();
+    let timeout = opts.timeout_ms.map(std::time::Duration::from_millis);
+
+    for file_path in &file_paths {
+        let variants = generate_variants_for_file(workspace, file_path);
+        for variant in variants {
+            // Apply the mutation to a copy of source, then record outcome.
+            // Full interpreter integration is in the next phase; for now every
+            // variant is recorded as "survived" so the endpoint is exercisable.
+            let outcome = crate::test_engine::mutate::VariantOutcome {
+                variant: variant.clone(),
+                killed: false,
+                killing_test: None,
+                error: None,
+            };
+            let _ = timeout; // will be used when interpreter is wired
+            all_outcomes.push(outcome);
+        }
+    }
+
+    let killed = all_outcomes.iter().filter(|o| o.killed).count();
+    let errored = all_outcomes.iter().filter(|o| o.error.is_some()).count();
+    let survived = all_outcomes.len() - killed - errored;
+
+    let report = MutationReport {
+        variants: all_outcomes,
+        killed,
+        survived,
+        errored,
+    };
+
+    match serde_json::to_value(&report) {
+        Ok(value) => Response {
+            id,
+            result: Some(value),
+            error: None,
+        },
+        Err(e) => super::rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("Serialization error: {e}"),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------

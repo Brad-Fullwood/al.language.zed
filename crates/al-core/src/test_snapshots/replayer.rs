@@ -37,7 +37,8 @@ pub enum ReplayerError {
 // ---------------------------------------------------------------------------
 
 /// The result of replaying a snapshot.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "divergences")]
 pub enum ReplayVerdict {
     /// All matched samples are byte-for-byte identical.
     Match,
