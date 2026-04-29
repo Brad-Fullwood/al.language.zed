@@ -36,6 +36,12 @@ pub enum CalcParseError {
     UnexpectedToken(String, usize),
     #[error("invalid where clause: {0}")]
     InvalidWhereClause(String),
+    #[error("FILTER() with empty expression in WHERE clause for field '{0}'")]
+    EmptyFilterExpression(String),
+    #[error("FIELD() with empty argument in WHERE clause for field '{0}'")]
+    EmptyFieldArgument(String),
+    #[error("CONST() with empty argument in WHERE clause for field '{0}'")]
+    EmptyConstArgument(String),
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -304,16 +310,25 @@ impl<'a> Parser<'a> {
             "CONST" => {
                 let inner = self.read_name()?;
                 self.expect_char(')')?;
+                if inner.trim().is_empty() {
+                    return Err(CalcParseError::EmptyConstArgument(field));
+                }
                 WhereValue::Const(inner)
             }
             "FIELD" => {
                 let inner = self.read_name()?;
                 self.expect_char(')')?;
+                if inner.trim().is_empty() {
+                    return Err(CalcParseError::EmptyFieldArgument(field));
+                }
                 WhereValue::Field(inner)
             }
             "FILTER" => {
                 let inner = self.read_until_close()?;
                 self.expect_char(')')?;
+                if inner.trim().is_empty() {
+                    return Err(CalcParseError::EmptyFilterExpression(field));
+                }
                 WhereValue::Filter(inner)
             }
             other => {

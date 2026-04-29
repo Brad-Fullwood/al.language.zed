@@ -209,6 +209,8 @@ impl MockRecord {
             return Err(RecordError::DuplicateKey);
         }
         self.rows.insert(key, self.current.clone());
+        // BC behaviour: after Insert, xRec mirrors the inserted row (Rec).
+        self.x_rec = self.current.clone();
         Ok(())
     }
 

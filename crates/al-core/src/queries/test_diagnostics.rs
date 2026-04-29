@@ -52,8 +52,24 @@ pub struct TestDiagnostic {
 // Conversion
 // ---------------------------------------------------------------------------
 
+/// Convert test run results into diagnostics using a pre-discovered codeunit
+/// list. Callers that run this in a hot loop (e.g. iterating many codeunits)
+/// should call `crate::queries::tests::discover_tests` once up front and pass
+/// the result here, avoiding an O(N) workspace scan per call.
+pub fn results_to_diagnostics_with_codeunits(
+    results: &[TestCodeunitResult],
+    codeunits: &[TestCodeunit],
+) -> Vec<TestDiagnostic> {
+    let discovered_by_id: std::collections::HashMap<i32, &TestCodeunit> =
+        codeunits.iter().map(|cu| (cu.id, cu)).collect();
+    results_to_diagnostics_inner(results, &discovered_by_id)
+}
+
 /// Convert test run results into diagnostics, using the workspace to find
 /// source locations for each failing test method.
+///
+/// Convenience wrapper — calls `discover_tests` once. For hot loops, prefer
+/// `results_to_diagnostics_with_codeunits` and pass a cached codeunit list.
 ///
 /// - Failing tests (`TestStatus::Fail`) → `DiagnosticSeverity::Error`
 /// - Skipped tests (`TestStatus::Skip`) → `DiagnosticSeverity::Warning`
@@ -65,11 +81,14 @@ pub fn results_to_diagnostics(
     results: &[TestCodeunitResult],
     workspace: &Workspace,
 ) -> Vec<TestDiagnostic> {
-    // Build a lookup: codeunit id → discovered TestCodeunit (for file/line info)
     let discovered = crate::queries::tests::discover_tests(workspace);
-    let discovered_by_id: std::collections::HashMap<i32, &TestCodeunit> =
-        discovered.iter().map(|cu| (cu.id, cu)).collect();
+    results_to_diagnostics_with_codeunits(results, &discovered)
+}
 
+fn results_to_diagnostics_inner(
+    results: &[TestCodeunitResult],
+    discovered_by_id: &std::collections::HashMap<i32, &TestCodeunit>,
+) -> Vec<TestDiagnostic> {
     let mut diagnostics = Vec::new();
 
     for result in results {

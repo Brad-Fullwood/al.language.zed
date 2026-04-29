@@ -553,4 +553,88 @@ mod tests {
         );
         assert_eq!(ok(result), Value::Text("HELLO".into()));
     }
+
+    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
+
+    #[test]
+    fn strsubstno_percent10_placeholder_corrupted_adversarial_h_8() {
+        // FINDING P1 wrong-result: substitute_placeholders iterates i=0..9
+        // and replaces %1 first, consuming the %1 prefix inside %10. Format
+        // "%1 and %10" with 10 args yields "FIRST and FIRST0" not "FIRST and TENTH".
+        // Root cause: str::replace scans the original string left-to-right; the
+        // %1 at position 0 AND the %1 inside %10 both get replaced on iteration 0.
+        // Expected: "FIRST and TENTH"
+        // Observed: "FIRST and FIRST0"
+        let mut ctx = ctx();
+        let result = dispatch_call(
+            None,
+            "StrSubstNo",
+            vec![
+                Value::Text("%1 and %10".into()),
+                Value::Text("FIRST".into()),
+                Value::Text("TWO".into()),
+                Value::Text("THREE".into()),
+                Value::Text("FOUR".into()),
+                Value::Text("FIVE".into()),
+                Value::Text("SIX".into()),
+                Value::Text("SEVEN".into()),
+                Value::Text("EIGHT".into()),
+                Value::Text("NINE".into()),
+                Value::Text("TENTH".into()),
+            ],
+            &mut ctx,
+        );
+        match ok(result) {
+            Value::Text(s) => assert_eq!(
+                s, "FIRST and TENTH",
+                "%%10 must map to 10th arg; got: {s:?}"
+            ),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copystr_pos_beyond_string_length_adversarial_h_9() {
+        // FINDING P2 spec-deviation: CopyStr("abc", 4, 1) silently returns ""
+        // instead of raising an error. Position 4 is beyond the 3-char string.
+        // AL/BC runtime raises "The value is too large" for out-of-bounds pos.
+        // Expected: Eval::Error
+        // Observed: Normal(Text(""))
+        let mut ctx = ctx();
+        let result = dispatch_call(
+            None,
+            "CopyStr",
+            vec![
+                Value::Text("abc".into()),
+                Value::Integer(4),
+                Value::Integer(1),
+            ],
+            &mut ctx,
+        );
+        assert!(
+            result.is_error(),
+            "CopyStr pos > string length must error, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn indexof_empty_needle_returns_one_not_zero_adversarial_h_10() {
+        // FINDING P2 edge-case: IndexOf("ab", "") returns Integer(1) because
+        // Rust str::find("") returns Some(0). AL convention: empty needle → 0.
+        // Expected: Integer(0)
+        // Observed: Integer(1)
+        let mut ctx = ctx();
+        let result = dispatch_call(
+            None,
+            "IndexOf",
+            vec![Value::Text("ab".into()), Value::Text(String::new())],
+            &mut ctx,
+        );
+        assert_eq!(
+            ok(result),
+            Value::Integer(0),
+            "IndexOf with empty needle should return 0"
+        );
+    }
 }

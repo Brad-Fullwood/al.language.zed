@@ -653,4 +653,55 @@ mod tests {
             }
         }
     }
+
+    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
+
+    #[test]
+    fn integer_add_overflow_should_not_panic_adversarial_h_4() {
+        // FINDING P0 panic: Integer(i64::MAX) + Integer(1) panics in debug
+        // (attempt to add with overflow) or silently wraps in release.
+        // The arm `("+", Integer(a), Integer(b)) => Normal(Integer(a + b))`
+        // uses unchecked addition with no overflow guard.
+        // Expected: Eval::Error
+        // Observed (debug): thread panic "attempt to add with overflow"
+        // Observed (release): Normal(Integer(i64::MIN))
+        let result = apply_binary("+", Value::Integer(i64::MAX), Value::Integer(1));
+        assert!(
+            result.is_error(),
+            "Integer overflow must produce Eval::Error, not panic or wrap silently"
+        );
+    }
+
+    #[test]
+    fn integer_min_div_neg1_should_not_panic_adversarial_h_5() {
+        // FINDING P0 panic: Integer(i64::MIN) div Integer(-1) panics in debug.
+        // The div arm checks `b == 0` but not the special case
+        // `a == i64::MIN && b == -1` which also overflows.
+        // Expected: Eval::Error
+        // Observed (debug): thread panic "attempt to divide with overflow"
+        let result = apply_binary("div", Value::Integer(i64::MIN), Value::Integer(-1));
+        assert!(
+            result.is_error(),
+            "i64::MIN div -1 must produce Eval::Error, not panic"
+        );
+    }
+
+    #[test]
+    fn decimal_inf_div_inf_silent_nan_adversarial_h_6() {
+        // FINDING P1 silent-error: Decimal(Inf) / Decimal(Inf) returns
+        // Normal(Decimal(NaN)) silently. The guard only checks `b != 0.0`;
+        // Inf / Inf = NaN which is not a valid AL Decimal value.
+        // Expected: Eval::Error
+        // Observed: Normal(Decimal(NaN))
+        let result = apply_binary(
+            "/",
+            Value::Decimal(f64::INFINITY),
+            Value::Decimal(f64::INFINITY),
+        );
+        assert!(
+            result.is_error(),
+            "Inf / Inf must produce Eval::Error (NaN is not valid AL Decimal), got: {:?}",
+            result
+        );
+    }
 }

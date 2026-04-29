@@ -1,11 +1,11 @@
-# al-core — Business Logic (~32K lines)
+# al-core — Business Logic (~66K lines)
 
 ALL LSP features live here as query functions. Largest crate in the workspace.
 
 ## Quick Reference
 
 ```sh
-cargo test -p al-core                    # run all tests (~489 inline)
+cargo test -p al-core                    # run all tests (~859 inline)
 cargo test -p al-core -- test_name       # single test
 cargo clippy -p al-core -- -D warnings   # lint
 ```
@@ -28,7 +28,7 @@ Central state object passed to every query:
 
 Pattern: `pub fn query(workspace: &Workspace, uri: &Url, position: Position) -> Option<Result>`
 
-32 query modules: arch_lint, audit, breaking_changes, bulk_fix, code_actions, code_lens, completions, dead_code, definition, deps, duplicates, folding, format, hover, impact, implementation, inlay_hints, obsolescence, profiler_hints, references, rename, search, semantic_tokens, signature, source, sql_patterns, suggest_event, symbols, test_coverage, test_diagnostics, tests, upgrade
+33 query modules: arch_lint, audit, breaking_changes, bulk_fix, code_actions, code_lens, completions, dead_code, definition, deps, diagnostics, duplicates, folding, format, hover, impact, implementation, inlay_hints, obsolescence, profiler_hints, references, rename, search, semantic_tokens, signature, source, sql_patterns, suggest_event, symbols, test_coverage, test_diagnostics, tests, upgrade
 
 **Check this list before adding a new query** — it may already exist.
 

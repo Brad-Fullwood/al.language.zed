@@ -25,12 +25,11 @@ pub type AlDateTime = i64;
 
 /// One AL runtime value.
 ///
-/// `PartialEq` derives field-wise comparison, with one exception: `Decimal`
-/// uses bitwise f64 equality through a hand-written `Eq`/`Ord` impl below
-/// so the type works as a `BTreeMap` key (used by the mock record store).
-/// NaN is treated as equal to itself for total ordering purposes — matches
-/// AL's nullable-decimal semantics where you'd never compare NaN anyway.
-#[derive(Debug, Clone, PartialEq)]
+/// `PartialEq` is implemented manually (below) to mirror the `Ord` total
+/// ordering — `Decimal` uses `f64::total_cmp` so NaN equals NaN, satisfying
+/// the `Eq` contract `a == a`. This keeps the three impls (PartialEq / Eq /
+/// Ord) consistent and lets `Value` be a valid `BTreeMap` key.
+#[derive(Debug, Clone)]
 pub enum Value {
     /// Uninitialised slot (before assignment).
     Null,
@@ -111,6 +110,15 @@ pub struct RecordValue {
 // implementation-defined (length-then-content) — adequate for BTreeMap
 // stability without committing to an external contract.
 // ---------------------------------------------------------------------------
+
+/// Manual `PartialEq` mirroring the `Ord` impl so the three trait impls
+/// stay consistent. `Decimal(NaN) == Decimal(NaN)` is `true` here (via
+/// `total_cmp`), satisfying the `Eq` contract `a == a`.
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
 
 impl Eq for Value {}
 
@@ -219,7 +227,8 @@ impl Value {
             "integer" | "biginteger" => Some(Value::Integer(0)),
             "decimal" => Some(Value::Decimal(0.0)),
             "boolean" => Some(Value::Boolean(false)),
-            "text" | "code" => Some(Value::Text(String::new())),
+            "text" => Some(Value::Text(String::new())),
+            "code" => Some(Value::Code(String::new())),
             "date" => Some(Value::Date(0)),
             "time" => Some(Value::Time(0)),
             "datetime" => Some(Value::DateTime(0)),
@@ -308,6 +317,45 @@ mod tests {
             }
             .type_name(),
             "Option"
+        );
+    }
+
+    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
+
+    #[test]
+    fn default_for_code_returns_code_variant_adversarial_h_1() {
+        // FINDING P2 wrong-result: default_for("code") returns Value::Text,
+        // not Value::Code. Match arm at value.rs:222:
+        //   "text" | "code" => Some(Value::Text(String::new()))
+        // The Code arm should produce Value::Code, not Value::Text.
+        // Expected: Some(Value::Code(""))
+        // Observed: Some(Value::Text(""))
+        assert!(
+            matches!(Value::default_for("Code"), Some(Value::Code(s)) if s.is_empty()),
+            "default_for(\"Code\") must return Value::Code, got: {:?}",
+            Value::default_for("Code")
+        );
+    }
+
+    #[test]
+    fn decimal_ord_transitivity_total_cmp_no_bug_adversarial_h_2() {
+        // AUDIT (no bug): Decimal Ord uses f64::total_cmp — a TOTAL ORDER.
+        // IEEE 754-2008 totalOrder places positive NaN AFTER all finite values
+        // (NaN > +Inf > ... > +0 > -0 > ... > -Inf > negative NaN).
+        // So Value::Decimal(NaN) > Value::Decimal(1.0). Transitivity holds.
+        // Kill attempt confirmed: no Ord violation exists.
+        let nan = Value::Decimal(f64::NAN);
+        let one = Value::Decimal(1.0);
+        let two = Value::Decimal(2.0);
+        // total_cmp: NaN > all finite values (NaN sorts as maximum)
+        assert!(nan > one, "NaN > 1.0 under total_cmp (NaN is largest)");
+        assert!(one < two);
+        // transitivity: nan > two && two > one => nan > one (already checked)
+        assert!(nan > two, "transitivity: NaN > two && two > one");
+        assert_eq!(
+            nan.cmp(&Value::Decimal(f64::NAN)),
+            std::cmp::Ordering::Equal,
+            "NaN == NaN under total_cmp (consistent sentinel)"
         );
     }
 }

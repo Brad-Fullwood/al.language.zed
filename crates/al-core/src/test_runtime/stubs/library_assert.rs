@@ -319,4 +319,45 @@ mod tests {
         assert_fail_contains(is_true(&[Value::Integer(1)]), "Assert.IsTrue expects");
         assert_fail_contains(are_equal(&[Value::Integer(1)]), "Assert.AreEqual expects");
     }
+
+    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
+
+    #[test]
+    fn are_nearly_equal_nan_inputs_adversarial_h_11() {
+        // FINDING P1 wrong-result: AreNearlyEqual(NaN, NaN, 0.001) fails with
+        // "AreNearlyEqual failed: |NaN - NaN| > 0.001" because (NaN-NaN).abs()
+        // = NaN and NaN <= precision is false. Two identical NaN sentinels
+        // should be treated as equal — they represent the same invalid state.
+        // Expected: Normal (pass)
+        // Observed: Error("AreNearlyEqual failed: |NaN - NaN| > 0.001")
+        let result = are_nearly_equal(&[
+            Value::Decimal(f64::NAN),
+            Value::Decimal(f64::NAN),
+            Value::Decimal(0.001),
+        ]);
+        assert!(
+            matches!(result, Eval::Normal(_)),
+            "AreNearlyEqual(NaN, NaN, ..) should pass: NaN == NaN sentinel, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn are_nearly_equal_inf_inf_adversarial_h_12() {
+        // FINDING P1 wrong-result: AreNearlyEqual(Inf, Inf, 0.001) fails with
+        // "AreNearlyEqual failed: |inf - inf| > 0.001" because (Inf-Inf).abs()
+        // = NaN and NaN <= 0.001 is false. But Inf == Inf exactly.
+        // Expected: Normal (pass)
+        // Observed: Error("AreNearlyEqual failed: |inf - inf| > 0.001")
+        let result = are_nearly_equal(&[
+            Value::Decimal(f64::INFINITY),
+            Value::Decimal(f64::INFINITY),
+            Value::Decimal(0.001),
+        ]);
+        assert!(
+            matches!(result, Eval::Normal(_)),
+            "AreNearlyEqual(Inf, Inf, ..) should pass: Inf == Inf exactly, got: {:?}",
+            result
+        );
+    }
 }

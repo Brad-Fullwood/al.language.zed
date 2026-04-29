@@ -236,4 +236,29 @@ mod tests {
         assert!(err.is_error());
         assert!(err.into_value().is_none());
     }
+
+    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
+
+    #[test]
+    fn scope_stack_1000_deep_lookup_no_stack_overflow_adversarial_h_3() {
+        // AUDIT (no bug): ScopeStack.lookup uses iterative rev().find_map,
+        // not recursion — 1000 nested frames cannot cause a call-stack overflow.
+        let mut stack = ScopeStack::new();
+        for i in 0..1000_usize {
+            let mut frame = CallFrame::new("Cu", format!("proc_{i}"));
+            if i == 500 {
+                frame.bind("deep_var", Value::Integer(500));
+            }
+            stack.push(frame);
+        }
+        assert_eq!(
+            stack.lookup("deep_var"),
+            Some(&Value::Integer(500)),
+            "must find value in frame 500 of 1000 without stack overflow"
+        );
+        assert!(
+            stack.lookup_mut("deep_var").is_some(),
+            "lookup_mut must also work on 1000-frame stack"
+        );
+    }
 }

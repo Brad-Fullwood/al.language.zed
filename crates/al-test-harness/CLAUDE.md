@@ -13,7 +13,7 @@ cargo test -p al-test-harness --test e2e -- test_name   # single test
 RUST_LOG=debug cargo test -p al-test-harness --test e2e # with logging
 ```
 
-**Requires:** `al-lsp` binary built first (`cargo build -p al-lsp`).
+**Requires:** `al-lsp` binary built first (`cargo build -p al-core --bin al-lsp`).
 
 ## Test Files
 

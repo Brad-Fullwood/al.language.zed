@@ -1,6 +1,6 @@
-# al-protocol — Shared IPC Types (~450 lines)
+# al-protocol — Shared IPC Types (~610 lines)
 
-**Leaf crate** — must NOT depend on al-core or any other al-* crate. Used by al-cli, al-explorer, and al-lsp's daemon-mode tests.
+**Leaf crate** — must NOT depend on al-core or any other al-* crate. Used by al-explorer (TUI + CLI) and al-core's daemon mode.
 
 ## Quick Reference
 

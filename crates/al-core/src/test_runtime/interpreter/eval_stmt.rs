@@ -934,4 +934,25 @@ mod tests {
             "x should NOT be 99 after short-circuit error"
         );
     }
+
+    // ── Adversarial tests (adversarial-h) ─────────────────────────────────────
+
+    #[test]
+    fn asserterror_must_propagate_exit_not_convert_to_fail_adversarial_h_7() {
+        // FINDING P1 spec-deviation: eval_asserterror converts Eval::Exit to
+        // Eval::Error("asserterror: expected an error...") instead of propagating
+        // it. AL spec: asserterror only catches Error(); Exit must propagate
+        // so the enclosing procedure can return normally.
+        // Buggy code at eval_stmt.rs line 578:
+        //   Eval::Normal(_) | Eval::Exit(_) => Error("expected an error...")
+        // Fix: separate Exit(_) to propagate: `Eval::Exit(v) => Eval::Exit(v)`.
+        // Expected: Eval::Exit(Value::Empty)
+        // Observed: Eval::Error("asserterror: expected an error to be raised...")
+        let (eval, _) = run_stmt("asserterror exit;");
+        assert!(
+            matches!(eval, Eval::Exit(_)),
+            "asserterror wrapping exit must propagate Eval::Exit, got: {:?}",
+            eval
+        );
+    }
 }

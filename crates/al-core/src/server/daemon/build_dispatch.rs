@@ -1882,22 +1882,28 @@ pub(super) async fn dispatch_tests_run(
     let codeunit_name = params
         .get("codeunitName")
         .and_then(|v| v.as_str())
-        .unwrap_or(&codeunit_id.to_string())
-        .to_string();
-    // Rebind after borrow ends
-    let codeunit_name = if codeunit_name == codeunit_id.to_string() {
-        codeunit_id.to_string()
-    } else {
-        codeunit_name
-    };
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| codeunit_id.to_string());
     let method = params
         .get("method")
         .and_then(|v| v.as_str())
         .map(String::from);
     let config_name = params.get("config").and_then(|v| v.as_str());
 
-    // -- Find launch config ----------------------------------------------------
-    let launch_cfg = match find_launch_config(&project_root) {
+    // -- Find launch config (sync fs read → run on blocking thread) ----------
+    let launch_cfg_root = project_root.clone();
+    let launch_cfg_opt =
+        match tokio::task::spawn_blocking(move || find_launch_config(&launch_cfg_root)).await {
+            Ok(opt) => opt,
+            Err(e) => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    &format!("launch config task failed: {e}"),
+                );
+            }
+        };
+    let launch_cfg = match launch_cfg_opt {
         Some(cfg) => cfg,
         None => {
             return rpc_error(
