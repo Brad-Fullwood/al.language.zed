@@ -204,6 +204,7 @@ async fn main() {
             }
         }
         let fi = file_index.clone();
+        let fi2 = file_index.clone();
 
         if let Err(e) = al_core::dap::native_dap::run_native_dap(
             &project_root,
@@ -224,6 +225,15 @@ async fn main() {
                         object_type: al_core::dap::native_dap::kind_to_object_type(&info.kind),
                         object_id: info.id.unwrap_or(-1) as i32,
                     })
+            },
+            move |object_type, object_id| {
+                fi2.object_info
+                    .iter()
+                    .find(|entry| {
+                        al_core::dap::native_dap::kind_to_object_type(&entry.kind) == object_type
+                            && entry.id == Some(object_id as i64)
+                    })
+                    .map(|entry| entry.key().clone())
             },
         )
         .await

@@ -12,7 +12,7 @@
 //! 6. Zed sends variables/evaluate → we call GetVariablesAsync/GetWatchNodeAsync
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -87,17 +87,20 @@ pub struct ResolvedObject {
 ///
 /// `acquire_token` is a callback to get an OAuth access token for the given tenant.
 /// `resolve_object` maps a file path to its AL object type + ID using the workspace index.
+/// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
 /// Both are provided by the caller (al-lsp) since they depend on al-core/al-symbols.
-pub async fn run_native_dap<F, Fut, R>(
+pub async fn run_native_dap<F, Fut, R, P>(
     project_root: &str,
     alc_path: Option<&Path>,
     acquire_token: F,
     resolve_object: R,
+    resolve_path: P,
 ) -> Result<()>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
     R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
 {
     // Single monotonic sequence counter shared between the main loop and the background
     // event-forwarding task. DAP spec requires non-decreasing seq values across all
@@ -844,7 +847,7 @@ where
                 let session_arc = session.lock().await.clone();
                 let stack_frames = if let Some(s) = session_arc {
                     match s.get_call_stack().await {
-                        Ok(frames) => bc_stack_to_dap(frames),
+                        Ok(frames) => bc_stack_to_dap(frames, &resolve_path),
                         Err(e) => {
                             debug!("get_call_stack failed: {e}");
                             Vec::new()
@@ -1208,10 +1211,14 @@ fn try_spawn(cmd: &str, args: &[&str]) -> bool {
 ///   - `SourcePosition.Line` / `SourcePosition.Column` — source location
 ///   - `DisplayName` — human-readable frame name (procedure name, trigger name, etc.)
 ///
-/// TODO: Map ApplicationObjectId back to a source file path using the workspace file index
-/// (currently not available here due to al-dap-client boundary rules; the source field
-/// will be omitted until a lookup callback is threaded through).
-fn bc_stack_to_dap(frames: serde_json::Value) -> Vec<serde_json::Value> {
+/// Convert a BC `GetStackTrace` result (array of StackFrame objects) to DAP StackFrame objects.
+///
+/// `resolve_path` maps a BC (ObjectType integer, ObjectNumber) to a workspace source file path.
+/// When a match is found the DAP `source` object is populated so Zed can navigate to the frame.
+fn bc_stack_to_dap<P>(frames: serde_json::Value, resolve_path: &P) -> Vec<serde_json::Value>
+where
+    P: Fn(i32, i32) -> Option<PathBuf>,
+{
     let arr = match frames.as_array() {
         Some(a) => a,
         None => return Vec::new(),
@@ -1239,13 +1246,35 @@ fn bc_stack_to_dap(frames: serde_json::Value) -> Vec<serde_json::Value> {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
 
-            serde_json::json!({
+            let object_type = frame
+                .get("ApplicationObjectId")
+                .and_then(|oid| oid.get("ObjectType").or_else(|| oid.get("objectType")))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32);
+
+            let object_number = frame
+                .get("ApplicationObjectId")
+                .and_then(|oid| oid.get("ObjectNumber").or_else(|| oid.get("objectNumber")))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32);
+
+            let source = match (object_type, object_number) {
+                (Some(ot), Some(on)) => {
+                    resolve_path(ot, on).map(|p| serde_json::json!({ "path": p.to_string_lossy() }))
+                }
+                _ => None,
+            };
+
+            let mut val = serde_json::json!({
                 "id": i as i64,
                 "name": display_name,
                 "line": line,
                 "column": col,
-                // source omitted — would need workspace file index lookup
-            })
+            });
+            if let Some(src) = source {
+                val["source"] = src;
+            }
+            val
         })
         .collect()
 }
@@ -1272,5 +1301,64 @@ mod tests {
             Some(42),
             "response missing camelCase `requestSeq`"
         );
+    }
+
+    #[test]
+    fn bc_stack_to_dap_includes_source_when_path_resolves() {
+        let frames = serde_json::json!([{
+            "DisplayName": "MyCodeunit.OnRun",
+            "SourcePosition": { "Line": 10, "Column": 4 },
+            "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
+        }]);
+        let resolve = |ot: i32, on: i32| -> Option<PathBuf> {
+            if ot == bc_object_type::CODEUNIT && on == 50100 {
+                Some(PathBuf::from("/workspace/src/MyCodeunit.al"))
+            } else {
+                None
+            }
+        };
+        let result = bc_stack_to_dap(frames, &resolve);
+        assert_eq!(result.len(), 1);
+        let frame = &result[0];
+        assert_eq!(frame["name"], "MyCodeunit.OnRun");
+        assert_eq!(frame["line"], 10);
+        assert_eq!(frame["column"], 4);
+        assert_eq!(
+            frame["source"]["path"].as_str().unwrap_or(""),
+            "/workspace/src/MyCodeunit.al"
+        );
+    }
+
+    #[test]
+    fn bc_stack_to_dap_omits_source_when_path_unknown() {
+        let frames = serde_json::json!([{
+            "DisplayName": "UnknownObject.Trigger",
+            "SourcePosition": { "Line": 1, "Column": 0 },
+            "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 99999 }
+        }]);
+        let result = bc_stack_to_dap(frames, &|_ot: i32, _on: i32| None::<PathBuf>);
+        assert_eq!(result.len(), 1);
+        assert!(
+            result[0].get("source").is_none(),
+            "source should be absent when resolve_path returns None"
+        );
+    }
+
+    #[test]
+    fn bc_stack_to_dap_handles_missing_application_object_id() {
+        let frames = serde_json::json!([{
+            "DisplayName": "SomeProc",
+            "SourcePosition": { "Line": 5, "Column": 0 }
+        }]);
+        let result = bc_stack_to_dap(frames, &|_ot: i32, _on: i32| None::<PathBuf>);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].get("source").is_none());
+        assert_eq!(result[0]["name"], "SomeProc");
+    }
+
+    #[test]
+    fn bc_stack_to_dap_returns_empty_for_non_array_input() {
+        let result = bc_stack_to_dap(serde_json::json!(null), &|_: i32, _: i32| None::<PathBuf>);
+        assert!(result.is_empty(), "non-array input must yield empty vec");
     }
 }
