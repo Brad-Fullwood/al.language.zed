@@ -8,6 +8,10 @@ build = "build.rs"
 name = "al-lsp"
 path = "src/bin/al-lsp.rs"
 
+[[bench]]
+name = "interpreter"
+harness = false
+
 [dependencies]
 al-protocol = { path = "../al-protocol" }
 netcorehost = { version = "0.17", optional = true }
@@ -54,3 +58,5 @@ cc = "1"
 tempfile = "3"
 wiremock = "0.6"
 tokio = { workspace = true, features = ["full"] }
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }

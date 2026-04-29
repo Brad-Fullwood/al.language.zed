@@ -334,7 +334,7 @@ impl<'a> Parser<'a> {
             other => {
                 return Err(CalcParseError::InvalidWhereClause(format!(
                     "unknown value token '{other}'"
-                )))
+                )));
             }
         };
         Ok(WhereCondition {
@@ -718,5 +718,256 @@ mod tests {
             result.is_err(),
             "Escaped double-quote inside quoted name is not supported; got Ok: {result:?}"
         );
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Property-based tests (proptest)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod proptest_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // ── Strategies ───────────────────────────────────────────────────────────
+
+    /// Generate an unquoted identifier safe for use as a table/field name
+    /// (alphanumeric + underscore, 1-12 chars, no leading digits).
+    fn ident() -> impl Strategy<Value = String> {
+        "[A-Za-z][A-Za-z0-9_]{0,11}".prop_map(|s| s)
+    }
+
+    /// Generate a quoted name (wrapped in double-quotes at the formula level).
+    fn quoted_name_str(inner: String) -> String {
+        format!("\"{inner}\"")
+    }
+
+    /// Generate one of the 8 formula type keywords (mixed-case to exercise
+    /// the case-insensitive parser path).
+    fn formula_type_str() -> impl Strategy<Value = &'static str> {
+        prop_oneof![
+            Just("Sum"),
+            Just("Count"),
+            Just("Lookup"),
+            Just("Average"),
+            Just("Min"),
+            Just("Max"),
+            Just("Exist"),
+            Just("Linked"),
+        ]
+    }
+
+    /// Classify the formula type for test logic.
+    fn needs_field(ftype: &str) -> bool {
+        matches!(
+            ftype.to_uppercase().as_str(),
+            "SUM" | "AVERAGE" | "MIN" | "MAX" | "LOOKUP"
+        )
+    }
+
+    /// Generate a WHERE condition string variant.
+    fn where_condition_str(field: String) -> impl Strategy<Value = String> {
+        let f1 = field.clone();
+        let f2 = field.clone();
+        let f3 = field;
+        prop_oneof![
+            // CONST(identifier)
+            ident().prop_map(move |v| format!("{}=CONST({})", f1, v)),
+            // FIELD(identifier)
+            ident().prop_map(move |v| format!("{}=FIELD({})", f2, v)),
+            // FILTER(simple integer — kept simple to avoid
+            // accidentally triggering unrelated filter-parser edge cases)
+            (0i64..=9999i64).prop_map(move |n| format!("{}=FILTER({})", f3, n)),
+        ]
+    }
+
+    /// Generate a complete well-formed CalcFormula string.
+    ///
+    /// Covers:
+    /// - All 8 formula types
+    /// - Unquoted and quoted table/field names
+    /// - With and without a WHERE clause (0-2 conditions)
+    fn calc_formula_str() -> impl Strategy<Value = String> {
+        (formula_type_str(), ident(), ident(), ident()).prop_flat_map(
+            |(ftype, table, field, cond_field)| {
+                let table_str = quoted_name_str(table.clone());
+                let field_str = quoted_name_str(field.clone());
+
+                // Whether this formula type needs a field name.
+                let has_field = needs_field(ftype);
+
+                // Strategy for the WHERE clause: None, one condition, two conditions.
+                let cond_str_strategy = where_condition_str(cond_field.clone());
+                let cond_str_strategy2 = where_condition_str(format!("{cond_field}2"));
+
+                // Pre-clone everything we need across multiple closures.
+                let ts0 = table_str.clone();
+                let fs0 = field_str.clone();
+                let ts1 = table_str.clone();
+                let fs1 = field_str.clone();
+                let ts2 = table_str;
+                let fs2 = field_str;
+                let cf2 = cond_field.clone();
+
+                prop_oneof![
+                    // No WHERE clause
+                    Just(()).prop_map(move |_| {
+                        if has_field {
+                            format!("{ftype}({ts0}.{fs0})")
+                        } else {
+                            format!("{ftype}({ts0})")
+                        }
+                    }),
+                    // One WHERE condition
+                    cond_str_strategy.prop_map(move |c| {
+                        if has_field {
+                            format!("{ftype}({ts1}.{fs1} WHERE ({c}))")
+                        } else {
+                            format!("{ftype}({ts1} WHERE ({c}))")
+                        }
+                    }),
+                    // Two WHERE conditions
+                    cond_str_strategy2.prop_map(move |c2| {
+                        // Hard-code a simple CONST condition as the first
+                        // to keep the strategy simple (no nested flat_map).
+                        let c1 = format!("{cf2}=CONST(Val)");
+                        if has_field {
+                            format!("{ftype}({ts2}.{fs2} WHERE ({c1},{c2}))")
+                        } else {
+                            format!("{ftype}({ts2} WHERE ({c1},{c2}))")
+                        }
+                    }),
+                ]
+            },
+        )
+    }
+
+    // ── Properties ───────────────────────────────────────────────────────────
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Property: every well-formed CalcFormula string parses successfully.
+        #[test]
+        fn prop_well_formed_formula_parses(s in calc_formula_str()) {
+            let result = parse(&s);
+            prop_assert!(
+                result.is_ok(),
+                "well-formed formula '{s}' failed to parse: {:?}",
+                result.err()
+            );
+        }
+
+        /// Property: idempotence — parsing the same input twice gives the
+        /// same `CalcFormula` value.
+        #[test]
+        fn prop_parse_idempotent(s in calc_formula_str()) {
+            let r1 = parse(&s);
+            let r2 = parse(&s);
+            prop_assert_eq!(r1, r2, "parsing '{}' twice gave different results", s);
+        }
+
+        /// Property: formula_type field matches the keyword used in the string.
+        #[test]
+        fn prop_formula_type_matches_keyword(s in calc_formula_str()) {
+            // Extract the prefix before the first `(`.
+            let prefix = s.split('(').next().unwrap_or("").to_uppercase();
+            let result = parse(&s).expect("must parse");
+            let expected_type = match prefix.as_str() {
+                "SUM" => FormulaType::Sum,
+                "COUNT" => FormulaType::Count,
+                "LOOKUP" => FormulaType::Lookup,
+                "AVERAGE" => FormulaType::Average,
+                "MIN" => FormulaType::Min,
+                "MAX" => FormulaType::Max,
+                "EXIST" => FormulaType::Exist,
+                "LINKED" => FormulaType::Linked,
+                other => panic!("unexpected prefix '{other}' in formula '{s}'"),
+            };
+            prop_assert_eq!(
+                result.formula_type,
+                expected_type,
+                "formula_type mismatch for '{}'",
+                s
+            );
+        }
+
+        /// Property: Sum/Average/Min/Max/Lookup always have a field_name;
+        /// Count/Exist/Linked always have field_name = None.
+        #[test]
+        fn prop_field_name_presence(s in calc_formula_str()) {
+            let prefix = s.split('(').next().unwrap_or("").to_uppercase();
+            let result = parse(&s).expect("must parse");
+            let expect_field = matches!(
+                prefix.as_str(),
+                "SUM" | "AVERAGE" | "MIN" | "MAX" | "LOOKUP"
+            );
+            if expect_field {
+                prop_assert!(
+                    result.field_name.is_some(),
+                    "formula '{s}' should have field_name"
+                );
+            } else {
+                prop_assert!(
+                    result.field_name.is_none(),
+                    "formula '{s}' should NOT have field_name"
+                );
+            }
+        }
+
+        /// Property: table_name is never empty for any valid formula.
+        #[test]
+        fn prop_table_name_nonempty(s in calc_formula_str()) {
+            let result = parse(&s).expect("must parse");
+            prop_assert!(
+                !result.table_name.is_empty(),
+                "table_name must not be empty in '{s}'"
+            );
+        }
+
+        /// Property: leading/trailing whitespace around the whole formula does
+        /// not change the parsed result.
+        #[test]
+        fn prop_whitespace_trimming_idempotent(s in calc_formula_str()) {
+            let padded = format!("   {s}   ");
+            let r1 = parse(&s).expect("base formula must parse");
+            let r2 = parse(&padded).expect("padded formula must parse");
+            prop_assert_eq!(r1, r2, "whitespace padding changed result for '{}'", s);
+        }
+
+        /// Negative property: the empty string always returns an error.
+        #[test]
+        fn prop_empty_string_fails(spaces in " {0,10}") {
+            prop_assert!(
+                parse(&spaces).is_err(),
+                "empty/whitespace-only input must fail to parse"
+            );
+        }
+
+        /// Negative property: arbitrary byte strings never panic the parser —
+        /// they either parse or return Err.
+        #[test]
+        fn prop_arbitrary_input_never_panics(s in "\\PC*") {
+            let _ = parse(&s);
+        }
+
+        /// Negative property: an unknown formula keyword always returns
+        /// `Err(CalcParseError::UnknownType(_))`.
+        #[test]
+        fn prop_unknown_keyword_returns_error(
+            kw in "[A-Z]{1,8}",
+            table in "[A-Za-z][A-Za-z0-9]{0,8}",
+        ) {
+            // Only test keywords that are NOT valid formula types.
+            let known = ["SUM", "COUNT", "LOOKUP", "AVERAGE", "MIN", "MAX", "EXIST", "LINKED"];
+            prop_assume!(!known.contains(&kw.to_uppercase().as_str()));
+            let s = format!("{kw}(\"{table}\")");
+            let result = parse(&s);
+            prop_assert!(
+                result.is_err(),
+                "unknown keyword '{kw}' should produce an error, got Ok"
+            );
+        }
     }
 }

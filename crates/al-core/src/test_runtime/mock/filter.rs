@@ -884,3 +884,208 @@ mod tests {
         );
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Property-based tests (proptest)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod proptest_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // ── Strategies ───────────────────────────────────────────────────────────
+
+    /// Generate a printable ASCII string safe for use as an unquoted pattern
+    /// token (no whitespace, no `|`, `&`, `(`, `)`, and no leading `.` pairs).
+    fn safe_token() -> impl Strategy<Value = String> {
+        "[A-Za-z0-9_]{1,12}".prop_map(|s| s)
+    }
+
+    /// Generate a small non-negative integer as a string (safe range token).
+    fn int_token() -> impl Strategy<Value = i64> {
+        0i64..=1_000_000i64
+    }
+
+    /// Generate a well-formed integer range string `"lo..hi"` where lo <= hi.
+    fn range_str() -> impl Strategy<Value = (i64, i64)> {
+        (0i64..=500_000i64, 0i64..=500_000i64).prop_map(
+            |(a, b)| {
+                if a <= b { (a, b) } else { (b, a) }
+            },
+        )
+    }
+
+    /// Generate a well-formed filter atom string — one of:
+    ///   - plain integer equality:  "42"
+    ///   - integer range:           "10..20"
+    ///   - relational comparison:   ">5", "<=100"
+    ///   - wildcard pattern:        "A*", "*B", "A?C"
+    ///   - not-equal:               "<>7"
+    fn atom_str() -> impl Strategy<Value = String> {
+        prop_oneof![
+            // Integer equality
+            int_token().prop_map(|n| n.to_string()),
+            // Integer range lo..hi
+            range_str().prop_map(|(lo, hi)| format!("{lo}..{hi}")),
+            // Greater-than
+            int_token().prop_map(|n| format!(">{n}")),
+            // Greater-or-equal
+            int_token().prop_map(|n| format!(">={n}")),
+            // Less-than (ensure n >= 1 so LessThan has a meaningful domain)
+            (1i64..=1_000_000i64).prop_map(|n| format!("<{n}")),
+            // Less-or-equal
+            int_token().prop_map(|n| format!("<={n}")),
+            // Not-equal
+            int_token().prop_map(|n| format!("<>{n}")),
+            // Wildcard suffix: "Token*"
+            safe_token().prop_map(|s| format!("{s}*")),
+            // Wildcard prefix: "*Token"
+            safe_token().prop_map(|s| format!("*{s}")),
+            // Question-mark wildcard in middle: "A?C" (fixed shapes)
+            safe_token().prop_map(|s| format!("?{s}")),
+        ]
+    }
+
+    /// Generate a well-formed filter expression with optional OR / AND nesting.
+    /// Depth is kept shallow (max 2 atoms) to avoid combinatorial explosion.
+    fn filter_expr_str() -> impl Strategy<Value = String> {
+        prop_oneof![
+            // Single atom
+            atom_str(),
+            // OR of two atoms
+            (atom_str(), atom_str()).prop_map(|(a, b)| format!("{a}|{b}")),
+            // AND of two atoms
+            (atom_str(), atom_str()).prop_map(|(a, b)| format!("{a}&{b}")),
+            // Parenthesised single atom
+            atom_str().prop_map(|a| format!("({a})")),
+            // OR inside parens & single atom outside
+            (atom_str(), atom_str(), atom_str()).prop_map(|(a, b, c)| format!("({a}|{b})&{c}")),
+        ]
+    }
+
+    // ── Properties ───────────────────────────────────────────────────────────
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Property: parsing a well-formed filter expression never panics and
+        /// always returns `Ok`.
+        #[test]
+        fn prop_well_formed_parse_succeeds(s in filter_expr_str()) {
+            let result = parse(&s);
+            prop_assert!(
+                result.is_ok(),
+                "well-formed filter '{s}' failed to parse: {:?}",
+                result.err()
+            );
+        }
+
+        /// Property: idempotence — parsing the same input twice yields the
+        /// same AST.
+        #[test]
+        fn prop_parse_idempotent(s in filter_expr_str()) {
+            let r1 = parse(&s);
+            let r2 = parse(&s);
+            prop_assert_eq!(
+                r1, r2,
+                "parsing '{}' twice gave different results",
+                s
+            );
+        }
+
+        /// Property: inserting leading/trailing whitespace around a valid
+        /// expression does not change the parsed result (the public `parse`
+        /// function trims before parsing).
+        #[test]
+        fn prop_whitespace_trimming_idempotent(s in filter_expr_str()) {
+            let padded = format!("  {s}  ");
+            let r_plain = parse(&s);
+            let r_padded = parse(&padded);
+            prop_assert_eq!(
+                r_plain, r_padded,
+                "whitespace padding changed parse result for '{}'",
+                s
+            );
+        }
+
+        /// Property: for any integer range `lo..hi` (lo <= hi), the value
+        /// `lo` and the value `hi` are both accepted by the range filter, and
+        /// `lo - 1` and `hi + 1` are both rejected (when within i64 bounds).
+        #[test]
+        fn prop_range_boundary_semantics(
+            (lo, hi) in range_str()
+        ) {
+            let s = format!("{lo}..{hi}");
+            let expr = parse(&s).expect("range must parse");
+
+            // lo and hi are inclusive endpoints.
+            prop_assert!(
+                matches(&expr, &Value::Integer(lo)),
+                "lo={lo} must match range {s}"
+            );
+            prop_assert!(
+                matches(&expr, &Value::Integer(hi)),
+                "hi={hi} must match range {s}"
+            );
+
+            // lo-1 is outside the range (if not underflow).
+            if lo > i64::MIN {
+                prop_assert!(
+                    !matches(&expr, &Value::Integer(lo - 1)),
+                    "lo-1={} must NOT match range {s}",
+                    lo - 1
+                );
+            }
+            // hi+1 is outside the range (if not overflow).
+            if hi < i64::MAX {
+                prop_assert!(
+                    !matches(&expr, &Value::Integer(hi + 1)),
+                    "hi+1={} must NOT match range {s}",
+                    hi + 1
+                );
+            }
+        }
+
+        /// Property: any non-empty arbitrary string fed to the parser either
+        /// parses successfully or returns an `Err` — it NEVER panics.
+        #[test]
+        fn prop_arbitrary_input_never_panics(s in "\\PC*") {
+            // We don't care about the result; we just assert no panic.
+            let _ = parse(&s);
+        }
+
+        /// Property: equality filter on an integer matches only that exact
+        /// integer value, not adjacent values.
+        #[test]
+        fn prop_equality_integer_exact(n in int_token()) {
+            let s = n.to_string();
+            let expr = parse(&s).expect("integer must parse");
+            prop_assert!(
+                matches(&expr, &Value::Integer(n)),
+                "integer filter '{s}' must match {n}"
+            );
+            if n > 0 {
+                prop_assert!(
+                    !matches(&expr, &Value::Integer(n - 1)),
+                    "integer filter '{s}' must not match {}",
+                    n - 1
+                );
+            }
+            prop_assert!(
+                !matches(&expr, &Value::Integer(n + 1)),
+                "integer filter '{s}' must not match {}",
+                n + 1
+            );
+        }
+
+        /// Negative property: the empty string always produces `Err(Empty)`.
+        #[test]
+        fn prop_empty_strings_fail(spaces in " {0,10}") {
+            prop_assert!(
+                parse(&spaces).is_err(),
+                "empty/whitespace-only string must fail to parse"
+            );
+        }
+    }
+}
