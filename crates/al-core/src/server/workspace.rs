@@ -5,6 +5,7 @@
 //! Auto-downloads missing BC symbol packages via BC server (launch.json) or NuGet.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::workspace::Workspace;
@@ -28,10 +29,16 @@ pub(crate) enum DownloadSource {
 /// Called from the background task spawned by the `initialized` notification handler
 /// (ISSUE-026 fix). Failures are logged but do not prevent the server from operating
 /// (graceful degradation).
+///
+/// `ready_flag` and `init_notify` are signalled as soon as the file scan is complete
+/// so that LSP request handlers can serve workspace/symbol and other queries without
+/// waiting for the (potentially blocking) package-download prompt to finish.
 pub(crate) async fn initialize_workspace(
     workspace: Arc<Workspace>,
     client: Client,
     root_uri: Option<Url>,
+    ready_flag: Arc<AtomicBool>,
+    init_notify: Arc<tokio::sync::Notify>,
 ) {
     // Signal that workspace initialization has begun
     client
@@ -79,6 +86,25 @@ pub(crate) async fn initialize_workspace(
                 "Found AL project"
             );
 
+            // 3. Scan workspace for .al files FIRST (blocking std::fs walk;
+            // isolate via block_in_place).  Scanning before the optional
+            // package-download prompt means workspace/symbol can return
+            // project-local objects immediately, even if the user has not yet
+            // responded to the download dialog.
+            let count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root));
+            if count > 0 {
+                info!(count, "Scanned workspace .al files");
+            }
+
+            *workspace.project.write().await = Some(project.clone());
+
+            // Signal readiness as soon as the file scan is done so that LSP
+            // request handlers (workspace/symbol, documentSymbol, hover, etc.)
+            // can answer queries without waiting for the package-download prompt
+            // which may block indefinitely waiting for user input.
+            ready_flag.store(true, Ordering::Release);
+            init_notify.notify_waiters();
+
             // Auto-download missing packages if needed.
             // Prompt the user and let them choose the download source.
             if project.packages.is_empty() {
@@ -124,13 +150,8 @@ pub(crate) async fn initialize_workspace(
             // Invalidate insight graph -- packages changed (ISSUE-132 fix)
             workspace.invalidate_insight_graph();
 
+            // Update project reference after any package downloads completed.
             *workspace.project.write().await = Some(project.clone());
-
-            // 5. Scan workspace for .al files (blocking std::fs walk; isolate via block_in_place)
-            let count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root));
-            if count > 0 {
-                info!(count, "Scanned workspace .al files");
-            }
         }
         Err(e) => {
             warn!(error = %e, "No AL project found (continuing without packages)");
@@ -143,6 +164,11 @@ pub(crate) async fn initialize_workspace(
             if count > 0 {
                 info!(count, "Scanned workspace .al files");
             }
+
+            // Signal readiness even without a project so request handlers
+            // don't block forever waiting for initialization.
+            ready_flag.store(true, Ordering::Release);
+            init_notify.notify_waiters();
         }
     }
 

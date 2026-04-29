@@ -320,6 +320,33 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         return extract_dataitem_from_section(node, source);
     }
 
+    // Table `field(ID; "Name"; Type) { }` — extract the field name from the
+    // parenthesized block.  The name is the first identifier/string that appears
+    // after a semicolon (i.e. position 2 in the triplet: ID ; Name ; Type).
+    if keyword.eq_ignore_ascii_case("field") {
+        if let Some(paren) = find_parenthesized_block(node) {
+            let name = extract_field_name_from_paren(paren, source);
+            let range = ts_range_to_lsp(&node.range(), source);
+            let selection_range = ts_range_to_lsp(&paren.range(), source);
+            let mut children = Vec::new();
+            if let Some(body) = node.child_by_field_name("body") {
+                extract_section_body_children(body, source, &mut children);
+            }
+            return Some(DocumentSymbol {
+                name,
+                detail: Some("field".to_string()),
+                kind: SymbolKind::Field,
+                range,
+                selection_range,
+                children: if children.is_empty() {
+                    None
+                } else {
+                    Some(children)
+                },
+            });
+        }
+    }
+
     let sym_kind = match keyword.to_lowercase().as_str() {
         "fields" => SymbolKind::Struct,
         "keys" => SymbolKind::Key,
@@ -1091,6 +1118,64 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
             children: None,
         });
     }
+}
+
+/// Find the first `parenthesized_block` child of a node (non-body, non-named-field).
+fn find_parenthesized_block(node: Node) -> Option<Node> {
+    let mut cursor = node.walk();
+    let result = node
+        .children(&mut cursor)
+        .find(|child| child.kind() == "parenthesized_block");
+    result
+}
+
+/// Extract a table field name from `(ID; "Name"; Type)`.
+///
+/// The name is the first identifier/quoted_identifier/string/name that appears
+/// after the first semicolon in the parenthesized block.  For a page field like
+/// `("Caption"; ...)` (no integer ID before the semicolon) the first identifier
+/// is used directly.
+fn extract_field_name_from_paren(paren: Node, source: &[u8]) -> String {
+    let mut past_first_semicolon = false;
+    let mut cursor = paren.walk();
+    for child in paren.children(&mut cursor) {
+        match child.kind() {
+            "semicolon" if !past_first_semicolon => {
+                past_first_semicolon = true;
+            }
+            "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
+                if past_first_semicolon =>
+            {
+                if let Ok(text) = child.utf8_text(source) {
+                    let trimmed = text.trim_matches('"').trim().to_string();
+                    if !trimmed.is_empty() {
+                        return trimmed;
+                    }
+                }
+            }
+            "identifier" | "quoted_identifier" | "string" | "name" | "name_or_keyword"
+                if !past_first_semicolon =>
+            {
+                // Page field: `field("Caption"; ...)` — no integer before semicolon.
+                if let Ok(text) = child.utf8_text(source) {
+                    let trimmed = text.trim_matches('"').trim().to_string();
+                    if !trimmed.is_empty() {
+                        return trimmed;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // Fallback: use the full paren text
+    paren
+        .utf8_text(source)
+        .map(|t| {
+            t.trim_matches(|c: char| c == '(' || c == ')')
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_else(|_| "field".to_string())
 }
 
 #[cfg(test)]

@@ -421,11 +421,10 @@ impl LanguageServer for AlServer {
         let notify = Arc::clone(&self.init_notify);
         let ready_flag = Arc::clone(&self.workspace_ready);
         let handle = tokio::spawn(async move {
-            workspace::initialize_workspace(ws, client, root_uri).await;
-            // Set workspace_ready BEFORE notify_waiters so that any waiter that
-            // re-checks the flag after waking always sees true.
-            ready_flag.store(true, Ordering::Release);
-            notify.notify_waiters();
+            // initialize_workspace signals ready_flag + init_notify internally
+            // as soon as the file scan is done — before any blocking
+            // package-download prompt — so workspace queries don't deadlock.
+            workspace::initialize_workspace(ws, client, root_uri, ready_flag, notify).await;
         });
         *self.init_task.lock().await = Some(handle);
     }
@@ -983,8 +982,21 @@ impl LanguageServer for AlServer {
                     let ws = Arc::clone(&self.workspace);
                     let client = self.client.clone();
                     let uri_cloned = uri.clone();
+                    // Reindex path: pass throwaway ready/notify pair so the
+                    // call satisfies the signature; reindex doesn't need to
+                    // gate request handlers since the workspace is already
+                    // serving traffic.
+                    let throwaway_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let throwaway_notify = Arc::new(tokio::sync::Notify::new());
                     let handle = tokio::spawn(async move {
-                        workspace::initialize_workspace(ws, client.clone(), Some(uri_cloned)).await;
+                        workspace::initialize_workspace(
+                            ws,
+                            client.clone(),
+                            Some(uri_cloned),
+                            throwaway_flag,
+                            throwaway_notify,
+                        )
+                        .await;
                         client
                             .show_message(MessageType::INFO, "Workspace reindex complete")
                             .await;
