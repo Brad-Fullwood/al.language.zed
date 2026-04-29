@@ -10,7 +10,7 @@ path = "src/bin/al-lsp.rs"
 
 [dependencies]
 al-protocol = { path = "../al-protocol" }
-netcorehost = "0.17"
+netcorehost = { version = "0.17", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -42,6 +42,10 @@ walkdir = "2"
 [features]
 default = ["nuget"]
 nuget = []
+# Enable in-process .NET hosting (requires libnethost from the .NET SDK).
+# Off by default so workspace commands work in environments without .NET.
+# Enable with --features semantic when building for deployment.
+semantic = ["dep:netcorehost"]
 
 [build-dependencies]
 cc = "1"

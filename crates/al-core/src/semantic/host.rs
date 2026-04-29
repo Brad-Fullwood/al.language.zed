@@ -2,27 +2,39 @@
 //!
 //! Loads the CLR directly into the Rust process, compiles and loads the
 //! bridge DLL, and exposes JSON-in/JSON-out communication with CodeAnalysis.
+//!
+//! When the `semantic` Cargo feature is disabled (e.g. in CI environments
+//! without .NET SDK or network access), `DotNetHost` is a no-op stub that
+//! always returns `SemanticError::NotInitialized`.  All other al-core
+//! functionality (syntax, symbols, LSP transport) continues to work.
 
+#[cfg(feature = "semantic")]
 use std::ffi::c_int;
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "semantic")]
 use netcorehost::hostfxr::{HostfxrContext, InitializedForRuntimeConfig};
+#[cfg(feature = "semantic")]
 use netcorehost::pdcstr;
-use tracing::{debug, info};
+use tracing::debug;
+#[cfg(feature = "semantic")]
+use tracing::info;
 
 use super::SemanticError;
 
-/// Function pointer types matching the C# [UnmanagedCallersOnly] signatures.
-/// `extern "system"` is required by netcorehost's ManagedFunctionPtr trait.
-/// On Linux this is identical to `extern "C"`.
+// Function pointer types — only needed by the real DotNetHost implementation.
+#[cfg(feature = "semantic")]
 type InitFn = unsafe extern "system" fn(*const u8, c_int) -> c_int;
+#[cfg(feature = "semantic")]
 type HandleRequestFn = unsafe extern "system" fn(*const u8, c_int, *mut c_int) -> *mut u8;
+#[cfg(feature = "semantic")]
 type FreeBufferFn = unsafe extern "system" fn(*mut u8);
 
 /// In-process .NET host wrapping the bridge DLL.
 ///
 /// Thread-safe: the .NET runtime is initialized once and function pointers
 /// are safe to call from any thread (CLR handles its own thread safety).
+#[cfg(feature = "semantic")]
 pub(crate) struct DotNetHost {
     _context: HostfxrContext<InitializedForRuntimeConfig>,
     _init_fn: InitFn,
@@ -30,12 +42,20 @@ pub(crate) struct DotNetHost {
     free_buffer_fn: FreeBufferFn,
 }
 
+/// Stub host used when the `semantic` Cargo feature is disabled.
+/// All methods return `SemanticError::NotInitialized`.
+#[cfg(not(feature = "semantic"))]
+pub(crate) struct DotNetHost;
+
 // SAFETY: DotNetHost wraps CLR function pointers obtained from netcorehost.
 // The pointers are valid for the lifetime of `_context` (declared first, dropped last).
 // Concurrent calls are serialized by std::sync::Mutex in SemanticBridge::call().
+#[cfg(feature = "semantic")]
 unsafe impl Send for DotNetHost {}
+#[cfg(feature = "semantic")]
 unsafe impl Sync for DotNetHost {}
 
+#[cfg(feature = "semantic")]
 impl DotNetHost {
     /// Initialize the .NET runtime and load the bridge DLL.
     ///
@@ -222,6 +242,26 @@ impl DotNetHost {
     }
 }
 
+/// Stub implementation compiled when the `semantic` feature is disabled.
+#[cfg(not(feature = "semantic"))]
+impl DotNetHost {
+    pub fn new(
+        _bridge_dll: &Path,
+        _runtime_config: &Path,
+        _code_analysis_path: &Path,
+    ) -> Result<Self, SemanticError> {
+        Err(SemanticError::NotInitialized)
+    }
+
+    pub fn call(
+        &mut self,
+        _method: &str,
+        _params: serde_json::Value,
+    ) -> Result<serde_json::Value, SemanticError> {
+        Err(SemanticError::NotInitialized)
+    }
+}
+
 /// Return `Some((dll, config))` if both files exist, otherwise `None`.
 fn check_bridge_pair(dll: PathBuf, config: PathBuf) -> Option<(PathBuf, PathBuf)> {
     if dll.is_file() && config.is_file() {
@@ -326,6 +366,7 @@ fn compile_bridge_from_source(csproj: &Path) -> Result<(PathBuf, PathBuf), Seman
 }
 
 /// Convert a Path to a PdCString for netcorehost.
+#[cfg(feature = "semantic")]
 fn path_to_pdcstring(path: &Path) -> Result<netcorehost::pdcstring::PdCString, SemanticError> {
     netcorehost::pdcstring::PdCString::from_os_str(path.as_os_str())
         .map_err(|e| SemanticError::HostInit(format!("Invalid path for .NET: {e}")))
@@ -339,18 +380,46 @@ mod tests {
     fn test_find_bridge_returns_error_when_not_found() {
         // Clear env so strategy 3 doesn't fire
         std::env::remove_var("AL_BRIDGE_DIR");
-        // This should fail gracefully (not panic) when bridge isn't available
+        // This should fail gracefully (not panic) when bridge isn't available.
+        // In dev mode the source project may be present, causing strategy 4 to
+        // attempt `dotnet build`; without .NET installed that also returns Err.
+        // Either way it must not panic.
         let result = find_bridge_dll();
-        // In dev mode with the source project present, this might succeed
-        // Either way, it shouldn't panic
         match result {
             Ok((dll, config)) => {
                 assert!(dll.is_file());
                 assert!(config.is_file());
             }
             Err(e) => {
-                assert!(e.to_string().contains("AlBridge") || e.to_string().contains("bridge"));
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("AlBridge")
+                        || msg.contains("bridge")
+                        || msg.contains("dotnet")
+                        || msg.contains("Not initialized"),
+                    "unexpected bridge error: {msg}"
+                );
             }
+        }
+    }
+
+    #[test]
+    fn test_stub_new_returns_not_initialized_without_semantic_feature() {
+        // When semantic feature is disabled the stub always fails
+        #[cfg(not(feature = "semantic"))]
+        {
+            use std::path::Path;
+            let dummy = Path::new("/nonexistent");
+            let result = DotNetHost::new(dummy, dummy, dummy);
+            assert!(
+                result.is_err(),
+                "stub DotNetHost::new must always return Err"
+            );
+        }
+        // When semantic feature is enabled this test is a no-op (covered by runtime behaviour)
+        #[cfg(feature = "semantic")]
+        {
+            // nothing to assert — real impl tested via integration tests with .NET
         }
     }
 }
