@@ -271,6 +271,26 @@ impl LspClient {
             tokio::time::Instant::now() + tokio::time::Duration::from_secs(init_timeout_secs);
         loop {
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+            // Auto-dismiss server-to-client requests that arrive during init.
+            // The server blocks on window/showMessageRequest (e.g. "download packages?")
+            // until it receives a response; reply with null so we don't deadlock.
+            while let Ok((method, params)) = self.notifications.try_recv() {
+                if let Some(req_id) = params.get("__server_req_id__") {
+                    tracing::debug!(method = %method, "harness: auto-dismissing server request during init");
+                    let response = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": serde_json::Value::Null
+                    });
+                    if let Some(writer) = self.writer.as_mut() {
+                        let _ = send_message(writer, &response).await;
+                    }
+                } else {
+                    self.buffered_notifications.push((method, params));
+                }
+            }
+
             if tokio::time::Instant::now() >= deadline {
                 return Err(format!(
                     "Timed out after {init_timeout_secs}s waiting for workspace init \
@@ -935,15 +955,29 @@ pub async fn read_loop(
             Err(_) => continue,
         };
 
-        // Dispatch: response (has id) or notification (no id)
-        if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
-            // Response to a request
+        // Dispatch: server request (id+method), response (id only), notification (method only)
+        if msg.get("method").is_some() && msg.get("id").is_some() {
+            // Server-to-client request (e.g. window/showMessageRequest).
+            // Embed the request id into params so the receiver can send a reply.
+            let method = msg["method"].as_str().unwrap_or("").to_string();
+            let id_value = msg["id"].clone();
+            let base_params = msg.get("params").cloned().unwrap_or(Value::Null);
+            let params_with_id = match base_params {
+                Value::Object(mut map) => {
+                    map.insert("__server_req_id__".to_string(), id_value);
+                    Value::Object(map)
+                }
+                _ => serde_json::json!({ "__server_req_id__": id_value }),
+            };
+            let _ = notif_tx.send((method, params_with_id));
+        } else if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
+            // Response to a client request (has id, no method)
             let mut pending = pending.lock().await;
             if let Some(tx) = pending.remove(&id) {
                 let _ = tx.send(msg);
             }
         } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
-            // Notification from server
+            // Notification from server (has method, no id)
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
             let _ = notif_tx.send((method.to_string(), params));
         }
