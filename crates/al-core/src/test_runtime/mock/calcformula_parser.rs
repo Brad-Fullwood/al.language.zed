@@ -589,4 +589,119 @@ mod tests {
     fn test_invalid_missing_table() {
         assert!(parse("Sum()").is_err());
     }
+    // ──────────────────────────────────────────────────────────────────────────
+    // ADVERSARIAL-I tests
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // Vector 15: Quoted names with special characters.
+
+    // Field name containing `&` inside double quotes must parse correctly.
+    // read_quoted() reads until the closing quote, so `&` inside quotes is
+    // treated as a literal character (not an operator).
+    #[test]
+    fn test_quoted_name_with_ampersand_adversarial_i_15a() {
+        // Formula: Sum("Sales & Distribution"."Amount Due")
+        let f = parse(r#"Sum("Sales & Distribution"."Amount Due")"#).unwrap();
+        assert_eq!(f.table_name, "Sales & Distribution");
+        assert_eq!(f.field_name.as_deref(), Some("Amount Due"));
+    }
+
+    // Quoted name containing a single quote inside double quotes.
+    // e.g. "Customer's Name" — apostrophe inside double-quoted name.
+    #[test]
+    fn test_quoted_name_with_apostrophe_adversarial_i_15b() {
+        let f = parse(r#"Lookup("Customer"."Customer's Name")"#).unwrap();
+        assert_eq!(f.table_name, "Customer");
+        assert_eq!(f.field_name.as_deref(), Some("Customer's Name"));
+    }
+
+    // Empty double-quoted name `""` — read_quoted reads until the second `"`
+    // immediately, producing an empty string. The parser then checks
+    // if table_name is_empty() and should return MissingTableName.
+    #[test]
+    fn test_empty_quoted_table_name_adversarial_i_15c() {
+        // `Sum("".Amount)` — empty quoted table name should be an error.
+        let result = parse(r#"Sum("".Amount)"#);
+        assert!(
+            result.is_err(),
+            "Empty quoted table name must be an error; got: {result:?}"
+        );
+    }
+
+    // Vector 16: Multiple WHERE conditions with mixed CONST, FIELD, FILTER.
+    #[test]
+    fn test_multiple_where_mixed_adversarial_i_16() {
+        let f = parse(concat!(
+            r#"Sum("Sales Line".Amount WHERE ("#,
+            r#""Document Type"=CONST(Order),"#,
+            r#""Document No."=FIELD("No."),"#,
+            r#"Type=FILTER(Item|Service)))"#
+        ))
+        .unwrap();
+        assert_eq!(f.formula_type, FormulaType::Sum);
+        assert_eq!(f.table_name, "Sales Line");
+        assert_eq!(f.field_name.as_deref(), Some("Amount"));
+        assert_eq!(f.where_clause.len(), 3);
+        assert_eq!(
+            f.where_clause[0].value,
+            WhereValue::Const("Order".to_string())
+        );
+        assert_eq!(
+            f.where_clause[1].value,
+            WhereValue::Field("No.".to_string())
+        );
+        assert_eq!(
+            f.where_clause[2].value,
+            WhereValue::Filter("Item|Service".to_string())
+        );
+    }
+
+    // Vector 17: Unknown formula keyword must return Err(UnknownType), not panic.
+    #[test]
+    fn test_unknown_formula_keyword_returns_err_adversarial_i_17() {
+        let err = parse(r#"Foobar("Item".Qty)"#).unwrap_err();
+        assert!(
+            matches!(err, CalcParseError::UnknownType(_)),
+            "Unknown formula keyword must return UnknownType error, got: {err:?}"
+        );
+    }
+
+    // Vector 18: FILTER with empty expression inside WHERE clause.
+    // `Count("Item" WHERE ("Date"=FILTER()))` — read_until_close reads
+    // until `)` at depth 0, producing empty string. This is silently
+    // accepted as WhereValue::Filter(""). Should this be an error?
+    // This test documents current behaviour (accepted silently).
+    #[test]
+    fn test_filter_empty_expression_in_where_adversarial_i_18() {
+        // An empty FILTER("") in a WHERE clause is currently accepted.
+        // BC would reject an empty filter expression.
+        let result = parse(r#"Count("Item" WHERE ("Date"=FILTER()))"#);
+        // Document current behaviour:
+        // If result is Ok: the empty filter string is accepted silently (bug).
+        // If result is Err: the parser correctly rejects empty filter.
+        assert!(
+            result.is_err(),
+            "FILTER() with empty expression should be rejected; got Ok: {result:?}"
+        );
+    }
+
+    // Extra: Escaped double-quote inside double-quoted name.
+    // The parser has no escape mechanism — a `"` always terminates the quoted
+    // string. So `"Foo""Bar"` would parse table_name="Foo", then `"Bar"` is
+    // leftover trailing content after the formula closes.
+    // This test documents the limitation: escaped quotes in names are not supported.
+    #[test]
+    fn test_double_quote_escape_not_supported_adversarial_i_15d() {
+        // `Sum("Item""s"."Qty")` — if escape supported: table = `Item"s`.
+        // If not supported: table = "Item" (closes at first ""), then `s"."Qty")`
+        // is leftover, causing an UnmatchedParen or UnexpectedToken error.
+        let result = parse(r#"Sum("Item""s".Qty)"#);
+        // Current behaviour: error (no escape support in read_quoted).
+        // If this test FAILS (result is Ok), it means double-quotes inside
+        // quoted names accidentally work in some edge case.
+        assert!(
+            result.is_err(),
+            "Escaped double-quote inside quoted name is not supported; got Ok: {result:?}"
+        );
+    }
 }

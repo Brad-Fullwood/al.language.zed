@@ -271,10 +271,17 @@ fn build_base_url(config: &BcServerConfig) -> String {
             let server = config.server.as_deref().unwrap_or("localhost");
             let instance = config.server_instance.as_deref().unwrap_or("BC");
             let server_trimmed = server.trim_end_matches('/');
-            if let Some(port) = config.port {
-                format!("{}:{}/{}", server_trimmed, port, instance)
+            let server_with_scheme = if server_trimmed.to_lowercase().starts_with("http://")
+                || server_trimmed.to_lowercase().starts_with("https://")
+            {
+                server_trimmed.to_string()
             } else {
-                format!("{}/{}", server_trimmed, instance)
+                format!("http://{}", server_trimmed)
+            };
+            if let Some(port) = config.port {
+                format!("{}:{}/{}", server_with_scheme, port, instance)
+            } else {
+                format!("{}/{}", server_with_scheme, instance)
             }
         }
         EnvironmentType::Sandbox | EnvironmentType::Production => {
@@ -413,5 +420,64 @@ mod tests {
         assert_eq!(result.passed, 1);
         assert_eq!(result.failed, 1);
         assert_eq!(result.skipped, 1);
+    }
+}
+
+#[cfg(test)]
+mod adversarial_j_tests {
+    use super::*;
+    use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+
+    // -------------------------------------------------------------------------
+    // Adversarial-j findings
+    // -------------------------------------------------------------------------
+
+    /// Finding adversarial_j_1: build_base_url must include an http:// scheme even
+    /// when config.server omits it.  Without a scheme, reqwest cannot parse the URL.
+    /// This test currently FAILS (RED) because build_base_url does not inject the scheme.
+    #[test]
+    fn test_on_prem_url_without_scheme_adds_http_adversarial_j_1() {
+        let config = BcServerConfig {
+            name: "plain-host".to_string(),
+            environment_type: EnvironmentType::OnPrem,
+            server: Some("myserver.company.com".to_string()), // no scheme
+            server_instance: Some("BC".to_string()),
+            port: Some(7049),
+            environment_name: None,
+            tenant: None,
+            authentication: AuthMethod::UserPassword,
+            accept_invalid_certs: false,
+        };
+        let url = build_base_url(&config);
+        // The URL must be parseable by reqwest — must start with http:// or https://
+        assert!(
+            url.starts_with("http://") || url.starts_with("https://"),
+            "build_base_url must include a scheme; got: {url}"
+        );
+        // Must still contain port and instance
+        assert!(url.contains("7049"), "URL should contain port: {url}");
+        assert!(url.contains("/BC"), "URL should contain instance: {url}");
+    }
+
+    /// Finding adversarial_j_1 (negative companion): server already has http:// — must not double it.
+    #[test]
+    fn test_on_prem_url_with_scheme_not_doubled_adversarial_j_1() {
+        let config = BcServerConfig {
+            name: "with-scheme".to_string(),
+            environment_type: EnvironmentType::OnPrem,
+            server: Some("http://myserver.company.com".to_string()),
+            server_instance: Some("BC".to_string()),
+            port: Some(7049),
+            environment_name: None,
+            tenant: None,
+            authentication: AuthMethod::UserPassword,
+            accept_invalid_certs: false,
+        };
+        let url = build_base_url(&config);
+        assert!(
+            !url.contains("http://http://"),
+            "Scheme must not be doubled: {url}"
+        );
+        assert!(url.starts_with("http://"), "Must retain scheme: {url}");
     }
 }

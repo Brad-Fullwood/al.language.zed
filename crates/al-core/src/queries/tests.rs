@@ -339,3 +339,85 @@ mod test_discovery {
         assert!(results.is_empty());
     }
 }
+
+#[cfg(test)]
+mod adversarial_j_tests {
+    use super::*;
+    use crate::syntax::AlParser;
+
+    /// Finding adversarial_j_3: has_test_subtype must NOT fire on a codeunit that has
+    /// Subtype = Normal even if the text of the property node contains the word "test"
+    /// in a different context (e.g. a second property line).
+    ///
+    /// This test will PASS because the grammar creates separate property nodes — the
+    /// "test" word appears in a comment/separate property, not the Subtype value.
+    /// If the grammar ever groups them into one node, this documents the expected behaviour.
+    #[test]
+    fn test_has_test_subtype_does_not_match_subtype_normal_adversarial_j_3() {
+        // A codeunit with Subtype = Normal — must NOT be treated as a test codeunit.
+        let source = r#"codeunit 50200 "Normal Codeunit"
+{
+    Subtype = Normal;
+
+    procedure TestSomething()
+    begin
+    end;
+}
+"#;
+        let result = AlParser::parse_quick(source);
+        let root = result.tree.root_node();
+        let bytes = source.as_bytes();
+        assert!(
+            !has_test_subtype(root, bytes),
+            "Subtype = Normal must NOT be detected as a test subtype"
+        );
+    }
+
+    /// Negative companion: Subtype = Test must be detected.
+    #[test]
+    fn test_has_test_subtype_detects_subtype_test_adversarial_j_3() {
+        let source = r#"codeunit 50201 "Test Codeunit"
+{
+    Subtype = Test;
+
+    procedure Setup()
+    begin
+    end;
+}
+"#;
+        let result = AlParser::parse_quick(source);
+        let root = result.tree.root_node();
+        let bytes = source.as_bytes();
+        assert!(
+            has_test_subtype(root, bytes),
+            "Subtype = Test must be detected as a test subtype"
+        );
+    }
+
+    /// Finding adversarial_j_3: has_test_subtype substring match — verify that a
+    /// property like Subtype = Normal with a trailing comment containing the word
+    /// "test" does NOT trigger a false positive.  This tests the boundary case where
+    /// tree-sitter might include comment trivia in the property node text.
+    #[test]
+    fn test_has_test_subtype_comment_with_test_word_not_false_positive_adversarial_j_3() {
+        // If the grammar includes the comment in the property node text, lower() would
+        // contain both "subtype" and "test" — triggering a false positive.
+        let source = r#"codeunit 50202 "Normal Codeunit With Comment"
+{
+    // This codeunit has test-like naming but is NOT a test codeunit
+    Subtype = Normal;
+
+    procedure Run()
+    begin
+    end;
+}
+"#;
+        let result = AlParser::parse_quick(source);
+        let root = result.tree.root_node();
+        let bytes = source.as_bytes();
+        assert!(
+            !has_test_subtype(root, bytes),
+            "Comment containing 'test' must NOT cause false-positive test subtype detection"
+        );
+    }
+}

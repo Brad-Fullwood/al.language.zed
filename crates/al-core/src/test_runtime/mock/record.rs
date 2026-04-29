@@ -746,4 +746,270 @@ mod tests {
         rec.reset();
         assert_eq!(rec.count(), 5);
     }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // ADVERSARIAL-I tests
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // Vector 1: NaN Decimal as primary key — BTreeMap uses Ord (total_cmp)
+    // for lookup, so insert+get should round-trip. However, PartialEq is
+    // derived (uses f64 ==) which returns false for NaN==NaN, violating the
+    // Eq contract. This test exposes the Eq/PartialEq inconsistency: the
+    // derived PartialEq says NaN != NaN, but Ord says they are Equal.
+    #[test]
+    fn test_nan_decimal_pk_eq_consistency_adversarial_i_1() {
+        let nan = Value::Decimal(f64::NAN);
+        // Ord/total_cmp says NaN == NaN — this should hold for Eq.
+        // If the derived PartialEq is used, this assertion will FAIL
+        // because f64 NaN != NaN.
+        assert!(
+            nan == nan,
+            "Eq contract: a == a must hold for Value::Decimal(NaN)"
+        );
+    }
+
+    // Vector 1b: NaN Decimal round-trips through BTreeMap insert/get.
+    // BTreeMap uses Ord for all key operations, so even with broken PartialEq
+    // the map should find the key. But contains_key on the extracted PrimaryKey
+    // goes through Vec<Value> comparison which uses PartialEq — potential
+    // inconsistency with BTreeMap's Ord-based lookup.
+    #[test]
+    fn test_nan_decimal_pk_roundtrip_adversarial_i_1b() {
+        let mut rec = MockRecord::new(99, "NanTable", vec![1]);
+        rec.field_set(1, Value::Decimal(f64::NAN));
+        rec.field_set(2, Value::Text("nanrow".to_string()));
+        rec.insert(false).expect("insert NaN PK should succeed");
+
+        // Second insert with NaN PK should be a DuplicateKey error.
+        rec.field_set(1, Value::Decimal(f64::NAN));
+        rec.field_set(2, Value::Text("duplicate".to_string()));
+        let err = rec.insert(false).unwrap_err();
+        assert_eq!(
+            err,
+            RecordError::DuplicateKey,
+            "NaN PK must trigger DuplicateKey on second insert"
+        );
+    }
+
+    // Vector 3: Rename to self (same key) should succeed without row loss.
+    // When old_key == new_key: we remove the row, then find no conflict
+    // (since the row is now absent), and re-insert. Result: row survives.
+    #[test]
+    fn test_rename_to_same_key_adversarial_i_3() {
+        let mut rec = make_table();
+        insert_row(&mut rec, 42, "SameKey");
+        rec.get(vec![Value::Integer(42)]).unwrap();
+        // Rename to the identical key value.
+        rec.rename(vec![(1, Value::Integer(42))]).unwrap();
+        // Row must still be findable.
+        rec.get(vec![Value::Integer(42)])
+            .expect("row must survive no-op rename to same key");
+        assert_eq!(rec.field_get(2), Some(&Value::Text("SameKey".to_string())));
+    }
+
+    // Vector 4: SetRange then SetFilter on the SAME field — second call
+    // must overwrite the first (last-write-wins). Combined on DIFFERENT
+    // fields must be AND semantics (both filters must match).
+    #[test]
+    fn test_setrange_then_setfilter_same_field_overwrite_adversarial_i_4() {
+        let mut rec = make_table();
+        for i in 1i64..=10 {
+            insert_row(&mut rec, i, "x");
+        }
+        // SetRange to [3,7], then SetFilter >=5 on the same field.
+        // Expected BC behaviour: SetFilter replaces SetRange → only >=5 applies.
+        rec.set_range(1, Value::Integer(3), Value::Integer(7));
+        rec.set_filter(1, ">=5").unwrap();
+        // If last-write-wins: count == 6 (5..=10).
+        // If AND semantics:    count == 3 (5..=7).
+        // Document which one actually happens:
+        let count = rec.count();
+        assert_eq!(count, 6, "SetFilter after SetRange on same field must overwrite (last-write-wins), giving >=5 → 6 rows");
+    }
+
+    // Vector 4b: SetRange and SetFilter on DIFFERENT fields must be AND.
+    #[test]
+    fn test_setrange_and_setfilter_different_fields_and_semantics_adversarial_i_4b() {
+        let mut rec = MockRecord::new(99, "Test", vec![1]);
+        // Insert rows: field1 in 1..=10, field2 = "A" or "B" alternating.
+        for i in 1i64..=10 {
+            rec.field_set(1, Value::Integer(i));
+            let label = if i % 2 == 0 { "A" } else { "B" };
+            rec.field_set(2, Value::Text(label.to_string()));
+            rec.insert(false).unwrap();
+        }
+        // SetRange on field1: [3,7] (rows 3,4,5,6,7).
+        rec.set_range(1, Value::Integer(3), Value::Integer(7));
+        // SetFilter on field2: only "A" (even rows: 4,6).
+        rec.set_filter(2, "A").unwrap();
+        // AND semantics: 5 rows in [3,7] AND field2="A" (case-insensitive).
+        // Even rows in [3,7]: 4, 6 → count = 2.
+        assert_eq!(
+            rec.count(),
+            2,
+            "Filters on different fields must be AND: rows 4 and 6"
+        );
+    }
+
+    // Vector 5: Modify after Reset with empty current buffer.
+    // reset() clears iter_pos and filters but NOT the current buffer.
+    // After init() (which does clear current), modify() has no key field
+    // → should return MissingKeyField, not NotFound, not panic.
+    #[test]
+    fn test_modify_after_init_empty_buffer_adversarial_i_5() {
+        let mut rec = make_table();
+        insert_row(&mut rec, 1, "Row");
+        rec.init(); // clears current buffer
+                    // Now modify() — current buffer is empty, no PK field set.
+        let err = rec.modify(false).unwrap_err();
+        assert!(
+            matches!(err, RecordError::MissingKeyField(_)),
+            "Modify with empty buffer should return MissingKeyField, got: {err:?}"
+        );
+    }
+
+    // Vector 5b: Modify after Reset (NOT init) — current buffer retains
+    // the last loaded row's key. Modify should succeed if the row exists.
+    #[test]
+    fn test_modify_after_reset_retains_current_adversarial_i_5b() {
+        let mut rec = make_table();
+        insert_row(&mut rec, 10, "Ten");
+        rec.get(vec![Value::Integer(10)]).unwrap();
+        // reset() does NOT clear the current buffer.
+        rec.reset();
+        // Modify a non-PK field and call modify — should succeed.
+        rec.field_set(2, Value::Text("TenModified".to_string()));
+        rec.modify(false)
+            .expect("Modify after reset should succeed when buffer has valid key");
+        rec.get(vec![Value::Integer(10)]).unwrap();
+        assert_eq!(
+            rec.field_get(2),
+            Some(&Value::Text("TenModified".to_string()))
+        );
+    }
+
+    // Vector 6: FindSet then Modify mid-iteration — cursor (iter_set)
+    // remains stable when a non-PK field is modified. Iteration must
+    // continue to the next row without skipping or panicking.
+    #[test]
+    fn test_findset_modify_mid_iteration_adversarial_i_6() {
+        let mut rec = make_table();
+        for i in 1i64..=5 {
+            insert_row(&mut rec, i, "original");
+        }
+        assert!(rec.find_set().unwrap());
+        let mut visited = Vec::new();
+        loop {
+            let key = rec.field_get(1).unwrap().clone();
+            visited.push(key.clone());
+            // Modify the current row's non-PK field.
+            rec.field_set(2, Value::Text("modified".to_string()));
+            rec.modify(false)
+                .expect("modify during iteration must not fail");
+            // Advance to next record.
+            if rec.next(1).unwrap() == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            visited.len(),
+            5,
+            "All 5 rows must be visited during iteration with mid-loop Modify"
+        );
+        // Verify modifications persisted.
+        for i in 1i64..=5 {
+            rec.get(vec![Value::Integer(i)]).unwrap();
+            assert_eq!(
+                rec.field_get(2),
+                Some(&Value::Text("modified".to_string())),
+                "Row {i} should have been modified"
+            );
+        }
+    }
+
+    // Vector 7: Count and IsEmpty after deleting all rows using FindSet+Delete.
+    #[test]
+    fn test_count_isempty_after_delete_all_adversarial_i_7() {
+        let mut rec = make_table();
+        for i in 1i64..=5 {
+            insert_row(&mut rec, i, "item");
+        }
+        assert_eq!(rec.count(), 5);
+        assert!(!rec.is_empty());
+
+        // Delete all rows via direct key deletion.
+        for i in 1i64..=5 {
+            rec.field_set(1, Value::Integer(i));
+            rec.delete(false).unwrap();
+        }
+        assert_eq!(rec.count(), 0, "Count must be 0 after deleting all rows");
+        assert!(
+            rec.is_empty(),
+            "IsEmpty must be true after deleting all rows"
+        );
+        // FindSet on empty table must return false.
+        assert!(
+            !rec.find_set().unwrap(),
+            "FindSet on empty table must return false"
+        );
+    }
+
+    // Vector 8: xRec after Insert on a fresh record (no prior Get).
+    // In BC, after Insert, xRec should equal the inserted record.
+    // In the mock, insert() does NOT update x_rec — it stays empty.
+    // This test documents the deviation: x_rec is empty after a first Insert.
+    #[test]
+    fn test_xrec_after_insert_equals_current_adversarial_i_8() {
+        let mut rec = make_table();
+        rec.field_set(1, Value::Integer(99));
+        rec.field_set(2, Value::Text("NewRow".to_string()));
+        rec.insert(false).unwrap();
+        // BC behaviour: xRec should match the inserted record.
+        // Mock behaviour: xRec was not updated by insert() — it is empty.
+        assert_eq!(
+            rec.x_rec_field(2),
+            Some(&Value::Text("NewRow".to_string())),
+            "xRec after Insert must reflect the inserted row (BC behaviour); got: {:?}",
+            rec.x_rec_field(2)
+        );
+    }
+
+    // Vector 19: SetCurrentKey changes sort key and the NEXT FindSet
+    // rebuilds iter_set in the new order (not stale from old FindSet).
+    #[test]
+    fn test_set_current_key_iter_set_rebuilds_adversarial_i_19() {
+        // Two-field rows: field1 = PK, field3 = secondary sort.
+        let mut rec = MockRecord::new(99, "SortTest", vec![1]);
+        for (no, priority) in [(10i64, 30i64), (20, 10), (30, 20)] {
+            rec.field_set(1, Value::Integer(no));
+            rec.field_set(3, Value::Integer(priority));
+            rec.insert(false).unwrap();
+        }
+
+        // First FindSet in PK order: 10, 20, 30.
+        assert!(rec.find_set().unwrap());
+        let mut first_pass = vec![rec.field_get(1).unwrap().clone()];
+        while rec.next(1).unwrap() != 0 {
+            first_pass.push(rec.field_get(1).unwrap().clone());
+        }
+        assert_eq!(
+            first_pass,
+            vec![Value::Integer(10), Value::Integer(20), Value::Integer(30)]
+        );
+
+        // Change sort key to field3 (priority).
+        rec.set_current_key(vec![3]);
+
+        // Second FindSet must use new sort key: priority 10→no=20, 20→no=30, 30→no=10.
+        assert!(rec.find_set().unwrap());
+        let mut second_pass = vec![rec.field_get(1).unwrap().clone()];
+        while rec.next(1).unwrap() != 0 {
+            second_pass.push(rec.field_get(1).unwrap().clone());
+        }
+        assert_eq!(
+            second_pass,
+            vec![Value::Integer(20), Value::Integer(30), Value::Integer(10)],
+            "After SetCurrentKey, iter_set must be rebuilt in new sort order"
+        );
+    }
 }
