@@ -911,7 +911,11 @@ mod proptest_tests {
     fn range_str() -> impl Strategy<Value = (i64, i64)> {
         (0i64..=500_000i64, 0i64..=500_000i64).prop_map(
             |(a, b)| {
-                if a <= b { (a, b) } else { (b, a) }
+                if a <= b {
+                    (a, b)
+                } else {
+                    (b, a)
+                }
             },
         )
     }

@@ -17,6 +17,9 @@ pub mod eval_stmt;
 pub mod scope;
 pub mod value;
 
+#[cfg(test)]
+mod tests_adversarial_wave2;
+
 pub use dispatch::{DispatchCtx, DispatchMode};
 pub use scope::{CallFrame, Eval, ScopeStack};
 pub use value::{ErrorInfo, RecordValue, Value};
