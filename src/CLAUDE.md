@@ -1,4 +1,4 @@
-# zed-al — WASM Extension (~620 lines)
+# zed-al — WASM Extension (~720 lines)
 
 The Zed IDE WASM extension. Compiled to `cdylib` targeting `wasm32-wasip1`. Bridges Zed and the `al-lsp` language server.
 

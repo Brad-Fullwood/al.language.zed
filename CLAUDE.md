@@ -67,10 +67,10 @@ make install                                  # build + symlink into PATH + Zed
 
 | Crate | Approx Lines | Role | Key Modules / Types |
 |-------|--------------|------|---------------------|
-| **al-core** | ~55K | All business logic + LSP binary | `Workspace`, `DocumentStore`; `syntax::{AlParser, TypeResolver, LanguageData}`; `symbols::{AppReader, SymbolIndex, NugetClient}`; `semantic::SemanticBridge`; `server::AlServer`; `dap::*`; `[[bin]] al-lsp` |
-| **al-protocol** | ~450 | Daemon IPC types (shared between al-core daemon and al-explorer) | `DaemonClient`, request/response enums |
-| **al-explorer** | ~6K | Unified TUI + CLI client | ratatui app + `cli::*` clap commands |
-| **zed-al** | ~620 | WASM extension for Zed | `AlExtension` |
+| **al-core** | ~66K | All business logic + LSP binary | `Workspace`, `DocumentStore`; `syntax::{AlParser, TypeResolver, LanguageData}`; `symbols::{AppReader, SymbolIndex, NugetClient}`; `semantic::SemanticBridge`; `server::AlServer`; `dap::*`; `[[bin]] al-lsp` |
+| **al-protocol** | ~610 | Daemon IPC types (shared between al-core daemon and al-explorer) | `DaemonClient`, request/response enums |
+| **al-explorer** | ~7K | Unified TUI + CLI client | ratatui app + `cli::*` clap commands |
+| **zed-al** | ~720 | WASM extension for Zed | `AlExtension` |
 | **al-test-harness** | n/a | E2E tests over the real `al-lsp` binary | `LspClient` |
 | **al-zed-test** | n/a | Live tests against real Zed | — |
 
