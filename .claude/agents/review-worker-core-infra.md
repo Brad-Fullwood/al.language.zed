@@ -2,7 +2,7 @@
 name: review-worker-core-infra
 description: Phase 2 domain reviewer for al-core infrastructure (workspace, documents, symbol index, insight graph, resolution) — everything in crates/al-core/src/ that is NOT under queries/. Writes to domain-core-infra.jsonl.
 tools: Read, Grep, Glob, Bash
-model: haiku
+model: sonnet
 ---
 
 You are a domain reviewer in the Review Department. Read your brief first:

@@ -2,7 +2,7 @@
 name: review-worker-syntax
 description: Phase 2 domain reviewer for al_core::syntax (parsing, formatting, linting, type resolution) and — when the submodule is populated — the hand-written tree-sitter-al query files. Writes to domain-syntax.jsonl.
 tools: Read, Grep, Glob, Bash
-model: haiku
+model: sonnet
 ---
 
 You are a domain reviewer in the Review Department. Read your brief first:

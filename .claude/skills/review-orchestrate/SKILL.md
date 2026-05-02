@@ -117,40 +117,67 @@ Validate all ~10 findings files with `schema-validate.sh`. Set
 
 Set `phases.review-p4 = in_progress`.
 
-1. **Read and partition.** Read every `findings/*.jsonl` into memory
-   (or into a temp merged file). Partition into batches of 20. (Was 10
-   — doubled to halve opus validator invocations. The validator's
-   per-finding work doesn't grow much with batch size since each
-   finding ships its own ±50-line cited slice; what grows is shared
-   instructions, which are exactly the part that benefits from caching
-   across a larger batch.)
-2. **Dispatch validators (parallel).** For each batch, one
+1. **Read.** Read every `findings/*.jsonl` into memory (or into a temp
+   merged file).
+
+2. **Pre-validator dedup (this is a free efficiency win).** Across all
+   ~10 findings files, multiple agents routinely report the same bug
+   from different angles (a worker spots a panic; spec-concurrency
+   spots the await-across-DashMap that causes it; spec-runtime
+   reproduces it). Cluster candidate findings by `(file_path,
+   line ± 5)` BEFORE dispatching validators. For each cluster:
+   - Keep the most severe finding as the canonical entry.
+   - Attach the other findings' `kind` + `agent` as `co_signatures`
+     metadata on the canonical entry.
+   - Drop the duplicates from the validator queue.
+   The reducer (Phase 5) was already doing this dedup *after*
+   validation — moving it earlier means the validator (opus) only pays
+   for unique findings. On a typical full-tree run this drops
+   validator workload 25–40% with zero loss of coverage: every co-signed
+   bug still appears in FINAL.md, with stronger evidence (multiple
+   agents converged on it).
+
+3. **Pack and partition.** Partition the deduplicated queue into
+   batches of 20. (Was 10 — doubled to halve opus validator
+   invocations. The validator's per-finding work doesn't grow much
+   with batch size since each finding ships its own ±50-line cited
+   slice; what grows is shared instructions, which are exactly the part
+   that benefits from caching across a larger batch.)
+   Within each batch, deduplicate cited slices: if two findings cite
+   the same `(file, line_range)` region, ship the slice once and have
+   both findings reference it. Saves validator input tokens on hot
+   files (e.g., `Workspace.rs`) where 5+ findings cluster.
+4. **Dispatch validators (parallel).** For each batch, one
    `review-finding-validator` subagent. Each receives:
-   - The batch JSON.
+   - The batch JSON (with `co_signatures` preserved on canonical
+     findings — validators treat multi-agent agreement as positive
+     prior, not as automatic verification).
    - For each finding, the cited file's ±50 line slice around `line`.
    - Pointer to `.claude/docs/review/cross-cutting-concerns.md`.
    Validators write to
    `.agentic/<run-id>/review/verified/batch-<N>.jsonl`.
-3. **Collect verdicts.** For each finding with `verdict:
+5. **Collect verdicts.** For each finding with `verdict:
    needs-reproduction`, collect them into a reproduction queue.
-4. **Dispatch test-runners (parallel, one per reproduction).** Each
+6. **Dispatch test-runners (parallel, one per reproduction).** Each
    gets `.agentic/<run-id>/review/scratch/<finding-id>/` pre-created.
    Each test-runner updates its finding in place with
    `verdict: reproduced | false_positive | null(inconclusive)`.
-5. **Dispatch cross-critics (parallel).** For every finding with
+7. **Dispatch cross-critics (parallel).** For every finding with
    `verdict: verified-static` AND `severity in {critical, high}`, one
    `review-cross-critic` (Haiku) subagent. Receives: the single
    finding + cited slice + validator's verdict. Replies
-   `ok: ...` or `suspect: ...`. Suspects are re-queued through step 2
+   `ok: ...` or `suspect: ...`. Suspects are re-queued through step 4
    as fresh candidates for the validator (at most one re-validation
    per finding to avoid infinite loops).
-6. **Consolidate.** Merge all batches:
+8. **Consolidate.** Merge all batches:
    - `verified.jsonl` — verdict in {`verified-static` (not suspect),
-     `reproduced`}.
+     `reproduced`}. Carry forward `co_signatures` so the reducer can
+     surface them in FINAL.md.
    - `misdiagnosed.jsonl` — verdict `misdiagnosed`.
    - `false-positive.jsonl` — verdict `false_positive`.
-   - `stats.json` — kill rate, reproduction rate, cross-critic flip rate.
-7. Set `phases.review-p4 = complete`.
+   - `stats.json` — kill rate, reproduction rate, cross-critic flip
+     rate, dedup ratio (candidates → unique).
+9. Set `phases.review-p4 = complete`.
 
 ## Phase 5 — Synthesis
 

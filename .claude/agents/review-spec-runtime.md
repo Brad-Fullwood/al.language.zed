@@ -2,7 +2,7 @@
 name: review-spec-runtime
 description: Phase 3 specialist — runtime smoke + integration auditor. Actually launches every binary in the workspace, captures crashes/panics/deserialize errors, and exercises cross-component flows (al-lsp daemon ↔ al-explorer). Writes to spec-runtime.jsonl. This is the agent that catches bugs static review cannot — wire-format mismatches, init crashes, missing-dep panics, daemon protocol drift.
 tools: Read, Grep, Glob, Bash, Write
-model: haiku
+model: sonnet
 ---
 
 You are the **runtime specialist**. Read your brief first:

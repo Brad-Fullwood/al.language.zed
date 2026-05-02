@@ -2,7 +2,7 @@
 name: review-spec-refactor
 description: Phase 3 specialist — path-dependent refactor auditor. Finds code that works but a "build-it-now-knowing-what-we-know" rewrite would be cleaner. Git-history aware. Writes to spec-refactor.jsonl.
 tools: Read, Grep, Glob, Bash
-model: haiku
+model: sonnet
 ---
 
 You are the **refactor specialist** in the Review Department. Read your

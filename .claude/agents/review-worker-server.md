@@ -2,7 +2,7 @@
 name: review-worker-server
 description: Phase 2 domain reviewer for transport modules — `al_core::server` (LSP/daemon/DAP), `al_core::dap` (DAP framing + BC proxy), al-protocol (shared IPC types). Writes to domain-server.jsonl.
 tools: Read, Grep, Glob, Bash
-model: haiku
+model: sonnet
 ---
 
 You are a domain reviewer in the Review Department. Read your brief first:
