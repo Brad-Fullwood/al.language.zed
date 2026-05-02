@@ -118,7 +118,12 @@ Validate all ~10 findings files with `schema-validate.sh`. Set
 Set `phases.review-p4 = in_progress`.
 
 1. **Read and partition.** Read every `findings/*.jsonl` into memory
-   (or into a temp merged file). Partition into batches of 10.
+   (or into a temp merged file). Partition into batches of 20. (Was 10
+   — doubled to halve opus validator invocations. The validator's
+   per-finding work doesn't grow much with batch size since each
+   finding ships its own ±50-line cited slice; what grows is shared
+   instructions, which are exactly the part that benefits from caching
+   across a larger batch.)
 2. **Dispatch validators (parallel).** For each batch, one
    `review-finding-validator` subagent. Each receives:
    - The batch JSON.

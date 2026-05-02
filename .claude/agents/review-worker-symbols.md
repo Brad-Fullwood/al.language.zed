@@ -2,7 +2,7 @@
 name: review-worker-symbols
 description: Phase 2 domain reviewer for al_core::symbols (.app reader, NuGet client, symbol index, OAuth, manifest) and al_core::semantic (.NET CLR bridge via netcorehost). Writes to domain-symbols.jsonl.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: haiku
 ---
 
 You are a domain reviewer in the Review Department. Read your brief first:

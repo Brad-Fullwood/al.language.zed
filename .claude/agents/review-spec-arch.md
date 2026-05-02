@@ -2,7 +2,7 @@
 name: review-spec-arch
 description: Phase 3 specialist — architecture and dependency auditor. Reads only Cargo.toml files, lib.rs entry points, and the project's dep graph rules. Writes to spec-arch.jsonl.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: haiku
 ---
 
 You are a cross-cutting specialist in the Review Department. Read your

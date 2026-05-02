@@ -2,7 +2,7 @@
 name: review-spec-grammar
 description: Phase 3 specialist — tree-sitter-al grammar and query auditor. Gated on submodule populated. Covers grammar.js, queries/*.scm, data/*.json, generator tooling. Writes to spec-grammar.jsonl.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: haiku
 ---
 
 You are the grammar specialist in the Review Department. Read your brief

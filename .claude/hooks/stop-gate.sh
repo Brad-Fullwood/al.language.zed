@@ -31,22 +31,21 @@ if [ -z "$RUST_CHANGES" ] && [ -z "$STAGED_RUST" ]; then
 fi
 
 # --- Enforcement: code was changed, verify the work ---
+#
+# clippy implies check (it runs the same compiler frontend), so we don't
+# run cargo check separately — that was a duplicate ~2-15s of compile time
+# every Stop. clippy with -D warnings catches both compile errors and lints.
 
 FAILURES=""
 
-# 1. Check that code compiles
-if ! cargo check --workspace --exclude zed-al 2>/dev/null; then
-  FAILURES="${FAILURES}\n- CODE DOES NOT COMPILE. Run 'cargo check --workspace --exclude zed-al' and fix all errors."
-fi
-
-# 2. Check clippy
-if ! cargo clippy --workspace --exclude zed-al -- -D warnings 2>/dev/null; then
-  FAILURES="${FAILURES}\n- CLIPPY WARNINGS. Run 'cargo clippy --workspace --exclude zed-al -- -D warnings' and fix all warnings."
-fi
-
-# 3. Check formatting
+# 1. Check formatting (cheapest — fail fast)
 if ! cargo fmt --all -- --check 2>/dev/null; then
   FAILURES="${FAILURES}\n- CODE NOT FORMATTED. Run 'cargo fmt --all'."
+fi
+
+# 2. Check clippy (also catches compile errors via -D warnings)
+if ! cargo clippy --workspace --exclude zed-al -- -D warnings 2>/dev/null; then
+  FAILURES="${FAILURES}\n- COMPILE OR CLIPPY ERRORS. Run 'cargo clippy --workspace --exclude zed-al -- -D warnings' and fix all errors/warnings."
 fi
 
 if [ -n "$FAILURES" ]; then

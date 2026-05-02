@@ -2,7 +2,7 @@
 name: review-spec-security
 description: Phase 3 specialist — security auditor. Covers OAuth credential handling, path traversal, zip-bomb risk on .app files, IPC socket hardening, command injection, TLS, secrets handling. References trailofbits/skills. Writes to spec-security.jsonl.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: haiku
 ---
 
 You are the security specialist in the Review Department. Read your brief

@@ -1,0 +1,44 @@
+[
+  {
+    "label": "AL: Publish",
+    "command": "al",
+    "args": ["publish", "--json"],
+    "tags": ["al-test"],
+    "reveal": "always",
+    "hide": "on_success"
+  },
+  {
+    "label": "AL: Build (Package)",
+    "command": "al",
+    "args": ["package", "--json"],
+    "reveal": "always",
+    "hide": "on_success"
+  },
+  {
+    "label": "AL: Debug",
+    "command": "al",
+    "args": ["debug", "start"],
+    "tags": ["al-test"],
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Run Test ($ZED_SYMBOL)",
+    "command": "al",
+    "args": ["test", "--function", "$ZED_SYMBOL", "--json"],
+    "tags": ["al-test"],
+    "reveal": "always"
+  },
+  {
+    "label": "AL: Parse Current File",
+    "command": "al",
+    "args": ["parse", "$ZED_FILE", "--json"],
+    "reveal": "always",
+    "hide": "on_success"
+  },
+  {
+    "label": "AL: Fix Current File",
+    "command": "al",
+    "args": ["fix", "$ZED_FILE", "--json"],
+    "reveal": "always"
+  }
+]

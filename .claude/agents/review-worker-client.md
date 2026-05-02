@@ -2,7 +2,7 @@
 name: review-worker-client
 description: Phase 2 domain reviewer for user-facing clients — al-explorer (TUI default + CLI subcommands), and the root zed-al WASM extension. Writes to domain-client.jsonl.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: haiku
 ---
 
 You are a domain reviewer in the Review Department. Read your brief first:

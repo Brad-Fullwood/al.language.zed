@@ -12,8 +12,17 @@ registering the routine.
 | Name | `review-all-nightly` |
 | Trigger | cron `0 3 * * *` (03:00 local) |
 | Target | `dev` branch of this repository |
-| Command | `/review-all` |
+| Command | `/review-all` (full-tree sweep) |
 | Description | Nightly exhaustive review of `dev`. Output lands in `.agentic/scheduled/<YYYY-MM-DD>/<run-id>/`. |
+
+## Why full, not incremental
+
+We deliberately run the full sweep nightly — not `--diff` or `--since`.
+Old bugs in unchanged code persist forever; an incremental scheduler
+would never re-find them. Token cost is paid once a night and accepted.
+Efficiency comes from the orchestrator itself (worker model = haiku,
+opt-in refactor + toolkit reinforcements, larger validator batches),
+not from skipping coverage.
 
 ## Registration (do this once)
 

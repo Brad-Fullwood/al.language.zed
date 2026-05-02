@@ -23,6 +23,10 @@ Optional flags:
 - `--skip-grammar` — force-skip the grammar reviewer even when the
   submodule is populated (useful for speed in mid-dev).
 
+Phase 4 validator batch size = 20 findings per validator invocation
+(was 10) — halves opus validator calls without affecting per-finding
+evaluation accuracy.
+
 ## Phase 0 — Orchestrator setup (do this first)
 
 1. Parse the arguments → resolve `MODE ∈ {full, diff, incremental}`.

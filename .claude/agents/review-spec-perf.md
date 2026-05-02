@@ -2,7 +2,7 @@
 name: review-spec-perf
 description: Phase 3 specialist — performance auditor. Focuses on LSP hot paths (keystroke-triggered), parser/formatter, symbol indexing, insight graph. Writes to spec-perf.jsonl.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: haiku
 ---
 
 You are the performance specialist in the Review Department. Read your

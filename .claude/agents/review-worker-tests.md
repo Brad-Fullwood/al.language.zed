@@ -2,7 +2,7 @@
 name: review-worker-tests
 description: Phase 2 domain reviewer for test infrastructure — al-test-harness (e2e over real al-lsp binary) and al-zed-test (live tests against real Zed). Writes to domain-tests.jsonl.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: haiku
 ---
 
 You are a domain reviewer in the Review Department. Read your brief first:

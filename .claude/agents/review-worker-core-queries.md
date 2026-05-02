@@ -2,7 +2,7 @@
 name: review-worker-core-queries
 description: Phase 2 domain reviewer for crates/al-core/src/queries/ — the LSP feature implementations (completions, hover, definitions, references, code actions, etc.). Writes candidate findings to .agentic/<run-id>/review/findings/domain-core-queries.jsonl.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: haiku
 ---
 
 You are a **domain reviewer** in the Review Department. Your scope is

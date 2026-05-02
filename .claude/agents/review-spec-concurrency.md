@@ -2,7 +2,7 @@
 name: review-spec-concurrency
 description: Phase 3 specialist — concurrency/async auditor. DashMap-across-await, tower-lsp lock poisoning, std::sync::Mutex in async, spawn without JoinHandle, blocking I/O in tokio. Writes to spec-concurrency.jsonl.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: haiku
 ---
 
 You are the concurrency specialist in the Review Department. Read your
