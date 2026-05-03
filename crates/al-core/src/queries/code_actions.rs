@@ -1671,7 +1671,7 @@ fn source_action_move_tooltip(
 }
 
 /// Simple object kind detector — checks the first `object` line in the file.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum AlObjectKind {
     Page,
     Table,
@@ -1681,31 +1681,19 @@ enum AlObjectKind {
 }
 
 fn detect_object_kind(text: &str) -> Option<AlObjectKind> {
-    for line in text.lines().take(5) {
-        let lower = line.trim().to_lowercase();
-        if lower.starts_with("page ") || lower.starts_with("page\t") {
-            return Some(AlObjectKind::Page);
-        }
-        if lower.starts_with("table ") || lower.starts_with("table\t") {
-            return Some(AlObjectKind::Table);
-        }
-        if lower.starts_with("codeunit ") {
-            return Some(AlObjectKind::Codeunit);
-        }
-        if lower.starts_with("report ") || lower.starts_with("report\t") {
-            return Some(AlObjectKind::Report);
-        }
-        if lower.starts_with("pageextension ")
-            || lower.starts_with("tableextension ")
-            || lower.starts_with("xmlport ")
-            || lower.starts_with("query ")
-            || lower.starts_with("enum ")
-            || lower.starts_with("interface ")
-        {
-            return Some(AlObjectKind::Other);
-        }
-    }
-    None
+    let first = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("//"))?;
+    let token = first.split(|c: char| c.is_whitespace()).next()?;
+    let object_type = crate::syntax::language_data::object_type_by_keyword(token)?;
+    Some(match object_type.keyword.as_str() {
+        "page" => AlObjectKind::Page,
+        "table" => AlObjectKind::Table,
+        "codeunit" => AlObjectKind::Codeunit,
+        "report" => AlObjectKind::Report,
+        _ => AlObjectKind::Other,
+    })
 }
 
 // ============================================================================
@@ -2518,6 +2506,76 @@ mod tests {
     use super::*;
     use crate::symbols::{ObjectKind, SymbolEntry};
     use crate::workspace::Workspace;
+
+    #[test]
+    fn detect_object_kind_routes_known_types() {
+        // Routing variants for the four kinds that gate code-actions.
+        assert_eq!(detect_object_kind("page 50 X { }"), Some(AlObjectKind::Page));
+        assert_eq!(
+            detect_object_kind("table 50 X { }"),
+            Some(AlObjectKind::Table)
+        );
+        assert_eq!(
+            detect_object_kind("codeunit 50 X { }"),
+            Some(AlObjectKind::Codeunit)
+        );
+        assert_eq!(
+            detect_object_kind("report 50 X { }"),
+            Some(AlObjectKind::Report)
+        );
+    }
+
+    #[test]
+    fn detect_object_kind_routes_extensions_and_extras_to_other() {
+        // Pre-T014 these mostly worked; the new lookup goes through
+        // LanguageData / object_types.json so coverage is now data-driven.
+        for (txt, label) in [
+            ("pageextension 50 X extends Y { }", "pageextension"),
+            ("tableextension 50 X extends Y { }", "tableextension"),
+            ("xmlport 50 X { }", "xmlport"),
+            ("query 50 X { }", "query"),
+            ("enum 50 X { }", "enum"),
+            ("interface IX { }", "interface"),
+        ] {
+            assert_eq!(
+                detect_object_kind(txt),
+                Some(AlObjectKind::Other),
+                "{label} should route to Other"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_object_kind_now_recognises_previously_missed_types() {
+        // The hardcoded prefix list pre-T014 silently dropped these,
+        // disabling code-actions on them. Each must now resolve.
+        for (txt, label) in [
+            ("permissionset 50 X { }", "permissionset"),
+            ("profile X { }", "profile"),
+            ("controladdin X { }", "controladdin"),
+            ("entitlement X { }", "entitlement"),
+            ("reportextension 50 X extends Y { }", "reportextension"),
+            ("enumextension 50 X extends Y { }", "enumextension"),
+        ] {
+            assert!(
+                detect_object_kind(txt).is_some(),
+                "{label}: regression — should be recognised by LanguageData"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_object_kind_returns_none_for_unknown_or_blank() {
+        assert!(detect_object_kind("").is_none());
+        assert!(detect_object_kind("// comment only\n").is_none());
+        assert!(detect_object_kind("garbage 99 X").is_none());
+    }
+
+    #[test]
+    fn detect_object_kind_skips_leading_comments_and_blank_lines() {
+        let text = "// header\n\n   \npage 50 MyPage { }";
+        assert_eq!(detect_object_kind(text), Some(AlObjectKind::Page));
+    }
 
     #[test]
     fn code_action_kind_serializes_to_lsp_string() {
