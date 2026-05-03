@@ -567,7 +567,11 @@ where
                             )
                             .await?;
 
-                            let _ = open_browser(&web_url);
+                            if !open_browser(&web_url) {
+                                tracing::warn!(url = %web_url,
+                                    "DAP launch: could not auto-open browser for AAD \
+                                     device-code; user must navigate manually");
+                            }
                         }
                     }
                     Err(e) => {
@@ -621,7 +625,14 @@ where
                             bps.remove(&source_path).unwrap_or_default()
                         };
                         for id in old_ids {
-                            let _ = s.remove_breakpoint(id).await;
+                            if let Err(e) = s.remove_breakpoint(id).await {
+                                tracing::warn!(
+                                    breakpoint_id = id,
+                                    error = %e,
+                                    "DAP setBreakpoints: removing prior breakpoint failed; \
+                                     local state will be overwritten regardless"
+                                );
+                            }
                         }
 
                         let mut new_ids = Vec::new();
@@ -953,12 +964,26 @@ where
                     if scope_index == 2 {
                         match s.get_globals(frame_id).await {
                             Ok(v) => v,
-                            Err(_) => serde_json::json!([]),
+                            Err(e) => {
+                                tracing::warn!(
+                                    frame_id,
+                                    error = %e,
+                                    "DAP variables: get_globals failed; returning empty array"
+                                );
+                                serde_json::json!([])
+                            }
                         }
                     } else {
                         match s.get_variables(frame_id).await {
                             Ok(v) => v,
-                            Err(_) => serde_json::json!([]),
+                            Err(e) => {
+                                tracing::warn!(
+                                    frame_id,
+                                    error = %e,
+                                    "DAP variables: get_variables failed; returning empty array"
+                                );
+                                serde_json::json!([])
+                            }
                         }
                     }
                 } else {
