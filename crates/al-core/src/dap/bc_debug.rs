@@ -258,10 +258,12 @@ pub async fn publish_app(
         Ok(())
     } else {
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
+        let body = crate::bc_client::sanitize_error_body(
+            &resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<body read failed: {e}>")),
+        );
         Err(DapError::PublishFailed(format!(
             "Publish failed (HTTP {status}): {body}"
         )))
@@ -293,10 +295,12 @@ pub async fn get_metadata(
             .map_err(|e| DapError::ConnectionFailed(format!("Bad metadata response: {e}")))
     } else {
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
+        let body = crate::bc_client::sanitize_error_body(
+            &resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<body read failed: {e}>")),
+        );
         Err(DapError::ConnectionFailed(format!(
             "Metadata failed (HTTP {status}): {body}"
         )))
