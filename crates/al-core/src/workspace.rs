@@ -85,9 +85,13 @@ pub struct Workspace {
     /// calls `client.show_message`; in the daemon path it logs. Not set in tests.
     pub notify_sink: std::sync::OnceLock<NotifySink>,
     /// Cached insight graph. Built lazily; invalidated when packages reload (ISSUE-132 fix).
-    pub insight_graph: std::sync::RwLock<Option<Arc<InsightGraph>>>,
+    /// Private — access via `get_or_build_insight_graph()` / `invalidate_insight_graph()`
+    /// only, so the DCL build path and the `call_graph → insight_graph` lock-ordering
+    /// invariant cannot be bypassed from outside the module (T005).
+    insight_graph: std::sync::RwLock<Option<Arc<InsightGraph>>>,
     /// Cached call graph. Built lazily after insight graph; invalidated with it.
-    pub call_graph: std::sync::RwLock<Option<CallGraph>>,
+    /// Private — access via `get_or_build_call_graph()` only (T005).
+    call_graph: std::sync::RwLock<Option<CallGraph>>,
     /// Active profiler session loaded from a `.alcpuprofile` file.
     ///
     /// When a profile is loaded the hints are stored here so that `code_lens`
@@ -155,11 +159,24 @@ impl Workspace {
                 return Arc::clone(arc);
             }
         }
-        // Build outside any lock so the executor thread is not parked.
-        // block_in_place yields the worker to the blocking pool when we are
-        // inside a multi-threaded Tokio runtime; otherwise the closure runs
-        // inline (block_in_place panics in current_thread mode, so we guard
-        // with try_handle and runtime flavor detection).
+        // Slow path: acquire the write lock, then re-check (double-checked
+        // locking). Mirrors `get_or_build_call_graph`. Without DCL, N
+        // concurrent first-callers each independently build a 50–200 ms graph
+        // and discard all but the first — wasted CPU on cold cache.
+        // Recover from a poisoned lock via `into_inner` so a panic inside an
+        // earlier build does not permanently freeze the cache.
+        let mut guard = self
+            .insight_graph
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(arc) = guard.as_ref() {
+            return Arc::clone(arc);
+        }
+        // Build inside the write lock. block_in_place yields the worker to
+        // the blocking pool when we are inside a multi-threaded Tokio
+        // runtime; otherwise the closure runs inline (block_in_place panics
+        // in current_thread mode, so we guard with try_handle and runtime
+        // flavor detection).
         let build = || {
             let mut g = InsightGraph::new();
             g.build_from_index(&self.symbols);
@@ -172,15 +189,6 @@ impl Workspace {
             _ => build(),
         };
         let arc = Arc::new(graph);
-        // Briefly take the write lock to store. If another thread won the
-        // race, return their result and discard ours.
-        let mut guard = self
-            .insight_graph
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(existing) = guard.as_ref() {
-            return Arc::clone(existing);
-        }
         *guard = Some(Arc::clone(&arc));
         arc
     }
@@ -537,6 +545,49 @@ mod workspace_lifecycle_tests {
 
     fn make_workspace() -> Workspace {
         Workspace::new()
+    }
+
+    /// T005 regression: get_or_build_insight_graph must collapse concurrent
+    /// first-callers onto a single Arc. Without DCL, N callers each ran the
+    /// 50–200 ms build independently and discarded all but the first result;
+    /// the fix mirrors get_or_build_call_graph.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn insight_graph_dcl_returns_same_arc_under_concurrency() {
+        let workspace = std::sync::Arc::new(make_workspace());
+        let mut handles = Vec::with_capacity(8);
+        for _ in 0..8 {
+            let ws = std::sync::Arc::clone(&workspace);
+            handles.push(tokio::spawn(async move {
+                tokio::task::spawn_blocking(move || ws.get_or_build_insight_graph())
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut graphs = Vec::new();
+        for h in handles {
+            graphs.push(h.await.unwrap());
+        }
+        let first = graphs.remove(0);
+        for g in &graphs {
+            assert!(
+                std::sync::Arc::ptr_eq(&first, g),
+                "DCL invariant: all concurrent callers must observe the same Arc<InsightGraph>"
+            );
+        }
+    }
+
+    /// T005 negative companion: invalidating the graph must let the next
+    /// call build a fresh one (a different Arc).
+    #[test]
+    fn insight_graph_invalidation_yields_new_arc() {
+        let workspace = make_workspace();
+        let first = workspace.get_or_build_insight_graph();
+        workspace.invalidate_insight_graph();
+        let second = workspace.get_or_build_insight_graph();
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &second),
+            "invalidation should drop the cached graph; next call must rebuild a new Arc"
+        );
     }
 
     /// Positive test: on_document_change populates the document cache and file index.
