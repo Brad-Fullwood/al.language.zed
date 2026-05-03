@@ -84,6 +84,19 @@ pub struct ClassifyResult {
 /// at least to InterpRecord, more often LiveBc". Adding a pattern is
 /// *safe* (more conservative). Removing one is *dangerous* (could lead
 /// to silent-wrong interpreter execution).
+///
+/// **Intentionally hardcoded** (T030 / d669c87f30f07df3 review note).
+/// CLAUDE.md's "no hardcoded AL values" rule targets language-definition
+/// data — keywords, builtin types, object kinds — which evolve with each
+/// BC release and *must* come from `LanguageData`. This list is **test
+/// routing infrastructure**: a conservative disqualifier set that
+/// classifies whether an AL test can run in our pure interpreter or has
+/// to escalate to LiveBc. Failure mode is over-routing (run on LiveBc
+/// when the interpreter would have sufficed), not silent-wrong results.
+/// Migrating it to a JSON config file would be a configuration burden
+/// without a correctness payoff. When BC adds a new operation that
+/// SHOULD force a routing upgrade, append a new entry here and the
+/// classifier picks it up on the next test pass.
 struct DisqualifyingPattern {
     /// Substring to look for.
     needle: &'static str,
