@@ -170,7 +170,11 @@ impl BcServerClient {
             }
             401 | 403 => Err(BcServerError::AuthenticationFailed {
                 status,
-                message: response.text().await.unwrap_or_default(),
+                // Truncate + scrub: never propagate the full BC error body
+                // (T008 / sec-002). Same helper as bc_client::map_error_response.
+                message: crate::bc_client::sanitize_error_body(
+                    &response.text().await.unwrap_or_default(),
+                ),
             }),
             404 => Err(BcServerError::PackageNotFound {
                 name: dep.name.clone(),
@@ -178,7 +182,9 @@ impl BcServerClient {
             }),
             _ => Err(BcServerError::ServerError {
                 status,
-                message: response.text().await.unwrap_or_default(),
+                message: crate::bc_client::sanitize_error_body(
+                    &response.text().await.unwrap_or_default(),
+                ),
             }),
         }
     }

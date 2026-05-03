@@ -240,7 +240,12 @@ impl SymbolIndex {
             .entry(name_lower)
             .or_default()
             .push(Arc::clone(&arc));
-        if arc.id != 0 {
+        // Only index entries with a real positive object id. Sentinel ids
+        // (0 = "no id assigned" for builtins; -1 = synthetic-enum marker
+        // emitted by table-field inline OptionMembers — see model.rs:731)
+        // would otherwise all collide under (Enum, -1) / (kind, 0) and
+        // pollute lookups via by_kind_id (T029 / c2d935).
+        if arc.id > 0 {
             self.by_kind_id
                 .entry((arc.kind, arc.id))
                 .or_default()
@@ -646,6 +651,44 @@ mod tests {
 
         let results = index.get_by_id(ObjectKind::Table, 99999);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn synthetic_enum_sentinel_id_does_not_pollute_lookup() {
+        // T029 / c2d935 regression: synthetic Option enums emitted by table-
+        // field OptionMembers carry id: -1 (model.rs:731). Pre-fix they all
+        // accumulated under (Enum, -1) in by_kind_id and a get_by_id(Enum, -1)
+        // returned every synthetic enum across the workspace, drowning real
+        // lookups. The fix: only positive ids enter by_kind_id.
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_entry(ObjectKind::Enum, -1, "InlineOpt1"),
+            make_entry(ObjectKind::Enum, -1, "InlineOpt2"),
+            make_entry(ObjectKind::Enum, 50200, "RealEnum"),
+            // builtin-style sentinel: id == 0 ("not assigned").
+            make_entry(ObjectKind::Codeunit, 0, "BuiltinHelper"),
+        ]);
+
+        // Sentinel ids must NOT be reachable through by_kind_id.
+        assert!(
+            index.get_by_id(ObjectKind::Enum, -1).is_empty(),
+            "synthetic-enum sentinel id -1 must not be queryable"
+        );
+        assert!(
+            index.get_by_id(ObjectKind::Codeunit, 0).is_empty(),
+            "no-id sentinel 0 must not be queryable"
+        );
+
+        // Real positive id stays reachable as before.
+        let real = index.get_by_id(ObjectKind::Enum, 50200);
+        assert_eq!(real.len(), 1, "real enum id must still be reachable");
+        assert_eq!(real[0].name, "RealEnum");
+
+        // The entries are still discoverable via by_name (which doesn't gate
+        // on sentinel ids). This proves we only narrowed by_kind_id, not
+        // dropped the entries entirely.
+        let by_name = index.get_by_name("InlineOpt1");
+        assert!(!by_name.is_empty(), "sentinel-id entries must still be name-resolvable");
     }
 
     #[test]

@@ -24,6 +24,55 @@ use tracing::{debug, warn};
 
 use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
 
+/// Maximum bytes of an HTTP error body kept in BcClientError messages.
+/// Anything past this is replaced with a `... [N more bytes truncated]`
+/// suffix so that a verbose BC error page (which can echo request URL
+/// parameters or auth header context) doesn't propagate unbounded into
+/// logs and JSON-RPC responses (T006 / sec-003).
+pub(crate) const ERROR_BODY_MAX: usize = 512;
+
+/// Truncate `body` to ERROR_BODY_MAX bytes (UTF-8 boundary safe) and
+/// blank out the values of common credential-bearing headers if they
+/// happen to appear inline. Conservative — pattern-based, not parsing
+/// — but better than passing the body through verbatim.
+pub(crate) fn sanitize_error_body(body: &str) -> String {
+    let mut out = if body.len() > ERROR_BODY_MAX {
+        // Find a UTF-8 char boundary at or before ERROR_BODY_MAX.
+        let mut cut = ERROR_BODY_MAX;
+        while cut > 0 && !body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!(
+            "{}... [{} more bytes truncated]",
+            &body[..cut],
+            body.len() - cut
+        )
+    } else {
+        body.to_string()
+    };
+    // Best-effort scrub of obvious credential echo patterns. Matches
+    // the conservative shape used by other BC clients in this crate.
+    for needle in [
+        "Authorization: Bearer ",
+        "Authorization:Bearer ",
+        "access_token=",
+        "refresh_token=",
+        "client_secret=",
+        "password=",
+    ] {
+        while let Some(idx) = out.find(needle) {
+            let value_start = idx + needle.len();
+            // Scrub up to the next whitespace, ", &, or end of string.
+            let value_end = out[value_start..]
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '&')
+                .map(|n| value_start + n)
+                .unwrap_or(out.len());
+            out.replace_range(value_start..value_end, "[REDACTED]");
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -261,7 +310,14 @@ impl BcClient {
         status: StatusCode,
         response: reqwest::Response,
     ) -> Result<T, BcClientError> {
-        let message = response.text().await.unwrap_or_else(|_| status.to_string());
+        let raw = response.text().await.unwrap_or_else(|_| status.to_string());
+        // Truncate + scrub: never propagate the full BC error body into
+        // logs/JSON-RPC responses (T006 / sec-003). BC servers can echo
+        // request URL parameters (incl. tenant) into error pages, and a
+        // verbose 401 page sometimes mirrors the Authorization header
+        // family; we keep enough text to be useful for debugging
+        // without leaving a tail of unbounded credential surface.
+        let message = sanitize_error_body(&raw);
 
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             return Err(BcClientError::AuthenticationFailed {
@@ -394,5 +450,52 @@ mod tests {
         // Just ensure it doesn't panic on construction
         let config = on_prem_config();
         let _client = BcClient::new(&config);
+    }
+
+    #[test]
+    fn sanitize_error_body_truncates_at_512_bytes() {
+        let body = "x".repeat(2000);
+        let out = sanitize_error_body(&body);
+        // Truncated portion is replaced; total stays below the original.
+        assert!(out.len() < body.len());
+        assert!(out.contains("more bytes truncated"));
+    }
+
+    #[test]
+    fn sanitize_error_body_redacts_bearer_token() {
+        let body = "401 Unauthorized\nAuthorization: Bearer eyJhbGc.123.456 token rejected";
+        let out = sanitize_error_body(body);
+        assert!(
+            !out.contains("eyJhbGc.123.456"),
+            "raw bearer token must not survive sanitisation"
+        );
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn sanitize_error_body_redacts_query_param_secrets() {
+        let body = "Bad request for client_secret=topsecret&grant_type=password";
+        let out = sanitize_error_body(body);
+        assert!(
+            !out.contains("topsecret"),
+            "client_secret value must be redacted"
+        );
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn sanitize_error_body_short_body_passes_through() {
+        let body = "404 not found";
+        let out = sanitize_error_body(body);
+        assert_eq!(out, body);
+    }
+
+    #[test]
+    fn sanitize_error_body_handles_utf8_boundary_safely() {
+        // Truncation must land on a UTF-8 char boundary.
+        let body = "a".repeat(510) + "🦀🦀🦀";
+        let out = sanitize_error_body(&body);
+        // Should not panic and should be valid UTF-8.
+        assert!(out.is_char_boundary(out.len()));
     }
 }
