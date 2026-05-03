@@ -10,6 +10,10 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# Read-only by default; the CI job neither writes nor needs write scopes.
+permissions:
+  contents: read
+
 jobs:
   ci:
     name: CI (${{ matrix.os }})

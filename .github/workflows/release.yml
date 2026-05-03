@@ -9,6 +9,11 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# Default to read-only across all scopes; jobs that need write
+# (create-release) opt in explicitly.
+permissions:
+  contents: read
+
 jobs:
   build-binaries:
     name: Build ${{ matrix.target }}
@@ -68,27 +73,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
 
-      - name: Build al-lsp (native)
+      # Post-consolidation crate names: al-lsp is now [[bin]] inside al-core,
+      # and al-cli was folded into al-explorer (see CLAUDE.md architecture
+      # note). Build via -p al-core / -p al-explorer with explicit --bin.
+      - name: Build al-lsp binary (native)
         if: "!matrix.cross"
-        run: cargo build -p al-lsp --release --target ${{ matrix.target }}
+        run: cargo build -p al-core --bin al-lsp --release --target ${{ matrix.target }}
 
-      - name: Build al-cli (native)
-        if: "!matrix.cross"
-        run: cargo build -p al-cli --release --target ${{ matrix.target }}
-
-      - name: Build al-explorer (native)
+      - name: Build al-explorer binary (native)
         if: "!matrix.cross"
         run: cargo build -p al-explorer --release --target ${{ matrix.target }}
 
-      - name: Build al-lsp (cross)
+      - name: Build al-lsp binary (cross)
         if: matrix.cross
-        run: cross build -p al-lsp --release --target ${{ matrix.target }}
+        run: cross build -p al-core --bin al-lsp --release --target ${{ matrix.target }}
 
-      - name: Build al-cli (cross)
-        if: matrix.cross
-        run: cross build -p al-cli --release --target ${{ matrix.target }}
-
-      - name: Build al-explorer (cross)
+      - name: Build al-explorer binary (cross)
         if: matrix.cross
         run: cross build -p al-explorer --release --target ${{ matrix.target }}
 
@@ -100,7 +100,6 @@ jobs:
           OUT="al-${{ matrix.artifact_name }}"
           mkdir -p "$OUT"
           cp "$BIN_DIR/al-lsp"      "$OUT/"
-          cp "$BIN_DIR/al"          "$OUT/"
           cp "$BIN_DIR/al-explorer" "$OUT/"
           tar -czf "$OUT.tar.gz" "$OUT"
 
@@ -113,7 +112,6 @@ jobs:
           $OUT     = "al-${{ matrix.artifact_name }}"
           New-Item -ItemType Directory -Path $OUT
           Copy-Item "$BIN_DIR\al-lsp.exe"      $OUT\
-          Copy-Item "$BIN_DIR\al.exe"           $OUT\
           Copy-Item "$BIN_DIR\al-explorer.exe"  $OUT\
           Compress-Archive -Path $OUT -DestinationPath "$OUT.zip"
 
@@ -184,7 +182,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
         with:
           path: artifacts/
 
