@@ -95,17 +95,23 @@ pub struct CachedProcedureInfo {
 
 pub struct FileIndex {
     /// File path → full text content.
+    /// Public — used by the al-lsp binary for stats and by daemon dispatchers.
     pub files: DashMap<PathBuf, String>,
-    /// Lowercase object name → file path.
-    pub objects: DashMap<String, PathBuf>,
+    /// Lowercase object name → file path. Internal: invariant-coupled to
+    /// `path_to_object`; mutate only via the impl methods (T004).
+    pub(crate) objects: DashMap<String, PathBuf>,
     /// File path → lowercase object name (reverse index for O(1) cleanup).
-    pub path_to_object: DashMap<PathBuf, String>,
+    /// Internal: invariant-coupled to `objects` (T004).
+    pub(crate) path_to_object: DashMap<PathBuf, String>,
     /// File path → (mtime, size) snapshot taken at last index time.
-    pub file_metadata: DashMap<PathBuf, FileMetadata>,
+    /// Internal: only used by `incremental_scan` to detect changed files (T004).
+    pub(crate) file_metadata: DashMap<PathBuf, FileMetadata>,
     /// File path → cached object declaration metadata (avoids re-parsing for workspace/symbol).
+    /// Public — al-lsp's DAP path needs object_id ↔ file_path lookups.
     pub object_info: DashMap<PathBuf, CachedObjectInfo>,
     /// File path → cached parse tree (avoids re-parsing for cross-file queries).
-    pub file_trees: DashMap<PathBuf, tree_sitter::Tree>,
+    /// Internal: invariant-coupled to `files` content; mutate only via impl methods (T004).
+    pub(crate) file_trees: DashMap<PathBuf, tree_sitter::Tree>,
     /// File path → cached document symbols (avoids re-extracting for cross-file queries).
     pub(crate) file_symbols: DashMap<PathBuf, Vec<crate::queries::AlDocumentSymbol>>,
     /// Lowercase procedure/event name → location (reverse index for O(1) go-to-definition).
