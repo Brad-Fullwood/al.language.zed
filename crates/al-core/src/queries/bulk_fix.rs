@@ -173,21 +173,39 @@ fn collect_al_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Detect if source text contains a page/page extension/report/requestpage declaration.
-fn is_page_file(source: &str) -> bool {
-    let lower = source.to_ascii_lowercase();
-    let trimmed = lower.trim_start();
-    trimmed.starts_with("page ")
-        || trimmed.starts_with("pageextension ")
-        || trimmed.starts_with("report ")
-        || trimmed.starts_with("requestpage ")
+/// Read the first whitespace-delimited token of `source`'s first non-blank,
+/// non-comment line and resolve it via `LanguageData` (T013/T042: was a
+/// hardcoded prefix list — silently dropped reportextension, requestpage
+/// variations, etc.). Returns the canonical lowercase keyword.
+fn detect_object_keyword(source: &str) -> Option<&'static str> {
+    let first = source
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("//"))?;
+    let token = first.split(|c: char| c.is_whitespace()).next()?;
+    crate::syntax::language_data::object_type_by_keyword(token).map(|ot| ot.keyword.as_str())
 }
 
-/// Detect if source text contains a table/table extension declaration.
+/// Detect if source text contains a page-family declaration
+/// (page, pageextension, report, reportextension, requestpage, pagecustomization).
+fn is_page_file(source: &str) -> bool {
+    matches!(
+        detect_object_keyword(source),
+        Some("page")
+            | Some("pageextension")
+            | Some("report")
+            | Some("reportextension")
+            | Some("requestpage")
+            | Some("pagecustomization")
+    )
+}
+
+/// Detect if source text contains a table/tableextension declaration.
 fn is_table_file(source: &str) -> bool {
-    let lower = source.to_ascii_lowercase();
-    let trimmed = lower.trim_start();
-    trimmed.starts_with("table ") || trimmed.starts_with("tableextension ")
+    matches!(
+        detect_object_keyword(source),
+        Some("table") | Some("tableextension")
+    )
 }
 
 /// Inject `ApplicationArea = <value>;` after field/action blocks that lack it.
