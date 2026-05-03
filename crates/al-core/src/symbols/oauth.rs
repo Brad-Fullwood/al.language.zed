@@ -775,6 +775,25 @@ fn load_cached_token(path: &PathBuf) -> Option<CachedToken> {
     }
 }
 
+/// Persist the OAuth token bundle so subsequent al-lsp invocations don't
+/// have to re-run the device-code or browser flow until the refresh token
+/// expires.
+///
+/// **Threat-model note (T012 / sec-001 / 3c348c6a5c6519d7).**
+/// Tokens are written as **plaintext JSON** at `~/.cache/al-lsp/oauth/`.
+/// Defence-in-depth here is exclusively filesystem permissions (parent dir
+/// 0o700, file 0o600 on Unix; default ACL on Windows — see create_secure_dir).
+/// There is no at-rest encryption: a compromised user account or any
+/// process running as the same user can read the refresh token (90-day
+/// AAD default) and impersonate the user against the tenant's BC API.
+///
+/// This is acceptable for a developer-facing tool with the same trust
+/// model as `~/.aws/credentials`, `~/.docker/config.json`, and
+/// `~/.config/gh/hosts.yml`. If/when this code ships in a more hostile
+/// deployment posture the refresh token should move to the OS keyring
+/// (Secret Service / Keychain / Credential Manager via the `keyring`
+/// crate). Tracked as future work; the access_token is short-lived
+/// enough (≤1h) that only refresh_token migration matters.
 fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
     use std::fs::OpenOptions;
     use std::io::Write;
