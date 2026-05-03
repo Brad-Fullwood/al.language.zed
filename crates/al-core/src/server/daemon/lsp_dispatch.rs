@@ -237,8 +237,8 @@ pub(super) fn dispatch_inlay_hints(
             character: u32::MAX,
         },
     };
-    let hints = crate::queries::inlay_hints::inlay_hints(workspace, &uri, range)
-        .unwrap_or_default();
+    let hints =
+        crate::queries::inlay_hints::inlay_hints(workspace, &uri, range).unwrap_or_default();
     match serde_json::to_value(&hints) {
         Ok(v) => Response {
             id,

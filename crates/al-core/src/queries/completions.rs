@@ -449,8 +449,7 @@ mod tests {
         // fixed by T015 / arch-001. If anyone widens the parameter back to
         // tower_lsp::lsp_types::Position the function pointer coercion below
         // will fail to type-check.
-        let _: fn(&Workspace, &Url, Position, &mut Vec<CompletionEntry>) =
-            add_default_completions;
+        let _: fn(&Workspace, &Url, Position, &mut Vec<CompletionEntry>) = add_default_completions;
     }
 
     #[test]

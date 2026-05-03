@@ -2510,7 +2510,10 @@ mod tests {
     #[test]
     fn detect_object_kind_routes_known_types() {
         // Routing variants for the four kinds that gate code-actions.
-        assert_eq!(detect_object_kind("page 50 X { }"), Some(AlObjectKind::Page));
+        assert_eq!(
+            detect_object_kind("page 50 X { }"),
+            Some(AlObjectKind::Page)
+        );
         assert_eq!(
             detect_object_kind("table 50 X { }"),
             Some(AlObjectKind::Table)
