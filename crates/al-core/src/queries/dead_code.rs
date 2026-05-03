@@ -81,6 +81,34 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         .map(|(p, t, tree)| (p.as_str(), t.as_str(), tree))
         .collect();
 
+    // Build a workspace-global lowercase set of all call-site identifier
+    // names ONCE, instead of re-scanning every file for every procedure
+    // (T020: pre-T020 inner loop was O(F²·P) in the cross-file walk; this
+    // makes per-procedure membership checks O(1)). The text-fallback set
+    // captures call sites inside action triggers that braced_block doesn't
+    // parse — same coverage as text_contains_call_outside_declaration but
+    // collected in a single pass per file.
+    let mut all_call_names: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(parsed_files.len() * 32);
+    let mut all_text_call_names: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(parsed_files.len() * 16);
+    for (_, text, tree) in &all_files {
+        all_call_names.extend(crate::syntax::collect_call_site_names(tree, text));
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            // Cheap fallback name extractor: every `ident(` where ident is
+            // not preceded by `procedure ` (declaration) — matches the
+            // existing text_contains_call_outside_declaration logic but
+            // amortised across the whole workspace instead of per-procedure.
+            for tok in extract_text_call_names(line) {
+                all_text_call_names.insert(tok);
+            }
+        }
+    }
+
     for (file_path, file_text, file_tree) in &all_files {
         let Some(obj_info) = crate::syntax::find_object_declaration(file_tree, file_text) else {
             continue;
@@ -93,6 +121,8 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
             file_tree,
             &obj_info.name,
             &all_files,
+            &all_call_names,
+            &all_text_call_names,
             &mut results,
         );
 
@@ -127,12 +157,19 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
 }
 
 /// Extract procedure declarations from a file and check if they're referenced elsewhere.
+///
+/// `all_call_names` and `all_text_call_names` are workspace-global precomputed
+/// sets (lowercased) of every call-site identifier — see `dead_code()` for the
+/// build pass. Membership lookup is O(1), turning the prior per-procedure
+/// `all_files.iter().any(...)` (O(F·N) per procedure) into a hash check.
 fn find_unused_procedures(
     file_path: &str,
     file_text: &str,
     file_tree: &tree_sitter::Tree,
     object_name: &str,
-    all_files: &[(&str, &str, &tree_sitter::Tree)],
+    _all_files: &[(&str, &str, &tree_sitter::Tree)],
+    all_call_names: &std::collections::HashSet<String>,
+    all_text_call_names: &std::collections::HashSet<String>,
     results: &mut Vec<UnusedSymbol>,
 ) {
     let root = file_tree.root_node();
@@ -147,35 +184,13 @@ fn find_unused_procedures(
             continue;
         }
 
-        // Check if this procedure is called anywhere (cross-file or same-file).
-        //
-        // Use find_call_references() which is context-aware: it only counts identifier
-        // nodes that appear in actual call positions (bare calls, member calls, scope
-        // calls). This avoids false negatives where a procedure named "Name" or "Status"
-        // would match ubiquitous field access tokens like `Rec.Name` or `Rec.Status`.
-        let referenced_in_other_file =
-            all_files
-                .iter()
-                .any(|(other_path, other_text, other_tree)| {
-                    if *other_path == file_path {
-                        return false;
-                    }
-                    // Primary: tree-sitter call references (misses action triggers due to grammar limitation).
-                    // Fallback: text scan for calls inside trigger bodies that braced_block doesn't parse.
-                    // ISSUE-076: prevents false positives for procedures called inside action triggers.
-                    crate::syntax::find_call_references(other_tree, other_text, proc_name) > 0
-                        || text_contains_call_outside_declaration(other_text, proc_name)
-                });
-
-        let referenced_in_same_file = {
-            // find_call_references counts call sites only (excludes the declaration itself),
-            // so any non-zero count means the procedure is actually called within this file.
-            // Fallback text scan handles calls in action triggers not visible to tree-sitter.
-            crate::syntax::find_call_references(file_tree, file_text, proc_name) > 0
-                || text_contains_call_outside_declaration(file_text, proc_name)
-        };
-
-        let referenced = referenced_in_other_file || referenced_in_same_file;
+        // Workspace-global O(1) membership check (T020 perf fix).
+        // The two sets together cover the same surface as the previous
+        // per-procedure scan: tree-sitter call references + text-fallback
+        // for calls inside action triggers (ISSUE-076: braced_block doesn't
+        // parse trigger bodies).
+        let lname = proc_name.to_ascii_lowercase();
+        let referenced = all_call_names.contains(&lname) || all_text_call_names.contains(&lname);
 
         if !referenced {
             results.push(UnusedSymbol {
@@ -190,37 +205,39 @@ fn find_unused_procedures(
     }
 }
 
-/// Text-based fallback: checks if `proc_name` appears as a call in the source text,
-/// excluding its own declaration line.
-///
-/// This handles ISSUE-076: calls inside action triggers are invisible to tree-sitter
-/// because `braced_block` nodes do not include `trigger_declaration` children.
-/// The fallback scans for `proc_name(` patterns (case-insensitive) outside of
-/// `procedure ProcName` declaration lines to avoid counting the declaration itself.
-fn text_contains_call_outside_declaration(text: &str, proc_name: &str) -> bool {
-    let name_lower = proc_name.to_lowercase();
-    let call_pat = format!("{}(", name_lower);
-    // Match the EXACT declaration `procedure <name>(` so a procedure with a
-    // common name (e.g. `Get`, `Post`) does not match unrelated declarations
-    // like `procedure GetSomethingElse(` and silently skip a real call site.
-    let decl_pat = format!("procedure {}(", name_lower);
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        // Skip line-comments — `// MyProc(` should not be treated as a call.
-        if trimmed.starts_with("//") {
-            continue;
+/// Extract every lowercase `ident` token that immediately precedes `(` on a
+/// non-comment line, excluding the `procedure ident(` declaration form. Used
+/// by the workspace-global text-fallback set in `dead_code()` (T020). Each
+/// such token is treated as a potential call site for dead-code purposes.
+fn extract_text_call_names(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let lower = line.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'(' && i > 0 {
+            // Walk left over identifier chars.
+            let mut start = i;
+            while start > 0 {
+                let prev = bytes[start - 1];
+                let is_ident = prev.is_ascii_alphanumeric() || prev == b'_';
+                if !is_ident {
+                    break;
+                }
+                start -= 1;
+            }
+            if start < i {
+                let name = &lower[start..i];
+                // Skip declarations: `procedure name(`.
+                let preceding = lower[..start].trim_end();
+                if !preceding.ends_with("procedure") {
+                    out.push(name.to_string());
+                }
+            }
         }
-        let lower = line.to_lowercase();
-        // Skip the declaration line itself, but only if it's THIS procedure's
-        // declaration (matched by the `procedure name(` token boundary).
-        if lower.contains(&decl_pat) {
-            continue;
-        }
-        if lower.contains(&call_pat) {
-            return true;
-        }
+        i += 1;
     }
-    false
+    out
 }
 
 /// Collect procedure declarations iteratively: (name, is_event_publisher, line_1based).

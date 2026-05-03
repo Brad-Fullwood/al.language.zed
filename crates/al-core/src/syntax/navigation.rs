@@ -239,6 +239,33 @@ pub fn find_call_references(tree: &Tree, text: &str, name: &str) -> usize {
     count
 }
 
+/// Collect every call-site identifier name (lowercased) reachable from `tree`.
+///
+/// Single-pass companion to `find_call_references`: instead of asking
+/// "is this one name called here?" N times, walk the tree once and collect
+/// the full set of called names. Call-site classification is the same as
+/// `find_call_references` (bare/member/scope calls only — field access is
+/// excluded). Names are lowercased so callers can do case-insensitive
+/// membership checks without per-query allocation.
+///
+/// Used by `dead_code` to fold an O(F²·P) cross-file scan into O(F·N) +
+/// O(P) hash lookups.
+pub fn collect_call_site_names(tree: &Tree, text: &str) -> std::collections::HashSet<String> {
+    let root = tree.root_node();
+    let source = text.as_bytes();
+    let mut names = std::collections::HashSet::new();
+    walk_tree(root, &mut |node| {
+        if matches!(node.kind(), "identifier" | "quoted_identifier") {
+            if let Ok(t) = node.utf8_text(source) {
+                if is_call_reference(node, source) {
+                    names.insert(t.trim_matches('"').to_ascii_lowercase());
+                }
+            }
+        }
+    });
+    names
+}
+
 /// Count call-site references to `target_name` in the AST rooted at `root`.
 ///
 /// The `_recursive` suffix is historical — the actual traversal is iterative
