@@ -765,14 +765,22 @@ pub(super) fn dispatch_setup(workspace: &Workspace, id: u64) -> Response {
     }
 }
 
-pub(super) fn dispatch_clear_cache(id: u64) -> Response {
+pub(super) async fn dispatch_clear_cache(id: u64) -> Response {
     let cache_dir = dirs::cache_dir()
         .map(|d| d.join("al-lsp").join("index"))
         .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/index"));
 
-    let existed = cache_dir.exists();
+    // Use tokio::fs to keep the daemon dispatch task on its async runtime
+    // instead of parking the worker on synchronous std::fs (T027 /
+    // spec-concurrency-001). On a large index this can be many MB of
+    // file handles; doing it synchronously held the worker thread for
+    // the duration and starved other dispatch handlers.
+    let existed = tokio::fs::try_exists(&cache_dir).await.unwrap_or(false);
     if existed {
-        let _ = std::fs::remove_dir_all(&cache_dir);
+        if let Err(e) = tokio::fs::remove_dir_all(&cache_dir).await {
+            tracing::warn!(path = %cache_dir.display(), error = %e,
+                "clearCache: failed to remove index dir; reporting partial success");
+        }
     }
 
     Response {

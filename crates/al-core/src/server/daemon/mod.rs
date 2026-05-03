@@ -450,7 +450,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
         "errorCodes" => build_dispatch::dispatch_error_codes(workspace, id),
         "builtinTypes" => build_dispatch::dispatch_builtin_types(workspace, id),
         "setup" => build_dispatch::dispatch_setup(workspace, id),
-        "clearCache" => build_dispatch::dispatch_clear_cache(id),
+        "clearCache" => build_dispatch::dispatch_clear_cache(id).await,
         "authenticate" => build_dispatch::dispatch_authenticate(workspace, id, &params).await,
         "downloadSymbols" => {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
