@@ -4,7 +4,7 @@
 //! `client` provides low-level DAP communication for EditorServices.Host.
 //!
 //! Folded into al-core in stage 3 of the crate consolidation; previously the
-//! standalone `al-dap-client` crate.
+//! standalone `crate::dap` crate.
 
 pub mod bc_debug;
 pub mod client;

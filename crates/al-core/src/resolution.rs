@@ -341,7 +341,7 @@ fn inside_quoted_identifier(line: &str, idx: usize) -> bool {
     quote_count % 2 == 1
 }
 
-/// Re-export from al-syntax to avoid duplication.
+/// Re-export from crate::syntax to avoid duplication.
 pub(crate) use crate::syntax::utf16_col_to_byte_offset;
 
 fn is_access_char(ch: u8) -> bool {

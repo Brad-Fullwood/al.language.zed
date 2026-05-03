@@ -366,7 +366,7 @@ pub(super) fn dispatch_object(
 /// Convert a workspace CachedObjectInfo to JSON matching SymbolEntry shape.
 ///
 /// `info.kind` is the tree-sitter node kind (lowercase, e.g. "table"). The wire
-/// schema for SymbolEntry uses the al-symbols ObjectKind enum, whose serde
+/// schema for SymbolEntry uses the crate::symbols ObjectKind enum, whose serde
 /// representation is PascalCase. Normalize via `ObjectKind::from_str` so the
 /// payload deserializes cleanly on al-cli / al-explorer.
 fn workspace_object_to_json(info: &crate::file_index::CachedObjectInfo) -> serde_json::Value {

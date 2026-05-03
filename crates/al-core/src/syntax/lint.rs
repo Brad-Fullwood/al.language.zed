@@ -1,6 +1,6 @@
 //! Native lint framework — types only, no rules.
 //!
-//! All AL diagnostics are produced by the .NET semantic bridge (al-semantic).
+//! All AL diagnostics are produced by the .NET semantic bridge (crate::semantic).
 //! This module retains the framework types so downstream crates (al-lsp, al-core)
 //! can reference `LintDiagnostic`, `LintSeverity`, `LintRuleInfo`, and `LintConfig`
 //! without change, but `lint()` and `lint_with_config()` always return an empty Vec.

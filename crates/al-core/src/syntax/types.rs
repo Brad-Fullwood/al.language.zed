@@ -1,6 +1,6 @@
-//! Transport-agnostic syntax types for al-syntax.
+//! Transport-agnostic syntax types for crate::syntax.
 //!
-//! These types are the native vocabulary of the al-syntax crate. They mirror
+//! These types are the native vocabulary of the crate::syntax crate. They mirror
 //! the LSP types (Position, Range, DocumentSymbol, SymbolKind, FoldingRange,
 //! FoldingRangeKind) but carry no dependency on tower-lsp or any transport layer.
 

@@ -1,12 +1,12 @@
 //! JSON pre-processing utilities shared across crates that parse JSONC files.
 //!
-//! Both `al-dap-client` (debug config) and `al-core` (launch config) need to
+//! Both `crate::dap` (debug config) and `al-core` (launch config) need to
 //! parse `.vscode/launch.json` and `.zed/debug.json`, which use JSONC syntax
 //! (single-line `//` comments and trailing commas). This module provides the
 //! canonical implementations so neither crate duplicates the logic.
 //!
 //! `al-core` uses these via its existing compile-time dependency on
-//! `al-dap-client`. No new dependency edges are introduced.
+//! `crate::dap`. No new dependency edges are introduced.
 
 /// Strip `//` single-line comments from a JSONC string.
 ///

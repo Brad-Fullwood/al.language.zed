@@ -1,8 +1,13 @@
 //! al-core: Central engine for AL language analysis.
 //!
-//! All state, queries, and orchestration live here. `al-lsp`, `al-cli`, and `al-explorer`
-//! (via the daemon) all depend on this crate for business logic.
-//! Analysis libraries (al-syntax, al-symbols, al-semantic) are standalone dependencies.
+//! Owns all state, queries, and orchestration. The `al-lsp` binary lives at
+//! `src/bin/al-lsp.rs` inside this crate; `al-explorer` consumes it through
+//! the daemon over `al-protocol`.
+//!
+//! Internal layers are organised as modules — `syntax`, `symbols`, `semantic`,
+//! `dap`, `server`, `queries`, `insight` — not standalone crates. The legacy
+//! `al-syntax` / `al-symbols` / `al-semantic` / `al-cli` / `al-dap-client`
+//! crate names are gone (consolidated April 2026).
 
 pub mod bc_client;
 pub mod build;

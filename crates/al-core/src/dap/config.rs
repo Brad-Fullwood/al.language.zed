@@ -1,7 +1,7 @@
 //! Local debug/launch configuration types and parsing.
 //!
 //! These types mirror the relevant parts of `al_protocol::launch` but are
-//! defined locally so that `al-dap-client` does not depend on `al-protocol`.
+//! defined locally so that `crate::dap` does not depend on `al-protocol`.
 //!
 //! Reads BC server connection details from debug configuration files.
 //! Supports both Zed (`.zed/debug.json`) and VS Code (`.vscode/launch.json`).
@@ -26,7 +26,7 @@ pub struct DebugConfigFile {
 
 /// BC server connection configuration extracted from a debug config file.
 ///
-/// Contains only the fields that `al-dap-client` needs to construct DAP
+/// Contains only the fields that `crate::dap` needs to construct DAP
 /// launch arguments. This is intentionally minimal — it does not include
 /// fields like `dev_packages_url` that belong in `al-core`.
 #[derive(Debug, Clone)]

@@ -13,12 +13,12 @@ use crate::project::AppDependency;
 
 /// BC environment type.
 ///
-/// Re-exported from al-dap-client to avoid duplication.
+/// Re-exported from crate::dap to avoid duplication.
 pub use crate::dap::config::EnvironmentType;
 
 /// Authentication method for BC connections.
 ///
-/// Re-exported from al-dap-client to avoid duplication.
+/// Re-exported from crate::dap to avoid duplication.
 pub use crate::dap::config::AuthMethod;
 
 /// A parsed debug configuration file.
@@ -50,7 +50,7 @@ pub struct BcServerConfig {
     pub accept_invalid_certs: bool,
 }
 
-// EnvironmentType and AuthMethod are re-exported from al-dap-client::config (see above).
+// EnvironmentType and AuthMethod are re-exported from crate::dap::config (see above).
 
 impl BcServerConfig {
     /// Construct the `/dev/packages` URL for downloading a single dependency.

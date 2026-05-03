@@ -49,7 +49,7 @@ fn read_cache<T: DeserializeOwned>(version: &str, name: &str) -> Option<T> {
 fn write_cache<T: Serialize + ?Sized>(version: &str, name: &str, data: &T, count: usize) {
     let version = sanitize_version(version);
     let dir = cache_dir();
-    // On Unix, create with 0o700 (owner-only) to mirror the al-symbols cache:
+    // On Unix, create with 0o700 (owner-only) to mirror the crate::symbols cache:
     // semantic results may include error messages with file paths from the
     // workspace, which are minor information leaks if world-readable.
     #[cfg(unix)]

@@ -1,7 +1,7 @@
 //! Semantic analysis subsystem — .NET CodeAnalysis bridge + lifecycle + cache.
 //!
 //! Folded into al-core in stage 6 of the crate consolidation. Splits across:
-//! - `bridge` — `SemanticBridge`, request/response types, JSON-over-FFI calls (was `al-semantic` lib)
+//! - `bridge` — `SemanticBridge`, request/response types, JSON-over-FFI calls (was `crate::semantic` lib)
 //! - `host` — netcorehost wrapper that loads the .NET runtime + AlBridge.dll
 //! - `cache` — disk cache for builtins and error codes (keyed by toolchain version)
 //! - `lifecycle` — bridge initialisation, lazy startup, crash detection + restart,

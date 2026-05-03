@@ -11,7 +11,7 @@
 //!
 //! Because `.app` symbol files contain declarations only (no call-site
 //! information), `DirectCall` edges can only be added when the source AST is
-//! available (i.e., for workspace files parsed by al-syntax).  The graph is
+//! available (i.e., for workspace files parsed by crate::syntax).  The graph is
 //! therefore built *incrementally*: symbol-index data populates event edges
 //! immediately; direct-call edges are added as source files are indexed.
 //!

@@ -258,7 +258,7 @@ pub fn is_procedure_symbol(kind: AlSymbolKind) -> bool {
 /// Human-readable label for a `VariableScope` variant.
 ///
 /// Used in hover and completion detail strings. Centralised here so both
-/// callers stay in sync without a Display impl in al-syntax.
+/// callers stay in sync without a Display impl in crate::syntax.
 pub(crate) fn scope_label(scope: &crate::syntax::type_resolver::VariableScope) -> &'static str {
     match scope {
         crate::syntax::type_resolver::VariableScope::Local => "local variable",
@@ -362,7 +362,7 @@ impl From<Range> for tower_lsp::lsp_types::Range {
 }
 
 // ---------------------------------------------------------------------------
-// Conversions between al-syntax native types and al-core agnostic types
+// Conversions between crate::syntax native types and al-core agnostic types
 // ---------------------------------------------------------------------------
 
 impl From<crate::syntax::types::SyntaxPosition> for Position {

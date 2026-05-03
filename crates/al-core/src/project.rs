@@ -43,7 +43,7 @@ pub struct AppManifest {
 
 /// A dependency entry in app.json.
 ///
-/// Canonical type from al-symbols — unified so no field-for-field conversion is needed.
+/// Canonical type from crate::symbols — unified so no field-for-field conversion is needed.
 pub use crate::symbols::nuget::AppDependency;
 
 /// A NuGet feed for BC symbol packages.

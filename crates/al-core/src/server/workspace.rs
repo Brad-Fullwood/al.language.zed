@@ -470,7 +470,7 @@ async fn download_symbols_from_server(
             return Vec::new();
         }
     };
-    // crate::project::AppDependency is re-exported from al-symbols — clone directly.
+    // crate::project::AppDependency is re-exported from crate::symbols — clone directly.
     let url_deps: Vec<(String, crate::symbols::nuget::AppDependency)> = deps
         .iter()
         .filter_map(|dep| config.dev_packages_url(dep).map(|url| (url, dep.clone())))
@@ -529,7 +529,7 @@ async fn download_packages_nuget(
         "Downloading symbol packages from NuGet"
     );
 
-    // crate::project::AppDependency is re-exported from al-symbols — pass directly.
+    // crate::project::AppDependency is re-exported from crate::symbols — pass directly.
     let feeds = map_nuget_feeds(&crate::project::nuget_feeds());
 
     let client = crate::symbols::nuget::NuGetClient::new(feeds);

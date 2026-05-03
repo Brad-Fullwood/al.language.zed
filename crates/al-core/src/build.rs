@@ -4,7 +4,7 @@
 //! structured results including diagnostics. Used by:
 //! - `al package` CLI command
 //! - `al.package` LSP execute command
-//! - `al debug start` (via al-dap-client, which has its own simpler version)
+//! - `al debug start` (via crate::dap, which has its own simpler version)
 
 use std::path::{Path, PathBuf};
 

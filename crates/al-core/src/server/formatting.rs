@@ -1,4 +1,4 @@
-//! Format handler — delegates to al-syntax.
+//! Format handler — delegates to crate::syntax.
 
 use tower_lsp::lsp_types::*;
 

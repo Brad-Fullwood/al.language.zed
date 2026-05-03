@@ -1,6 +1,6 @@
 //! Minimal data loader for object_types.json and runtime_enums.json.
 //!
-//! al-symbols cannot depend on al-syntax (dependency rule), so it loads
+//! crate::symbols cannot depend on crate::syntax (dependency rule), so it loads
 //! the data files it needs directly.
 
 use serde::Deserialize;

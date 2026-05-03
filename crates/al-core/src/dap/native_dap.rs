@@ -88,7 +88,7 @@ pub struct ResolvedObject {
 /// `acquire_token` is a callback to get an OAuth access token for the given tenant.
 /// `resolve_object` maps a file path to its AL object type + ID using the workspace index.
 /// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
-/// Both are provided by the caller (al-lsp) since they depend on al-core/al-symbols.
+/// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
 pub async fn run_native_dap<F, Fut, R, P>(
     project_root: &str,
     alc_path: Option<&Path>,
@@ -1142,7 +1142,7 @@ async fn write_dap(
 /// This is a DAP-local version of compilation. It returns raw output as a string
 /// rather than structured diagnostics because the DAP path streams output to the
 /// client as console events. al-core has a richer `compile_project` with diagnostics
-/// and analyzer support, but al-dap-client cannot import al-core (boundary rule).
+/// and analyzer support, but crate::dap cannot import al-core (boundary rule).
 async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<String, DapError> {
     let project_path = Path::new(project_root);
     if !project_path.join("app.json").is_file() {

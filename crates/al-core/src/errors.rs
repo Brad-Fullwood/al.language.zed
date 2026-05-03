@@ -1,6 +1,6 @@
 //! Unified error hierarchy for the AL workspace.
 //!
-//! `AlError` wraps crate-level errors from al-semantic and al-symbols so that
+//! `AlError` wraps crate-level errors from crate::semantic and crate::symbols so that
 //! al-core functions can use `Result<T, AlError>` with `?` conversion throughout.
 //! Query functions that return `Option<T>` for "nothing found" cases do NOT use
 //! AlError — Option is the correct type there.
