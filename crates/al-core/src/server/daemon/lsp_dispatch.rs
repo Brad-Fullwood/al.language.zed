@@ -195,12 +195,7 @@ pub(super) fn dispatch_folding_ranges(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
-    let result = crate::queries::folding::folding_ranges(workspace, &uri).map(|ranges| {
-        ranges
-            .into_iter()
-            .map(tower_lsp::lsp_types::FoldingRange::from)
-            .collect::<Vec<_>>()
-    });
+    let result = crate::queries::folding::folding_ranges(workspace, &uri);
     ok_response_opt(id, result, "textDocument/foldingRange")
 }
 
@@ -242,12 +237,8 @@ pub(super) fn dispatch_inlay_hints(
             character: u32::MAX,
         },
     };
-    let hints = crate::queries::inlay_hints::inlay_hints(workspace, &uri, range).map(|h| {
-        h.into_iter()
-            .map(tower_lsp::lsp_types::InlayHint::from)
-            .collect::<Vec<_>>()
-    });
-    let hints = hints.unwrap_or_default();
+    let hints = crate::queries::inlay_hints::inlay_hints(workspace, &uri, range)
+        .unwrap_or_default();
     match serde_json::to_value(&hints) {
         Ok(v) => Response {
             id,
