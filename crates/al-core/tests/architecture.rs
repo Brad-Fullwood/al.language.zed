@@ -229,35 +229,44 @@ fn test_workspace_child_search_result_does_not_embed_tower_lsp_types() {
     );
 }
 
-/// Reproduces: 8e48b967d935bfd5 — `get_or_build_insight_graph` in
-/// `workspace.rs` previously held a `std::sync::RwLock` write guard
-/// across `graph.build_from_index(...)`. The expensive build must run
-/// without any lock held to avoid parking the tokio executor.
+/// Reproduces: spec-concurrency-003 / T005 — `get_or_build_insight_graph`
+/// in `workspace.rs` must use double-checked locking that mirrors
+/// `get_or_build_call_graph`: take the write lock first, re-check inside
+/// the guard, then build INSIDE the lock wrapped in `block_in_place` so
+/// the tokio worker is yielded to the blocking pool. The earlier "build
+/// before write lock" pattern allowed N concurrent first-callers to each
+/// run the 50–200 ms build and discard all but one result.
 #[test]
-fn test_get_or_build_insight_graph_does_not_hold_write_lock_across_build() {
+fn test_get_or_build_insight_graph_uses_double_checked_locking() {
     let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/workspace.rs"))
         .expect("failed to read workspace.rs");
 
     let fn_pos = source
         .find("fn get_or_build_insight_graph")
         .expect("could not find get_or_build_insight_graph");
-    let window_end = (fn_pos + 1500).min(source.len());
+    let window_end = (fn_pos + 2000).min(source.len());
     let window = &source[fn_pos..window_end];
 
-    // Find the first `.write()` call after the fn declaration and the
-    // `build_from_index` call. The fix moves `build_from_index` BEFORE the
-    // write guard is taken, so build_from_index must appear before .write().
-    let build_pos = window.find("build_from_index");
-    let write_pos = window.find(".write()");
-    if let (Some(b), Some(w)) = (build_pos, write_pos) {
-        assert!(
-            b < w,
-            "get_or_build_insight_graph still calls `build_from_index` AFTER \
-             acquiring the write lock — meaning the std::sync::RwLock write guard \
-             is held across the expensive build. Move the build before the write \
-             lock acquisition to avoid parking the tokio executor."
-        );
-    }
+    let write_pos = window
+        .find(".write()")
+        .expect("get_or_build_insight_graph must take the write lock");
+    let build_pos = window
+        .find("build_from_index")
+        .expect("get_or_build_insight_graph must call build_from_index");
+    let block_in_place_pos = window.find("block_in_place");
+
+    assert!(
+        write_pos < build_pos,
+        "DCL violation: build_from_index must run AFTER the write lock is held \
+         (mirrors get_or_build_call_graph). Without DCL, N concurrent first- \
+         callers each rebuild and discard all but the first."
+    );
+    assert!(
+        block_in_place_pos.is_some(),
+        "build inside the write lock must be wrapped in tokio::task::block_in_place \
+         (under multi-thread runtime) so the executor worker is yielded to the \
+         blocking pool while the 50–200 ms build runs."
+    );
 }
 
 /// Reproduces: 2e506b918924b167 — `register_procedures_from_tree` in
