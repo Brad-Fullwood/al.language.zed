@@ -175,7 +175,7 @@ pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<
                     sort_text: None,
                 });
             }
-            add_default_completions(workspace, uri, lsp_pos, &mut items);
+            add_default_completions(workspace, uri, position, &mut items);
         }
     }
 
@@ -269,7 +269,7 @@ pub async fn completions_full(
 fn add_default_completions(
     workspace: &Workspace,
     uri: &Url,
-    position: tower_lsp::lsp_types::Position,
+    position: Position,
     items: &mut Vec<CompletionEntry>,
 ) {
     let kw_data = crate::syntax::language_data::keywords();
@@ -316,7 +316,7 @@ fn add_default_completions(
         }
 
         let resolver = crate::syntax::type_resolver::TypeResolver::new(&tree, &file_text);
-        let vars = resolver.variables_at(crate::syntax_lsp::lsp_pos_to_syntax(position));
+        let vars = resolver.variables_at(position.into());
         for var in &vars {
             let subtype = var
                 .type_subtype
@@ -441,6 +441,16 @@ mod tests {
 
     fn test_uri() -> Url {
         Url::parse("file:///test/src/Test.al").unwrap()
+    }
+
+    #[test]
+    fn add_default_completions_signature_is_transport_agnostic() {
+        // Compile-time guard against re-introducing the lsp_types boundary leak
+        // fixed by T015 / arch-001. If anyone widens the parameter back to
+        // tower_lsp::lsp_types::Position the function pointer coercion below
+        // will fail to type-check.
+        let _: fn(&Workspace, &Url, Position, &mut Vec<CompletionEntry>) =
+            add_default_completions;
     }
 
     #[test]
