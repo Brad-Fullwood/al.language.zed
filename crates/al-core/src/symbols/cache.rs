@@ -206,8 +206,7 @@ impl SymbolCache {
             // silent let _, so a permissions tightening failure left the
             // cache dir at whatever default mode the umask produced.
             use std::os::unix::fs::PermissionsExt;
-            if let Err(e) =
-                fs::set_permissions(&self.cache_dir, fs::Permissions::from_mode(0o700))
+            if let Err(e) = fs::set_permissions(&self.cache_dir, fs::Permissions::from_mode(0o700))
             {
                 tracing::warn!(
                     path = %self.cache_dir.display(),

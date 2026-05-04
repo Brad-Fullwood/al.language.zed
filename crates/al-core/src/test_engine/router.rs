@@ -342,10 +342,7 @@ fn extract_procedure_bodies(tree: &tree_sitter::Tree, text: &str) -> Vec<(String
             if let Some(name_node) = node.child_by_field_name("name") {
                 if let Ok(name) = name_node.utf8_text(source) {
                     if let Ok(body_text) = node.utf8_text(source) {
-                        out.push((
-                            name.trim_matches('"').to_string(),
-                            body_text.to_string(),
-                        ));
+                        out.push((name.trim_matches('"').to_string(), body_text.to_string()));
                     }
                 }
             }

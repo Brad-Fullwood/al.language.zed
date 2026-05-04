@@ -532,14 +532,15 @@ impl BcDebugSession {
                             );
                             // Notify wait_for_break_event before forwarding the full
                             // message so it can unblock immediately on Break/end events.
+                            // The break_event_tx.send(...) result is intentionally
+                            // logged-on-drop rather than collapsed into a match guard:
+                            // putting a side-effecting send() in a pattern guard would
+                            // be unusual and harder to reason about than the explicit
+                            // if-let-err shape here.
+                            #[allow(clippy::collapsible_match)]
                             if msg.type_ == 1 {
                                 match msg.target.as_deref() {
                                     Some("Break") => {
-                                        // Discarded send error => receiver dropped.
-                                        // Log at debug since this is expected during
-                                        // session shutdown but is otherwise unusual
-                                        // and load-bearing for the channel-based
-                                        // wait_for_break_event path (commit 4619213).
                                         if break_event_tx.send(true).is_err() {
                                             tracing::debug!(
                                                 target = "Break",
