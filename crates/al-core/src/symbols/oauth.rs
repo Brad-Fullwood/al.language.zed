@@ -75,7 +75,20 @@ pub async fn acquire_token(
             warn!("BC_CLIENT_ID is set but blank/whitespace; falling back to default client_id");
             DEFAULT_CLIENT_ID.into()
         }
-        Err(_) => DEFAULT_CLIENT_ID.into(),
+        // T041 / sec-asym-client-id: split NotPresent (the common case —
+        // env var simply unset) from NotUnicode (a real config error worth
+        // surfacing). Pre-fix the catch-all Err(_) silently used the
+        // default for both, so a misencoded BC_CLIENT_ID was indistinguishable
+        // from "no override set" in the logs.
+        Err(std::env::VarError::NotPresent) => DEFAULT_CLIENT_ID.into(),
+        Err(std::env::VarError::NotUnicode(raw)) => {
+            warn!(
+                ?raw,
+                "BC_CLIENT_ID contains non-UTF-8 bytes; falling back to default client_id \
+                 — fix the env var encoding to override"
+            );
+            DEFAULT_CLIENT_ID.into()
+        }
     };
     let cache_path = token_cache_path(tenant);
 
