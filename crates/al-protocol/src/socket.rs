@@ -31,9 +31,19 @@ pub fn socket_path_with_runtime_dir(
     project_root: &Path,
     runtime_dir: impl AsRef<str>,
 ) -> Option<PathBuf> {
-    let canonical = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
+    // canonicalize() resolves symlinks and ensures every (different real
+    // path, different alias) maps to a unique hash. If it fails — usually
+    // because the project hasn't been created yet — fall back to the
+    // ABSOLUTE path, never the relative input directly. Using an
+    // unsanitised `project_root` here would let two callers reach the
+    // same socket via different relative paths and accidentally share a
+    // daemon, or in a worst case let a local attacker pre-create
+    // `./.sock` and intercept JSON-RPC (T034 / sec-022).
+    let canonical = project_root.canonicalize().unwrap_or_else(|_| {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(project_root))
+            .unwrap_or_else(|_| project_root.to_path_buf())
+    });
     let hash = format!("{:016x}", fnv1a64(canonical.as_os_str().as_encoded_bytes()));
     Some(PathBuf::from(format!(
         "{}/al-lsp/{}.sock",
