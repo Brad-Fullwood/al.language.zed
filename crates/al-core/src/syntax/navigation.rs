@@ -445,7 +445,14 @@ mod tests {
         let mut parser = AlParser::new();
         let result = parser.parse(src);
         let root = result.tree.root_node();
-        fn dump(node: tree_sitter::Node, src: &str, depth: usize) {
+        // Iterative tree-walk (T069 / 8d3018731e108290): the previous
+        // version used a self-recursive `dump()` helper which violates
+        // CLAUDE.md's "iterative tree-sitter traversal — no recursion"
+        // rule even in test code, and was the only recursive walker
+        // remaining in al-core. The Vec stack here is bounded by tree
+        // depth; AL parses cap at ~30 levels even for nested begin/end.
+        let mut stack: Vec<(tree_sitter::Node, usize)> = vec![(root, 0)];
+        while let Some((node, depth)) = stack.pop() {
             let indent = "  ".repeat(depth);
             let text = node.utf8_text(src.as_bytes()).unwrap_or("??");
             let short = if text.len() > 50 { &text[..50] } else { text };
@@ -462,12 +469,14 @@ mod tests {
                 }),
                 short
             );
+            // Push children in reverse so iteration order matches the
+            // original recursive depth-first left-to-right walk.
             let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                dump(child, src, depth + 1);
+            let children: Vec<_> = node.children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push((child, depth + 1));
             }
         }
-        dump(root, src, 0);
     }
 
     #[test]
