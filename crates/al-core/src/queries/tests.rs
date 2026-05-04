@@ -124,6 +124,15 @@ pub fn affected_tests(workspace: &Workspace, changed_paths: &[String]) -> Vec<Af
 }
 
 /// Check if the codeunit has `Subtype = Test`.
+///
+/// T046: tightened from a fragile substring match
+/// (`lower.contains("subtype") && lower.contains("test")`) to a proper
+/// `<key> = <value>` parse. Pre-T046 a property like
+/// `Description = 'Has Subtype = Test in description';` would have
+/// false-matched, and any property whose name contained both substrings
+/// (e.g. a hypothetical SubtypeFilter property) would have too. Now we
+/// only match when the property KEY is exactly `subtype` (case-
+/// insensitive) AND the value is exactly `test`.
 pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
     let mut cursor = root.walk();
     let mut did_visit = false;
@@ -132,9 +141,19 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
             let node = cursor.node();
             if node.kind() == "property" || node.kind() == "property_assignment" {
                 if let Ok(text) = node.utf8_text(source) {
-                    let lower = text.to_lowercase();
-                    if lower.contains("subtype") && lower.contains("test") {
-                        return true;
+                    if let Some((key, value)) = text.split_once('=') {
+                        let k = key.trim();
+                        // Strip trailing ; and surrounding whitespace; tolerate
+                        // single-quoted enum values (the AL printer doesn't quote
+                        // bare identifiers but we're robust either way).
+                        let v = value
+                            .trim()
+                            .trim_end_matches(';')
+                            .trim()
+                            .trim_matches('\'');
+                        if k.eq_ignore_ascii_case("subtype") && v.eq_ignore_ascii_case("test") {
+                            return true;
+                        }
                     }
                 }
             }
