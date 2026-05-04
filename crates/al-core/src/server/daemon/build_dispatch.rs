@@ -776,18 +776,31 @@ pub(super) async fn dispatch_clear_cache(id: u64) -> Response {
     // file handles; doing it synchronously held the worker thread for
     // the duration and starved other dispatch handlers.
     let existed = tokio::fs::try_exists(&cache_dir).await.unwrap_or(false);
+    let mut error: Option<String> = None;
+    let mut deleted = false;
     if existed {
-        if let Err(e) = tokio::fs::remove_dir_all(&cache_dir).await {
-            tracing::warn!(path = %cache_dir.display(), error = %e,
-                "clearCache: failed to remove index dir; reporting partial success");
+        match tokio::fs::remove_dir_all(&cache_dir).await {
+            Ok(()) => deleted = true,
+            Err(e) => {
+                tracing::warn!(path = %cache_dir.display(), error = %e,
+                    "clearCache: failed to remove index dir");
+                error = Some(format!("{e}"));
+            }
         }
     }
 
+    // Report the actual outcome — `deleted` reflects whether the dir was
+    // both present AND successfully removed. `error` is populated only on
+    // failure, so callers can detect a partial-clear and retry/notify
+    // (cycle-3 review note: previous implementation reported success
+    // even when remove failed, which silently lost partial-state info).
     Response {
         id,
         result: Some(serde_json::json!({
-            "deleted": existed,
+            "deleted": deleted,
+            "existed": existed,
             "path": cache_dir.display().to_string(),
+            "error": error,
         })),
         error: None,
     }
