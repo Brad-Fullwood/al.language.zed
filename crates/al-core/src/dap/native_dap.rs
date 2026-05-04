@@ -118,7 +118,14 @@ where
     // Channel for the BC-event forwarding task to send pre-serialized DAP event bytes
     // to the main loop. The main loop drains this channel before processing each
     // incoming DAP message, ensuring BC push events reach Zed promptly.
-    let (dap_event_tx, mut dap_event_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    //
+    // Bounded at 1024 (T010 / spec-concurrency-007): under a misbehaving BC
+    // session that fires events faster than Zed drains them, an unbounded
+    // channel could grow to GB before any back-pressure. 1024 is generous
+    // for realistic debug-event rates (steps, breakpoints, output) and
+    // collapses to a try_send + warn-log at the producer end so we never
+    // block the SignalR forwarder waiting for stdin to drain.
+    let (dap_event_tx, mut dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
 
     let mut stdin = BufReader::new(io::stdin());
     let mut stdout = io::stdout();
@@ -503,8 +510,21 @@ where
                                         let Ok(body) = serde_json::to_vec(&dap_evt) else {
                                             continue;
                                         };
-                                        if event_tx_clone.send(body).is_err() {
-                                            return; // receiver dropped — DAP server shut down
+                                        // try_send + warn-log preserves the producer side's
+                                        // back-pressure semantics: if Zed is wedged and the
+                                        // 1024-slot channel fills, drop the event with a log
+                                        // rather than block this task forever (T010).
+                                        match event_tx_clone.try_send(body) {
+                                            Ok(()) => {}
+                                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                                tracing::warn!(
+                                                    "DAP event channel saturated (1024) — \
+                                                     dropping event; client appears to be stuck"
+                                                );
+                                            }
+                                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                                return; // receiver dropped — DAP server shut down
+                                            }
                                         }
                                     }
 
