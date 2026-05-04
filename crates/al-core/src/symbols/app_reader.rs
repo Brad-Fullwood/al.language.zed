@@ -176,9 +176,28 @@ fn has_only_json_padding(bytes: &[u8]) -> bool {
 }
 
 /// Find a file in the archive by name (case-insensitive, ignoring path prefixes).
+/// Maximum number of entries we will inspect when locating a single file
+/// inside a `.app` ZIP archive (T-sec-008). Real BC packages have well
+/// under 100k entries; refusing to walk a many-million-entry archive
+/// caps zip-bomb amplification — a malicious .app could otherwise force
+/// `archive.by_index(i)` calls in a tight loop until they exceed the
+/// 200 MB outer cap on file *size* (which says nothing about entry
+/// count). Higher than realistic BC packages by ~10x.
+const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+
 fn find_file_in_archive(archive: &mut ZipArchive<Cursor<&[u8]>>, target: &str) -> Option<String> {
     let target_lower = target.to_lowercase();
-    for i in 0..archive.len() {
+    let entries = archive.len();
+    if entries > MAX_ARCHIVE_ENTRIES {
+        tracing::warn!(
+            entries,
+            limit = MAX_ARCHIVE_ENTRIES,
+            target = target,
+            ".app archive entry count exceeds safety cap — aborting search"
+        );
+        return None;
+    }
+    for i in 0..entries {
         if let Ok(file) = archive.by_index(i) {
             let name = file.name().to_string();
             // Match the filename part (after last /)
