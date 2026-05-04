@@ -791,8 +791,14 @@ mod tests {
 }"#;
         super::collect_fields_from_text(text, &mut fields);
         let names: Vec<_> = fields.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"Real"), "Real field should be collected: {names:?}");
-        assert!(names.contains(&"AlsoReal"), "AlsoReal should be collected: {names:?}");
+        assert!(
+            names.contains(&"Real"),
+            "Real field should be collected: {names:?}"
+        );
+        assert!(
+            names.contains(&"AlsoReal"),
+            "AlsoReal should be collected: {names:?}"
+        );
         assert!(
             !names.contains(&"Phantom"),
             "Phantom inside /* */ must NOT be collected: {names:?}"
@@ -813,7 +819,11 @@ mod tests {
 }"#;
         super::collect_fields_from_text(text, &mut fields);
         let names: Vec<_> = fields.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["Kept"], "only Kept should be collected: {names:?}");
+        assert_eq!(
+            names,
+            vec!["Kept"],
+            "only Kept should be collected: {names:?}"
+        );
     }
 
     #[test]
