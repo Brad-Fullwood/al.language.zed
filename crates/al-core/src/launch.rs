@@ -302,8 +302,22 @@ fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> AuthMethod 
         None if *env_type == EnvironmentType::OnPrem => AuthMethod::Windows,
         None => AuthMethod::AAD,
         Some(other) => {
-            warn!(auth = %other, "Unknown auth method, defaulting to AAD");
-            AuthMethod::AAD
+            // T032 / launch-auth-fallback: env-type-aware fallback rather than
+            // silently jumping to AAD on every typo. A misconfigured launch.json
+            // for an OnPrem server should not silently switch to cloud OAuth — it
+            // typically means the user typed a vendor-specific value (e.g.
+            // "NavUserPassword") that maps to UserPassword in spirit. Match the
+            // None-arm policy so the fallback is "what would the env type pick by
+            // default" not "always AAD".
+            let fallback = match env_type {
+                EnvironmentType::OnPrem => AuthMethod::Windows,
+                _ => AuthMethod::AAD,
+            };
+            warn!(
+                auth = %other, env = ?env_type, fallback = ?fallback,
+                "Unknown auth method in launch.json — falling back to env-type default"
+            );
+            fallback
         }
     }
 }
