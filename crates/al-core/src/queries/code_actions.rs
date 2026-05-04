@@ -1479,16 +1479,24 @@ fn parse_using_directives(text: &str) -> (Vec<String>, u32) {
 
     for (i, line) in text.lines().enumerate() {
         let trimmed = line.trim();
-        if trimmed.starts_with("namespace ") || trimmed.starts_with("Namespace ") {
+        // AL keywords are case-insensitive per language spec — pre-T062 we
+        // only recognised two case variants ("namespace " / "Namespace ",
+        // "using " / "Using ") which silently dropped legitimate
+        // NAMESPACE / USING / mixed-case forms (e.g. "uSiNg ").
+        let leader_is = |kw: &str| {
+            trimmed
+                .get(..kw.len())
+                .map(|p| p.eq_ignore_ascii_case(kw))
+                .unwrap_or(false)
+                && trimmed[kw.len()..].starts_with(' ')
+        };
+        if leader_is("namespace") {
             last_directive_line = i as u32;
             found_any_directive = true;
-        } else if trimmed.starts_with("using ") || trimmed.starts_with("Using ") {
+        } else if leader_is("using") {
             // Extract namespace name: "using Foo.Bar;" -> "Foo.Bar"
             // Strip trailing inline comment before the semicolon (e.g. "using Foo; // comment")
-            let after_keyword = trimmed
-                .strip_prefix("using ")
-                .or_else(|| trimmed.strip_prefix("Using "))
-                .unwrap_or("");
+            let after_keyword = trimmed.get(6..).unwrap_or("");
             // Remove inline comment (// ...) before parsing
             let without_comment = if let Some(pos) = after_keyword.find("//") {
                 &after_keyword[..pos]
