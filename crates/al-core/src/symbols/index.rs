@@ -492,6 +492,12 @@ impl SymbolIndex {
     ///
     /// Used to clear previously registered workspace entries before re-adding them,
     /// preventing duplicates when the call graph is rebuilt.
+    ///
+    /// T049: every secondary index that stores `Vec<Arc<SymbolEntry>>` MUST be
+    /// passed through `retain_arcs_not_in` here; missing one leaves dangling
+    /// references the next caller will see. The helper makes the discipline
+    /// uniform — adding a new secondary index requires adding exactly one
+    /// `Self::retain_arcs_not_in(&self.new_index, &ptrs);` line below.
     pub fn remove_package_entries(&self, package_name: &str) {
         let package_lower = package_name.to_lowercase();
 
@@ -522,29 +528,11 @@ impl SymbolIndex {
             self.all.remove(seq);
         }
 
-        // Filter `by_name` Vecs.
-        self.by_name.retain(|_, vec| {
-            vec.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
-            !vec.is_empty()
-        });
-
-        // Filter `by_kind_id` Vecs.
-        self.by_kind_id.retain(|_, vec| {
-            vec.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
-            !vec.is_empty()
-        });
-
-        // Filter `by_kind` Vecs.
-        self.by_kind.retain(|_, vec| {
-            vec.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
-            !vec.is_empty()
-        });
-
-        // Filter `by_extends` Vecs.
-        self.by_extends.retain(|_, vec| {
-            vec.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
-            !vec.is_empty()
-        });
+        // Filter every Vec<Arc<SymbolEntry>>-valued DashMap secondary index.
+        Self::retain_arcs_not_in(&self.by_name, &ptrs);
+        Self::retain_arcs_not_in(&self.by_kind_id, &ptrs);
+        Self::retain_arcs_not_in(&self.by_kind, &ptrs);
+        Self::retain_arcs_not_in(&self.by_extends, &ptrs);
 
         // Rebuild default_completions — it may reference removed entries.
         let mut cache = self
@@ -552,6 +540,27 @@ impl SymbolIndex {
             .write()
             .unwrap_or_else(|e| e.into_inner());
         cache.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
+    }
+
+    /// Helper: filter a `DashMap<K, Vec<Arc<SymbolEntry>>>` secondary index
+    /// in place, removing every Arc whose pointer appears in `ptrs` and
+    /// dropping any key whose Vec becomes empty as a result.
+    ///
+    /// T049: extracted from the four-times-repeated retain pattern in
+    /// remove_package_entries. New secondary indexes that follow the
+    /// `DashMap<K, Vec<Arc<SymbolEntry>>>` shape MUST be passed through
+    /// this helper; the contract is that no Arc reachable from any
+    /// secondary index can reference an entry no longer in `self.all`.
+    fn retain_arcs_not_in<K>(
+        index: &dashmap::DashMap<K, Vec<Arc<SymbolEntry>>>,
+        ptrs: &std::collections::HashSet<*const SymbolEntry>,
+    ) where
+        K: Eq + std::hash::Hash + Clone,
+    {
+        index.retain(|_, vec| {
+            vec.retain(|arc| !ptrs.contains(&Arc::as_ptr(arc)));
+            !vec.is_empty()
+        });
     }
 }
 
@@ -736,6 +745,84 @@ mod tests {
         index.add_entries(&[make_entry(ObjectKind::Table, 1, "T")]);
         assert!(!index.is_empty());
         assert_eq!(index.len(), 1);
+    }
+
+    /// T049 regression: removing a package must clear EVERY secondary
+    /// index in lockstep. Adds entries that populate by_name, by_kind_id,
+    /// by_kind, and by_extends, then removes the package and asserts each
+    /// secondary index is empty for those entries. Adding a new secondary
+    /// index later without wiring it through `retain_arcs_not_in` would
+    /// leave its entries dangling — this test would still pass, so the
+    /// followup discipline lives in the doc comment on the helper.
+    #[test]
+    fn remove_package_entries_clears_all_secondary_indexes() {
+        let index = SymbolIndex::new();
+        // 1 table + 1 page-extension that extends it. After remove_package_entries,
+        // by_name(customer/customer ext)/by_kind_id((Table,50100), (PageExt,...))/
+        // by_kind(Table)/by_extends("Customer") must all be empty.
+        let mut entries = vec![
+            make_entry(ObjectKind::Table, 50100, "Customer"),
+            make_extension(ObjectKind::PageExtension, 50100, "Customer Ext", "Customer"),
+        ];
+        // Use a distinct package name we can target.
+        for e in &mut entries {
+            e.package = "Drop Target".to_string();
+        }
+        index.add_entries(&entries);
+
+        // Pre-state: every secondary index has the entries.
+        assert!(!index.get_by_name("Customer").is_empty());
+        assert!(!index.get_by_name("Customer Ext").is_empty());
+        assert!(!index.get_by_id(ObjectKind::Table, 50100).is_empty());
+        assert!(!index.get_by_id(ObjectKind::PageExtension, 50100).is_empty());
+        assert!(!index.get_by_kind(ObjectKind::Table).is_empty());
+        assert!(!index.get_extensions_of("Customer").is_empty());
+
+        // Drop everything from "Drop Target".
+        index.remove_package_entries("Drop Target");
+
+        // Every secondary index must report empty for the removed package.
+        assert!(index.get_by_name("Customer").is_empty(), "by_name leak");
+        assert!(
+            index.get_by_name("Customer Ext").is_empty(),
+            "by_name leak (ext)"
+        );
+        assert!(
+            index.get_by_id(ObjectKind::Table, 50100).is_empty(),
+            "by_kind_id leak"
+        );
+        assert!(
+            index.get_by_id(ObjectKind::PageExtension, 50100).is_empty(),
+            "by_kind_id leak (ext)"
+        );
+        assert!(
+            index.get_by_kind(ObjectKind::Table).is_empty(),
+            "by_kind leak"
+        );
+        assert!(
+            index.get_extensions_of("Customer").is_empty(),
+            "by_extends leak"
+        );
+        assert_eq!(index.len(), 0, "primary `all` index leak");
+    }
+
+    /// T049 negative: remove_package_entries on a non-existent package is
+    /// a no-op (no panic, no spurious removals).
+    #[test]
+    fn remove_package_entries_no_match_is_noop() {
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_entry(ObjectKind::Table, 50100, "Customer"),
+            make_entry(ObjectKind::Page, 50100, "Customer Card"),
+        ]);
+        let before_len = index.len();
+        index.remove_package_entries("ThisPackageDoesNotExist");
+        assert_eq!(
+            index.len(),
+            before_len,
+            "removing a non-existent package must not change the index"
+        );
+        assert!(!index.get_by_name("Customer").is_empty());
     }
 
     #[test]
