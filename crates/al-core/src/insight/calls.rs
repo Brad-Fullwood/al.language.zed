@@ -669,9 +669,24 @@ pub fn register_workspace_nodes(
 ) {
     let mut workspace_entries: Vec<crate::symbols::SymbolEntry> = Vec::new();
 
-    for entry in file_index.object_info.iter() {
-        let path = entry.key();
-        let info = entry.value();
+    // Snapshot the (path, info) pairs in one short-lived shard iteration
+    // (T039 / 3c892bcd20cdd0a3): the body of this loop calls
+    // file_index.get_cached_parse(path) which acquires *other* DashMap
+    // shards (files / file_trees) and runs a full tree walk per entry —
+    // pre-T039 we held the object_info shard read lock the entire time,
+    // blocking concurrent did_change writers to that shard for the
+    // duration of the build. Cloning the snapshot is cheap (kB-scale)
+    // versus the cost of an N-file tree walk that follows.
+    let snapshot: Vec<(std::path::PathBuf, super::super::file_index::CachedObjectInfo)> =
+        file_index
+            .object_info
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
+            .collect();
+
+    for (path, info) in snapshot {
+        let path = path.as_path();
+        let info = &info;
 
         let ok: ObjectKind = match info.kind.parse() {
             Ok(k) => k,
