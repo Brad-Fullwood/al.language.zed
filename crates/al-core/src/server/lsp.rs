@@ -1053,11 +1053,15 @@ impl LanguageServer for AlServer {
                                                 line: start_line,
                                                 character: start_char,
                                             },
-                                            // alc only reports start position; extend to end of line
-                                            // so editors show a visible underline (u32::MAX → EOL).
+                                            // alc only reports start position; the LSP-spec way to
+                                            // express "to end of line" is `start of next line`
+                                            // (Position{ line+1, character: 0 }). The previous
+                                            // u32::MAX sentinel was tolerated by Zed/VS Code but
+                                            // is undefined by the LSP spec and breaks stricter
+                                            // clients (T067 / stb-server-lsp-1059).
                                             end: Position {
-                                                line: start_line,
-                                                character: u32::MAX,
+                                                line: start_line.saturating_add(1),
+                                                character: 0,
                                             },
                                         },
                                         severity: Some(severity),
