@@ -1413,6 +1413,19 @@ fn main() -> ExitCode {
 }
 
 fn run_tui() -> Result<(), Box<dyn Error>> {
+    // Pre-flight: refuse with a human-readable message instead of letting
+    // crossterm propagate ENXIO (code 6) when stdin/stdout aren't a TTY
+    // (T033 / RT-001). Without this, `al-explorer | tee log` or running
+    // in a CI step prints `Error: Os { code: 6 }` and exits non-zero with
+    // no hint that the TUI cannot run headless.
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Err("al-explorer TUI requires an interactive terminal — \
+             stdin or stdout is not a TTY. Use `al-explorer <subcommand>` \
+             for scripted output (run `al-explorer --help` for the CLI list)."
+            .into());
+    }
+
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = crossterm::terminal::disable_raw_mode();
