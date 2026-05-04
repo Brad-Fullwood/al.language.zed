@@ -70,7 +70,25 @@ pub async fn acquire_token(
     on_message: impl Fn(&str),
 ) -> Result<String, OAuthError> {
     let client_id = match std::env::var("BC_CLIENT_ID") {
-        Ok(v) if !v.trim().is_empty() => v,
+        Ok(v) if !v.trim().is_empty() => {
+            let trimmed = v.trim();
+            // T061: AAD client IDs are GUIDs. Reject obviously bad shapes
+            // before we interpolate them into the authorize URL — a typoed
+            // value would otherwise produce an opaque AAD redirect error
+            // long after the launch attempt. Conservative validator: 36
+            // chars, hyphens at positions 8/13/18/23, hex elsewhere.
+            // Failure path is the same as blank/missing: warn + use default.
+            if !is_well_formed_guid(trimmed) {
+                warn!(
+                    candidate = %trimmed,
+                    "BC_CLIENT_ID is set but is not a well-formed AAD GUID; \
+                     falling back to default client_id"
+                );
+                DEFAULT_CLIENT_ID.into()
+            } else {
+                trimmed.to_string()
+            }
+        }
         Ok(_) => {
             warn!("BC_CLIENT_ID is set but blank/whitespace; falling back to default client_id");
             DEFAULT_CLIENT_ID.into()
@@ -722,6 +740,52 @@ fn open_browser(url: &str) -> bool {
     {
         let _ = url;
         false
+    }
+}
+
+/// True iff `s` is a 36-character hyphenated GUID
+/// (8-4-4-4-12, hex elsewhere). Used by acquire_token to validate
+/// BC_CLIENT_ID before interpolating it into the AAD authorize URL
+/// (T061 / sec-061-guid-validate).
+fn is_well_formed_guid(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    for (i, &b) in bytes.iter().enumerate() {
+        let is_hyphen_pos = matches!(i, 8 | 13 | 18 | 23);
+        if is_hyphen_pos {
+            if b != b'-' {
+                return false;
+            }
+        } else if !b.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod guid_tests {
+    use super::is_well_formed_guid;
+    #[test]
+    fn accepts_canonical_aad_app_id() {
+        assert!(is_well_formed_guid("ef72a0a7-b59c-4f97-99c8-5b9a2cd3a1b6"));
+        // Real BC default client id (uppercase hex)
+        assert!(is_well_formed_guid("ABCDEF12-3456-7890-ABCD-EF1234567890"));
+    }
+    #[test]
+    fn rejects_obvious_bad_shapes() {
+        assert!(!is_well_formed_guid(""));
+        assert!(!is_well_formed_guid("not-a-guid"));
+        // 35 chars
+        assert!(!is_well_formed_guid("ef72a0a7-b59c-4f97-99c8-5b9a2cd3a1b"));
+        // 37 chars
+        assert!(!is_well_formed_guid("ef72a0a7-b59c-4f97-99c8-5b9a2cd3a1b66"));
+        // wrong hyphen position
+        assert!(!is_well_formed_guid("ef72a0a-7b59c-4f97-99c8-5b9a2cd3a1b66"));
+        // non-hex
+        assert!(!is_well_formed_guid("zf72a0a7-b59c-4f97-99c8-5b9a2cd3a1b6"));
     }
 }
 
