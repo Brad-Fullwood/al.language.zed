@@ -227,6 +227,13 @@ impl SemanticBridge {
     /// the blocking task continues running — the timeout does NOT release the
     /// Mutex lock or interrupt the .NET call. The lock will remain held until
     /// the bridge returns or the process exits.
+    ///
+    /// T047: when the cooldown window elapses, the gate isn't released
+    /// blindly — we first `try_lock()` the Mutex. If the Mutex is still
+    /// held (the previous CLR call hasn't returned), we re-stamp
+    /// `last_timeout_secs` and keep the gate closed for another
+    /// TIMEOUT_COOLDOWN. This prevents an indefinitely-hung CLR call from
+    /// being followed by a fresh thundering herd of attempts every 60s.
     async fn call(
         &self,
         method: &str,
@@ -234,8 +241,8 @@ impl SemanticBridge {
     ) -> Result<serde_json::Value, SemanticError> {
         // If a previous call timed out, short-circuit during the cooldown
         // window to avoid piling up new calls on a potentially-hung Mutex.
-        // After the cooldown elapses, we let calls through again so a
-        // transient stall can self-heal without a process restart.
+        // After the cooldown elapses, we probe the lock — only if it's
+        // actually free do we let the call through.
         let last = self
             .last_timeout_secs
             .load(std::sync::atomic::Ordering::Relaxed);
@@ -244,8 +251,54 @@ impl SemanticBridge {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            if now.saturating_sub(last) < TIMEOUT_COOLDOWN.as_secs() {
+            let elapsed = now.saturating_sub(last);
+            if elapsed < TIMEOUT_COOLDOWN.as_secs() {
+                tracing::trace!(
+                    method,
+                    elapsed,
+                    cooldown_secs = TIMEOUT_COOLDOWN.as_secs(),
+                    "semantic bridge: short-circuiting (cooldown window)"
+                );
                 return Err(SemanticError::Poisoned);
+            }
+            // Cooldown elapsed — probe the Mutex before releasing the gate.
+            // If it's still held, the previous call is stuck; re-stamp the
+            // cooldown and keep the gate closed for another TIMEOUT_COOLDOWN.
+            match self.host.try_lock() {
+                Ok(_guard) => {
+                    // Lock is free — the previous timeout has completed; clear
+                    // the stamp so subsequent calls go through normally.
+                    self.last_timeout_secs
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!(
+                        method,
+                        elapsed,
+                        "semantic bridge: cooldown elapsed, lock free — resuming"
+                    );
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    // Lock is still held by the hung call — extend cooldown.
+                    self.last_timeout_secs
+                        .store(now, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!(
+                        method,
+                        elapsed,
+                        "semantic bridge: cooldown elapsed but lock STILL held — extending cooldown"
+                    );
+                    return Err(SemanticError::Poisoned);
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    // Mutex was poisoned by a panicking call — we know the
+                    // CLR state is suspect. Extend cooldown to avoid piling
+                    // on; a restart_bridge() is the proper recovery path.
+                    self.last_timeout_secs
+                        .store(now, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!(
+                        method,
+                        "semantic bridge: Mutex poisoned — extending cooldown"
+                    );
+                    return Err(SemanticError::Poisoned);
+                }
             }
         }
 
