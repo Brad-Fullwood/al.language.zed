@@ -25,3 +25,4 @@ crates/al-dap/dotnet/AlDap/obj/
 .env
 .env.*
 *.env
+.claude/scheduled_tasks.lock
