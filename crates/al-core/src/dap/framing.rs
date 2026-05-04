@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 
 /// Maximum DAP message body size (20 MB).
 const MAX_DAP_BODY_SIZE: usize = 20 * 1024 * 1024;
@@ -33,25 +33,58 @@ pub async fn read_dap_body<R: tokio::io::AsyncRead + Unpin>(
 }
 
 /// Read DAP headers and extract Content-Length.
+///
+/// Bounded against header-line DoS (T059 / 3d630127d17fed8a): tokio's
+/// `read_line` is unbounded — it grows the destination String until it
+/// hits a newline or EOF. Pre-T059 the post-read length check happened
+/// AFTER the allocation, so a misbehaving DAP source could still drive
+/// the client into multi-GB territory before the guard fired. Now the
+/// loop reads byte-by-byte through a per-line cap, refusing input as
+/// soon as it crosses MAX_DAP_HEADER_LINE.
 async fn read_headers<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut BufReader<R>,
 ) -> Result<usize, std::io::Error> {
     let mut content_length: Option<usize> = None;
+    let mut buf = Vec::with_capacity(128);
     loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
-        if n > MAX_DAP_HEADER_LINE {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("DAP header line exceeds maximum length of {MAX_DAP_HEADER_LINE} bytes"),
-            ));
+        buf.clear();
+        // Bounded line read: consume up to MAX_DAP_HEADER_LINE bytes,
+        // breaking on '\n'. Anything past the cap is a hard reject —
+        // matching the existing error contract but BEFORE the allocation
+        // grows past the cap.
+        let mut byte = [0u8; 1];
+        loop {
+            let n = reader.read(&mut byte).await?;
+            if n == 0 {
+                if buf.is_empty() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "EOF while reading DAP headers",
+                    ));
+                }
+                break;
+            }
+            buf.push(byte[0]);
+            if byte[0] == b'\n' {
+                break;
+            }
+            if buf.len() > MAX_DAP_HEADER_LINE {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "DAP header line exceeds maximum length of {MAX_DAP_HEADER_LINE} bytes"
+                    ),
+                ));
+            }
         }
-        if n == 0 {
+        if buf.is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "EOF while reading DAP headers",
             ));
         }
+        let line = std::str::from_utf8(&buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             break;
