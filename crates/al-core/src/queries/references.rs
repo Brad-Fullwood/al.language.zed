@@ -13,16 +13,13 @@ pub fn references(
     position: Position,
     include_declaration: bool,
 ) -> Vec<Location> {
-    let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
         return Vec::new();
     };
 
-    let Some(node) = crate::syntax::find_node_at_position(
-        &tree,
-        &text,
-        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
-    ) else {
+    // Direct queries::Position -> SyntaxPosition (one hop) — matches the
+    // T015 / arch-001 cleanup pattern, no lsp_types round-trip.
+    let Some(node) = crate::syntax::find_node_at_position(&tree, &text, position.into()) else {
         return Vec::new();
     };
     let Some(clean_name) = super::node_clean_name(node, text.as_bytes()) else {
@@ -34,7 +31,7 @@ pub fn references(
     let source_bytes = text.as_bytes();
     let refs = crate::syntax::find_variable_references(&tree, &text, clean_name);
     for r in &refs {
-        let range: Range = crate::syntax_lsp::ts_range_to_lsp(r, source_bytes).into();
+        let range: Range = crate::syntax::ts_range_to_syntax(r, source_bytes).into();
         if !include_declaration && range.start == position {
             continue;
         }
@@ -71,7 +68,7 @@ pub fn references(
             if let Ok(file_uri) = Url::from_file_path(&file_path) {
                 locations.push(Location {
                     uri: file_uri,
-                    range: crate::syntax_lsp::ts_range_to_lsp(r, file_source_bytes).into(),
+                    range: crate::syntax::ts_range_to_syntax(r, file_source_bytes).into(),
                 });
             }
         }
