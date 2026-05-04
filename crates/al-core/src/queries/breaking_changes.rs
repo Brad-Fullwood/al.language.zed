@@ -428,6 +428,86 @@ mod tests {
     }
 
     #[test]
+    fn detects_return_type_change() {
+        // T019: previously untested ReturnTypeChanged variant.
+        let old_cu = make_codeunit(
+            "Calc",
+            vec![make_method("Total", vec![], Some("Decimal".to_string()))],
+        );
+        let new_cu = make_codeunit(
+            "Calc",
+            vec![make_method("Total", vec![], Some("Integer".to_string()))],
+        );
+        let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
+        assert!(
+            changes.iter().any(|c| c.kind == BreakingChangeKind::ReturnTypeChanged
+                && c.member.as_deref() == Some("Total")),
+            "ReturnTypeChanged must be reported: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn detects_enum_value_removed() {
+        // T019: previously untested EnumValueRemoved variant.
+        use crate::symbols::EnumValueSymbol;
+        let make_enum = |values: Vec<&str>| SymbolEntry {
+            kind: ObjectKind::Enum,
+            id: 50100,
+            name: "Status".to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "Test".to_string(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: values
+                .into_iter()
+                .enumerate()
+                .map(|(i, n)| EnumValueSymbol {
+                    ordinal: i as i32,
+                    name: n.to_string(),
+                })
+                .collect(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        };
+        let baseline = vec![make_enum(vec!["Open", "Pending", "Closed"])];
+        let current = vec![make_enum(vec!["Open", "Closed"])]; // dropped Pending
+        let changes = analyze_breaking_changes(&baseline, &current);
+        assert!(
+            changes.iter().any(|c| c.kind == BreakingChangeKind::EnumValueRemoved
+                && c.member.as_deref() == Some("Pending")),
+            "EnumValueRemoved must be reported when a value disappears: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn detects_signature_change_parameter_count() {
+        // T019: signature-change tests previously only covered TYPE changes;
+        // adding/removing a parameter is also a SignatureChanged report.
+        let old_cu = make_codeunit(
+            "API",
+            vec![make_method("Send", vec![make_param("Body", "Text")], None)],
+        );
+        let new_cu = make_codeunit(
+            "API",
+            vec![make_method(
+                "Send",
+                vec![make_param("Body", "Text"), make_param("Timeout", "Integer")],
+                None,
+            )],
+        );
+        let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
+        assert!(
+            changes.iter().any(|c| c.kind == BreakingChangeKind::SignatureChanged
+                && c.member.as_deref() == Some("Send")),
+            "SignatureChanged must be reported on parameter-count delta: {changes:?}"
+        );
+    }
+
+    #[test]
     fn adding_procedure_is_not_breaking() {
         let old_cu = make_codeunit("My CU", vec![]);
         let new_cu = make_codeunit("My CU", vec![make_method("NewProc", vec![], None)]);
