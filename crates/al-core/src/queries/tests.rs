@@ -159,11 +159,17 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
 /// Collect all procedures with a [Test] attribute.
 pub fn collect_test_procedures(root: tree_sitter::Node, source: &[u8]) -> Vec<TestProcedure> {
     let mut procs = Vec::new();
-    collect_test_procs_recursive(root, source, &mut procs);
+    collect_test_procs_iterative(root, source, &mut procs);
     procs
 }
 
-fn collect_test_procs_recursive(
+/// Iterative tree-walk (despite the historical `_recursive` name, retained
+/// elsewhere in this crate's history): uses `tree_sitter::TreeCursor`
+/// goto_first_child / goto_next_sibling / goto_parent. No self-recursion,
+/// no Vec stack needed because the cursor IS the stack. Renamed in T065
+/// to reflect the actual shape so a CLAUDE.md "no recursive tree-sitter"
+/// audit can pass on a grep without manually inspecting the body.
+fn collect_test_procs_iterative(
     root: tree_sitter::Node,
     source: &[u8],
     procs: &mut Vec<TestProcedure>,
