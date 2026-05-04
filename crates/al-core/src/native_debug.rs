@@ -210,8 +210,12 @@ impl NativeDebugSession {
 
     /// Stop the debug session and disconnect.
     pub async fn stop(&mut self) -> Result<()> {
-        let _ = self.session.stop_debugging().await;
-        let _ = self.session.terminate().await;
+        if let Err(e) = self.session.stop_debugging().await {
+            warn!(error = %e, "stop_debugging failed during shutdown");
+        }
+        if let Err(e) = self.session.terminate().await {
+            warn!(error = %e, "terminate failed during shutdown");
+        }
         info!("Native debug session stopped");
         Ok(())
     }

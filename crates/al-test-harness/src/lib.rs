@@ -802,7 +802,32 @@ impl LspClient {
             }
         }
     }
+}
 
+/// Best-effort orphan-cleanup hook.
+///
+/// `shutdown()` is the graceful path and should be called from every test that
+/// reaches its happy ending. When a test panics or returns early, however,
+/// `Drop` runs first and we still need to reap the child — otherwise the
+/// `al-lsp` process leaks past the test boundary, which has bitten us before
+/// in CI when tests left orphans that consumed sockets and confused later
+/// runs in the same process group.
+///
+/// `start_kill()` is sync (no `await`) and only signals SIGKILL; it does NOT
+/// wait for reap. The kernel reaps the orphan via the tokio reactor that the
+/// `Child` was created with. If `shutdown()` already consumed `self`, this
+/// `Drop` does not run; if it didn't, we send SIGKILL here as a safety net.
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        if let Lifecycle::Stdio(child) = &mut self.lifecycle {
+            if let Err(e) = child.start_kill() {
+                tracing::warn!(error = %e, "LspClient::drop: start_kill failed; child may be a zombie");
+            }
+        }
+    }
+}
+
+impl LspClient {
     // -- Internal --
 
     /// Build a file:// URI from a relative path. Public for test assertions.

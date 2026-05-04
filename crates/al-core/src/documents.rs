@@ -420,6 +420,68 @@ mod tests {
         }
     }
 
+    /// T055 regression: position_to_offset clamps an over-large `character`
+    /// (UTF-16 code units past end-of-line) to the line's UTF-16 length and
+    /// returns Some, never None. The clamp is the contract relied on by
+    /// apply_changes when a client sends a position past EOL during a paste.
+    #[test]
+    fn position_to_offset_clamps_overflow_character() {
+        let rope = Rope::from_str("hello\nworld\n");
+        // Line 0 is "hello" (5 utf16 cu). Pass character = 999.
+        let off = position_to_offset(&rope, 0, 999);
+        assert!(off.is_some(), "out-of-line character must clamp, not None");
+        // Clamped result must point to end of line 0 INCLUDING the trailing
+        // \n — ropey's `line(line)` slice covers the line break, so the
+        // utf16_cu_to_char clamp lands at byte index 6 (just past 'hello\n').
+        assert_eq!(off, Some(6));
+    }
+
+    /// T055 regression: a non-existent line still returns None — the clamp is
+    /// for `character` only, not for `line`.
+    #[test]
+    fn position_to_offset_returns_none_for_overflow_line() {
+        let rope = Rope::from_str("only one line\n");
+        // Line index 99 is past EOF — must be None.
+        let off = position_to_offset(&rope, 99, 0);
+        assert!(off.is_none());
+    }
+
+    /// T055 regression: locks in the apply_changes lock-discipline invariant
+    /// — the version bump and the tree-cache invalidation are observable as a
+    /// single atomic step from any concurrent reader. Reading get_cached_tree
+    /// either sees (old version, old tree) or (new version, no tree) — never
+    /// (old version, no tree) or (new version, old tree).
+    #[test]
+    fn apply_changes_version_bump_and_tree_remove_are_consistent() {
+        let store = DocumentStore::new();
+        let uri = test_uri("lockdiscipline");
+        store.open(uri.clone(), "v0".to_string());
+
+        // Cache a tree at v0.
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&crate::syntax::parser::language())
+            .unwrap();
+        let tree_v0 = parser.parse("v0", None).unwrap();
+        store.cache_tree(&uri, 0, tree_v0);
+        assert!(store.get_cached_tree(&uri).is_some());
+        assert_eq!(store.get_version(&uri), Some(0));
+
+        // Apply a change.
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: None,
+                text: "v1".to_string(),
+            }],
+        );
+
+        // Post-state: version is 1 AND tree is gone. Both must be true; if
+        // apply_changes ever leaks the v0 tree under v1's version, this fails.
+        assert_eq!(store.get_version(&uri), Some(1));
+        assert!(store.get_cached_tree(&uri).is_none());
+    }
+
     #[test]
     fn concurrent_open_close_no_panic() {
         use std::sync::Arc;

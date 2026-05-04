@@ -213,6 +213,10 @@ impl AlExtension {
                 .map_err(|e| format!("Failed to make al-lsp executable: {e}"))?;
 
             // Remove old version directories, guarded to only clean up al-lsp-* dirs.
+            // T055: `fs::remove_dir_all` errors are intentionally swallowed — the
+            // Zed WASM extension sandbox has no usable logging path, and stale
+            // version dirs are best-effort cleanup (a leftover dir is at worst
+            // wasted disk space, never a correctness issue).
             if fs::metadata(&version_dir).is_ok_and(|m| m.is_dir()) {
                 if let Ok(entries) = fs::read_dir(".") {
                     for entry in entries.flatten() {
