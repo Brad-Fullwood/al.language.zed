@@ -146,11 +146,7 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
                         // Strip trailing ; and surrounding whitespace; tolerate
                         // single-quoted enum values (the AL printer doesn't quote
                         // bare identifiers but we're robust either way).
-                        let v = value
-                            .trim()
-                            .trim_end_matches(';')
-                            .trim()
-                            .trim_matches('\'');
+                        let v = value.trim().trim_end_matches(';').trim().trim_matches('\'');
                         if k.eq_ignore_ascii_case("subtype") && v.eq_ignore_ascii_case("test") {
                             return true;
                         }

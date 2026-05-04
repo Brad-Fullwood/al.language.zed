@@ -677,12 +677,14 @@ pub fn register_workspace_nodes(
     // blocking concurrent did_change writers to that shard for the
     // duration of the build. Cloning the snapshot is cheap (kB-scale)
     // versus the cost of an N-file tree walk that follows.
-    let snapshot: Vec<(std::path::PathBuf, super::super::file_index::CachedObjectInfo)> =
-        file_index
-            .object_info
-            .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
-            .collect();
+    let snapshot: Vec<(
+        std::path::PathBuf,
+        super::super::file_index::CachedObjectInfo,
+    )> = file_index
+        .object_info
+        .iter()
+        .map(|e| (e.key().clone(), e.value().clone()))
+        .collect();
 
     for (path, info) in snapshot {
         let path = path.as_path();
