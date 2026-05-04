@@ -108,6 +108,7 @@ pub(super) fn dispatch_lint(
             id,
             result: Some(serde_json::json!(results)),
             error: None,
+            ..Default::default()
         };
     }
 
@@ -137,6 +138,7 @@ pub(super) fn dispatch_lint(
         id,
         result: Some(serde_json::json!(diags)),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -181,6 +183,7 @@ pub(super) fn dispatch_format(
             id,
             result: Some(serde_json::json!({ "changed": changed })),
             error: None,
+            ..Default::default()
         }
     } else {
         // If a file was specified, write back
@@ -208,6 +211,7 @@ pub(super) fn dispatch_format(
                 "changed": changed,
             })),
             error: None,
+            ..Default::default()
         }
     }
 }
@@ -256,6 +260,7 @@ pub(super) fn dispatch_fix(workspace: &Workspace, id: u64, params: &serde_json::
             "edits": edits,
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -276,6 +281,7 @@ pub(super) fn dispatch_rules(id: u64) -> Response {
         id,
         result: Some(serde_json::json!(value)),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -312,6 +318,7 @@ pub(super) fn dispatch_parse(
             })).collect::<Vec<_>>(),
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -334,6 +341,7 @@ pub(super) fn dispatch_location(
                 "line": 1,
             })),
             error: None,
+            ..Default::default()
         },
         None => Response {
             id,
@@ -342,6 +350,7 @@ pub(super) fn dispatch_location(
                 code: error_codes::INVALID_PARAMS,
                 message: format!("Object '{}' not found in workspace", name),
             }),
+            ..Default::default()
         },
     }
 }
@@ -370,6 +379,7 @@ pub(super) fn dispatch_source(
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
             error: None,
+            ..Default::default()
         },
         None => Response {
             id,
@@ -378,6 +388,7 @@ pub(super) fn dispatch_source(
                 code: error_codes::INVALID_PARAMS,
                 message: format!("Object '{}' not found", name),
             }),
+            ..Default::default()
         },
     }
 }
@@ -418,6 +429,7 @@ pub(super) fn dispatch_permissions(
                     "objectCount": entries.len(),
                 })),
                 error: None,
+                ..Default::default()
             }
         }
         _ => {
@@ -430,6 +442,7 @@ pub(super) fn dispatch_permissions(
                     "objectCount": entries.len(),
                 })),
                 error: None,
+                ..Default::default()
             }
         }
     }
@@ -450,6 +463,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                     code: error_codes::INTERNAL_ERROR,
                     message: ERR_INITIALIZING.to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -463,6 +477,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                     code: error_codes::INTERNAL_ERROR,
                     message: ERR_INITIALIZING.to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -477,6 +492,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                     code: error_codes::INTERNAL_ERROR,
                     message: ERR_NO_PROJECT.to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -488,6 +504,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                 code: error_codes::INTERNAL_ERROR,
                 message: "No toolchain loaded".to_string(),
             }),
+            ..Default::default()
         };
     }
     // Drop the read guards before acquiring async locks
@@ -537,6 +554,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
             id,
             result: Some(value),
             error: None,
+            ..Default::default()
         },
         Err(msg) => Response {
             id,
@@ -545,6 +563,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                 code: error_codes::CODE_ANALYSIS_ERROR,
                 message: msg,
             }),
+            ..Default::default()
         },
     }
 }
@@ -561,6 +580,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
                     code: error_codes::INTERNAL_ERROR,
                     message: ERR_INITIALIZING.to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -574,6 +594,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
                     code: error_codes::INTERNAL_ERROR,
                     message: "No toolchain available. Run 'al setup' first.".to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -588,6 +609,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
                     code: error_codes::INTERNAL_ERROR,
                     message: ERR_INITIALIZING.to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -601,6 +623,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
                     code: error_codes::INTERNAL_ERROR,
                     message: ERR_NO_PROJECT.to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -631,6 +654,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
             // SILENT: serialization of valid struct should not fail
             result: Some(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
             error: None,
+            ..Default::default()
         },
         Err(e) => Response {
             id,
@@ -639,6 +663,7 @@ pub(super) async fn dispatch_package(workspace: &Workspace, id: u64) -> Response
                 code: error_codes::INTERNAL_ERROR,
                 message: e.to_string(),
             }),
+            ..Default::default()
         },
     }
 }
@@ -654,6 +679,7 @@ pub(super) fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Respo
                     code: error_codes::INVALID_PARAMS,
                     message: "Missing 'dir' parameter".to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -667,6 +693,7 @@ pub(super) fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Respo
                 code: error_codes::INVALID_PARAMS,
                 message: "'dir' must be an absolute path".to_string(),
             }),
+            ..Default::default()
         };
     }
 
@@ -690,6 +717,7 @@ pub(super) fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Respo
             // SILENT: serialization of valid struct should not fail
             result: Some(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null)),
             error: None,
+            ..Default::default()
         },
         Err(e) => Response {
             id,
@@ -698,6 +726,7 @@ pub(super) fn dispatch_new_project(id: u64, params: &serde_json::Value) -> Respo
                 code: error_codes::INTERNAL_ERROR,
                 message: e,
             }),
+            ..Default::default()
         },
     }
 }
@@ -717,6 +746,7 @@ pub(super) fn dispatch_error_codes(workspace: &Workspace, id: u64) -> Response {
         id,
         result: Some(serde_json::json!(value)),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -728,6 +758,7 @@ pub(super) fn dispatch_builtin_types(workspace: &Workspace, id: u64) -> Response
                 id,
                 result: Some(serde_json::json!([])),
                 error: None,
+                ..Default::default()
             }
         }
     };
@@ -753,6 +784,7 @@ pub(super) fn dispatch_builtin_types(workspace: &Workspace, id: u64) -> Response
         id,
         result: Some(serde_json::json!(value)),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -762,6 +794,7 @@ pub(super) fn dispatch_setup(workspace: &Workspace, id: u64) -> Response {
         id,
         result: Some(serde_json::to_value(&report).unwrap_or(serde_json::Value::Null)),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -803,6 +836,7 @@ pub(super) async fn dispatch_clear_cache(id: u64) -> Response {
             "error": error,
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -853,6 +887,7 @@ pub(super) async fn dispatch_authenticate(
                 id,
                 result: Some(serde_json::json!({ "tenants": statuses })),
                 error: None,
+                ..Default::default()
             }
         }
         "clear" => {
@@ -874,6 +909,7 @@ pub(super) async fn dispatch_authenticate(
                 id,
                 result: Some(serde_json::json!({ "cleared": cleared })),
                 error: None,
+                ..Default::default()
             }
         }
         _ => {
@@ -891,6 +927,7 @@ pub(super) async fn dispatch_authenticate(
                         code: error_codes::INVALID_PARAMS,
                         message: "No tenant found. Specify --tenant or configure a launch config with a tenant.".to_string(),
                     }),
+                    ..Default::default()
                 };
             };
 
@@ -916,6 +953,7 @@ pub(super) async fn dispatch_authenticate(
                             "messages": *msgs,
                         })),
                         error: None,
+                        ..Default::default()
                     }
                 }
                 Err(e) => Response {
@@ -925,6 +963,7 @@ pub(super) async fn dispatch_authenticate(
                         code: error_codes::INTERNAL_ERROR,
                         message: format!("Authentication failed: {e}"),
                     }),
+                    ..Default::default()
                 },
             }
         }
@@ -967,6 +1006,7 @@ pub(super) async fn dispatch_download_symbols(
                     code: error_codes::INTERNAL_ERROR,
                     message: ERR_INITIALIZING.to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -978,6 +1018,7 @@ pub(super) async fn dispatch_download_symbols(
                 code: error_codes::INTERNAL_ERROR,
                 message: ERR_NO_PROJECT.to_string(),
             }),
+            ..Default::default()
         };
     };
 
@@ -992,6 +1033,7 @@ pub(super) async fn dispatch_download_symbols(
                 "results": [],
             })),
             error: None,
+            ..Default::default()
         };
     }
 
@@ -1093,6 +1135,7 @@ pub(super) async fn dispatch_download_symbols(
             "results": result,
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -1112,6 +1155,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                     message: "Missing 'cmd' parameter (expected: start, list, download)"
                         .to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -1138,6 +1182,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                         "status": "started",
                     })),
                     error: None,
+                    ..Default::default()
                 },
                 Err(e) => Response {
                     id,
@@ -1146,6 +1191,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                         code: error_codes::INTERNAL_ERROR,
                         message: format!("snapshot start failed: {e}"),
                     }),
+                    ..Default::default()
                 },
             }
         }
@@ -1164,6 +1210,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                             "snapshots": items,
                         })),
                         error: None,
+                        ..Default::default()
                     }
                 }
                 Err(e) => Response {
@@ -1173,6 +1220,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                         code: error_codes::INTERNAL_ERROR,
                         message: format!("snapshot list failed: {e}"),
                     }),
+                    ..Default::default()
                 },
             }
         }
@@ -1188,6 +1236,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                             code: error_codes::INVALID_PARAMS,
                             message: "Missing 'snapshotId' parameter".to_string(),
                         }),
+                        ..Default::default()
                     };
                 }
             };
@@ -1202,6 +1251,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                         "status": "downloaded",
                     })),
                     error: None,
+                    ..Default::default()
                 },
                 Err(e) => Response {
                     id,
@@ -1210,6 +1260,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                         code: error_codes::INTERNAL_ERROR,
                         message: format!("snapshot download failed: {e}"),
                     }),
+                    ..Default::default()
                 },
             }
         }
@@ -1221,6 +1272,7 @@ pub(super) async fn dispatch_snapshot(id: u64, params: &serde_json::Value) -> Re
                 code: error_codes::INVALID_PARAMS,
                 message: format!("Unknown snapshot command: {other}"),
             }),
+            ..Default::default()
         },
     }
 }
@@ -1240,6 +1292,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                     code: error_codes::INVALID_PARAMS,
                     message: "Missing 'cmd' parameter (expected: start, stop, analyze)".to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -1264,6 +1317,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                     "status": "profiling",
                 })),
                 error: None,
+                ..Default::default()
             },
             Err(e) => Response {
                 id,
@@ -1272,6 +1326,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                     code: error_codes::INTERNAL_ERROR,
                     message: format!("profiling start failed: {e}"),
                 }),
+                ..Default::default()
             },
         },
 
@@ -1292,6 +1347,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                         "status": "stopped",
                     })),
                     error: None,
+                    ..Default::default()
                 },
                 Err(e) => Response {
                     id,
@@ -1300,6 +1356,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                         code: error_codes::INTERNAL_ERROR,
                         message: format!("profiling stop failed: {e}"),
                     }),
+                    ..Default::default()
                 },
             }
         }
@@ -1315,6 +1372,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                             code: error_codes::INVALID_PARAMS,
                             message: "Missing 'path' parameter for analyze command".to_string(),
                         }),
+                        ..Default::default()
                     };
                 }
             };
@@ -1327,6 +1385,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                         code: error_codes::INVALID_PARAMS,
                         message: "'path' must be an absolute path".to_string(),
                     }),
+                    ..Default::default()
                 };
             }
             let top_n = params.get("topN").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
@@ -1348,6 +1407,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                             "profilePath": result.profile_path.as_ref().map(|p| p.display().to_string()),
                         })),
                         error: None,
+                        ..Default::default()
                     }
                 }
                 Err(e) => Response {
@@ -1357,6 +1417,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                         code: error_codes::INTERNAL_ERROR,
                         message: format!("profiling analyze failed: {e}"),
                     }),
+                    ..Default::default()
                 },
             }
         }
@@ -1368,6 +1429,7 @@ pub(super) async fn dispatch_profiling(id: u64, params: &serde_json::Value) -> R
                 code: error_codes::INVALID_PARAMS,
                 message: format!("Unknown profiling command: {other}"),
             }),
+            ..Default::default()
         },
     }
 }
@@ -1408,6 +1470,7 @@ pub(super) async fn dispatch_xlf_generate(
                 "units": count,
             })),
             error: None,
+            ..Default::default()
         },
         Ok(None) => Response {
             id,
@@ -1417,6 +1480,7 @@ pub(super) async fn dispatch_xlf_generate(
                 "message": "No translatable texts found (check features.TranslationFile in app.json)",
             })),
             error: None,
+            ..Default::default()
         },
         Err(e) => rpc_error(id, -32000, &format!("xlf-build failed: {e}")),
     }
@@ -1517,6 +1581,7 @@ pub(super) async fn dispatch_xlf_refresh(
         id,
         result: Some(serde_json::to_value(&refresh_result).unwrap_or_default()),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -1568,6 +1633,7 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
         id,
         result: Some(serde_json::json!({ "untranslated": items, "count": count })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -1617,6 +1683,7 @@ pub(super) async fn dispatch_xlf_suggest(
             "count": suggestions.len(),
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -1648,6 +1715,7 @@ pub(super) fn dispatch_fix_application_area(
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
             error: None,
+            ..Default::default()
         },
         Err(e) => rpc_error(id, error_codes::INTERNAL_ERROR, &e),
     }
@@ -1702,6 +1770,7 @@ pub(super) fn dispatch_fix_tooltips(
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
             error: None,
+            ..Default::default()
         },
         Err(e) => rpc_error(id, error_codes::INTERNAL_ERROR, &e),
     }
@@ -1731,6 +1800,7 @@ pub(super) fn dispatch_fix_data_classification(
             id,
             result: Some(serde_json::to_value(&result).unwrap_or_default()),
             error: None,
+            ..Default::default()
         },
         Err(e) => rpc_error(id, error_codes::INTERNAL_ERROR, &e),
     }
@@ -1784,6 +1854,7 @@ pub(super) fn dispatch_metrics(
             id,
             result: Some(serde_json::json!(all_results)),
             error: None,
+            ..Default::default()
         };
     }
 
@@ -1815,6 +1886,7 @@ pub(super) fn dispatch_metrics(
             "thresholdCognitive": threshold_cognitive,
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -1840,6 +1912,7 @@ pub(super) fn dispatch_tests_discover(workspace: &Workspace, id: u64) -> Respons
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -1850,6 +1923,7 @@ pub(super) fn dispatch_tests_coverage(workspace: &Workspace, id: u64) -> Respons
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2008,6 +2082,7 @@ pub(super) async fn dispatch_tests_run(
             "diagnostics": diag_json,
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2211,6 +2286,7 @@ pub(super) async fn dispatch_tests_run_batch(
             },
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2294,6 +2370,7 @@ pub(super) async fn dispatch_tests_last_results(
                 id,
                 result: Some(serde_json::json!({ "lastResult": opt })),
                 error: None,
+                ..Default::default()
             },
             Err(e) => rpc_error(
                 id,
@@ -2325,6 +2402,7 @@ pub(super) async fn dispatch_tests_last_results(
         id,
         result: Some(serde_json::json!({ "results": filtered })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2410,6 +2488,7 @@ pub(super) fn dispatch_tests_affected(
         id,
         result: Some(serde_json::json!({ "affected": affected })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2442,6 +2521,7 @@ pub(super) fn dispatch_tests_classify(workspace: &Workspace, id: u64) -> Respons
         id,
         result: Some(serde_json::json!({ "classifications": json })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2547,6 +2627,7 @@ pub(super) async fn dispatch_tests_snapshot_replay(
             "bcVersion": snapshot.bc_version,
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2581,6 +2662,7 @@ pub(super) async fn dispatch_tests_snapshot_diff(id: u64, params: &serde_json::V
         id,
         result: Some(serde_json::json!({ "divergences": divergences })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2647,6 +2729,7 @@ pub(super) fn dispatch_generate(
                 id,
                 result: Some(serde_json::json!({ "code": code, "kind": "page" })),
                 error: None,
+                ..Default::default()
             }
         }
         "report" => {
@@ -2672,6 +2755,7 @@ pub(super) fn dispatch_generate(
                 id,
                 result: Some(serde_json::json!({ "code": code, "kind": "report" })),
                 error: None,
+                ..Default::default()
             }
         }
         "test" => {
@@ -2691,6 +2775,7 @@ pub(super) fn dispatch_generate(
                 id,
                 result: Some(serde_json::json!({ "code": code, "kind": "test" })),
                 error: None,
+                ..Default::default()
             }
         }
         other => Response {
@@ -2700,6 +2785,7 @@ pub(super) fn dispatch_generate(
                 code: error_codes::INVALID_PARAMS,
                 message: format!("Unknown generate kind: {other}. Use page, report, or test"),
             }),
+            ..Default::default()
         },
     }
 }
@@ -2715,6 +2801,7 @@ pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2725,6 +2812,7 @@ pub(super) fn dispatch_audit_data_classification(workspace: &Workspace, id: u64)
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2735,6 +2823,7 @@ pub(super) fn dispatch_permission_set_audit(workspace: &Workspace, id: u64) -> R
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2778,6 +2867,7 @@ pub(super) fn dispatch_deps_graph(
             id,
             result: Some(serde_json::json!({ "format": "dot", "content": dot })),
             error: None,
+            ..Default::default()
         }
     } else {
         let value = serde_json::to_value(&graph).unwrap_or(serde_json::Value::Null);
@@ -2785,6 +2875,7 @@ pub(super) fn dispatch_deps_graph(
             id,
             result: Some(value),
             error: None,
+            ..Default::default()
         }
     }
 }
@@ -2810,6 +2901,7 @@ pub(super) fn dispatch_breaking_changes(
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2832,6 +2924,7 @@ pub(super) fn dispatch_arch_lint(workspace: &Workspace, id: u64) -> Response {
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2855,6 +2948,7 @@ pub(super) fn dispatch_find_duplicates(
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2878,6 +2972,7 @@ pub(super) fn dispatch_upgrade_report(
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2892,6 +2987,7 @@ pub(super) fn dispatch_sql_patterns(
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -2936,6 +3032,7 @@ pub(super) fn dispatch_sort_members(
                             code: error_codes::INTERNAL_ERROR,
                             message: format!("Failed to write sorted file: {e}"),
                         }),
+                        ..Default::default()
                     };
                 }
                 workspace.documents.open(uri, sorted.clone());
@@ -2947,6 +3044,7 @@ pub(super) fn dispatch_sort_members(
         id,
         result: Some(serde_json::json!({ "sorted": sorted, "changed": changed })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -3020,6 +3118,7 @@ pub(super) fn dispatch_organize_files(
         id,
         result: Some(serde_json::json!({ "files": results })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -3056,6 +3155,7 @@ pub(super) fn dispatch_profiler_hints(
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -3619,6 +3719,7 @@ pub(super) async fn dispatch_tests_mutate(
                 .unwrap_or(serde_json::Value::Null),
             ),
             error: None,
+            ..Default::default()
         };
     }
 
@@ -3659,6 +3760,7 @@ pub(super) async fn dispatch_tests_mutate(
             id,
             result: Some(value),
             error: None,
+            ..Default::default()
         },
         Err(e) => super::rpc_error(
             id,

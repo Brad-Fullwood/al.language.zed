@@ -366,6 +366,7 @@ async fn handle_connection(
                     id: req_id,
                     result: Some(empty_result),
                     error: None,
+                    ..Default::default()
                 }
             } else {
                 let start = Instant::now();
@@ -506,6 +507,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
             id,
             result: Some(serde_json::json!("pong")),
             error: None,
+            ..Default::default()
         },
         "shutdown" => {
             tracing::info!("daemon: shutdown requested");
@@ -514,6 +516,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
                 id,
                 result: Some(serde_json::json!("ok")),
                 error: None,
+                ..Default::default()
             }
         }
         "status" => {
@@ -533,6 +536,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
                 id,
                 result: Some(status),
                 error: None,
+                ..Default::default()
             }
         }
         _ => Response {
@@ -542,6 +546,7 @@ async fn dispatch_request(workspace: &Workspace, req: Request, shutdown: &Notify
                 code: error_codes::METHOD_NOT_FOUND,
                 message: format!("Unknown method: {}", req.method),
             }),
+            ..Default::default()
         },
     }
 }
@@ -559,6 +564,7 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
                     id,
                     result: Some(value),
                     error: None,
+                    ..Default::default()
                 },
                 Err(e) => Response {
                     id,
@@ -567,6 +573,7 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
                         code: error_codes::INTERNAL_ERROR,
                         message: format!("diag/summary serialization failed: {e}"),
                     }),
+                    ..Default::default()
                 },
             }
         }
@@ -577,6 +584,7 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
                 code: error_codes::INVALID_PARAMS,
                 message: format!("Unknown diag subcommand: {cmd}. Available: summary"),
             }),
+            ..Default::default()
         },
     }
 }
@@ -605,6 +613,7 @@ pub(crate) fn invalid_params(id: u64) -> Response {
             code: error_codes::INVALID_PARAMS,
             message: "Missing or invalid parameters".to_string(),
         }),
+        ..Default::default()
     }
 }
 
@@ -616,6 +625,7 @@ pub(crate) fn file_not_found(id: u64) -> Response {
             code: error_codes::FILE_NOT_FOUND,
             message: "File not found".to_string(),
         }),
+        ..Default::default()
     }
 }
 
@@ -627,6 +637,7 @@ pub(crate) fn rpc_error(id: u64, code: i32, message: &str) -> Response {
             code,
             message: message.to_string(),
         }),
+        ..Default::default()
     }
 }
 

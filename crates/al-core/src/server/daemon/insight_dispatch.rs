@@ -24,6 +24,7 @@ pub(super) fn dispatch_trace(
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -36,6 +37,7 @@ pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -57,6 +59,7 @@ pub(super) fn dispatch_graph_export(
                 id,
                 result: Some(serde_json::json!({ "format": "dot", "content": dot })),
                 error: None,
+                ..Default::default()
             }
         }
         _ => {
@@ -67,6 +70,7 @@ pub(super) fn dispatch_graph_export(
                 id,
                 result: Some(value),
                 error: None,
+                ..Default::default()
             }
         }
     }
@@ -81,6 +85,7 @@ pub(super) fn dispatch_insight_stats(workspace: &Workspace, id: u64) -> Response
             "edges": graph.edge_count(),
         })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -90,6 +95,7 @@ pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
         id,
         result: Some(serde_json::to_value(&unused).unwrap_or_default()),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -107,6 +113,7 @@ pub(super) fn dispatch_impact(
                 code: error_codes::INVALID_PARAMS,
                 message: "Missing 'symbol' parameter".to_string(),
             }),
+            ..Default::default()
         };
     }
     let entries = crate::queries::impact::impact(workspace, symbol);
@@ -114,6 +121,7 @@ pub(super) fn dispatch_impact(
         id,
         result: Some(serde_json::json!({ "symbol": symbol, "impacted": entries })),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -140,6 +148,7 @@ pub(super) fn dispatch_suggest_event(
                     code: error_codes::INVALID_PARAMS,
                     message: format!("Invalid suggestEvent query: {e}"),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -149,5 +158,6 @@ pub(super) fn dispatch_suggest_event(
         id,
         result: Some(serde_json::to_value(&result).unwrap_or_default()),
         error: None,
+        ..Default::default()
     }
 }

@@ -18,6 +18,7 @@ fn ok_response<T: Serialize>(id: u64, value: &T, method: &str) -> Response {
             id,
             result: Some(v),
             error: None,
+            ..Default::default()
         },
         Err(e) => {
             tracing::error!(method, error = %e, "serialization failed for LSP result");
@@ -28,6 +29,7 @@ fn ok_response<T: Serialize>(id: u64, value: &T, method: &str) -> Response {
                     code: error_codes::INTERNAL_ERROR,
                     message: format!("serialization failed for {method}: {e}"),
                 }),
+                ..Default::default()
             }
         }
     }
@@ -42,6 +44,7 @@ fn ok_response_opt<T: Serialize>(id: u64, value: Option<T>, method: &str) -> Res
             id,
             result: None,
             error: None,
+            ..Default::default()
         },
     }
 }
@@ -79,6 +82,7 @@ pub(super) fn dispatch_definition(
             id,
             result: None,
             error: None,
+            ..Default::default()
         },
     }
 }
@@ -169,6 +173,7 @@ pub(super) fn dispatch_rename(
             id,
             result: None,
             error: None,
+            ..Default::default()
         },
     }
 }
@@ -244,6 +249,7 @@ pub(super) fn dispatch_inlay_hints(
             id,
             result: Some(v),
             error: None,
+            ..Default::default()
         },
         Err(e) => {
             tracing::error!(method = "textDocument/inlayHint", error = %e, "serialization failed");
@@ -254,6 +260,7 @@ pub(super) fn dispatch_inlay_hints(
                     code: error_codes::INTERNAL_ERROR,
                     message: format!("serialization failed for textDocument/inlayHint: {e}"),
                 }),
+                ..Default::default()
             }
         }
     }
@@ -309,6 +316,7 @@ pub(super) fn dispatch_search(
         id,
         result: Some(serde_json::json!(value)),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -353,12 +361,14 @@ pub(super) fn dispatch_object(
                 code: error_codes::INVALID_PARAMS,
                 message: format!("No {} named '{}'", kind, name),
             }),
+            ..Default::default()
         }
     } else {
         Response {
             id,
             result: Some(serde_json::json!(matches)),
             error: None,
+            ..Default::default()
         }
     }
 }
@@ -412,12 +422,14 @@ pub(super) fn dispatch_by_id(
                 code: error_codes::INVALID_PARAMS,
                 message: format!("No {} with id {}", kind, obj_id),
             }),
+            ..Default::default()
         }
     } else {
         Response {
             id,
             result: Some(serde_json::json!(value)),
             error: None,
+            ..Default::default()
         }
     }
 }
@@ -452,6 +464,7 @@ pub(super) fn dispatch_events(
         id,
         result: Some(serde_json::json!(publishers)),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -481,6 +494,7 @@ pub(super) fn dispatch_subscribers(
         id,
         result: Some(serde_json::json!(subscribers)),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -506,6 +520,7 @@ pub(super) fn dispatch_composed(
                 id,
                 result: Some(value),
                 error: None,
+                ..Default::default()
             }
         }
         None => Response {
@@ -515,6 +530,7 @@ pub(super) fn dispatch_composed(
                 code: error_codes::INVALID_PARAMS,
                 message: format!("No {} named '{}' or no extensions found", kind, name),
             }),
+            ..Default::default()
         },
     }
 }
@@ -530,6 +546,7 @@ pub(super) fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
                     code: error_codes::INTERNAL_ERROR,
                     message: "Lock poisoned".to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -538,6 +555,7 @@ pub(super) fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
         id,
         result: Some(value),
         error: None,
+        ..Default::default()
     }
 }
 
@@ -552,6 +570,7 @@ pub(super) fn dispatch_deps(workspace: &Workspace, id: u64) -> Response {
                     code: error_codes::INTERNAL_ERROR,
                     message: "Workspace is initializing, try again".to_string(),
                 }),
+                ..Default::default()
             };
         }
     };
@@ -594,6 +613,7 @@ pub(super) fn dispatch_deps(workspace: &Workspace, id: u64) -> Response {
                     }
                 })),
                 error: None,
+                ..Default::default()
             }
         }
         None => Response {
@@ -603,6 +623,7 @@ pub(super) fn dispatch_deps(workspace: &Workspace, id: u64) -> Response {
                 code: error_codes::INTERNAL_ERROR,
                 message: "No project loaded".to_string(),
             }),
+            ..Default::default()
         },
     }
 }

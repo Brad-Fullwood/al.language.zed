@@ -4,16 +4,25 @@
 
 use serde::{Deserialize, Serialize};
 
-// T057 (deferred — design): JSON-RPC 2.0 spec requires a `jsonrpc: "2.0"`
-// field on every Request/Response. Adding it as a required struct field
-// would touch ~30+ literal construction sites across al-core and would
-// be a wire-format break for any older daemon client that doesn't emit
-// it. The right fix is a builder/constructor pattern — out of scope for
-// the small-surgical-fix lane of this loop. Tracked as future work.
+// T057: JSON-RPC 2.0 spec requires a `jsonrpc: "2.0"` field on every
+// Request and Response. The field is wired in as a `#[serde(default)]`
+// String so existing in-tree construction sites continue to compile
+// via `..Default::default()` spread or via the `Request::new` /
+// `Response::ok` / `Response::error` / `Response::null` constructors.
+// Deserialization tolerates omission (defaults to "2.0") so the daemon
+// remains backward-compatible with any older client that doesn't emit
+// the field.
+
+/// Default value for the `jsonrpc` field.
+fn default_jsonrpc() -> String {
+    "2.0".to_string()
+}
 
 /// A JSON-RPC request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
+    #[serde(default = "default_jsonrpc")]
+    pub jsonrpc: String,
     pub id: u64,
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -21,9 +30,34 @@ pub struct Request {
     pub params: Option<serde_json::Value>,
 }
 
+impl Default for Request {
+    fn default() -> Self {
+        Self {
+            jsonrpc: default_jsonrpc(),
+            id: 0,
+            method: String::new(),
+            params: None,
+        }
+    }
+}
+
+impl Request {
+    /// Build a Request with the canonical `jsonrpc: "2.0"` field set.
+    pub fn new(id: u64, method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
+        Self {
+            jsonrpc: default_jsonrpc(),
+            id,
+            method: method.into(),
+            params,
+        }
+    }
+}
+
 /// A JSON-RPC response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Response {
+    #[serde(default = "default_jsonrpc")]
+    pub jsonrpc: String,
     pub id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
@@ -33,10 +67,22 @@ pub struct Response {
     pub error: Option<RpcError>,
 }
 
+impl Default for Response {
+    fn default() -> Self {
+        Self {
+            jsonrpc: default_jsonrpc(),
+            id: 0,
+            result: None,
+            error: None,
+        }
+    }
+}
+
 impl Response {
     /// Successful response with a JSON result value.
     pub fn ok(id: u64, result: serde_json::Value) -> Self {
         Self {
+            jsonrpc: default_jsonrpc(),
             id,
             result: Some(result),
             error: None,
@@ -46,12 +92,24 @@ impl Response {
     /// Error response.
     pub fn error(id: u64, code: i32, message: impl Into<String>) -> Self {
         Self {
+            jsonrpc: default_jsonrpc(),
             id,
             result: None,
             error: Some(RpcError {
                 code,
                 message: message.into(),
             }),
+        }
+    }
+
+    /// Null response — no result and no error. Some LSP methods (e.g.
+    /// definition with no match) legitimately return null.
+    pub fn null(id: u64) -> Self {
+        Self {
+            jsonrpc: default_jsonrpc(),
+            id,
+            result: None,
+            error: None,
         }
     }
 }
@@ -86,13 +144,41 @@ mod tests {
 
     #[test]
     fn request_serialization_omits_null_params() {
-        let req = Request {
-            id: 1,
-            method: "ping".to_string(),
-            params: None,
-        };
+        let req = Request::new(1, "ping", None);
         let json = serde_json::to_string(&req).unwrap();
-        assert!(!json.contains("params"));
+        assert!(!json.contains("\"params\""));
+        // T057: the `jsonrpc: "2.0"` field is now serialised on every Request.
+        assert!(
+            json.contains("\"jsonrpc\":\"2.0\""),
+            "Request must include jsonrpc=\"2.0\" per JSON-RPC 2.0 spec; got {json}"
+        );
+    }
+
+    /// T057: Response::ok / Response::error / Response::null all set
+    /// jsonrpc="2.0" on the wire.
+    #[test]
+    fn t057_response_constructors_emit_jsonrpc_field() {
+        let ok = Response::ok(1, serde_json::json!({"v": 42}));
+        let err = Response::error(2, error_codes::METHOD_NOT_FOUND, "no");
+        let null = Response::null(3);
+        for resp in [&ok, &err, &null] {
+            let s = serde_json::to_string(resp).unwrap();
+            assert!(
+                s.contains("\"jsonrpc\":\"2.0\""),
+                "Response missing jsonrpc=\"2.0\"; got {s}"
+            );
+        }
+    }
+
+    /// T057 negative: a Response JSON without the jsonrpc field still
+    /// deserializes (default = "2.0") so the daemon remains backward-
+    /// compatible with older clients.
+    #[test]
+    fn t057_response_deserialization_tolerates_missing_jsonrpc_field() {
+        let json = r#"{"id":1,"result":{"v":42}}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.jsonrpc, "2.0");
+        assert_eq!(resp.id, 1);
     }
 
     #[test]

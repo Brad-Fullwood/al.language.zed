@@ -112,6 +112,7 @@ pub(super) async fn dispatch_debug(
                                 code: error_codes::INVALID_PARAMS,
                                 message: "No debug configuration found in project (.zed/debug.json or .vscode/launch.json)".to_string(),
                             }),
+                            ..Default::default()
                         };
                     }
                 }
@@ -132,6 +133,7 @@ pub(super) async fn dispatch_debug(
                             "session": session_id,
                         })),
                         error: None,
+                        ..Default::default()
                     }
                 }
                 Err(e) => Response {
@@ -141,6 +143,7 @@ pub(super) async fn dispatch_debug(
                         code: error_codes::INTERNAL_ERROR,
                         message: format!("Debug start failed: {e}"),
                     }),
+                    ..Default::default()
                 },
             }
         }
@@ -156,6 +159,7 @@ pub(super) async fn dispatch_debug(
                             code: error_codes::INVALID_PARAMS,
                             message: "Missing 'file' parameter".to_string(),
                         }),
+                        ..Default::default()
                     };
                 }
             };
@@ -190,6 +194,7 @@ pub(super) async fn dispatch_debug(
                                     "breakpoints": bp_json,
                                 })),
                                 error: None,
+                                ..Default::default()
                             }
                         }
                         Err(e) => Response {
@@ -199,6 +204,7 @@ pub(super) async fn dispatch_debug(
                                 code: error_codes::INTERNAL_ERROR,
                                 message: format!("set_breakpoints failed: {e}"),
                             }),
+                            ..Default::default()
                         },
                     }
                 }
@@ -214,6 +220,7 @@ pub(super) async fn dispatch_debug(
                         id,
                         result: serde_json::to_value(state).ok(),
                         error: None,
+                        ..Default::default()
                     },
                     Err(e) => Response {
                         id,
@@ -222,6 +229,7 @@ pub(super) async fn dispatch_debug(
                             code: error_codes::INTERNAL_ERROR,
                             message: format!("state() failed: {e}"),
                         }),
+                        ..Default::default()
                     },
                 },
             }
@@ -238,6 +246,7 @@ pub(super) async fn dispatch_debug(
                             code: error_codes::INVALID_PARAMS,
                             message: "Missing 'expr' parameter".to_string(),
                         }),
+                        ..Default::default()
                     };
                 }
             };
@@ -254,6 +263,7 @@ pub(super) async fn dispatch_debug(
                             "typeName": eval_result.type_name,
                         })),
                         error: None,
+                        ..Default::default()
                     },
                     Err(e) => Response {
                         id,
@@ -262,6 +272,7 @@ pub(super) async fn dispatch_debug(
                             code: error_codes::INTERNAL_ERROR,
                             message: format!("eval() failed: {e}"),
                         }),
+                        ..Default::default()
                     },
                 },
             }
@@ -276,6 +287,7 @@ pub(super) async fn dispatch_debug(
                         id,
                         result: serde_json::to_value(state).ok(),
                         error: None,
+                        ..Default::default()
                     },
                     Err(e) => Response {
                         id,
@@ -284,6 +296,7 @@ pub(super) async fn dispatch_debug(
                             code: error_codes::INTERNAL_ERROR,
                             message: format!("continue() failed: {e}"),
                         }),
+                        ..Default::default()
                     },
                 },
             }
@@ -304,6 +317,7 @@ pub(super) async fn dispatch_debug(
                         id,
                         result: serde_json::to_value(state).ok(),
                         error: None,
+                        ..Default::default()
                     },
                     Err(e) => Response {
                         id,
@@ -312,6 +326,7 @@ pub(super) async fn dispatch_debug(
                             code: error_codes::INTERNAL_ERROR,
                             message: format!("step() failed: {e}"),
                         }),
+                        ..Default::default()
                     },
                 },
             }
@@ -336,6 +351,7 @@ pub(super) async fn dispatch_debug(
                             "hits": hits,
                         })),
                         error: None,
+                        ..Default::default()
                     }
                 }
             }
@@ -348,6 +364,7 @@ pub(super) async fn dispatch_debug(
                     id,
                     result: Some(serde_json::json!({"cmd": "stop", "status": "stopped"})),
                     error: None,
+                    ..Default::default()
                 },
                 Some(session) => {
                     let stop_result = session.stop().await;
@@ -357,6 +374,7 @@ pub(super) async fn dispatch_debug(
                             id,
                             result: Some(serde_json::json!({"cmd": "stop", "status": "stopped"})),
                             error: None,
+                            ..Default::default()
                         },
                         Err(e) => Response {
                             id,
@@ -365,6 +383,7 @@ pub(super) async fn dispatch_debug(
                                 code: error_codes::INTERNAL_ERROR,
                                 message: format!("stop() failed: {e}"),
                             }),
+                            ..Default::default()
                         },
                     }
                 }
@@ -378,6 +397,7 @@ pub(super) async fn dispatch_debug(
                 code: error_codes::INVALID_PARAMS,
                 message: format!("Unknown debug command: {other}"),
             }),
+            ..Default::default()
         },
     }
 }

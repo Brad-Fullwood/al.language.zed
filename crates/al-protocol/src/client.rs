@@ -117,11 +117,7 @@ impl DaemonClient {
         let id = self.next_id;
         self.next_id += 1;
 
-        let req = Request {
-            id,
-            method: method.to_string(),
-            params: params.clone(),
-        };
+        let req = Request::new(id, method, params.clone());
 
         let mut json = serde_json::to_string(&req)
             .map_err(|e| format!("Failed to serialize request: {}", e))?;
@@ -240,20 +236,9 @@ mod tests {
                 let req: Request = serde_json::from_str(&line).expect("test");
                 let response = if count < fail_count {
                     count += 1;
-                    Response {
-                        id: req.id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: -32603,
-                            message: "Workspace is initializing, try again".to_string(),
-                        }),
-                    }
+                    Response::error(req.id, -32603, "Workspace is initializing, try again")
                 } else {
-                    Response {
-                        id: req.id,
-                        result: Some(serde_json::json!({"status": "ok"})),
-                        error: None,
-                    }
+                    Response::ok(req.id, serde_json::json!({"status": "ok"}))
                 };
                 let mut json = serde_json::to_string(&response).expect("test");
                 json.push('\n');
@@ -330,11 +315,7 @@ mod tests {
                 for line in reader.lines() {
                     let _ = line.expect("test"); // consume request
                                                  // Reply with mismatched id
-                    let response = Response {
-                        id: 999,
-                        result: Some(serde_json::json!({"status": "mismatch"})),
-                        error: None,
-                    };
+                    let response = Response::ok(999, serde_json::json!({"status": "mismatch"}));
                     let mut json = serde_json::to_string(&response).expect("test");
                     json.push('\n');
                     writer.write_all(json.as_bytes()).expect("test");
