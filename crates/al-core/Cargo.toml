@@ -7,6 +7,7 @@ build = "build.rs"
 [[bin]]
 name = "al-lsp"
 path = "src/bin/al-lsp.rs"
+required-features = ["bin"]
 
 [[bench]]
 name = "interpreter"
@@ -44,12 +45,19 @@ rayon = "1"
 getrandom = { workspace = true }
 futures = { workspace = true }
 # Folded in from al-lsp (stage 7):
-tracing-subscriber = { workspace = true }
+# tracing-subscriber is binary-only — only the [[bin]] al-lsp target wires it
+# up. Opt-in via the `bin` feature so library consumers (al-test-harness, the
+# in-tree test crates) don't pay for the layered registry / EnvFilter pull-in.
+tracing-subscriber = { workspace = true, optional = true }
 walkdir = "2"
 
 [features]
-default = ["nuget"]
+default = ["nuget", "bin"]
 nuget = []
+# `bin` is on by default (so `cargo build --workspace` still produces al-lsp),
+# but library consumers can opt out with default-features = false to drop the
+# tracing-subscriber tree. T060.
+bin = ["dep:tracing-subscriber"]
 # Enable in-process .NET hosting (requires libnethost from the .NET SDK).
 # Off by default so workspace commands work in environments without .NET.
 # Enable with --features semantic when building for deployment.
