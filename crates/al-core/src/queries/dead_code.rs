@@ -390,34 +390,86 @@ fn contains_member_access(text: &str, field_name: &str) -> bool {
 
 /// Extract field names from AL table source text.
 ///
-/// The grammar doesn't have a `field_declaration` node type, so we use
-/// text-based extraction matching `field(id; "Name"; Type)` patterns.
+/// The grammar doesn't expose a `field_declaration` node type so we scan
+/// the source as text. T045 fix: now skips field( occurrences that are
+/// inside `/* ... */` block comments — the previous version would happily
+/// collect a commented-out `field(1; "Foo"; Integer)` line, then report
+/// "Foo" as an unused field that doesn't exist anywhere. Single-line
+/// comments are already filtered naturally because the strip_prefix
+/// fails on the leading `//`.
 fn collect_fields_from_text(text: &str, fields: &mut Vec<(String, u32)>) {
+    let mut in_block_comment = false;
     for (line_idx, line) in text.lines().enumerate() {
-        let trimmed = line.trim();
+        let mut search_from = 0;
+        if in_block_comment {
+            if let Some(end) = line.find("*/") {
+                search_from = end + 2;
+                in_block_comment = false;
+            } else {
+                continue;
+            }
+        }
+        // Inline-comment scan: walk left-to-right toggling the flag for any
+        // /* and */ openers/closers on this line. We deliberately don't
+        // try to handle */ inside string literals — a malicious-looking
+        // file with `Message('*/')` would just cause a (rare) false miss
+        // of one field, which is strictly safer than the false-positive
+        // we were producing pre-T045.
+        let after_initial = &line[search_from..];
+        if let Some(open) = after_initial.find("/*") {
+            in_block_comment = true;
+            // If the opener has a matching closer on the same line, the
+            // post-closer tail is still scannable.
+            if let Some(close_rel) = after_initial[open + 2..].find("*/") {
+                in_block_comment = false;
+                let tail = &after_initial[open + 2 + close_rel + 2..];
+                let trimmed = tail.trim();
+                if let Some(rest) = trimmed
+                    .strip_prefix("field(")
+                    .or_else(|| trimmed.strip_prefix("field ("))
+                {
+                    extract_field_name_from_args(rest, line_idx, fields);
+                }
+                continue;
+            }
+            // Block comment continues past EOL — only the pre-opener
+            // portion of this line is real source.
+            let head = &after_initial[..open];
+            let trimmed = head.trim();
+            if let Some(rest) = trimmed
+                .strip_prefix("field(")
+                .or_else(|| trimmed.strip_prefix("field ("))
+            {
+                extract_field_name_from_args(rest, line_idx, fields);
+            }
+            continue;
+        }
+        let trimmed = after_initial.trim();
         // Match: field(id; "Name"; ...) or field(id; Name; ...)
         if let Some(rest) = trimmed
             .strip_prefix("field(")
             .or_else(|| trimmed.strip_prefix("field ("))
         {
-            // Extract name: skip the id part (before first ;), then get the name
-            if let Some(after_semi) = rest.find(';').map(|i| &rest[i + 1..]) {
-                let name_part = after_semi.trim();
-                // Name is either "quoted" or unquoted until next ;
-                let name = if let Some(stripped) = name_part.strip_prefix('"') {
-                    // Find closing quote
-                    stripped.find('"').map(|i| &stripped[..i])
-                } else {
-                    // Unquoted: take until ; or )
-                    let end = name_part.find([';', ')']).unwrap_or(name_part.len());
-                    Some(name_part[..end].trim())
-                };
+            extract_field_name_from_args(rest, line_idx, fields);
+        }
+    }
+}
 
-                if let Some(name) = name {
-                    if !name.is_empty() {
-                        fields.push((name.to_string(), line_idx as u32 + 1));
-                    }
-                }
+/// Helper: parse `<id>; "Name"; ...)` and push the field name + 1-based line.
+/// Refactored out of `collect_fields_from_text` (T045) so the block-comment
+/// state machine and the inline-on-same-line cases share the same parser.
+fn extract_field_name_from_args(rest: &str, line_idx: usize, fields: &mut Vec<(String, u32)>) {
+    if let Some(after_semi) = rest.find(';').map(|i| &rest[i + 1..]) {
+        let name_part = after_semi.trim();
+        let name = if let Some(stripped) = name_part.strip_prefix('"') {
+            stripped.find('"').map(|i| &stripped[..i])
+        } else {
+            let end = name_part.find([';', ')']).unwrap_or(name_part.len());
+            Some(name_part[..end].trim())
+        };
+        if let Some(name) = name {
+            if !name.is_empty() {
+                fields.push((name.to_string(), line_idx as u32 + 1));
             }
         }
     }
@@ -717,6 +769,51 @@ mod tests {
                 .any(|u| u.name == "Name" && u.kind == UnusedKind::Field),
             "'Name' should not be flagged as unused"
         );
+    }
+
+    #[test]
+    fn t045_collect_fields_skips_block_comments() {
+        // T045 / 0b9b650928095b99 regression: a multi-line /* */ block
+        // comment containing a `field(...)` line previously yielded a
+        // phantom "Foo" entry that then surfaced as a false-positive
+        // unused field. The block-comment scanner in collect_fields_from_text
+        // must skip these.
+        let mut fields = Vec::new();
+        let text = r#"table 50100 "T"
+{
+    fields {
+        field(1; "Real"; Integer) { }
+        /*
+        field(2; "Phantom"; Integer) { }
+        */
+        field(3; "AlsoReal"; Integer) { }
+    }
+}"#;
+        super::collect_fields_from_text(text, &mut fields);
+        let names: Vec<_> = fields.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"Real"), "Real field should be collected: {names:?}");
+        assert!(names.contains(&"AlsoReal"), "AlsoReal should be collected: {names:?}");
+        assert!(
+            !names.contains(&"Phantom"),
+            "Phantom inside /* */ must NOT be collected: {names:?}"
+        );
+    }
+
+    #[test]
+    fn t045_collect_fields_handles_inline_block_comment() {
+        // Same-line /* ... */ around the `field(` token — the scanner
+        // treats the post-closer tail as scannable, so a real field
+        // declaration after an inline block comment is still picked up.
+        let mut fields = Vec::new();
+        let text = r#"table 50100 "T"
+{
+    fields {
+        /* old: field(99; "Removed"; Integer) */ field(1; "Kept"; Integer) { }
+    }
+}"#;
+        super::collect_fields_from_text(text, &mut fields);
+        let names: Vec<_> = fields.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["Kept"], "only Kept should be collected: {names:?}");
     }
 
     #[test]
