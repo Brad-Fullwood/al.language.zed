@@ -72,6 +72,16 @@ impl ZedInstance {
     /// - [`ZedTestError::ZedNotRunning`] — no window with class `dev.zed.Zed`
     /// - [`ZedTestError::CommandFailed`] — `hyprctl` exited non-zero
     /// - [`ZedTestError::Json`] — unexpected output format
+    ///
+    /// # Multiple Zed windows
+    ///
+    /// T071: when more than one Zed window is open, `discover()` picks the
+    /// **first** entry returned by `hyprctl clients -j` whose class matches
+    /// `dev.zed.Zed`. Hyprland's enumeration order is implementation-defined
+    /// (driven by stack order of focus events), so the same machine state may
+    /// pick different windows across runs. Tests that depend on a specific
+    /// window MUST narrow the scope before calling `discover()` (e.g. close
+    /// other Zed windows, or ensure only one workspace contains the target).
     pub fn discover() -> Result<Self, ZedTestError> {
         let output = Command::new("hyprctl")
             .args(["clients", "-j"])

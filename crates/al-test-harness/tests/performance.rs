@@ -7,6 +7,18 @@
 //! - definition: <10ms
 //! - document symbols: <5ms
 //! - semantic tokens: <15ms
+//!
+//! These tests are `#[ignore]` by default. To run them you must:
+//!   1. Point `AL_TEST_PROJECT_PATH` at a real AL project on disk
+//!      (the inline fixture under `data/test_al_project/` does NOT
+//!      contain the deep-codebase files referenced below).
+//!   2. Pass `-- --ignored` to cargo:
+//!      `AL_TEST_PROJECT_PATH=/path/to/project \
+//!         cargo test -p al-test-harness --test performance -- --ignored`
+//!
+//! T071 doc-fix: previously the file header said `cargo test -p al-test-harness`
+//! would run these — that was wrong; without the env var the fixture
+//! resolution panics, and without `--ignored` the tests are skipped.
 
 use al_test_harness::*;
 use std::path::PathBuf;

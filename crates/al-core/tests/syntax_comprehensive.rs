@@ -966,3 +966,109 @@ fn full_pipeline_all_fixtures() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// T071: deeply-nested AL coverage
+//
+// Page extension with 3-deep nested action groups, action triggers carrying
+// var sections, and a top-level page trigger. Previously there was no
+// fixture covering the action.group.group.group + action(trigger.var)
+// pattern, so a regression in trigger-declaration parsing on these chains
+// could go undetected.
+// ---------------------------------------------------------------------------
+
+const DEEPLY_NESTED_PAGEEXT: &str = r#"pageextension 50101 "Sales Order Pageext" extends "Sales Order"
+{
+    actions
+    {
+        addafter(Approve)
+        {
+            group("Outer")
+            {
+                group("Middle")
+                {
+                    group("Inner")
+                    {
+                        action("Deep")
+                        {
+                            trigger OnAction()
+                            var
+                                Counter: Integer;
+                                Buffer: Text;
+                            begin
+                                for Counter := 1 to 5 do
+                                    Buffer += Format(Counter);
+                            end;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    trigger OnOpenPage()
+    var
+        Setup: Record "User Setup";
+    begin
+        if Setup.Get(UserId) then
+            CurrPage.Caption := Setup."Salespers./Purch. Code";
+    end;
+}
+"#;
+
+#[test]
+fn t071_parse_deeply_nested_action_groups() {
+    let mut parser = AlParser::new();
+    let result = parser.parse(DEEPLY_NESTED_PAGEEXT);
+    assert!(
+        result.errors.is_empty(),
+        "deeply nested pageext should parse cleanly; errors: {:?}",
+        result.errors
+    );
+
+    // Symbol extraction must reach into the nested action.
+    let symbols = extract_document_symbols(&result.tree, DEEPLY_NESTED_PAGEEXT);
+    assert!(
+        !symbols.is_empty(),
+        "deeply-nested pageext must produce at least the top-level symbol"
+    );
+}
+
+#[test]
+fn t071_format_deeply_nested_does_not_collapse() {
+    let mut parser = AlParser::new();
+    let opts = FormatOptions::default();
+    let formatted = format_al(DEEPLY_NESTED_PAGEEXT, &opts);
+
+    // The formatted output must still parse cleanly — the formatter
+    // must not break the action.group.group.group hierarchy.
+    let result = parser.parse(&formatted);
+    assert!(
+        result.errors.is_empty(),
+        "formatted deeply-nested pageext lost parsability: {:?}",
+        result.errors
+    );
+
+    // Sanity: every nested group keyword still appears.
+    for keyword in ["Outer", "Middle", "Inner", "Deep"] {
+        assert!(
+            formatted.contains(keyword),
+            "formatter dropped action group `{keyword}`; output: {formatted}"
+        );
+    }
+}
+
+/// T071 negative: a deeply-nested pageext with a missing closing `}` must
+/// surface a parse error rather than silently accepting a truncated tree.
+#[test]
+fn t071_parse_deeply_nested_truncated_reports_errors() {
+    let mut parser = AlParser::new();
+    // Strip the final closing brace.
+    let truncated = DEEPLY_NESTED_PAGEEXT.trim_end_matches('\n');
+    let truncated = truncated.trim_end_matches('}');
+    let result = parser.parse(truncated);
+    assert!(
+        !result.errors.is_empty(),
+        "tree-sitter-al must report errors for unbalanced braces; got 0"
+    );
+}
