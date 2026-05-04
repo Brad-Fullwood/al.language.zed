@@ -60,14 +60,23 @@ pub(crate) fn sanitize_error_body(body: &str) -> String {
         "client_secret=",
         "password=",
     ] {
-        while let Some(idx) = out.find(needle) {
+        // Advance the search start past each replacement so we never
+        // re-scrub our own [REDACTED] sentinel — that bug would make the
+        // loop run forever on bodies like client_secret=x&password=y where
+        // replacing x with [REDACTED] still left a trailing & for the next
+        // pattern. Walking left-to-right with a moving start cursor also
+        // means a worst-case body scrubs in O(N) instead of O(N^2).
+        const REDACTED: &str = "[REDACTED]";
+        let mut search_from = 0;
+        while let Some(rel_idx) = out[search_from..].find(needle) {
+            let idx = search_from + rel_idx;
             let value_start = idx + needle.len();
-            // Scrub up to the next whitespace, ", &, or end of string.
             let value_end = out[value_start..]
                 .find(|c: char| c.is_whitespace() || c == '"' || c == '&')
                 .map(|n| value_start + n)
                 .unwrap_or(out.len());
-            out.replace_range(value_start..value_end, "[REDACTED]");
+            out.replace_range(value_start..value_end, REDACTED);
+            search_from = value_start + REDACTED.len();
         }
     }
     out
