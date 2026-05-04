@@ -286,7 +286,7 @@ pub fn classify_codeunits(
     let mut out = Vec::new();
     for cu in codeunits {
         let path = std::path::Path::new(&cu.file);
-        let Some((text, _tree)) = workspace.file_index.get_cached_parse(path) else {
+        let Some((text, tree)) = workspace.file_index.get_cached_parse(path) else {
             // No cached parse — emit a conservative decision per method.
             for proc in &cu.tests {
                 out.push(ClassifyResult {
@@ -303,11 +303,21 @@ pub fn classify_codeunits(
             }
             continue;
         };
+        // T051: classify each proc against ITS body, not the whole-codeunit
+        // text. Pre-T051 a mixed-concern codeunit (one DB-touching test +
+        // one pure-record test) routed every method to LiveBc because the
+        // worst pattern in any procedure dragged the rest with it.
+        // Falls back to whole-text classification only when we cannot
+        // locate the proc body — same conservative behaviour as before.
+        let proc_bodies = extract_procedure_bodies(&tree, &text);
         for proc in &cu.tests {
-            // Phase 2 simplification: classify against the whole codeunit
-            // source rather than just the proc body. False-positive cost
-            // is a stricter routing decision; correctness is preserved.
-            let (decision, reasons) = classify_body(&text);
+            let (decision, reasons) = match proc_bodies
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(&proc.name))
+            {
+                Some((_, body)) => classify_body(body),
+                None => classify_body(&text),
+            };
             out.push(ClassifyResult {
                 codeunit_id: cu.id,
                 codeunit_name: cu.name.clone(),
@@ -315,6 +325,38 @@ pub fn classify_codeunits(
                 decision,
                 reasons,
             });
+        }
+    }
+    out
+}
+
+/// Walk the cached parse tree and emit `(proc_name, body_text)` for every
+/// `procedure_declaration`. Iterative — uses a Vec stack so we don't blow
+/// the call stack on deeply nested AL.
+fn extract_procedure_bodies(tree: &tree_sitter::Tree, text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let source = text.as_bytes();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "procedure_declaration" {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source) {
+                    if let Ok(body_text) = node.utf8_text(source) {
+                        out.push((
+                            name.trim_matches('"').to_string(),
+                            body_text.to_string(),
+                        ));
+                    }
+                }
+            }
+            // Don't recurse into procedure body — nested fn declarations
+            // are not legal AL, so skipping children is safe and avoids
+            // re-emitting nested anonymous block bodies.
+            continue;
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
         }
     }
     out
