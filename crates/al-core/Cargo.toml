@@ -12,6 +12,10 @@ path = "src/bin/al-lsp.rs"
 name = "interpreter"
 harness = false
 
+[[bench]]
+name = "parser"
+harness = false
+
 [dependencies]
 al-protocol = { path = "../al-protocol" }
 netcorehost = { version = "0.17", optional = true }

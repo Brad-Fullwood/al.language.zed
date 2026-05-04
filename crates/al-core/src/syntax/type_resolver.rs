@@ -197,12 +197,15 @@ impl<'a> TypeResolver<'a> {
         // the tree-sitter Point. Otherwise lines containing non-ASCII
         // identifiers resolve to the wrong descendant and we silently fall
         // through to the text-scanning fallback.
+        //
+        // T050 perf: previously this allocated a `String` per call via
+        // `lines().nth(row).map(str::to_string)`. Borrow the line as `&str`
+        // so signature-help / hover / definition queries (which all funnel
+        // through here) avoid the per-keystroke allocation.
         let row = position.line as usize;
-        let line = std::str::from_utf8(self.source)
-            .ok()
-            .and_then(|s| s.lines().nth(row).map(str::to_string))
-            .unwrap_or_default();
-        let column = super::utf16_col_to_byte_offset(&line, position.character as usize);
+        let source_str = std::str::from_utf8(self.source).ok()?;
+        let line = source_str.lines().nth(row).unwrap_or("");
+        let column = super::utf16_col_to_byte_offset(line, position.character as usize);
         let point = tree_sitter::Point { row, column };
 
         let node = self
