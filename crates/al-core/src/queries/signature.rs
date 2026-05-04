@@ -36,14 +36,15 @@ pub struct SignatureHelpResult {
     pub active_parameter: Option<u32>,
 }
 
-/// Build a `SignatureHelpResult` from a package symbol `MethodSymbol`.
+/// Build a single `SignatureInfo` from a package symbol `MethodSymbol`.
 ///
-/// Both `signature_help` and `resolve_receiver_signature` produce this shape —
-/// extracted here to eliminate the verbatim duplication between the two call-sites.
-fn build_signature_from_method(
+/// T063: This is the per-overload primitive. Callers that may have multiple
+/// overloads matching the same name should collect a `Vec<SignatureInfo>`
+/// via this helper and then assemble a `SignatureHelpResult` themselves.
+fn build_signature_info_from_method(
     method: &crate::symbols::MethodSymbol,
     active_param: u32,
-) -> SignatureHelpResult {
+) -> SignatureInfo {
     let params: Vec<SignatureParameterInfo> = method
         .parameters
         .iter()
@@ -58,16 +59,22 @@ fn build_signature_from_method(
         .as_ref()
         .map(|r| format!(": {}", r))
         .unwrap_or_default();
-    SignatureHelpResult {
-        signatures: vec![SignatureInfo {
-            label: format!("{}({}){}", method.name, params_str.join("; "), return_str),
-            documentation: None,
-            parameters: params,
-            active_parameter: Some(active_param),
-        }],
-        active_signature: Some(0),
+    SignatureInfo {
+        label: format!("{}({}){}", method.name, params_str.join("; "), return_str),
+        documentation: None,
+        parameters: params,
         active_parameter: Some(active_param),
     }
+}
+
+/// Pick the index of the signature whose parameter count first exceeds
+/// `active_param` — the one most likely to match the partially-typed call.
+/// Falls back to 0 (first signature) if no signature has enough parameters.
+fn pick_active_signature(signatures: &[SignatureInfo], active_param: u32) -> u32 {
+    signatures
+        .iter()
+        .position(|s| s.parameters.len() as u32 > active_param)
+        .unwrap_or(0) as u32
 }
 
 /// Convert a detail string into `ParameterInfo` entries.
@@ -187,13 +194,28 @@ pub fn signature_help(
         return Some(sig);
     }
 
-    // Package symbols
-    let symbols = workspace.symbols.get_by_name(func_name);
-    for entry in &symbols {
-        for method in &entry.methods {
-            if method.name.eq_ignore_ascii_case(func_name) {
-                return Some(build_signature_from_method(method, active_param));
+    // Package symbols.
+    //
+    // T063: collect ALL overloads of `func_name` across every matching package
+    // symbol entry — previously the code returned the first match, hiding the
+    // other overloads from clients that show all signatures (Zed, VS Code).
+    {
+        let symbols = workspace.symbols.get_by_name(func_name);
+        let mut sigs: Vec<SignatureInfo> = Vec::new();
+        for entry in &symbols {
+            for method in &entry.methods {
+                if method.name.eq_ignore_ascii_case(func_name) {
+                    sigs.push(build_signature_info_from_method(method, active_param));
+                }
             }
+        }
+        if !sigs.is_empty() {
+            let active_sig = pick_active_signature(&sigs, active_param);
+            return Some(SignatureHelpResult {
+                signatures: sigs,
+                active_signature: Some(active_sig),
+                active_parameter: Some(active_param),
+            });
         }
     }
 
@@ -310,14 +332,27 @@ fn resolve_receiver_signature(
         }
     }
 
-    // Package symbols for the resolved type
+    // Package symbols for the resolved type.
+    //
+    // T063: same overload-collection upgrade as the top-level package-symbol
+    // path — gather every `func_name` overload defined on the resolved
+    // receiver type before returning.
     let pkg_symbols = workspace.symbols.get_by_name(subtype);
+    let mut sigs: Vec<SignatureInfo> = Vec::new();
     for entry in &pkg_symbols {
         for method in &entry.methods {
             if method.name.eq_ignore_ascii_case(func_name) {
-                return Some(build_signature_from_method(method, active_param));
+                sigs.push(build_signature_info_from_method(method, active_param));
             }
         }
+    }
+    if !sigs.is_empty() {
+        let active_sig = pick_active_signature(&sigs, active_param);
+        return Some(SignatureHelpResult {
+            signatures: sigs,
+            active_signature: Some(active_sig),
+            active_parameter: Some(active_param),
+        });
     }
 
     None
@@ -371,5 +406,88 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert_eq!(params[0].label, "\"Sales Line\": Record");
         assert_eq!(params[1].label, "Qty: Decimal");
+    }
+
+    use crate::symbols::{MethodSymbol, ParameterSymbol};
+
+    fn make_method(name: &str, params: Vec<&str>, return_type: Option<&str>) -> MethodSymbol {
+        MethodSymbol {
+            name: name.to_string(),
+            parameters: params
+                .into_iter()
+                .map(|p| ParameterSymbol {
+                    name: p.to_string(),
+                    type_name: "Text".to_string(),
+                    is_var: false,
+                })
+                .collect(),
+            return_type: return_type.map(|s| s.to_string()),
+            attributes: vec![],
+            is_local: false,
+        }
+    }
+
+    /// T063: collecting per-overload SignatureInfo from MethodSymbol must
+    /// produce one entry per overload — the building block for the
+    /// overload-collection upgrade applied to the package-symbol path.
+    #[test]
+    fn t063_build_signature_info_emits_one_per_overload() {
+        let m_zero = make_method("Send", vec![], Some("Boolean"));
+        let m_one = make_method("Send", vec!["Address"], Some("Boolean"));
+        let m_two = make_method("Send", vec!["Address", "Subject"], Some("Boolean"));
+
+        let s0 = build_signature_info_from_method(&m_zero, 0);
+        let s1 = build_signature_info_from_method(&m_one, 0);
+        let s2 = build_signature_info_from_method(&m_two, 0);
+
+        // Distinct labels — one per arity.
+        assert_eq!(s0.label, "Send(): Boolean");
+        assert_eq!(s1.label, "Send(Address: Text): Boolean");
+        assert_eq!(s2.label, "Send(Address: Text; Subject: Text): Boolean");
+
+        // Active parameter mirrors the request — clients use this to
+        // highlight which slot the cursor is in.
+        assert_eq!(s0.active_parameter, Some(0));
+        assert_eq!(s1.active_parameter, Some(0));
+        assert_eq!(s2.active_parameter, Some(0));
+    }
+
+    /// T063: pick_active_signature returns the index of the first signature
+    /// whose parameter count exceeds active_param — the most-likely-overload
+    /// rule used by both signature_help and resolve_receiver_signature.
+    #[test]
+    fn t063_pick_active_signature_picks_first_compatible_overload() {
+        let m0 = make_method("Send", vec![], Some("Boolean"));
+        let m1 = make_method("Send", vec!["A"], Some("Boolean"));
+        let m2 = make_method("Send", vec!["A", "B"], Some("Boolean"));
+
+        let s0 = build_signature_info_from_method(&m0, 1);
+        let s1 = build_signature_info_from_method(&m1, 1);
+        let s2 = build_signature_info_from_method(&m2, 1);
+
+        let sigs = vec![s0, s1, s2];
+
+        // active_param = 1 — the cursor is at the second slot. The
+        // 2-arg overload is the first whose parameter count > 1.
+        assert_eq!(pick_active_signature(&sigs, 1), 2);
+        // active_param = 0 — even the no-arg overload satisfies > 0
+        // for the 1-arg one (params.len() == 1 > 0). Index 1 is first match.
+        assert_eq!(pick_active_signature(&sigs, 0), 1);
+    }
+
+    /// T063 negative: when no signature has enough parameters for the
+    /// requested active_param, fall back to the first signature (index 0).
+    #[test]
+    fn t063_pick_active_signature_falls_back_when_no_match() {
+        let m0 = make_method("Send", vec![], Some("Boolean"));
+        let m1 = make_method("Send", vec!["A"], Some("Boolean"));
+
+        let s0 = build_signature_info_from_method(&m0, 5);
+        let s1 = build_signature_info_from_method(&m1, 5);
+
+        let sigs = vec![s0, s1];
+
+        // active_param = 5 — neither overload has 6 parameters; fall back to 0.
+        assert_eq!(pick_active_signature(&sigs, 5), 0);
     }
 }
