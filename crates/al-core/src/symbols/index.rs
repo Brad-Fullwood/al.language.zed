@@ -688,7 +688,10 @@ mod tests {
         // on sentinel ids). This proves we only narrowed by_kind_id, not
         // dropped the entries entirely.
         let by_name = index.get_by_name("InlineOpt1");
-        assert!(!by_name.is_empty(), "sentinel-id entries must still be name-resolvable");
+        assert!(
+            !by_name.is_empty(),
+            "sentinel-id entries must still be name-resolvable"
+        );
     }
 
     #[test]

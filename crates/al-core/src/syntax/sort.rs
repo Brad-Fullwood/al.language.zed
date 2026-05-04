@@ -92,8 +92,8 @@ pub fn sort_members(text: &str) -> Option<String> {
     }
 
     // Sort triggers and procedures alphabetically (case-insensitive)
-    triggers.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-    procedures.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    triggers.sort_by_key(|a| a.0.to_lowercase());
+    procedures.sort_by_key(|a| a.0.to_lowercase());
 
     // Reconstruct
     let mut result_lines: Vec<&str> = header.to_vec();

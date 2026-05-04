@@ -393,30 +393,20 @@ fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
     }
     let lower = type_name.to_lowercase();
     match lower.as_str() {
-        "integer" | "biginteger" => {
-            if !matches!(arg, Value::Integer(_)) {
-                return Some(format!("expected Integer, got {}", arg.type_name()));
-            }
+        "integer" | "biginteger" if !matches!(arg, Value::Integer(_)) => {
+            return Some(format!("expected Integer, got {}", arg.type_name()));
         }
-        "decimal" => {
-            if !matches!(arg, Value::Decimal(_) | Value::Integer(_)) {
-                return Some(format!("expected Decimal, got {}", arg.type_name()));
-            }
+        "decimal" if !matches!(arg, Value::Decimal(_) | Value::Integer(_)) => {
+            return Some(format!("expected Decimal, got {}", arg.type_name()));
         }
-        "boolean" => {
-            if !matches!(arg, Value::Boolean(_)) {
-                return Some(format!("expected Boolean, got {}", arg.type_name()));
-            }
+        "boolean" if !matches!(arg, Value::Boolean(_)) => {
+            return Some(format!("expected Boolean, got {}", arg.type_name()));
         }
-        t if t.starts_with("text") => {
-            if !matches!(arg, Value::Text(_) | Value::Code(_)) {
-                return Some(format!("expected Text, got {}", arg.type_name()));
-            }
+        t if t.starts_with("text") && !matches!(arg, Value::Text(_) | Value::Code(_)) => {
+            return Some(format!("expected Text, got {}", arg.type_name()));
         }
-        t if t.starts_with("code") => {
-            if !matches!(arg, Value::Text(_) | Value::Code(_)) {
-                return Some(format!("expected Code, got {}", arg.type_name()));
-            }
+        t if t.starts_with("code") && !matches!(arg, Value::Text(_) | Value::Code(_)) => {
+            return Some(format!("expected Code, got {}", arg.type_name()));
         }
         // All other type names: pass through (Phase 2b can't check complex types).
         _ => {}

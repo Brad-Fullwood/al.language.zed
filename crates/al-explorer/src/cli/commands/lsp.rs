@@ -1750,7 +1750,7 @@ pub fn cmd_tests_coverage(json: bool) -> ExitCode {
                 .get("totalProcedures")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let pct = if total > 0 { covered * 100 / total } else { 0 };
+            let pct = (covered * 100).checked_div(total).unwrap_or(0);
             println!("Test coverage: {covered}/{total} procedures ({pct}%)");
         },
     )

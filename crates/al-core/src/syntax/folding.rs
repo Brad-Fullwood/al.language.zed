@@ -60,10 +60,10 @@ fn extract_structural_ranges(root: Node, source: &[u8], ranges: &mut Vec<Folding
             | "while_statement"
             | "repeat_statement"
             | "with_statement"
-            | "enum_value_declaration" => {
-                if node.start_position().row < node.end_position().row {
-                    add_range(node, FoldingRangeKind::Region, source, ranges);
-                }
+            | "enum_value_declaration"
+                if node.start_position().row < node.end_position().row =>
+            {
+                add_range(node, FoldingRangeKind::Region, source, ranges);
             }
 
             // Block comments

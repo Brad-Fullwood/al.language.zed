@@ -284,7 +284,7 @@ pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
         })
         .collect();
 
-    candidates.sort_by(|a, b| b.0.cmp(&a.0)); // most-recent first
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.0)); // most-recent first
     candidates.into_iter().next().map(|(_, path)| path)
 }
 

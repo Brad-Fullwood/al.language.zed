@@ -1,3 +1,9 @@
+// `collapsible_match` would force `Event::Mouse(mouse_event)` arms into
+// `Event::Mouse(mouse_event) if app.view_mode == ViewMode::X` style guards,
+// which makes the per-mode dispatch table noticeably less skimmable. The
+// expanded form is intentional in this file's TUI event dispatcher.
+#![allow(clippy::collapsible_match)]
+
 mod cli;
 mod types;
 use clap::Parser;

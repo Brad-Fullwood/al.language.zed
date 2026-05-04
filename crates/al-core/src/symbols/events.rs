@@ -68,23 +68,23 @@ pub fn get_events(index: &SymbolIndex, query: &str) -> EventResults {
         for method in &entry.methods {
             for attr in &method.attributes {
                 match attr.name.as_str() {
-                    "IntegrationEvent" => {
-                        if matches_event_query(&entry.name, &method.name, &query_lower) {
-                            publishers.push(EventPublisher {
-                                object: Arc::clone(&entry),
-                                method: method.clone(),
-                                event_type: EventType::Integration,
-                            });
-                        }
+                    "IntegrationEvent"
+                        if matches_event_query(&entry.name, &method.name, &query_lower) =>
+                    {
+                        publishers.push(EventPublisher {
+                            object: Arc::clone(&entry),
+                            method: method.clone(),
+                            event_type: EventType::Integration,
+                        });
                     }
-                    "BusinessEvent" => {
-                        if matches_event_query(&entry.name, &method.name, &query_lower) {
-                            publishers.push(EventPublisher {
-                                object: Arc::clone(&entry),
-                                method: method.clone(),
-                                event_type: EventType::Business,
-                            });
-                        }
+                    "BusinessEvent"
+                        if matches_event_query(&entry.name, &method.name, &query_lower) =>
+                    {
+                        publishers.push(EventPublisher {
+                            object: Arc::clone(&entry),
+                            method: method.clone(),
+                            event_type: EventType::Business,
+                        });
                     }
                     "EventSubscriber" => {
                         let (target_type, target_name, target_event) =
