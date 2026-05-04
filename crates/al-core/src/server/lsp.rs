@@ -603,14 +603,47 @@ impl LanguageServer for AlServer {
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         self.await_ready().await;
-        let uri = &params.text_document_position.text_document.uri;
+        let uri = params.text_document_position.text_document.uri.clone();
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
         let start = std::time::Instant::now();
-        let result = definition::handle_references(self, uri, position, include_declaration);
+
+        // T028: run the synchronous reference walk inside `spawn_blocking` so the
+        // tokio task can be dropped (via tower-lsp's $/cancelRequest handling)
+        // without waiting for the walk to finish. Without this wrapper a pending
+        // references query on a large workspace blocks the async task until it
+        // completes — the LSP client appears responsive (tower-lsp drops the
+        // future) but the CPU is wasted.
+        let workspace = Arc::clone(&self.workspace);
+        let uri_for_log = uri.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let core_pos = position.into();
+            let locations = crate::queries::references::references(
+                &workspace,
+                &uri,
+                core_pos,
+                include_declaration,
+            );
+            if locations.is_empty() {
+                None
+            } else {
+                Some(
+                    locations
+                        .into_iter()
+                        .map(Into::into)
+                        .collect::<Vec<Location>>(),
+                )
+            }
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "references spawn_blocking join failed");
+            None
+        });
+
         let elapsed = start.elapsed();
         let count = result.as_ref().map(|v| v.len()).unwrap_or(0);
-        tracing::debug!(uri = %uri, line = position.line, col = position.character, count, elapsed_us = elapsed.as_micros() as u64, "references");
+        tracing::debug!(uri = %uri_for_log, line = position.line, col = position.character, count, elapsed_us = elapsed.as_micros() as u64, "references");
         Ok(result)
     }
 

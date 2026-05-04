@@ -23,26 +23,8 @@ pub(crate) fn handle_definition(
     }
 }
 
-/// Handle textDocument/references.
-pub(crate) fn handle_references(
-    server: &AlServer,
-    uri: &Url,
-    position: Position,
-    include_declaration: bool,
-) -> Option<Vec<Location>> {
-    let core_pos = position.into();
-    let locations = crate::queries::references::references(
-        &server.workspace,
-        uri,
-        core_pos,
-        include_declaration,
-    );
-    if locations.is_empty() {
-        None
-    } else {
-        Some(locations.into_iter().map(Into::into).collect())
-    }
-}
+// T028: handle_references was inlined into the LanguageServer::references impl
+// and wrapped in spawn_blocking so it can be cancel-friendly. Removed.
 
 /// Handle textDocument/rename.
 pub(crate) fn handle_rename(
