@@ -202,9 +202,20 @@ impl SymbolCache {
             builder.mode(0o700);
             builder.create(&self.cache_dir)?;
             // Ensure existing dirs (created earlier with default mode) are
-            // tightened too.
+            // tightened too. Log on failure (T068) — pre-fix this was a
+            // silent let _, so a permissions tightening failure left the
+            // cache dir at whatever default mode the umask produced.
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&self.cache_dir, fs::Permissions::from_mode(0o700));
+            if let Err(e) =
+                fs::set_permissions(&self.cache_dir, fs::Permissions::from_mode(0o700))
+            {
+                tracing::warn!(
+                    path = %self.cache_dir.display(),
+                    error = %e,
+                    "failed to tighten cache dir permissions to 0o700 — \
+                     existing entries may be world-readable"
+                );
+            }
         }
         #[cfg(not(unix))]
         fs::create_dir_all(&self.cache_dir)?;
