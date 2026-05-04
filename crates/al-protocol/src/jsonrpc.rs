@@ -4,6 +4,13 @@
 
 use serde::{Deserialize, Serialize};
 
+// T057 (deferred — design): JSON-RPC 2.0 spec requires a `jsonrpc: "2.0"`
+// field on every Request/Response. Adding it as a required struct field
+// would touch ~30+ literal construction sites across al-core and would
+// be a wire-format break for any older daemon client that doesn't emit
+// it. The right fix is a builder/constructor pattern — out of scope for
+// the small-surgical-fix lane of this loop. Tracked as future work.
+
 /// A JSON-RPC request.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Request {
