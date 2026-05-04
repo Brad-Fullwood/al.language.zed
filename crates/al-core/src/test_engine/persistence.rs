@@ -74,6 +74,12 @@ pub struct TestResultStore {
     path: PathBuf,
     /// Serializes appends within this process. Cross-process is best-effort.
     write_lock: Mutex<()>,
+    /// In-memory bucket-count cache: maps (codeunit_id, method_name) → current
+    /// count in the file. Populated lazily on first append (T070 perf fix —
+    /// pre-cache `append` re-read the entire file on every call to count
+    /// the bucket; with this cache we only re-read when the bucket genuinely
+    /// overflows and triggers a rewrite).
+    bucket_counts: Mutex<Option<std::collections::HashMap<(i32, String), usize>>>,
 }
 
 impl TestResultStore {
@@ -85,6 +91,7 @@ impl TestResultStore {
         Ok(Self {
             path,
             write_lock: Mutex::new(()),
+            bucket_counts: Mutex::new(None),
         })
     }
 
@@ -103,26 +110,43 @@ impl TestResultStore {
 
     /// Append one record. May trigger a single-pass prune if the affected
     /// bucket would exceed `MAX_PER_BUCKET`.
+    ///
+    /// Uses an in-memory `bucket_counts` cache so the common
+    /// path is O(1) — no file read, no allocation. Only the first call (or
+    /// a call that pushes a bucket past `MAX_PER_BUCKET`) re-materialises
+    /// the full record set from disk to do an accurate prune (T070).
     pub async fn append(&self, record: TestRunRecord) -> Result<(), PersistenceError> {
         let _guard = self.write_lock.lock().await;
-        // Check bucket size first; if at cap, rewrite without the oldest
-        // entry for this (codeunit_id, method_name).
-        let mut existing = read_records_no_lock(&self.path).await?;
-        let bucket_count = existing
-            .iter()
-            .filter(|r| r.codeunit_id == record.codeunit_id && r.method_name == record.method_name)
-            .count();
+
+        let key = (record.codeunit_id, record.method_name.clone());
+        let mut counts_guard = self.bucket_counts.lock().await;
+        if counts_guard.is_none() {
+            // First append in this process — materialise the on-disk counts
+            // once, then maintain incrementally.
+            let mut counts = std::collections::HashMap::new();
+            for rec in read_records_no_lock(&self.path).await? {
+                *counts
+                    .entry((rec.codeunit_id, rec.method_name.clone()))
+                    .or_insert(0usize) += 1;
+            }
+            *counts_guard = Some(counts);
+        }
+        let counts = counts_guard.as_mut().expect("just initialised");
+        let bucket_count = counts.get(&key).copied().unwrap_or(0);
 
         if bucket_count >= MAX_PER_BUCKET {
-            // Drop the oldest matching entry. Records are stored append-order,
-            // so the first match is the oldest.
+            // At capacity: re-read everything, drop the oldest matching
+            // entry, rewrite, and refresh the in-memory counter.
+            let mut existing = read_records_no_lock(&self.path).await?;
             if let Some(oldest_idx) = existing.iter().position(|r| {
                 r.codeunit_id == record.codeunit_id && r.method_name == record.method_name
             }) {
                 existing.remove(oldest_idx);
             }
-            // Rewrite the file from scratch, then append the new record.
             rewrite_records(&self.path, &existing).await?;
+            // Drop the count by 1 to reflect the prune; the post-append
+            // increment below restores it to MAX_PER_BUCKET exactly.
+            counts.entry(key.clone()).and_modify(|n| *n -= 1);
         }
 
         let mut file = OpenOptions::new()
@@ -134,6 +158,8 @@ impl TestResultStore {
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
+
+        *counts.entry(key).or_insert(0) += 1;
         Ok(())
     }
 
