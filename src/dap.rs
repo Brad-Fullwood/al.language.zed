@@ -14,7 +14,29 @@ pub fn build_dap_binary(
 ) -> zed::Result<zed::DebugAdapterBinary> {
     let workspace_path = worktree.root_path();
 
-    let config_json: Value = serde_json::from_str(&config.config).unwrap_or_else(|_| json!({}));
+    // Silently defaulting to {} on a parse failure was masking malformed
+    // launch.json from the user (T073). The WASM extension can't `tracing::`
+    // — it has no host I/O — but it CAN return a structured error so Zed
+    // surfaces a real diagnostic in the debugger panel instead of starting
+    // up against an empty config and producing confusing downstream errors.
+    let config_json: Value = match serde_json::from_str(&config.config) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(format!(
+                "AL DAP: failed to parse debug task configuration as JSON: {e}. \
+                 Check the launch.json entry for syntax errors."
+            ));
+        }
+    };
+    // If the parsed JSON isn't an object we still want to keep going (an
+    // empty Object is a valid no-customisation case), but flatten any
+    // unexpected shape to {} rather than letting `.get(...)` accesses
+    // misbehave on an array/string root.
+    let config_json = if config_json.is_object() {
+        config_json
+    } else {
+        json!({})
+    };
 
     let request_type = config_json
         .get("request")
