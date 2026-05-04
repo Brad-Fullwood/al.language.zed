@@ -353,6 +353,17 @@ pub struct BcDebugSession {
 impl BcDebugSession {
     /// Connect to the BC debug hub via SignalR WebSocket.
     pub async fn connect(config: &BcDebugConfig, access_token: &str) -> Result<Self> {
+        if config.accept_invalid_certs {
+            // Match the warn-on-construction parity from BcClient::new at
+            // bc_client.rs:99 (T035). Without this the DAP path silently
+            // disables TLS certificate validation when launch.json sets
+            // accept_invalid_certs=true.
+            warn!(
+                "BcDebugSession::connect: accept_invalid_certs=true is active — TLS \
+                 certificate validation is DISABLED for the SignalR negotiate + \
+                 WebSocket. Use only for local-dev sandboxes."
+            );
+        }
         let hub_url = config.debug_hub_url();
 
         // SignalR negotiate to get connection token
@@ -524,12 +535,29 @@ impl BcDebugSession {
                             if msg.type_ == 1 {
                                 match msg.target.as_deref() {
                                     Some("Break") => {
-                                        let _ = break_event_tx.send(true);
+                                        // Discarded send error => receiver dropped.
+                                        // Log at debug since this is expected during
+                                        // session shutdown but is otherwise unusual
+                                        // and load-bearing for the channel-based
+                                        // wait_for_break_event path (commit 4619213).
+                                        if break_event_tx.send(true).is_err() {
+                                            tracing::debug!(
+                                                target = "Break",
+                                                "break_event_tx receiver dropped — \
+                                                 wait_for_break_event listener has gone"
+                                            );
+                                        }
                                     }
                                     Some(
                                         "OnDetachedFromConnection" | "OnFatalDebuggerException",
                                     ) => {
-                                        let _ = break_event_tx.send(false);
+                                        if break_event_tx.send(false).is_err() {
+                                            tracing::debug!(
+                                                target = "Detached/Fatal",
+                                                "break_event_tx receiver dropped — \
+                                                 session-end notification not delivered"
+                                            );
+                                        }
                                     }
                                     _ => {}
                                 }
