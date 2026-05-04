@@ -908,6 +908,22 @@ impl LspClient {
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
 
+    /// T052: send the LSP `$/cancelRequest` notification with the given
+    /// JSON-RPC request id. Used by cancellation tests; tower-lsp drops the
+    /// pending future for the matching id (cancels_pending_requests in
+    /// tower-lsp 0.20 service.rs).
+    pub async fn cancel_request(&mut self, id: i64) -> Result<(), Box<dyn std::error::Error>> {
+        self.notify("$/cancelRequest", serde_json::json!({ "id": id }))
+            .await
+    }
+
+    /// T052: peek the next request id that `request()` would assign,
+    /// without incrementing. Tests that want to cancel an in-flight
+    /// request need to know its id ahead of time.
+    pub fn peek_next_request_id(&self) -> i64 {
+        self.next_id.load(Ordering::SeqCst)
+    }
+
     async fn notify(
         &mut self,
         method: &str,
