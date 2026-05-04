@@ -3,6 +3,9 @@ mod discovery;
 mod platform;
 mod settings;
 
+#[cfg(test)]
+mod merge_json_test;
+
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
@@ -21,101 +24,22 @@ struct AlExtension {
 /// - All other types: override replaces base entirely
 ///
 /// NOTE: These are separate Cargo packages (WASM vs native) that can't share code
-/// without a shared crate, which would add complexity for a 16-line utility.
+/// without a shared crate, which would add complexity for a small utility.
 fn merge_json(base: &Value, overrides: &Value) -> Value {
-    // Stack-based iterative deep merge.
-    // Each entry: (base_obj, override_obj, target_key_path) to produce a merged map.
-    // We use owned clones and process bottom-up by pre-cloning leaves and merging upward.
-    //
-    // Strategy: collect pending (key, base, override) pairs into a queue, process with
-    // a recursive-to-iterative conversion using a result accumulator stack.
-    merge_json_owned(base.clone(), overrides.clone())
-}
-
-fn merge_json_owned(base: Value, overrides: Value) -> Value {
-    // Iterative deep merge using a work stack.
-    // Stack items: (base_value, override_value) → produce merged value.
-    // Since we need to return a single Value and merging objects requires merging
-    // their children first, we simulate the recursion with an explicit continuation stack.
-    //
-    // We use the following representation:
-    //   - Work items: pairs (base, overrides) that need merging
-    //   - Results stack: completed merged values
-    //   - Continuation stack: instructions to assemble completed maps from results
-
-    enum Work {
-        /// Merge two values; push result onto results stack.
-        Merge(Value, Value),
-        /// Collect `count` (key, value) pairs from results and assemble into an Object.
-        AssembleObject { keys: Vec<String>, count: usize },
-    }
-
-    let mut work: Vec<Work> = vec![Work::Merge(base, overrides)];
-    let mut results: Vec<Value> = Vec::new();
-    while let Some(item) = work.pop() {
-        match item {
-            Work::Merge(b, o) => match (b, o) {
-                (Value::Object(base_map), Value::Object(override_map)) => {
-                    // Clone base map to start; we'll override keys from override_map.
-                    // For keys in override_map: if also in base_map, push a Merge work item.
-                    // For keys only in override_map: push them directly as results.
-                    // For keys only in base_map: carry them unchanged.
-                    let mut merged_base = base_map;
-                    let mut pending_keys: Vec<String> = Vec::new();
-
-                    for (key, override_val) in override_map {
-                        if let Some(base_val) = merged_base.remove(&key) {
-                            // Need to merge these two sub-values
-                            pending_keys.push(key);
-                            work.push(Work::Merge(base_val, override_val));
-                        } else {
-                            // Key only in override — use override directly
-                            pending_keys.push(key.clone());
-                            results.push(override_val);
-                        }
-                    }
-
-                    // Remaining base-only keys: insert directly as (key, value) in results
-                    // We'll handle them via the assemble step by including in the merged map.
-                    // Instead, encode remaining base keys as pre-placed results with a sentinel.
-                    let remaining_count = pending_keys.len();
-                    // Push AssembleObject to combine: remaining base keys + pending_keys merged values
-                    // For simplicity, build a partial map from base-only keys, then insert pending.
-                    // Encode the base_only portion as a single Object result:
-                    let base_only = Value::Object(merged_base);
-                    results.push(base_only);
-
-                    // Now push the pending_keys in the right order so AssembleObject can pop them
-                    // Results order (bottom to top after all Merge complete):
-                    //   [base_only_map, val_for_pending_keys[0], ..., val_for_pending_keys[n-1]]
-                    work.push(Work::AssembleObject {
-                        keys: pending_keys,
-                        count: remaining_count,
-                    });
-                }
-                (_, o) => results.push(o),
-            },
-            Work::AssembleObject { keys, count } => {
-                // Pop `count` values from results (they are in reverse push order)
-                let mut vals: Vec<Value> = (0..count).filter_map(|_| results.pop()).collect();
-                vals.reverse(); // restore push order
-                                // Pop the base_only Object
-                let base_only = results
-                    .pop()
-                    .unwrap_or(Value::Object(serde_json::Map::new()));
-                let mut map = match base_only {
-                    Value::Object(m) => m,
-                    _ => serde_json::Map::new(),
-                };
-                for (key, val) in keys.into_iter().zip(vals) {
-                    map.insert(key, val);
-                }
-                results.push(Value::Object(map));
+    match (base, overrides) {
+        (Value::Object(base_obj), Value::Object(override_obj)) => {
+            let mut merged = base_obj.clone();
+            for (key, override_value) in override_obj {
+                let value = merged
+                    .get(key)
+                    .map(|base_value| merge_json(base_value, override_value))
+                    .unwrap_or_else(|| override_value.clone());
+                merged.insert(key.clone(), value);
             }
+            Value::Object(merged)
         }
+        (_, override_value) => override_value.clone(),
     }
-
-    results.pop().unwrap_or(Value::Null)
 }
 
 impl AlExtension {
@@ -262,12 +186,21 @@ impl zed::Extension for AlExtension {
 
         // Explicit binary path from settings takes unconditional priority.
         // This is the recommended configuration path — no auto-download or
-        // discovery is attempted if a path is provided.
+        // discovery is attempted if a path is provided. Must be checked before
+        // proxy discovery so users can override a stale legacy proxy install.
         let user_configured_path = settings
             .binary
             .as_ref()
             .and_then(|b| b.path.as_ref())
             .map(|p| p.to_string());
+
+        if let Some(path) = user_configured_path.clone() {
+            return Ok(zed::Command {
+                command: path,
+                args: user_args,
+                env: vec![],
+            });
+        }
 
         // Check for bundled proxy binary at the installed extension path.
         // If found, use it (proxy discovers EditorServices.Host itself).

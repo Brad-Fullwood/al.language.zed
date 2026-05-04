@@ -7,7 +7,7 @@ Status: in progress. Findings are numbered in rough priority order as they are v
 - Severity: High
 - Area: Zed extension initialization options
 - Files: `src/lib.rs:25`, `src/lib.rs:35`, `src/lib.rs:91`, `src/lib.rs:326`
-- Status: validated by code inspection
+- Status: RESOLVED 2026-05-04. `merge_json_owned` removed; `merge_json` rewritten as a straightforward recursive merge. Inline unit tests cover nested merge, scalar-replaces-scalar, scalar-replaces-object, object-replaces-scalar, override-only-key, top-level non-object, and deep-nested cases (7 tests, all green).
 
 ### Problem
 
@@ -75,7 +75,7 @@ Add unit tests in `src/lib.rs` or a small extension test module for:
 - Severity: High
 - Area: Zed extension binary discovery
 - Files: `src/lib.rs:259`, `src/lib.rs:268`, `src/lib.rs:270`, `src/lib.rs:287`
-- Status: validated by code inspection
+- Status: RESOLVED 2026-05-04. `language_server_command` now early-returns the user-configured `binary.path` (with `user_args`) before calling `discovery::find_proxy_path`, matching the documented unconditional-priority intent. Cached/PATH/download chain still applies when no explicit path is set and no proxy is found.
 
 ### Problem
 
