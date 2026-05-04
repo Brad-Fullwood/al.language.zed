@@ -60,6 +60,25 @@ jobs:
       - name: Formatting check
         run: cargo fmt --all -- --check
 
+  cargo-deny:
+    # Enforces the deny.toml at repo root: license allow-list, banned crates,
+    # advisory-DB review, source allow-list. Was previously only documentation
+    # — wired into CI per T054 / spec-arch-005. Linux only because cargo-deny
+    # itself is fast and platform-independent on the workspace metadata.
+    name: Dependency policy (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          submodules: recursive
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@e2f4ede4a4e60ea15ff31bc0647485d80c66cfba # v2
+        with:
+          # Default args (`check`) runs all four checks: advisories, bans,
+          # licenses, sources — same as the local invocation contract.
+          arguments: --workspace --exclude zed-al
+
   wasm:
     name: WASM extension build
     runs-on: ubuntu-latest
