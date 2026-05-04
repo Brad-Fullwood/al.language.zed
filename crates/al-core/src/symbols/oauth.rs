@@ -781,9 +781,13 @@ mod guid_tests {
         // 35 chars
         assert!(!is_well_formed_guid("ef72a0a7-b59c-4f97-99c8-5b9a2cd3a1b"));
         // 37 chars
-        assert!(!is_well_formed_guid("ef72a0a7-b59c-4f97-99c8-5b9a2cd3a1b66"));
+        assert!(!is_well_formed_guid(
+            "ef72a0a7-b59c-4f97-99c8-5b9a2cd3a1b66"
+        ));
         // wrong hyphen position
-        assert!(!is_well_formed_guid("ef72a0a-7b59c-4f97-99c8-5b9a2cd3a1b66"));
+        assert!(!is_well_formed_guid(
+            "ef72a0a-7b59c-4f97-99c8-5b9a2cd3a1b66"
+        ));
         // non-hex
         assert!(!is_well_formed_guid("zf72a0a7-b59c-4f97-99c8-5b9a2cd3a1b6"));
     }

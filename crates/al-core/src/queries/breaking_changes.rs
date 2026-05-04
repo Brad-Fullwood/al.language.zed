@@ -440,8 +440,10 @@ mod tests {
         );
         let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
         assert!(
-            changes.iter().any(|c| c.kind == BreakingChangeKind::ReturnTypeChanged
-                && c.member.as_deref() == Some("Total")),
+            changes
+                .iter()
+                .any(|c| c.kind == BreakingChangeKind::ReturnTypeChanged
+                    && c.member.as_deref() == Some("Total")),
             "ReturnTypeChanged must be reported: {changes:?}"
         );
     }
@@ -477,8 +479,10 @@ mod tests {
         let current = vec![make_enum(vec!["Open", "Closed"])]; // dropped Pending
         let changes = analyze_breaking_changes(&baseline, &current);
         assert!(
-            changes.iter().any(|c| c.kind == BreakingChangeKind::EnumValueRemoved
-                && c.member.as_deref() == Some("Pending")),
+            changes
+                .iter()
+                .any(|c| c.kind == BreakingChangeKind::EnumValueRemoved
+                    && c.member.as_deref() == Some("Pending")),
             "EnumValueRemoved must be reported when a value disappears: {changes:?}"
         );
     }
@@ -501,8 +505,10 @@ mod tests {
         );
         let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
         assert!(
-            changes.iter().any(|c| c.kind == BreakingChangeKind::SignatureChanged
-                && c.member.as_deref() == Some("Send")),
+            changes
+                .iter()
+                .any(|c| c.kind == BreakingChangeKind::SignatureChanged
+                    && c.member.as_deref() == Some("Send")),
             "SignatureChanged must be reported on parameter-count delta: {changes:?}"
         );
     }
