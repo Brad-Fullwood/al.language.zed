@@ -685,10 +685,18 @@ impl<'a> TypeResolver<'a> {
 
     /// Fallback: collect local variables from action trigger var sections.
     ///
-    /// The tree-sitter grammar doesn't produce `trigger_declaration` nodes for
-    /// `trigger OnAction()` inside page action blocks. This scans the text
-    /// backwards from the cursor to find a `var` section between a `trigger`
-    /// header and a `begin` keyword, then parses variable declarations from it.
+    /// Historical: the tree-sitter grammar previously produced `braced_block`
+    /// instead of `trigger_declaration` for `trigger OnAction()` inside page
+    /// action blocks. T031 (cycle 1) verified the current grammar emits
+    /// `trigger_declaration` natively — making this fallback redundant on
+    /// the happy path. We keep it as defence-in-depth so the LSP remains
+    /// functional against older grammar artifacts (cached parser binaries,
+    /// vendor forks). Safe to delete once the grammar's action-trigger
+    /// corpus tests are part of a release contract.
+    ///
+    /// This scans the text backwards from the cursor to find a `var` section
+    /// between a `trigger` header and a `begin` keyword, then parses variable
+    /// declarations from it.
     fn collect_action_trigger_vars(&self, position: Position, result: &mut Vec<VariableDecl>) {
         let text = match std::str::from_utf8(self.source) {
             Ok(t) => t,

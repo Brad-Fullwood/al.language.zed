@@ -424,6 +424,93 @@ mod tests {
         );
     }
 
+    /// T016 regression: package-level dependency edges (line 130-138)
+    /// produce an edge for every (pkg_name -> dep_name) entry in pkg_deps.
+    /// Without this fixture the path was effectively dead test code —
+    /// only root-app deps were exercised.
+    #[test]
+    fn package_level_dependency_edges_emitted_in_dot_output() {
+        let app_json = r#"{
+    "name": "My App",
+    "publisher": "Me",
+    "version": "1.0.0.0",
+    "dependencies": [
+        { "name": "Base Application", "publisher": "Microsoft", "version": "24.0.0.0" }
+    ]
+}"#;
+
+        // Base Application depends on System Application — this exercises
+        // the (pkg_name, _, _, pkg_deps) loop in build_dependency_graph.
+        let packages = vec![
+            (
+                "Base Application".to_string(),
+                "Microsoft".to_string(),
+                "24.0.0.0".to_string(),
+                vec![(
+                    "System Application".to_string(),
+                    "Microsoft".to_string(),
+                    "24.0.0.0".to_string(),
+                )],
+            ),
+            (
+                "System Application".to_string(),
+                "Microsoft".to_string(),
+                "24.0.0.0".to_string(),
+                vec![],
+            ),
+        ];
+
+        let graph = build_dependency_graph(app_json, &packages);
+        let dot = graph.to_dot();
+
+        // Both edges must appear in the DOT output:
+        //   "My App" -> "Base Application"   (root)
+        //   "Base Application" -> "System Application" (package-level)
+        assert!(
+            dot.contains("\"My App\" -> \"Base Application\""),
+            "expected root->package edge in DOT; got: {dot}"
+        );
+        assert!(
+            dot.contains("\"Base Application\" -> \"System Application\""),
+            "expected package->package edge (the path under T016 fix); got: {dot}"
+        );
+    }
+
+    /// T016 negative: a malformed root app.json (invalid JSON) does not
+    /// panic — `build_dependency_graph` falls back to `name = "Unknown"`
+    /// and `dependencies = []`.
+    #[test]
+    fn malformed_root_app_json_does_not_panic() {
+        // Truncated JSON — invalid syntax.
+        let graph = build_dependency_graph("{ \"name\": ", &[]);
+        assert_eq!(graph.root_app.name, "Unknown");
+        assert!(graph.nodes.is_empty() || graph.nodes.len() == 1);
+    }
+
+    /// T016 negative: a package with no dependencies (`pkg_deps` is empty)
+    /// emits NO package-level edges, only nodes.
+    #[test]
+    fn empty_pkg_deps_emits_no_package_level_edges() {
+        let app_json = r#"{
+    "name": "My App",
+    "publisher": "Me",
+    "version": "1.0.0.0",
+    "dependencies": []
+}"#;
+        let packages = vec![(
+            "Standalone".to_string(),
+            "Vendor".to_string(),
+            "1.0.0.0".to_string(),
+            vec![], // no deps -> no edges
+        )];
+        let graph = build_dependency_graph(app_json, &packages);
+        let dot = graph.to_dot();
+        assert!(
+            !dot.contains("\"Standalone\" ->"),
+            "Standalone has no deps; must not produce outgoing edge in DOT: {dot}"
+        );
+    }
+
     #[test]
     fn no_collision_same_name_different_version() {
         // Two packages with the same name and publisher but different versions must both appear.

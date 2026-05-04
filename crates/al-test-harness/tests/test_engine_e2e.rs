@@ -128,3 +128,84 @@ fn code_lens_test_kind_wire_format_is_recognised() {
     assert_eq!(parsed["kind"], "test");
     assert_eq!(parsed["status"]["kind"], "notRun");
 }
+
+/// T026: E2E coverage for the textDocument/codeLens path.
+///
+/// Spawns the real `al-lsp` binary, opens the Pure-Logic test fixture, and
+/// asserts the code-lens response contains entries for the `[Test]`-tagged
+/// procedures (`TestAddition`, `TestStringConcat`). Without test-result
+/// history attached, the response status should be NotRun for every test.
+///
+/// This closes the deferred-cycle-7 gap noted in handoff T026: previously
+/// only inline al-core unit tests covered code_lens; the wire-format-only
+/// JSON tests above don't exercise the real DocumentStore + tree-sitter
+/// pipeline, so a regression in the LSP transport could go undetected.
+#[tokio::test]
+#[ignore = "requires al-lsp binary + the fixture project to be on disk"]
+async fn code_lens_e2e_returns_test_lenses_for_test_procedures() {
+    let mut client = LspClient::spawn(test_project_dir())
+        .await
+        .expect("spawn al-lsp");
+    let content =
+        std::fs::read_to_string(test_project_dir().join(PURE_LOGIC_REL)).expect("fixture missing");
+    client.open_file(PURE_LOGIC_REL, &content).await;
+
+    let lenses = client.code_lens(PURE_LOGIC_REL).await;
+
+    // Must produce *some* lenses for a file with `[Test]` procedures.
+    assert!(
+        !lenses.is_empty(),
+        "expected non-empty code-lens response for fixture with [Test] procs; got: {lenses:?}"
+    );
+
+    // Each test lens carries `data` describing the lens kind. The harness
+    // serialises CodeLensKind via serde-tagged json under `data` — search
+    // for entries whose data.kind is "test".
+    let test_lenses: Vec<&serde_json::Value> = lenses
+        .iter()
+        .filter(|l| {
+            l.get("data")
+                .and_then(|d| d.get("kind"))
+                .and_then(|k| k.as_str())
+                == Some("test")
+        })
+        .collect();
+
+    // Expect at least 2: one per `[Test]` proc (TestAddition + TestStringConcat).
+    assert!(
+        test_lenses.len() >= 2,
+        "expected ≥2 test lenses (one per [Test] proc); got {} : {test_lenses:?}",
+        test_lenses.len()
+    );
+
+    // Without test-result history attached, every test lens must be NotRun.
+    for l in &test_lenses {
+        let status_kind = l
+            .get("data")
+            .and_then(|d| d.get("status"))
+            .and_then(|s| s.get("kind"))
+            .and_then(|k| k.as_str());
+        assert_eq!(
+            status_kind,
+            Some("notRun"),
+            "expected NotRun status without history; got lens: {l:?}"
+        );
+    }
+}
+
+/// T026 negative: code_lens for a non-existent (closed) file produces an
+/// empty response without panic.
+#[tokio::test]
+#[ignore = "requires al-lsp binary + the fixture project to be on disk"]
+async fn code_lens_e2e_missing_file_returns_empty() {
+    let mut client = LspClient::spawn(test_project_dir())
+        .await
+        .expect("spawn al-lsp");
+    let virtual_path = "src/__no_such_file_for_lens__.al";
+    client.open_file(virtual_path, "").await;
+    let lenses = client.code_lens(virtual_path).await;
+    assert!(
+        lenses.is_empty(),
+        "empty file should produce no code lenses; got {lenses:?}"
+    );
+}

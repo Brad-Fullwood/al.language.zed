@@ -668,6 +668,28 @@ impl LspClient {
         }
     }
 
+    /// Get code lenses for a document.
+    ///
+    /// T026: this exercises the textDocument/codeLens path through the real
+    /// `al-lsp` binary with a live `DocumentStore` + (optional) test-result
+    /// store, so the wire format and end-to-end shape of the response are
+    /// observed by tests rather than just the inline unit-tests in
+    /// `al-core::queries::code_lens`.
+    pub async fn code_lens(&mut self, relative_path: &str) -> Vec<Value> {
+        let uri = self.file_uri(relative_path);
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+        });
+
+        match self.request("textDocument/codeLens", params).await {
+            Ok(result) => result.as_array().cloned().unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(uri = %uri, error = %e, "codeLens request failed");
+                vec![]
+            }
+        }
+    }
+
     /// Get code actions.
     pub async fn code_actions(
         &mut self,
