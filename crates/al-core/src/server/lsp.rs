@@ -654,11 +654,24 @@ impl LanguageServer for AlServer {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         self.await_ready().await;
-        let uri = &params.text_document.uri;
+        let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
-        let result = handlers::handle_document_symbol(self, uri);
+        // T028: spawn_blocking for cancel-friendliness on large files.
+        let workspace = Arc::clone(&self.workspace);
+        let uri_for_log = uri.clone();
+        #[allow(deprecated)]
+        let result = tokio::task::spawn_blocking(move || {
+            crate::queries::symbols::document_symbols(&workspace, &uri).map(|symbols| {
+                DocumentSymbolResponse::Nested(symbols.into_iter().map(Into::into).collect())
+            })
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "document_symbol spawn_blocking join failed");
+            None
+        });
         let elapsed = start.elapsed();
-        tracing::debug!(uri = %uri, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "document_symbol");
+        tracing::debug!(uri = %uri_for_log, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "document_symbol");
         Ok(result)
     }
 
@@ -709,10 +722,37 @@ impl LanguageServer for AlServer {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         self.await_ready().await;
-        let uri = &params.text_document.uri;
+        let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
-        let result = handlers::handle_semantic_tokens(self, uri);
-        let elapsed = start.elapsed();
+        // T028: spawn_blocking — semantic_tokens_full traverses the entire
+        // tree-sitter tree on big AL files; cancellation-friendliness matters.
+        let workspace = Arc::clone(&self.workspace);
+        let uri_for_log = uri.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let tokens = crate::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri);
+            if tokens.is_empty() {
+                return None;
+            }
+            let lsp_tokens: Vec<SemanticToken> = tokens
+                .into_iter()
+                .map(|t| SemanticToken {
+                    delta_line: t.delta_line,
+                    delta_start: t.delta_start,
+                    length: t.length,
+                    token_type: t.token_type,
+                    token_modifiers_bitset: t.token_modifiers,
+                })
+                .collect();
+            Some(SemanticTokensResult::Tokens(SemanticTokens {
+                result_id: None,
+                data: lsp_tokens,
+            }))
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "semantic_tokens_full spawn_blocking join failed");
+            None
+        });
         let count = result
             .as_ref()
             .map(|r| match r {
@@ -720,7 +760,8 @@ impl LanguageServer for AlServer {
                 SemanticTokensResult::Partial(t) => t.data.len(),
             })
             .unwrap_or(0);
-        tracing::debug!(uri = %uri, tokens = count, elapsed_us = elapsed.as_micros() as u64, "semantic_tokens_full");
+        let elapsed = start.elapsed();
+        tracing::debug!(uri = %uri_for_log, tokens = count, elapsed_us = elapsed.as_micros() as u64, "semantic_tokens_full");
         Ok(result)
     }
 

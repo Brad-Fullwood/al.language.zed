@@ -9,16 +9,8 @@ use super::AlServer;
 // Document symbols
 // ---------------------------------------------------------------------------
 
-#[allow(deprecated)]
-pub(crate) fn handle_document_symbol(
-    server: &AlServer,
-    uri: &Url,
-) -> Option<DocumentSymbolResponse> {
-    let symbols = crate::queries::symbols::document_symbols(&server.workspace, uri)?;
-    Some(DocumentSymbolResponse::Nested(
-        symbols.into_iter().map(Into::into).collect(),
-    ))
-}
+// T028: handle_document_symbol inlined in lsp::document_symbol with
+// spawn_blocking wrapper — see crates/al-core/src/server/lsp.rs.
 
 // ---------------------------------------------------------------------------
 // Folding ranges
@@ -33,26 +25,8 @@ pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<F
 // Semantic tokens
 // ---------------------------------------------------------------------------
 
-pub(crate) fn handle_semantic_tokens(server: &AlServer, uri: &Url) -> Option<SemanticTokensResult> {
-    let tokens = crate::queries::semantic_tokens::semantic_tokens_full(&server.workspace, uri);
-    if tokens.is_empty() {
-        return None;
-    }
-    let lsp_tokens: Vec<SemanticToken> = tokens
-        .into_iter()
-        .map(|t| SemanticToken {
-            delta_line: t.delta_line,
-            delta_start: t.delta_start,
-            length: t.length,
-            token_type: t.token_type,
-            token_modifiers_bitset: t.token_modifiers,
-        })
-        .collect();
-    Some(SemanticTokensResult::Tokens(SemanticTokens {
-        result_id: None,
-        data: lsp_tokens,
-    }))
-}
+// T028: handle_semantic_tokens inlined in lsp::semantic_tokens_full with
+// spawn_blocking wrapper — see crates/al-core/src/server/lsp.rs.
 
 // ---------------------------------------------------------------------------
 // Signature help
