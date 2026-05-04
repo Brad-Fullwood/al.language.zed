@@ -12,14 +12,9 @@ use crate::workspace::Workspace;
 /// Find the definition location of the symbol at the given position.
 #[must_use]
 pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Option<Vec<Location>> {
-    let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let (text, tree) = crate::parsing::get_or_parse(&workspace.documents, uri)?;
 
-    let node = crate::syntax::find_node_at_position(
-        &tree,
-        &text,
-        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
-    )?;
+    let node = crate::syntax::find_node_at_position(&tree, &text, position.into())?;
     let source = text.as_bytes();
     let clean_name = super::node_clean_name(node, source)?;
 
@@ -97,11 +92,9 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
     }
 
     let resolver = crate::syntax::TypeResolver::new(&tree, &text);
-    if let Some(decl) =
-        resolver.resolve_type(clean_name, crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos))
-    {
+    if let Some(decl) = resolver.resolve_type(clean_name, position.into()) {
         let def_range: Range =
-            crate::syntax_lsp::ts_range_to_lsp(&decl.range, text.as_bytes()).into();
+            crate::syntax::ts_range_to_syntax(&decl.range, text.as_bytes()).into();
         if def_range.start != position {
             return Some(vec![Location {
                 uri: uri.clone(),

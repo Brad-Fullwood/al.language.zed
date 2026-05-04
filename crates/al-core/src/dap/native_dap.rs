@@ -516,13 +516,17 @@ where
                                         // rather than block this task forever (T010).
                                         match event_tx_clone.try_send(body) {
                                             Ok(()) => {}
-                                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                            Err(tokio::sync::mpsc::error::TrySendError::Full(
+                                                _,
+                                            )) => {
                                                 tracing::warn!(
                                                     "DAP event channel saturated (1024) — \
                                                      dropping event; client appears to be stuck"
                                                 );
                                             }
-                                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                            Err(
+                                                tokio::sync::mpsc::error::TrySendError::Closed(_),
+                                            ) => {
                                                 return; // receiver dropped — DAP server shut down
                                             }
                                         }

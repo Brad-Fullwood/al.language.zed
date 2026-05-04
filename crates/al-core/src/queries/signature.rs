@@ -91,11 +91,10 @@ pub fn signature_help(
     uri: &Url,
     position: Position,
 ) -> Option<SignatureHelpResult> {
-    let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let text = workspace.documents.get_text_arc(uri)?;
 
-    let line_idx = lsp_pos.line as usize;
-    let col_utf16 = lsp_pos.character as usize;
+    let line_idx = position.line as usize;
+    let col_utf16 = position.character as usize;
     let line = text.lines().nth(line_idx)?;
     // Convert UTF-16 column offset to a byte offset for slicing the &str.
     //
@@ -183,7 +182,7 @@ pub fn signature_help(
         prefix,
         func_name,
         active_param,
-        lsp_pos,
+        position,
     ) {
         return Some(sig);
     }
@@ -270,7 +269,7 @@ fn resolve_receiver_signature(
     prefix: &str,
     func_name: &str,
     active_param: u32,
-    position: tower_lsp::lsp_types::Position,
+    position: Position,
 ) -> Option<SignatureHelpResult> {
     let paren_pos = prefix.rfind('(')?;
     let before_paren = prefix[..paren_pos].trim_end();
@@ -282,10 +281,7 @@ fn resolve_receiver_signature(
     }
 
     let resolver = crate::syntax::TypeResolver::new(tree, text);
-    let decl = resolver.resolve_type(
-        receiver_name,
-        crate::syntax_lsp::lsp_pos_to_syntax(position),
-    )?;
+    let decl = resolver.resolve_type(receiver_name, position.into())?;
     let subtype = decl.type_subtype.as_deref()?;
 
     let obj_key = subtype.to_lowercase();

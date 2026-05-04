@@ -67,12 +67,14 @@ use crate::syntax::context::{detect_context, CompletionContext};
 /// Get completions at a position in a document.
 #[must_use]
 pub fn completions(workspace: &Workspace, uri: &Url, position: Position) -> Vec<CompletionEntry> {
-    let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
     };
-    let context = detect_context(&text, crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos));
-    tracing::debug!(context = ?context, line = lsp_pos.line, character = lsp_pos.character, "completion: detected context");
+    let context = detect_context(&text, position.into());
+    tracing::debug!(
+        context = ?context, line = position.line, character = position.character,
+        "completion: detected context"
+    );
 
     let mut items = Vec::new();
 
@@ -202,14 +204,10 @@ pub async fn completions_full(
     // Bridge fallback: only for member access context.
     // Use get_text_arc to share the cached Arc<String> instead of deep-cloning
     // the entire file contents on every keystroke.
-    let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return items;
     };
-    let ctx = crate::syntax::context::detect_context(
-        &text,
-        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
-    );
+    let ctx = crate::syntax::context::detect_context(&text, position.into());
     if !matches!(ctx, crate::syntax::context::CompletionContext::MemberAccess) {
         return items;
     }

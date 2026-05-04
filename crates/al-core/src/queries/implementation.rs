@@ -16,16 +16,11 @@ use crate::workspace::Workspace;
 /// 2. Workspace source files — scanned via cached parse trees for `implements_clause` nodes.
 #[must_use]
 pub fn find_implementations(workspace: &Workspace, uri: &Url, position: Position) -> Vec<Location> {
-    let lsp_pos: tower_lsp::lsp_types::Position = position.into();
     let Some((text, tree)) = crate::parsing::get_or_parse(&workspace.documents, uri) else {
         return Vec::new();
     };
 
-    let Some(node) = crate::syntax::find_node_at_position(
-        &tree,
-        &text,
-        crate::syntax_lsp::lsp_pos_to_syntax(lsp_pos),
-    ) else {
+    let Some(node) = crate::syntax::find_node_at_position(&tree, &text, position.into()) else {
         return Vec::new();
     };
     let Some(interface_name) = super::node_clean_name(node, text.as_bytes()) else {
