@@ -397,4 +397,64 @@ mod tests {
         let entries = obsolescence_timeline(&ws);
         assert!(entries.is_empty());
     }
+
+    #[test]
+    fn t021_finds_obsolete_method_in_symbol_package() {
+        // T021 / stb0c590a012b: pre-existing tests only exercised the
+        // file-scan branch; the symbol-package scan branch (lines 82-111)
+        // and the attribute-argument trim logic were silently uncovered
+        // because the workspace.symbols index was empty in those tests.
+        // Build a SymbolEntry with an Obsolete-marked method and confirm
+        // it surfaces, with reason and tag arguments correctly trimmed of
+        // surrounding quotes.
+        use crate::symbols::{
+            AttributeSymbol, MethodSymbol, ObjectKind, ParameterSymbol, SymbolEntry,
+        };
+        let ws = Workspace::new();
+        let entries = vec![SymbolEntry {
+            kind: ObjectKind::Codeunit,
+            id: 50100,
+            name: "Legacy CU".to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "TestPkg".to_string(),
+            methods: vec![MethodSymbol {
+                name: "OldHelper".to_string(),
+                parameters: vec![ParameterSymbol {
+                    name: "Amount".to_string(),
+                    type_name: "Decimal".to_string(),
+                    is_var: false,
+                }],
+                return_type: None,
+                attributes: vec![AttributeSymbol {
+                    name: "Obsolete".to_string(),
+                    // Quoted arguments must be trimmed of single AND
+                    // double quotes by the symbol-package scan path.
+                    arguments: vec![
+                        "'Use NewHelper instead'".to_string(),
+                        "\"24.0\"".to_string(),
+                    ],
+                }],
+                is_local: false,
+            }],
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        }];
+        ws.symbols.add_entries(&entries);
+
+        let report = obsolescence_timeline(&ws);
+        let entry = report
+            .iter()
+            .find(|e| e.symbol == "OldHelper")
+            .expect("symbol-package scan must find the Obsolete method");
+        assert_eq!(entry.object, "Legacy CU");
+        assert_eq!(entry.kind, "procedure");
+        assert_eq!(entry.reason.as_deref(), Some("Use NewHelper instead"));
+        assert_eq!(entry.tag.as_deref(), Some("24.0"));
+    }
 }
