@@ -166,7 +166,22 @@ pub fn get_or_create_virtual_file(
                 .unwrap_or_default();
             Some((uri, range))
         }
-        Err(_) => None,
+        Err(e) => {
+            // T064: previously a silent `Err(_) => None` swallowed every
+            // virtual-file failure. Permission errors, write failures, and
+            // package-not-found all looked identical to the caller (a
+            // missing definition link). Now logged at debug — production
+            // diagnostic logs surface the cause; behaviour is unchanged.
+            tracing::debug!(
+                package = %entry.package,
+                kind = ?entry.kind,
+                name = %entry.name,
+                error = %e,
+                "queries::get_or_create_virtual_file: virtual_file::get_or_create failed; \
+                 returning None to caller"
+            );
+            None
+        }
     }
 }
 
