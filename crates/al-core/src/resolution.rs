@@ -775,9 +775,14 @@ pub(crate) fn resolve_workspace_object_definition(
     let (file_source, tree) = workspace.file_index.get_cached_parse(&path)?;
     let obj = crate::syntax::find_object_declaration(&tree, &file_source)?;
     let uri = Url::from_file_path(&path).ok()?; // SILENT: non-absolute paths can't become file URIs
+    // Direct ts_range -> queries::Range conversion (one hop) instead of the
+    // wasteful ts_range -> lsp_types::Range -> queries::Range round-trip
+    // through syntax_lsp. The latter only exists for the LSP transport
+    // boundary; resolution.rs is business logic and should stay
+    // lsp_types-free (T040 / 77c47433db6de8ca review note).
     Some((
         uri,
-        crate::syntax_lsp::ts_range_to_lsp(&obj.range, file_source.as_bytes()).into(),
+        crate::syntax::ts_range_to_syntax(&obj.range, file_source.as_bytes()).into(),
     ))
 }
 
@@ -1186,7 +1191,9 @@ fn workspace_member(
                 uri: Url::from_file_path(path).ok(), // SILENT: non-absolute paths can't become file URIs
                 kind: ResolvedMemberKind::Variable {
                     range: Some(
-                        crate::syntax_lsp::ts_range_to_lsp(&var.range, content.as_bytes()).into(),
+                        // Direct conversion — see object_path_to_uri_and_range above
+                        // for rationale (T040).
+                        crate::syntax::ts_range_to_syntax(&var.range, content.as_bytes()).into(),
                     ),
                     scope: "global variable",
                 },
