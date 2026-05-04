@@ -135,6 +135,13 @@ pub fn cmd_doctor(json: bool) -> ExitCode {
         .get("workspaceFiles")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    // T056: distinguish "real misconfiguration" (ALTool / .NET / project
+    // missing) from "daemon still loading" (only the indexedSymbols /
+    // workspaceFiles counts are zero) so the CLI exit code reflects the
+    // actual category. Pre-T056 both returned ExitCode::FAILURE which
+    // confused scripted callers — they couldn't distinguish a transient
+    // startup race from a real broken setup.
+    let mut transient_loading = false;
     if symbols > 0 && files > 0 {
         println!(
             "[OK] {} symbols indexed, {} workspace files",
@@ -142,13 +149,19 @@ pub fn cmd_doctor(json: bool) -> ExitCode {
         );
     } else {
         println!(
-            "[!!] {} symbols indexed, {} workspace files — daemon may still be loading",
+            "[..] {} symbols indexed, {} workspace files — daemon may still be loading",
             symbols, files
         );
-        any_failed = true;
+        transient_loading = true;
     }
     if any_failed {
+        // Real configuration error (ALTool/.NET/project missing).
         ExitCode::FAILURE
+    } else if transient_loading {
+        // Documented EX_TEMPFAIL (75) approximates "try again later" in
+        // the BSD sysexits convention. Use 75 directly so wrapping
+        // scripts can `[ $? -eq 75 ] && retry`.
+        ExitCode::from(75)
     } else {
         ExitCode::SUCCESS
     }
