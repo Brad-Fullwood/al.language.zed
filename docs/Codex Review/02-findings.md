@@ -16,7 +16,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-010: Reindex/full scan retains deleted files. _(RESOLVED 2026-05-05.)_
 - F-011: Daemon file-mutating commands do not refresh indexes. _(RESOLVED 2026-05-05; format/sort/organize wired through new helpers. fix_* family follow-up pending — same helpers, needs workspace plumbed through queries::bulk_fix.)_
 - F-012: DAP proxy can corrupt frames because two tasks write to stdout independently. _(RESOLVED 2026-05-05.)_
-- F-013: DAP launch continues even when compilation fails.
+- F-013: DAP launch continues even when compilation fails. _(RESOLVED 2026-05-05.)_
 - F-014: Native daemon debug state does not consume server-push events.
 - F-015: Named debug config lookup silently falls back to first config. _(RESOLVED 2026-05-05.)_
 - F-016: Daemon breakpoints default object metadata to zero. _(RESOLVED 2026-05-05.)_
@@ -431,7 +431,7 @@ Route every outbound DAP message through one writer task/channel. Only that task
 - Unit-test two simultaneous outbound DAP messages and assert byte stream contains two complete frames.
 - Run a debug session with verbose event traffic and verify the client stays connected.
 
-## F-013: DAP launch continues even when compilation fails
+## F-013: DAP launch continues even when compilation fails _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: debug launch, build task handling

@@ -385,18 +385,29 @@ where
                             }
                         }
                     } else {
+                        // F-013: a missing .app means compile failed (or
+                        // hasn't run). Continuing into publish/attach would
+                        // either silently use a stale .app from a previous
+                        // build (worse — debugging the wrong source) or
+                        // produce a confusing "Connect failed" trail. Fail
+                        // the launch with a clear error so the user sees
+                        // the compile failure as the root cause.
                         write_dap(
                             &mut stdout,
-                            &make_event(
+                            &make_response(
                                 &seq,
-                                "output",
-                                Some(serde_json::json!({
-                                    "category": "stderr",
-                                    "output": "Warning: No .app file found. Skipping publish.\r\n"
-                                })),
+                                request_seq,
+                                &command,
+                                false,
+                                None,
+                                Some(
+                                    "No compiled .app found in project root — compile must succeed before launch (run `al-explorer compile`)."
+                                        .to_string(),
+                                ),
                             ),
                         )
                         .await?;
+                        continue;
                     }
                 }
 
