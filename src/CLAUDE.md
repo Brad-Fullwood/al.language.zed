@@ -15,8 +15,6 @@ make install                                              # build + symlink into
 |------|---------|
 | lib.rs | `AlExtension` (implements `zed::Extension`), `merge_json()`, extension registration |
 | dap.rs | DAP adapter integration: `get_dap_binary()`, `dap_request_kind()`, `dap_config_to_scenario()` |
-| discovery.rs | `find_proxy_path()` — looks for bundled proxy binary |
-| platform.rs | Platform/architecture helpers for asset name construction |
 | settings.rs | `apply_al_settings_to_config()` — maps Zed settings to al-lsp init options |
 
 ## Binary Resolution (language_server_command)

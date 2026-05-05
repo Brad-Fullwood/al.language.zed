@@ -1,6 +1,4 @@
 mod dap;
-mod discovery;
-mod platform;
 mod settings;
 
 #[cfg(test)]
@@ -9,7 +7,6 @@ mod merge_json_test;
 mod settings_test;
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::fs;
 use zed_extension_api::{self as zed, settings::LspSettings, Result};
 
@@ -173,9 +170,6 @@ impl zed::Extension for AlExtension {
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        let env_vec = worktree.shell_env();
-        let env_map: HashMap<String, String> = env_vec.into_iter().collect();
-
         let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
 
         // User-configured binary arguments (e.g. ["--stdio"]).
@@ -186,44 +180,16 @@ impl zed::Extension for AlExtension {
             .map(|args| args.to_vec())
             .unwrap_or_else(|| vec!["--stdio".to_string()]);
 
-        // Explicit binary path from settings takes unconditional priority.
-        // This is the recommended configuration path — no auto-download or
-        // discovery is attempted if a path is provided. Must be checked before
-        // proxy discovery so users can override a stale legacy proxy install.
+        // Resolution chain (4 steps): user-configured path → cached download
+        // → PATH lookup → GitHub release download. Step 1 is checked inside
+        // find_or_download_binary; user_configured_path takes unconditional
+        // priority over auto-discovery and downloads.
         let user_configured_path = settings
             .binary
             .as_ref()
             .and_then(|b| b.path.as_ref())
             .map(|p| p.to_string());
 
-        if let Some(path) = user_configured_path.clone() {
-            return Ok(zed::Command {
-                command: path,
-                args: user_args,
-                env: vec![],
-            });
-        }
-
-        // Check for bundled proxy binary at the installed extension path.
-        // If found, use it (proxy discovers EditorServices.Host itself).
-        if let Some(proxy_path) = discovery::find_proxy_path(&env_map) {
-            // EditorServices.Host path for the proxy: PATH discovery > "auto".
-            // NOTE: user_configured_path is for al-lsp, not EditorServices.Host.
-            let al_server_path = worktree
-                .which("Microsoft.Dynamics.Nav.EditorServices.Host")
-                .unwrap_or_else(|| "auto".to_string());
-
-            let mut proxy_args = vec![al_server_path];
-            proxy_args.extend(user_args);
-
-            return Ok(zed::Command {
-                command: proxy_path,
-                args: proxy_args,
-                env: vec![],
-            });
-        }
-
-        // No bundled proxy — resolve al-lsp via cached path, PATH, or GitHub download.
         let binary_path = self.find_or_download_binary(
             language_server_id,
             worktree,
