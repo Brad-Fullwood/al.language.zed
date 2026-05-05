@@ -10,28 +10,28 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-004: AL toolchain discovery misses a valid Microsoft AL tool install.
 - F-005: Zed tasks and README use `al` for repository CLI, but Microsoft now owns that command name.
 - F-006: Tree-sitter grammar directory is not directly buildable from checkout.
-- F-007: CI Clippy commands fail under current Rust toolchain.
-- F-008: `al.compile` leaves stale compiler diagnostics after clean rebuild.
-- F-009: Daemon `downloadSymbols` downloads packages but never loads them into workspace.
-- F-010: Reindex/full scan retains deleted files.
+- F-007: CI Clippy commands fail under current Rust toolchain. _(WASM clippy fix RESOLVED 2026-05-05; native clippy section already passes — see finding body for status.)_
+- F-008: `al.compile` leaves stale compiler diagnostics after clean rebuild. _(RESOLVED 2026-05-05.)_
+- F-009: Daemon `downloadSymbols` downloads packages but never loads them into workspace. _(RESOLVED 2026-05-05.)_
+- F-010: Reindex/full scan retains deleted files. _(RESOLVED 2026-05-05.)_
 - F-011: Daemon file-mutating commands do not refresh indexes.
 - F-012: DAP proxy can corrupt frames because two tasks write to stdout independently.
 - F-013: DAP launch continues even when compilation fails.
 - F-014: Native daemon debug state does not consume server-push events.
 - F-015: Named debug config lookup silently falls back to first config.
 - F-016: Daemon breakpoints default object metadata to zero.
-- F-017: Successful daemon null responses serialize without JSON-RPC `result`.
+- F-017: Successful daemon null responses serialize without JSON-RPC `result`. _(RESOLVED 2026-05-05.)_
 - F-018: Workspace readiness is signaled before package symbols load.
 - F-019: Compiler diagnostic parsing/publishing is fragile for paths.
 - F-020: `al-explorer` is not Windows-buildable, but CI/release include Windows.
 - F-021: Release workflow references removed packages and incompatible artifacts.
-- F-022: `DaemonClient::read_response` can allocate unbounded memory before enforcing its cap.
+- F-022: `DaemonClient::read_response` can allocate unbounded memory before enforcing its cap. _(RESOLVED 2026-05-05.)_
 - F-023: `al-test-harness` can leak `al-lsp` children and pending requests on failures.
 - F-024: Zed live-test helpers have race-prone log waits and fixed sleeps.
 - F-025: DAP capture scripts drop buffered frames between reads.
 - F-026: `deny.toml` exists but is not enforced in CI.
-- F-027: Nested Zed settings under `al` are double-wrapped and ignored.
-- F-028: Legacy proxy discovery probes the wrong installed extension directory.
+- F-027: Nested Zed settings under `al` are double-wrapped and ignored. _(RESOLVED 2026-05-05.)_
+- F-028: Legacy proxy discovery probes the wrong installed extension directory. _(RESOLVED 2026-05-05; legacy proxy branch removed.)_
 - F-029: Debug schema/snippets advertise `snapshotInitialize`, but adapter maps it to launch.
 - F-030: `al.editorServicesPath` is exposed but not passed to the Zed DAP command.
 - F-031: Zed grammar pin is behind native parser used by `al-core`.
@@ -51,7 +51,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-045: Code-action object-kind detection treats many object types as page-like.
 - F-046: Daemon autostart can race into multiple daemons for one project.
 - F-047: Daemon dedup returns fake empty results for valid repeated requests.
-- F-048: Daemon protocol omits mandatory JSON-RPC `jsonrpc: "2.0"`.
+- F-048: Daemon protocol omits mandatory JSON-RPC `jsonrpc: "2.0"`. _(RESOLVED 2026-04-30 by T057 — see commit 5073384.)_
 - F-049: `al clear-cache` does not call the daemon cache endpoint and clears the wrong directory.
 - F-050: CLI accepts relative paths that daemon endpoints reject.
 - F-051: `al-test-harness` advertises socket transport, but `connect()` is a panic stub.
