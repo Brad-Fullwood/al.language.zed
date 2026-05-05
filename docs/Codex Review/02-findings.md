@@ -52,7 +52,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-046: Daemon autostart can race into multiple daemons for one project. _(RESOLVED 2026-05-05; per-socket spawn lock with stale recovery.)_
 - F-047: Daemon dedup returns fake empty results for valid repeated requests.
 - F-048: Daemon protocol omits mandatory JSON-RPC `jsonrpc: "2.0"`. _(RESOLVED 2026-04-30 by T057 — see commit 5073384.)_
-- F-049: `al clear-cache` does not call the daemon cache endpoint and clears the wrong directory.
+- F-049: `al clear-cache` does not call the daemon cache endpoint and clears the wrong directory. _(RESOLVED 2026-05-05.)_
 - F-050: CLI accepts relative paths that daemon endpoints reject.
 - F-051: `al-test-harness` advertises socket transport, but `connect()` is a panic stub.
 - F-052: DAP helper scripts are pinned to one developer's filesystem.
@@ -1303,7 +1303,7 @@ Add defaulted `jsonrpc: "2.0"` fields to request and response types, include it 
 - Serialization tests for request, success response, error response, and parse error.
 - Assert every envelope includes `"jsonrpc":"2.0"`.
 
-## F-049: `al clear-cache` does not call the daemon cache endpoint and clears the wrong directory
+## F-049: `al clear-cache` does not call the daemon cache endpoint and clears the wrong directory _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: CLI cache commands, daemon cache maintenance

@@ -17,39 +17,119 @@ pub fn cmd_version(json: bool) -> ExitCode {
 }
 
 pub fn cmd_clear_cache(json: bool) -> ExitCode {
-    let cache_dir = dirs::cache_dir()
-        .map(|d| d.join("al-lsp").join("packages"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/packages"));
+    // The authoritative cache directory is `~/.cache/al-lsp/index/` — that's
+    // what the daemon's `clearCache` endpoint deletes. When a daemon is
+    // running, treat its JSON response as the source of truth (path,
+    // existed, deleted, error). When no daemon is running, fall back to
+    // clearing the same directory locally so the command still works.
+    let index_dir = al_lsp_index_dir();
 
-    // Notify a running daemon so it can flush in-memory handles before we
-    // delete the files.  Use a try-connect pattern: if no daemon is running
-    // (or any error occurs) just proceed with the local removal.
-    let daemon_notified = if let Ok(mut client) = connect(None) {
-        client.request("al.clearSymbolCache", None).is_ok()
-    } else {
-        false
-    };
+    if let Ok(mut client) = connect(None) {
+        match client.request("clearCache", None) {
+            Ok(value) => {
+                if json {
+                    print_json(&value);
+                } else {
+                    let path = value
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<unknown>");
+                    let deleted = value
+                        .get("deleted")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let existed = value
+                        .get("existed")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if !existed {
+                        eprintln!("Cache directory does not exist: {path}");
+                    } else if deleted {
+                        eprintln!("Cleared cache: {path} (via daemon)");
+                    } else {
+                        let err = value
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown error");
+                        eprintln!("Daemon failed to clear cache at {path}: {err}");
+                        return ExitCode::FAILURE;
+                    }
+                }
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("Daemon clearCache request failed ({e}); falling back to local removal.");
+            }
+        }
+    }
 
-    let existed = cache_dir.exists();
+    let existed = index_dir.exists();
+    let mut deleted = false;
+    let mut error: Option<String> = None;
     if existed {
-        let _ = std::fs::remove_dir_all(&cache_dir);
+        match std::fs::remove_dir_all(&index_dir) {
+            Ok(()) => deleted = true,
+            Err(e) => error = Some(e.to_string()),
+        }
     }
 
     if json {
         print_json(&serde_json::json!({
-            "deleted": existed,
-            "path": cache_dir.display().to_string(),
-            "daemonNotified": daemon_notified,
+            "deleted": deleted,
+            "existed": existed,
+            "path": index_dir.display().to_string(),
+            "daemonNotified": false,
+            "error": error,
         }));
-    } else if existed {
-        eprintln!("Cleared cache: {}", cache_dir.display());
-        if daemon_notified {
-            eprintln!("Running daemon notified.");
-        }
+    } else if !existed {
+        eprintln!("Cache directory does not exist: {}", index_dir.display());
+    } else if deleted {
+        eprintln!("Cleared cache: {}", index_dir.display());
     } else {
-        eprintln!("Cache directory does not exist: {}", cache_dir.display());
+        eprintln!(
+            "Failed to clear cache at {}: {}",
+            index_dir.display(),
+            error.as_deref().unwrap_or("unknown error")
+        );
+        return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+fn al_lsp_index_dir() -> PathBuf {
+    dirs::cache_dir()
+        .map(|d| d.join("al-lsp").join("index"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/index"))
+}
+
+#[cfg(test)]
+mod clear_cache_tests {
+    use super::*;
+
+    #[test]
+    fn al_lsp_index_dir_targets_index_subdir() {
+        // Positive: F-049 invariant — al-explorer points at `…/al-lsp/index`,
+        // matching the daemon's `clearCache` target. Previously it pointed
+        // at `…/al-lsp/packages` (a stale cache location).
+        let dir = al_lsp_index_dir();
+        let s = dir.to_string_lossy();
+        assert!(
+            s.ends_with("/al-lsp/index") || s.ends_with("\\al-lsp\\index"),
+            "expected …/al-lsp/index, got {s}"
+        );
+    }
+
+    #[test]
+    fn al_lsp_index_dir_is_not_packages_subdir() {
+        // Negative: explicitly assert we never resolve to the legacy
+        // `…/al-lsp/packages` path that F-049 flagged.
+        let dir = al_lsp_index_dir();
+        let s = dir.to_string_lossy();
+        assert!(
+            !s.ends_with("/al-lsp/packages") && !s.ends_with("\\al-lsp\\packages"),
+            "regression: clear-cache resolves back to legacy packages path: {s}"
+        );
+    }
 }
 
 fn fetch_setup_result(json: bool) -> Result<serde_json::Value, ExitCode> {
