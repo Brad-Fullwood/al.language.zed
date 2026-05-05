@@ -15,7 +15,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-009: Daemon `downloadSymbols` downloads packages but never loads them into workspace. _(RESOLVED 2026-05-05.)_
 - F-010: Reindex/full scan retains deleted files. _(RESOLVED 2026-05-05.)_
 - F-011: Daemon file-mutating commands do not refresh indexes. _(RESOLVED 2026-05-05; format/sort/organize wired through new helpers. fix_* family follow-up pending — same helpers, needs workspace plumbed through queries::bulk_fix.)_
-- F-012: DAP proxy can corrupt frames because two tasks write to stdout independently.
+- F-012: DAP proxy can corrupt frames because two tasks write to stdout independently. _(RESOLVED 2026-05-05.)_
 - F-013: DAP launch continues even when compilation fails.
 - F-014: Native daemon debug state does not consume server-push events.
 - F-015: Named debug config lookup silently falls back to first config. _(RESOLVED 2026-05-05.)_
@@ -407,7 +407,7 @@ Centralize daemon file writes through a helper that writes the file and then upd
 - Immediately query workspace symbol or definition for the changed object.
 - Assert the new content is visible without daemon restart.
 
-## F-012: DAP proxy can corrupt frames because two tasks write to stdout independently
+## F-012: DAP proxy can corrupt frames because two tasks write to stdout independently _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: DAP proxy, protocol framing

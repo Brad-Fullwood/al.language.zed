@@ -144,12 +144,22 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
     let capture_out = capture_log.clone();
     let capture_in = capture_log.clone();
 
+    // F-012: both directions need to write Zed-bound DAP frames — the
+    // stdin_to_child branch fabricates Zed-bound output events during
+    // compile / patch_outgoing, while child_to_stdout forwards real
+    // EditorServices.Host frames. Without coordination they share the
+    // underlying stdout fd and interleave bytes, corrupting frame headers
+    // and bodies. Wrap stdout in an async-aware Mutex and have every write
+    // path lock it for the duration of one frame's worth of work.
+    let stdout_writer: std::sync::Arc<tokio::sync::Mutex<io::Stdout>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(io::stdout()));
+
     // Zed → EditorServices.Host (compile on launch, patch config)
     let mut stdin_writer = child_stdin;
     let seq_counter_ref = &seq_counter;
+    let stdout_writer_out = stdout_writer.clone();
     let stdin_to_child = async {
         let mut reader = BufReader::new(io::stdin());
-        let mut stdout_writer = io::stdout();
         loop {
             match read_dap_body(&mut reader).await {
                 Ok(body) => {
@@ -159,14 +169,12 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                             let _ = writeln!(f, ">>> ZED→ES: {}", String::from_utf8_lossy(&body));
                         }
                     }
-                    let patched = patch_outgoing(
-                        &body,
-                        &toolchain,
-                        &project_root,
-                        &mut stdout_writer,
-                        seq_counter_ref,
-                    )
-                    .await;
+                    let patched = {
+                        let mut guard = stdout_writer_out.lock().await;
+                        let writer: &mut io::Stdout = &mut guard;
+                        patch_outgoing(&body, &toolchain, &project_root, writer, seq_counter_ref)
+                            .await
+                    };
                     write_dap_frame(&mut stdin_writer, &patched).await?;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
@@ -178,7 +186,7 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
     };
 
     // EditorServices.Host → Zed (patch missing `seq` field)
-    let mut stdout_writer = io::stdout();
+    let stdout_writer_in = stdout_writer.clone();
     let child_to_stdout = async {
         let mut reader = BufReader::new(child_stdout);
         loop {
@@ -191,7 +199,9 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                         }
                     }
                     let patched = patch_incoming(&body, &seq_counter);
-                    write_dap_frame(&mut stdout_writer, &patched).await?;
+                    let mut guard = stdout_writer_in.lock().await;
+                    let writer: &mut io::Stdout = &mut guard;
+                    write_dap_frame(writer, &patched).await?;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
                 Err(e) => return Err(e),
