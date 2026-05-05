@@ -1126,17 +1126,51 @@ pub(super) async fn dispatch_download_symbols(
         .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("error"))
         .count();
 
+    // F-009: refresh the workspace symbol indexes so the freshly-downloaded
+    // packages become visible to hover/completion/definition without
+    // requiring a daemon restart. Mirrors the LSP-side
+    // `download_symbols_command` reload sequence in
+    // `crate::server::workspace::download_symbols_command`.
+    let loaded = refresh_workspace_after_download(workspace, &result);
+
     Response {
         id,
         result: Some(serde_json::json!({
             "source": source,
             "downloaded": success,
             "failed": failed,
+            "loaded_into_index": loaded,
             "results": result,
         })),
         error: None,
         ..Default::default()
     }
+}
+
+/// Extract the on-disk paths of successfully-downloaded packages from the
+/// daemon `downloadSymbols` result vector, then load them into the
+/// workspace's symbol indexes. Returns the number of packages loaded
+/// (0 if no successful downloads). F-009.
+fn refresh_workspace_after_download(workspace: &Workspace, result: &[serde_json::Value]) -> usize {
+    let downloaded_paths: Vec<std::path::PathBuf> = result
+        .iter()
+        .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("ok"))
+        .filter_map(|r| {
+            r.get("path")
+                .and_then(|v| v.as_str())
+                .map(std::path::PathBuf::from)
+        })
+        .collect();
+    if downloaded_paths.is_empty() {
+        return 0;
+    }
+    let cache = crate::symbols::cache::SymbolCache::default_location();
+    let loaded = workspace
+        .symbols
+        .load_packages_cached(&downloaded_paths, &cache);
+    workspace.symbols.load_runtime_enums();
+    workspace.invalidate_insight_graph();
+    loaded.len()
 }
 
 // ---------------------------------------------------------------------------
@@ -3640,6 +3674,67 @@ mod p1_5_tests {
             r["affected"].as_array().expect("array").is_empty(),
             "empty changedFiles must yield empty affected"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // F-009: dispatch_download_symbols must refresh workspace symbol indexes
+    // after a successful download so hover/completion/definition see the new
+    // packages without a daemon restart.
+    // -----------------------------------------------------------------------
+
+    /// Empty result vector — no successful downloads — must short-circuit
+    /// to 0 loaded packages and not touch the workspace symbol index.
+    #[test]
+    fn f009_refresh_after_download_returns_zero_for_empty_result() {
+        let ws = empty_ws();
+        let before = ws.symbols.len();
+        let loaded = refresh_workspace_after_download(&ws, &[]);
+        assert_eq!(loaded, 0);
+        assert_eq!(
+            ws.symbols.len(),
+            before,
+            "empty result must not touch the index"
+        );
+    }
+
+    /// All-error result — no `path` entries — must also short-circuit.
+    #[test]
+    fn f009_refresh_after_download_skips_failed_downloads() {
+        let ws = empty_ws();
+        let before = ws.symbols.len();
+        let result = vec![
+            serde_json::json!({"name":"pkg1","status":"error","error":"network"}),
+            serde_json::json!({"name":"pkg2","status":"error","error":"403"}),
+        ];
+        let loaded = refresh_workspace_after_download(&ws, &result);
+        assert_eq!(loaded, 0);
+        assert_eq!(
+            ws.symbols.len(),
+            before,
+            "failed downloads must not touch the index"
+        );
+    }
+
+    /// Successful results with non-existent paths must not panic and must
+    /// return 0 loaded — load_packages_cached gracefully ignores missing
+    /// files. Verifies the wire-up reaches load_packages_cached without
+    /// crashing on bogus input (the regression mode of the original bug
+    /// was that this code path was never reached at all).
+    #[test]
+    fn f009_refresh_after_download_attempts_load_for_ok_paths() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bogus = tmp.path().join("nonexistent.app");
+        let result = vec![serde_json::json!({
+            "name": "pkg",
+            "status": "ok",
+            "path": bogus.display().to_string()
+        })];
+        // Must not panic, must not error — just returns 0 loaded for
+        // unreadable paths. The point is that the code path is now
+        // exercised on every successful download.
+        let loaded = refresh_workspace_after_download(&ws, &result);
+        assert_eq!(loaded, 0, "unreadable path should yield 0 loaded");
     }
 }
 // WP18 / Phase 5: Mutation testing
