@@ -76,6 +76,61 @@ fn read_bounded_line<R: BufRead>(
     }
 }
 
+/// Result of trying to acquire the per-socket spawn lock for the daemon.
+#[cfg(unix)]
+enum SpawnLockResult {
+    /// This caller owns the lock and is responsible for spawning + cleanup.
+    Acquired(std::path::PathBuf),
+    /// Another caller already holds the lock and is mid-spawn — we should
+    /// wait for the socket to appear and retry connect.
+    Contended,
+}
+
+/// F-046: serialise daemon startup with a per-socket lock file. Two
+/// simultaneous `DaemonClient::connect` calls would otherwise both fail
+/// the initial connect, both spawn `al-lsp daemon`, and the later
+/// daemon would unlink+rebind the same socket while the first daemon
+/// kept running. CLI/TUI clients ended up split across two daemons
+/// with divergent indexes and debug state.
+///
+/// Implementation: `create_new` on a sibling `.lock` file is atomic on
+/// Unix. The first caller wins and spawns; concurrent callers see
+/// `AlreadyExists` and wait for the winner's daemon to come up.
+///
+/// Stale-lock recovery: if the lock file is older than `STALE_LOCK_AGE`
+/// the previous spawner crashed mid-spawn — drop it and retry.
+#[cfg(unix)]
+const STALE_LOCK_AGE: Duration = Duration::from_secs(30);
+
+#[cfg(unix)]
+fn try_acquire_spawn_lock(sock_path: &Path) -> std::io::Result<SpawnLockResult> {
+    let lock_path = sock_path.with_extension("lock");
+    // Stale-lock recovery: the previous spawner died mid-spawn.
+    if let Ok(meta) = std::fs::metadata(&lock_path) {
+        if let Ok(modified) = meta.modified() {
+            if modified.elapsed().unwrap_or_default() > STALE_LOCK_AGE {
+                let _ = std::fs::remove_file(&lock_path);
+            }
+        }
+    }
+    if let Some(parent) = lock_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(mut f) => {
+            use std::io::Write;
+            let _ = writeln!(f, "pid={}", std::process::id());
+            Ok(SpawnLockResult::Acquired(lock_path))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(SpawnLockResult::Contended),
+        Err(e) => Err(e),
+    }
+}
+
 /// A synchronous client for the al-lsp daemon.
 #[cfg(unix)]
 pub struct DaemonClient {
@@ -87,20 +142,55 @@ pub struct DaemonClient {
 #[cfg(unix)]
 impl DaemonClient {
     /// Connect to the daemon for a project, auto-starting if needed.
+    ///
+    /// F-046: concurrent first-time callers are serialised via a per-socket
+    /// `.lock` file so only one process spawns `al-lsp daemon`. Losers wait
+    /// for the winner's socket to appear, then connect normally.
     pub fn connect(project_root: &Path) -> Result<Self, String> {
         let sock_path = socket_path(project_root)
             .ok_or_else(|| "Cannot determine Unix socket path: XDG_RUNTIME_DIR is not set and no secure runtime directory is available".to_string())?;
 
-        // Try connecting first
+        // Fast path: daemon already running.
         if let Ok(stream) = UnixStream::connect(&sock_path) {
             return Self::from_stream(stream);
         }
-        // Daemon not running — start it
-        Self::start_daemon(project_root)?;
-        Self::wait_for_daemon(&sock_path)?;
-        let stream = UnixStream::connect(&sock_path)
-            .map_err(|e| format!("Failed to connect after starting daemon: {}", e))?;
-        Self::from_stream(stream)
+
+        // F-046: serialise spawn so concurrent callers don't both fork
+        // al-lsp daemons that race on the socket.
+        match try_acquire_spawn_lock(&sock_path)
+            .map_err(|e| format!("Cannot acquire daemon spawn lock: {}", e))?
+        {
+            SpawnLockResult::Acquired(lock_path) => {
+                // Re-check inside the lock — a concurrent winner may have
+                // just finished spawning while we were acquiring.
+                let result = if let Ok(stream) = UnixStream::connect(&sock_path) {
+                    Self::from_stream(stream)
+                } else {
+                    Self::start_daemon(project_root)
+                        .and_then(|()| Self::wait_for_daemon(&sock_path))
+                        .and_then(|()| {
+                            UnixStream::connect(&sock_path).map_err(|e| {
+                                format!("Failed to connect after starting daemon: {}", e)
+                            })
+                        })
+                        .and_then(Self::from_stream)
+                };
+                let _ = std::fs::remove_file(&lock_path);
+                result
+            }
+            SpawnLockResult::Contended => {
+                // Another caller is spawning the daemon. Wait for the
+                // socket, then connect — no spawn from this caller.
+                Self::wait_for_daemon(&sock_path)?;
+                let stream = UnixStream::connect(&sock_path).map_err(|e| {
+                    format!(
+                        "Failed to connect after another caller's daemon spawn: {}",
+                        e
+                    )
+                })?;
+                Self::from_stream(stream)
+            }
+        }
     }
 
     /// Create a client from an already-connected stream (for testing).
@@ -413,5 +503,64 @@ mod tests {
         let mut reader = std::io::BufReader::new(payload);
         let result = read_bounded_line(&mut reader, 64).expect("EOF must not error");
         assert!(result.is_none());
+    }
+
+    /// F-046: first acquirer of the per-socket spawn lock gets `Acquired`
+    /// with a real path; the lock file exists on disk.
+    #[test]
+    fn f046_spawn_lock_first_acquirer_succeeds() {
+        let sock = unique_sock();
+        let result = try_acquire_spawn_lock(&sock).expect("io ok");
+        match result {
+            SpawnLockResult::Acquired(lock_path) => {
+                assert!(lock_path.exists(), "lock file must be present on disk");
+                assert_eq!(lock_path.extension().unwrap(), "lock");
+                std::fs::remove_file(&lock_path).ok();
+            }
+            SpawnLockResult::Contended => panic!("first acquirer must not be contended"),
+        }
+    }
+
+    /// F-046 negative: a concurrent acquirer sees `Contended`. The
+    /// AlreadyExists branch is the gate that prevents two daemons from
+    /// being forked.
+    #[test]
+    fn f046_spawn_lock_second_acquirer_is_contended() {
+        let sock = unique_sock();
+        let first = try_acquire_spawn_lock(&sock).expect("io ok");
+        let SpawnLockResult::Acquired(lock_path) = first else {
+            panic!("first must be acquired");
+        };
+
+        let second = try_acquire_spawn_lock(&sock).expect("io ok");
+        match second {
+            SpawnLockResult::Contended => {}
+            SpawnLockResult::Acquired(_) => {
+                std::fs::remove_file(&lock_path).ok();
+                panic!("second acquirer must be contended");
+            }
+        }
+
+        // Releasing lets a third caller acquire.
+        std::fs::remove_file(&lock_path).ok();
+        let third = try_acquire_spawn_lock(&sock).expect("io ok");
+        match third {
+            SpawnLockResult::Acquired(p) => {
+                std::fs::remove_file(&p).ok();
+            }
+            SpawnLockResult::Contended => panic!("post-release acquirer must succeed"),
+        }
+    }
+
+    /// F-046 sanity: STALE_LOCK_AGE must comfortably exceed the
+    /// daemon-spawn wait window, otherwise a slow but live spawn
+    /// would be incorrectly classified as stale and clobbered.
+    /// `wait_for_daemon` polls 50 × 100ms = 5s.
+    #[test]
+    fn f046_stale_lock_age_exceeds_spawn_wait_window() {
+        assert!(
+            STALE_LOCK_AGE >= Duration::from_secs(10),
+            "STALE_LOCK_AGE must comfortably exceed the 5s spawn wait window"
+        );
     }
 }
