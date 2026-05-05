@@ -50,7 +50,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions.
 - F-045: Code-action object-kind detection treats many object types as page-like.
 - F-046: Daemon autostart can race into multiple daemons for one project. _(RESOLVED 2026-05-05; per-socket spawn lock with stale recovery.)_
-- F-047: Daemon dedup returns fake empty results for valid repeated requests.
+- F-047: Daemon dedup returns fake empty results for valid repeated requests. _(RESOLVED 2026-05-05.)_
 - F-048: Daemon protocol omits mandatory JSON-RPC `jsonrpc: "2.0"`. _(RESOLVED 2026-04-30 by T057 — see commit 5073384.)_
 - F-049: `al clear-cache` does not call the daemon cache endpoint and clears the wrong directory. _(RESOLVED 2026-05-05.)_
 - F-050: CLI accepts relative paths that daemon endpoints reject. _(RESOLVED 2026-05-05.)_
@@ -1255,7 +1255,7 @@ Guard startup with a per-socket lock. While holding the lock, retry connect befo
 - Run several first-time daemon CLI calls in parallel from the same project.
 - Verify only one `al-lsp daemon --project` process exists.
 
-## F-047: Daemon dedup returns fake empty results for valid repeated requests
+## F-047: Daemon dedup returns fake empty results for valid repeated requests _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: daemon interactive request handling

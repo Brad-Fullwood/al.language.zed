@@ -275,14 +275,15 @@ async fn handle_connection(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-    // Dedup cache: bounded ring buffer to avoid unbounded memory growth.
-    // Only stores last N entries; old entries are evicted naturally.
-    const DEDUP_CACHE_SIZE: usize = 64;
-    let mut dedup_keys: Vec<(String, Instant)> = Vec::with_capacity(DEDUP_CACHE_SIZE);
-    let mut dedup_write_idx: usize = 0;
 
-    /// Methods eligible for deduplication (rapid-fire interactive requests).
-    const DEDUP_METHODS: &[&str] = &["hover", "completions", "signatureHelp", "inlayHints"];
+    // F-047: previously a 50 ms ring-buffer dedup over hover / completions /
+    // signatureHelp / inlayHints replied to repeat requests with `null` /
+    // `[]`. Editors that legitimately re-issue these (debounce flush, retry
+    // after typing, parallel daemon clients) saw missing-info flicker.
+    // Removed entirely — real coalescing requires keeping the request IDs
+    // around to replay the completed result, and the workload here is small
+    // enough that running the dispatch twice is cheaper than the
+    // correctness debt.
 
     while let Some(line) = read_bounded_line(&mut reader, MAX_MESSAGE_SIZE).await? {
         let line = line.trim().to_string();
@@ -325,60 +326,15 @@ async fn handle_connection(
         let response = {
             let method = req.method.clone();
             let req_id = req.id;
-
-            // Request deduplication: skip if identical method+params within 50ms.
-            // Only build the dedup key for eligible methods to avoid serialization cost.
-            let is_dup = if DEDUP_METHODS.contains(&req.method.as_str()) {
-                let dedup_key = format!(
-                    "{}:{}",
-                    req.method,
-                    req.params
-                        .as_ref()
-                        .map(|p| p.to_string())
-                        .unwrap_or_default()
-                );
-                let now = Instant::now();
-                let dup = dedup_keys
-                    .iter()
-                    .any(|(k, t)| k == &dedup_key && now.duration_since(*t).as_millis() < 50);
-                // Ring buffer insert: only record non-duplicate requests so we don't
-                // keep refreshing the timestamp and extending the dedup window.
-                if !dup {
-                    if dedup_write_idx < dedup_keys.len() {
-                        dedup_keys[dedup_write_idx] = (dedup_key, now);
-                    } else {
-                        dedup_keys.push((dedup_key, now));
-                    }
-                    dedup_write_idx = (dedup_write_idx + 1) % DEDUP_CACHE_SIZE;
-                }
-                dup
-            } else {
-                false
-            };
-
-            if is_dup {
-                tracing::trace!(method = %method, id = req_id, "daemon: dedup skip");
-                let empty_result = match method.as_str() {
-                    "completions" | "inlayHints" => serde_json::json!([]),
-                    _ => serde_json::Value::Null,
-                };
-                Response {
-                    id: req_id,
-                    result: Some(empty_result),
-                    error: None,
-                    ..Default::default()
-                }
-            } else {
-                let start = Instant::now();
-                let resp = dispatch_request(&workspace, req, &shutdown).await;
-                let elapsed = start.elapsed();
-                tracing::debug!(method = %method, id = req_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
-                // Mark activity AFTER dispatch returns so the idle reaper
-                // can't kill the daemon mid-request — a long-running build /
-                // download keeps the timer fresh until completion.
-                *last_activity.lock().await = Instant::now();
-                resp
-            }
+            let start = Instant::now();
+            let resp = dispatch_request(&workspace, req, &shutdown).await;
+            let elapsed = start.elapsed();
+            tracing::debug!(method = %method, id = req_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
+            // Mark activity AFTER dispatch returns so the idle reaper can't
+            // kill the daemon mid-request — a long-running build / download
+            // keeps the timer fresh until completion.
+            *last_activity.lock().await = Instant::now();
+            resp
         };
 
         let mut json = serde_json::to_string(&response)?;
