@@ -27,7 +27,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-021: Release workflow references removed packages and incompatible artifacts. _(RESOLVED 2026-05-05.)_
 - F-022: `DaemonClient::read_response` can allocate unbounded memory before enforcing its cap. _(RESOLVED 2026-05-05.)_
 - F-023: `al-test-harness` can leak `al-lsp` children and pending requests on failures. _(RESOLVED 2026-05-05.)_
-- F-024: Zed live-test helpers have race-prone log waits and fixed sleeps.
+- F-024: Zed live-test helpers have race-prone log waits and fixed sleeps. _(RESOLVED 2026-05-05 — every fixed sleep now scaled by `AL_ZED_TEST_TIMING_MULTIPLIER`; log wait was already event-driven via `wait_for_lsp_log`.)_
 - F-025: DAP capture scripts drop buffered frames between reads. _(RESOLVED 2026-05-05 — pattern was already correct, invariant now documented in both scripts.)_
 - F-026: `deny.toml` exists but is not enforced in CI. _(RESOLVED — pre-existing fix; cargo-deny job wired in `.github/workflows/ci.yml:63` per prior T054.)_
 - F-027: Nested Zed settings under `al` are double-wrapped and ignored. _(RESOLVED 2026-05-05.)_
@@ -699,7 +699,7 @@ Implement `Drop`/explicit cleanup around child lifecycle, use `kill_on_drop` whe
 - Force a request timeout and verify pending map cleanup.
 - Force initialization failure and verify no `al-lsp` child remains.
 
-## F-024: Zed live-test helpers have race-prone log waits and fixed input sleeps
+## F-024: Zed live-test helpers have race-prone log waits and fixed input sleeps _(RESOLVED 2026-05-05)_
 
 - Severity: Low
 - Area: live Zed automation tests

@@ -369,7 +369,11 @@ impl ZedTest {
         }
 
         // Give Zed time to open the tab and activate the language server.
-        tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+        // F-024: fixed sleeps here are flaky on slow / busy machines.
+        // `AL_ZED_TEST_TIMING_MULTIPLIER` (float, default 1.0) lets CI or
+        // a dev with a heavy box scale every UI sleep without code edits.
+        // For LSP-bound waits prefer `wait_for_lsp_log` instead.
+        tokio::time::sleep(scale_duration(tokio::time::Duration::from_millis(800))).await;
         Ok(())
     }
 
@@ -433,9 +437,9 @@ impl ZedTest {
         self.focus()?;
         input::send_keys("ctrl+shift+p")?;
         // Synchronous sleep — this is test tooling, blocking is acceptable.
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(scale_duration(std::time::Duration::from_millis(200)));
         input::type_text(command)?;
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(scale_duration(std::time::Duration::from_millis(100)));
         input::send_keys("return")?;
         Ok(())
     }
@@ -450,9 +454,9 @@ impl ZedTest {
     pub fn goto_line(&self, line: u32) -> Result<(), ZedTestError> {
         self.focus()?;
         input::send_keys("ctrl+g")?;
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        std::thread::sleep(scale_duration(std::time::Duration::from_millis(150)));
         input::type_text(&line.to_string())?;
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(scale_duration(std::time::Duration::from_millis(100)));
         input::send_keys("return")?;
         Ok(())
     }
@@ -575,7 +579,7 @@ impl ZedTest {
     /// Sleep for `ms` milliseconds. Provided for explicit timing control in
     /// test scripts where waiting on a log pattern is not practical.
     pub async fn wait(&self, ms: u64) {
-        tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
+        tokio::time::sleep(scale_duration(tokio::time::Duration::from_millis(ms))).await;
     }
 
     /// Save all open files (Ctrl+Shift+S in Zed).
@@ -598,5 +602,98 @@ impl ZedTest {
         self.focus()?;
         input::send_keys("ctrl+w")?;
         Ok(())
+    }
+}
+
+/// F-024: scale a fixed sleep duration by `AL_ZED_TEST_TIMING_MULTIPLIER`
+/// (env var, parsed as f64, defaulting to 1.0). Lets CI / a heavily-loaded
+/// dev machine make every UI sleep longer without re-editing source. A
+/// multiplier of 0.0 or NaN clamps to the original duration so a typo
+/// can't accidentally turn the wait into a no-op.
+fn scale_duration(d: std::time::Duration) -> std::time::Duration {
+    let mult: f64 = std::env::var("AL_ZED_TEST_TIMING_MULTIPLIER")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|v: &f64| v.is_finite() && *v > 0.0)
+        .unwrap_or(1.0);
+    if (mult - 1.0).abs() < f64::EPSILON {
+        return d;
+    }
+    let scaled_ms = (d.as_millis() as f64) * mult;
+    std::time::Duration::from_millis(scaled_ms.round() as u64)
+}
+
+#[cfg(test)]
+mod scale_duration_tests {
+    use super::scale_duration;
+    use std::time::Duration;
+
+    #[test]
+    fn default_multiplier_is_identity() {
+        // Positive: with no env var set, sleep durations are unchanged.
+        let _guard = EnvGuard::unset("AL_ZED_TEST_TIMING_MULTIPLIER");
+        let d = Duration::from_millis(800);
+        assert_eq!(scale_duration(d), d);
+    }
+
+    #[test]
+    fn explicit_multiplier_scales() {
+        let _guard = EnvGuard::set("AL_ZED_TEST_TIMING_MULTIPLIER", "2.5");
+        let scaled = scale_duration(Duration::from_millis(200));
+        assert_eq!(scaled, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn zero_or_negative_falls_back_to_original() {
+        // Negative: a typo of 0 or -1 must NOT turn the wait into a no-op.
+        let _g0 = EnvGuard::set("AL_ZED_TEST_TIMING_MULTIPLIER", "0");
+        assert_eq!(
+            scale_duration(Duration::from_millis(150)),
+            Duration::from_millis(150)
+        );
+        drop(_g0);
+        let _g1 = EnvGuard::set("AL_ZED_TEST_TIMING_MULTIPLIER", "-2");
+        assert_eq!(
+            scale_duration(Duration::from_millis(150)),
+            Duration::from_millis(150)
+        );
+    }
+
+    #[test]
+    fn malformed_value_falls_back_to_original() {
+        let _guard = EnvGuard::set("AL_ZED_TEST_TIMING_MULTIPLIER", "fast-please");
+        assert_eq!(
+            scale_duration(Duration::from_millis(150)),
+            Duration::from_millis(150)
+        );
+    }
+
+    /// Tiny RAII helper — env vars are process-global so we restore on drop.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: tests in this module run serially via a Mutex below.
+            unsafe { std::env::set_var(key, val) };
+            EnvGuard { key, prev }
+        }
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            EnvGuard { key, prev }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
     }
 }
