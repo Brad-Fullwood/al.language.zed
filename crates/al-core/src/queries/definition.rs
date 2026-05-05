@@ -103,7 +103,23 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
-    // textual fallback
+    // F-039: prefer a same-file procedure / trigger / event declaration
+    // BEFORE falling back to the first textual identifier match, which is
+    // typically a use site. Walk the tree iteratively looking for a
+    // `procedure_declaration` (or trigger/event variant) whose `name` field
+    // case-insensitively matches `clean_name`.
+    if let Some(decl_range) = find_same_file_procedure_decl(&tree, source, clean_name) {
+        let def_range: Range = crate::syntax_lsp::ts_range_to_lsp(&decl_range, source).into();
+        if def_range.start != position {
+            return Some(vec![Location {
+                uri: uri.clone(),
+                range: def_range,
+            }]);
+        }
+    }
+
+    // textual fallback (last resort — may land on a usage if no declaration
+    // node matches; the procedure-decl scan above is the primary path).
     let refs = crate::syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let first = &refs[0];
@@ -166,6 +182,37 @@ pub fn definition(workspace: &Workspace, uri: &Url, position: Position) -> Optio
         }
     }
 
+    None
+}
+
+/// F-039: scan the parse tree for a procedure / trigger / event declaration
+/// whose `name` field case-insensitively matches `target`. Returns the range
+/// of the name node (the canonical declaration site to navigate to). Walks
+/// iteratively to avoid stack overflow on deeply nested AL.
+fn find_same_file_procedure_decl(
+    tree: &tree_sitter::Tree,
+    source: &[u8],
+    target: &str,
+) -> Option<tree_sitter::Range> {
+    let mut cursor = tree.walk();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    if let Ok(name_text) = name_node.utf8_text(source) {
+                        if name_text.trim_matches('"').eq_ignore_ascii_case(target) {
+                            return Some(name_node.range());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
     None
 }
 
@@ -436,6 +483,63 @@ mod tests {
         let ws = Workspace::new();
         let result = find_package_entry_for_type(&ws, "Record", Some("Nonexistent"));
         assert!(result.is_none());
+    }
+
+    use crate::queries::Position;
+
+    fn open(ws: &Workspace, src: &str) -> Url {
+        let uri = Url::parse("file:///tmp/def-test.al").unwrap();
+        ws.documents.open(uri.clone(), src.to_string());
+        uri
+    }
+
+    /// F-039 regression: caller `Add(1, 2)` appears BEFORE the `procedure Add`
+    /// declaration. Hover the call-site `Add` and `definition()` must return
+    /// the declaration line, not the call-site itself.
+    #[test]
+    fn definition_jumps_to_forward_declared_procedure() {
+        let src = "codeunit 50100 \"Test\"\n{\n    procedure Caller()\n    begin\n        Add(1, 2);\n    end;\n\n    procedure Add(A: Integer; B: Integer): Integer\n    begin\n        exit(A + B);\n    end;\n}\n";
+        let ws = Workspace::new();
+        let uri = open(&ws, src);
+        // Line 4 (0-indexed): "        Add(1, 2);" — col 8 → 'A' of Add (call site).
+        let result = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 8,
+            },
+        )
+        .expect("definition should resolve");
+        let loc = result.first().expect("at least one location");
+        // Declaration is on line 7 (0-indexed): "    procedure Add(...)".
+        assert_eq!(
+            loc.range.start.line, 7,
+            "expected declaration on line 7, got {:?}",
+            loc.range
+        );
+    }
+
+    /// Negative: the helper must not return the call-site even when a
+    /// declaration exists at a different position.
+    #[test]
+    fn definition_does_not_return_callsite_for_known_procedure() {
+        let src = "codeunit 50100 \"Test\"\n{\n    procedure Caller()\n    begin\n        Helper();\n    end;\n\n    procedure Helper()\n    begin\n    end;\n}\n";
+        let ws = Workspace::new();
+        let uri = open(&ws, src);
+        let result = definition(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 8,
+            },
+        )
+        .expect("definition should resolve");
+        let loc = &result[0];
+        // Must point to declaration line 7, NOT call line 4.
+        assert_ne!(loc.range.start.line, 4);
+        assert_eq!(loc.range.start.line, 7);
     }
 
     #[test]
