@@ -44,7 +44,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-038: References and rename are workspace-wide lexical matches, not symbol references.
 - F-039: Same-file procedure go-to-definition misses forward declarations and can jump to a use. _(RESOLVED 2026-05-05.)_
 - F-040: Workspace object index collapses duplicate object names and can remove wrong mapping.
-- F-041: Virtual package source cache can serve stale definitions.
+- F-041: Virtual package source cache can serve stale definitions. _(RESOLVED 2026-05-05.)_
 - F-042: Some generated ranges use byte columns as LSP UTF-16 columns.
 - F-043: "Make procedure local" is offered without checking external callers.
 - F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions.
@@ -1109,7 +1109,7 @@ Key object maps by a composite identity: kind, ID where available, name, package
 - Remove one file.
 - Assert the other mapping remains.
 
-## F-041: Virtual package source cache can serve stale definitions
+## F-041: Virtual package source cache can serve stale definitions _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: package source cache

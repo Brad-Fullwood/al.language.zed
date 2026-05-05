@@ -30,29 +30,56 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
 
     ensure_readonly_settings(&cache_root);
 
+    fs::create_dir_all(&pkg_dir)?;
+
+    // F-041: invalidate the cache entry when the source `.app` package is
+    // newer than the cached virtual file. Without this, replacing a package
+    // with a newer version (same publisher + name + object id + name) would
+    // serve stale generated source forever because `create_new` short-
+    // circuited on AlreadyExists. Compare mtimes — if the .app post-dates
+    // the cached file, drop the cached file (clearing its read-only bit
+    // first so the remove succeeds on Windows + Unix).
+    if let Some(app) = app_path {
+        if let (Ok(app_meta), Ok(cache_meta)) = (fs::metadata(app), fs::metadata(&file_path)) {
+            if let (Ok(app_mtime), Ok(cache_mtime)) = (app_meta.modified(), cache_meta.modified()) {
+                if app_mtime > cache_mtime {
+                    let _ = clear_readonly(&file_path);
+                    let _ = fs::remove_file(&file_path);
+                }
+            }
+        }
+    }
+
     // Use create_new to atomically create the file, avoiding a TOCTOU race.
     // If another thread/process already created it, AlreadyExists is fine.
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file_path)
     {
-        fs::create_dir_all(&pkg_dir)?;
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&file_path)
-        {
-            Ok(mut f) => {
-                let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
-                let source = extracted.unwrap_or_else(|| render_outline(entry));
-                f.write_all(source.as_bytes())?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Another thread already wrote the file; use what's there.
-            }
-            Err(e) => return Err(e),
+        Ok(mut f) => {
+            let extracted = app_path.and_then(|path| extract_source_from_app(path, entry));
+            let source = extracted.unwrap_or_else(|| render_outline(entry));
+            f.write_all(source.as_bytes())?;
         }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another thread already wrote the file; use what's there.
+        }
+        Err(e) => return Err(e),
     }
 
     enforce_readonly(&file_path);
     Ok(file_path)
+}
+
+/// Drop the read-only attribute on a cached virtual file so `remove_file`
+/// can delete it. Best-effort: failures here are not fatal — the subsequent
+/// `remove_file` will simply fail and the stale entry will linger.
+fn clear_readonly(path: &Path) -> std::io::Result<()> {
+    let mut perms = fs::metadata(path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    fs::set_permissions(path, perms)
 }
 
 /// Kinds of members used for line matching.
