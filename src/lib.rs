@@ -181,7 +181,7 @@ impl zed::Extension for AlExtension {
             .binary
             .as_ref()
             .and_then(|b| b.arguments.as_ref())
-            .map(|args| args.iter().cloned().collect())
+            .map(|args| args.to_vec())
             .unwrap_or_else(|| vec!["--stdio".to_string()]);
 
         // Explicit binary path from settings takes unconditional priority.
