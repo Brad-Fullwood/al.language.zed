@@ -9,7 +9,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-003: Workspace test suite fails on hover for procedure parameters. _(RESOLVED 2026-05-05.)_
 - F-004: AL toolchain discovery misses a valid Microsoft AL tool install. _(RESOLVED 2026-05-05.)_
 - F-005: Zed tasks and README use `al` for repository CLI, but Microsoft now owns that command name. _(RESOLVED 2026-05-05.)_
-- F-006: Tree-sitter grammar directory is not directly buildable from checkout.
+- F-006: Tree-sitter grammar directory is not directly buildable from checkout. _(RESOLVED 2026-05-05.)_
 - F-007: CI Clippy commands fail under current Rust toolchain. _(WASM clippy fix RESOLVED 2026-05-05; native clippy section already passes — see finding body for status.)_
 - F-008: `al.compile` leaves stale compiler diagnostics after clean rebuild. _(RESOLVED 2026-05-05.)_
 - F-009: Daemon `downloadSymbols` downloads packages but never loads them into workspace. _(RESOLVED 2026-05-05.)_
@@ -29,7 +29,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-023: `al-test-harness` can leak `al-lsp` children and pending requests on failures.
 - F-024: Zed live-test helpers have race-prone log waits and fixed sleeps.
 - F-025: DAP capture scripts drop buffered frames between reads.
-- F-026: `deny.toml` exists but is not enforced in CI.
+- F-026: `deny.toml` exists but is not enforced in CI. _(RESOLVED — pre-existing fix; cargo-deny job wired in `.github/workflows/ci.yml:63` per prior T054.)_
 - F-027: Nested Zed settings under `al` are double-wrapped and ignored. _(RESOLVED 2026-05-05.)_
 - F-028: Legacy proxy discovery probes the wrong installed extension directory. _(RESOLVED 2026-05-05; legacy proxy branch removed.)_
 - F-029: Debug schema/snippets advertise `snapshotInitialize`, but adapter maps it to launch. _(RESOLVED 2026-05-05.)_
@@ -249,7 +249,7 @@ Make a product decision and apply it consistently:
 - With Microsoft ALTool installed, run every Zed task command.
 - Verify every README command either invokes Microsoft `al` intentionally or invokes the repository CLI by its real name.
 
-## F-006: Tree-sitter grammar directory is not directly buildable from checkout
+## F-006: Tree-sitter grammar directory is not directly buildable from checkout _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: tree-sitter grammar packaging
@@ -747,7 +747,7 @@ Maintain a persistent byte buffer, parse as many complete frames as are availabl
 - Feed two concatenated DAP frames in one chunk.
 - Assert both frames are parsed.
 
-## F-026: `deny.toml` exists but is not enforced in CI
+## F-026: `deny.toml` exists but is not enforced in CI _(RESOLVED — pre-existing fix)_
 
 - Severity: Low
 - Area: supply-chain validation

@@ -517,6 +517,18 @@ tree-sitter-al/
    `queries/highlights.scm`.
 3. `tree-sitter generate` compiles `grammar.js` into `src/parser.c`.
 
+The submodule's `.gitignore` excludes generated artefacts (`src/parser.c`,
+`src/grammar.json`, `src/node-types.json`, …), so a fresh checkout cannot run
+`tree-sitter build` directly. Run `make grammar` from the parent repo first
+(steps 2 + 3 above; step 1 needs the Microsoft VS Code AL extension assets and
+is normally run by the original maintainer rather than every contributor):
+
+```sh
+make grammar                               # regenerate src/ inside tree-sitter-al
+cd tree-sitter-al
+tree-sitter build --output target/tree-sitter-al.so
+```
+
 ### Submodule workflow
 
 When you change anything in `tree-sitter-al/`:

@@ -6,6 +6,8 @@
 #   make rust      — rebuild all Rust crates (native, excludes zed-al)
 #   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip1)
 #   make bridges   — rebuild just .NET bridges
+#   make grammar   — regenerate the tree-sitter-al parser sources (required before
+#                    `tree-sitter build` from a fresh clone — see F-006)
 #   make clean     — clean all build artifacts
 
 SHELL := /bin/bash
@@ -19,7 +21,7 @@ ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-core/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip1/release/zed_al.wasm
 
-.PHONY: build install rust wasm bridges clean
+.PHONY: build install rust wasm bridges grammar clean
 
 # ── Default: rebuild everything ──────────────────────────────────
 build: rust wasm bridges
@@ -76,6 +78,31 @@ bridges:
 	@if [ -f $(ALSEMANTIC_PROJ) ]; then \
 		dotnet build $(ALSEMANTIC_PROJ) --nologo -v quiet && echo "  AlSemantic: OK"; \
 	fi
+
+# ── Regenerate tree-sitter-al parser ─────────────────────────────
+# `tree-sitter build --output target/tree-sitter-al.so` from inside
+# tree-sitter-al/ fails on a fresh clone because src/grammar.json,
+# src/parser.c, src/node-types.json and friends are gitignored in the
+# submodule. Run this target first to materialise them; it shells out
+# to the al-gen generator, then `tree-sitter generate`.
+#
+# Requires: tree-sitter CLI on PATH, plus the al-extract step's inputs
+# (Microsoft VS Code AL extension assets — see tree-sitter-al/README.md).
+grammar:
+	@echo "=== Regenerating tree-sitter-al parser sources ==="
+	@if [ ! -d tree-sitter-al/generator ]; then \
+		echo "ERROR: tree-sitter-al submodule is empty. Run \`git submodule update --init --recursive\` first."; \
+		exit 1; \
+	fi
+	@if ! command -v tree-sitter >/dev/null; then \
+		echo "ERROR: tree-sitter CLI not found on PATH. Install: cargo install tree-sitter-cli"; \
+		exit 1; \
+	fi
+	cd tree-sitter-al/generator && cargo run --release --bin al-gen
+	cd tree-sitter-al && tree-sitter generate
+	@echo ""
+	@echo "Parser sources regenerated. You can now run:"
+	@echo "  cd tree-sitter-al && tree-sitter build --output target/tree-sitter-al.so"
 
 # ── Clean ────────────────────────────────────────────────────────
 clean:
