@@ -221,7 +221,10 @@ pub async fn completions_full(
     let Ok(path) = uri.to_file_path() else {
         return items;
     };
-    let pos = (position.line + 1, position.character + 1);
+    // F-036: bridge `completions` consumes 0-based (line, column) — see
+    // `bridge::SemanticBridge::completions_at` doc and the matching C#
+    // `LineColToOffset` invariant.
+    let pos = (position.line, position.character);
     let bridge_items = match bridge.completions_at(&path, pos).await {
         Ok(v) => v,
         Err(e) => {

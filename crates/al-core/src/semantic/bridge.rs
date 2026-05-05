@@ -347,6 +347,13 @@ impl SemanticBridge {
     }
 
     /// Resolve the type of the symbol at the given position.
+    ///
+    /// **Position contract (F-036):** `pos` is `(line, column)` in the same
+    /// 0-based UTF-16 coordinate system that LSP uses. The C# bridge's
+    /// `LineColToOffset` walks `cur < line` newlines from the start of the
+    /// file, then adds `col` directly to the resulting byte offset, so any
+    /// off-by-one done on the Rust side will land at the wrong token. Pass
+    /// LSP positions through unchanged.
     pub async fn type_at(
         &self,
         file: &Path,
@@ -366,6 +373,10 @@ impl SemanticBridge {
     }
 
     /// Get completion items at the given position.
+    ///
+    /// **Position contract (F-036):** identical to [`Self::type_at`] — `pos`
+    /// is 0-based UTF-16 `(line, column)`, passed through to the C# bridge
+    /// without adjustment.
     pub async fn completions_at(
         &self,
         file: &Path,

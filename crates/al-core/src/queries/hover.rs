@@ -389,7 +389,11 @@ pub async fn hover_full(
     let guard = crate::semantic::get_or_init_bridge(workspace).await?;
     let bridge = guard.as_ref()?;
     let path = uri.to_file_path().ok()?;
-    let pos = (position.line + 1, position.character + 1);
+    // F-036: bridge `typeAt` consumes 0-based (line, column) — its C#
+    // `LineColToOffset` walks `cur < line` newlines from the start of the
+    // file, then adds `col` directly. Adding 1 here landed one full line
+    // past the cursor and shifted hover one byte right of the token.
+    let pos = (position.line, position.character);
     let info = match bridge.type_at(&path, pos).await {
         Ok(v) => v?,
         Err(e) => {

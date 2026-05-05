@@ -39,7 +39,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-033: Debug schema rejects booleans it claims to support. _(RESOLVED 2026-05-05.)_
 - F-034: Generated attach scenarios still run a compile build task. _(RESOLVED 2026-05-05.)_
 - F-035: README architecture and command documentation are stale after crate consolidation. _(RESOLVED 2026-05-05.)_
-- F-036: Semantic bridge position contract is off by one.
+- F-036: Semantic bridge position contract is off by one. _(RESOLVED 2026-05-05.)_
 - F-037: Bridge hover/completion ignore unsaved text and package references.
 - F-038: References and rename are workspace-wide lexical matches, not symbol references.
 - F-039: Same-file procedure go-to-definition misses forward declarations and can jump to a use. _(RESOLVED 2026-05-05.)_
@@ -987,7 +987,7 @@ Update README architecture, command examples, and dependency notes to match curr
 
 - Check every README package/command reference against `cargo metadata` and CLI help output.
 
-## F-036: Semantic bridge position contract is off by one
+## F-036: Semantic bridge position contract is off by one _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: semantic bridge, hover/completion fallback
