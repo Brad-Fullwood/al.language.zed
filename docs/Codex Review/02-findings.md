@@ -34,7 +34,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-028: Legacy proxy discovery probes the wrong installed extension directory. _(RESOLVED 2026-05-05; legacy proxy branch removed.)_
 - F-029: Debug schema/snippets advertise `snapshotInitialize`, but adapter maps it to launch. _(RESOLVED 2026-05-05.)_
 - F-030: `al.editorServicesPath` is exposed but not passed to the Zed DAP command. _(RESOLVED 2026-05-05.)_
-- F-031: Zed grammar pin is behind native parser used by `al-core`.
+- F-031: Zed grammar pin is behind native parser used by `al-core`. _(RESOLVED 2026-05-05.)_
 - F-032: Runnable test tasks call CLI commands that do not exist. _(RESOLVED 2026-05-05.)_
 - F-033: Debug schema rejects booleans it claims to support. _(RESOLVED 2026-05-05.)_
 - F-034: Generated attach scenarios still run a compile build task. _(RESOLVED 2026-05-05.)_
@@ -868,7 +868,7 @@ Wire the setting through to `al-lsp --dap` using an explicit argument/env var, o
 - Start DAP.
 - Assert `al-lsp` receives and uses that path.
 
-## F-031: Zed grammar pin is behind native parser used by `al-core`
+## F-031: Zed grammar pin is behind native parser used by `al-core` _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: grammar versioning

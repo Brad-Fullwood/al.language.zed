@@ -25,6 +25,22 @@ Package a completed `/dev-implement` batch into a shippable unit.
 4. Otherwise: print paths and the `gh pr create` command the user
    can run manually.
 
+## Pre-flight checklist (audit phase)
+
+The auditor MUST also check (F-031) that `extension.toml`'s
+`[grammars.al].rev` exactly matches the `tree-sitter-al/` submodule
+HEAD. If they diverge, Zed's syntax highlighting and the native
+`al-core` parser will produce different parse trees for the same .al
+file. Verify with:
+
+```sh
+diff <(grep '^rev' extension.toml | cut -d'"' -f2) \
+     <(cd tree-sitter-al && git rev-parse HEAD)
+```
+
+If they differ, halt and ask whether to bump `extension.toml`'s rev to
+match the submodule HEAD before proceeding.
+
 ## Phases
 
 Follow `.claude/skills/release-prep/SKILL.md` verbatim.
