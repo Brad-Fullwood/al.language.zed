@@ -21,7 +21,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Windows is intentionally excluded — al-protocol's daemon socket is
+        # Unix-only (see F-020), so al-explorer cannot link on Windows. The
+        # Zed extension itself ships as platform-neutral WASM.
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout

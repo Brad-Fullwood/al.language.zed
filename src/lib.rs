@@ -86,12 +86,24 @@ impl AlExtension {
         )?;
 
         let (os, arch) = zed::current_platform();
+        // F-020/F-021: al-protocol's daemon socket is Unix-only, so we do
+        // not ship a Windows release asset. On Windows, fail fast with a
+        // clear message rather than asking GitHub for a non-existent
+        // archive whose extraction would also be wrong shape.
+        if matches!(os, zed::Os::Windows) {
+            return Err(
+                "AL extension binaries are not currently published for Windows. \
+                 Set the binary path manually in Zed settings: \
+                 {\"lsp\": {\"al-lsp\": {\"binary\": {\"path\": \"/path/to/al-lsp\"}}}}"
+                    .to_string(),
+            );
+        }
         let asset_name = format!(
             "al-{os}-{arch}.tar.gz",
             os = match os {
                 zed::Os::Mac => "macos",
                 zed::Os::Linux => "linux",
-                zed::Os::Windows => "windows",
+                zed::Os::Windows => unreachable!("Windows handled above"),
             },
             arch = match arch {
                 zed::Architecture::Aarch64 => "aarch64",

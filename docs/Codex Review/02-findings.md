@@ -23,8 +23,8 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-017: Successful daemon null responses serialize without JSON-RPC `result`. _(RESOLVED 2026-05-05.)_
 - F-018: Workspace readiness is signaled before package symbols load.
 - F-019: Compiler diagnostic parsing/publishing is fragile for paths.
-- F-020: `al-explorer` is not Windows-buildable, but CI/release include Windows.
-- F-021: Release workflow references removed packages and incompatible artifacts.
+- F-020: `al-explorer` is not Windows-buildable, but CI/release include Windows. _(RESOLVED 2026-05-05.)_
+- F-021: Release workflow references removed packages and incompatible artifacts. _(RESOLVED 2026-05-05.)_
 - F-022: `DaemonClient::read_response` can allocate unbounded memory before enforcing its cap. _(RESOLVED 2026-05-05.)_
 - F-023: `al-test-harness` can leak `al-lsp` children and pending requests on failures.
 - F-024: Zed live-test helpers have race-prone log waits and fixed sleeps.
@@ -603,7 +603,7 @@ Parse compiler output with a structured regex that captures file, line, column, 
 - Unit-test diagnostic lines with spaces, parentheses, and relative paths.
 - Run `al.compile` on a project under a path with parentheses.
 
-## F-020: `al-explorer` is not Windows-buildable, but CI/release include Windows
+## F-020: `al-explorer` is not Windows-buildable, but CI/release include Windows _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: cross-platform support, CI/release
@@ -627,7 +627,7 @@ Decide whether Windows is supported. If yes, implement a Windows transport such 
 - `rustup target add x86_64-pc-windows-gnu`
 - `cargo check -p al-explorer --target x86_64-pc-windows-gnu`
 
-## F-021: Release workflow references removed packages and incompatible artifacts
+## F-021: Release workflow references removed packages and incompatible artifacts _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: release workflow, extension auto-download

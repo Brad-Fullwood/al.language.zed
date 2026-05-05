@@ -43,10 +43,10 @@ jobs:
             runner: macos-latest
             artifact_name: macos-aarch64
 
-          # Windows x86_64
-          - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-            artifact_name: windows-x86_64
+          # Windows is intentionally excluded — al-protocol's daemon socket
+          # is Unix-only (see F-020/F-021), so al-explorer cannot link on
+          # Windows. The Zed extension itself ships as platform-neutral
+          # WASM and works on every Zed-supported OS.
 
     steps:
       - name: Checkout
@@ -103,31 +103,11 @@ jobs:
           cp "$BIN_DIR/al-explorer" "$OUT/"
           tar -czf "$OUT.tar.gz" "$OUT"
 
-      # ── Package (Windows) ───────────────────────────────────────────────────
-      - name: Package artifacts (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $BIN_DIR = "target\${{ matrix.target }}\release"
-          $OUT     = "al-${{ matrix.artifact_name }}"
-          New-Item -ItemType Directory -Path $OUT
-          Copy-Item "$BIN_DIR\al-lsp.exe"      $OUT\
-          Copy-Item "$BIN_DIR\al-explorer.exe"  $OUT\
-          Compress-Archive -Path $OUT -DestinationPath "$OUT.zip"
-
       - name: Upload binary artifact (Unix)
-        if: runner.os != 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: al-${{ matrix.artifact_name }}
           path: al-${{ matrix.artifact_name }}.tar.gz
-
-      - name: Upload binary artifact (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: al-${{ matrix.artifact_name }}
-          path: al-${{ matrix.artifact_name }}.zip
 
   build-wasm:
     name: Build WASM extension
