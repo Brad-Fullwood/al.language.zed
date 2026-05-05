@@ -87,8 +87,10 @@ code generation) happens in `al-lsp` outside the Zed sandbox.
 - Tolerates BC's non-standard DAP messages: injects missing `seq` fields; accepts string-or-bool launch arguments (`breakOnError`, `breakOnRecordWrite`)
 
 ### Tooling
-- `al` — JSON-RPC client for every LSP feature from the terminal, plus batch analysis, code generation, builds, and translations
-- `al-explorer` — ratatui-based TUI symbol browser with multiple view modes
+- `al-explorer` — unified TUI + CLI client. The CLI is a JSON-RPC client for
+  every LSP feature from the terminal, plus batch analysis, code generation,
+  builds, and translations. With no arguments, it launches the ratatui-based
+  TUI symbol browser.
 - XLIFF workflow: generate `.g.xlf`, refresh language files, list untranslated strings, suggest translations from base-app symbols
 - Project scaffolding: `default`, `pte`, `appsource`, `library`, `test`, `copilot`, `agent`, `api` templates
 - Bulk fixes: add `ApplicationArea`, add `Tooltips` from base app, add `DataClassification`, sort members in canonical order, rename files to `<Type><Id>.<Name>.al`
@@ -101,16 +103,15 @@ code generation) happens in `al-lsp` outside the Zed sandbox.
 ```
 ┌─ Entry points ──────────────────────────────┐     ┌─ Business logic ─────────┐
 │                                             │     │                          │
-│ Zed editor ──► zed-al (wasm32-wasip1)       │     │  al-core                 │
-│                  │                          │     │   ├─ al-syntax           │
-│                  │ spawns & speaks LSP      │     │   ├─ al-symbols          │
-│                  ▼                          │     │   ├─ al-semantic         │
-│                al-lsp --stdio  ────────────►├────►│   ├─ al-dap-client       │
-│                                             │     │   └─ al-daemon-client    │
-│ al (CLI)     ──► al-lsp daemon ────────────►│     │                          │
-│ al-explorer  ──► al-lsp daemon ────────────►│     │  Queries live in         │
-│                                             │     │  al-core/src/queries/    │
-│ Zed debugger ──► al-lsp --dap  ────────────►│     │  (32 modules)            │
+│ Zed editor   ──► zed-al (wasm32-wasip1)     │     │  al-core                 │
+│                    │                        │     │   ├─ syntax  (module)    │
+│                    │ spawns & speaks LSP    │     │   ├─ symbols (module)    │
+│                    ▼                        │     │   ├─ semantic (module)   │
+│                  al-lsp --stdio  ──────────►├────►│   ├─ server  (module)    │
+│                                             │     │   ├─ dap     (module)    │
+│ al-explorer  ──► al-lsp daemon  ───────────►│     │   ├─ queries (32 files)  │
+│                                             │     │   └─ bin/al-lsp.rs       │
+│ Zed debugger ──► al-lsp --dap   ───────────►│     │                          │
 │                                             │     │                          │
 └─────────────────────────────────────────────┘     └──────────────────────────┘
 ```
@@ -119,32 +120,28 @@ code generation) happens in `al-lsp` outside the Zed sandbox.
 
 All business logic lives in `al-core`. Each file under `crates/al-core/src/queries/`
 takes a `&Workspace` plus a position/argument struct and returns **transport-agnostic
-types**. Converting to LSP or JSON-RPC wire shapes happens at the transport boundary
-in `al-lsp`. `al-lsp` must not parse, resolve, or analyse anything itself.
+types**. Converting to LSP or JSON-RPC wire shapes happens in `al_core::server` (the
+transport boundary). The `[[bin]] al-lsp` entry point lives inside al-core as well.
 
 ### Crates
 
 | Crate | Role | Key types |
 |-------|------|-----------|
-| **al-core** | All queries, workspace state, diagnostics pipeline, insight graph | `Workspace`, `DocumentStore`, `SymbolIndex`, `InsightGraph`, `CallGraph`, `AlConfig`, `AlToolchain` |
-| **al-syntax** | tree-sitter wrappers, type resolver, formatter, complexity, folding, semantic tokens | `AlParser`, `TypeResolver`, `LanguageData` |
-| **al-symbols** | `.app` reader, NuGet client, symbol index, OAuth 2.0 | `AppReader`, `SymbolIndex`, `NuGetClient` |
-| **al-semantic** | In-process CLR bridge to Microsoft's `CodeAnalysis.dll` | `SemanticBridge`, `DotNetHost` |
-| **al-lsp** | Server binary — LSP, daemon, and DAP transports (no logic) | `AlServer`, daemon handlers |
-| **al-dap-client** | DAP client: native BC (REST + SignalR) and EditorServices proxy | `BcDebugSession`, `NativeDap`, `DapClient` |
-| **al-daemon-client** | Shared IPC types and Unix-socket client | `DaemonClient`, socket-path helpers |
-| **al-cli** | `al` terminal client (thin JSON-RPC) | clap command tree |
-| **al-explorer** | TUI symbol browser | ratatui app |
-| **al-test-harness** | Spawns real `al-lsp` over stdio for E2E tests | `LspClient` |
-| **al-zed-test** | Drives a live Zed IDE on Wayland/Hyprland for full-stack tests | test helpers around `hyprctl`, `wtype`, `grim` |
+| **al-core** | All business logic + the `al-lsp` binary. Workspace state, parsing, symbols, .NET bridge, queries, LSP/daemon/DAP transports | `Workspace`, `DocumentStore`, `SymbolIndex`, `InsightGraph`, `CallGraph`, `AlConfig`, `AlToolchain`, `AlParser`, `TypeResolver`, `LanguageData`, `AppReader`, `NuGetClient`, `SemanticBridge`, `AlServer` |
+| **al-protocol** | Daemon IPC types (shared by `al-core`'s daemon and `al-explorer`) | `DaemonClient`, request/response enums, JSON-RPC envelope |
+| **al-explorer** | Unified TUI + CLI client (the binary is named `al-explorer` to avoid conflict with Microsoft's `al`) | ratatui app + clap command tree |
+| **al-test-harness** | Spawns the real `al-lsp` binary over stdio for E2E tests | `LspClient` |
+| **al-zed-test** | Drives a live Zed IDE on Wayland/Hyprland for full-stack tests | helpers around `hyprctl`, `wtype`, `grim` |
 | **zed-al** | WASM extension for Zed — binary resolution, DAP wiring, settings | `AlExtension` |
 
-### Server modes
+### Server modes (the `al-lsp` binary)
+
+`al-lsp` ships inside `al-core` and switches mode based on its first argument.
 
 | Mode | Launch | Transport | Client |
 |------|--------|-----------|--------|
 | LSP | `al-lsp --stdio` (default) | `tower-lsp` over stdin/stdout | Zed editor |
-| Daemon | `al-lsp daemon --project <path>` | line-delimited JSON-RPC over Unix socket | `al` CLI, `al-explorer` |
+| Daemon | `al-lsp daemon --project <path>` | line-delimited JSON-RPC over Unix socket | `al-explorer` |
 | DAP | `al-lsp --dap` | Debug Adapter Protocol over stdio | Zed debugger |
 
 Daemon socket: `$XDG_RUNTIME_DIR/al-lsp/<fnv1a-hash-of-project-path>.sock`.
@@ -160,17 +157,19 @@ queries, code generation, XLIFF, tests, debug, compile) are **daemon-only** RPCs
 ### Dependency rules (enforced)
 
 ```
-al-lsp ──► al-core ──► al-syntax
-                  ──► al-symbols
-                  ──► al-semantic
-                  ──► al-dap-client
-                  ──► al-daemon-client
+al-explorer ──► al-protocol
+al-core     ──► al-protocol
+zed-al      (isolated, WASM — no compile-time native deps)
 ```
 
-`al-syntax`, `al-symbols`, and `al-semantic` never depend on each other or on
-`al-core`. `al-daemon-client` never depends on `al-core`. `zed-al` has no
-compile-time dependency on any native crate — it ships as pure WASM and shells out
-to `al-lsp`. Hookify rules in `.claude/` block imports that would break these rules.
+- `al-explorer` depends only on `al-protocol`. Never on `al-core` (which would
+  drag in tree-sitter, the .NET CLR, and tower-lsp into the TUI binary).
+- `al-core` may depend on `al-protocol`. The reverse is forbidden — `al-protocol`
+  must remain a tiny types-only crate.
+- `zed-al` has no compile-time dependency on any native crate — it ships as pure
+  WASM and shells out to `al-lsp`.
+- Module-level discipline within `al-core` (`syntax` / `symbols` / `semantic` not
+  importing each other) is enforced by code review, not the compiler.
 
 ### Diagnostics pipeline
 
@@ -410,8 +409,8 @@ al-explorer
 ```
 
 Use it to explore loaded packages, navigate to objects, and inspect composed
-(base + extensions) views. It talks to the same daemon as `al`; no extra setup
-is required.
+(base + extensions) views. It talks to the same daemon as the `al-explorer` CLI
+subcommands; no extra setup is required.
 
 ---
 
@@ -638,16 +637,16 @@ and `RUST_LOG` are the most-used test environment knobs.
 ├── extension.toml        # Zed extension metadata (id: al, API version 0.8.0)
 ├── CLAUDE.md             # rules for AI agents contributing to this repo
 ├── crates/
-│   ├── al-core/          # queries, workspace, state
-│   ├── al-syntax/        # parser, formatter, type resolver
-│   ├── al-symbols/       # .app reader, NuGet, OAuth
-│   ├── al-semantic/      # .NET CLR bridge
-│   │   └── bridge/       # AlBridge.csproj + Bridge.cs
-│   ├── al-lsp/           # server binary (LSP / daemon / DAP)
-│   ├── al-dap-client/    # DAP client (native BC + proxy)
-│   ├── al-daemon-client/ # IPC types
-│   ├── al-cli/           # al
-│   ├── al-explorer/      # al-explorer
+│   ├── al-core/          # all logic + the al-lsp binary
+│   │                     #   ├─ syntax/   (parser, formatter, type resolver)
+│   │                     #   ├─ symbols/  (.app reader, NuGet, OAuth)
+│   │                     #   ├─ semantic/ (.NET CLR bridge — bridge/ holds AlBridge.csproj + Bridge.cs)
+│   │                     #   ├─ server/   (LSP/daemon transport)
+│   │                     #   ├─ dap/      (Debug Adapter Protocol)
+│   │                     #   ├─ queries/  (transport-agnostic LSP feature impls)
+│   │                     #   └─ bin/al-lsp.rs
+│   ├── al-protocol/      # daemon IPC types (shared by al-core daemon and al-explorer)
+│   ├── al-explorer/      # unified TUI + CLI client (al-explorer binary)
 │   ├── al-test-harness/  # stdio E2E test infrastructure
 │   └── al-zed-test/      # live-Zed E2E tests
 ├── src/                  # zed-al WASM extension source (lib.rs, dap.rs, ...)

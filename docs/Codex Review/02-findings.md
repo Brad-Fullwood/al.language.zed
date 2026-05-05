@@ -38,7 +38,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-032: Runnable test tasks call CLI commands that do not exist.
 - F-033: Debug schema rejects booleans it claims to support.
 - F-034: Generated attach scenarios still run a compile build task.
-- F-035: README architecture and command documentation are stale after crate consolidation.
+- F-035: README architecture and command documentation are stale after crate consolidation. _(RESOLVED 2026-05-05.)_
 - F-036: Semantic bridge position contract is off by one.
 - F-037: Bridge hover/completion ignore unsaved text and package references.
 - F-038: References and rename are workspace-wide lexical matches, not symbol references.
@@ -964,7 +964,7 @@ Only include build tasks for launch/publish scenarios. Attach templates should o
 - Start attach with a compile error present.
 - Assert attach does not run compile.
 
-## F-035: README architecture and command documentation are stale after crate consolidation
+## F-035: README architecture and command documentation are stale after crate consolidation _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: documentation
