@@ -21,6 +21,19 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
 /// Fix #4: `al debug start` sends `{"cmd":"start","config":name}` which does not
 /// include full DAP launch args. This function looks up the named config file entry
 /// and constructs the `BcDebugConfig` from it instead of from `params` directly.
+/// F-016: resolve `(objectType, objectId)` from the workspace file_index for
+/// a given file path, so daemon breakpoints land at the correct BC object
+/// instead of `(0, 0)`. Returns `None` when the file isn't indexed yet — the
+/// caller must then either supply the metadata explicitly or surface an error.
+fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i32)> {
+    use crate::dap::native_dap::kind_to_object_type;
+    let path = std::path::PathBuf::from(file);
+    let entry = workspace.file_index.object_info.get(&path)?;
+    let info = entry.value();
+    let id = info.id?;
+    Some((kind_to_object_type(&info.kind), id as i32))
+}
+
 /// F-015: when a config name is supplied, it MUST match exactly. Falling
 /// back to the first config silently masks typos (and could route to the
 /// wrong BC environment). Only fall back to the first config when no name
@@ -184,18 +197,46 @@ pub(super) async fn dispatch_debug(
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
+            // F-016: prefer caller-supplied objectType/objectId; otherwise
+            // resolve from the workspace file_index. Defaulting to (0, 0)
+            // routes the breakpoint at the wrong object — BC accepts the
+            // request but never hits the line.
+            let resolved = resolve_object_metadata(workspace, &file);
+            let obj_type = params
+                .get("objectType")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32)
+                .or(resolved.map(|(t, _)| t));
+            let obj_id = params
+                .get("objectId")
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32)
+                .or(resolved.map(|(_, i)| i));
+
+            let (obj_type, obj_id) = match (obj_type, obj_id) {
+                (Some(t), Some(i)) => (t, i),
+                _ => {
+                    return Response {
+                        id,
+                        result: None,
+                        error: Some(RpcError {
+                            code: error_codes::INVALID_PARAMS,
+                            message: format!(
+                                "Cannot resolve object metadata for breakpoint in {file:?} — \
+                                 file is not indexed and caller did not supply \
+                                 objectType/objectId"
+                            ),
+                        }),
+                        ..Default::default()
+                    };
+                }
+            };
+
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
                 None => no_session(id),
                 Some(session) => {
                     let bps: Vec<(u32, Option<&str>)> = vec![(line, condition.as_deref())];
-                    // object_type/object_id: use defaults (0) when not provided by caller
-                    let obj_type = params
-                        .get("objectType")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0) as i32;
-                    let obj_id =
-                        params.get("objectId").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
                     match session.set_breakpoints(&file, &bps, obj_type, obj_id).await {
                         Ok(verified) => {
                             let bp_json: Vec<serde_json::Value> = verified
@@ -468,5 +509,40 @@ mod pick_named_config_tests {
         // Negative: missing-config-list path is its own clear error.
         let err = pick_named_config(&[], None).expect_err("empty list must error");
         assert!(err.contains("no configs"));
+    }
+}
+
+#[cfg(test)]
+mod resolve_object_metadata_tests {
+    use super::resolve_object_metadata;
+    use crate::workspace::Workspace;
+
+    #[test]
+    fn resolves_indexed_codeunit_to_object_type_and_id() {
+        // Positive (F-016 invariant): when the file is indexed, the helper
+        // must return the BC object type code and id, NOT (0, 0).
+        let ws = Workspace::new();
+        let path = std::path::PathBuf::from("/tmp/SomeCodeunit.al");
+        let src = "codeunit 50100 \"Some Codeunit\"\n{\n}\n".to_string();
+        ws.file_index.add_file(path.clone(), src);
+
+        let (obj_type, obj_id) = resolve_object_metadata(&ws, "/tmp/SomeCodeunit.al")
+            .expect("indexed file should resolve");
+        // codeunit kind → bc_object_type::CODEUNIT (don't pin the exact int —
+        // assert it's non-zero, which is the F-016 invariant).
+        assert!(
+            obj_type > 0,
+            "object_type should be non-zero, got {obj_type}"
+        );
+        assert_eq!(obj_id, 50100);
+    }
+
+    #[test]
+    fn returns_none_for_unindexed_file() {
+        // Negative: when the file isn't in the index, return None so the
+        // caller can either accept caller-supplied metadata or error out
+        // cleanly instead of silently using (0, 0).
+        let ws = Workspace::new();
+        assert!(resolve_object_metadata(&ws, "/nonexistent/Foo.al").is_none());
     }
 }

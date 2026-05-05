@@ -19,7 +19,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-013: DAP launch continues even when compilation fails.
 - F-014: Native daemon debug state does not consume server-push events.
 - F-015: Named debug config lookup silently falls back to first config. _(RESOLVED 2026-05-05.)_
-- F-016: Daemon breakpoints default object metadata to zero.
+- F-016: Daemon breakpoints default object metadata to zero. _(RESOLVED 2026-05-05.)_
 - F-017: Successful daemon null responses serialize without JSON-RPC `result`. _(RESOLVED 2026-05-05.)_
 - F-018: Workspace readiness is signaled before package symbols load.
 - F-019: Compiler diagnostic parsing/publishing is fragile for paths.
@@ -506,7 +506,7 @@ If a config name is supplied, require an exact match. Only fall back to the firs
 - Request a nonexistent config name.
 - Assert the daemon returns an error and does not launch the first config.
 
-## F-016: Daemon breakpoints default object metadata to zero
+## F-016: Daemon breakpoints default object metadata to zero _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: daemon debug breakpoints
