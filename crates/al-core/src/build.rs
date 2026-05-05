@@ -196,6 +196,47 @@ pub async fn compile_project_with_analyzers(
 /// Parse alc compiler output into structured diagnostics.
 ///
 /// alc output format: `file(line,col): error CODE: message`
+/// Find the byte offsets of the `(` and `)` that wrap the `<line>,<col>`
+/// coordinate pair in an alc diagnostic line, choosing the rightmost
+/// candidate so that earlier `(` characters in the path component (F-019)
+/// do not steal the match. Returns `None` when the line has no recognisable
+/// coordinate-pair-followed-by-severity shape.
+fn find_diagnostic_coord_span(line: &str) -> Option<(usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut search_from = bytes.len();
+    while let Some(rel_close) = line[..search_from].rfind(')') {
+        let close = rel_close;
+        // The coord span must be followed by `: <severity> ` (where severity
+        // is `error` / `warning` / `info`). Validate before locating the
+        // matching `(`.
+        let after = line.get(close + 1..).map(|s| s.trim_start())?;
+        let after_colon = match after.strip_prefix(':') {
+            Some(rest) => rest.trim_start(),
+            None => {
+                search_from = close;
+                continue;
+            }
+        };
+        let has_severity = ["error", "warning", "info"]
+            .iter()
+            .any(|sev| after_colon.starts_with(sev));
+        if !has_severity {
+            search_from = close;
+            continue;
+        }
+        // Walk back from `close` to find the matching `(` that opens a
+        // `digits,digits` payload.
+        if let Some(open_rel) = line[..close].rfind('(') {
+            let payload = &line[open_rel + 1..close];
+            if !payload.is_empty() && payload.split(',').all(|s| s.trim().parse::<u32>().is_ok()) {
+                return Some((open_rel, close));
+            }
+        }
+        search_from = close;
+    }
+    None
+}
+
 fn parse_alc_output(output: &str) -> Vec<CompileDiagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -211,10 +252,14 @@ fn parse_alc_output(output: &str) -> Vec<CompileDiagnostic> {
 /// Parse a single alc diagnostic line.
 ///
 /// Format: `path/file.al(10,5): error AL0001: Some message`
+///
+/// F-019: paths can contain `(` (e.g. `Project (Old)/Foo.al`). Scan for the
+/// rightmost `(<digits>,<digits>):` followed by a severity keyword instead
+/// of the first `(`, so the path keeps its embedded parentheses.
 fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
-    // Find the (line,col) pattern
-    let paren_open = line.find('(')?;
-    let paren_close = line[paren_open..].find(')')? + paren_open;
+    // Find the rightmost `):` that is immediately preceded by `(N,M)` and
+    // immediately followed by ` <severity>`.
+    let (paren_open, paren_close) = find_diagnostic_coord_span(line)?;
     let coords = &line[paren_open + 1..paren_close];
     let mut parts = coords.split(',');
     let line_num: u32 = parts.next()?.trim().parse().ok()?; // SILENT: non-numeric coords skipped
@@ -345,6 +390,27 @@ mod tests {
         assert!(parse_diagnostic_line("Compiling project...").is_none());
         assert!(parse_diagnostic_line("").is_none());
         assert!(parse_diagnostic_line("Build succeeded.").is_none());
+    }
+
+    #[test]
+    fn parse_diagnostic_line_with_parens_in_path() {
+        // F-019 regression: a path containing `(` (e.g. a directory called
+        // "Project (Old)") used to make `find('(')` match the wrong
+        // opener and the line was either misparsed or dropped.
+        let line = r#"Project (Old)/src/Foo.al(10,5): error AL0001: Boom"#;
+        let diag = parse_diagnostic_line(line).expect("must parse line with parens in path");
+        assert_eq!(diag.file, "Project (Old)/src/Foo.al");
+        assert_eq!(diag.line, 10);
+        assert_eq!(diag.column, 5);
+        assert_eq!(diag.code, "AL0001");
+        assert_eq!(diag.message, "Boom");
+    }
+
+    #[test]
+    fn parse_diagnostic_line_rejects_non_severity_after_coords() {
+        // Negative: bare `path(1,2): something` without a severity keyword
+        // must not be mistaken for a diagnostic.
+        assert!(parse_diagnostic_line("foo(1,2): note about something").is_none());
     }
 
     #[test]

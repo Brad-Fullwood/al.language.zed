@@ -1144,7 +1144,22 @@ impl LanguageServer for AlServer {
                                         message: d.message.clone(),
                                         ..Default::default()
                                     };
-                                    by_file.entry(d.file.clone()).or_default().push(lsp_diag);
+                                    // F-019: alc emits relative paths
+                                    // (`src/Foo.al`) when run from project_root.
+                                    // `Url::from_file_path` requires an absolute
+                                    // path, so resolve relative entries against
+                                    // the project root before grouping —
+                                    // otherwise the per-file URI conversion
+                                    // below silently drops the diagnostic.
+                                    let abs_path = {
+                                        let p = std::path::Path::new(&d.file);
+                                        if p.is_absolute() {
+                                            d.file.clone()
+                                        } else {
+                                            root.join(p).to_string_lossy().into_owned()
+                                        }
+                                    };
+                                    by_file.entry(abs_path).or_default().push(lsp_diag);
                                 }
                                 let current_affected: std::collections::HashSet<String> =
                                     by_file.keys().cloned().collect();
