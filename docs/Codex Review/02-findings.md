@@ -32,7 +32,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-026: `deny.toml` exists but is not enforced in CI.
 - F-027: Nested Zed settings under `al` are double-wrapped and ignored. _(RESOLVED 2026-05-05.)_
 - F-028: Legacy proxy discovery probes the wrong installed extension directory. _(RESOLVED 2026-05-05; legacy proxy branch removed.)_
-- F-029: Debug schema/snippets advertise `snapshotInitialize`, but adapter maps it to launch.
+- F-029: Debug schema/snippets advertise `snapshotInitialize`, but adapter maps it to launch. _(RESOLVED 2026-05-05.)_
 - F-030: `al.editorServicesPath` is exposed but not passed to the Zed DAP command.
 - F-031: Zed grammar pin is behind native parser used by `al-core`.
 - F-032: Runnable test tasks call CLI commands that do not exist.
@@ -819,7 +819,7 @@ Either remove the legacy proxy branch or make the probe use the actual extension
 - `make install`
 - Verify discovery probes the directory that install creates.
 
-## F-029: Debug schema/snippets advertise `snapshotInitialize`, but the adapter maps it to launch
+## F-029: Debug schema/snippets advertise `snapshotInitialize`, but the adapter maps it to launch _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: debug adapter configuration

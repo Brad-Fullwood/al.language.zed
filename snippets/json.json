@@ -138,37 +138,5 @@
             "}"
         ],
         "description": "Attach to an agent session on your server"
-    },
-    "AL: Initialize a snapshot debugging session on cloud": {
-        "prefix": "al-snapshot-cloud",
-        "body": [
-            "{",
-            "\t\"adapter\": \"al\",",
-            "\t\"label\": \"${0:snapshotInitialize: Microsoft production cloud}\",",
-            "\t\"request\": \"snapshotInitialize\",",
-            "\t\"environmentType\": \"Production\",",
-            "\t\"environmentName\": \"production\",",
-            "\t\"breakOnNext\": \"WebClient\",",
-            "\t\"executionContext\": \"DebugAndProfile\"",
-            "}"
-        ],
-        "description": "Initialize a snapshot debugging session on cloud"
-    },
-    "AL: Initialize a snapshot debugging session on your own server": {
-        "prefix": "al-snapshot-server",
-        "body": [
-            "{",
-            "\t\"adapter\": \"al\",",
-            "\t\"label\": \"${1:snapshotInitialize: Your own server}\",",
-            "\t\"request\": \"snapshotInitialize\",",
-            "\t\"environmentType\": \"OnPrem\",",
-            "\t\"server\": \"${2|http://bcserver,http://localhost|}\",",
-            "\t\"serverInstance\": \"${3:BC}\",",
-            "\t\"authentication\": \"${4|UserPassword,Windows,AAD,MicrosoftEntraID|}\",",
-            "\t\"breakOnNext\": \"WebClient\",",
-            "\t\"executionContext\": \"DebugAndProfile\"",
-            "}"
-        ],
-        "description": "Initialize a snapshot debugging session on your own server"
     }
 }

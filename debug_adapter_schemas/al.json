@@ -20,10 +20,9 @@
       "type": "string",
       "enum": [
         "launch",
-        "attach",
-        "snapshotInitialize"
+        "attach"
       ],
-      "description": "Debug request type"
+      "description": "Debug request type. Snapshot initialization is not supported by this adapter; use `al-explorer snapshot start` instead."
     },
     "build": {
       "description": "Build step to run before debugging",
