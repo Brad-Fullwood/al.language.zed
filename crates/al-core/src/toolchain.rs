@@ -72,8 +72,12 @@ const INSTALL_CMD: &str =
 ///
 /// Search order:
 /// 1. `$AL_TOOL_PATH` environment variable
-/// 2. `~/.dotnet/tools/.store/microsoft.dynamics.businesscentral.development.tools*/`
-/// 3. System PATH (`which alc`)
+/// 2. Known dotnet tool store roots:
+///    - `~/.dotnet/tools/.store/`
+///    - `~/.local/bin/.store/` (user-local install)
+///    - `~/.local/share/dotnet/tools/.store/`
+/// 3. System PATH — `which alc`, then `which al` (Microsoft wrapper) with
+///    sibling `.store/` probe.
 pub fn find_toolchain() -> Result<AlToolchain, DiscoveryError> {
     if let Ok(tool_path) = std::env::var("AL_TOOL_PATH") {
         let dir = PathBuf::from(&tool_path);
@@ -86,10 +90,16 @@ pub fn find_toolchain() -> Result<AlToolchain, DiscoveryError> {
     }
 
     if let Some(home) = home_dir() {
-        let store = home.join(".dotnet/tools/.store");
-        if store.is_dir() {
-            if let Some(tc) = search_dotnet_tool_store(&store) {
-                return Ok(tc);
+        for rel in [
+            ".dotnet/tools/.store",
+            ".local/bin/.store",
+            ".local/share/dotnet/tools/.store",
+        ] {
+            let store = home.join(rel);
+            if store.is_dir() {
+                if let Some(tc) = search_dotnet_tool_store(&store) {
+                    return Ok(tc);
+                }
             }
         }
     }
@@ -241,6 +251,16 @@ fn search_dir_recursive(root: &Path) -> Option<AlToolchain> {
 }
 
 fn search_system_path() -> Option<AlToolchain> {
+    if let Some(tc) = search_path_for("alc") {
+        return Some(tc);
+    }
+    // Microsoft's dotnet-tool wrapper installs as `al`, not `alc`. When found,
+    // its parent directory typically holds a sibling `.store/` containing the
+    // actual `alc.dll` package payload.
+    search_path_for("al")
+}
+
+fn search_path_for(cmd_name: &str) -> Option<AlToolchain> {
     // Use `where` on Windows, `which` on Unix — both are non-fatal if missing.
     #[cfg(target_os = "windows")]
     let which_cmd = "where";
@@ -248,7 +268,7 @@ fn search_system_path() -> Option<AlToolchain> {
     let which_cmd = "which";
 
     let output = std::process::Command::new(which_cmd)
-        .arg("alc")
+        .arg(cmd_name)
         .output()
         .ok()?; // ok(): command missing is non-fatal
 
@@ -259,15 +279,24 @@ fn search_system_path() -> Option<AlToolchain> {
     // Take only the first line — `where` (Windows) can return multiple matches.
     let stdout = String::from_utf8_lossy(&output.stdout);
     let first_line = stdout.lines().next().unwrap_or("").trim();
-    let alc_path = PathBuf::from(first_line);
-    if !alc_path.is_file() {
+    let cmd_path = PathBuf::from(first_line);
+    if !cmd_path.is_file() {
         return None;
     }
 
-    let dir = alc_path.parent()?;
+    let dir = cmd_path.parent()?;
 
     if dir.join(ALC_DLL).is_file() {
         if let Ok(tc) = build_toolchain(dir) {
+            return Some(tc);
+        }
+    }
+
+    // Wrapper script (`al`) lives in e.g. `~/.local/bin/`; the dotnet tool
+    // payload is under `<dir>/.store/<package>/<version>/.../tools/net8.0/any`.
+    let sibling_store = dir.join(".store");
+    if sibling_store.is_dir() {
+        if let Some(tc) = search_dotnet_tool_store(&sibling_store) {
             return Some(tc);
         }
     }
@@ -528,5 +557,89 @@ mod tests {
         assert!(json["altoolInstalled"].is_boolean());
         assert!(json["indexedSymbols"].is_number());
         assert!(json["workspaceFiles"].is_number());
+    }
+
+    /// Build a minimal tools/net8.0/any layout under the given store with
+    /// the Microsoft package prefix; returns the leaf tools dir.
+    fn make_fake_dotnet_tool_store(store: &std::path::Path, version: &str) -> PathBuf {
+        let leaf = store
+            .join(format!("{DOTNET_TOOL_PACKAGE_PREFIX}/{version}/microsoft.dynamics.businesscentral.development.tools/{version}/tools/net8.0/any"));
+        std::fs::create_dir_all(&leaf).unwrap();
+        for f in [
+            ALC_DLL,
+            ALDOC_DLL,
+            CODE_ANALYSIS_DLL,
+            "Microsoft.Dynamics.Nav.CodeCop.dll",
+            "Microsoft.Dynamics.Nav.AppSourceCop.dll",
+            "Microsoft.Dynamics.Nav.UICop.dll",
+            "Microsoft.Dynamics.Nav.PerTenantExtensionCop.dll",
+            "Microsoft.Dynamics.Nav.Analyzers.Common.dll",
+        ] {
+            std::fs::write(leaf.join(f), b"").unwrap();
+        }
+        leaf
+    }
+
+    #[test]
+    fn search_dotnet_tool_store_finds_user_local_install() {
+        // Mirrors the F-004 reproduction layout: ~/.local/bin/.store/...
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join(".local/bin/.store");
+        std::fs::create_dir_all(&store).unwrap();
+        let leaf = make_fake_dotnet_tool_store(&store, "17.0.34.45391");
+
+        let tc = search_dotnet_tool_store(&store).expect("toolchain not found in user-local store");
+        assert_eq!(tc.alc, leaf.join(ALC_DLL));
+        assert!(tc.code_analysis.is_file());
+    }
+
+    #[test]
+    fn search_dotnet_tool_store_missing_package_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join(".store");
+        std::fs::create_dir_all(&store).unwrap();
+        // Intentionally do not create any package directory.
+        assert!(search_dotnet_tool_store(&store).is_none());
+    }
+
+    #[test]
+    fn search_dotnet_tool_store_ignores_unrelated_packages() {
+        // A neighbouring (non-AL) dotnet tool must not confuse discovery.
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join(".store");
+        std::fs::create_dir_all(&store).unwrap();
+        // Unrelated package — wrong prefix entirely.
+        let other = store.join("some.other.dotnet.tool/1.0.0/tools/net8.0/any");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join(ALC_DLL), b"").unwrap();
+        // The real AL package the discovery should find.
+        let leaf = make_fake_dotnet_tool_store(&store, "17.0.34.45391");
+
+        let tc = search_dotnet_tool_store(&store).expect("expected AL package");
+        assert_eq!(tc.alc, leaf.join(ALC_DLL));
+    }
+
+    #[test]
+    fn search_dir_recursive_finds_alc_in_nested_layout() {
+        // Mirrors `<.store-root>/<pkg>/<ver>/.../tools/net8.0/any/alc.dll` layout.
+        let tmp = tempfile::tempdir().unwrap();
+        let leaf = tmp.path().join("a/b/c/d/tools/net8.0/any");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(leaf.join(ALC_DLL), b"").unwrap();
+        std::fs::write(leaf.join(CODE_ANALYSIS_DLL), b"").unwrap();
+
+        let tc = search_dir_recursive(tmp.path()).expect("expected to find alc.dll deep");
+        assert_eq!(tc.alc, leaf.join(ALC_DLL));
+    }
+
+    #[test]
+    fn search_dir_recursive_no_alc_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let leaf = tmp.path().join("a/b/c");
+        std::fs::create_dir_all(&leaf).unwrap();
+        // Put a sibling DLL but not alc.dll.
+        std::fs::write(leaf.join("Other.dll"), b"").unwrap();
+
+        assert!(search_dir_recursive(tmp.path()).is_none());
     }
 }

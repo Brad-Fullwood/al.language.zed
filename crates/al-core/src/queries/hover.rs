@@ -163,6 +163,7 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
             });
         }
 
+        // Cursor on the parameter name itself.
         for param in &proc_info.parameters {
             if param.name.eq_ignore_ascii_case(clean_name) {
                 let content = format!("```al\n{}\n```\n*(parameter)*", param);
@@ -171,6 +172,31 @@ pub fn hover(workspace: &Workspace, uri: &Url, position: Position) -> Option<Hov
                     range: Some(node_range),
                 });
             }
+        }
+
+        // Cursor inside a `parameter` node (e.g. on the type identifier
+        // `Integer` of `A: Integer`). Walk up to the parameter ancestor and
+        // look up the corresponding ParameterInfo by name.
+        let mut anc = Some(node);
+        while let Some(n) = anc {
+            if n.kind() == "parameter" {
+                if let Some(name_node) = n.child_by_field_name("name") {
+                    if let Ok(name_text) = name_node.utf8_text(source) {
+                        let pname = name_text.trim_matches('"');
+                        for param in &proc_info.parameters {
+                            if param.name.eq_ignore_ascii_case(pname) {
+                                let content = format!("```al\n{}\n```\n*(parameter)*", param);
+                                return Some(HoverResult {
+                                    contents: content,
+                                    range: Some(node_range),
+                                });
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+            anc = n.parent();
         }
     }
 
@@ -447,6 +473,75 @@ fn format_builtin_method(method: &crate::semantic::BuiltinMethod) -> String {
 mod tests {
     use super::*;
     use crate::syntax::ProcedureInfo;
+
+    use crate::queries::Position;
+    use crate::workspace::Workspace;
+    use url::Url;
+
+    fn open_doc(ws: &Workspace, src: &str) -> Url {
+        let uri = Url::parse("file:///tmp/hover-test.al").unwrap();
+        ws.documents.open(uri.clone(), src.to_string());
+        uri
+    }
+
+    const PARAM_FIXTURE: &str = "codeunit 50150 \"Test\"\n{\n    procedure Add(A: Integer; B: Integer): Integer\n    begin\n        exit(A + B);\n    end;\n}\n";
+
+    #[test]
+    fn hover_on_parameter_name_returns_parameter_info() {
+        let ws = Workspace::new();
+        let uri = open_doc(&ws, PARAM_FIXTURE);
+        // Line 2, col 18 — cursor on 'A' parameter name.
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 2,
+                character: 18,
+            },
+        )
+        .expect("hover on parameter name should return a result");
+        assert!(r.contents.contains("A: Integer"), "got: {:?}", r.contents);
+        assert!(r.contents.contains("(parameter)"));
+    }
+
+    #[test]
+    fn hover_on_parameter_type_returns_parameter_info() {
+        let ws = Workspace::new();
+        let uri = open_doc(&ws, PARAM_FIXTURE);
+        // Line 2, col 22 — cursor on 'n' inside 'Integer' (param type).
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 2,
+                character: 22,
+            },
+        )
+        .expect("hover on parameter type identifier should return a result");
+        assert!(r.contents.contains("A: Integer"), "got: {:?}", r.contents);
+        assert!(r.contents.contains("(parameter)"));
+    }
+
+    #[test]
+    fn hover_on_unknown_identifier_returns_none() {
+        let ws = Workspace::new();
+        // Identifier with no matching procedure, parameter, variable, symbol or builtin.
+        let src = "codeunit 50150 \"Test\"\n{\n    procedure Foo()\n    begin\n        TotallyUnknownThing;\n    end;\n}\n";
+        let uri = open_doc(&ws, src);
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 12,
+            },
+        );
+        assert!(
+            r.is_none(),
+            "expected None for unknown identifier, got {:?}",
+            r
+        );
+    }
 
     #[test]
     fn test_format_procedure_hover_simple() {

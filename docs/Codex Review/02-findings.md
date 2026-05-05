@@ -6,8 +6,8 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 
 - F-001: Initialization option deep-merge returns the wrong subtree.
 - F-002: User-configured `al-lsp` binary path is ignored when the legacy proxy exists.
-- F-003: Workspace test suite fails on hover for procedure parameters.
-- F-004: AL toolchain discovery misses a valid Microsoft AL tool install.
+- F-003: Workspace test suite fails on hover for procedure parameters. _(RESOLVED 2026-05-05.)_
+- F-004: AL toolchain discovery misses a valid Microsoft AL tool install. _(RESOLVED 2026-05-05.)_
 - F-005: Zed tasks and README use `al` for repository CLI, but Microsoft now owns that command name.
 - F-006: Tree-sitter grammar directory is not directly buildable from checkout.
 - F-007: CI Clippy commands fail under current Rust toolchain. _(WASM clippy fix RESOLVED 2026-05-05; native clippy section already passes — see finding body for status.)_
@@ -165,7 +165,7 @@ If the proxy must remain preferred for compatibility, rename the setting and doc
   - proxy present without explicit path returns proxy
   - no proxy uses cached/PATH/download chain
 
-## F-003: Workspace test suite fails on hover for procedure parameters
+## F-003: Workspace test suite fails on hover for procedure parameters _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: LSP hover, syntax navigation, integration tests
@@ -189,7 +189,7 @@ Trace `queries::hover` for parameter identifier positions. The likely fix is to 
 - `cargo test -p al-test-harness --test integration_full test_c03_hover_parameter -- --nocapture`
 - `cargo test --workspace --exclude zed-al`
 
-## F-004: AL toolchain discovery misses a valid Microsoft AL tool install
+## F-004: AL toolchain discovery misses a valid Microsoft AL tool install _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: AL compiler/toolchain discovery
