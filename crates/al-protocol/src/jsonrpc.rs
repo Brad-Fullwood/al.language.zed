@@ -102,13 +102,15 @@ impl Response {
         }
     }
 
-    /// Null response — no result and no error. Some LSP methods (e.g.
-    /// definition with no match) legitimately return null.
+    /// Null response — explicit JSON-RPC 2.0 success with `result: null`.
+    /// Some LSP methods (e.g. definition with no match) legitimately return
+    /// null. The spec requires success responses to carry `result` even when
+    /// the value is null, so we serialize `Some(Value::Null)`, not `None`.
     pub fn null(id: u64) -> Self {
         Self {
             jsonrpc: default_jsonrpc(),
             id,
-            result: None,
+            result: Some(serde_json::Value::Null),
             error: None,
         }
     }
@@ -202,6 +204,40 @@ mod tests {
         assert_eq!(resp.id, 2);
         assert!(resp.result.is_none());
         assert_eq!(resp.error.unwrap().code, error_codes::METHOD_NOT_FOUND);
+    }
+
+    /// F-017: Response::null must serialize `"result":null` on the wire.
+    /// Per JSON-RPC 2.0 §5.1, success responses MUST contain `result`,
+    /// including when its value is null. Strict clients reject responses
+    /// missing both `result` and `error`.
+    #[test]
+    fn f017_null_response_serializes_explicit_result_null() {
+        let resp = Response::null(7);
+        let s = serde_json::to_string(&resp).unwrap();
+        assert!(
+            s.contains("\"result\":null"),
+            "Response::null must include explicit result:null on the wire; got {s}"
+        );
+        assert!(
+            !s.contains("\"error\""),
+            "Response::null must not include error field; got {s}"
+        );
+    }
+
+    /// F-017 negative: error responses must NOT include a `result` field
+    /// (per JSON-RPC 2.0 §5.1: result and error are mutually exclusive).
+    #[test]
+    fn f017_error_response_omits_result_field() {
+        let resp = Response::error(8, error_codes::INTERNAL_ERROR, "boom");
+        let s = serde_json::to_string(&resp).unwrap();
+        assert!(
+            !s.contains("\"result\""),
+            "Response::error must omit result field entirely; got {s}"
+        );
+        assert!(
+            s.contains("\"error\""),
+            "Response::error must include error; got {s}"
+        );
     }
 
     #[test]
