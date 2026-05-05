@@ -186,21 +186,21 @@ pub(super) fn dispatch_format(
             ..Default::default()
         }
     } else {
-        // If a file was specified, write back
+        // If a file was specified, write back. F-011: routed through
+        // write_al_file_and_refresh so the document store, file index,
+        // and insight graph all see the update.
         if let Some(uri) = file_uri_from_params(params) {
             if let Ok(path) = uri.to_file_path() {
                 if changed {
-                    if let Err(e) =
-                        tokio::task::block_in_place(|| std::fs::write(&path, &formatted))
-                    {
+                    if let Err(e) = tokio::task::block_in_place(|| {
+                        write_al_file_and_refresh(workspace, &path, formatted.clone())
+                    }) {
                         return rpc_error(
                             id,
                             -32000,
                             &format!("Failed to write formatted file: {e}"),
                         );
                     }
-                    // Update document store
-                    workspace.documents.open(uri, formatted.clone());
                 }
             }
         }
@@ -1145,6 +1145,43 @@ pub(super) async fn dispatch_download_symbols(
         error: None,
         ..Default::default()
     }
+}
+
+/// F-011: Write `.al` content to disk and refresh the workspace's
+/// in-memory state so subsequent daemon queries observe the change
+/// without requiring a restart. Updates the document store, the file
+/// index, and invalidates the lazy insight graph. Centralised so every
+/// daemon write dispatcher can use one consistent refresh sequence.
+pub(crate) fn write_al_file_and_refresh(
+    workspace: &Workspace,
+    path: &std::path::Path,
+    content: String,
+) -> std::io::Result<()> {
+    std::fs::write(path, &content)?;
+    if let Ok(uri) = url::Url::from_file_path(path) {
+        workspace.documents.open(uri, content.clone());
+    }
+    workspace.file_index.add_file(path.to_path_buf(), content);
+    workspace.invalidate_insight_graph();
+    Ok(())
+}
+
+/// F-011: Rename a `.al` file on disk and refresh both index entries
+/// (drop the old path, add the new one with current content). The
+/// document store is best-effort: open buffers under the old URI are
+/// not migrated — the editor is expected to re-open the new path.
+pub(crate) fn rename_al_file_and_refresh(
+    workspace: &Workspace,
+    old: &std::path::Path,
+    new: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::rename(old, new)?;
+    workspace.file_index.remove_file(old);
+    if let Ok(content) = std::fs::read_to_string(new) {
+        workspace.file_index.add_file(new.to_path_buf(), content);
+    }
+    workspace.invalidate_insight_graph();
+    Ok(())
 }
 
 /// Extract the on-disk paths of successfully-downloaded packages from the
@@ -3058,7 +3095,11 @@ pub(super) fn dispatch_sort_members(
     if changed && !dry_run {
         if let Some(uri) = file_uri_from_params(params) {
             if let Ok(path) = uri.to_file_path() {
-                if let Err(e) = tokio::task::block_in_place(|| std::fs::write(&path, &sorted)) {
+                // F-011: refresh document store + file index + insight graph
+                // so subsequent daemon queries observe the sorted content.
+                if let Err(e) = tokio::task::block_in_place(|| {
+                    write_al_file_and_refresh(workspace, &path, sorted.clone())
+                }) {
                     return Response {
                         id,
                         result: None,
@@ -3069,7 +3110,6 @@ pub(super) fn dispatch_sort_members(
                         ..Default::default()
                     };
                 }
-                workspace.documents.open(uri, sorted.clone());
             }
         }
     }
@@ -3135,8 +3175,12 @@ pub(super) fn dispatch_organize_files(
 
         let new_path = path.parent().unwrap_or(&root).join(&expected_name);
 
+        // F-011: route the rename through rename_al_file_and_refresh so
+        // file_index + insight_graph are kept in sync. Without it, the
+        // old path stayed in file_index after the disk rename.
         let renamed = if !dry_run {
-            tokio::task::block_in_place(|| std::fs::rename(&path, &new_path)).is_ok()
+            tokio::task::block_in_place(|| rename_al_file_and_refresh(workspace, &path, &new_path))
+                .is_ok()
         } else {
             false
         };
@@ -3735,6 +3779,78 @@ mod p1_5_tests {
         // exercised on every successful download.
         let loaded = refresh_workspace_after_download(&ws, &result);
         assert_eq!(loaded, 0, "unreadable path should yield 0 loaded");
+    }
+
+    // -----------------------------------------------------------------------
+    // F-011: write_al_file_and_refresh / rename_al_file_and_refresh keep
+    // the workspace in sync with daemon-initiated file mutations.
+    // -----------------------------------------------------------------------
+
+    /// F-011 positive: write_al_file_and_refresh writes to disk AND
+    /// updates documents + file_index + invalidates insight graph.
+    #[test]
+    fn f011_write_helper_refreshes_documents_and_file_index() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("Foo.al");
+        let content = r#"codeunit 50100 "Foo" { }"#.to_string();
+        write_al_file_and_refresh(&ws, &path, content.clone()).expect("helper succeeds");
+        // On disk
+        let on_disk = std::fs::read_to_string(&path).expect("file written");
+        assert_eq!(on_disk, content);
+        // Document store
+        let uri = url::Url::from_file_path(&path).unwrap();
+        assert_eq!(
+            ws.documents.get_text(&uri).as_deref(),
+            Some(content.as_str())
+        );
+        // File index
+        assert_eq!(
+            ws.file_index.get_content(&path).as_deref(),
+            Some(content.as_str())
+        );
+    }
+
+    /// F-011 positive: rename_al_file_and_refresh moves the file on disk
+    /// AND drops the old file_index entry while adding the new one.
+    #[test]
+    fn f011_rename_helper_refreshes_file_index_for_old_and_new_paths() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let old = tmp.path().join("Old.al");
+        let new = tmp.path().join("New.al");
+        let content = r#"codeunit 50101 "Renamed" { }"#.to_string();
+        std::fs::write(&old, &content).unwrap();
+        ws.file_index.add_file(old.clone(), content.clone());
+        assert!(ws.file_index.get_content(&old).is_some());
+
+        rename_al_file_and_refresh(&ws, &old, &new).expect("helper succeeds");
+
+        assert!(!old.exists(), "old file removed from disk");
+        assert!(new.exists(), "new file present on disk");
+        assert!(
+            ws.file_index.get_content(&old).is_none(),
+            "old file_index entry must be dropped"
+        );
+        assert_eq!(
+            ws.file_index.get_content(&new).as_deref(),
+            Some(content.as_str()),
+            "new path must be re-indexed"
+        );
+    }
+
+    /// F-011 negative: write_al_file_and_refresh propagates I/O errors
+    /// instead of silently succeeding. A path under a non-existent
+    /// directory must surface the underlying io::Error.
+    #[test]
+    fn f011_write_helper_returns_io_error_for_unwritable_path() {
+        let ws = empty_ws();
+        let bogus = std::path::PathBuf::from("/nonexistent/parent/dir/Foo.al");
+        let err = write_al_file_and_refresh(&ws, &bogus, "x".to_string()).expect_err("must error");
+        assert!(matches!(
+            err.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+        ));
     }
 }
 // WP18 / Phase 5: Mutation testing
