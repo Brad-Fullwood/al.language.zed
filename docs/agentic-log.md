@@ -7,6 +7,60 @@ run, newest first. Per-run details live under `.agentic/<run-id>/`
 The Overseer's `overseer-log-append.sh` Stop hook prepends entries to
 this file at the end of every `/loop` invocation.
 
+## 2026-05-05T01-25-18Z-de10ced — Codex Review batch (cycles 1-3, capped)
+
+Started: 2026-05-05T01:25:18Z · Branch: `dev` · Trigger: user
+"investigate, confirm, then fix issues in /Docs/Codex Review" → "Run /loop"
+
+Codex-review handoff (`docs/Codex Review/02-findings.md`, 52 findings)
+served as Phase A input — fresh `/review-all` skipped because Codex
+already provided a validated, exhaustive set. Phase B (/arch-plan) was
+skipped throughout: every Codex finding came with actionable fix
+guidance, none marked needs_design. Phase C used in-session sequential
+TDD with one commit per finding (same pattern as the cycle-1/2 sweep).
+Phase D (release) skipped — handed back for `/release-prep`.
+
+10 findings closed across 3 cycles, halted-capped at max_cycles=3.
+Cumulative with the pre-loop F-001/F-002 fix and T057's F-048 closure,
+the run lifts the resolved count to 13/52.
+
+| Cycle | Working set | Done | Commits |
+|-------|-------------|------|---------|
+| 1 | small/mechanical bucket: F-007, F-017, F-022, F-027, F-028 | 5 | dd25701, 7183803, 0340430, dce8c33, 9c7c464 |
+| 2 | al-core daemon/diagnostics cluster: F-009, F-010, F-008 | 3 | d88ed07, 0a2fcd7, 9ab38c4 |
+| 3 | deferred daemon-cluster pair: F-011, F-046 | 2 | 9a92977, 13d9cf3 |
+
+Plus 2 doc commits (de10ced, ee50392) keeping the Codex findings index
+in sync. F-003 (cycle-3 deferral) was held back because its root cause
+likely lies in F-004 (AL toolchain discovery), and the test failure
+needs deeper investigation than fits the final capped cycle.
+
+Highlights:
+
+- **F-022 / F-046 hardened daemon transport** — bounded read during
+  read closes the unbounded-allocation window, and the per-socket
+  spawn lock prevents concurrent CLI/TUI clients from forking two
+  daemons that race on the same socket.
+- **F-009 / F-010 / F-011 closed three "stale-state-after-mutation"
+  classes** — daemon downloadSymbols now refreshes symbol indexes,
+  full file-index scan drops deleted files, and daemon write/rename
+  paths route through new `write_al_file_and_refresh` /
+  `rename_al_file_and_refresh` helpers (format/sort/organize wired
+  in this batch; bulk_fix family deferred for follow-up).
+- **F-008 closes a long-standing UX trust break** — `al.compile`
+  now tracks the previous compile's affected file set and republishes
+  syntax-only diagnostics (or empty for closed files) when stale
+  compiler errors should disappear after a clean rebuild.
+- **F-027 / F-028 simplified zed-al** — nested `al: { ... }` settings
+  now unwrap correctly, and the dead legacy-proxy discovery branch
+  came out (with `discovery.rs` + `platform.rs` deleted).
+
+Quality gates were green at the end of every cycle. No drift detected
+(no resolved finding reappeared). 39 Codex findings remain open;
+recommended next-loop start is F-003/F-004 (toolchain + hover-test
+pair) and the F-038 lexical-references rewrite is flagged for
+/arch-plan before any in-loop implementation.
+
 ## 20260503T231913Z-0375949 — cycle 2 (deferred-task sweep, full closure)
 
 Started: 2026-05-04T00:30:00Z · Branch: `dev` · Trigger: user

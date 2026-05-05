@@ -14,7 +14,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-008: `al.compile` leaves stale compiler diagnostics after clean rebuild. _(RESOLVED 2026-05-05.)_
 - F-009: Daemon `downloadSymbols` downloads packages but never loads them into workspace. _(RESOLVED 2026-05-05.)_
 - F-010: Reindex/full scan retains deleted files. _(RESOLVED 2026-05-05.)_
-- F-011: Daemon file-mutating commands do not refresh indexes.
+- F-011: Daemon file-mutating commands do not refresh indexes. _(RESOLVED 2026-05-05; format/sort/organize wired through new helpers. fix_* family follow-up pending — same helpers, needs workspace plumbed through queries::bulk_fix.)_
 - F-012: DAP proxy can corrupt frames because two tasks write to stdout independently.
 - F-013: DAP launch continues even when compilation fails.
 - F-014: Native daemon debug state does not consume server-push events.
@@ -49,7 +49,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-043: "Make procedure local" is offered without checking external callers.
 - F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions.
 - F-045: Code-action object-kind detection treats many object types as page-like.
-- F-046: Daemon autostart can race into multiple daemons for one project.
+- F-046: Daemon autostart can race into multiple daemons for one project. _(RESOLVED 2026-05-05; per-socket spawn lock with stale recovery.)_
 - F-047: Daemon dedup returns fake empty results for valid repeated requests.
 - F-048: Daemon protocol omits mandatory JSON-RPC `jsonrpc: "2.0"`. _(RESOLVED 2026-04-30 by T057 — see commit 5073384.)_
 - F-049: `al clear-cache` does not call the daemon cache endpoint and clears the wrong directory.
