@@ -286,7 +286,7 @@ impl FileIndex {
         // Remove the old object-name mapping for this path (if any), so
         // stale entries don't linger when the object is renamed/replaced.
         if let Some((_, old_obj_name)) = self.path_to_object.remove(&path) {
-            self.objects.remove(&old_obj_name);
+            self.remove_owned_object_mapping(&old_obj_name, &path);
         }
         // Remove stale procedure entries for this file before re-indexing.
         self.remove_procedures_for_file(&path);
@@ -306,7 +306,7 @@ impl FileIndex {
     pub fn add_file_with_tree(&self, path: PathBuf, content: String, tree: tree_sitter::Tree) {
         // Remove the old object-name mapping for this path (if any).
         if let Some((_, old_obj_name)) = self.path_to_object.remove(&path) {
-            self.objects.remove(&old_obj_name);
+            self.remove_owned_object_mapping(&old_obj_name, &path);
         }
         // Remove stale procedure entries for this file before re-indexing.
         self.remove_procedures_for_file(&path);
@@ -391,8 +391,20 @@ impl FileIndex {
         self.object_info.remove(path);
         self.remove_procedures_for_file(path);
         if let Some((_, obj_name)) = self.path_to_object.remove(path) {
-            self.objects.remove(&obj_name);
+            self.remove_owned_object_mapping(&obj_name, path);
         }
+    }
+
+    /// F-040: only remove the `objects[name] → path` mapping when it still
+    /// points at `path`. Without this guard, two AL objects sharing a name
+    /// across kinds / packages — say a table `Foo` and a page `Foo` — both
+    /// insert under `objects["foo"]`. Whoever inserted last wins; removing
+    /// the OTHER file then dropped the surviving object's mapping and made
+    /// it unfindable. Keys can still collide on insert (DashMap is a single-
+    /// value map), but stale-key removal is now collision-safe.
+    fn remove_owned_object_mapping(&self, obj_name: &str, path: &Path) {
+        self.objects
+            .remove_if(obj_name, |_, current_path| current_path == path);
     }
 
     /// Remove all procedure index entries associated with a file path.
@@ -623,6 +635,53 @@ mod tests {
         assert_eq!(index.len(), 0);
         assert!(index.find_by_object_name("remove me").is_none());
         assert!(index.get_content(&path).is_none());
+    }
+
+    /// F-040 positive: when two files share an object name (table Foo,
+    /// page Foo), removing one file must NOT drop the other file's mapping.
+    #[test]
+    fn remove_file_preserves_other_owners_object_mapping() {
+        let index = FileIndex::new();
+        let table_path = PathBuf::from("/tmp/test/TableFoo.al");
+        let page_path = PathBuf::from("/tmp/test/PageFoo.al");
+
+        index.add_file(
+            table_path.clone(),
+            r#"table 50100 "Foo" { fields { } }"#.to_string(),
+        );
+        // Insert the page second — its insert overwrites the `objects[foo]`
+        // entry. Before F-040, removing the table would then have
+        // unconditionally dropped the surviving page's mapping.
+        index.add_file(
+            page_path.clone(),
+            r#"page 50100 "Foo" { layout { } actions { } }"#.to_string(),
+        );
+
+        index.remove_file(&table_path);
+
+        // The page's mapping must survive — find_by_object_name should still
+        // resolve "foo" to the page file.
+        let resolved = index.find_by_object_name("foo");
+        assert_eq!(
+            resolved.as_deref(),
+            Some(page_path.as_path()),
+            "F-040: surviving owner's object mapping was dropped"
+        );
+    }
+
+    /// F-040 negative: when the file being removed IS the current owner of
+    /// `objects[name]`, the mapping is correctly removed (no orphan).
+    #[test]
+    fn remove_file_drops_objects_mapping_when_owner() {
+        let index = FileIndex::new();
+        let path = PathBuf::from("/tmp/test/SoloFoo.al");
+        index.add_file(path.clone(), r#"codeunit 50100 "SoloFoo" { }"#.to_string());
+        assert!(index.find_by_object_name("solofoo").is_some());
+        index.remove_file(&path);
+        assert!(
+            index.find_by_object_name("solofoo").is_none(),
+            "owner removal should clear the mapping"
+        );
     }
 
     #[test]
