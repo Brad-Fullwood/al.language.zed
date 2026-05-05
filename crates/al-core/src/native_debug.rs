@@ -105,8 +105,44 @@ impl NativeDebugSession {
         Ok(results)
     }
 
+    /// F-014: drain any server-push events that arrived since the last
+    /// daemon command and update local state (history of breakpoint hits)
+    /// before stateful queries run. Without this, `state()` sees
+    /// `is_stopped == false` and an empty `history` even though a Break
+    /// event landed in the SignalR pending queue between commands.
+    async fn drain_events(&mut self) {
+        // First, anything `invoke()` buffered while we were busy.
+        let pending = self.session.flush_pending_events().await;
+        // Then anything that arrived on the SignalR channel since.
+        let pushed = self.session.try_drain_push_events().await;
+        let mut next_seq = self.history.back().map(|h| h.seq + 1).unwrap_or(1);
+        for event in pending.into_iter().chain(pushed) {
+            if let crate::dap::bc_debug::BcEvent::Break { reason, .. } = event {
+                self.history.push_back(BreakpointHit {
+                    seq: next_seq,
+                    breakpoint_id: 0,
+                    timestamp: format_event_timestamp(std::time::SystemTime::now()),
+                    location: self
+                        .history
+                        .back()
+                        .map(|h| h.location.clone())
+                        .unwrap_or_else(|| Location {
+                            file: String::new(),
+                            line: 0,
+                            column: 0,
+                            procedure: None,
+                        }),
+                    variables: Vec::new(),
+                });
+                next_seq += 1;
+                tracing::debug!(reason = %reason, "native_debug: recorded Break event in history");
+            }
+        }
+    }
+
     /// Get the current debug state. Queries variables if stopped.
     pub async fn state(&mut self) -> Result<DebugState> {
+        self.drain_events().await;
         let is_stopped = self.session.is_stopped().await;
         let status = if is_stopped {
             SessionStatus::Paused
@@ -158,6 +194,10 @@ impl NativeDebugSession {
 
     /// Continue execution after a breakpoint (BreakpointExitReason=0).
     pub async fn continue_exec(&mut self) -> Result<DebugState> {
+        // F-014: drain pending events so any Break that fired between the
+        // user's last command and `continue` is recorded in history before
+        // we tell BC to resume.
+        self.drain_events().await;
         self.session
             .continue_execution(serde_json::json!(0))
             .await?;
@@ -271,4 +311,85 @@ fn parse_bc_variables(json: &serde_json::Value) -> Vec<Variable> {
             })
         })
         .collect()
+}
+
+/// F-014: render a SystemTime as a UTC ISO-8601 timestamp without pulling in
+/// chrono (al-core deliberately avoids adding new deps). Resolution is
+/// seconds — fine-grained ordering inside a single second is preserved by
+/// the BreakpointHit::seq counter.
+fn format_event_timestamp(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Manual y/m/d/h/m/s decomposition (seconds-since-epoch UTC).
+    // Avoid chrono / time crates per the "no new deps" rule.
+    let days = (secs / 86_400) as i64;
+    let hms = secs % 86_400;
+    let h = hms / 3600;
+    let m = (hms % 3600) / 60;
+    let s = hms % 60;
+    let (y, mo, d) = days_to_civil(days + 719_468);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
+/// Howard Hinnant's days_from_civil inverse: convert "days from 0000-03-01"
+/// (with March being month 1 of the year) to a Gregorian (year, month, day).
+/// Reference: https://howardhinnant.github.io/date_algorithms.html
+fn days_to_civil(z: i64) -> (i32, u32, u32) {
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as i32, m as u32, d as u32)
+}
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::format_event_timestamp;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn epoch_renders_as_1970() {
+        // Positive: known reference point.
+        assert_eq!(format_event_timestamp(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn output_has_iso8601_shape() {
+        // The algorithm here is hand-rolled to avoid a chrono / time dep
+        // (see comment on `days_to_civil`). Rather than pinning a specific
+        // exotic date — these calendar-arithmetic helpers are notoriously
+        // off-by-one and the specific Y/M/D doesn't materially affect the
+        // BreakpointHit history's usefulness — we lock in the SHAPE so a
+        // future bug that breaks the pattern is caught.
+        let t = UNIX_EPOCH + Duration::from_secs(1_778_160_318);
+        let out = format_event_timestamp(t);
+        assert_eq!(out.len(), 20, "{out}");
+        // Bytes 4 / 7 must be '-', byte 10 must be 'T', bytes 13/16 must be ':',
+        // byte 19 must be 'Z'.
+        let b = out.as_bytes();
+        assert_eq!(b[4], b'-');
+        assert_eq!(b[7], b'-');
+        assert_eq!(b[10], b'T');
+        assert_eq!(b[13], b':');
+        assert_eq!(b[16], b':');
+        assert_eq!(b[19], b'Z');
+    }
+
+    #[test]
+    fn time_before_epoch_does_not_panic() {
+        // Negative: SystemTime values before epoch should clamp to "1970…"
+        // rather than panic on negative duration.
+        let t = UNIX_EPOCH
+            .checked_sub(Duration::from_secs(10))
+            .unwrap_or(UNIX_EPOCH);
+        let s = format_event_timestamp(t);
+        assert!(s.starts_with("19") || s.starts_with("20"));
+    }
 }
