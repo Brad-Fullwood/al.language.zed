@@ -116,16 +116,16 @@
     "tags": ["al-impact"]
   },
   {
-    "label": "AL: Run Test '$ZED_SYMBOL'",
+    "label": "AL: Discover Tests",
     "command": "al-explorer",
-    "args": ["test", "--procedure", "$ZED_SYMBOL", "--json"],
+    "args": ["tests", "--json"],
     "tags": ["al-test"],
     "reveal": "always"
   },
   {
-    "label": "AL: Debug Test '$ZED_SYMBOL'",
+    "label": "AL: Run All Tests",
     "command": "al-explorer",
-    "args": ["debug", "test", "--procedure", "$ZED_SYMBOL"],
+    "args": ["test-run-all", "--json"],
     "tags": ["al-test"],
     "reveal": "always"
   },
