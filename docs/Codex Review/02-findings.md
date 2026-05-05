@@ -26,7 +26,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-020: `al-explorer` is not Windows-buildable, but CI/release include Windows. _(RESOLVED 2026-05-05.)_
 - F-021: Release workflow references removed packages and incompatible artifacts. _(RESOLVED 2026-05-05.)_
 - F-022: `DaemonClient::read_response` can allocate unbounded memory before enforcing its cap. _(RESOLVED 2026-05-05.)_
-- F-023: `al-test-harness` can leak `al-lsp` children and pending requests on failures.
+- F-023: `al-test-harness` can leak `al-lsp` children and pending requests on failures. _(RESOLVED 2026-05-05.)_
 - F-024: Zed live-test helpers have race-prone log waits and fixed sleeps.
 - F-025: DAP capture scripts drop buffered frames between reads. _(RESOLVED 2026-05-05 — pattern was already correct, invariant now documented in both scripts.)_
 - F-026: `deny.toml` exists but is not enforced in CI. _(RESOLVED — pre-existing fix; cargo-deny job wired in `.github/workflows/ci.yml:63` per prior T054.)_
@@ -675,7 +675,7 @@ Use a bounded read loop like the daemon server's bounded line reader: read chunk
 - Add a test with a stream that emits more than 64 MiB before newline.
 - Assert the client errors before unbounded allocation.
 
-## F-023: `al-test-harness` can leak `al-lsp` children and pending requests on failure paths
+## F-023: `al-test-harness` can leak `al-lsp` children and pending requests on failure paths _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: test harness lifecycle

@@ -844,6 +844,8 @@ impl LspClient {
         format!("file://{}", encoded)
     }
 
+    // (helper for F-023; see request() below)
+
     async fn request(
         &mut self,
         method: &str,
@@ -861,6 +863,14 @@ impl LspClient {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().await.insert(id, tx);
 
+        // F-023: ensure the pending entry is removed on EVERY exit path
+        // (write failure, timeout, channel close, LSP error). The previous
+        // code only removed it via the read_loop's response path, so a
+        // timeout left the oneshot Sender wedged in the map and the map
+        // grew unboundedly across long-running test runs.
+        let pending_ref = self.pending.clone();
+        let cleanup = scopeguard_remove(pending_ref, id);
+
         let writer = self.writer.as_mut().ok_or("writer closed")?;
         send_message(writer, &msg).await?;
 
@@ -868,6 +878,10 @@ impl LspClient {
             .await
             .map_err(|_| format!("timeout waiting for response to {method} (id={id})"))?
             .map_err(|_| "channel closed")?;
+
+        // Successful response — read_loop already removed the entry; the
+        // cleanup guard's idempotent `.remove(&id)` then becomes a no-op.
+        drop(cleanup);
 
         if let Some(error) = response.get("error") {
             return Err(format!("LSP error: {}", error).into());
@@ -1013,4 +1027,33 @@ pub async fn read_loop(
             let _ = notif_tx.send((method.to_string(), params));
         }
     }
+}
+
+/// F-023 helper: returns a guard whose Drop removes the pending entry
+/// for uid=1000(braf) gid=1000(braf) groups=1000(braf),3(sys),90(network),957(nopasswdlogin),979(rfkill),982(users),983(video),985(storage),989(lp),995(audio),998(wheel) from the shared  map. Used by
+/// so that EVERY exit path — write failure, timeout, channel close,
+/// LSP error, panic in the calling test — drains the map. Only the
+/// happy path triggers a no-op (the read_loop already removed the
+/// entry by the time the guard fires; `pending.remove(&id)` for an
+/// absent id is fine).
+fn scopeguard_remove(
+    pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
+    id: i64,
+) -> impl Drop {
+    struct Guard {
+        pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
+        id: i64,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // try_lock to avoid blocking inside Drop; if the map is locked
+            // (currently held by another caller), skip — the next request()
+            // on the map will see the stale Sender's receiver dropped and
+            // its send() will fail silently.
+            if let Ok(mut guard) = self.pending.try_lock() {
+                guard.remove(&self.id);
+            }
+        }
+    }
+    Guard { pending, id }
 }
