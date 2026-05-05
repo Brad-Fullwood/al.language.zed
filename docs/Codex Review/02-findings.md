@@ -4,8 +4,8 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 
 ## Finding Index
 
-- F-001: Initialization option deep-merge returns the wrong subtree.
-- F-002: User-configured `al-lsp` binary path is ignored when the legacy proxy exists.
+- F-001: Initialization option deep-merge returns the wrong subtree. _(RESOLVED — pre-loop fix in commit d2f2a2f.)_
+- F-002: User-configured `al-lsp` binary path is ignored when the legacy proxy exists. _(RESOLVED — pre-loop fix in commit d2f2a2f.)_
 - F-003: Workspace test suite fails on hover for procedure parameters. _(RESOLVED 2026-05-05.)_
 - F-004: AL toolchain discovery misses a valid Microsoft AL tool install. _(RESOLVED 2026-05-05.)_
 - F-005: Zed tasks and README use `al` for repository CLI, but Microsoft now owns that command name. _(RESOLVED 2026-05-05.)_
@@ -33,7 +33,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-027: Nested Zed settings under `al` are double-wrapped and ignored. _(RESOLVED 2026-05-05.)_
 - F-028: Legacy proxy discovery probes the wrong installed extension directory. _(RESOLVED 2026-05-05; legacy proxy branch removed.)_
 - F-029: Debug schema/snippets advertise `snapshotInitialize`, but adapter maps it to launch. _(RESOLVED 2026-05-05.)_
-- F-030: `al.editorServicesPath` is exposed but not passed to the Zed DAP command.
+- F-030: `al.editorServicesPath` is exposed but not passed to the Zed DAP command. _(RESOLVED 2026-05-05.)_
 - F-031: Zed grammar pin is behind native parser used by `al-core`.
 - F-032: Runnable test tasks call CLI commands that do not exist. _(RESOLVED 2026-05-05.)_
 - F-033: Debug schema rejects booleans it claims to support. _(RESOLVED 2026-05-05.)_
@@ -843,7 +843,7 @@ Either implement snapshot initialization as a real supported debug flow or remov
 - Add a test that every schema request enum is explicitly handled by `dap_request_kind()`.
 - Try a generated snapshot config in Zed.
 
-## F-030: `al.editorServicesPath` is exposed but not passed to the Zed DAP command
+## F-030: `al.editorServicesPath` is exposed but not passed to the Zed DAP command _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: debug settings

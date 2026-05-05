@@ -113,17 +113,6 @@
       "default": null,
       "description": "Default publisher name for scaffolding."
     },
-    "al.editorServicesPath": {
-      "type": "string",
-      "default": null,
-      "description": "Path to EditorServices.Host binary for debugging. If not set, auto-discovered."
-    },
-    "al.editorServicesLogLevel": {
-      "type": "string",
-      "enum": ["off", "error", "warning", "info", "debug", "trace"],
-      "default": "warning",
-      "description": "Log level for the EditorServices.Host DAP process."
-    },
     "al.symbolsCountryRegion": {
       "type": "string",
       "default": null,
