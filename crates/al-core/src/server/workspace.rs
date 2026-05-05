@@ -98,10 +98,30 @@ pub(crate) async fn initialize_workspace(
 
             *workspace.project.write().await = Some(project.clone());
 
-            // Signal readiness as soon as the file scan is done so that LSP
-            // request handlers (workspace/symbol, documentSymbol, hover, etc.)
-            // can answer queries without waiting for the package-download prompt
-            // which may block indefinitely waiting for user input.
+            // F-018: load already-cached packages BEFORE flipping `ready` so
+            // that warm-start queries (the common case) see complete symbol
+            // coverage. The package-download prompt path still signals ready
+            // before user interaction so a missing-dependencies dialog
+            // doesn't strand the editor — but warm starts no longer race
+            // package symbol load against the first hover/completion.
+            if !project.packages.is_empty() {
+                let cache = crate::symbols::cache::SymbolCache::default_location();
+                let loaded = workspace
+                    .symbols
+                    .load_packages_cached(&project.packages, &cache);
+                info!(
+                    loaded = loaded.len(),
+                    total_symbols = workspace.symbols.len(),
+                    "Loaded symbol packages (pre-ready)"
+                );
+                workspace.symbols.load_runtime_enums();
+                workspace.invalidate_insight_graph();
+            }
+
+            // Signal readiness. For warm starts the package symbol index is
+            // already populated above; for cold starts (no cached packages
+            // yet) we signal early to avoid blocking on the prompt and load
+            // again after download completes.
             ready_flag.store(true, Ordering::Release);
             init_notify.notify_waiters();
 
@@ -124,31 +144,26 @@ pub(crate) async fn initialize_workspace(
                         };
                         if !downloaded.is_empty() {
                             project.packages = downloaded;
+
+                            // Now load the freshly-downloaded packages.
+                            let cache = crate::symbols::cache::SymbolCache::default_location();
+                            let loaded = workspace
+                                .symbols
+                                .load_packages_cached(&project.packages, &cache);
+                            info!(
+                                loaded = loaded.len(),
+                                total_symbols = workspace.symbols.len(),
+                                "Loaded symbol packages (post-download)"
+                            );
+                            workspace.symbols.load_runtime_enums();
+                            workspace.invalidate_insight_graph();
                         }
                     }
                 }
             }
 
-            // Load .alpackages / cached packages (disk cache for fast warm starts)
-            if !project.packages.is_empty() {
-                let cache = crate::symbols::cache::SymbolCache::default_location();
-                let loaded = workspace
-                    .symbols
-                    .load_packages_cached(&project.packages, &cache);
-                info!(
-                    loaded = loaded.len(),
-                    total_symbols = workspace.symbols.len(),
-                    "Loaded symbol packages"
-                );
-            }
-
             // Log which packages lack embedded source (outlines rendered automatically)
             log_source_availability(&project.packages);
-
-            // Load runtime enum definitions (compiler built-ins not in any package)
-            workspace.symbols.load_runtime_enums();
-            // Invalidate insight graph -- packages changed (ISSUE-132 fix)
-            workspace.invalidate_insight_graph();
 
             // Update project reference after any package downloads completed.
             *workspace.project.write().await = Some(project.clone());

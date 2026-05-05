@@ -21,7 +21,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-015: Named debug config lookup silently falls back to first config. _(RESOLVED 2026-05-05.)_
 - F-016: Daemon breakpoints default object metadata to zero. _(RESOLVED 2026-05-05.)_
 - F-017: Successful daemon null responses serialize without JSON-RPC `result`. _(RESOLVED 2026-05-05.)_
-- F-018: Workspace readiness is signaled before package symbols load.
+- F-018: Workspace readiness is signaled before package symbols load. _(RESOLVED 2026-05-05.)_
 - F-019: Compiler diagnostic parsing/publishing is fragile for paths. _(RESOLVED 2026-05-05.)_
 - F-020: `al-explorer` is not Windows-buildable, but CI/release include Windows. _(RESOLVED 2026-05-05.)_
 - F-021: Release workflow references removed packages and incompatible artifacts. _(RESOLVED 2026-05-05.)_
@@ -554,7 +554,7 @@ Represent success `null` as `Some(Value::Null)`. Consider a response enum or con
 - Add tests for null success serialization.
 - Assert the wire payload contains `"result":null`.
 
-## F-018: Workspace readiness is signaled before package symbols load
+## F-018: Workspace readiness is signaled before package symbols load _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: workspace initialization, package loading
