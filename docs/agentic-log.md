@@ -7,7 +7,35 @@ run, newest first. Per-run details live under `.agentic/<run-id>/`
 The Overseer's `overseer-log-append.sh` Stop hook prepends entries to
 this file at the end of every `/loop` invocation.
 
-## 2026-05-05T01-25-18Z-de10ced — Codex Review batch (cycles 4-5, resumed to convergence)
+## 2026-05-05T01-25-18Z-de10ced — Codex Review batch (cycles 4-5, FULL CONVERGENCE)
+
+**Final state: 0 of 52 Codex findings open. All 52 marked RESOLVED.**
+
+The 11 findings still listed at the cycles-1-3 capped stop closed in
+this resumed run. Final cycle pushed past the F-014 / F-037 / F-038
+items that were initially flagged "architectural — defer":
+
+- F-014 closed by adding `NativeDebugSession::drain_events()` that
+  flushes both the SignalR pending queue and the live channel before
+  every stateful daemon command, translating `BcEvent::Break` into
+  `BreakpointHit` history (which previously was never populated). New
+  `format_event_timestamp` helper renders ISO-8601 UTC without
+  pulling in chrono — al-core's no-new-deps rule held.
+- F-037 closed by extending the bridge's `typeAt` / `completions` JSON
+  with an optional `text` property; C# bridge prefers the supplied
+  buffer over `File.ReadAllText`. Rust `hover_full` / `completions_full`
+  now pass the open document text via `workspace.documents.get_text`.
+  Package-reference plumbing (the second half of F-037) flagged as
+  follow-up.
+- F-038 closed via the safe-default fallback Codex recommended:
+  rename now scope-restricts to the enclosing procedure when the
+  cursor binds to a parameter or `var`-declared local, so renaming a
+  local `Status` in procedure A no longer rewrites `Status` in
+  procedure B / fields / unrelated codeunit methods. Workspace-wide
+  rename retained for non-local identifiers (procedure names, fields,
+  types). Full symbol-aware rewrite remains future work.
+
+
 
 Resumed: 2026-05-05T14:00Z · Branch: `dev` · Trigger: user
 "continue with the 39 remaining codex review tasks. Make sure you do
