@@ -2085,37 +2085,12 @@ async fn test_r13_core_workspace_symbol_query() {
 }
 
 // ---------------------------------------------------------------------------
-// Section S: Daemon socket transport stub verification
+// Section S: (formerly) daemon socket transport stub verification
 // ---------------------------------------------------------------------------
-
-/// S-01: LspClient::connect panics with the documented message (T303 stub)
-#[tokio::test]
-async fn test_s01_connect_panics_with_daemon_not_implemented_message() {
-    let result = tokio::spawn(async {
-        let _ = al_test_harness::LspClient::connect("/tmp/al-lsp.sock", "/tmp/project").await;
-    })
-    .await;
-
-    assert!(
-        result.is_err(),
-        "connect() must panic — daemon transport is not yet implemented"
-    );
-
-    let err = result.unwrap_err();
-    assert!(err.is_panic(), "connect() must panic, not cancel");
-
-    let payload = err.into_panic();
-    let msg = payload
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
-        .unwrap_or("<non-string>");
-
-    assert!(
-        msg.contains("Daemon transport not yet implemented"),
-        "panic message must mention 'Daemon transport not yet implemented'. Got: {msg:?}"
-    );
-}
+// `LspClient::connect()` was removed in F-051 — al-lsp's daemon mode speaks
+// a different (non-LSP) protocol via `al_protocol::DaemonClient`, so the
+// LSP-shaped harness cannot share a transport. The S-01 panic-message
+// regression test was deleted alongside the API.
 
 // ---------------------------------------------------------------------------
 // Section T: Object-type coverage (AL grammar completeness)
