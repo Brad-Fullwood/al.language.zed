@@ -99,6 +99,19 @@ pub(crate) fn handle_code_action(
         {
             actions.push(core_action_to_lsp(entry, Some(diag)));
         }
+        // F-044: AL0185 (and similar "Type … not found") namespace
+        // quick-fix lives in `namespace_quick_fix_for_diagnostic` but
+        // wasn't wired into the LSP code-action surface. Plumb it
+        // through so the user sees the suggested namespace `using`
+        // imports next to the AL compiler diagnostic.
+        for entry in crate::queries::code_actions::namespace_quick_fix_for_diagnostic(
+            &server.workspace,
+            uri,
+            &text,
+            &diag_info,
+        ) {
+            actions.push(core_action_to_lsp(entry, Some(diag)));
+        }
     }
 
     // Source actions via al-core

@@ -47,7 +47,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-041: Virtual package source cache can serve stale definitions. _(RESOLVED 2026-05-05.)_
 - F-042: Some generated ranges use byte columns as LSP UTF-16 columns.
 - F-043: "Make procedure local" is offered without checking external callers. _(RESOLVED 2026-05-05.)_
-- F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions.
+- F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions. _(RESOLVED 2026-05-05.)_
 - F-045: Code-action object-kind detection treats many object types as page-like. _(RESOLVED 2026-05-05.)_
 - F-046: Daemon autostart can race into multiple daemons for one project. _(RESOLVED 2026-05-05; per-socket spawn lock with stale recovery.)_
 - F-047: Daemon dedup returns fake empty results for valid repeated requests. _(RESOLVED 2026-05-05.)_
@@ -1182,7 +1182,7 @@ Only offer the action when call graph/reference analysis proves there are no ext
 - Procedure called from another object should not get the quick fix.
 - Private-only procedure should still get it.
 
-## F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions
+## F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: code actions, diagnostics
