@@ -86,7 +86,13 @@ def send_dap(msg):
     print(f">>> SENT: {msg.get('command', msg.get('type', '?'))}")
 
 def read_dap():
-    """Read one DAP message from stdout."""
+    """Read one DAP message from stdout.
+
+    F-025 invariant: consume exactly one frame and leave any additional
+    buffered bytes on `proc.stdout` for the next call. `readline()` and
+    `read(length)` both honour their counts exactly on Python's
+    BufferedReader, so we never over-consume into the next frame.
+    """
     headers = {}
     while True:
         line = proc.stdout.readline().decode().strip()

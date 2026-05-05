@@ -28,7 +28,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-022: `DaemonClient::read_response` can allocate unbounded memory before enforcing its cap. _(RESOLVED 2026-05-05.)_
 - F-023: `al-test-harness` can leak `al-lsp` children and pending requests on failures.
 - F-024: Zed live-test helpers have race-prone log waits and fixed sleeps.
-- F-025: DAP capture scripts drop buffered frames between reads.
+- F-025: DAP capture scripts drop buffered frames between reads. _(RESOLVED 2026-05-05 — pattern was already correct, invariant now documented in both scripts.)_
 - F-026: `deny.toml` exists but is not enforced in CI. _(RESOLVED — pre-existing fix; cargo-deny job wired in `.github/workflows/ci.yml:63` per prior T054.)_
 - F-027: Nested Zed settings under `al` are double-wrapped and ignored. _(RESOLVED 2026-05-05.)_
 - F-028: Legacy proxy discovery probes the wrong installed extension directory. _(RESOLVED 2026-05-05; legacy proxy branch removed.)_
@@ -723,7 +723,7 @@ Replace fixed sleeps with event-based waits and unique per-test markers. Clear o
 - Run live tests repeatedly under load.
 - Assert no flakes across several consecutive runs.
 
-## F-025: DAP capture scripts drop buffered frames between reads
+## F-025: DAP capture scripts drop buffered frames between reads _(RESOLVED 2026-05-05)_
 
 - Severity: Low
 - Area: DAP scripts

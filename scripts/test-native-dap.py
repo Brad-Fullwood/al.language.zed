@@ -88,7 +88,16 @@ def send(command, arguments=None):
     return msg["seq"]
 
 def recv(timeout_sec=120):
-    """Read one DAP message."""
+    """Read one DAP message.
+
+    F-025 invariant: this function MUST consume exactly one DAP frame
+    (header block + Content-Length-many body bytes) and leave any
+    additional buffered bytes on `proc.stdout` for the next call.
+    `proc.stdout` is a BufferedReader and `read(n)` honours `n` exactly,
+    so the byte-by-byte header read + exact-size body read pattern below
+    is sufficient — do NOT switch to `read1()` or any chunked read that
+    might over-consume into the next frame.
+    """
     sel = selectors.DefaultSelector()
     sel.register(proc.stdout, selectors.EVENT_READ)
 
