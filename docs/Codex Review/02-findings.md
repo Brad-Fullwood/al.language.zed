@@ -18,7 +18,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-012: DAP proxy can corrupt frames because two tasks write to stdout independently.
 - F-013: DAP launch continues even when compilation fails.
 - F-014: Native daemon debug state does not consume server-push events.
-- F-015: Named debug config lookup silently falls back to first config.
+- F-015: Named debug config lookup silently falls back to first config. _(RESOLVED 2026-05-05.)_
 - F-016: Daemon breakpoints default object metadata to zero.
 - F-017: Successful daemon null responses serialize without JSON-RPC `result`. _(RESOLVED 2026-05-05.)_
 - F-018: Workspace readiness is signaled before package symbols load.
@@ -481,7 +481,7 @@ Add an event pump for daemon debug sessions, or drain/process queued server even
 - Query `state` immediately.
 - Assert the state reflects the breakpoint event without requiring a later command.
 
-## F-015: Named debug config lookup silently falls back to first config
+## F-015: Named debug config lookup silently falls back to first config _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: daemon debug config resolution

@@ -21,10 +21,30 @@ fn missing_cmd(id: u64, msg: &str) -> Response {
 /// Fix #4: `al debug start` sends `{"cmd":"start","config":name}` which does not
 /// include full DAP launch args. This function looks up the named config file entry
 /// and constructs the `BcDebugConfig` from it instead of from `params` directly.
+/// F-015: when a config name is supplied, it MUST match exactly. Falling
+/// back to the first config silently masks typos (and could route to the
+/// wrong BC environment). Only fall back to the first config when no name
+/// was supplied. Extracted for unit-testability — the surrounding
+/// `resolve_debug_config` adds project + file IO that is hard to mock.
+fn pick_named_config<'a>(
+    configs: &'a [crate::launch::BcServerConfig],
+    requested_name: Option<&str>,
+) -> Result<&'a crate::launch::BcServerConfig, String> {
+    match requested_name {
+        Some(name) => configs.iter().find(|c| c.name == name).ok_or_else(|| {
+            let known: Vec<&str> = configs.iter().map(|c| c.name.as_str()).collect();
+            format!("Debug config {name:?} not found. Known configs: {known:?}")
+        }),
+        None => configs
+            .first()
+            .ok_or_else(|| "Project debug configuration file has no configs".to_string()),
+    }
+}
+
 fn resolve_debug_config(
     workspace: &Workspace,
     params: &serde_json::Value,
-) -> Option<crate::dap::bc_debug::BcDebugConfig> {
+) -> Result<crate::dap::bc_debug::BcDebugConfig, String> {
     use crate::dap::bc_debug::BcDebugConfig;
     use crate::launch::find_launch_config;
 
@@ -32,21 +52,16 @@ fn resolve_debug_config(
         .project
         .try_read()
         .ok()
-        .and_then(|g| g.as_ref().map(|p| p.root.clone()))?;
+        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
+        .ok_or_else(|| "No active project".to_string())?;
 
-    let debug_file = find_launch_config(&project_root)?;
+    let debug_file = find_launch_config(&project_root).ok_or_else(|| {
+        "No debug configuration found in project (.zed/debug.json or .vscode/launch.json)"
+            .to_string()
+    })?;
 
     let config_name = params.get("config").and_then(|v| v.as_str());
-
-    // Select the requested config by name, or fall back to the first one.
-    let bc_cfg = match config_name {
-        Some(name) => debug_file
-            .configs
-            .iter()
-            .find(|c| c.name == name)
-            .or_else(|| debug_file.configs.first()),
-        None => debug_file.configs.first(),
-    }?;
+    let bc_cfg = pick_named_config(&debug_file.configs, config_name)?;
 
     use crate::launch::{AuthMethod, EnvironmentType};
 
@@ -61,7 +76,7 @@ fn resolve_debug_config(
         AuthMethod::AAD => "AAD".to_string(),
     };
 
-    Some(BcDebugConfig {
+    Ok(BcDebugConfig {
         server: bc_cfg.server.clone(),
         server_instance: bc_cfg.server_instance.clone(),
         port: bc_cfg.port.unwrap_or(7049),
@@ -103,14 +118,14 @@ pub(super) async fn dispatch_debug(
             let config = if params.get("config").is_some() || params.get("server").is_none() {
                 // Either a named config reference or no server specified — look up from file
                 match resolve_debug_config(workspace, params) {
-                    Some(c) => c,
-                    None => {
+                    Ok(c) => c,
+                    Err(msg) => {
                         return Response {
                             id,
                             result: None,
                             error: Some(RpcError {
                                 code: error_codes::INVALID_PARAMS,
-                                message: "No debug configuration found in project (.zed/debug.json or .vscode/launch.json)".to_string(),
+                                message: msg,
                             }),
                             ..Default::default()
                         };
@@ -399,5 +414,59 @@ pub(super) async fn dispatch_debug(
             }),
             ..Default::default()
         },
+    }
+}
+
+#[cfg(test)]
+mod pick_named_config_tests {
+    use super::pick_named_config;
+    use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+
+    fn cfg(name: &str) -> BcServerConfig {
+        BcServerConfig {
+            name: name.to_string(),
+            environment_type: EnvironmentType::OnPrem,
+            server: None,
+            server_instance: None,
+            port: None,
+            environment_name: None,
+            tenant: None,
+            authentication: AuthMethod::UserPassword,
+            accept_invalid_certs: false,
+        }
+    }
+
+    #[test]
+    fn no_name_returns_first_config() {
+        // Positive: backward-compatible default behaviour when caller does
+        // not specify a config name.
+        let configs = vec![cfg("alpha"), cfg("beta")];
+        let picked = pick_named_config(&configs, None).expect("first should win");
+        assert_eq!(picked.name, "alpha");
+    }
+
+    #[test]
+    fn matching_name_returns_that_config() {
+        // Positive: exact-match path.
+        let configs = vec![cfg("alpha"), cfg("beta")];
+        let picked = pick_named_config(&configs, Some("beta")).expect("beta should match");
+        assert_eq!(picked.name, "beta");
+    }
+
+    #[test]
+    fn unknown_name_is_not_found_no_fallback() {
+        // Negative (the F-015 invariant): a typo in the config name MUST
+        // surface as an error, NOT silently route to the first config.
+        let configs = vec![cfg("alpha"), cfg("beta")];
+        let err = pick_named_config(&configs, Some("alfa")).expect_err("typo must error");
+        assert!(err.contains("\"alfa\""), "{err}");
+        assert!(err.contains("alpha") && err.contains("beta"), "{err}");
+    }
+
+    #[test]
+    fn empty_config_list_errors_when_no_name_given() {
+        // Negative: missing-config-list path is its own clear error.
+        let err = pick_named_config(&[], None).expect_err("empty list must error");
+        assert!(err.contains("no configs"));
     }
 }
