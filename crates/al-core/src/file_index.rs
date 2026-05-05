@@ -176,10 +176,18 @@ impl FileIndex {
     /// Scan a directory tree for .al files and index their contents.
     ///
     /// Skips hidden directories, `node_modules`, and `.alpackages`.
-    /// Returns the number of files indexed.
+    /// On a re-scan, files that were previously indexed but no longer
+    /// exist on disk are removed from every index (primary + secondary
+    /// object-name / object-id / procedure maps). F-010: a stale
+    /// re-scan was leaving deleted AL objects discoverable by go-to-
+    /// definition, workspace symbols, and code actions.
+    /// Returns the number of files freshly indexed (not the resulting
+    /// total — call [`len`] for that).
     pub fn scan(&self, root: &Path) -> usize {
         let mut count = 0;
+        let mut on_disk: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         self.walk_al_files(root, &mut count, 0, &mut |path| {
+            on_disk.insert(path.clone());
             match std::fs::read_to_string(&path) {
                 Ok(content) => self.add_file(path, content),
                 Err(e) => {
@@ -187,6 +195,15 @@ impl FileIndex {
                 }
             }
         });
+        // Drop entries for files that disappeared from disk between scans.
+        // remove_file already cleans the secondary maps (object-name,
+        // object-id, procedures, file_metadata, file_trees, file_symbols).
+        let indexed_paths: Vec<PathBuf> = self.files.iter().map(|e| e.key().clone()).collect();
+        for path in indexed_paths {
+            if !on_disk.contains(&path) {
+                self.remove_file(&path);
+            }
+        }
         count
     }
 
@@ -766,6 +783,60 @@ mod tests {
         assert_eq!(delta.removed.len(), 0);
         assert_eq!(index.len(), 4, "Total file count should increase by 1");
         assert!(index.get_content(&new_path).is_some());
+    }
+
+    /// F-010: a full `scan()` re-run after a file is deleted from disk
+    /// must drop the deleted file from every index — primary `files`,
+    /// the object-name map, content cache, and the procedure reverse
+    /// index. Previously `scan` only added/updated entries, leaving
+    /// deleted AL objects discoverable by go-to-definition.
+    #[test]
+    fn f010_scan_removes_files_deleted_between_scans() {
+        let dir = setup_test_dir();
+        let index = FileIndex::new();
+
+        index.scan(dir.path());
+        assert_eq!(index.len(), 3);
+        assert!(index.find_by_object_name("my test page").is_some());
+
+        let page_path = dir.path().join("MyTestPage.al");
+        fs::remove_file(&page_path).unwrap();
+
+        let count = index.scan(dir.path());
+
+        assert_eq!(count, 2, "scan() walks only files still on disk");
+        assert_eq!(index.len(), 2, "deleted file must be dropped from index");
+        assert!(
+            index.find_by_object_name("my test page").is_none(),
+            "deleted file's object-name entry must be cleared"
+        );
+        assert!(
+            index.get_content(&page_path).is_none(),
+            "deleted file's content cache must be cleared"
+        );
+    }
+
+    /// F-010 negative regression: a scan with no on-disk changes must
+    /// not remove anything. Confirms the deletion sweep is gated on
+    /// "not on disk this scan", not on "older than this scan".
+    #[test]
+    fn f010_scan_does_not_remove_files_still_present() {
+        let dir = setup_test_dir();
+        let index = FileIndex::new();
+
+        index.scan(dir.path());
+        let initial_len = index.len();
+        assert_eq!(initial_len, 3);
+
+        // Re-scan with no changes.
+        index.scan(dir.path());
+        assert_eq!(
+            index.len(),
+            initial_len,
+            "re-scan with no on-disk changes must not drop entries"
+        );
+        assert!(index.find_by_object_name("my test page").is_some());
+        assert!(index.find_by_object_name("my test table").is_some());
     }
 
     /// Verify that a deleted file is removed from the index incrementally.
