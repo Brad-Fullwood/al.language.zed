@@ -36,7 +36,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-030: `al.editorServicesPath` is exposed but not passed to the Zed DAP command.
 - F-031: Zed grammar pin is behind native parser used by `al-core`.
 - F-032: Runnable test tasks call CLI commands that do not exist.
-- F-033: Debug schema rejects booleans it claims to support.
+- F-033: Debug schema rejects booleans it claims to support. _(RESOLVED 2026-05-05.)_
 - F-034: Generated attach scenarios still run a compile build task.
 - F-035: README architecture and command documentation are stale after crate consolidation. _(RESOLVED 2026-05-05.)_
 - F-036: Semantic bridge position contract is off by one.
@@ -916,7 +916,7 @@ Audit every task command against the actual CLI parser. Remove dead tasks or imp
 - Execute each configured Zed task command in a shell.
 - Add a task/CLI consistency check if practical.
 
-## F-033: Debug schema rejects booleans it claims to support
+## F-033: Debug schema rejects booleans it claims to support _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: debug schema

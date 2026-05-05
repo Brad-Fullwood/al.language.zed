@@ -65,19 +65,23 @@
       "description": "Specifies the server authentication method."
     },
     "breakOnError": {
-      "type": [
-        "boolean",
-        "string"
-      ],
-      "enum": [
-        "False",
-        "True",
-        "None",
-        "All",
-        "ExcludeTry"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "False",
+            "True",
+            "None",
+            "All",
+            "ExcludeTry"
+          ]
+        },
+        {
+          "type": "boolean"
+        }
       ],
       "default": "All",
-      "description": "Specifies whether the debugger to break on the next error"
+      "description": "Specifies whether the debugger to break on the next error. Accepts the string mode (`All`/`ExcludeTry`/`None`/etc.) or a boolean (`true` ≈ `All`, `false` ≈ `None`)."
     },
     "breakOnNext": {
       "enum": [
@@ -91,19 +95,23 @@
       "description": "Specifies that attach should break on the next available client session."
     },
     "breakOnRecordWrite": {
-      "type": [
-        "boolean",
-        "string"
-      ],
-      "enum": [
-        "False",
-        "True",
-        "None",
-        "All",
-        "ExcludeTemporary"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "False",
+            "True",
+            "None",
+            "All",
+            "ExcludeTemporary"
+          ]
+        },
+        {
+          "type": "boolean"
+        }
       ],
       "default": "None",
-      "description": "Specifies whether the debugger breaks on record changes."
+      "description": "Specifies whether the debugger breaks on record changes. Accepts the string mode (`All`/`ExcludeTemporary`/`None`/etc.) or a boolean (`true` ≈ `All`, `false` ≈ `None`)."
     },
     "dependencyPublishingOption": {
       "enum": [
