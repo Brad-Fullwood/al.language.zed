@@ -5,6 +5,8 @@ mod settings;
 
 #[cfg(test)]
 mod merge_json_test;
+#[cfg(test)]
+mod settings_test;
 
 use serde_json::{json, Value};
 use std::collections::HashMap;

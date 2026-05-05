@@ -20,6 +20,20 @@ pub fn apply_al_settings_to_config(
     let mut result = config.clone();
 
     for (key, value) in settings_obj {
+        // F-027: Accept the nested wrapper shape { "al": { ... } } by merging
+        // its children directly. Without this, a natural Zed settings nest
+        // would be wrapped a second time as init_options.al.al.<child>.
+        if key == "al" {
+            if let Some(nested) = value.as_object() {
+                for (child_key, child_value) in nested {
+                    let effective = child_key.strip_prefix("al.").unwrap_or(child_key);
+                    let parts: Vec<&str> = effective.split('.').collect();
+                    set_nested_value(&mut result, &parts, child_value);
+                }
+                continue;
+            }
+        }
+
         // Strip "al." prefix if present
         let effective_key = key.strip_prefix("al.").unwrap_or(key);
 
