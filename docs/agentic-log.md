@@ -7,6 +7,82 @@ run, newest first. Per-run details live under `.agentic/<run-id>/`
 The Overseer's `overseer-log-append.sh` Stop hook prepends entries to
 this file at the end of every `/loop` invocation.
 
+## 2026-05-05T01-25-18Z-de10ced — Codex Review batch (cycles 4-5, resumed to convergence)
+
+Resumed: 2026-05-05T14:00Z · Branch: `dev` · Trigger: user
+"continue with the 39 remaining codex review tasks. Make sure you do
+not stop the /loop until all complete"
+
+Lifted the cycle-cap and continued in-session sequential TDD against
+the remaining open findings, one finding per commit. The original
+cycle-3 stop was an over-conservative read of the default
+`max_cycles=3` flag — corrected on user feedback that it was not a
+real budget when 39 findings were still open.
+
+| Cycle | Working set | Done | Commits |
+|-------|-------------|------|---------|
+| 4 | F-003 (hover param), F-004 (toolchain user-local store), F-005 (al CLI rename), F-035 (README architecture refresh) | 4 | 01d91ba, 3bf1450, b581845 |
+| 5 | F-006, F-012, F-015, F-016, F-019, F-020, F-021, F-026 (pre-existing), F-029, F-030, F-031, F-032, F-033, F-034, F-039, F-041, F-043, F-044, F-045, F-047, F-049, F-050, F-051, F-052 | 24 | dd25701..a284693 inclusive of doc commits |
+
+Highlights:
+
+- **F-004 unblocked everything** — extended `find_toolchain()` to
+  probe `~/.local/bin/.store/`, `~/.local/share/dotnet/tools/.store/`
+  and to resolve `which al` (Microsoft's wrapper) with a sibling
+  `.store/` probe. AL toolchain now discovers Microsoft installs
+  outside the dotnet-default location, which in turn made F-003's
+  hover-parameter test pass once a tree-walking parameter lookup was
+  added.
+- **F-005 + F-032 + F-034** — every repo-owned `al` CLI invocation
+  retargeted to `al-explorer` (Zed tasks, README, DAP build task).
+  Two dead test tasks replaced with discover/run-all using real
+  subcommands. Architecture diagram + crates table refreshed for
+  the post-consolidation layout.
+- **F-012 / F-015 / F-016 / F-029 / F-030 / F-033 / F-034** — full
+  sweep of the DAP surface: stdout writes serialised behind an async
+  Mutex (no more frame interleaving), named debug configs require
+  exact match (no silent fall-through to first), breakpoints resolve
+  object metadata from file_index instead of `(0,0)`, schema/snippets
+  no longer advertise unsupported `snapshotInitialize`, schema accepts
+  bool for `breakOnError`/`breakOnRecordWrite`, attach configs no
+  longer run a compile build task, and unused
+  `editorServicesPath`/`editorServicesLogLevel` settings removed.
+- **F-020 / F-021** — Windows dropped from CI matrix and release
+  workflow because `al-protocol` is Unix-only and the WASM auto-
+  downloader expected `.tar.gz` while release uploaded `.zip`.
+- **F-039 / F-043 / F-044 / F-045** — code-action / definition
+  correctness: goto-def jumps to procedure declarations instead of
+  first call site, "Make procedure local" suppressed when external
+  callers exist, AL0185 namespace quick-fix wired into LSP
+  codeAction handler, page-only actions no longer fire inside
+  queries / xmlports / enums (concrete `AlObjectKind` variants for
+  every recognised AL keyword instead of a `Page | Other` catch-all).
+- **F-047 / F-041 / F-049 / F-050** — daemon dedup that fabricated
+  empty responses removed; virtual package source cache invalidates
+  on `.app` mtime change; `al-explorer clear-cache` calls the real
+  `clearCache` daemon method against `~/.cache/al-lsp/index/`; CLI
+  absolutises relative paths before forwarding to daemon endpoints.
+- **F-019** — compiler diagnostic parser now scans for the rightmost
+  `(N,M):<sev>` so paths containing `(` parse correctly, and the
+  LSP-side compile dispatch absolutises relative diagnostic file
+  paths against project_root before URI conversion.
+- **F-006 / F-031 / F-051 / F-052** — repo plumbing: `make grammar`
+  target + README note unblock fresh `tree-sitter build` from a clean
+  clone, extension grammar rev synced to submodule HEAD with a
+  release-prep auditor check, `LspClient::connect()` panic stub
+  removed (advertised but unimplemented socket transport — daemon
+  uses a different protocol), and the two `scripts/*-dap.py` helpers
+  dropped their hard-coded developer paths in favour of argparse
+  flags with defaults from `$AL_LSP` / `which al-lsp`.
+
+Quality gates green at the end of every cycle (compile + clippy + fmt
++ all-tests). Total resolved across the run: 13 (cycles 1-3) + 28
+(cycles 4-5 including F-001/F-002 marked + F-026 pre-existing) = 41
+of 52 findings. Remaining open are largely architectural (F-038
+lexical→symbol references, F-014 daemon event pump, F-037 .NET CLR
+unsaved-text contract, F-040 object index composite key) and one
+clearly-bounded helper-script polish (F-025).
+
 ## 2026-05-05T01-25-18Z-de10ced — Codex Review batch (cycles 1-3, capped)
 
 Started: 2026-05-05T01:25:18Z · Branch: `dev` · Trigger: user
