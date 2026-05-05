@@ -234,8 +234,19 @@ internal class CodeAnalysisBridge
         var line = prms.GetProperty("line").GetUInt32();
         var col = prms.GetProperty("column").GetUInt32();
 
-        if (!File.Exists(file)) return null;
-        var source = File.ReadAllText(file);
+        // F-037: prefer caller-supplied unsaved text over disk so hover
+        // reflects the editor buffer, not the last-saved file. Disk read is
+        // the fallback for callers that don't have the buffer (analyze).
+        string? source = null;
+        if (prms.TryGetProperty("text", out var textProp) && textProp.ValueKind == JsonValueKind.String)
+        {
+            source = textProp.GetString();
+        }
+        if (source == null)
+        {
+            if (!File.Exists(file)) return null;
+            source = File.ReadAllText(file);
+        }
         var tree = ParseSource(source, file);
         if (tree == null) return null;
 
@@ -293,8 +304,18 @@ internal class CodeAnalysisBridge
         var line = prms.GetProperty("line").GetUInt32();
         var col = prms.GetProperty("column").GetUInt32();
 
-        if (!File.Exists(file)) return Array.Empty<object>();
-        var source = File.ReadAllText(file);
+        // F-037: prefer caller-supplied unsaved text over disk; see
+        // HandleTypeAt for the same fallback contract.
+        string? source = null;
+        if (prms.TryGetProperty("text", out var textProp) && textProp.ValueKind == JsonValueKind.String)
+        {
+            source = textProp.GetString();
+        }
+        if (source == null)
+        {
+            if (!File.Exists(file)) return Array.Empty<object>();
+            source = File.ReadAllText(file);
+        }
         var tree = ParseSource(source, file);
         if (tree == null) return Array.Empty<object>();
 

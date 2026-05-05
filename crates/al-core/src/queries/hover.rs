@@ -394,7 +394,12 @@ pub async fn hover_full(
     // file, then adds `col` directly. Adding 1 here landed one full line
     // past the cursor and shifted hover one byte right of the token.
     let pos = (position.line, position.character);
-    let info = match bridge.type_at(&path, pos).await {
+    // F-037: pass the open-document text so the bridge sees unsaved edits
+    // instead of the last-saved file content. `documents.get_text` is the
+    // same source as the rest of the LSP query path, so behaviour stays
+    // consistent for open vs unopened files.
+    let unsaved_text = workspace.documents.get_text(uri);
+    let info = match bridge.type_at(&path, pos, unsaved_text.as_deref()).await {
         Ok(v) => v?,
         Err(e) => {
             tracing::debug!(error = %e, "hover_full: bridge error");

@@ -354,16 +354,25 @@ impl SemanticBridge {
     /// file, then adds `col` directly to the resulting byte offset, so any
     /// off-by-one done on the Rust side will land at the wrong token. Pass
     /// LSP positions through unchanged.
+    ///
+    /// **Unsaved-text contract (F-037):** when `text` is `Some`, the bridge
+    /// uses that buffer instead of reading `file` from disk. Pass the
+    /// document store's current text for open documents so hover answers
+    /// reflect the editor buffer, not the last-saved version.
     pub async fn type_at(
         &self,
         file: &Path,
         pos: (u32, u32),
+        text: Option<&str>,
     ) -> Result<Option<TypeInfo>, SemanticError> {
-        let params = serde_json::json!({
+        let mut params = serde_json::json!({
             "file": file,
             "line": pos.0,
             "column": pos.1,
         });
+        if let Some(t) = text {
+            params["text"] = serde_json::Value::String(t.to_string());
+        }
         let result = self.call("typeAt", params).await?;
         if result.is_null() {
             return Ok(None);
@@ -377,16 +386,23 @@ impl SemanticBridge {
     /// **Position contract (F-036):** identical to [`Self::type_at`] — `pos`
     /// is 0-based UTF-16 `(line, column)`, passed through to the C# bridge
     /// without adjustment.
+    ///
+    /// **Unsaved-text contract (F-037):** identical to [`Self::type_at`] —
+    /// caller-supplied `text` overrides the disk read.
     pub async fn completions_at(
         &self,
         file: &Path,
         pos: (u32, u32),
+        text: Option<&str>,
     ) -> Result<Vec<CompletionItem>, SemanticError> {
-        let params = serde_json::json!({
+        let mut params = serde_json::json!({
             "file": file,
             "line": pos.0,
             "column": pos.1,
         });
+        if let Some(t) = text {
+            params["text"] = serde_json::Value::String(t.to_string());
+        }
         let result = self.call("completions", params).await?;
         Self::parse_response(result)
     }

@@ -225,7 +225,13 @@ pub async fn completions_full(
     // `bridge::SemanticBridge::completions_at` doc and the matching C#
     // `LineColToOffset` invariant.
     let pos = (position.line, position.character);
-    let bridge_items = match bridge.completions_at(&path, pos).await {
+    // F-037: pass the open-document text so the bridge sees unsaved edits
+    // instead of stale on-disk content.
+    let unsaved_text = workspace.documents.get_text(uri);
+    let bridge_items = match bridge
+        .completions_at(&path, pos, unsaved_text.as_deref())
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             tracing::debug!(error = %e, "completions_full: bridge error");

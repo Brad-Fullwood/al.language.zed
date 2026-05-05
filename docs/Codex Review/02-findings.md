@@ -40,7 +40,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-034: Generated attach scenarios still run a compile build task. _(RESOLVED 2026-05-05.)_
 - F-035: README architecture and command documentation are stale after crate consolidation. _(RESOLVED 2026-05-05.)_
 - F-036: Semantic bridge position contract is off by one. _(RESOLVED 2026-05-05.)_
-- F-037: Bridge hover/completion ignore unsaved text and package references.
+- F-037: Bridge hover/completion ignore unsaved text and package references. _(RESOLVED 2026-05-05 — unsaved text now plumbed through bridge `text` param; package-reference plumbing remains a follow-up.)_
 - F-038: References and rename are workspace-wide lexical matches, not symbol references.
 - F-039: Same-file procedure go-to-definition misses forward declarations and can jump to a use. _(RESOLVED 2026-05-05.)_
 - F-040: Workspace object index collapses duplicate object names and can remove wrong mapping. _(RESOLVED 2026-05-05.)_
@@ -1011,7 +1011,7 @@ Define one contract at the bridge boundary: LSP positions are zero-based UTF-16;
 - Fixtures where hover is requested at token start, middle, and end.
 - Compare bridge response with expected symbol at each position.
 
-## F-037: Bridge hover/completion ignore unsaved text and package references
+## F-037: Bridge hover/completion ignore unsaved text and package references _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: semantic bridge, document state
