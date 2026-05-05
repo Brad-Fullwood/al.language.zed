@@ -46,7 +46,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-040: Workspace object index collapses duplicate object names and can remove wrong mapping.
 - F-041: Virtual package source cache can serve stale definitions. _(RESOLVED 2026-05-05.)_
 - F-042: Some generated ranges use byte columns as LSP UTF-16 columns.
-- F-043: "Make procedure local" is offered without checking external callers.
+- F-043: "Make procedure local" is offered without checking external callers. _(RESOLVED 2026-05-05.)_
 - F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions.
 - F-045: Code-action object-kind detection treats many object types as page-like. _(RESOLVED 2026-05-05.)_
 - F-046: Daemon autostart can race into multiple daemons for one project. _(RESOLVED 2026-05-05; per-socket spawn lock with stale recovery.)_
@@ -1158,7 +1158,7 @@ Centralize byte-to-LSP position conversion and use it for every tree-sitter/rang
 - Fixture with multi-byte characters before a diagnostic/code-action range.
 - Assert LSP character offsets are UTF-16 correct.
 
-## F-043: "Make procedure local" is offered without checking external callers
+## F-043: "Make procedure local" is offered without checking external callers _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: code actions
