@@ -23,6 +23,58 @@ const INIT_RETRY_MAX: u32 = 3;
 /// Delay between retries.
 #[cfg(unix)]
 const INIT_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// Hard cap on a single JSON-RPC response line. Enforced *during* read
+/// so a hostile or broken daemon cannot force an unbounded allocation
+/// before we get a chance to reject the message.
+#[cfg(unix)]
+const MAX_RESPONSE_LINE: usize = 64 * 1024 * 1024;
+
+/// Read a single newline-delimited line, enforcing a byte cap *during*
+/// reading. Returns `Ok(None)` on EOF with empty buffer, `Err` if the
+/// line would exceed `max_bytes`. Sync mirror of the daemon-side
+/// `read_bounded_line` in `al_core::server::daemon`.
+#[cfg(unix)]
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<Option<String>> {
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if buf.is_empty() {
+                Ok(None)
+            } else {
+                String::from_utf8(buf)
+                    .map(Some)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            };
+        }
+        // Pre-extend size check: refuse to grow `buf` past `max_bytes` so the
+        // limit is enforced before the allocation, not after.
+        let prospective_take = if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            pos
+        } else {
+            available.len()
+        };
+        if buf.len().saturating_add(prospective_take) > max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("line exceeds {max_bytes} byte limit"),
+            ));
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            buf.extend_from_slice(&available[..pos]);
+            reader.consume(pos + 1);
+            return String::from_utf8(buf)
+                .map(Some)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+        }
+        let len = available.len();
+        buf.extend_from_slice(available);
+        reader.consume(len);
+    }
+}
 
 /// A synchronous client for the al-lsp daemon.
 #[cfg(unix)]
@@ -133,23 +185,9 @@ impl DaemonClient {
     }
 
     fn read_response(&mut self) -> Result<Response, String> {
-        const MAX_RESPONSE_LINE: usize = 64 * 1024 * 1024;
-
-        let mut line = String::new();
-        let bytes_read = self
-            .reader
-            .read_line(&mut line)
-            .map_err(|e| format!("Failed to read response: {}", e))?;
-        if bytes_read == 0 {
-            return Err("Connection closed by daemon (EOF)".to_string());
-        }
-        if line.len() > MAX_RESPONSE_LINE {
-            return Err(format!(
-                "Response too large ({} bytes, max {})",
-                line.len(),
-                MAX_RESPONSE_LINE
-            ));
-        }
+        let line = read_bounded_line(&mut self.reader, MAX_RESPONSE_LINE)
+            .map_err(|e| format!("Failed to read response: {}", e))?
+            .ok_or_else(|| "Connection closed by daemon (EOF)".to_string())?;
         serde_json::from_str(line.trim()).map_err(|e| format!("Failed to parse response: {}", e))
     }
 
@@ -341,5 +379,39 @@ mod tests {
             err_msg.contains("mismatch"),
             "Error should mention mismatch: {err_msg}"
         );
+    }
+
+    /// F-022: read_bounded_line must accept any line up to the cap and
+    /// return the bytes excluding the trailing newline.
+    #[test]
+    fn f022_bounded_read_accepts_line_at_or_under_cap() {
+        let payload = b"hello world\n";
+        let mut reader = std::io::BufReader::new(&payload[..]);
+        let result = read_bounded_line(&mut reader, 64).expect("under-cap line should succeed");
+        assert_eq!(result.as_deref(), Some("hello world"));
+    }
+
+    /// F-022 negative: a line that would exceed the cap must error
+    /// *before* the buffer grows past `max_bytes`. The fix is the
+    /// pre-extend size check — `read_line` previously appended the
+    /// whole oversized line and only checked size after.
+    #[test]
+    fn f022_bounded_read_rejects_line_exceeding_cap() {
+        // 100 bytes, no newline; cap is 5 bytes.
+        let payload = vec![b'X'; 100];
+        let mut reader = std::io::BufReader::new(&payload[..]);
+        let err = read_bounded_line(&mut reader, 5).expect_err("must reject oversized line");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("5 byte limit"));
+    }
+
+    /// F-022: empty stream returns Ok(None), not an error and not an
+    /// allocation. Mirrors EOF on the daemon socket.
+    #[test]
+    fn f022_bounded_read_returns_none_on_empty_eof() {
+        let payload: &[u8] = &[];
+        let mut reader = std::io::BufReader::new(payload);
+        let result = read_bounded_line(&mut reader, 64).expect("EOF must not error");
+        assert!(result.is_none());
     }
 }
