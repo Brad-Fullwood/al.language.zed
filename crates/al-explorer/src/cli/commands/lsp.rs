@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use super::{
-    collect_al_files, connect, file_to_uri, print_json, print_lint_diag, print_symbol_entries,
-    project_root, report_error, run_command,
+    absolutize_path, collect_al_files, connect, file_to_uri, print_json, print_lint_diag,
+    print_symbol_entries, project_root, report_error, run_command,
 };
 
 pub fn cmd_version(json: bool) -> ExitCode {
@@ -1536,7 +1536,7 @@ pub fn cmd_new(dir: &str, name: &str, publisher: &str, template: &str, json: boo
     };
 
     let params = serde_json::json!({
-        "dir": dir,
+        "dir": absolutize_path(dir),
         "name": name,
         "publisher": publisher,
         "template": template,

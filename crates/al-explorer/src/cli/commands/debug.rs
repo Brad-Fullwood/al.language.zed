@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use super::super::{DebugCommands, ProfileCommands, SnapshotCommands};
 
-use super::{bc_server_params, connect, file_to_uri, print_json, report_error};
+use super::{absolutize_path, bc_server_params, connect, file_to_uri, print_json, report_error};
 
 pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
     match subcmd {
@@ -452,7 +452,7 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
             };
             let params = serde_json::json!({
                 "cmd": "analyze",
-                "path": path,
+                "path": absolutize_path(path),
                 "topN": top,
             });
             match client.request("profiling", Some(params)) {

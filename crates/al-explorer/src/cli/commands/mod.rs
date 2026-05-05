@@ -42,9 +42,64 @@ pub fn bc_server_params(
         p["password"] = serde_json::json!(pw);
     }
     if let Some(d) = output_dir {
-        p["outputDir"] = serde_json::json!(d);
+        p["outputDir"] = serde_json::json!(absolutize_path(d));
     }
     p
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::absolutize_path;
+
+    #[test]
+    fn absolutize_path_passes_through_absolute_paths() {
+        // Positive: already-absolute paths must round-trip unchanged.
+        let abs = "/tmp/foo/bar";
+        assert_eq!(absolutize_path(abs), abs);
+    }
+
+    #[test]
+    fn absolutize_path_resolves_relative_paths_against_cwd() {
+        // Positive: relative paths must come out absolute (F-050).
+        let cwd = std::env::current_dir().unwrap();
+        let resolved = absolutize_path("MyApp");
+        assert!(
+            std::path::Path::new(&resolved).is_absolute(),
+            "expected absolute, got {resolved}"
+        );
+        assert!(resolved.starts_with(&cwd.to_string_lossy().to_string()));
+        assert!(resolved.ends_with("MyApp"));
+    }
+
+    #[test]
+    fn absolutize_path_does_not_require_target_to_exist() {
+        // Negative: must NOT depend on filesystem state (canonicalize would
+        // fail on `trace.alcpuprofile` before the file is captured).
+        let resolved = absolutize_path("nonexistent.alcpuprofile");
+        assert!(std::path::Path::new(&resolved).is_absolute());
+        assert!(!std::path::Path::new(&resolved).exists());
+    }
+}
+
+/// Make a user-supplied path absolute relative to the current working
+/// directory, without requiring the path to exist yet.
+///
+/// Daemon endpoints (`newProject`, `profiling analyze`, snapshot/profile
+/// `outputDir`, …) reject relative paths with `"… must be an absolute
+/// path"`. The CLI accepts shell-style relative paths like `MyApp` or
+/// `trace.alcpuprofile` because users naturally type them, so the CLI
+/// must absolutize before forwarding (F-050). `canonicalize()` is
+/// unsuitable here because it requires the target to exist; for `new`
+/// the directory is being created on the daemon side.
+pub fn absolutize_path(input: &str) -> String {
+    let p = std::path::Path::new(input);
+    if p.is_absolute() {
+        return input.to_string();
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(p).to_string_lossy().into_owned(),
+        Err(_) => input.to_string(),
+    }
 }
 
 /// Get the project root directory.
