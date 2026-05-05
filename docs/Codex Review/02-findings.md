@@ -55,7 +55,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-049: `al clear-cache` does not call the daemon cache endpoint and clears the wrong directory. _(RESOLVED 2026-05-05.)_
 - F-050: CLI accepts relative paths that daemon endpoints reject. _(RESOLVED 2026-05-05.)_
 - F-051: `al-test-harness` advertises socket transport, but `connect()` is a panic stub.
-- F-052: DAP helper scripts are pinned to one developer's filesystem.
+- F-052: DAP helper scripts are pinned to one developer's filesystem. _(RESOLVED 2026-05-05.)_
 
 ## F-001: Initialization option deep-merge returns the wrong subtree
 
@@ -1376,7 +1376,7 @@ Implement Unix socket transport or remove the advertised API/docs until it exist
 - `cargo test -p al-test-harness --test transport`
 - Add at least one daemon request/response integration test.
 
-## F-052: DAP helper scripts are pinned to one developer's filesystem
+## F-052: DAP helper scripts are pinned to one developer's filesystem _(RESOLVED 2026-05-05)_
 
 - Severity: Low
 - Area: scripts, DAP manual validation

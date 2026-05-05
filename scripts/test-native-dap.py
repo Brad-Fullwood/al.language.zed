@@ -4,6 +4,7 @@
 Sends the full DAP sequence and reports results for each step.
 """
 
+import argparse
 import subprocess
 import json
 import sys
@@ -12,18 +13,49 @@ import re
 import time
 import selectors
 
-PROJECT_ROOT = "/home/bradf/Dev/AL/AL-ForNAV-Direct-Print-On-Event/ForNAV Direct Print On Event/Core"
-AL_LSP = os.path.expanduser("~/Dev/Software/Zed/Zed AL Extension/target/debug/al-lsp")
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--project", required=True,
+                    help="Path to AL project root (must contain .zed/debug.json)")
+parser.add_argument("--al-lsp", default=None,
+                    help="Path to the al-lsp binary (default: $AL_LSP or `which al-lsp`)")
+parser.add_argument("--debug-json", default=None,
+                    help="Override path to launch config (default: <project>/.zed/debug.json)")
+parser.add_argument("--config", default=None,
+                    help="Label of launch config to use (default: first launch config)")
+parser.add_argument("--breakpoint-file", default=None,
+                    help="AL file to set a breakpoint in (default: first .al file under <project>/src)")
+args = parser.parse_args()
 
-# Read launch config
-debug_json_path = os.path.join(PROJECT_ROOT, ".zed", "debug.json")
+PROJECT_ROOT = os.path.abspath(os.path.expanduser(args.project))
+if not os.path.isdir(PROJECT_ROOT):
+    parser.error(f"--project not found: {PROJECT_ROOT}")
+
+AL_LSP = args.al_lsp or os.environ.get("AL_LSP")
+if not AL_LSP:
+    from shutil import which
+    AL_LSP = which("al-lsp")
+if not AL_LSP or not os.path.isfile(AL_LSP):
+    parser.error("Could not locate al-lsp; pass --al-lsp or set $AL_LSP")
+AL_LSP = os.path.abspath(os.path.expanduser(AL_LSP))
+
+debug_json_path = args.debug_json or os.path.join(PROJECT_ROOT, ".zed", "debug.json")
+if not os.path.isfile(debug_json_path):
+    parser.error(f"debug.json not found: {debug_json_path}")
+
 with open(debug_json_path) as f:
     content = f.read()
 content = re.sub(r',\s*([}\]])', r'\1', content)
 configs = json.loads(content)
-launch_config = next((c for c in configs if c.get("request") == "launch"), None)
+launch_config = None
+for c in configs:
+    if c.get("request") != "launch":
+        continue
+    if args.config is None or c.get("label") == args.config:
+        launch_config = c
+        break
 if not launch_config:
-    print("ERROR: No launch config found")
+    label_hint = f" labelled {args.config!r}" if args.config else ""
+    print(f"ERROR: No launch config{label_hint} found in {debug_json_path}")
     sys.exit(1)
 
 print(f"Config: {launch_config.get('label')}")
@@ -197,9 +229,12 @@ if not ok:
     sys.exit(1)
 
 # 4. Set breakpoints
-test_file = os.path.join(PROJECT_ROOT, "src/Codeunit/Print Management.Codeunit.al")
-if not os.path.exists(test_file):
-    # Find any .al file
+test_file = args.breakpoint_file
+if test_file:
+    test_file = os.path.abspath(os.path.expanduser(test_file))
+if not test_file or not os.path.exists(test_file):
+    # Find any .al file under <project>/src.
+    test_file = None
     for root, dirs, files in os.walk(os.path.join(PROJECT_ROOT, "src")):
         for f in files:
             if f.endswith(".al"):
@@ -207,6 +242,10 @@ if not os.path.exists(test_file):
                 break
         if test_file:
             break
+    if not test_file:
+        print("ERROR: No .al file found under <project>/src and --breakpoint-file not given")
+        proc.terminate()
+        sys.exit(1)
 
 print(f"\n  Using breakpoint file: {os.path.basename(test_file)}")
 ok = test_step("Set Breakpoints", "setBreakpoints", {
