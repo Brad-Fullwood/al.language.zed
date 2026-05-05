@@ -94,6 +94,8 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
     al_config.insert("type".to_string(), json!("al"));
     al_config.insert("name".to_string(), json!(config.label));
 
+    let is_attach = matches!(config.request, zed::DebugRequest::Attach(_));
+
     match &config.request {
         zed::DebugRequest::Launch(launch) => {
             al_config.insert("request".to_string(), json!("launch"));
@@ -114,21 +116,32 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
         }
     }
 
-    Ok(zed::DebugScenario {
-        label: config.label,
-        adapter: "al".to_string(),
-        build: Some(zed::BuildTaskDefinition::Template(
+    // Attach configurations connect to an already-running BC session, so
+    // running `compile` first is wasted work that can fail or mutate project
+    // state for unrelated reasons (F-034). Only emit the build step for
+    // launch/publish flows. Repository-owned CLI is `al-explorer`, not `al`
+    // (Microsoft now owns the latter — see F-005).
+    let build = if is_attach {
+        None
+    } else {
+        Some(zed::BuildTaskDefinition::Template(
             zed::BuildTaskDefinitionTemplatePayload {
                 locator_name: None,
                 template: zed::BuildTaskTemplate {
                     label: "AL: Compile".to_string(),
-                    command: "al".to_string(),
+                    command: "al-explorer".to_string(),
                     args: vec!["compile".to_string()],
                     env: Default::default(),
                     cwd: None,
                 },
             },
-        )),
+        ))
+    };
+
+    Ok(zed::DebugScenario {
+        label: config.label,
+        adapter: "al".to_string(),
+        build,
         config: Value::Object(al_config).to_string(),
         tcp_connection: None,
     })
