@@ -8,7 +8,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-002: User-configured `al-lsp` binary path is ignored when the legacy proxy exists.
 - F-003: Workspace test suite fails on hover for procedure parameters. _(RESOLVED 2026-05-05.)_
 - F-004: AL toolchain discovery misses a valid Microsoft AL tool install. _(RESOLVED 2026-05-05.)_
-- F-005: Zed tasks and README use `al` for repository CLI, but Microsoft now owns that command name.
+- F-005: Zed tasks and README use `al` for repository CLI, but Microsoft now owns that command name. _(RESOLVED 2026-05-05.)_
 - F-006: Tree-sitter grammar directory is not directly buildable from checkout.
 - F-007: CI Clippy commands fail under current Rust toolchain. _(WASM clippy fix RESOLVED 2026-05-05; native clippy section already passes — see finding body for status.)_
 - F-008: `al.compile` leaves stale compiler diagnostics after clean rebuild. _(RESOLVED 2026-05-05.)_
@@ -221,7 +221,7 @@ Update discovery to handle dotnet tool-path installs:
 - Run the toolchain doctor/setup command and verify it finds `alc.dll`.
 - Re-run the failing integration test and confirm logs no longer report `AL toolchain not found`.
 
-## F-005: Zed tasks and README use `al` for repository CLI, but Microsoft now owns that command name
+## F-005: Zed tasks and README use `al` for repository CLI, but Microsoft now owns that command name _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: user-facing CLI, tasks, docs

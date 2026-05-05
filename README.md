@@ -18,7 +18,7 @@ code generation) happens in `al-lsp` outside the Zed sandbox.
 - [Prerequisites](#prerequisites)
 - [Build & install](#build--install)
 - [Configuration in Zed](#configuration-in-zed)
-- [The `al` CLI](#the-al-cli)
+- [The `al-explorer` CLI](#the-al-explorer-cli)
 - [`al-explorer` TUI](#al-explorer-tui)
 - [Symbol & package cache](#symbol--package-cache)
 - [Debugging](#debugging)
@@ -66,7 +66,7 @@ code generation) happens in `al-lsp` outside the Zed sandbox.
 
 ### Analysis
 - Pull and push diagnostics (LSP 3.17) from four sources: tree-sitter (`al`), .NET analyzers (`al-analyzer`), compiler (`al-compiler`), test runner (`al-test-runner`)
-- Architecture lint rules from `.alarch.json` (`al arch-lint`)
+- Architecture lint rules from `.alarch.json` (`al-explorer arch-lint`)
 - SQL anti-pattern detection — `FindFirst` in loops, unfiltered `FindSet`, missing `CalcFields`, etc.
 - Duplicate-code detection with normalized AST hashing and a similarity threshold
 - Dead-code analysis — unused procedures, unreferenced table fields, orphaned event subscribers
@@ -198,7 +198,7 @@ demand.
 
 **Optional (enables additional features)**
 - .NET SDK 8 or newer — builds the `al-semantic` bridge and enables CodeAnalysis diagnostics
-- Microsoft ALTool — enables compilation, semantic diagnostics, and the EditorServices proxy debug path. `al setup` reports whether it is installed and prints the install command if it is not.
+- Microsoft ALTool — enables compilation, semantic diagnostics, and the EditorServices proxy debug path. `al-explorer setup` reports whether it is installed and prints the install command if it is not.
 
 Without .NET / ALTool the extension still provides syntax highlighting, folding,
 navigation, formatting, and symbol-index completion from `.app` packages.
@@ -257,139 +257,143 @@ Minimal `settings.json`:
 ```
 
 Run `al.applyRecommendedSettings` from the command palette to write these defaults
-into your Zed config. `al doctor` will flag common misconfigurations.
+into your Zed config. `al-explorer doctor` will flag common misconfigurations.
 
 ---
 
-## The `al` CLI
+## The `al-explorer` CLI
 
-`al` is a thin JSON-RPC client that talks to an `al-lsp daemon`. If no daemon
-is running for the current project, `al` spawns one automatically (running
-`al-lsp daemon --project <cwd>` and waiting up to 5 seconds for the socket to
-come up).
+`al-explorer` is the repository-owned CLI. It is a thin JSON-RPC client that
+talks to an `al-lsp daemon`. If no daemon is running for the current project,
+`al-explorer` spawns one automatically (running `al-lsp daemon --project <cwd>`
+and waiting up to 5 seconds for the socket to come up).
+
+> Note: the unqualified `al` command name is owned by Microsoft's
+> `Microsoft.Dynamics.BusinessCentral.Development.Tools` dotnet tool, which is
+> a different program. Use `al-explorer` for everything documented below.
 
 Every command accepts the global `--json` flag for machine-readable output.
 
 ### Symbol lookup & navigation
 
 ```sh
-al search <query> [--limit N]             # fuzzy symbol search
-al object <TYPE> <name>                   # look up an object
-al by-id <TYPE> <id>                      # look up by numeric ID
-al events <name>                          # find event publishers
-al subscribers <event>                    # find event subscribers
-al composed <TYPE> <name>                 # base + merged extensions
-al packages                               # loaded packages with stats
-al deps                                   # direct dependencies
-al deps-graph [--format json|dot]         # transitive dependency graph
+al-explorer search <query> [--limit N]             # fuzzy symbol search
+al-explorer object <TYPE> <name>                   # look up an object
+al-explorer by-id <TYPE> <id>                      # look up by numeric ID
+al-explorer events <name>                          # find event publishers
+al-explorer subscribers <event>                    # find event subscribers
+al-explorer composed <TYPE> <name>                 # base + merged extensions
+al-explorer packages                               # loaded packages with stats
+al-explorer deps                                   # direct dependencies
+al-explorer deps-graph [--format json|dot]         # transitive dependency graph
 
-al hover      <file> <line> <col>
-al definition <file> <line> <col>
-al references <file> <line> <col>
-al completions <file> <line> <col>
-al signature  <file> <line> <col>
-al rename     <file> <line> <col> <new-name> [--dry-run]
-al symbols    <file>                      # outline
-al hints      <file> [--start-line N] [--end-line N]
-al folding    <file>
-al tokens     <file>
-al parse      <file>                      # show parse tree
+al-explorer hover      <file> <line> <col>
+al-explorer definition <file> <line> <col>
+al-explorer references <file> <line> <col>
+al-explorer completions <file> <line> <col>
+al-explorer signature  <file> <line> <col>
+al-explorer rename     <file> <line> <col> <new-name> [--dry-run]
+al-explorer symbols    <file>                      # outline
+al-explorer hints      <file> [--start-line N] [--end-line N]
+al-explorer folding    <file>
+al-explorer tokens     <file>
+al-explorer parse      <file>                      # show parse tree
 ```
 
 ### Analysis & quality
 
 ```sh
-al lint [files...] [--all] [--analyzers CodeCop,AppSourceCop,UICop,PerTenantCop]
-al format [file] [--check] [--stdin] [--all]
-al fix    [file] [--dry-run] [--rule CODE]
-al metrics [file] [--all] [--threshold-cyclomatic N] [--threshold-cognitive N]
-al sql-scan
-al arch-lint
-al duplicates [--min-tokens N] [--min-similarity F]
-al dead-code
-al breaking
-al obsolete
-al audit-data
-al permission-audit
-al upgrade
-al rules                                   # list lint rules
-al error-codes                             # list compiler error codes
-al builtins                                # list built-in types and methods
+al-explorer lint [files...] [--all] [--analyzers CodeCop,AppSourceCop,UICop,PerTenantCop]
+al-explorer format [file] [--check] [--stdin] [--all]
+al-explorer fix    [file] [--dry-run] [--rule CODE]
+al-explorer metrics [file] [--all] [--threshold-cyclomatic N] [--threshold-cognitive N]
+al-explorer sql-scan
+al-explorer arch-lint
+al-explorer duplicates [--min-tokens N] [--min-similarity F]
+al-explorer dead-code
+al-explorer breaking
+al-explorer obsolete
+al-explorer audit-data
+al-explorer permission-audit
+al-explorer upgrade
+al-explorer rules                                   # list lint rules
+al-explorer error-codes                             # list compiler error codes
+al-explorer builtins                                # list built-in types and methods
 ```
 
 ### Build & test
 
 ```sh
-al compile [--project DIR]
-al package
-al download-symbols [--project DIR] [--source server|nuget]
-al tests                                   # discover [Test] codeunits
-al test-run <codeunit-id> [--name N] [--method M] [--config C]
-al test-coverage
+al-explorer compile [--project DIR]
+al-explorer package
+al-explorer download-symbols [--project DIR] [--source server|nuget]
+al-explorer tests                                   # discover [Test] codeunits
+al-explorer test-run <codeunit-id> [--name N] [--method M] [--config C]
+al-explorer test-coverage
 ```
 
 ### Code generation
 
 ```sh
-al new <dir> [--template default|pte|appsource|library|test|copilot|agent|api]
-al generate <page|report|test> [--id] [--name] [--table] [--page-type] [--subject]
-al permissions [--format al|xml]
-al add-application-area    [--value All]            [--dry-run]
-al add-tooltips            [--from-table NAME]      [--dry-run]
-al add-data-classification [--value CustomerContent][--dry-run]
-al sort-members   [file] [--all] [--dry-run]
-al organize-files        [--dry-run]
+al-explorer new <dir> [--template default|pte|appsource|library|test|copilot|agent|api]
+al-explorer generate <page|report|test> [--id] [--name] [--table] [--page-type] [--subject]
+al-explorer permissions [--format al|xml]
+al-explorer add-application-area    [--value All]            [--dry-run]
+al-explorer add-tooltips            [--from-table NAME]      [--dry-run]
+al-explorer add-data-classification [--value CustomerContent][--dry-run]
+al-explorer sort-members   [file] [--all] [--dry-run]
+al-explorer organize-files        [--dry-run]
 ```
 
 ### Insight graph
 
 ```sh
-al trace <event> [--depth N]
-al entrypoints
-al graph [--format json|dot]
-al insight-stats
-al impact <symbol>
-al suggest-event [--object] [--procedure] [--table] [--field] [--event]
+al-explorer trace <event> [--depth N]
+al-explorer entrypoints
+al-explorer graph [--format json|dot]
+al-explorer insight-stats
+al-explorer impact <symbol>
+al-explorer suggest-event [--object] [--procedure] [--table] [--field] [--event]
 ```
 
 ### Debugging, snapshots, profiling
 
 ```sh
-al debug start [--config NAME]
-al debug breakpoint <file> <line> [--condition EXPR]
-al debug state | eval <expr> | continue | step [over|into|out] | history | stop
+al-explorer debug start [--config NAME]
+al-explorer debug breakpoint <file> <line> [--condition EXPR]
+al-explorer debug state | eval <expr> | continue | step [over|into|out] | history | stop
 
-al snapshot start  [--server] [--company] [--description] [--output-dir] ...
-al snapshot list   [--server] [--company] ...
-al snapshot download <snapshot-id> [--output-dir] ...
+al-explorer snapshot start  [--server] [--company] [--description] [--output-dir] ...
+al-explorer snapshot list   [--server] [--company] ...
+al-explorer snapshot download <snapshot-id> [--output-dir] ...
 
-al profile start [--server] [--company] [--output-dir] ...
-al profile stop  [--session-id] ...
-al profile analyze <path> [--top N]
-al profiler-hints [hotspot...]
+al-explorer profile start [--server] [--company] [--output-dir] ...
+al-explorer profile stop  [--session-id] ...
+al-explorer profile analyze <path> [--top N]
+al-explorer profiler-hints [hotspot...]
 
-al init-debug                               # write .zed/debug.json
+al-explorer init-debug                               # write .zed/debug.json
 ```
 
 ### Translations
 
 ```sh
-al xlf generate      [--project DIR]
-al xlf refresh       <xlf> [--generated PATH]
-al xlf untranslated  <xlf>
-al xlf suggest       <xlf>
+al-explorer xlf generate      [--project DIR]
+al-explorer xlf refresh       <xlf> [--generated PATH]
+al-explorer xlf untranslated  <xlf>
+al-explorer xlf suggest       <xlf>
 ```
 
 ### Utility
 
 ```sh
-al setup                                   # report ALTool / .NET SDK status
-al doctor                                  # green/red project checklist
-al authenticate [login|status|clear] [--tenant ID]
-al diag                                    # daemon memory stats, object counts
-al clear-cache                             # remove ~/.cache/al-lsp/packages/ and flush the daemon's in-memory cache
-al version
-al generate-completions <bash|zsh|fish|elvish|powershell>
+al-explorer setup                                   # report ALTool / .NET SDK status
+al-explorer doctor                                  # green/red project checklist
+al-explorer authenticate [login|status|clear] [--tenant ID]
+al-explorer diag                                    # daemon memory stats, object counts
+al-explorer clear-cache                             # remove ~/.cache/al-lsp/packages/ and flush the daemon's in-memory cache
+al-explorer version
+al-explorer generate-completions <bash|zsh|fish|elvish|powershell>
 ```
 
 ---
@@ -417,7 +421,7 @@ is required.
 |----------|----------|
 | `<project>/.alpackages/` | `.app` packages downloaded from NuGet or a BC server |
 | `~/.cache/al-lsp/index/` | Parsed-symbol disk cache (rebuilt from `.app` files) |
-| `~/.cache/al-lsp/packages/` | Legacy package cache location; not populated by current code but still cleared by `al clear-cache` |
+| `~/.cache/al-lsp/packages/` | Legacy package cache location; not populated by current code but still cleared by `al-explorer clear-cache` |
 
 On first open, `al-lsp` resolves `app.json` dependencies against the configured
 NuGet feeds:

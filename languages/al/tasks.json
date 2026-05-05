@@ -1,79 +1,79 @@
 [
   {
     "label": "AL: Compile",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["compile"],
     "tags": ["al-compile"]
   },
   {
     "label": "AL: Package (.app)",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["package"],
     "tags": ["al-package"]
   },
   {
     "label": "AL: Debug Start",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["debug", "start"],
     "tags": ["al-debug-start"]
   },
   {
     "label": "AL: Debug Stop",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["debug", "stop"],
     "tags": ["al-debug-stop"]
   },
   {
     "label": "AL: Download Symbols (Server)",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["download-symbols", "--source", "server"],
     "tags": ["al-download-symbols-server"]
   },
   {
     "label": "AL: Download Symbols (NuGet)",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["download-symbols", "--source", "nuget"],
     "tags": ["al-download-symbols-nuget"]
   },
   {
     "label": "AL: Lint Current File",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["lint", "$ZED_FILE"],
     "tags": ["al-lint"]
   },
   {
     "label": "AL: Lint All",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["lint", "--all"],
     "tags": ["al-lint-all"]
   },
   {
     "label": "AL: Format Current File",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["format", "$ZED_FILE"],
     "tags": ["al-format"]
   },
   {
     "label": "AL: Format All",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["format", "--all"],
     "tags": ["al-format-all"]
   },
   {
     "label": "AL: Doctor",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["doctor"],
     "tags": ["al-doctor"]
   },
   {
     "label": "AL: New Project",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["new", "."],
     "tags": ["al-new-project"]
   },
   {
     "label": "AL: Generate Permission Set",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["permissions"],
     "tags": ["al-permissions"]
   },
@@ -87,65 +87,65 @@
   },
   {
     "label": "AL: Clear Symbol Cache",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["clear-cache"],
     "tags": ["al-clear-cache"]
   },
   {
     "label": "AL: Event Trace",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["trace", "$ZED_SYMBOL", "--json"],
     "tags": ["al-trace"]
   },
   {
     "label": "AL: Generate Debug Config (.zed/debug.json)",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["init-debug"],
     "tags": ["al-init-debug"]
   },
   {
     "label": "AL: Dead Code Analysis",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["dead-code", "--json"],
     "tags": ["al-dead-code"]
   },
   {
     "label": "AL: Impact Analysis",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["impact", "$ZED_SYMBOL", "--json"],
     "tags": ["al-impact"]
   },
   {
     "label": "AL: Run Test '$ZED_SYMBOL'",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["test", "--procedure", "$ZED_SYMBOL", "--json"],
     "tags": ["al-test"],
     "reveal": "always"
   },
   {
     "label": "AL: Debug Test '$ZED_SYMBOL'",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["debug", "test", "--procedure", "$ZED_SYMBOL"],
     "tags": ["al-test"],
     "reveal": "always"
   },
   {
     "label": "AL: Trace Event '$ZED_SYMBOL'",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["trace", "$ZED_SYMBOL", "--json"],
     "tags": ["al-event-publisher"],
     "reveal": "always"
   },
   {
     "label": "AL: Find Subscribers for '$ZED_SYMBOL'",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["subscribers", "$ZED_SYMBOL", "--json"],
     "tags": ["al-event-publisher"],
     "reveal": "always"
   },
   {
     "label": "AL: Show Event Source for '$ZED_SYMBOL'",
-    "command": "al",
+    "command": "al-explorer",
     "args": ["events", "$ZED_SYMBOL", "--json"],
     "tags": ["al-event-subscriber"],
     "reveal": "always"
