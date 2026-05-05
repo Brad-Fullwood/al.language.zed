@@ -10,15 +10,13 @@
 //!
 //! # Visibility constraint
 //!
-//! `from_transport` is a private `fn`.  The only public constructors are
-//! `LspClient::spawn` (requires a real binary) and `LspClient::connect`
-//! (unimplemented).  Every test that needs a harness without a real binary
-//! drives the mock-server task itself and reaches the code under test through
-//! `spawn` with a fake binary — OR it tests the public API surface directly.
+//! `from_transport` is a private `fn`.  The only public constructor is
+//! `LspClient::spawn` (requires a real binary). Every test that needs a
+//! harness without a real binary drives the mock-server task itself and
+//! reaches the code under test through `spawn` with a fake binary — OR it
+//! tests the public API surface directly.
 //!
 //! Naming convention: `test_adversarial_<what>`.
-
-use std::panic;
 
 use tokio::io::AsyncWriteExt;
 use tokio::time::{timeout, Duration};
@@ -36,43 +34,14 @@ async fn write_lsp_message(writer: &mut (impl AsyncWriteExt + Unpin), body: &str
 }
 
 // ---------------------------------------------------------------------------
-// ST-01  connect() panics with the documented unimplemented message
+// ST-01  no `connect()` API
 // ---------------------------------------------------------------------------
 
-/// `LspClient::connect` is a stub (T303).  It must panic with a message
-/// that clearly identifies what is missing.  If someone changed the panic
-/// message without updating tests this test fails.
-#[tokio::test]
-async fn test_adversarial_connect_panics_with_expected_message() {
-    // catch_unwind requires the future to be 'static + Send.
-    // We spawn it in a task and check that the task panicked.
-    let result = tokio::spawn(async {
-        let _ = al_test_harness::LspClient::connect("/tmp/al-lsp.sock", "/tmp/project").await;
-    })
-    .await;
-
-    assert!(
-        result.is_err(),
-        "connect() must panic — it returned Ok, meaning the stub was removed or changed"
-    );
-
-    // The panic payload must mention daemon transport / T303
-    let err = result.unwrap_err();
-    assert!(
-        err.is_panic(),
-        "connect() task must have panicked, not been cancelled"
-    );
-    let payload = err.into_panic();
-    let msg = payload
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
-        .unwrap_or("<non-string panic payload>");
-    assert!(
-        msg.contains("Daemon transport not yet implemented"),
-        "panic message changed — expected 'Daemon transport not yet implemented', got: {msg:?}"
-    );
-}
+// `LspClient::connect()` was removed (F-051) — al-lsp's daemon mode speaks a
+// different (non-LSP) protocol via `al_protocol::DaemonClient`, so the two
+// transports cannot share a client. Tests that need to exercise the daemon
+// drive `DaemonClient` directly. The previous panic-stub assertion test was
+// removed alongside the API.
 
 // ---------------------------------------------------------------------------
 // ST-02  read_loop: missing Content-Length header → silent skip, no panic

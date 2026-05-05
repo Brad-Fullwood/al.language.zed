@@ -3,13 +3,14 @@
 //! Spawns the `al-lsp` binary over stdio and speaks the LSP protocol,
 //! providing a high-level API for end-to-end testing of every capability.
 //!
-//! # Transport Abstraction
+//! # Transport
 //!
-//! The harness supports two transports:
-//! - **Stdio** (`LspClient::spawn`): spawns al-lsp as a child process
-//! - **Socket** (`LspClient::connect`): connects to a running al-lsp daemon
-//!
-//! Both share the same JSON-RPC protocol and `LspClient` API.
+//! Stdio only — `LspClient::spawn` launches al-lsp as a child process. The
+//! harness previously advertised a Unix-socket transport, but al-lsp's daemon
+//! mode speaks a different (non-LSP) line-delimited JSON-RPC protocol via
+//! [`al_protocol::DaemonClient`], so the two transports cannot share a
+//! single client. Tests that need to exercise the daemon should drive
+//! `DaemonClient` directly.
 //!
 //! # Usage
 //! ```no_run
@@ -92,14 +93,12 @@ fn find_binary() -> PathBuf {
 
 /// Lifecycle management for the server connection.
 ///
-/// Stdio mode owns a child process; daemon mode connects to an existing server.
+/// Stdio mode owns a child process. (Previously also tracked a Daemon
+/// variant for Unix-socket transport — removed alongside `connect()` because
+/// al-lsp's daemon mode speaks a different protocol; see crate docs.)
 enum Lifecycle {
     /// al-lsp spawned as a child process, communicating over stdio.
     Stdio(Child),
-    /// Connected to al-lsp daemon over Unix socket.
-    /// Full implementation in T303 when daemon mode exists.
-    #[allow(dead_code)]
-    Daemon,
 }
 
 /// Writer half of the transport — abstracted so stdio and socket share the same code path.
@@ -154,28 +153,6 @@ impl LspClient {
 
         client.initialize().await?;
         Ok(client)
-    }
-
-    /// Connect to a running al-lsp daemon over a Unix socket.
-    ///
-    /// Requires al-lsp to be running in daemon mode (see T303).
-    /// The daemon handles project discovery from the `project_root`.
-    #[allow(dead_code)]
-    pub async fn connect(
-        _socket_path: impl AsRef<Path>,
-        project_root: impl AsRef<Path>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let _root_path = project_root.as_ref().to_path_buf();
-        // T303: Full implementation when daemon mode exists.
-        // Will:
-        // 1. Connect to Unix socket at socket_path
-        // 2. Split into read/write halves
-        // 3. Call Self::from_transport(writer, reader, Lifecycle::Daemon, root_path)
-        // 4. Run initialize handshake
-        unimplemented!(
-            "Daemon transport not yet implemented. \
-             Requires al-lsp daemon mode (T303)."
-        )
     }
 
     /// Construct an LspClient from transport halves.
@@ -810,19 +787,11 @@ impl LspClient {
         // Drop writer to signal EOF
         self.writer.take();
 
-        match &mut self.lifecycle {
-            Lifecycle::Stdio(child) => {
-                // Wait with timeout to avoid hanging if the server doesn't exit
-                let _ =
-                    tokio::time::timeout(tokio::time::Duration::from_secs(3), child.wait()).await;
-                // Kill if still running
-                let _ = child.kill().await;
-            }
-            Lifecycle::Daemon => {
-                // Socket close (writer drop above) is sufficient.
-                // No child process to manage.
-            }
-        }
+        let Lifecycle::Stdio(child) = &mut self.lifecycle;
+        // Wait with timeout to avoid hanging if the server doesn't exit.
+        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(3), child.wait()).await;
+        // Kill if still running.
+        let _ = child.kill().await;
     }
 }
 
@@ -841,10 +810,9 @@ impl LspClient {
 /// `Drop` does not run; if it didn't, we send SIGKILL here as a safety net.
 impl Drop for LspClient {
     fn drop(&mut self) {
-        if let Lifecycle::Stdio(child) = &mut self.lifecycle {
-            if let Err(e) = child.start_kill() {
-                tracing::warn!(error = %e, "LspClient::drop: start_kill failed; child may be a zombie");
-            }
+        let Lifecycle::Stdio(child) = &mut self.lifecycle;
+        if let Err(e) = child.start_kill() {
+            tracing::warn!(error = %e, "LspClient::drop: start_kill failed; child may be a zombie");
         }
     }
 }

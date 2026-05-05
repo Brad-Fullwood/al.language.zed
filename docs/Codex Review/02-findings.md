@@ -54,7 +54,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-048: Daemon protocol omits mandatory JSON-RPC `jsonrpc: "2.0"`. _(RESOLVED 2026-04-30 by T057 — see commit 5073384.)_
 - F-049: `al clear-cache` does not call the daemon cache endpoint and clears the wrong directory. _(RESOLVED 2026-05-05.)_
 - F-050: CLI accepts relative paths that daemon endpoints reject. _(RESOLVED 2026-05-05.)_
-- F-051: `al-test-harness` advertises socket transport, but `connect()` is a panic stub.
+- F-051: `al-test-harness` advertises socket transport, but `connect()` is a panic stub. _(RESOLVED 2026-05-05.)_
 - F-052: DAP helper scripts are pinned to one developer's filesystem. _(RESOLVED 2026-05-05.)_
 
 ## F-001: Initialization option deep-merge returns the wrong subtree
@@ -1352,7 +1352,7 @@ Normalize user paths in the CLI before daemon dispatch. Join relative paths with
 - `cargo run -p al-explorer -- new MyApp --json`
 - `cargo run -p al-explorer -- profile analyze trace.alcpuprofile --json`
 
-## F-051: `al-test-harness` advertises socket transport, but `connect()` is a panic stub
+## F-051: `al-test-harness` advertises socket transport, but `connect()` is a panic stub _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: test harness, daemon coverage
