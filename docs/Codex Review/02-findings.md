@@ -48,7 +48,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-042: Some generated ranges use byte columns as LSP UTF-16 columns.
 - F-043: "Make procedure local" is offered without checking external callers.
 - F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions.
-- F-045: Code-action object-kind detection treats many object types as page-like.
+- F-045: Code-action object-kind detection treats many object types as page-like. _(RESOLVED 2026-05-05.)_
 - F-046: Daemon autostart can race into multiple daemons for one project. _(RESOLVED 2026-05-05; per-socket spawn lock with stale recovery.)_
 - F-047: Daemon dedup returns fake empty results for valid repeated requests. _(RESOLVED 2026-05-05.)_
 - F-048: Daemon protocol omits mandatory JSON-RPC `jsonrpc: "2.0"`. _(RESOLVED 2026-04-30 by T057 — see commit 5073384.)_
@@ -1207,7 +1207,7 @@ Ensure diagnostic-sourced code actions pass AL compiler diagnostics through the 
 - Request code actions through LSP and daemon.
 - Assert the namespace quick fix is present and applies correctly.
 
-## F-045: Code-action object-kind detection treats many object types as page-like
+## F-045: Code-action object-kind detection treats many object types as page-like _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: code actions, object parsing

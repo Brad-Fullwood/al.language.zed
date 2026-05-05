@@ -1679,12 +1679,32 @@ fn source_action_move_tooltip(
 }
 
 /// Simple object kind detector — checks the first `object` line in the file.
+///
+/// F-045: distinguish every recognised AL object type. The previous
+/// `Other` catch-all caused page-specific code actions to fire inside
+/// queries, xmlports, enums, and unrelated extensions because the
+/// gating used `Page | Other`.
 #[derive(Debug, PartialEq, Eq)]
 enum AlObjectKind {
     Page,
+    PageExtension,
     Table,
+    TableExtension,
     Codeunit,
     Report,
+    ReportExtension,
+    Query,
+    XmlPort,
+    Enum,
+    EnumExtension,
+    Interface,
+    PermissionSet,
+    PermissionSetExtension,
+    Profile,
+    ControlAddIn,
+    PageCustomization,
+    /// Recognised AL object keyword that doesn't have its own variant yet.
+    /// Distinct from "no recognised keyword".
     Other,
 }
 
@@ -1697,9 +1717,22 @@ fn detect_object_kind(text: &str) -> Option<AlObjectKind> {
     let object_type = crate::syntax::language_data::object_type_by_keyword(token)?;
     Some(match object_type.keyword.as_str() {
         "page" => AlObjectKind::Page,
+        "pageextension" => AlObjectKind::PageExtension,
         "table" => AlObjectKind::Table,
+        "tableextension" => AlObjectKind::TableExtension,
         "codeunit" => AlObjectKind::Codeunit,
         "report" => AlObjectKind::Report,
+        "reportextension" => AlObjectKind::ReportExtension,
+        "query" => AlObjectKind::Query,
+        "xmlport" => AlObjectKind::XmlPort,
+        "enum" => AlObjectKind::Enum,
+        "enumextension" => AlObjectKind::EnumExtension,
+        "interface" => AlObjectKind::Interface,
+        "permissionset" => AlObjectKind::PermissionSet,
+        "permissionsetextension" => AlObjectKind::PermissionSetExtension,
+        "profile" => AlObjectKind::Profile,
+        "controladdin" => AlObjectKind::ControlAddIn,
+        "pagecustomization" => AlObjectKind::PageCustomization,
         _ => AlObjectKind::Other,
     })
 }
@@ -1725,10 +1758,12 @@ fn source_action_convert_promoted_actions(
 ) -> Vec<CodeActionEntry> {
     let cursor_line = range.start.line as usize;
 
-    // Must be inside a page or pageextension object
+    // Must be inside a page or pageextension object (F-045: previously
+    // matched `Page | Other`, which included tables, queries, enums, and
+    // every other non-special-cased object kind).
     let obj_kind = detect_object_kind(text);
     match obj_kind {
-        Some(AlObjectKind::Page) | Some(AlObjectKind::Other) => {}
+        Some(AlObjectKind::Page) | Some(AlObjectKind::PageExtension) => {}
         _ => return Vec::new(),
     }
 
@@ -2016,10 +2051,15 @@ fn source_action_set_application_area(
     let cursor_line = range.start.line as usize;
     let _ = cursor_line; // offered throughout the file
 
-    // Must be inside a page or report
+    // Must be inside a page, report, or one of their extensions (F-045:
+    // previously matched `Page | Report | Other`, which included queries,
+    // enums, and every other non-special-cased kind).
     let obj_kind = detect_object_kind(text)?;
     match obj_kind {
-        AlObjectKind::Page | AlObjectKind::Report | AlObjectKind::Other => {}
+        AlObjectKind::Page
+        | AlObjectKind::PageExtension
+        | AlObjectKind::Report
+        | AlObjectKind::ReportExtension => {}
         _ => return None,
     }
 
@@ -2537,21 +2577,52 @@ mod tests {
     }
 
     #[test]
-    fn detect_object_kind_routes_extensions_and_extras_to_other() {
-        // Pre-T014 these mostly worked; the new lookup goes through
-        // LanguageData / object_types.json so coverage is now data-driven.
-        for (txt, label) in [
-            ("pageextension 50 X extends Y { }", "pageextension"),
-            ("tableextension 50 X extends Y { }", "tableextension"),
-            ("xmlport 50 X { }", "xmlport"),
-            ("query 50 X { }", "query"),
-            ("enum 50 X { }", "enum"),
-            ("interface IX { }", "interface"),
+    fn detect_object_kind_routes_extensions_and_extras_distinctly() {
+        // F-045: each recognised object keyword now resolves to its own
+        // variant instead of bucketing into `Other`. Page-specific
+        // actions therefore can no longer fire inside queries / xmlports
+        // / enums / unrelated extensions.
+        for (txt, expected, label) in [
+            (
+                "pageextension 50 X extends Y { }",
+                AlObjectKind::PageExtension,
+                "pageextension",
+            ),
+            (
+                "tableextension 50 X extends Y { }",
+                AlObjectKind::TableExtension,
+                "tableextension",
+            ),
+            ("xmlport 50 X { }", AlObjectKind::XmlPort, "xmlport"),
+            ("query 50 X { }", AlObjectKind::Query, "query"),
+            ("enum 50 X { }", AlObjectKind::Enum, "enum"),
+            ("interface IX { }", AlObjectKind::Interface, "interface"),
+            (
+                "permissionset 50 X { }",
+                AlObjectKind::PermissionSet,
+                "permissionset",
+            ),
+            ("profile X { }", AlObjectKind::Profile, "profile"),
+            (
+                "controladdin X { }",
+                AlObjectKind::ControlAddIn,
+                "controladdin",
+            ),
+            (
+                "reportextension 50 X extends Y { }",
+                AlObjectKind::ReportExtension,
+                "reportextension",
+            ),
+            (
+                "enumextension 50 X extends Y { }",
+                AlObjectKind::EnumExtension,
+                "enumextension",
+            ),
         ] {
             assert_eq!(
                 detect_object_kind(txt),
-                Some(AlObjectKind::Other),
-                "{label} should route to Other"
+                Some(expected),
+                "{label} routed to wrong variant"
             );
         }
     }
@@ -2580,6 +2651,25 @@ mod tests {
         assert!(detect_object_kind("").is_none());
         assert!(detect_object_kind("// comment only\n").is_none());
         assert!(detect_object_kind("garbage 99 X").is_none());
+    }
+
+    #[test]
+    fn page_only_actions_do_not_match_query_or_xmlport() {
+        // F-045 regression: a `query` or `xmlport` previously matched
+        // `AlObjectKind::Other` and slipped past `Page | Other` gates,
+        // wrongly offering page-specific code actions. Now they resolve
+        // to their own variants and must NOT equal the page-action gate.
+        let query_kind = detect_object_kind("query 50 X { }").unwrap();
+        let xmlport_kind = detect_object_kind("xmlport 50 X { }").unwrap();
+        for k in [query_kind, xmlport_kind] {
+            assert_ne!(k, AlObjectKind::Page);
+            assert_ne!(k, AlObjectKind::PageExtension);
+            assert_ne!(
+                k,
+                AlObjectKind::Other,
+                "Other catch-all is what F-045 fixed; concrete variants required"
+            );
+        }
     }
 
     #[test]
