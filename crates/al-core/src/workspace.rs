@@ -107,6 +107,12 @@ pub struct Workspace {
     /// store cheaply without cloning records.
     pub test_results:
         std::sync::RwLock<Option<std::sync::Arc<crate::test_engine::TestResultStore>>>,
+    /// Set of file paths that received `al-compiler` diagnostics in the
+    /// most recent `al.compile` run. Used by the LSP `al.compile` handler
+    /// to clear stale diagnostics: any file in this set absent from the
+    /// new compile result needs an empty (or syntax-only) republish so
+    /// the editor squiggles disappear after a clean rebuild. F-008.
+    pub last_compile_affected: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Workspace {
@@ -131,6 +137,7 @@ impl Workspace {
             call_graph: std::sync::RwLock::new(None),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
+            last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -636,5 +643,48 @@ mod workspace_lifecycle_tests {
         on_document_change(&workspace, &uri, text);
         // No file was added to the index (non-file URI).
         assert!(workspace.file_index.is_empty());
+    }
+
+    /// F-008: a fresh workspace starts with an empty `last_compile_affected`
+    /// set so the first compile run has no stale entries to clear.
+    #[tokio::test]
+    async fn f008_last_compile_affected_starts_empty() {
+        let workspace = make_workspace();
+        let guard = workspace.last_compile_affected.lock().await;
+        assert!(
+            guard.is_empty(),
+            "fresh workspace must have no compile-affected files"
+        );
+    }
+
+    /// F-008: the al.compile handler computes "stale" as set difference
+    /// (previous - current). This unit-tests that pure computation in
+    /// isolation from the LSP/toolchain plumbing.
+    #[test]
+    fn f008_stale_is_set_difference_previous_minus_current() {
+        let previous: std::collections::HashSet<String> = ["/p/A.al", "/p/B.al", "/p/C.al"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let current: std::collections::HashSet<String> = ["/p/A.al", "/p/D.al"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut stale: Vec<String> = previous.difference(&current).cloned().collect();
+        stale.sort();
+        assert_eq!(stale, vec!["/p/B.al".to_string(), "/p/C.al".to_string()]);
+    }
+
+    /// F-008 negative: when the new compile result equals the previous
+    /// result, no stale entries are produced (no spurious clears).
+    #[test]
+    fn f008_no_stale_when_compile_set_unchanged() {
+        let previous: std::collections::HashSet<String> = ["/p/A.al", "/p/B.al"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let current = previous.clone();
+        let stale: Vec<String> = previous.difference(&current).cloned().collect();
+        assert!(stale.is_empty(), "no diff means no stale clears");
     }
 }

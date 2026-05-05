@@ -1146,11 +1146,40 @@ impl LanguageServer for AlServer {
                                     };
                                     by_file.entry(d.file.clone()).or_default().push(lsp_diag);
                                 }
+                                let current_affected: std::collections::HashSet<String> =
+                                    by_file.keys().cloned().collect();
                                 for (file, diags) in by_file {
                                     if let Ok(uri) = Url::from_file_path(&file) {
                                         self.client.publish_diagnostics(uri, diags, None).await;
                                     }
                                 }
+
+                                // F-008: clear compiler diagnostics for files that were
+                                // affected last compile but are clean now. We re-publish
+                                // syntax/lint diagnostics if the file is open (so
+                                // existing squiggles stay), or an empty list otherwise.
+                                let last = self.workspace.last_compile_affected.lock().await;
+                                let stale: Vec<String> =
+                                    last.difference(&current_affected).cloned().collect();
+                                drop(last);
+                                for file in &stale {
+                                    if let Ok(uri) = Url::from_file_path(file) {
+                                        if let Some(text) = self.workspace.documents.get_text(&uri)
+                                        {
+                                            crate::server::diagnostics::publish_diagnostics(
+                                                self, &uri, &text,
+                                            )
+                                            .await;
+                                        } else {
+                                            self.client
+                                                .publish_diagnostics(uri, Vec::new(), None)
+                                                .await;
+                                        }
+                                    }
+                                }
+                                *self.workspace.last_compile_affected.lock().await =
+                                    current_affected;
+
                                 if result.success {
                                     self.client
                                         .show_message(MessageType::INFO, "Compilation succeeded")
