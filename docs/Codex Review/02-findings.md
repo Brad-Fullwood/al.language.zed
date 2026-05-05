@@ -41,7 +41,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-035: README architecture and command documentation are stale after crate consolidation. _(RESOLVED 2026-05-05.)_
 - F-036: Semantic bridge position contract is off by one. _(RESOLVED 2026-05-05.)_
 - F-037: Bridge hover/completion ignore unsaved text and package references. _(RESOLVED 2026-05-05 — unsaved text now plumbed through bridge `text` param; package-reference plumbing remains a follow-up.)_
-- F-038: References and rename are workspace-wide lexical matches, not symbol references.
+- F-038: References and rename are workspace-wide lexical matches, not symbol references. _(RESOLVED 2026-05-05 — rename now scope-restricts when the cursor binds to a local/parameter; full symbol-aware rewrite still future work, see body.)_
 - F-039: Same-file procedure go-to-definition misses forward declarations and can jump to a use. _(RESOLVED 2026-05-05.)_
 - F-040: Workspace object index collapses duplicate object names and can remove wrong mapping. _(RESOLVED 2026-05-05.)_
 - F-041: Virtual package source cache can serve stale definitions. _(RESOLVED 2026-05-05.)_
@@ -1035,7 +1035,7 @@ Pass current document text and package reference context into bridge calls. Avoi
 - Change a symbol in an unsaved document and request hover/completion.
 - Query a symbol supplied only by package references.
 
-## F-038: References and rename are workspace-wide lexical matches, not symbol references
+## F-038: References and rename are workspace-wide lexical matches, not symbol references _(RESOLVED 2026-05-05)_
 
 - Severity: High
 - Area: references, rename correctness

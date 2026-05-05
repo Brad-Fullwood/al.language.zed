@@ -42,8 +42,59 @@ pub fn rename(
     let clean_name = super::node_clean_name(node, text.as_bytes())?;
 
     let mut changes: Vec<(Url, Vec<TextEdit>)> = Vec::new();
-
     let source_bytes = text.as_bytes();
+
+    // F-038: when the symbol at the cursor binds locally to a procedure
+    // (parameter or `var`-declared local), restrict the rename to that
+    // procedure's source range. Workspace-wide lexical rename of a local
+    // would silently edit every other procedure / object that happens to
+    // use the same name. Until proper symbol-aware rename exists this
+    // scope-local fast path is the safe default for locals; non-local
+    // identifiers (cross-file procedures, fields, types) still get the
+    // workspace-wide pass below.
+    if let Some(proc) = crate::syntax::find_procedure_at(&tree, &text, position.into()) {
+        let is_local_binding = proc
+            .parameters
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(clean_name))
+            || {
+                let resolver = crate::syntax::type_resolver::TypeResolver::new(&tree, &text);
+                resolver
+                    .resolve_type(clean_name, position.into())
+                    .map(|d| {
+                        matches!(
+                            d.scope,
+                            crate::syntax::type_resolver::VariableScope::Local
+                                | crate::syntax::type_resolver::VariableScope::Parameter
+                        )
+                    })
+                    .unwrap_or(false)
+            };
+        if is_local_binding {
+            let proc_start = proc.range.start_byte;
+            let proc_end = proc.range.end_byte;
+            let refs = crate::syntax::find_variable_references(&tree, &text, clean_name);
+            let edits: Vec<TextEdit> = refs
+                .iter()
+                .filter(|r| r.start_byte >= proc_start && r.end_byte <= proc_end)
+                .filter_map(|r| {
+                    let matched_text = text.get(r.start_byte..r.end_byte)?;
+                    let replacement = make_rename_text(node.kind(), matched_text, new_name);
+                    Some(TextEdit {
+                        range: crate::syntax::ts_range_to_syntax(r, source_bytes).into(),
+                        new_text: replacement,
+                    })
+                })
+                .collect();
+            if edits.is_empty() {
+                return None;
+            }
+            return Some(WorkspaceEdit {
+                changes: vec![(uri.clone(), edits)],
+            });
+        }
+    }
+
     let refs = crate::syntax::find_variable_references(&tree, &text, clean_name);
     if !refs.is_empty() {
         let edits: Vec<TextEdit> = refs
@@ -212,6 +263,92 @@ mod tests {
         for e in edits {
             assert_eq!(e.new_text, "NewVar");
         }
+    }
+
+    /// F-038 positive: when two procedures each declare a local with the
+    /// same name (`Status`), renaming the local in procedure A must NOT
+    /// touch procedure B's same-named local.
+    #[test]
+    fn rename_local_var_does_not_touch_other_procedure_with_same_name() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        let src = r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    var
+        Status: Integer;
+    begin
+        Status := 1;
+    end;
+
+    procedure Bar()
+    var
+        Status: Integer;
+    begin
+        Status := 2;
+    end;
+}
+"#;
+        open_doc(&ws, &uri, src);
+
+        // Cursor on Foo's `Status` usage on line 6.
+        let pos = Position {
+            line: 6,
+            character: 8,
+        };
+        let result = rename(&ws, &uri, pos, "Phase").expect("rename should produce edits");
+        let (edit_uri, edits) = &result.changes[0];
+        assert_eq!(edit_uri, &uri);
+
+        // Every edit must land within Foo's source range (lines 2..=7).
+        for e in edits {
+            assert!(
+                e.range.start.line <= 7,
+                "F-038: leaked edit at line {} into Bar's procedure",
+                e.range.start.line
+            );
+        }
+        // And Foo's two `Status` sites must both be renamed.
+        assert!(
+            edits.len() >= 2,
+            "expected at least 2 edits in Foo, got {}",
+            edits.len()
+        );
+    }
+
+    /// F-038 negative: a non-local identifier (the procedure name itself,
+    /// which IS workspace-visible) should still be renamed across the
+    /// workspace — only locals get the scope-restricted treatment.
+    #[test]
+    fn rename_procedure_name_still_workspace_wide() {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        let src = r#"codeunit 50100 "Test"
+{
+    procedure Foo()
+    begin
+    end;
+
+    procedure Bar()
+    begin
+        Foo();
+    end;
+}
+"#;
+        open_doc(&ws, &uri, src);
+        // Cursor on `Foo` declaration name (line 2).
+        let pos = Position {
+            line: 2,
+            character: 14,
+        };
+        let result = rename(&ws, &uri, pos, "Baz").expect("rename should produce edits");
+        let (_uri, edits) = &result.changes[0];
+        // Both the declaration on line 2 and the call on line 8 should rename.
+        let touched_lines: Vec<u32> = edits.iter().map(|e| e.range.start.line).collect();
+        assert!(
+            touched_lines.contains(&2) && touched_lines.contains(&8),
+            "expected rename to span declaration (line 2) AND call (line 8); got {touched_lines:?}"
+        );
     }
 
     #[test]
