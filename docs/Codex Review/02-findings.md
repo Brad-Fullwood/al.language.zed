@@ -45,7 +45,7 @@ Status: restored 2026-05-04. F-001 and F-002 are currently marked resolved by fo
 - F-039: Same-file procedure go-to-definition misses forward declarations and can jump to a use. _(RESOLVED 2026-05-05.)_
 - F-040: Workspace object index collapses duplicate object names and can remove wrong mapping. _(RESOLVED 2026-05-05.)_
 - F-041: Virtual package source cache can serve stale definitions. _(RESOLVED 2026-05-05.)_
-- F-042: Some generated ranges use byte columns as LSP UTF-16 columns.
+- F-042: Some generated ranges use byte columns as LSP UTF-16 columns. _(RESOLVED 2026-05-05 — fixed the only user-visible offender in source_action_make_local; broader audit confirmed remaining sites use byte_col_to_utf16_col / encode_utf16.)_
 - F-043: "Make procedure local" is offered without checking external callers. _(RESOLVED 2026-05-05.)_
 - F-044: AL0185 namespace diagnostic quick fix is not wired into LSP/daemon diagnostic actions. _(RESOLVED 2026-05-05.)_
 - F-045: Code-action object-kind detection treats many object types as page-like. _(RESOLVED 2026-05-05.)_
@@ -1134,7 +1134,7 @@ Key virtual source cache by package identity/version/hash and clear affected ent
 - Replace with package version B.
 - Assert virtual source content updates.
 
-## F-042: Some generated ranges use byte columns as LSP UTF-16 columns
+## F-042: Some generated ranges use byte columns as LSP UTF-16 columns _(RESOLVED 2026-05-05)_
 
 - Severity: Medium
 - Area: LSP ranges

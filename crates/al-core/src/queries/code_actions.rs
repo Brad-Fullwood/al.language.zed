@@ -1624,19 +1624,24 @@ fn source_action_make_local(
         return None;
     }
 
-    // Find `procedure` keyword position in the line and replace with `local procedure`
-    let proc_col = lower.find("procedure")?;
-    let proc_end_col = proc_col + "procedure".len();
+    // Find `procedure` keyword position in the line and replace with `local procedure`.
+    // F-042: `find` returns a BYTE offset; LSP `Position.character` is a UTF-16 code
+    // unit count. Convert before using, otherwise a multi-byte character earlier on
+    // the line shifts the edit to the wrong column.
+    let proc_col_bytes = lower.find("procedure")?;
+    let proc_end_col_bytes = proc_col_bytes + "procedure".len();
+    let proc_col_utf16 = crate::syntax::byte_col_to_utf16_col(line_text, proc_col_bytes);
+    let proc_end_col_utf16 = crate::syntax::byte_col_to_utf16_col(line_text, proc_end_col_bytes);
 
     let edit = TextEdit {
         range: Range {
             start: super::Position {
                 line: proc_line as u32,
-                character: proc_col as u32,
+                character: proc_col_utf16,
             },
             end: super::Position {
                 line: proc_line as u32,
-                character: proc_end_col as u32,
+                character: proc_end_col_utf16,
             },
         },
         new_text: "local procedure".to_string(),
