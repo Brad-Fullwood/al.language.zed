@@ -1,28 +1,23 @@
+# Build outputs
 /target
 *.wasm
+*.rlib
 /grammars/
 .alpackages/
-.claude/worktrees/
 
-# Agentic loop run directories (Review/Arch/Dev/Release/Overseer)
-.agentic/
-
-# .NET build artifacts (all obj/ and bin/ under any .NET project)
+# .NET build artifacts
 **/obj/
 **/bin/
-crates/al-semantic/bridge/obj/
-crates/al-semantic/dotnet/AlSemantic/bin/
-crates/al-semantic/dotnet/AlSemantic/obj/
-crates/al-dap/dotnet/AlDap/bin/
-crates/al-dap/dotnet/AlDap/obj/
 
-# Supervisor state (machine-local runtime file)
-/tmp/al-*
-
+# Claude Code automation state (local)
+.claude/
+.agentic/
 .mcp.json
+
+# Supervisor / runtime state
+/tmp/al-*
 
 # Environment / secrets
 .env
 .env.*
 *.env
-.claude/scheduled_tasks.lock
