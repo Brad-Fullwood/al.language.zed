@@ -196,7 +196,7 @@ demand.
 - `wasm32-wasip1` target (`rustup target add wasm32-wasip1`)
 
 **Optional (enables additional features)**
-- .NET SDK 8 or newer — builds the `al-semantic` bridge and enables CodeAnalysis diagnostics
+- .NET SDK 8 or newer — builds the `al-core/bridge` .NET bridge and enables CodeAnalysis diagnostics
 - Microsoft ALTool — enables compilation, semantic diagnostics, and the EditorServices proxy debug path. `al-explorer setup` reports whether it is installed and prints the install command if it is not.
 
 Without .NET / ALTool the extension still provides syntax highlighting, folding,
@@ -219,7 +219,7 @@ Individual targets:
 ```sh
 make rust       # native crates only (cargo build --workspace --exclude zed-al)
 make wasm       # zed-al for wasm32-wasip1 (release)
-make bridges    # dotnet build crates/al-semantic/bridge/AlBridge.csproj (skipped if .NET missing)
+make bridges    # dotnet build crates/al-core/bridge/AlBridge.csproj (skipped if .NET missing)
 make clean
 ```
 
@@ -489,7 +489,7 @@ tree-sitter-al/
 │   ├── outline.scm
 │   ├── textobjects.scm
 │   └── brackets.scm
-├── data/                          # embedded into al-syntax via include_str!
+├── data/                          # embedded into al-core::syntax via include_str!
 │   ├── keywords.json              # control, object, type, operator, metadata, property
 │   ├── builtin_functions.json     # 81 global built-ins with signatures
 │   ├── object_types.json          # table, page, codeunit, report, ...
@@ -548,7 +548,7 @@ changes will be lost on the next run.
 
 The grammar's `braced_block` does not include `trigger_declaration`, so triggers
 inside `key(...)` and a few action-tree positions are not visible via the clean
-AST. `TypeResolver::collect_action_trigger_vars` in `al-syntax` does a
+AST. `TypeResolver::collect_action_trigger_vars` in `al-core::syntax` does a
 text-based backward scan to recover trigger-local variables. Fixing this
 properly requires a grammar change; do not paper over it elsewhere.
 
@@ -588,7 +588,7 @@ Four layers of tests:
 | Layer | Location | What it covers |
 |-------|----------|----------------|
 | Unit | inside each crate | pure functions, parsers, formatters |
-| Integration | `crates/al-lsp/tests/integration.rs` | al-syntax + al-symbols + handler logic, no transport |
+| Integration | `crates/al-core/tests/*.rs` | al-core's `syntax` + `symbols` modules + handler logic, no transport |
 | E2E (stdio) | `crates/al-test-harness/tests/*.rs` | spawns the real `al-lsp` binary, drives LSP over stdio |
 | E2E (Zed IDE) | `crates/al-zed-test/` | drives a live Zed window on Wayland/Hyprland |
 
