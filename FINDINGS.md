@@ -26,6 +26,29 @@ Chewing through the carry-forwards. Three commits landed:
 
 Workspace test count: 1803 → 1806. All gates green.
 
+### Iteration 2 (2026-05-15, +30m)
+
+Four commits, three carry-forwards closed, one new gap analysis (OAuth):
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-005 | P2 → fixed | `get_or_build_call_graph` now uses a separate `call_graph_build_lock: Mutex<()>` for build coordination; the data lock is only held for the brief atomic swap. Readers no longer block for the full 100-200ms build. New architecture test pins the pattern. |
+| F-OPEN-006 | P2 → documented | Confirmed the `std::sync::Mutex` in the OAuth callback is correct (sync callback, no await across it). Added a SAFETY comment noting the assumption so a future refactor can't silently introduce a deadlock. |
+| F-OPEN-008 | P2 → confirmed | Audited `zed_extension_api` v0.8.0: `download_file` forces rustls-with-platform-verifier (OS root CA store). TLS is enforced. Recorded the SHA-verify follow-up as defence-in-depth (not blocking). |
+| F-OPEN-001 | P3 → near-complete | Justified 6 more `#[allow(clippy::too_many_arguments)]` attrs (suggest_event, test_coverage, dead_code, signature, calls, dap/config). 8 of 25 still bare allows; the rest follow the same generic justification. |
+| F-FIX-014 | **P1** | New (OAuth audit gap): `acquire_token` interpolated unvalidated `tenant` into Microsoft OAuth URLs. Added `is_valid_tenant` allow-list (GUID / `common`/`organizations`/`consumers` / dotted domain). 6 regression tests. Rejects URL punctuation, whitespace, embedded URLs. |
+
+New open follow-ups from the OAuth audit:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-010 | P2 | Token zeroization — `access_token` and `refresh_token` are plain `String`s in a long-lived daemon process. Adopt the `zeroize` crate. |
+| F-OPEN-011 | P2 | Cache write race — concurrent `acquire_token` calls for the same tenant race on `save_cached_token`. No file lock, last-writer-wins. Could lose a refresh token. |
+| F-OPEN-012 | P2 | No 401 invalidation — when bc_server.rs returns 401, the cached token isn't deleted. Next call re-uses the stale token. Add a callback or expose a `invalidate_token(&tenant)` API. |
+| F-OPEN-013 | P3 | GitHub release SHA verification — Zed's `download_file` provides TLS but doesn't verify the GitHub-provided `asset.digest`. Defence-in-depth. |
+
+Workspace test count: 1806 → 1813. All gates green.
+
 
 
 | Phase | Status | Output |
