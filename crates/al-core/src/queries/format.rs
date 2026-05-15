@@ -4,19 +4,22 @@
 //! formatting options. Falls back to `FormatOptions::default()` when no
 //! config file is present or when the file cannot be parsed.
 //!
-//! ## Differentiator
-//! The MS AL formatter is not configurable.  This module lets teams enforce
-//! their own keyword casing, blank-line rules, max line length, and brace style.
+//! ## Current implementation status
+//!
+//! Only `tabSize` and `insertSpaces` are honoured by the formatter today.
+//! The other fields (`keywordCasing`, `blankLinesBetweenProcedures`,
+//! `maxLineLength`, `braceStyle`, `sortProperties`) are accepted for
+//! forward compatibility but the line-by-line state machine in
+//! `crate::syntax::formatting::format_al` doesn't consult them yet.
+//! `to_format_options` logs a `tracing::warn!` when a non-default value
+//! for an unimplemented field is encountered so users don't quietly
+//! think their config is in effect when it isn't (F-OPEN-024).
 //!
 //! ## Config file (.alformat.json)
 //! ```json
 //! {
 //!   "tabSize": 4,
-//!   "insertSpaces": true,
-//!   "keywordCasing": "lower",
-//!   "blankLinesBetweenProcedures": "one",
-//!   "maxLineLength": 120,
-//!   "braceStyle": "nextLine"
+//!   "insertSpaces": true
 //! }
 //! ```
 
@@ -68,6 +71,13 @@ impl AlFormatConfig {
     }
 
     /// Convert to `FormatOptions`, falling back to defaults for absent fields.
+    ///
+    /// **Honesty note** (F-OPEN-024): only `tabSize` and `insertSpaces` are
+    /// currently honoured by the formatter implementation. The other fields
+    /// are parsed and stored on `FormatOptions` but the line-by-line state
+    /// machine in `format_al` doesn't consult them yet. We log a one-time
+    /// warning per field per workspace so users don't quietly think their
+    /// `.alformat.json` is in effect when it isn't.
     pub fn to_format_options(&self) -> FormatOptions {
         let mut opts = FormatOptions::default();
 
@@ -80,6 +90,13 @@ impl AlFormatConfig {
             opts.insert_spaces = spaces;
         }
         if let Some(casing) = &self.keyword_casing {
+            if !casing.eq_ignore_ascii_case("preserve") {
+                tracing::warn!(
+                    setting = "keywordCasing",
+                    value = %casing,
+                    "`.alformat.json` setting is not yet implemented — formatter will preserve existing casing"
+                );
+            }
             opts.keyword_casing = match casing.to_lowercase().as_str() {
                 "lower" => KeywordCasing::Lower,
                 "upper" => KeywordCasing::Upper,
@@ -87,6 +104,13 @@ impl AlFormatConfig {
             };
         }
         if let Some(blank_lines) = &self.blank_lines_between_procedures {
+            if !blank_lines.eq_ignore_ascii_case("preserve") {
+                tracing::warn!(
+                    setting = "blankLinesBetweenProcedures",
+                    value = %blank_lines,
+                    "`.alformat.json` setting is not yet implemented — formatter will collapse double blanks only"
+                );
+            }
             opts.blank_lines_between_procedures = match blank_lines.to_lowercase().as_str() {
                 "one" => BlankLinesBetweenProcedures::One,
                 "two" => BlankLinesBetweenProcedures::Two,
@@ -94,15 +118,35 @@ impl AlFormatConfig {
             };
         }
         if let Some(max_len) = self.max_line_length {
+            if max_len > 0 {
+                tracing::warn!(
+                    setting = "maxLineLength",
+                    value = max_len,
+                    "`.alformat.json` setting is not yet implemented — formatter does not wrap long lines"
+                );
+            }
             opts.max_line_length = max_len;
         }
         if let Some(brace) = &self.brace_style {
+            if !brace.eq_ignore_ascii_case("nextLine") && !brace.eq_ignore_ascii_case("next_line") {
+                tracing::warn!(
+                    setting = "braceStyle",
+                    value = %brace,
+                    "`.alformat.json` setting is not yet implemented — formatter always emits next-line braces"
+                );
+            }
             opts.brace_style = match brace.to_lowercase().as_str() {
                 "sameline" | "same_line" => BraceStyle::SameLine,
                 _ => BraceStyle::NextLine,
             };
         }
         if let Some(sort) = self.sort_properties {
+            if sort {
+                tracing::warn!(
+                    setting = "sortProperties",
+                    "`.alformat.json` setting is not yet implemented — properties stay in source order"
+                );
+            }
             opts.sort_properties = sort;
         }
 
