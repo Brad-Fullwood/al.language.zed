@@ -49,7 +49,6 @@ futures = { workspace = true }
 # up. Opt-in via the `bin` feature so library consumers (al-test-harness, the
 # in-tree test crates) don't pay for the layered registry / EnvFilter pull-in.
 tracing-subscriber = { workspace = true, optional = true }
-walkdir = "2"
 
 [features]
 default = ["nuget", "bin"]
