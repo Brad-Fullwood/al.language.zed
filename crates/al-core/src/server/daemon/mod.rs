@@ -168,6 +168,16 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                         // Reset backoff on success.
                         accept_backoff = ACCEPT_BACKOFF_START;
 
+                        // Bump the idle timer *before* spawning the connection
+                        // handler. Without this there's a small race window
+                        // between accept and the spawned task's first
+                        // dispatch where the 60s-poll idle-timeout checker
+                        // could fire on a daemon that just received a fresh
+                        // connection. The spawned task still updates the
+                        // timer per-request; this just closes the accept->
+                        // first-request gap.
+                        *last_activity.lock().await = std::time::Instant::now();
+
                         // Acquire a connection slot. If at the limit, drop this connection
                         // rather than blocking the accept loop.
                         let permit = match connection_limit.clone().try_acquire_owned() {
