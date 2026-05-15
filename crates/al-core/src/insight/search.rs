@@ -42,31 +42,39 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
     let mut steps = Vec::new();
     let mut visited = std::collections::HashSet::new();
 
-    // Find all Event nodes matching the name
-    for (key, indices) in &graph.index {
-        if let NodeKey::Event(_, _, ref name) = key {
-            if name == &event_lower {
-                for &idx in indices {
-                    let node = &graph.graph[idx];
-                    let (obj_name, event_label) = match node {
-                        InsightNode::Event {
-                            object_name, name, ..
-                        } => (object_name.clone(), name.clone()),
-                        _ => continue,
-                    };
+    // Find all Event nodes matching the name. Sort by NodeIndex so the
+    // emitted trace order is deterministic across runs — `graph.index`
+    // is a HashMap and would otherwise yield arbitrary order, making
+    // export comparisons (DOT / JSON) flaky for downstream tooling.
+    let mut matches: Vec<petgraph::graph::NodeIndex> = graph
+        .index
+        .iter()
+        .filter_map(|(key, indices)| match key {
+            NodeKey::Event(_, _, name) if name == &event_lower => Some(indices.iter().copied()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    matches.sort_by_key(|idx| idx.index());
 
-                    steps.push(TraceStep {
-                        depth: 0,
-                        edge_type: "origin".to_string(),
-                        node_type: "event".to_string(),
-                        name: event_label,
-                        object: obj_name,
-                    });
+    for idx in matches {
+        let node = &graph.graph[idx];
+        let (obj_name, event_label) = match node {
+            InsightNode::Event {
+                object_name, name, ..
+            } => (object_name.clone(), name.clone()),
+            _ => continue,
+        };
 
-                    trace_from_node(graph, idx, 1, max_depth, &mut visited, &mut steps);
-                }
-            }
-        }
+        steps.push(TraceStep {
+            depth: 0,
+            edge_type: "origin".to_string(),
+            node_type: "event".to_string(),
+            name: event_label,
+            object: obj_name,
+        });
+
+        trace_from_node(graph, idx, 1, max_depth, &mut visited, &mut steps);
     }
 
     steps
@@ -577,6 +585,58 @@ mod tests {
         assert!(!trace.is_empty());
         assert_eq!(trace[0].name, "OnPost");
         assert_eq!(trace[0].node_type, "event");
+    }
+
+    #[test]
+    fn trace_event_is_deterministic_across_repeated_builds() {
+        // Regression for the audit finding: trace_event used to iterate
+        // `graph.index` (a HashMap) directly, so the order of matching
+        // event roots was arbitrary between graph rebuilds. The fix
+        // sorts matching NodeIndex values before walking. This test
+        // builds the same graph 5 times and asserts trace output is
+        // byte-identical every time. F-OPEN-(insight-audit-13).
+        let index = SymbolIndex::new();
+        // Two publishers emitting the same event name — without the
+        // sort, their relative order in the trace would be HashMap-
+        // iteration-arbitrary.
+        index.add_entries(&[
+            make_codeunit_with_events(
+                1,
+                "Publisher A",
+                vec![("Shared", "IntegrationEvent")],
+                vec![],
+            ),
+            make_codeunit_with_events(
+                2,
+                "Publisher B",
+                vec![("Shared", "IntegrationEvent")],
+                vec![],
+            ),
+            make_codeunit_with_events(
+                3,
+                "Publisher C",
+                vec![("Shared", "IntegrationEvent")],
+                vec![],
+            ),
+        ]);
+
+        let mut reference: Option<Vec<TraceStep>> = None;
+        for _ in 0..5 {
+            let mut graph = InsightGraph::new();
+            graph.build_from_index(&index);
+            let trace = trace_event(&graph, "Shared", 10);
+            match &reference {
+                None => reference = Some(trace),
+                Some(prev) => {
+                    let prev_objs: Vec<&str> = prev.iter().map(|s| s.object.as_str()).collect();
+                    let now_objs: Vec<&str> = trace.iter().map(|s| s.object.as_str()).collect();
+                    assert_eq!(
+                        prev_objs, now_objs,
+                        "trace_event order must be deterministic across rebuilds"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

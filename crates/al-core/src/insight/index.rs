@@ -35,6 +35,15 @@ use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
 /// This maps 1-to-1 with a `petgraph::NodeIndex` inside the backing
 /// [`InsightGraph`].  We expose it as a newtype so callers don't need to
 /// import petgraph.
+///
+/// **Lifetime warning:** `NodeId` is stable only within a single
+/// [`crate::workspace::Workspace`] graph build. After
+/// [`crate::workspace::Workspace::invalidate_insight_graph`] runs (e.g.
+/// when packages reload or a file changes), the rebuilt graph creates new
+/// indices and old `NodeId`s no longer point at the same node — they may
+/// be out-of-bounds or refer to an unrelated node. Do not cache `NodeId`s
+/// across request boundaries or across graph rebuilds; always re-resolve
+/// from a fresh `Arc<InsightGraph>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct NodeId(pub usize);
 
