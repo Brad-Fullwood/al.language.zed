@@ -35,6 +35,9 @@ pub enum OAuthError {
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    /// Caller-supplied input failed validation before any network I/O.
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Successful token response from the token endpoint.
@@ -69,6 +72,17 @@ pub async fn acquire_token(
     tenant: &str,
     on_message: impl Fn(&str),
 ) -> Result<String, OAuthError> {
+    // Reject obviously-malformed tenants before interpolating into the OAuth
+    // URLs. A typical tenant is a GUID, an `*.onmicrosoft.com` domain, or one
+    // of the well-known reserved names. Anything else — slashes, query
+    // strings, embedded URLs — could redirect/poison the request even though
+    // the host (login.microsoftonline.com) is hardcoded.
+    if !is_valid_tenant(tenant) {
+        return Err(OAuthError::Other(format!(
+            "Invalid tenant '{tenant}': expected a GUID, domain, or one of \
+             'common'/'organizations'/'consumers'"
+        )));
+    }
     let client_id = match std::env::var("BC_CLIENT_ID") {
         Ok(v) if !v.trim().is_empty() => {
             let trimmed = v.trim();
@@ -743,6 +757,30 @@ fn open_browser(url: &str) -> bool {
     }
 }
 
+/// Validate a tenant identifier before interpolating it into Microsoft's
+/// OAuth URLs. Accepts:
+///   - A well-formed GUID (e.g. `12345678-1234-1234-1234-123456789012`)
+///   - The well-known reserved names `common`, `organizations`, `consumers`
+///   - A domain like `contoso.onmicrosoft.com` (letters/digits/`.`/`-`/`_`)
+///
+/// Rejects anything containing `/`, `?`, `#`, whitespace, or other URL
+/// punctuation that could redirect / poison the request.
+fn is_valid_tenant(s: &str) -> bool {
+    if s.is_empty() || s.len() > 256 {
+        return false;
+    }
+    if matches!(s, "common" | "organizations" | "consumers") {
+        return true;
+    }
+    if is_well_formed_guid(s) {
+        return true;
+    }
+    // Domain-shaped: alphanumeric segments separated by dots, optional
+    // hyphens / underscores. No `/`, `?`, `#`, ':', '@', whitespace.
+    let domain_chars = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_';
+    s.chars().all(domain_chars) && s.contains('.')
+}
+
 /// True iff `s` is a 36-character hyphenated GUID
 /// (8-4-4-4-12, hex elsewhere). Used by acquire_token to validate
 /// BC_CLIENT_ID before interpolating it into the AAD authorize URL
@@ -790,6 +828,57 @@ mod guid_tests {
         ));
         // non-hex
         assert!(!is_well_formed_guid("zf72a0a7-b59c-4f97-99c8-5b9a2cd3a1b6"));
+    }
+}
+
+#[cfg(test)]
+mod tenant_tests {
+    use super::is_valid_tenant;
+
+    #[test]
+    fn accepts_guid_tenant() {
+        assert!(is_valid_tenant("12345678-1234-1234-1234-123456789012"));
+    }
+
+    #[test]
+    fn accepts_reserved_names() {
+        assert!(is_valid_tenant("common"));
+        assert!(is_valid_tenant("organizations"));
+        assert!(is_valid_tenant("consumers"));
+    }
+
+    #[test]
+    fn accepts_domain_tenants() {
+        assert!(is_valid_tenant("contoso.onmicrosoft.com"));
+        assert!(is_valid_tenant("my-org.example.com"));
+        assert!(is_valid_tenant("a.b.c.d"));
+    }
+
+    #[test]
+    fn rejects_empty_and_oversize() {
+        assert!(!is_valid_tenant(""));
+        let long = "a".repeat(257);
+        assert!(!is_valid_tenant(&long));
+    }
+
+    #[test]
+    fn rejects_url_punctuation() {
+        // Negative: anything that could redirect or poison the URL must be rejected.
+        assert!(!is_valid_tenant("contoso.com/extra"));
+        assert!(!is_valid_tenant("contoso.com?query=evil"));
+        assert!(!is_valid_tenant("contoso.com#frag"));
+        assert!(!is_valid_tenant("evil@contoso.com"));
+        assert!(!is_valid_tenant("contoso .com")); // whitespace
+        assert!(!is_valid_tenant("contoso\ncom")); // newline
+        assert!(!is_valid_tenant("http://contoso.com"));
+        assert!(!is_valid_tenant("///pwned"));
+    }
+
+    #[test]
+    fn rejects_bare_word_without_dot() {
+        // Looks like it could be a single-segment domain but isn't one of the
+        // reserved names — reject so a typo of "common" doesn't sneak through.
+        assert!(!is_valid_tenant("randomword"));
     }
 }
 
