@@ -162,8 +162,10 @@ fn dispatch_workspace_procedure(
     args: Vec<Value>,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    // Recursion guard.
-    if ctx.recursion_depth > MAX_RECURSION_DEPTH {
+    // Recursion guard. Use `>=` (not `>`) so MAX_RECURSION_DEPTH is the
+    // inclusive upper bound on simultaneous frames — without this, one
+    // extra frame slipped through (101 instead of the documented 100).
+    if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
         return simple_error("recursion depth exceeded");
     }
 
