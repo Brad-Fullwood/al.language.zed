@@ -122,6 +122,26 @@ New audit: AL syntax formatter (`crates/al-core/src/syntax/formatting.rs` + `que
 
 Workspace test count: 1821 → 1827. All gates green.
 
+### Iteration 7 (2026-05-15, +180m)
+
+Two commits + an insight-graph audit. One formatter follow-up addressed,
+two real determinism / documentation fixes from the audit.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-024 | P3 → fixed | `.alformat.json` config now emits `tracing::warn!` per non-default unimplemented setting at load time (`keywordCasing`, `blankLines…`, `maxLineLength`, `braceStyle`, `sortProperties`). Module docs updated to list which fields actually wire through. |
+| F-FIX-016 | P2 | `trace_event` iterated `InsightGraph::index` (HashMap) directly — order of multiple matching event roots was non-deterministic across rebuilds. Now collects + sorts by NodeIndex. New 5× rebuild regression test. |
+| F-FIX-017 | P3 | `NodeId` public newtype had no lifetime warning. Added a doc block making it clear NodeIds are invalidated by `invalidate_insight_graph` and must not be cached across rebuilds. |
+
+New audit: insight graph subsystem (`crates/al-core/src/insight/{graph,calls,index,search,discovery,analysis}.rs`, ~6.5K LOC total). **Mostly clean** — every tree-sitter traversal verified iterative (CLAUDE.md compliant), poisoned-lock recovery comprehensive, empty/parse-error workspace handled gracefully, no production panics, no DashMap-across-await. Real remaining gaps recorded below:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-027 | P3 | `recurse_event` / `recurse_subscriber` in `search.rs` cap by depth but not by total visited nodes. A 1000-node forward-acyclic chain at `max_depth=20` clones ChainNode vectors at every level — memory grows quadratic in width. Add a total-visited cap. |
+| F-OPEN-028 | P3 | `discover_events` clones object/method strings into every matching subscriber list. Use indices or Rc for large workspaces. |
+
+Workspace test count: 1827 → 1828. All gates green.
+
 
 
 | Phase | Status | Output |
