@@ -170,6 +170,13 @@ impl AlExtension {
                 &zed::LanguageServerInstallationStatus::Downloading,
             );
 
+            // TLS / integrity: zed::download_file uses Zed's host HTTP
+            // client, which forces rustls-with-platform-verifier (validates
+            // against the OS root-CA store). For an even stronger guarantee
+            // we could SHA-verify against `asset.digest` returned by the
+            // GitHub API, but the WASM extension has no easy hashing
+            // primitive and trusting platform TLS is already strong. See
+            // F-OPEN-008.
             zed::download_file(
                 &asset.download_url,
                 &version_dir,

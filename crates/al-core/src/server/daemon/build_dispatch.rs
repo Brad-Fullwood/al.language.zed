@@ -991,6 +991,13 @@ pub(super) async fn dispatch_authenticate(
             };
 
             let client = reqwest::Client::new();
+            // SAFETY (concurrency): `std::sync::Mutex` is correct here only
+            // because the callback below is synchronous — it locks, pushes,
+            // drops, and the await on `acquire_token` happens around the
+            // callback, not inside it. If `acquire_token` is ever refactored
+            // to invoke the callback from a spawned task or across an await
+            // point, switch this to `tokio::sync::Mutex` (and make the
+            // callback itself async). See F-OPEN-006.
             let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
             let msgs_clone = messages.clone();
 
