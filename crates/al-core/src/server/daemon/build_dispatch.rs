@@ -14,6 +14,53 @@ use super::{
 const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 const ERR_NO_PROJECT: &str = "No project loaded";
 
+/// Resolve a user-provided output-file path against `project_root` and reject
+/// anything that escapes it (path traversal). Used for JUnit / Cobertura
+/// output paths in `dispatch_tests_run_batch`, where a malicious or
+/// misconfigured client could otherwise ask the daemon to write XML to
+/// arbitrary filesystem locations as the daemon's user.
+///
+/// Returns `Some(canonical_path)` if the requested location is inside
+/// `project_root`, else `None`.
+fn resolve_output_path_within_project(
+    requested: &std::path::Path,
+    project_root: &std::path::Path,
+) -> Option<PathBuf> {
+    // Resolve relative paths against project_root.
+    let absolute = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        project_root.join(requested)
+    };
+
+    // Logical (non-filesystem) normalisation: collapse `.` and `..` segments.
+    // We can't use `Path::canonicalize` because the file may not yet exist.
+    let mut normalised = PathBuf::new();
+    for comp in absolute.components() {
+        use std::path::Component;
+        match comp {
+            Component::ParentDir => {
+                if !normalised.pop() {
+                    // `..` above the root — definitely escaping.
+                    return None;
+                }
+            }
+            Component::CurDir => {}
+            other => normalised.push(other.as_os_str()),
+        }
+    }
+
+    // Canonicalise the project root so symlinks / case-normalisation can't
+    // be used to spoof containment. The root must exist; if canonicalisation
+    // fails, reject conservatively.
+    let project_canonical = project_root.canonicalize().ok()?;
+    if normalised.starts_with(&project_canonical) || normalised.starts_with(project_root) {
+        Some(normalised)
+    } else {
+        None
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared BC server connection params (used by snapshot and profiling)
 // ---------------------------------------------------------------------------
@@ -2181,7 +2228,6 @@ pub(super) async fn dispatch_tests_run_batch(
     use crate::test_engine::backends::live_bc::LiveBcMode;
     use crate::test_engine::output::{cobertura, junit};
     use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
-    use std::path::PathBuf;
     use tokio::sync::mpsc;
 
     // -- Resolve project root + launch config ---------------------------------
@@ -2261,14 +2307,39 @@ pub(super) async fn dispatch_tests_run_batch(
             .get("parallel")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
-        junit_out: params
-            .get("junitOut")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from),
-        cobertura_out: params
-            .get("coberturaOut")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from),
+        // Validate output paths against project_root — a malicious client
+        // could otherwise ask the daemon to overwrite arbitrary files
+        // (cron tabs, ssh keys) as the daemon's user.
+        junit_out: match params.get("junitOut").and_then(|v| v.as_str()) {
+            Some(s) => {
+                match resolve_output_path_within_project(std::path::Path::new(s), &project_root) {
+                    Some(p) => Some(p),
+                    None => {
+                        return rpc_error(
+                            id,
+                            error_codes::INVALID_PARAMS,
+                            "'junitOut' path escapes the project root",
+                        )
+                    }
+                }
+            }
+            None => None,
+        },
+        cobertura_out: match params.get("coberturaOut").and_then(|v| v.as_str()) {
+            Some(s) => {
+                match resolve_output_path_within_project(std::path::Path::new(s), &project_root) {
+                    Some(p) => Some(p),
+                    None => {
+                        return rpc_error(
+                            id,
+                            error_codes::INVALID_PARAMS,
+                            "'coberturaOut' path escapes the project root",
+                        )
+                    }
+                }
+            }
+            None => None,
+        },
         filter: params
             .get("filter")
             .and_then(|v| v.as_str())
@@ -3249,6 +3320,66 @@ mod p1_5_tests {
     fn empty_ws() -> Workspace {
         Workspace::new()
     }
+
+    // --- resolve_output_path_within_project ----------------------------------
+
+    #[test]
+    fn output_path_accepts_relative_inside_project() {
+        // Positive: a plain relative path resolves to inside the project.
+        let project = tempfile::tempdir().unwrap();
+        let resolved = resolve_output_path_within_project(
+            std::path::Path::new("out/junit.xml"),
+            project.path(),
+        );
+        assert!(resolved.is_some(), "relative path inside project must resolve");
+    }
+
+    #[test]
+    fn output_path_accepts_absolute_inside_project() {
+        // Positive: an absolute path that points inside the project is fine.
+        let project = tempfile::tempdir().unwrap();
+        let abs = project.path().canonicalize().unwrap().join("results.xml");
+        let resolved = resolve_output_path_within_project(&abs, project.path());
+        assert!(resolved.is_some(), "absolute path inside project must resolve");
+    }
+
+    #[test]
+    fn output_path_rejects_parent_dir_escape() {
+        // Negative: `../escape.xml` resolves to outside the project — reject.
+        let project = tempfile::tempdir().unwrap();
+        let resolved = resolve_output_path_within_project(
+            std::path::Path::new("../escape.xml"),
+            project.path(),
+        );
+        assert!(
+            resolved.is_none(),
+            "../ escape must be rejected, got {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn output_path_rejects_deep_parent_dir_escape() {
+        // Negative: multiple `..` segments that resolve above the project.
+        let project = tempfile::tempdir().unwrap();
+        let resolved = resolve_output_path_within_project(
+            std::path::Path::new("subdir/../../../etc/passwd"),
+            project.path(),
+        );
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn output_path_rejects_absolute_outside_project() {
+        // Negative: a totally unrelated absolute path must be rejected.
+        let project = tempfile::tempdir().unwrap();
+        let resolved = resolve_output_path_within_project(
+            std::path::Path::new("/etc/hosts"),
+            project.path(),
+        );
+        assert!(resolved.is_none(), "absolute outside project must be rejected");
+    }
+
+    // --- dispatch_tests_run_batch --------------------------------------------
 
     #[tokio::test]
     async fn run_batch_no_project_returns_error() {
