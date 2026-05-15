@@ -112,6 +112,15 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // When > 0, an `end;` closes a begin block, not the case label body.
     let mut case_begin_depth: i32 = 0;
 
+    // Multi-line block comment state. `/* ... */` comments may span many
+    // lines; while we're inside one, the formatter MUST NOT drain the
+    // single-stmt stack or re-indent based on the comment text. The
+    // previous text-based scanner only knew about line comments (`//`),
+    // so a block comment between an `if … then` and its body would
+    // misclassify as a regular statement and collapse the single-stmt
+    // indent prematurely. See the AL formatter audit.
+    let mut in_block_comment = false;
+
     for line in text.lines() {
         let trimmed = line.trim();
 
@@ -262,7 +271,28 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
 
         // Drain single-stmt stack: if we just wrote a "normal" statement (not a
         // block opener, closer, comment, or another single-stmt opener), pop the stack.
-        let is_comment = trimmed.starts_with("//");
+        //
+        // Treat block-comment lines (whether they start a comment with `/*`
+        // or sit inside an ongoing one) as comments here too — they're not
+        // executable statements and must not consume single-stmt-depth.
+        // After classifying THIS line, update `in_block_comment` based on
+        // whether the line opens and/or closes a block comment.
+        let starts_block_comment = trimmed.starts_with("/*");
+        let line_is_block_comment_body = in_block_comment || starts_block_comment;
+        // A line counts as "closing" the block comment if it contains `*/`
+        // AFTER the position where the block comment starts on this line.
+        // For the simple case we just look at whether the trimmed text
+        // contains `*/` — adversarial pathologies (string literals
+        // containing `*/`) are out of scope for this text-based scanner.
+        let closes_block_comment = trimmed.contains("*/");
+        if line_is_block_comment_body {
+            // Update the multi-line tracker for the NEXT iteration. If this
+            // line opens-and-closes a block comment on the same line, we
+            // stay outside afterwards; if it opens without closing, we're
+            // inside; if it was already inside and closes here, we leave.
+            in_block_comment = !closes_block_comment;
+        }
+        let is_comment = trimmed.starts_with("//") || line_is_block_comment_body;
         let is_block_opener = trimmed.ends_with('{')
             || trimmed_lower == "begin"
             || trimmed_lower.ends_with(" begin")
@@ -807,5 +837,93 @@ end;
         assert!(!edits.is_empty());
         assert!(edits[0].new_text.contains("        if x > 0 then"));
         assert!(edits[0].new_text.contains("            Message(\'yes\');"));
+    }
+
+    #[test]
+    fn test_block_comment_between_if_then_and_body_preserves_indent() {
+        // Regression: a multi-line `/* */` block comment between an
+        // `if … then` and its body must NOT drain the single-statement
+        // indent stack. Previously the text-based scanner saw the comment
+        // body as a regular statement and collapsed the indent, leaving
+        // the actual body de-indented. See iteration-6 formatter audit.
+        let input = "\
+codeunit 50100 Test
+{
+    procedure Outer()
+    begin
+        if x > 0 then
+            /* explain
+               what's going on */
+            Message('yes');
+    end;
+}
+";
+        let opts = FormatOptions::default();
+        let out = format_al(input, &opts);
+        // The body line must remain indented one level past `if … then`.
+        assert!(
+            out.contains("            Message('yes');"),
+            "block comment must not collapse single-stmt indent — got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_formatter_is_idempotent_on_simple_input() {
+        // Positive: formatting twice produces identical output. Regressions
+        // here usually mean the state machine is sensitive to the very
+        // whitespace it just produced — a quietly catastrophic class of bug
+        // when formatting fires on save.
+        let input = "\
+codeunit 50100 Test
+{
+    procedure Outer()
+    var
+        x: Integer;
+    begin
+        if x > 0 then
+            Message('yes')
+        else
+            Message('no');
+
+        for i := 1 to 10 do
+            Message(Format(i));
+    end;
+}
+";
+        let opts = FormatOptions::default();
+        let pass1 = format_al(input, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(
+            pass1, pass2,
+            "second-pass formatting should be a no-op — pass-1 output is\n{pass1}\nand pass-2 is\n{pass2}"
+        );
+    }
+
+    #[test]
+    fn test_formatter_is_idempotent_with_block_comments() {
+        // Idempotency must hold even when block comments are present —
+        // the per-line block-comment tracker must produce the same
+        // classification on a second pass.
+        let input = "\
+codeunit 50100 Test
+{
+    /* class-level comment
+       spans two lines */
+    procedure Outer()
+    begin
+        if x > 0 then
+            /* inline block
+               comment */
+            Message('yes');
+    end;
+}
+";
+        let opts = FormatOptions::default();
+        let pass1 = format_al(input, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(
+            pass1, pass2,
+            "second-pass formatting with block comments should be a no-op"
+        );
     }
 }
