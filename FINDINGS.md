@@ -103,6 +103,25 @@ New audit: .NET semantic bridge (`crates/al-core/src/semantic/host.rs` + `bridge
 
 Workspace test count: 1818 → 1821. All gates green.
 
+### Iteration 6 (2026-05-15, +150m)
+
+Two commits, one NuGet follow-up closed, one new audit on the syntax formatter:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-019 | P3 → fixed | NuGet `download` now serialises concurrent downloads of the same package id on a per-id `tokio::sync::Mutex`. Different packages still run in parallel up to the semaphore cap. 3 regression tests including a 10-task concurrent-hammer that asserts serialisation timing. |
+| F-FIX-015 | **P1** | Formatter mis-classified multi-line `/* … */` block comments as regular statements, draining the single-statement indent stack early and de-indenting the actual body. Added per-line `in_block_comment` tracker. 3 new regression tests (block-comment-doesn't-collapse-indent + 2 idempotency tests). |
+
+New audit: AL syntax formatter (`crates/al-core/src/syntax/formatting.rs` + `queries/format.rs` + `server/formatting.rs`). One **P1 bug fixed in this iteration** (above). Remaining findings recorded as P3 follow-ups:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-024 | P3 | `FormatOptions` declares `keyword_casing`, `blank_lines_between_procedures`, `max_line_length`, `brace_style`, `sort_properties` — none are wired through to the formatter implementation. Either implement or remove from the public config. |
+| F-OPEN-025 | P3 | `extract_formatted_region` walks original and formatted lines in lockstep without an explicit mismatch check (`formatting.rs:402-432`). If the formatter ever drops or duplicates a line, the alignment silently breaks. Add an assertion / fall-through. |
+| F-OPEN-026 | P3 | Unterminated string literal (missing closing `'`) leaves `in_string` stuck true for the rest of the line, mis-tracking parens. Adversarial input only — typical AL doesn't survive that long unterminated. |
+
+Workspace test count: 1821 → 1827. All gates green.
+
 
 
 | Phase | Status | Output |
