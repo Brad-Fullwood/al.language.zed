@@ -18,20 +18,45 @@ struct AlExtension {
     cached_binary_path: Option<String>,
 }
 
+/// Maximum nesting depth for `merge_json`. Above this, the override
+/// value is used as-is. Defends against stack-overflow / DoS from
+/// pathologically nested user settings.
+const MERGE_JSON_MAX_DEPTH: u32 = 64;
+
+/// Validate that a GitHub release version is safe to interpolate into a
+/// filesystem path. Allows the chars a normal semver tag uses
+/// (`0-9`, `a-z`, `A-Z`, `.`, `-`, `_`, `+`) and nothing else — in particular,
+/// no `/` or `..` segments. An empty string is rejected.
+fn is_safe_version(v: &str) -> bool {
+    !v.is_empty()
+        && v.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+')
+        })
+}
+
 /// Deep-merge `overrides` into `base`, returning the merged result.
 /// - Objects are merged recursively (override keys replace base keys)
 /// - All other types: override replaces base entirely
+/// - Recursion is capped at `MERGE_JSON_MAX_DEPTH`
 ///
 /// NOTE: These are separate Cargo packages (WASM vs native) that can't share code
 /// without a shared crate, which would add complexity for a small utility.
 fn merge_json(base: &Value, overrides: &Value) -> Value {
+    merge_json_inner(base, overrides, 0)
+}
+
+fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
+    if depth >= MERGE_JSON_MAX_DEPTH {
+        // Stop recursing — user wins by default at deep nesting.
+        return overrides.clone();
+    }
     match (base, overrides) {
         (Value::Object(base_obj), Value::Object(override_obj)) => {
             let mut merged = base_obj.clone();
             for (key, override_value) in override_obj {
                 let value = merged
                     .get(key)
-                    .map(|base_value| merge_json(base_value, override_value))
+                    .map(|base_value| merge_json_inner(base_value, override_value, depth + 1))
                     .unwrap_or_else(|| override_value.clone());
                 merged.insert(key.clone(), value);
             }
@@ -124,6 +149,15 @@ impl AlExtension {
                 )
             })?;
 
+        // Defense-in-depth: validate the version string is plain alphanumeric/
+        // dot/hyphen so a malicious or compromised release tag can't produce a
+        // path that escapes the extension's work directory.
+        if !is_safe_version(&release.version) {
+            return Err(format!(
+                "Rejected release version '{}': contains path-unsafe characters",
+                release.version
+            ));
+        }
         let version_dir = format!("al-lsp-{}", release.version);
         let binary_name = match os {
             zed::Os::Windows => "al-lsp.exe",

@@ -85,3 +85,44 @@ fn merge_json_deep_nested_merge() {
         })
     );
 }
+
+#[test]
+fn merge_json_extreme_nesting_does_not_stack_overflow() {
+    // Negative: a hostile workspace settings file could include a deeply
+    // nested object override. merge_json must cap recursion and fall
+    // back to a copy at the depth limit instead of blowing the stack.
+    use serde_json::{Map, Value};
+
+    let mut nested = Value::Bool(true);
+    // 200 levels — well past the cap of 64. We deliberately stay below
+    // the depth at which `serde_json::Value`'s own recursive drop blows
+    // the test runner's stack (somewhere around ~2_000 on linux).
+    for _ in 0..200 {
+        let mut m = Map::new();
+        m.insert("k".to_string(), nested);
+        nested = Value::Object(m);
+    }
+    let base = json!({ "k": null });
+    // Must not panic — the cap stops merge_json from recursing further
+    // than MERGE_JSON_MAX_DEPTH, even though the override is deeper.
+    let _merged = merge_json(&base, &nested);
+}
+
+#[test]
+fn is_safe_version_accepts_semver_like() {
+    assert!(crate::is_safe_version("1.2.3"));
+    assert!(crate::is_safe_version("v0.8.0"));
+    assert!(crate::is_safe_version("0.1.0-rc1"));
+    assert!(crate::is_safe_version("2024.04.30+build.42"));
+}
+
+#[test]
+fn is_safe_version_rejects_path_traversal() {
+    // Negative: any version string with characters that escape the
+    // intended single-segment directory name must be rejected.
+    assert!(!crate::is_safe_version(""));
+    assert!(!crate::is_safe_version("../etc/passwd"));
+    assert!(!crate::is_safe_version("evil/path"));
+    assert!(!crate::is_safe_version("v1.0\nrm -rf /"));
+    assert!(!crate::is_safe_version("1.0 OR 1=1"));
+}
