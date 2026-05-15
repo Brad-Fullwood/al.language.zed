@@ -61,7 +61,6 @@ dependencies = [
  "tree-sitter",
  "url",
  "urlencoding",
- "walkdir",
  "wiremock",
  "zip 2.4.2",
 ]
@@ -93,7 +92,6 @@ dependencies = [
 name = "al-test-harness"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -2871,9 +2869,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.9"
+version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7df23109aa6c1567d1c575b9952556388da57401e4ace1d15f79eedad0d8f53"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -4573,7 +4571,6 @@ dependencies = [
 name = "zed-al"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
  "zed_extension_api",
 ]
