@@ -111,20 +111,21 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
 
     // app.json — propagate serialization error rather than silently writing empty file
     let app_json = generate_app_json(config)?;
-    std::fs::write(dir.join("app.json"), &app_json)
-        .map_err(|e| format!("Failed to write app.json: {e}"))?;
+    atomic_write(&dir.join("app.json"), app_json.as_bytes(), "app.json")?;
     files.push("app.json".to_string());
 
     // .gitignore
     let gitignore = generate_gitignore();
-    std::fs::write(dir.join(".gitignore"), &gitignore)
-        .map_err(|e| format!("Failed to write .gitignore: {e}"))?;
+    atomic_write(&dir.join(".gitignore"), gitignore.as_bytes(), ".gitignore")?;
     files.push(".gitignore".to_string());
 
     // .zed/debug.json — propagate serialization error rather than silently writing empty file
     let debug_json = generate_debug_json()?;
-    std::fs::write(dir.join(".zed/debug.json"), &debug_json)
-        .map_err(|e| format!("Failed to write .zed/debug.json: {e}"))?;
+    atomic_write(
+        &dir.join(".zed/debug.json"),
+        debug_json.as_bytes(),
+        ".zed/debug.json",
+    )?;
     files.push(".zed/debug.json".to_string());
 
     // Template-specific source files
@@ -137,68 +138,107 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
     })
 }
 
+/// Write `content` to `path` atomically.
+///
+/// Writes to a sibling `<file>.<pid>.tmp` then `rename(2)`s into place. On
+/// POSIX, rename is atomic when source and destination are on the same
+/// filesystem (always the case here — the temp is in the same directory).
+/// Replaces `std::fs::write(path, content)` calls that would otherwise
+/// leave a half-written `.al` file on disk after a crash / signal.
+/// F-OPEN-034.
+fn atomic_write(path: &Path, content: &[u8], label: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let pid = std::process::id();
+    let tmp_path = match path.file_name() {
+        Some(n) => path.with_file_name(format!("{}.{pid}.tmp", n.to_string_lossy())),
+        None => return Err(format!("Failed to derive tempfile name for {label}")),
+    };
+
+    let mut file = std::fs::File::create(&tmp_path)
+        .map_err(|e| format!("Failed to open tempfile for {label}: {e}"))?;
+    if let Err(e) = file.write_all(content) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write {label}: {e}"));
+    }
+    if let Err(e) = file.sync_all() {
+        // sync_all failing is non-fatal for correctness — rename is still
+        // atomic, durability after a power loss is the only loss. Log via
+        // tracing so an op can see it, but don't fail the scaffold.
+        tracing::warn!(label, error = %e, "scaffold: sync_all on tempfile failed");
+    }
+    drop(file);
+
+    std::fs::rename(&tmp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("Failed to rename tempfile for {label}: {e}")
+    })
+}
+
 /// Generate template-specific source files, returning their relative paths.
 fn generate_template_files(dir: &Path, config: &ScaffoldConfig) -> Result<Vec<String>, String> {
     match &config.template {
         ProjectTemplate::Default | ProjectTemplate::PerTenantExtension => {
             let starter = generate_starter_codeunit(config);
             let name = "src/HelloWorld.Codeunit.al";
-            std::fs::write(dir.join(name), &starter)
-                .map_err(|e| format!("Failed to write starter codeunit: {e}"))?;
+            atomic_write(&dir.join(name), starter.as_bytes(), "starter codeunit")?;
             Ok(vec![name.to_string()])
         }
         ProjectTemplate::AppSourceApp => {
             let starter = generate_starter_codeunit(config);
             let name = "src/HelloWorld.Codeunit.al";
-            std::fs::write(dir.join(name), &starter)
-                .map_err(|e| format!("Failed to write starter codeunit: {e}"))?;
+            atomic_write(&dir.join(name), starter.as_bytes(), "starter codeunit")?;
             let cop = generate_app_source_cop_json()?;
             let cop_name = "AppSourceCop.json";
-            std::fs::write(dir.join(cop_name), &cop)
-                .map_err(|e| format!("Failed to write AppSourceCop.json: {e}"))?;
+            atomic_write(&dir.join(cop_name), cop.as_bytes(), "AppSourceCop.json")?;
             Ok(vec![name.to_string(), cop_name.to_string()])
         }
         ProjectTemplate::Library => {
             let lib = generate_library_codeunit(config);
             let name = "src/Library.Codeunit.al";
-            std::fs::write(dir.join(name), &lib)
-                .map_err(|e| format!("Failed to write library codeunit: {e}"))?;
+            atomic_write(&dir.join(name), lib.as_bytes(), "library codeunit")?;
             Ok(vec![name.to_string()])
         }
         ProjectTemplate::TestApp => {
             let test = generate_test_codeunit(config);
             let name = "src/Test.Codeunit.al";
-            std::fs::write(dir.join(name), &test)
-                .map_err(|e| format!("Failed to write test codeunit: {e}"))?;
+            atomic_write(&dir.join(name), test.as_bytes(), "test codeunit")?;
             Ok(vec![name.to_string()])
         }
         ProjectTemplate::Copilot => {
             let participant = generate_copilot_codeunit(config);
             let part_name = "src/CopilotParticipant.Codeunit.al";
-            std::fs::write(dir.join(part_name), &participant)
-                .map_err(|e| format!("Failed to write copilot participant: {e}"))?;
+            atomic_write(
+                &dir.join(part_name),
+                participant.as_bytes(),
+                "copilot participant",
+            )?;
             let openai = generate_azure_openai_codeunit(config);
             let ai_name = "src/AzureOpenAI.Codeunit.al";
-            std::fs::write(dir.join(ai_name), &openai)
-                .map_err(|e| format!("Failed to write Azure OpenAI codeunit: {e}"))?;
+            atomic_write(
+                &dir.join(ai_name),
+                openai.as_bytes(),
+                "Azure OpenAI codeunit",
+            )?;
             Ok(vec![part_name.to_string(), ai_name.to_string()])
         }
         ProjectTemplate::Agent => {
             let agent = generate_agent_codeunit(config);
             let agent_name = "src/Agent.Codeunit.al";
-            std::fs::write(dir.join(agent_name), &agent)
-                .map_err(|e| format!("Failed to write agent codeunit: {e}"))?;
+            atomic_write(&dir.join(agent_name), agent.as_bytes(), "agent codeunit")?;
             let handler = generate_agent_job_handler(config);
             let handler_name = "src/AgentJobHandler.Codeunit.al";
-            std::fs::write(dir.join(handler_name), &handler)
-                .map_err(|e| format!("Failed to write agent job handler: {e}"))?;
+            atomic_write(
+                &dir.join(handler_name),
+                handler.as_bytes(),
+                "agent job handler",
+            )?;
             Ok(vec![agent_name.to_string(), handler_name.to_string()])
         }
         ProjectTemplate::Api => {
             let api = generate_api_page(config);
             let name = "src/Api.Page.al";
-            std::fs::write(dir.join(name), &api)
-                .map_err(|e| format!("Failed to write API page: {e}"))?;
+            atomic_write(&dir.join(name), api.as_bytes(), "API page")?;
             Ok(vec![name.to_string()])
         }
     }
@@ -765,5 +805,51 @@ mod tests {
             .files_created
             .iter()
             .any(|f| f == "AppSourceCop.json"));
+    }
+
+    #[test]
+    fn atomic_write_does_not_leave_tempfile_on_success() {
+        // Regression for F-OPEN-034: a successful scaffold must not leave
+        // `<file>.<pid>.tmp` lingering next to the final artefact. The
+        // helper renames atomically, so the tempfile name should not
+        // exist after the call returns.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("foo.al");
+        atomic_write(&target, b"hello", "foo.al").unwrap();
+        assert!(target.exists(), "final file must exist after atomic_write");
+        let pid = std::process::id();
+        let tmp = dir.path().join(format!("foo.al.{pid}.tmp"));
+        assert!(
+            !tmp.exists(),
+            "tempfile {tmp:?} should have been renamed away"
+        );
+        // And the content is exactly what we wrote.
+        let read = std::fs::read(&target).unwrap();
+        assert_eq!(read, b"hello");
+    }
+
+    #[test]
+    fn atomic_write_overwrites_existing_file() {
+        // Positive: a second atomic_write to the same path replaces the
+        // first artefact (matches the previous `std::fs::write` semantics).
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("foo.al");
+        atomic_write(&target, b"v1", "foo.al").unwrap();
+        atomic_write(&target, b"v2", "foo.al").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"v2");
+    }
+
+    #[test]
+    fn atomic_write_returns_err_on_missing_parent() {
+        // Negative: write target with no parent directory must fail
+        // cleanly (Err propagated up), not panic, and must not leave a
+        // tempfile behind.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("no-such-subdir/foo.al");
+        let result = atomic_write(&target, b"hello", "foo.al");
+        assert!(result.is_err(), "expected Err for missing parent dir");
+        let pid = std::process::id();
+        let tmp = dir.path().join(format!("no-such-subdir/foo.al.{pid}.tmp"));
+        assert!(!tmp.exists());
     }
 }
