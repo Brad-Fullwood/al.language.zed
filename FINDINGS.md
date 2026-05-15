@@ -90,3 +90,62 @@ High-signal lints actioned:
 | F-OPEN-003 | P3 | The 3 `unsafe` blocks that the prior exploration flagged in `build_dispatch.rs:3326/3465/3623` are all inside `#[cfg(test)] mod tests`. No production `unsafe` to audit there. |
 | F-OPEN-004 | P3 | `zed_extension_api` is pulled in by branch (`branch = "main"`) — `cargo deny` correctly flags this as a wildcard dependency. Intentional during development; pin to a SHA at release time. |
 
+## Phase B — Targeted Test Gap Fill
+
+The plan's "10 lightly-tested queries" finding was based on counting external test-file references; recounting per-query showed each of those 10 actually has 7-47 inline unit tests covering happy paths. The real gap was **negative / degenerate / malformed input coverage** — a future refactor could quietly delete an early-return guard and the inline tests would still pass.
+
+Added `crates/al-core/tests/queries_adversarial.rs` — **21 tests** exercising every one of the 10 queries with at least one degenerate input:
+- empty workspace
+- workspace with a parse-error file
+- nonexistent symbol / empty query
+- malformed / missing-fields JSON
+- empty baseline vs empty current
+- non-existent and empty filesystem paths
+
+No new bugs surfaced — every query already handled these cases gracefully — but the contract is now pinned to commits, not memory. Workspace test count: 1777 → 1798.
+
+## Phase C — Agentic Audits
+
+Five parallel one-shot audits (Concurrency, WASM Security, Daemon Protocol Robustness, Dep Direction, Panic Surface). Findings verified by direct file reads before fixing — three of the agent claims were false positives.
+
+### Fixed (4 commits)
+
+| ID | Severity | Title |
+|---|---|---|
+| F-FIX-010 | **P0** | `dispatch_tests_run_batch` accepted user-controlled `junitOut`/`coberturaOut` paths and wrote XML wherever they pointed (`build_dispatch.rs:2264-2271`). Added `resolve_output_path_within_project` helper + 5 tests. JSON-RPC INVALID_PARAMS on out-of-bounds. |
+| F-FIX-011 | **P0** | Daemon idle-timeout race (`daemon/mod.rs:165-191`): 60s-poll could fire between `accept()` and the spawned task's first dispatch, shutting down a daemon that just got a fresh connection. Bumped `last_activity` immediately on accept. |
+| F-FIX-012 | P1 | WASM `merge_json` recursive without depth limit (`src/lib.rs:27-42`). Pathological user settings (deeply nested JSON) could stack-overflow the WASM extension. Added depth cap of 64 + regression test at 200 levels. |
+| F-FIX-013 | P1 | WASM GitHub release `version` interpolated into install path without validation (`src/lib.rs:127`). Compromised release tag could escape work dir (`al-lsp-../../tmp/evil/`). Added `is_safe_version` allow-list + 2 tests. |
+
+### Verified clean (no fix needed)
+
+| ID | Topic |
+|---|---|
+| F-CHECK-001 | Dep-direction audit: **PASS**. All `Cargo.toml`s respect the rules. No `lsp_types::*` in `al_core::queries::*` `pub fn` signatures; conversion helpers live in `queries/mod.rs` and the boundary is `crates/al-core/src/server/lsp.rs`. |
+| F-CHECK-002 | DashMap-across-await: clean. (Confirmed by both the earlier exploration and this audit.) |
+| F-CHECK-003 | tower-lsp lock poisoning: `.unwrap_or_else(|e| e.into_inner())` pattern is applied consistently. |
+| F-CHECK-004 | Send/Sync bounds: no `Rc`/`RefCell`/raw-pointer leaks through tokio tasks. |
+| F-CHECK-005 | All `tokio::spawn` tasks retain a `JoinHandle` (`AlServer` holds `diag_task`, `init_task`, `reindex_task`; connection tasks hold a semaphore permit). |
+| F-CHECK-006 | Daemon socket is created mode 0600 in `$XDG_RUNTIME_DIR`. |
+| F-CHECK-007 | Bounded line reads (`read_bounded_line` 64 MB cap) used on both ends; JSON-RPC parse errors return `id=null, code=-32700` instead of crashing. |
+| F-CHECK-008 | The 3 `unsafe` blocks the original exploration flagged in `build_dispatch.rs` are all inside `#[cfg(test)] mod tests` — no production `unsafe` in daemon code. |
+
+### False positives caught
+
+| ID | Where | Why it isn't a bug |
+|---|---|---|
+| F-FP-001 | `resolution.rs:720, 741, 642` byte-slicing (Panic-Surface audit flagged as "HIGH — panics on malformed XML") | All searches are for ASCII delimiters (`>`, `"`), which always sit at UTF-8 char boundaries. `find()` returns `Option<usize>`; the `?` operator handles missing delimiters. There is an explicit `if content_start > end_pos { return None }` guard before the slice. Code is correct. |
+| F-FP-002 | DAP `server`/`browser` argument injection (WASM audit) | `zed::Command` does not invoke a shell, so semicolons/pipes are passed as literal characters to `al-lsp --dap …`, not interpreted. The al-lsp DAP parser also treats them as opaque values. No shell ever sees them. |
+| F-FP-003 | `parse_profile` accepting `[]` | The function correctly requires a `{"nodes": []}` object shape — `[]` returning `Err` is the documented contract. Test fixture in the adversarial-tests file was wrong, not the implementation. |
+
+### Carried forward (medium severity, not fixed this pass)
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-005 | P2 | `workspace::get_or_build_call_graph` holds a write lock for the duration of an expensive build (`block_in_place`, 100-200ms on large workspaces). Concurrent readers are blocked. Refactor to build outside the lock, then store. |
+| F-OPEN-006 | P2 | `std::sync::Mutex` used to collect messages from an OAuth callback (`build_dispatch.rs:935-944`). Currently safe because the callback is synchronous, but a future refactor of `acquire_token` to call the callback from across an await point would deadlock. Document or migrate to `tokio::sync::Mutex`. |
+| F-OPEN-007 | P2 | Some numeric request params (`timeoutMs`, `depth`) are not capped at the daemon boundary. Cap them to sane bounds. |
+| F-OPEN-008 | P2 | TLS / SHA verification on the GitHub release download is delegated to `zed::download_file`. Verify that Zed's API itself pins TLS / verifies; if not, add a hash check. |
+| F-OPEN-009 | P3 | Bulk graph-export responses (`graph`, `deadcode`) serialize into a single `serde_json::Value` before writing — a 100K-symbol workspace could allocate 100MB+ here. Stream or cap. |
+
+
