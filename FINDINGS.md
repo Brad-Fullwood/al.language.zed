@@ -8,6 +8,84 @@ Severity buckets:
 - **P2** — latent bug (unreachable in current code, defensible if reached)
 - **P3** — code quality / housekeeping
 
+---
+
+## Final Rollup
+
+**Pass complete. All five phases banked.**
+
+| Phase | Status | Output |
+|---|---|---|
+| 0 — Baseline | green | numbers re-verified; CI gates clean; 5 fixes |
+| A — Static sweep | green | 3 perf fixes; pedantic clippy mapped; 4 open follow-ups |
+| B — Test gap fill | green | 21 new adversarial tests (`queries_adversarial.rs`) |
+| C — Agentic audits | green | 4 verified P0/P1 bugs fixed; 8 verified-clean checks; 3 false-positives caught; 5 open follow-ups |
+| D — Manual runbook | written | `MANUAL_TEST.md` — fixture-only, ready to execute |
+| E — Triage | this section | — |
+
+### Severity buckets — fixes landed this pass
+
+| Severity | Count | IDs |
+|---|---|---|
+| P0 | 4 | F-FIX-002 (env-var race), F-FIX-003 (4× RUSTSEC), F-FIX-010 (path traversal), F-FIX-011 (idle-timeout race) |
+| P1 | 3 | F-FIX-001 (broken UTF-16 test fixture), F-FIX-012 (merge_json depth), F-FIX-013 (version path sanitization) |
+| P2 | 1 | F-FIX-009 (gitignore shadowing `src/bin/`) |
+| P3 | 5 | F-FIX-004 (unused deps), F-FIX-005 (dead license), F-FIX-006/007/008 (perf nits) |
+| **Total** | **13** | |
+
+### Open follow-ups (carried forward)
+
+These are recorded but **not fixed this pass**. Each is either low-impact, requires a design decision, or needs an environment we don't have right now.
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-001 | P3 | 25 `#[allow(...)]` attrs — most are defensible, none carry a one-line `// Reason:` comment |
+| F-OPEN-002 | P3 | 6 source files >1500 LOC — file splits as follow-up issues |
+| F-OPEN-003 | P3 | `build_dispatch.rs` unsafe blocks confirmed test-only (informational) |
+| F-OPEN-004 | P3 | `zed_extension_api` wildcard git dep — pin to a SHA at release time |
+| F-OPEN-005 | P2 | `get_or_build_call_graph` holds a write lock during expensive build (~100-200ms on large workspaces) |
+| F-OPEN-006 | P2 | OAuth callback uses `std::sync::Mutex` — works today, fragile if `acquire_token` is ever refactored to call across an await |
+| F-OPEN-007 | P2 | Some daemon numeric params (`timeoutMs`, `depth`) lack upper caps |
+| F-OPEN-008 | P2 | GitHub release download TLS/SHA verification delegated to `zed::download_file` — confirm Zed's API pins |
+| F-OPEN-009 | P3 | Bulk graph-export responses allocate into a single `Value` — stream or cap for very large workspaces |
+
+### Final CI gate status
+
+| Gate | Status |
+|---|---|
+| `cargo fmt --all -- --check` | green |
+| `cargo check --workspace --exclude zed-al` | green |
+| `cargo clippy --workspace --exclude zed-al -- -D warnings` | green |
+| `cargo test --workspace --exclude zed-al` | **1803 passed**, 0 failed, 86 ignored (vs 1777 start) |
+| `cargo build -p zed-al --target wasm32-wasip1 --release` | green |
+| `cargo test -p zed-al --target x86_64-unknown-linux-gnu` | 15 passed, 0 failed (WASM extension unit tests on host) |
+| `cargo audit` | 0 advisories (was 4); 2 informational `rand` warnings remain (unsound only with custom logger — we don't install one) |
+| `cargo machete` | 0 unused deps (was 3) |
+| `cargo deny check` | green (1 wildcard warning on `zed_extension_api` — intentional) |
+
+### Commit count this pass
+
+```
+$ git log --oneline 6c06541^..HEAD   # all post-cleanup review/test commits
+```
+
+Roughly 18 commits, grouped per logical fix. One commit per logical change; no WIP commits. Branch is `dev`, 57 commits ahead of `origin/dev` total (including pre-cleanup history).
+
+### Net new tests
+
+| File | Tests |
+|---|---|
+| `crates/al-core/tests/queries_adversarial.rs` (new) | +21 |
+| `crates/al-core/src/server/daemon/build_dispatch.rs` (`output_path_*` group) | +5 |
+| `crates/al-zed-test/src/lib.rs` (env-var race regression — no new tests, existing 4 became reliable) | 0 |
+| `crates/al-test-harness/tests/zed_fidelity.rs` (1 broken test repaired) | 0 |
+| `src/merge_json_test.rs` (new: extreme nesting, is_safe_version pos/neg) | +3 |
+| **Total** | **+29** |
+
+(1777 → 1803 = +26 in workspace test count; 13 host-target zed-al → 15 = +2; one repaired existing test in zed_fidelity not counted as new.)
+
+---
+
 ## Phase 0 — Baseline
 
 ### CI Gates
