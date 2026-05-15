@@ -188,6 +188,26 @@ New audit: scaffold + generators (`crates/al-core/src/{scaffold,generators,permi
 
 Workspace test count: 1836 → 1837. All gates green.
 
+### Iteration 10 (2026-05-16, +270m)
+
+Three commits, two carry-forwards closed, one new audit on symbol index
+producing one P1 fix.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-034 | P3 → fixed | Scaffold `.al` writes now go through `atomic_write` (tempfile + fsync + rename). All 11 write sites in `create_project` + `generate_template_files` use it. 3 regression tests (success no-leak, overwrite, missing-parent Err). |
+| F-OPEN-033 | P3 → fixed | `dispatch_generate` now checks `SymbolIndex::get_by_id(kind, object_id)` before scaffolding and returns INVALID_PARAMS on collision. Per-kind so Page 50100 + Table 50100 still legal. 2 regression tests (same-kind collision, cross-kind no false positive). |
+| F-FIX-020 | **P1** | (New from symbol-index audit.) `read_manifest` didn't strip the UTF-8 BOM from `NavxManifest.xml`. Newer BC versions emit one and quick-xml rejected the file — the whole `.app` was skipped, no symbols surfaced, no obvious cause in logs. Applied the same `strip_utf8_bom` already used for `SymbolReference.json`. One regression test. |
+
+New audit: symbol index + cross-symbol resolution (`crates/al-core/src/symbols/{index,model,app_reader,source_index,virtual_file,composition}.rs` + `resolution.rs`). **Mostly clean** — concurrency well-disciplined (no DashMap-across-await, consistent lowercase keys, fast-paths for completion), zip-slip / zip-bomb / size-cap protections in place, no production panic surfaces, memmap usage justified with mtime staleness checks. Remaining items are P3:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-037 | P3 | `SymbolIndex::add_entries(&[SymbolEntry])` clones every entry before wrapping in `Arc`. `add_entries_owned(Vec<…>)` exists for the move path; migrate any production callers (currently only test code uses `add_entries`). |
+| F-OPEN-038 | P3 | Extension-chain resolution is cycle-safe by structure (no extends walking) — but document the invariant so a future caller doesn't add unchecked recursion. |
+
+Workspace test count: 1837 → 1843. All gates green.
+
 
 
 | Phase | Status | Output |
