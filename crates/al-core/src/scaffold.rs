@@ -361,36 +361,37 @@ fn generate_debug_json() -> Result<String, String> {
 }
 
 fn generate_starter_codeunit(config: &ScaffoldConfig) -> String {
+    let name = crate::permissions::al_escape_name(&config.name);
     format!(
         r#"codeunit 50100 "Hello World"
 {{
     trigger OnRun()
     begin
-        Message('Hello from {}!');
+        Message('Hello from {name}!');
     end;
 }}
-"#,
-        config.name
+"#
     )
 }
 
 fn generate_library_codeunit(config: &ScaffoldConfig) -> String {
+    let name = crate::permissions::al_escape_name(&config.name);
     format!(
-        r#"codeunit 50100 "{} Library"
+        r#"codeunit 50100 "{name} Library"
 {{
     procedure GetVersion(): Text
     begin
         exit('1.0.0.0');
     end;
 }}
-"#,
-        config.name
+"#
     )
 }
 
 fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
+    let name = crate::permissions::al_escape_name(&config.name);
     format!(
-        r#"codeunit 50100 "{} Test"
+        r#"codeunit 50100 "{name} Test"
 {{
     Subtype = Test;
 
@@ -408,14 +409,14 @@ fn generate_test_codeunit(config: &ScaffoldConfig) -> String {
     var
         Assert: Codeunit "Library Assert";
 }}
-"#,
-        config.name
+"#
     )
 }
 
 fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
+    let name = crate::permissions::al_escape_name(&config.name);
     format!(
-        r#"codeunit 50100 "{} Copilot Participant"
+        r#"codeunit 50100 "{name} Copilot Participant"
 {{
     [EventSubscriber(ObjectType::Codeunit, Codeunit::"Copilot Chat", 'OnGenerateCompletion', '', false, false)]
     local procedure OnGenerateCompletion(var Prompt: Text; var Completion: Text)
@@ -443,46 +444,49 @@ fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
         exit(Key);
     end;
 }}
-"#,
-        config.name
+"#
     )
 }
 
 fn generate_azure_openai_codeunit(config: &ScaffoldConfig) -> String {
+    let name = crate::permissions::al_escape_name(&config.name);
+    // The second interpolation is inside a single-quoted AL string literal;
+    // AL escapes single quotes as `''` (not `\'`). Apply the same convention.
+    let single_quoted = config.name.replace('\'', "''");
     format!(
-        r#"codeunit 50101 "{} Azure OpenAI Helper"
+        r#"codeunit 50101 "{name} Azure OpenAI Helper"
 {{
     procedure BuildPrompt(UserQuery: Text): Text
     begin
-        exit(StrSubstNo('You are a helpful assistant for %1. %2', '{}', UserQuery));
+        exit(StrSubstNo('You are a helpful assistant for %1. %2', '{single_quoted}', UserQuery));
     end;
 }}
-"#,
-        config.name, config.name
+"#
     )
 }
 
 fn generate_agent_codeunit(config: &ScaffoldConfig) -> String {
+    let name = crate::permissions::al_escape_name(&config.name);
     format!(
-        r#"codeunit 50100 "{} Agent"
+        r#"codeunit 50100 "{name} Agent"
 {{
     procedure Run(Instructions: Text): Text
     var
-        JobHandler: Codeunit "{} Agent Job Handler";
+        JobHandler: Codeunit "{name} Agent Job Handler";
         Result: Text;
     begin
         JobHandler.Execute(Instructions, Result);
         exit(Result);
     end;
 }}
-"#,
-        config.name, config.name
+"#
     )
 }
 
 fn generate_agent_job_handler(config: &ScaffoldConfig) -> String {
+    let name = crate::permissions::al_escape_name(&config.name);
     format!(
-        r#"codeunit 50101 "{} Agent Job Handler"
+        r#"codeunit 50101 "{name} Agent Job Handler"
 {{
     procedure Execute(Instructions: Text; var Result: Text)
     begin
@@ -491,14 +495,14 @@ fn generate_agent_job_handler(config: &ScaffoldConfig) -> String {
         Result := StrSubstNo('Processed: %1', Instructions);
     end;
 }}
-"#,
-        config.name
+"#
     )
 }
 
 fn generate_api_page(config: &ScaffoldConfig) -> String {
+    let name = crate::permissions::al_escape_name(&config.name);
     format!(
-        r#"page 50100 "{} API"
+        r#"page 50100 "{name} API"
 {{
     PageType = API;
     APIPublisher = 'defaultPublisher';
@@ -534,8 +538,7 @@ fn generate_api_page(config: &ScaffoldConfig) -> String {
         }}
     }}
 }}
-"#,
-        config.name
+"#
     )
 }
 

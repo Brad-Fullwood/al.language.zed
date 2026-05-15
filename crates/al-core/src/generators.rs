@@ -66,7 +66,12 @@ pub fn generate_page(config: &GeneratePageConfig) -> String {
         PageType::Document => "Document",
     };
 
-    let table_name = &config.source_table.name;
+    // Escape user-supplied names that we're about to interpolate into AL
+    // quoted identifiers. Without this, a table whose name contains `"`
+    // (or a page name with an embedded quote from a malformed symbol
+    // index) would generate `"Foo"Bar"` and the page wouldn't parse.
+    let page_name = crate::permissions::al_escape_name(&config.page_name);
+    let table_name = crate::permissions::al_escape_name(&config.source_table.name);
     let fields = collect_normal_fields(&config.source_table.fields);
     let field_lines = generate_field_controls(&fields);
 
@@ -77,10 +82,10 @@ pub fn generate_page(config: &GeneratePageConfig) -> String {
     };
 
     format!(
-        r#"page {id} "{name}"
+        r#"page {id} "{page_name}"
 {{
     PageType = {page_type};
-    SourceTable = "{table}";
+    SourceTable = "{table_name}";
     ApplicationArea = All;
     UsageCategory = Lists;
 
@@ -90,37 +95,34 @@ pub fn generate_page(config: &GeneratePageConfig) -> String {
         {{
             repeater(Group)
             {{
-{fields}
+{field_lines}
             }}
         }}
     }}{actions}}}
 "#,
         id = config.object_id,
-        name = config.page_name,
         page_type = page_type_str,
-        table = table_name,
-        fields = field_lines,
-        actions = actions,
     )
 }
 
 /// Generate an AL report from a table symbol.
 pub fn generate_report(config: &GenerateReportConfig) -> String {
-    let table_name = &config.source_table.name;
+    let report_name = crate::permissions::al_escape_name(&config.report_name);
+    let table_name = crate::permissions::al_escape_name(&config.source_table.name);
     let fields = collect_normal_fields(&config.source_table.fields);
     let column_lines = generate_report_columns(&fields);
 
     format!(
-        r#"report {id} "{name}"
+        r#"report {id} "{report_name}"
 {{
     UsageCategory = ReportsAndAnalysis;
     ApplicationArea = All;
 
     dataset
     {{
-        dataitem("{table_var}"; "{table}")
+        dataitem("{table_var}"; "{table_name}")
         {{
-{columns}
+{column_lines}
         }}
     }}
 
@@ -139,10 +141,7 @@ pub fn generate_report(config: &GenerateReportConfig) -> String {
 }}
 "#,
         id = config.object_id,
-        name = config.report_name,
-        table = table_name,
-        table_var = sanitize_identifier(table_name),
-        columns = column_lines,
+        table_var = sanitize_identifier(&config.source_table.name),
     )
 }
 
@@ -470,5 +469,42 @@ mod tests {
         assert_eq!(al_identifier("No."), "no");
         assert_eq!(al_identifier("Customer Name"), "customerName");
         assert_eq!(al_identifier("Unit of Measure"), "unitOfMeasure");
+    }
+
+    #[test]
+    fn generate_page_escapes_double_quote_in_table_name() {
+        // Negative regression for the scaffold/generators audit: a table
+        // name containing a `"` must be emitted as `""` inside an AL
+        // quoted identifier. Pre-fix, the embedded quote terminated the
+        // identifier early and produced unparseable AL.
+        let table = make_table(r#"Bad"Table"#, vec![make_field(1, "No.", "Code[20]")]);
+        let config = GeneratePageConfig {
+            object_id: 50100,
+            page_name: r#"Demo "Page""#.to_string(),
+            page_type: PageType::List,
+            source_table: table,
+        };
+        let out = generate_page(&config);
+
+        // Both the page name and the table name must have their `"` doubled.
+        assert!(
+            out.contains(r#"page 50100 "Demo ""Page""""#),
+            "page name must escape `\"` → `\"\"`, got:\n{out}"
+        );
+        assert!(
+            out.contains(r#"SourceTable = "Bad""Table";"#),
+            "table name must escape `\"` → `\"\"`, got:\n{out}"
+        );
+        // And no spurious un-escaped quote should remain inside an identifier.
+        // (Doubled-quote `""` is fine; a single bare `"` between the opening
+        // and closing identifier quotes would mean the escape didn't fire.)
+        let in_identifier = out
+            .split('"')
+            .nth(2) // payload between the page-name opening and closing quotes
+            .unwrap_or("");
+        assert!(
+            !in_identifier.contains('"') || in_identifier.is_empty(),
+            "page-name identifier body should contain no bare `\"`"
+        );
     }
 }
