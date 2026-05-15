@@ -283,6 +283,9 @@ fn has_test_attr_child(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
     false
 }
 
+// Eight tree-walk inputs (tree-sitter node, source, workspace, file path,
+// per-file maps for callers / coverage / unresolved, accumulator). Grouping
+// into a struct would not reduce the per-call setup.
 #[allow(clippy::too_many_arguments)]
 fn collect_coverage_from_tree(
     root: tree_sitter::Node,

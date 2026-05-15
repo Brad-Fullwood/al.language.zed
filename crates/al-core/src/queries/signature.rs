@@ -282,6 +282,10 @@ pub fn signature_help(
     None
 }
 
+// All eight parameters (workspace, uri, source bytes, tree, type resolver,
+// builtins, receiver expression node, method name) are inputs the resolver
+// needs per call site. A bundling struct doesn't reduce caller-side
+// complexity; it just adds a layer of indirection.
 #[allow(clippy::too_many_arguments)]
 fn resolve_receiver_signature(
     workspace: &Workspace,

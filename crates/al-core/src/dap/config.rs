@@ -226,6 +226,9 @@ fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std:
 /// Shared constructor: resolve env type + auth, then build a [`DapLaunchConfig`].
 ///
 /// Returns `None` if `environment_type_str` is absent or unrecognised.
+// Every parameter corresponds to a distinct JSON field in launch.json — the
+// shape is dictated externally by VS Code's DAP launch config schema. A
+// struct here would just mirror the schema in less-clear form.
 #[allow(clippy::too_many_arguments)]
 fn build_launch_config(
     name: String,

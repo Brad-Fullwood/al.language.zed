@@ -511,6 +511,10 @@ fn parse_run_trigger_arg(
 /// - `MemberCall` → resolves object against `symbols`, then finds method in `insight`.
 /// - `RecordOp` (run_trigger=true) → resolves variable to table via `var_types`,
 ///   then finds the table's `OnBefore{Op}Event` / `OnAfter{Op}Event` in `insight`.
+// Tree-walk inputs (tree / source / current object) plus three lookup tables
+// (symbols / insight graph / call graph) plus variable-type map plus the
+// procedure node ID. All independent. A bundling struct doesn't shrink the
+// call sites; it just splits the type's lifetime in two.
 #[allow(clippy::too_many_arguments)]
 pub fn populate_call_edges_for_procedure(
     tree: &tree_sitter::Tree,

@@ -405,6 +405,9 @@ fn query_event(
 // ---------------------------------------------------------------------------
 
 /// Recursively trace from a node, collecting events along the way.
+// All arguments are recursion state (graph / call-graph / current node / visited
+// set / filter / accumulator / depth) that flows through every call. Bundling
+// them into a Context struct moves the cognitive load rather than reducing it.
 #[allow(clippy::too_many_arguments)]
 fn trace_from_node(
     node_id: NodeId,

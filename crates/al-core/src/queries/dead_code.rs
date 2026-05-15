@@ -162,6 +162,9 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
 /// sets (lowercased) of every call-site identifier — see `dead_code()` for the
 /// build pass. Membership lookup is O(1), turning the prior per-procedure
 /// `all_files.iter().any(...)` (O(F·N) per procedure) into a hash check.
+// Workspace + file context + four pre-built lookup sets (procedure / table-field
+// / fixed-id / event-subscriber names). Each set is a distinct membership
+// target; bundling into one struct would obscure intent.
 #[allow(clippy::too_many_arguments)]
 fn find_unused_procedures(
     file_path: &str,
