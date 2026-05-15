@@ -38,7 +38,10 @@ fn dead_code_empty_workspace_returns_empty() {
     // produce no findings.
     let ws = Workspace::new();
     let result = dead_code(&ws);
-    assert!(result.is_empty(), "empty workspace should yield no findings");
+    assert!(
+        result.is_empty(),
+        "empty workspace should yield no findings"
+    );
 }
 
 #[test]

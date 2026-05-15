@@ -3331,7 +3331,10 @@ mod p1_5_tests {
             std::path::Path::new("out/junit.xml"),
             project.path(),
         );
-        assert!(resolved.is_some(), "relative path inside project must resolve");
+        assert!(
+            resolved.is_some(),
+            "relative path inside project must resolve"
+        );
     }
 
     #[test]
@@ -3340,7 +3343,10 @@ mod p1_5_tests {
         let project = tempfile::tempdir().unwrap();
         let abs = project.path().canonicalize().unwrap().join("results.xml");
         let resolved = resolve_output_path_within_project(&abs, project.path());
-        assert!(resolved.is_some(), "absolute path inside project must resolve");
+        assert!(
+            resolved.is_some(),
+            "absolute path inside project must resolve"
+        );
     }
 
     #[test]
@@ -3372,11 +3378,12 @@ mod p1_5_tests {
     fn output_path_rejects_absolute_outside_project() {
         // Negative: a totally unrelated absolute path must be rejected.
         let project = tempfile::tempdir().unwrap();
-        let resolved = resolve_output_path_within_project(
-            std::path::Path::new("/etc/hosts"),
-            project.path(),
+        let resolved =
+            resolve_output_path_within_project(std::path::Path::new("/etc/hosts"), project.path());
+        assert!(
+            resolved.is_none(),
+            "absolute outside project must be rejected"
         );
-        assert!(resolved.is_none(), "absolute outside project must be rejected");
     }
 
     // --- dispatch_tests_run_batch --------------------------------------------

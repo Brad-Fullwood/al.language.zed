@@ -29,9 +29,8 @@ const MERGE_JSON_MAX_DEPTH: u32 = 64;
 /// no `/` or `..` segments. An empty string is rejected.
 fn is_safe_version(v: &str) -> bool {
     !v.is_empty()
-        && v.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+')
-        })
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
 }
 
 /// Deep-merge `overrides` into `base`, returning the merged result.
