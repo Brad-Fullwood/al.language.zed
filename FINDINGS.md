@@ -49,6 +49,27 @@ New open follow-ups from the OAuth audit:
 
 Workspace test count: 1806 → 1813. All gates green.
 
+### Iteration 3 (2026-05-15, +60m)
+
+Three commits, two OAuth follow-ups closed, one new audit on native_debug:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-011 | P2 → fixed | `save_cached_token` now writes to `<path>.<pid>.tmp` + fsync + atomic rename. Concurrent readers can no longer observe a half-written cache file. 200×200 hammer test asserts no partial-read events. |
+| F-OPEN-012 | P2 → fixed | New `pub fn invalidate_cached_token(tenant)`. Wired into `bc_server.rs` 401/403 branch so a known-dead token doesn't linger across retries. |
+
+New audit: native_debug / BC REST + SignalR client (`crates/al-core/src/dap/bc_debug.rs` + `native_dap.rs`). One CRITICAL claim verified as a **false positive** (array indexing was already bounds-guarded). Real follow-ups recorded below.
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-014 | P2 | Parallel `setBreakpoints` race (`native_dap.rs:629-705`): two concurrent DAP `setBreakpoints` calls can leave orphaned breakpoints on the BC server. Per-session breakpoint mutex would serialise correctly. |
+| F-OPEN-015 | P3 | 60-second fixed timeout for every BC operation (`bc_debug.rs:626`). Quick steps and deep variable-fetches share the same bound; high-latency networks see legitimate ops time out. Per-op timeouts would help. |
+| F-OPEN-016 | P3 | Hardcoded BC protocol version assumptions (`bc_debug.rs:818, 809`): falls through silently if BC changes the `DebugAdapterConfigurationDone` signature again. A version-detection layer or server-capability probe would surface mismatches loudly. |
+| F-OPEN-017 | P3 | SignalR `mpsc::UnboundedReceiver` for push events (`bc_debug.rs:334`). Documented trade-off ("so Break events are never silently dropped") but a misbehaving server could still OOM the daemon. Replace with a deep-but-bounded channel + explicit overflow policy. |
+| F-FP-004 | (false pos.) | "Array indexing on untrusted server data at `bc_debug.rs:677`" — guarded by `if args.len() >= 3` on the line above. Code is safe. |
+
+Workspace test count: 1813 → 1818. All gates green.
+
 
 
 | Phase | Status | Output |
