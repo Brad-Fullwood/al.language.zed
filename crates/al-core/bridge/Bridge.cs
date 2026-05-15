@@ -16,6 +16,13 @@ namespace AlBridge;
 public static class Bridge
 {
     private static CodeAnalysisBridge? _bridge;
+    /// <summary>
+    /// Captured exception message from the last failed <c>Init</c> attempt,
+    /// returned through <c>HandleRequest</c> so the Rust side has something
+    /// more informative than "code -2" to log. Reset to null on a successful
+    /// init.
+    /// </summary>
+    private static string? _lastInitError;
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -53,10 +60,16 @@ public static class Bridge
 
             var asm = Assembly.LoadFrom(path);
             _bridge = new CodeAnalysisBridge(asm, alExtDir);
+            _lastInitError = null;
             return 0;
         }
-        catch
+        catch (Exception ex)
         {
+            // Capture the exception so HandleRequest can surface it back to
+            // Rust on the next call. Previously the catch was bare and the
+            // caller saw only "code -2", which made remote diagnosis of a
+            // missing CodeAnalysis dependency essentially impossible.
+            _lastInitError = ex.ToString();
             return -2;
         }
     }
@@ -76,9 +89,22 @@ public static class Bridge
             var method = doc.RootElement.GetProperty("method").GetString() ?? "";
             doc.RootElement.TryGetProperty("params", out var prms);
 
+            // Reject calls that arrive before a successful Init. Without this
+            // explicit guard the `_bridge?.Handle*` calls below silently return
+            // null and the caller sees `{ "result": null }` — indistinguishable
+            // from "no results for this query". Surface the original init error
+            // (if any) so the daemon can log a real reason.
+            if (method != "ping" && _bridge is null)
+            {
+                throw new InvalidOperationException(
+                    _lastInitError is null
+                        ? "AlBridge: Init was never called or has not completed."
+                        : $"AlBridge: Init failed previously: {_lastInitError}");
+            }
+
             object? result = method switch
             {
-                "ping" => new { status = "ok" },
+                "ping" => new { status = "ok", initialized = _bridge is not null },
                 "analyze" => _bridge?.HandleAnalyze(prms),
                 "builtins" => _bridge?.HandleBuiltins(),
                 "typeAt" => _bridge?.HandleTypeAt(prms),
