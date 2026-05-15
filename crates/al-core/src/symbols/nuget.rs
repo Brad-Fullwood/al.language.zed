@@ -251,13 +251,7 @@ async fn download(
     // 2. Get version list
     let version_url = format!("{}{}/index.json", base_url, id_lower);
     debug!(url = %version_url, "Fetching version index");
-    let version_index: VersionIndex = client
-        .get(&version_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let version_index: VersionIndex = fetch_metadata_json(client, &version_url).await?;
 
     if version_index.versions.is_empty() {
         return Err(NuGetError::NoVersions(pkg.id.clone()));
@@ -395,13 +389,57 @@ fn parse_version(version: &str) -> (u64, u64, u64, u64) {
     (major, minor, patch, rev)
 }
 
+/// Upper bound for NuGet metadata responses (service index + version list).
+/// These should be a few hundred KB at most for normal feeds; the cap is a
+/// defence against a hostile or misconfigured server streaming gigabytes of
+/// JSON before parser-side truncation kicks in. F-OPEN-018.
+const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024; // 16 MB
+
+/// Fetch a JSON metadata response from `url`, refusing bodies larger than
+/// `MAX_METADATA_BYTES`. Requires a `Content-Length` header so the cap is
+/// enforceable without buffering the whole response first; servers without
+/// one are refused. Same hardening pattern as the package-download path.
+async fn fetch_metadata_json<T: serde::de::DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<T, NuGetError> {
+    let response = client.get(url).send().await?.error_for_status()?;
+    let content_length = response.content_length().ok_or_else(|| {
+        NuGetError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Metadata response from {url} has no Content-Length header — refusing"),
+        ))
+    })?;
+    if content_length > MAX_METADATA_BYTES {
+        return Err(NuGetError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Metadata response from {url} Content-Length {content_length} exceeds \
+                 {MAX_METADATA_BYTES} byte limit — refusing"
+            ),
+        )));
+    }
+    let bytes = response.bytes().await?;
+    if bytes.len() as u64 > MAX_METADATA_BYTES {
+        return Err(NuGetError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Metadata response from {url} body {actual} exceeds {MAX_METADATA_BYTES} \
+                 byte limit — server lied about Content-Length",
+                actual = bytes.len(),
+            ),
+        )));
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 /// Get the PackageBaseAddress URL from the NuGet v3 service index.
 async fn get_package_base_address(
     client: &reqwest::Client,
     index_url: &str,
 ) -> Result<String, NuGetError> {
     debug!(url = %index_url, "Fetching NuGet service index");
-    let index: ServiceIndex = client.get(index_url).send().await?.json().await?;
+    let index: ServiceIndex = fetch_metadata_json(client, index_url).await?;
 
     let base = index
         .resources
@@ -682,5 +720,76 @@ mod tests {
         assert!(app.exists(), ".app file should exist at final path");
 
         let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    // --- fetch_metadata_json (F-OPEN-018) -----------------------------------
+
+    #[derive(Debug, serde::Deserialize)]
+    struct DummyJson {
+        ok: bool,
+    }
+
+    #[tokio::test]
+    async fn fetch_metadata_json_accepts_small_response() {
+        // Positive: a small valid JSON response under the cap deserialises.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", "11")
+                    .set_body_string(r#"{"ok":true}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let v: DummyJson = fetch_metadata_json(&client, &server.uri()).await.unwrap();
+        assert!(v.ok);
+    }
+
+    #[tokio::test]
+    async fn fetch_metadata_json_refuses_missing_content_length() {
+        // Negative: a response with no Content-Length header is refused, so
+        // we never start buffering an unbounded body.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string(r#"{"ok":true}"#)
+                    .insert_header("Transfer-Encoding", "chunked"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let res: Result<DummyJson, NuGetError> = fetch_metadata_json(&client, &server.uri()).await;
+        assert!(
+            res.is_err(),
+            "missing Content-Length must be refused, got Ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_metadata_json_refuses_oversized_content_length() {
+        // Negative: a hostile feed claims an enormous Content-Length — we
+        // refuse before reading the body.
+        let oversize = (MAX_METADATA_BYTES + 1).to_string();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", oversize.as_str())
+                    .set_body_string(r#"{"ok":true}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let res: Result<DummyJson, NuGetError> = fetch_metadata_json(&client, &server.uri()).await;
+        // Either we caught the lie ourselves (NuGetError::Io with "exceeds")
+        // or reqwest noticed the body didn't match the claimed length and
+        // returned a transport error. Both outcomes mean: bogus oversize
+        // Content-Length does NOT result in successfully deserialised JSON.
+        assert!(res.is_err(), "oversized Content-Length must not yield Ok");
     }
 }
