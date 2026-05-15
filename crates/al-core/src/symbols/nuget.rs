@@ -158,6 +158,12 @@ pub struct NuGetClient {
     feeds: Vec<NuGetFeed>,
     /// Cache of service index base addresses keyed by feed index_url.
     base_address_cache: Mutex<HashMap<String, String>>,
+    /// Per-package download mutexes. Two concurrent downloads of the SAME
+    /// package id will serialise on the same `tokio::sync::Mutex`, so the
+    /// second observer hits the on-disk artefact written by the first and
+    /// skips the network round-trip. Downloads of DIFFERENT packages still
+    /// run concurrently up to the `download_all` semaphore. F-OPEN-019.
+    package_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl NuGetClient {
@@ -171,13 +177,33 @@ impl NuGetClient {
             client,
             feeds,
             base_address_cache: Mutex::new(HashMap::new()),
+            package_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Get or create the per-package serialisation mutex for `pkg_id`.
+    fn lock_for(&self, pkg_id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        let key = pkg_id.to_lowercase();
+        let mut map = self.package_locks.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = map.get(&key) {
+            return existing.clone();
+        }
+        let new_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        map.insert(key, new_lock.clone());
+        new_lock
     }
 
     /// Download a single package, trying each feed in order until one succeeds.
     ///
     /// Returns the path to the extracted .app file.
     pub async fn download(&self, pkg: &PackageRef, dest: &Path) -> Result<PathBuf, NuGetError> {
+        // Serialise concurrent downloads of the SAME package id. If two
+        // callers race on `Foo.symbols.<guid>`, only the first hits the
+        // network; the second observes the on-disk artefact written by
+        // the tempfile+rename below and short-circuits.
+        let lock = self.lock_for(&pkg.id);
+        let _serial = lock.lock().await;
+
         let mut last_err = None;
         for feed in &self.feeds {
             match download(&self.client, &self.base_address_cache, feed, pkg, dest).await {
@@ -791,5 +817,60 @@ mod tests {
         // returned a transport error. Both outcomes mean: bogus oversize
         // Content-Length does NOT result in successfully deserialised JSON.
         assert!(res.is_err(), "oversized Content-Length must not yield Ok");
+    }
+
+    // --- per-package serialisation lock (F-OPEN-019) -----------------------
+
+    #[test]
+    fn lock_for_same_id_returns_same_arc() {
+        // Positive: two calls with the same (case-insensitive) id share one
+        // mutex, so concurrent downloads will serialise.
+        let client = NuGetClient::new(vec![]);
+        let a = client.lock_for("Microsoft.Foo.symbols.abc-123");
+        let b = client.lock_for("microsoft.foo.symbols.abc-123");
+        assert!(
+            std::sync::Arc::ptr_eq(&a, &b),
+            "case-insensitive same id should yield same mutex"
+        );
+    }
+
+    #[test]
+    fn lock_for_different_ids_returns_different_arcs() {
+        // Negative: different package ids must NOT share a mutex, or
+        // unrelated downloads would block each other for no reason.
+        let client = NuGetClient::new(vec![]);
+        let a = client.lock_for("Microsoft.Foo");
+        let b = client.lock_for("Microsoft.Bar");
+        assert!(
+            !std::sync::Arc::ptr_eq(&a, &b),
+            "different ids must yield independent mutexes"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_downloads_of_same_package_serialise() {
+        // Hammer: spawn 10 tasks that all hold the lock for the same id
+        // for 5ms each. If the per-package mutex works, they run strictly
+        // sequentially (total >= 50ms) instead of in parallel.
+        let client = std::sync::Arc::new(NuGetClient::new(vec![]));
+        let start = std::time::Instant::now();
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let c = client.clone();
+            handles.push(tokio::spawn(async move {
+                let lock = c.lock_for("Pkg.X");
+                let _g = lock.lock().await;
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }));
+        }
+        for h in handles {
+            h.await.expect("task panicked");
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= std::time::Duration::from_millis(45),
+            "10 × 5ms serial waits should take >= 45ms (got {elapsed:?}) — \
+             if they ran concurrently the mutex isn't serialising"
+        );
     }
 }
