@@ -186,9 +186,7 @@ async fn main() {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
 
-        let alc_path = al_core::toolchain::find_toolchain()
-            .ok()
-            .map(|tc| tc.alc.clone());
+        let alc_path = al_core::toolchain::find_toolchain().ok().map(|tc| tc.alc);
 
         // Initialize a lightweight file index for resolving AL object types + IDs.
         // The DAP server needs this to map file paths to BC's ApplicationObjectIdWrapper.

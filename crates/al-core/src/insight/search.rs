@@ -13,6 +13,7 @@
 //!   Cycle detection prevents infinite loops.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 use petgraph::visit::EdgeRef;
 use petgraph::Direction;
@@ -430,23 +431,25 @@ pub fn export_dot(graph: &InsightGraph) -> String {
         };
         // Escape double-quotes in the label to prevent malformed DOT output.
         let escaped_label = label.replace('"', "\\\"");
-        dot.push_str(&format!(
-            "    n{} [label=\"{}\", shape={}];\n",
-            idx.index(),
-            escaped_label,
-            shape
-        ));
+        writeln!(
+            dot,
+            "    n{} [label=\"{escaped_label}\", shape={shape}];",
+            idx.index()
+        )
+        .expect("writeln to String is infallible");
     }
 
     dot.push('\n');
 
     for edge_ref in graph.graph.edge_references() {
-        dot.push_str(&format!(
-            "    n{} -> n{} [label=\"{}\"];\n",
+        writeln!(
+            dot,
+            "    n{} -> n{} [label=\"{}\"];",
             edge_ref.source().index(),
             edge_ref.target().index(),
             edge_ref.weight()
-        ));
+        )
+        .expect("writeln to String is infallible");
     }
 
     dot.push_str("}\n");

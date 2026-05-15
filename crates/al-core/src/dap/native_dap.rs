@@ -166,7 +166,7 @@ where
         let arguments = msg
             .get("arguments")
             .cloned()
-            .unwrap_or(serde_json::json!({}));
+            .unwrap_or_else(|| serde_json::json!({}));
 
         debug!("DAP request: {command} (seq={request_seq})");
 
