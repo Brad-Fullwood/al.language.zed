@@ -142,6 +142,27 @@ New audit: insight graph subsystem (`crates/al-core/src/insight/{graph,calls,ind
 
 Workspace test count: 1827 → 1828. All gates green.
 
+### Iteration 8 (2026-05-15, +210m)
+
+Two commits, one DAP follow-up closed, one test_engine audit producing
+one immediate **P0/P1 fix** plus follow-ups.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-015 | P3 → fixed | `bc_debug::invoke()` now uses per-target timeouts via `default_invoke_timeout`: step/continue 10 s, IsAlive 5 s, variable inspection 30 s, attach/configDone 120 s, fallback 60 s. 4 regression tests. |
+| F-FIX-018 | **P0** | (New from test_engine audit.) `run_procedure_interp` took a `timeout_dur` argument prefixed with `_` and never used it. Adversarial AL like `while true do x := x + 1;` pinned the daemon's blocking thread until the OS reaped it. Added `DispatchCtx::deadline` + per-iteration check in every loop construct (while/for/foreach/repeat). 3 unit + 1 integration test (5ms deadline against a runaway loop, asserts deadline-exceeded error). |
+
+New audit: AL `test_engine` / interpreter (`crates/al-core/src/test_engine/`, `test_runtime/`). The P0 above was the main finding. Remaining items recorded as carry-forwards:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-029 | P2 | `Value::Array` / `List` / `Dict` / `Blob` are unbounded — `arr := array[1_000_000_000] of Integer;` allocates directly into the daemon heap. Add a per-allocation size cap (or total-bytes-per-test budget). |
+| F-OPEN-030 | P3 | Builtin procedure dispatch in `test_runtime/interpreter/dispatch.rs:113-123` matches against hardcoded AL identifier strings (`"error"`, `"message"`, …). Per CLAUDE.md should derive from `LanguageData`. |
+| F-OPEN-031 | P3 | `MAX_RECURSION_DEPTH = 100` guard is `> ` not `>=` — off-by-one means 101 frames before erroring. Cosmetic. |
+| F-OPEN-032 | P3 | Thread-local state in `stubs::library_random` / `library_variable_storage` leaks between parallel tests on the same thread. Reset on test start. |
+
+Workspace test count: 1828 → 1836. All gates green.
+
 
 
 | Phase | Status | Output |
