@@ -5,6 +5,12 @@ use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
 use super::invalid_params;
 
+/// Upper bound on `node_count + edge_count` for full graph export.
+/// A 100k-symbol workspace can yield 200 MB+ of DOT/JSON; we refuse
+/// to materialise that into a single JSON-RPC response. Clients that
+/// hit the cap should narrow the query (impact / trace) or paginate.
+const MAX_GRAPH_EXPORT_NODES_AND_EDGES: usize = 50_000;
+
 pub(super) fn dispatch_trace(
     workspace: &Workspace,
     id: u64,
@@ -51,6 +57,27 @@ pub(super) fn dispatch_graph_export(
         .and_then(|v| v.as_str())
         .unwrap_or("json");
     let graph = workspace.get_or_build_insight_graph();
+
+    // Refuse to materialise an unbounded graph into one JSON-RPC response.
+    // The whole exported document lives in memory twice (the String/Value
+    // *and* the framed JSON-RPC body), so even a "moderately large"
+    // workspace can OOM the daemon's tokio worker thread.
+    let size = graph.node_count() + graph.edge_count();
+    if size > MAX_GRAPH_EXPORT_NODES_AND_EDGES {
+        return Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!(
+                    "Graph too large to export in one response: {size} nodes+edges \
+                     exceeds cap of {MAX_GRAPH_EXPORT_NODES_AND_EDGES}. \
+                     Use the trace or impact endpoints to narrow the query."
+                ),
+            }),
+            ..Default::default()
+        };
+    }
 
     match format {
         "dot" => {
