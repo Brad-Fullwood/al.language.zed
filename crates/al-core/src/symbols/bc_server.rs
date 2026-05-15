@@ -168,14 +168,24 @@ impl BcServerClient {
                 );
                 Ok(out_path)
             }
-            401 | 403 => Err(BcServerError::AuthenticationFailed {
-                status,
-                // Truncate + scrub: never propagate the full BC error body
-                // (T008 / sec-002). Same helper as bc_client::map_error_response.
-                message: crate::bc_client::sanitize_error_body(
-                    &response.text().await.unwrap_or_default(),
-                ),
-            }),
+            401 | 403 => {
+                // The cached OAuth token (if any) is now known-stale —
+                // either expired or its grant was revoked. Invalidate it
+                // so the next acquire_token call falls through to refresh
+                // → interactive sign-in instead of re-presenting the same
+                // dead token. F-OPEN-012.
+                if let Some(t) = self.tenant.as_deref() {
+                    let _ = crate::symbols::oauth::invalidate_cached_token(t);
+                }
+                Err(BcServerError::AuthenticationFailed {
+                    status,
+                    // Truncate + scrub: never propagate the full BC error body
+                    // (T008 / sec-002). Same helper as bc_client::map_error_response.
+                    message: crate::bc_client::sanitize_error_body(
+                        &response.text().await.unwrap_or_default(),
+                    ),
+                })
+            }
             404 => Err(BcServerError::PackageNotFound {
                 name: dep.name.clone(),
                 version: dep.version.clone(),
