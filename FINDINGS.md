@@ -12,7 +12,21 @@ Severity buckets:
 
 ## Final Rollup
 
-**Pass complete. All five phases banked.**
+**Pass complete. All five phases banked. Open-issue iterations continuing under /loop dynamic mode.**
+
+### Iteration 1 (2026-05-15, post-rollup)
+
+Chewing through the carry-forwards. Three commits landed:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-007 | P2 → fixed | `clamp_timeout_ms` caps `timeoutMs` JSON-RPC param at 1h (`MAX_TIMEOUT_MS = 3_600_000`). Applied to both `dispatch_tests_run_batch` and `dispatch_tests_mutate`. +3 regression tests. |
+| F-OPEN-009 | P3 → fixed | `dispatch_graph_export` refuses to materialise when `node_count + edge_count > 50_000`, returns `INVALID_PARAMS` pointing at narrower trace/impact endpoints. |
+| F-OPEN-001 | P3 → partially | Justified two `#[allow(clippy::*)]` attrs (`inlay_hints::collect_inlay_hints`, `virtual_file::clear_readonly`). Removed one entirely (`build_dispatch.rs` type_complexity → reused `PackageEntry` alias). 22 allows still uncommented. |
+
+Workspace test count: 1803 → 1806. All gates green.
+
+
 
 | Phase | Status | Output |
 |---|---|---|
