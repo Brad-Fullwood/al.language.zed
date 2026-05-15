@@ -14,6 +14,18 @@ use super::{
 const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 const ERR_NO_PROJECT: &str = "No project loaded";
 
+/// Upper bound for `timeoutMs` JSON-RPC params. Anything beyond an hour
+/// is almost certainly a configuration mistake; capping prevents a
+/// hostile or fat-fingered client from pinning the daemon to a
+/// multi-day or 584-year (u64::MAX ms) test run.
+const MAX_TIMEOUT_MS: u64 = 60 * 60 * 1000;
+
+/// Clamp a user-supplied timeout (milliseconds) to a sensible upper
+/// bound. Used by `dispatch_tests_run_batch` and `dispatch_tests_mutate`.
+fn clamp_timeout_ms(t: Option<u64>) -> Option<u64> {
+    t.map(|ms| ms.min(MAX_TIMEOUT_MS))
+}
+
 /// Resolve a user-provided output-file path against `project_root` and reject
 /// anything that escapes it (path traversal). Used for JUnit / Cobertura
 /// output paths in `dispatch_tests_run_batch`, where a malicious or
@@ -2302,7 +2314,7 @@ pub(super) async fn dispatch_tests_run_batch(
         });
     }
     let opts = RunOptions {
-        timeout_ms: params.get("timeoutMs").and_then(|v| v.as_u64()),
+        timeout_ms: clamp_timeout_ms(params.get("timeoutMs").and_then(|v| v.as_u64())),
         parallel: params
             .get("parallel")
             .and_then(|v| v.as_bool())
@@ -2995,11 +3007,12 @@ pub(super) fn dispatch_deps_graph(
         })
         .unwrap_or_default();
 
-    // Build package list from loaded symbols — name, publisher, version, deps
+    // Build package list from loaded symbols — name, publisher, version, deps.
     // Currently we pass the packages list without transitive dependency info;
     // the dep graph will still resolve direct dependencies from app.json.
-    #[allow(clippy::type_complexity)]
-    let packages: Vec<(String, String, String, Vec<(String, String, String)>)> = Vec::new();
+    // Uses the `PackageEntry` alias defined in `queries::deps` so the type
+    // stays in one place if its shape ever changes.
+    let packages: Vec<crate::queries::deps::PackageEntry> = Vec::new();
 
     let graph = crate::queries::deps::build_dependency_graph(&app_json, &packages);
 
@@ -3319,6 +3332,39 @@ mod p1_5_tests {
 
     fn empty_ws() -> Workspace {
         Workspace::new()
+    }
+
+    // --- clamp_timeout_ms ----------------------------------------------------
+
+    #[test]
+    fn clamp_timeout_ms_passes_through_sensible_values() {
+        // Positive: realistic timeouts (a few seconds to a few minutes)
+        // pass through unchanged.
+        assert_eq!(clamp_timeout_ms(Some(0)), Some(0));
+        assert_eq!(clamp_timeout_ms(Some(30_000)), Some(30_000));
+        assert_eq!(clamp_timeout_ms(Some(15 * 60 * 1000)), Some(900_000));
+    }
+
+    #[test]
+    fn clamp_timeout_ms_caps_at_max() {
+        // Negative: a hostile or fat-fingered client could send u64::MAX —
+        // we must cap at the documented upper bound (1 hour) so the
+        // daemon doesn't get pinned to a multi-day test run.
+        let huge = u64::MAX;
+        assert_eq!(clamp_timeout_ms(Some(huge)), Some(MAX_TIMEOUT_MS));
+        // Exactly one tick above the cap also clamps.
+        assert_eq!(
+            clamp_timeout_ms(Some(MAX_TIMEOUT_MS + 1)),
+            Some(MAX_TIMEOUT_MS)
+        );
+        // Exactly the cap is allowed through unchanged.
+        assert_eq!(clamp_timeout_ms(Some(MAX_TIMEOUT_MS)), Some(MAX_TIMEOUT_MS));
+    }
+
+    #[test]
+    fn clamp_timeout_ms_propagates_none() {
+        // None (param omitted entirely) stays None — caller decides the default.
+        assert_eq!(clamp_timeout_ms(None), None);
     }
 
     // --- resolve_output_path_within_project ----------------------------------
@@ -4031,7 +4077,7 @@ pub(super) async fn dispatch_tests_mutate(
         .get("parallel")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let timeout_ms = params.get("timeoutMs").and_then(|v| v.as_u64());
+    let timeout_ms = clamp_timeout_ms(params.get("timeoutMs").and_then(|v| v.as_u64()));
 
     let opts = MutationOptions {
         affected_only: true,
