@@ -163,6 +163,31 @@ New audit: AL `test_engine` / interpreter (`crates/al-core/src/test_engine/`, `t
 
 Workspace test count: 1828 → 1836. All gates green.
 
+### Iteration 9 (2026-05-15, +240m)
+
+Two commits, one carry-forward closed, one new audit on scaffold/generators
+producing one real correctness fix.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-031 | P3 → fixed | Interpreter recursion guard tightened from `>` to `>=` so `MAX_RECURSION_DEPTH = 100` is exact. |
+| F-FIX-019 | **P1** | (New from scaffold/generators audit.) `scaffold::generate_*_codeunit` and `generators::generate_page`/`generate_report` interpolated user-supplied names into AL quoted identifiers without escaping embedded `"`. A name like `Bad"Table` produced `"Bad"Table"` — unparseable AL. Reused `permissions::al_escape_name` (now `pub(crate)`) across 10 generator sites. Single-quoted AL strings get the `''` escape too. Regression test covers both name and table positions. |
+
+| ID | Severity | Title |
+|---|---|---|
+| F-FP-005 | (false pos.) | "Unbounded Value::Array / List / Dict / Blob in interpreter" (F-OPEN-029) — verified: the interpreter has no `array[N] of` allocation syntax yet, and the only growth path (LVS queue) already caps at 25 items. No exploitable surface. |
+
+New audit: scaffold + generators (`crates/al-core/src/{scaffold,generators,permissions}.rs`). One P1 fixed (above); remaining findings recorded as carry-forwards:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-033 | P3 | No object-ID conflict detection — `scaffold codeunit 50100 …` succeeds even if another object already uses 50100 in the workspace. Check the symbol index before writing. |
+| F-OPEN-034 | P3 | `scaffold::create_project` uses `std::fs::write` directly; a crash mid-write leaves a truncated `.al` file. Move to tempfile+rename. |
+| F-OPEN-035 | P3 | No round-trip test that generated `.al` parses back through `tree-sitter-al`. String-content assertions only. |
+| F-OPEN-036 | P3 | `permissions.rs` `writeln!(out, …).unwrap()` on `String` — infallible by Rust's `fmt::Write for String`. Stylistic only; tracked here for hygiene. |
+
+Workspace test count: 1836 → 1837. All gates green.
+
 
 
 | Phase | Status | Output |
