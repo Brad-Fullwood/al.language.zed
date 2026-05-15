@@ -70,6 +70,25 @@ New audit: native_debug / BC REST + SignalR client (`crates/al-core/src/dap/bc_d
 
 Workspace test count: 1813 → 1818. All gates green.
 
+### Iteration 4 (2026-05-15, +90m)
+
+One commit, one carry-forward closed, one new audit on the NuGet client:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-014 | P2 → fixed | `native_dap.rs:setBreakpoints` now holds the `breakpoints` (tokio) mutex across the entire remove → add → store cycle. Two concurrent setBreakpoints calls on the same source no longer leave orphaned breakpoints on the BC server. |
+
+New audit: NuGet client (`crates/al-core/src/symbols/nuget.rs`). **Mostly well-hardened** — ZIP-slip protection, 200 MB cap with `Content-Length` enforcement, atomic tempfile+rename downloads, hardcoded HTTPS feed, HTTPS-only with env-var escape hatch (`AL_LSP_ALLOW_HTTP_FEED`), 4-way concurrent download semaphore. The few remaining gaps are low-severity:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-018 | P3 | Metadata JSON responses (service index, version list) have no `Content-Length` cap. A misbehaving feed could stream gigabytes before parser-side truncation kicks in. |
+| F-OPEN-019 | P3 | No per-package mutex for concurrent downloads. Two workspace loads racing to download the same `.nupkg` would each create their own tempfile (no corruption) but the second rename could clobber the first. |
+| F-OPEN-020 | P3 | `http_auth.rs` exports `danger_accept_invalid_certs` — design smell. Currently unused by NuGet but the helper exists. Inline at callers instead. |
+| F-OPEN-021 | P3 | NuGet client doesn't propagate 401/403 to `oauth::invalidate_cached_token` (F-OPEN-012). The public BC feed is unauthenticated so this is theoretical, but if anyone wires an authenticated feed in the future the cached token will linger. |
+
+Workspace test count: 1818 (unchanged; setBreakpoints fix is concurrency, not feature). All gates green.
+
 
 
 | Phase | Status | Output |
