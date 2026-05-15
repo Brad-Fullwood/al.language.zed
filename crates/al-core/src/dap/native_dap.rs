@@ -653,12 +653,17 @@ where
                         let obj_type = obj.object_type;
                         let obj_id = obj.object_id;
 
-                        // Collect old breakpoint IDs under the breakpoints lock, then
-                        // drop the lock before awaiting (remove_breakpoint is async).
-                        let old_ids: Vec<i64> = {
-                            let mut bps = breakpoints.lock().await;
-                            bps.remove(&source_path).unwrap_or_default()
-                        };
+                        // Hold the breakpoints lock for the ENTIRE remove → add → store
+                        // cycle so two concurrent setBreakpoints calls on the same
+                        // source_path serialise correctly. Without this hold-across-
+                        // await (tokio::sync::Mutex makes that safe), both callers
+                        // would read the same `old_ids`, both remove the same set on
+                        // BC, both add fresh breakpoints, and one caller's `new_ids`
+                        // would overwrite the other in the map — leaving the BC
+                        // server's bp set as the union of both adds but the local map
+                        // tracking only one half, orphaning the rest. F-OPEN-014.
+                        let mut bps = breakpoints.lock().await;
+                        let old_ids: Vec<i64> = bps.remove(&source_path).unwrap_or_default();
                         for id in old_ids {
                             if let Err(e) = s.remove_breakpoint(id).await {
                                 tracing::warn!(
@@ -699,10 +704,8 @@ where
                                 }
                             }
                         }
-                        breakpoints
-                            .lock()
-                            .await
-                            .insert(source_path.clone(), new_ids);
+                        bps.insert(source_path.clone(), new_ids);
+                        drop(bps);
                     } else {
                         for bp in &bp_requests {
                             let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
