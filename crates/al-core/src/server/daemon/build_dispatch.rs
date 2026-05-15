@@ -2843,6 +2843,32 @@ pub(super) fn dispatch_generate(
     let object_id = params.get("id").and_then(|v| v.as_i64()).unwrap_or(50100) as i32;
     let table_name = params.get("table").and_then(|v| v.as_str()).unwrap_or("");
 
+    // Object-ID conflict check (F-OPEN-033). The default of 50100 makes it
+    // very easy for users to generate code that collides with an existing
+    // object in the workspace. Refuse with a clear error so the offending
+    // ID surfaces at generate time instead of at compile time. The check
+    // is scoped to the same object kind — a Page 50100 and Table 50100 can
+    // legitimately coexist in BC's ID space.
+    let target_kind = match kind {
+        "page" => Some(crate::symbols::ObjectKind::Page),
+        "report" => Some(crate::symbols::ObjectKind::Report),
+        "test" => Some(crate::symbols::ObjectKind::Codeunit),
+        _ => None,
+    };
+    if let Some(target_kind) = target_kind {
+        let collisions = workspace.symbols.get_by_id(target_kind, object_id);
+        if let Some(existing) = collisions.first() {
+            return rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!(
+                    "Object ID {object_id} ({kind}) already in use by '{}' — pass a different `id` to scaffold",
+                    existing.name
+                ),
+            );
+        }
+    }
+
     // Resolve the source table symbol from the workspace symbol index.
     let table_entry = if !table_name.is_empty() {
         workspace
@@ -3437,6 +3463,79 @@ mod p1_5_tests {
             resolved.is_none(),
             "absolute outside project must be rejected"
         );
+    }
+
+    // --- dispatch_generate (F-OPEN-033) --------------------------------------
+
+    #[test]
+    fn dispatch_generate_rejects_object_id_collision() {
+        // Negative regression: an existing Page with id 50100 must cause
+        // a generate request for kind=page, id=50100 to fail with a
+        // structured INVALID_PARAMS error mentioning the colliding name.
+        let ws = empty_ws();
+        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Page,
+            id: 50100,
+            name: "Existing Page".to_string(),
+            ..Default::default()
+        }]);
+
+        let resp = dispatch_generate(
+            &ws,
+            42,
+            &serde_json::json!({
+                "kind": "page",
+                "id": 50100,
+                "name": "Demo",
+                "table": "Customer"
+            }),
+        );
+
+        let err = resp.error.expect("expected error response on collision");
+        assert_eq!(err.code, al_protocol::jsonrpc::error_codes::INVALID_PARAMS);
+        assert!(
+            err.message.contains("50100") && err.message.contains("Existing Page"),
+            "error must mention the colliding id and existing name: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn dispatch_generate_allows_same_id_across_kinds() {
+        // Positive: BC's object-id space is per-kind. A Page 50100 must
+        // NOT block a Table 50100 (or here, a Codeunit 50100 — `test`
+        // generates a Codeunit, which is what `target_kind` resolves to).
+        // We can't fully exercise the success path without a workspace
+        // root, but we can verify the collision check doesn't fire when
+        // the ID is occupied by a *different* kind.
+        let ws = empty_ws();
+        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Table,
+            id: 50100,
+            name: "Existing Table".to_string(),
+            ..Default::default()
+        }]);
+
+        let resp = dispatch_generate(
+            &ws,
+            43,
+            &serde_json::json!({
+                "kind": "test",
+                "id": 50100,
+                "name": "Demo"
+            }),
+        );
+
+        // If the collision check fired wrongly it'd carry the "already in use"
+        // string. The success / table-not-found path won't.
+        match resp.error {
+            Some(e) => assert!(
+                !e.message.contains("already in use"),
+                "must NOT report a Codeunit/Table cross-kind collision: {}",
+                e.message
+            ),
+            None => {} // also acceptable
+        }
     }
 
     // --- dispatch_tests_run_batch --------------------------------------------
