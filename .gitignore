@@ -5,9 +5,12 @@
 /grammars/
 .alpackages/
 
-# .NET build artifacts
-**/obj/
-**/bin/
+# .NET build artifacts (scope to dotnet/ and bridge/ subdirs so Rust
+# `src/bin/` directories aren't accidentally ignored)
+crates/*/dotnet/**/obj/
+crates/*/dotnet/**/bin/
+crates/*/bridge/obj/
+crates/*/bridge/bin/
 
 # Claude Code automation state (local)
 .claude/
