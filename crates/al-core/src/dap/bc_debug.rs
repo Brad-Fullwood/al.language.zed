@@ -350,6 +350,42 @@ pub struct BcDebugSession {
     break_event_rx: Mutex<mpsc::UnboundedReceiver<bool>>,
 }
 
+/// Per-operation timeout for SignalR `invoke()` calls. Different debug-hub
+/// targets have wildly different latency budgets:
+///
+/// - quick step/continue control flow → a few seconds is plenty
+/// - stack/variable inspection → can be slow on deep AL records
+/// - attach / disconnect / publish → cover network setup + server-side work
+///
+/// A blanket 60 s timeout (the prior default) was too short for slow-network
+/// attach flows and too long for the user to notice that "Step Over" was
+/// silently stuck. F-OPEN-015.
+fn default_invoke_timeout(target: &str) -> tokio::time::Duration {
+    use tokio::time::Duration;
+    match target {
+        // Step / continue / break — should respond within a couple of seconds
+        // on a healthy server. Short timeout so a hung server fails fast.
+        "Next" | "StepIn" | "StepOut" | "Continue" | "Break" => Duration::from_secs(10),
+        // Connection ping. Should be very fast.
+        "IsAlive" => Duration::from_secs(5),
+        // Variable inspection / stack frames — can be slow on deep records
+        // (BC's GetVariables walks the record graph server-side).
+        "GetVariables" | "GetStackTrace" | "ExpandGlobals" | "ExpandVariableTree"
+        | "ExpandLocalsTree" | "GetSource" => Duration::from_secs(30),
+        // Attach / DebugAdapterConfigurationDone — network setup. Allow a
+        // longer budget for high-latency BC SaaS connections.
+        "Attach" | "DebugAdapterConfigurationDone" => Duration::from_secs(120),
+        // Breakpoint operations — usually fast but can serialize behind a
+        // BC compilation step.
+        "AddBreakpoint" | "RemoveBreakpoint" | "SetBreakpointResponse" => Duration::from_secs(30),
+        // Teardown — should be quick; if it isn't, we abandon and tear down
+        // the WS connection anyway.
+        "StopDebugging" | "TerminateSession" => Duration::from_secs(10),
+        // Unknown / future targets — fall back to the previous global value.
+        _ => Duration::from_secs(60),
+    }
+}
+
 impl BcDebugSession {
     /// Connect to the BC debug hub via SignalR WebSocket.
     pub async fn connect(config: &BcDebugConfig, access_token: &str) -> Result<Self> {
@@ -598,6 +634,16 @@ impl BcDebugSession {
         target: &str,
         arguments: Vec<serde_json::Value>,
     ) -> Result<Option<serde_json::Value>> {
+        self.invoke_with_timeout(target, arguments, default_invoke_timeout(target))
+            .await
+    }
+
+    async fn invoke_with_timeout(
+        &self,
+        target: &str,
+        arguments: Vec<serde_json::Value>,
+        timeout: tokio::time::Duration,
+    ) -> Result<Option<serde_json::Value>> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
 
         let msg = serde_json::json!({
@@ -610,7 +656,7 @@ impl BcDebugSession {
         // Log only the invocation target at INFO. The argument payload
         // can include breakpoint paths, attach metadata and other
         // potentially sensitive content; keep it at DEBUG.
-        info!("SignalR invoke: {target}");
+        info!("SignalR invoke: {target} (timeout {}s)", timeout.as_secs());
         debug!(
             target = %target,
             args = %serde_json::to_string(&arguments).unwrap_or_default(),
@@ -623,7 +669,6 @@ impl BcDebugSession {
 
         // Wait for completion with matching invocation ID
         let mut rx = self.event_rx.lock().await;
-        let timeout = tokio::time::Duration::from_secs(60);
         let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
@@ -1113,6 +1158,58 @@ fn redact_connection_token(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- default_invoke_timeout (F-OPEN-015) ---------------------------------
+
+    #[test]
+    fn invoke_timeout_step_ops_are_short() {
+        // Positive: step / continue / break should respond within seconds;
+        // they get a short timeout so a hung server fails fast and the user
+        // notices instead of waiting a full minute.
+        for target in ["Next", "StepIn", "StepOut", "Continue", "Break"] {
+            let t = default_invoke_timeout(target);
+            assert!(
+                t <= tokio::time::Duration::from_secs(15),
+                "{target} timeout {t:?} should be ≤ 15s"
+            );
+        }
+    }
+
+    #[test]
+    fn invoke_timeout_variable_inspection_is_medium() {
+        // Positive: variable / stack-frame inspection can be slow on deep
+        // BC records but shouldn't take more than ~30s either.
+        for target in ["GetVariables", "GetStackTrace", "ExpandGlobals"] {
+            let t = default_invoke_timeout(target);
+            assert!(
+                t >= tokio::time::Duration::from_secs(15)
+                    && t <= tokio::time::Duration::from_secs(60),
+                "{target} timeout {t:?} should be in [15s, 60s]"
+            );
+        }
+    }
+
+    #[test]
+    fn invoke_timeout_attach_is_generous() {
+        // Positive: attach / DebugAdapterConfigurationDone include network
+        // setup against potentially-slow BC SaaS endpoints; need budget.
+        for target in ["Attach", "DebugAdapterConfigurationDone"] {
+            let t = default_invoke_timeout(target);
+            assert!(
+                t >= tokio::time::Duration::from_secs(60),
+                "{target} timeout {t:?} should be ≥ 60s for SaaS latency headroom"
+            );
+        }
+    }
+
+    #[test]
+    fn invoke_timeout_unknown_target_falls_back_to_60s() {
+        // Negative: an unrecognised target (future BC protocol additions, or
+        // a typo in our code) must still produce a finite, reasonable
+        // default rather than panic or return zero.
+        let t = default_invoke_timeout("SomeFutureUnknownTarget");
+        assert_eq!(t, tokio::time::Duration::from_secs(60));
+    }
 
     #[test]
     fn redact_connection_token_replaces_field() {
