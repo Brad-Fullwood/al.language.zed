@@ -128,7 +128,14 @@ fn read_manifest(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<NavxManifest
     // 1 MB limit guards against decompression bombs in the manifest.
     file.take(1_048_576).read_to_end(&mut xml_bytes)?;
 
-    Ok(manifest::parse_manifest(&xml_bytes)?)
+    // BC's `.app` toolchain inconsistently emits a UTF-8 BOM in the
+    // manifest XML (consistent only in SymbolReference.json). When present,
+    // the BOM appears as bytes before `<?xml ?>` and quick-xml rejects the
+    // file with a "characters before XML declaration" error. Strip it so
+    // both BC versions parse identically. F-OPEN-(symbol-index-audit-3).
+    let xml_slice = strip_utf8_bom(&xml_bytes);
+
+    Ok(manifest::parse_manifest(xml_slice)?)
 }
 
 /// Extract and parse SymbolReference.json from the ZIP archive.
@@ -383,5 +390,22 @@ mod tests {
         let err = read_app_bytes(&data).unwrap_err();
 
         assert!(matches!(err, AppReaderError::Json(_)));
+    }
+
+    #[test]
+    fn manifest_with_utf8_bom_is_parsed() {
+        // Regression for F-OPEN-(symbol-index-audit-3): BC's .app toolchain
+        // sometimes emits a UTF-8 BOM in NavxManifest.xml (consistent only
+        // in SymbolReference.json). Without stripping, quick-xml rejects
+        // the file. Verify both BOM-prefixed and BOM-less manifests parse
+        // to the same metadata.
+        let mut bommed = vec![0xEF, 0xBB, 0xBF];
+        bommed.extend_from_slice(test_manifest().as_bytes());
+        let bommed_xml = String::from_utf8(bommed).unwrap();
+
+        let data = make_test_app(&bommed_xml, &test_symbols());
+        let pkg = read_app_bytes(&data).expect("BOM-prefixed manifest must parse");
+        assert_eq!(pkg.name, "Test App");
+        assert_eq!(pkg.publisher, "Test Publisher");
     }
 }
