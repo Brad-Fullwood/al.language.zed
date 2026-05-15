@@ -668,22 +668,31 @@ mod scale_duration_tests {
         );
     }
 
-    /// Tiny RAII helper — env vars are process-global so we restore on drop.
+    /// Tiny RAII helper — env vars are process-global so we restore on drop
+    /// AND hold a module-wide mutex so cargo's parallel test runner can't
+    /// race two `EnvGuard`s on the same key.
+    static ENV_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     struct EnvGuard {
         key: &'static str,
         prev: Option<String>,
+        // Order matters: `_lock` is dropped after `key`/`prev` are used in
+        // `Drop::drop`, releasing the mutex only after env state is restored.
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
     impl EnvGuard {
         fn set(key: &'static str, val: &str) -> Self {
+            let _lock = ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
             let prev = std::env::var(key).ok();
-            // SAFETY: tests in this module run serially via a Mutex below.
+            // SAFETY: ENV_SERIAL serialises every set/unset/Drop in this module.
             unsafe { std::env::set_var(key, val) };
-            EnvGuard { key, prev }
+            EnvGuard { key, prev, _lock }
         }
         fn unset(key: &'static str) -> Self {
+            let _lock = ENV_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
             let prev = std::env::var(key).ok();
             unsafe { std::env::remove_var(key) };
-            EnvGuard { key, prev }
+            EnvGuard { key, prev, _lock }
         }
     }
     impl Drop for EnvGuard {
