@@ -77,6 +77,12 @@ pub fn get_or_create(entry: &SymbolEntry, app_path: Option<&Path>) -> std::io::R
 /// `remove_file` will simply fail and the stale entry will linger.
 fn clear_readonly(path: &Path) -> std::io::Result<()> {
     let mut perms = fs::metadata(path)?.permissions();
+    // Clippy warns about the platform-portability footgun of calling
+    // `set_readonly(false)` — on unix it sets mode 0o666 rather than
+    // restoring the original mode. That is precisely the behaviour we
+    // want here: a cached virtual file we are about to delete, where
+    // any writable mode is fine and we don't care about preserving
+    // umask-specific bits.
     #[allow(clippy::permissions_set_readonly_false)]
     perms.set_readonly(false);
     fs::set_permissions(path, perms)
