@@ -269,6 +269,60 @@ fn test_get_or_build_insight_graph_uses_double_checked_locking() {
     );
 }
 
+/// Pins the build-coordination-mutex pattern for `get_or_build_call_graph`.
+/// The call-graph build is expensive enough (>100 ms on real workspaces)
+/// that we deliberately do NOT hold the `call_graph` write lock during the
+/// build — we serialise concurrent builds on a separate `call_graph_build_lock`
+/// mutex while leaving the data lock available to readers throughout. If
+/// someone "simplifies" by inlining the build back inside the call_graph
+/// write lock, every concurrent reader during a workspace warmup will block
+/// for the full build duration. This test exists to make that regression
+/// surface immediately.
+#[test]
+fn test_get_or_build_call_graph_uses_build_coordination_mutex() {
+    let source = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/workspace.rs"))
+        .expect("failed to read workspace.rs");
+
+    // The dedicated build-coordination lock field must exist.
+    assert!(
+        source.contains("call_graph_build_lock"),
+        "Workspace must declare a separate `call_graph_build_lock: Mutex<()>` \
+         so the expensive build runs without holding the call_graph data lock."
+    );
+
+    // Within the function body, the build closure must be invoked while the
+    // build_lock is held but BEFORE the `call_graph.write()` brief-swap. The
+    // order we check is: `call_graph_build_lock.lock()` → `build()` (or
+    // `block_in_place(build)`) → `self.call_graph.write()`.
+    let fn_pos = source
+        .find("fn get_or_build_call_graph")
+        .expect("could not find get_or_build_call_graph");
+    let window_end = (fn_pos + 4000).min(source.len());
+    let window = &source[fn_pos..window_end];
+
+    let build_lock_pos = window
+        .find("call_graph_build_lock")
+        .expect("get_or_build_call_graph must acquire call_graph_build_lock");
+    let block_in_place_pos = window
+        .find("block_in_place")
+        .expect("the build must be wrapped in block_in_place under multi-thread runtime");
+    // The last `call_graph.write()` is the brief-swap that stores the result.
+    let cg_write_pos = window
+        .rfind("call_graph.write()")
+        .expect("get_or_build_call_graph must take a brief call_graph.write() to store");
+
+    assert!(
+        build_lock_pos < block_in_place_pos,
+        "call_graph_build_lock must be acquired BEFORE the build runs."
+    );
+    assert!(
+        block_in_place_pos < cg_write_pos,
+        "the build must run BEFORE the call_graph write lock is taken — \
+         if you see this fail, someone moved the build back inside the data lock \
+         and every concurrent reader will block for the full build."
+    );
+}
+
 /// Reproduces: 2e506b918924b167 — `register_procedures_from_tree` in
 /// `insight/calls.rs` was a self-recursive tree-sitter walker. Same risk
 /// as collect_call_sites_from_block: must be iterative.

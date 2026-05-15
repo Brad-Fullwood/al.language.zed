@@ -92,6 +92,12 @@ pub struct Workspace {
     /// Cached call graph. Built lazily after insight graph; invalidated with it.
     /// Private — access via `get_or_build_call_graph()` only (T005).
     call_graph: std::sync::RwLock<Option<CallGraph>>,
+    /// Serialises concurrent call-graph builds so two callers can't waste CPU
+    /// running the (100-200ms) build twice. *Not* the data lock — readers and
+    /// the build itself don't take this; only the slow-path build acquires it.
+    /// Without this, the slow path would have to hold the `call_graph` write
+    /// lock for the whole build, blocking every reader during initial warmup.
+    call_graph_build_lock: std::sync::Mutex<()>,
     /// Active profiler session loaded from a `.alcpuprofile` file.
     ///
     /// When a profile is loaded the hints are stored here so that `code_lens`
@@ -135,6 +141,7 @@ impl Workspace {
             notify_sink: std::sync::OnceLock::new(),
             insight_graph: std::sync::RwLock::new(None),
             call_graph: std::sync::RwLock::new(None),
+            call_graph_build_lock: std::sync::Mutex::new(()),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
             last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
@@ -167,9 +174,13 @@ impl Workspace {
             }
         }
         // Slow path: acquire the write lock, then re-check (double-checked
-        // locking). Mirrors `get_or_build_call_graph`. Without DCL, N
-        // concurrent first-callers each independently build a 50–200 ms graph
-        // and discard all but the first — wasted CPU on cold cache.
+        // locking). Without DCL, N concurrent first-callers each independently
+        // build a 50–200 ms graph and discard all but the first — wasted CPU
+        // on cold cache. The build runs INSIDE this write lock because the
+        // graph build is short enough (≤200 ms) that holding the data lock
+        // is cheaper than introducing a separate build-coordination mutex.
+        // `get_or_build_call_graph` uses the build-coordination-mutex pattern
+        // because its build is longer and includes this build internally.
         // Recover from a poisoned lock via `into_inner` so a panic inside an
         // earlier build does not permanently freeze the cache.
         let mut guard = self
@@ -227,11 +238,11 @@ impl Workspace {
     /// before building, and re-checked inside the lock so at most one build runs.
     ///
     /// **Lock ordering invariant:** This function takes locks in the order
-    /// `call_graph` → `insight_graph` (fast path holds a `call_graph` read guard
-    /// while calling `get_or_build_insight_graph`, slow path holds a `call_graph`
-    /// write guard during the entire build before touching `insight_graph`).
-    /// Any new code that touches both locks MUST follow this ordering or the
-    /// daemon can deadlock.
+    /// `call_graph_build_lock` → `insight_graph` (write, brief) → `call_graph`
+    /// (write, brief). The expensive build itself runs while holding ONLY
+    /// the build coordination mutex — no readers are blocked during the
+    /// 100-200ms build pass. Any new code that touches the data locks MUST
+    /// follow that ordering or the daemon can deadlock.
     pub fn get_or_build_call_graph(
         &self,
     ) -> (
@@ -247,14 +258,22 @@ impl Workspace {
             }
         }
 
-        // Slow path: acquire the write lock, then re-check (double-checked locking).
-        // A concurrent caller may have built and stored the graph while we waited.
-        let mut write_guard = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
-        if write_guard.is_some() {
-            drop(write_guard);
-            let insight = self.get_or_build_insight_graph();
-            let guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
-            return (insight, guard);
+        // Slow path: serialise concurrent builds on a *separate* mutex —
+        // the data lock stays available to readers for the whole build.
+        // Double-checked locking guards against the case where another
+        // caller built the graph while we waited for the build mutex.
+        let _build_lock = self
+            .call_graph_build_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        {
+            let cg_guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
+            if cg_guard.is_some() {
+                drop(cg_guard);
+                let insight = self.get_or_build_insight_graph();
+                let guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
+                return (insight, guard);
+            }
         }
 
         // Build enriched InsightGraph + CallGraph. This is a CPU-intensive
@@ -264,6 +283,10 @@ impl Workspace {
         // hover-followups) keep responding while the build runs. Guarded
         // by try_handle + flavor check because block_in_place panics on
         // current_thread runtimes (e.g. CLI tests).
+        //
+        // Important: no read/write guard on `call_graph` or `insight_graph`
+        // is held across this build. Readers see the previous (or symbol-
+        // only) graph until the swap below.
         let build = || {
             let mut graph = InsightGraph::new();
             graph.build_from_index(&self.symbols);
@@ -291,18 +314,21 @@ impl Workspace {
             _ => build(),
         };
 
-        // Cache the enriched InsightGraph (replaces symbol-only version).
-        // Recover from poisoned lock so the enriched graph is not silently
-        // discarded after a prior panic in a build path.
-        let mut ig_guard = self
-            .insight_graph
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        *ig_guard = Some(Arc::clone(&insight));
-        drop(ig_guard);
-
-        *write_guard = Some(cg);
-        drop(write_guard);
+        // Atomic-ish swap: take each write lock just long enough to store the
+        // built artefact, then release before re-acquiring the call_graph
+        // read guard the function returns. Recover from poison so a panic
+        // earlier in the daemon's lifetime can't silently discard the build.
+        {
+            let mut ig_guard = self
+                .insight_graph
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            *ig_guard = Some(Arc::clone(&insight));
+        }
+        {
+            let mut cg_guard = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
+            *cg_guard = Some(cg);
+        }
 
         let guard = self.call_graph.read().unwrap_or_else(|e| e.into_inner());
         (insight, guard)
