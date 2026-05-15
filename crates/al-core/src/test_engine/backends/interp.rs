@@ -278,7 +278,7 @@ fn run_procedure_interp(
     cu: Option<&TestCodeunit>,
     codeunit_name: &str,
     proc_name: &str,
-    _timeout_dur: Duration,
+    timeout_dur: Duration,
 ) -> Eval {
     let cu = match cu {
         Some(c) => c,
@@ -321,11 +321,16 @@ fn run_procedure_interp(
     stack.push(frame);
 
     let ws_arc = workspace_to_arc_workaround(workspace);
+    // F-OPEN-015b: thread the timeout down to the interpreter so a runaway
+    // `while true do …` test fails with a clear "deadline exceeded" error
+    // instead of pinning the spawned blocking thread until the daemon
+    // shuts down.
     let mut ctx = DispatchCtx {
         workspace: ws_arc,
         records: HashMap::new(),
         mode: DispatchMode::PureLogic,
         recursion_depth: 0,
+        deadline: Some(std::time::Instant::now() + timeout_dur),
     };
 
     eval_stmt(body, source, &mut stack, &mut ctx)

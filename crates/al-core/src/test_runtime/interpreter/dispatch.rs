@@ -53,6 +53,12 @@ pub struct DispatchCtx {
     /// Current call depth — incremented on each workspace-procedure call and
     /// decremented on return. Capped at `MAX_RECURSION_DEPTH`.
     pub recursion_depth: usize,
+    /// Optional wall-clock deadline for this dispatch. `eval_stmt` loop
+    /// constructs (while / repeat / for) check this on every iteration so
+    /// an adversarial `while true do …` test can't pin the daemon thread
+    /// past the configured per-test budget. `None` means "no deadline" —
+    /// used by unit-test paths that need full determinism. F-OPEN-015b.
+    pub deadline: Option<std::time::Instant>,
 }
 
 impl DispatchCtx {
@@ -63,6 +69,7 @@ impl DispatchCtx {
             records: HashMap::new(),
             mode: DispatchMode::PureLogic,
             recursion_depth: 0,
+            deadline: None,
         }
     }
 
@@ -73,6 +80,16 @@ impl DispatchCtx {
             records,
             mode: DispatchMode::WithRecords,
             recursion_depth: 0,
+            deadline: None,
+        }
+    }
+
+    /// True when a deadline has been set and has now passed. Cheap to call
+    /// in a hot loop (Instant comparison is monotonic-clock arithmetic).
+    pub fn deadline_exceeded(&self) -> bool {
+        match self.deadline {
+            Some(d) => std::time::Instant::now() >= d,
+            None => false,
         }
     }
 }
@@ -1031,5 +1048,31 @@ mod tests {
             "expected 'recursion depth exceeded' in error, got: {}",
             e.message
         );
+    }
+
+    #[test]
+    fn deadline_exceeded_returns_false_when_unset() {
+        // Positive: no deadline → never expired. Used by unit-test paths.
+        let ws = workspace_with_helper();
+        let ctx = DispatchCtx::new_pure(ws);
+        assert!(!ctx.deadline_exceeded());
+    }
+
+    #[test]
+    fn deadline_exceeded_returns_true_when_past() {
+        // Positive: a deadline in the past trips immediately.
+        let ws = workspace_with_helper();
+        let mut ctx = DispatchCtx::new_pure(ws);
+        ctx.deadline = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        assert!(ctx.deadline_exceeded());
+    }
+
+    #[test]
+    fn deadline_exceeded_returns_false_when_future() {
+        // Positive: a deadline in the (far) future hasn't tripped yet.
+        let ws = workspace_with_helper();
+        let mut ctx = DispatchCtx::new_pure(ws);
+        ctx.deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        assert!(!ctx.deadline_exceeded());
     }
 }

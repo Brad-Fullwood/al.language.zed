@@ -185,6 +185,9 @@ fn eval_while(
         .or_else(|| named_stmt_child(node, 1));
 
     loop {
+        if ctx.deadline_exceeded() {
+            return Eval::Error(simple_error("interpreter deadline exceeded in while loop"));
+        }
         let cond = match eval_expr(cond_node, source, stack) {
             Eval::Normal(v) => v,
             other => return other,
@@ -273,6 +276,9 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
 
     let mut i = start_i;
     loop {
+        if ctx.deadline_exceeded() {
+            return Eval::Error(simple_error("interpreter deadline exceeded in for loop"));
+        }
         if is_downto {
             if i < end_i {
                 break;
@@ -357,6 +363,11 @@ fn eval_foreach(
     };
 
     for item in items {
+        if ctx.deadline_exceeded() {
+            return Eval::Error(simple_error(
+                "interpreter deadline exceeded in foreach loop",
+            ));
+        }
         if let Some(slot) = stack.lookup_mut(&var_name) {
             *slot = item.clone();
         } else if let Some(frame) = stack.top_mut() {
@@ -391,6 +402,9 @@ fn eval_repeat(
         .or_else(|| named_stmt_child(node, 1));
 
     loop {
+        if ctx.deadline_exceeded() {
+            return Eval::Error(simple_error("interpreter deadline exceeded in repeat loop"));
+        }
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
                 Eval::Normal(_) => {}
@@ -1102,6 +1116,43 @@ mod tests {
         let (eval, stack) = run_stmt("while x < 5 do x := x + 1;");
         assert!(matches!(eval, Eval::Normal(_)), "got {:?}", eval);
         assert_eq!(stack.lookup("x"), Some(&Value::Integer(5)));
+    }
+
+    #[test]
+    fn runaway_while_loop_trips_deadline() {
+        // Negative regression for F-OPEN-015b: an infinite loop must
+        // return Eval::Error with the deadline message instead of pinning
+        // the thread forever. We set a deadline 5 ms in the future and
+        // expect the while-loop's per-iteration check to fire on the next
+        // iteration after the deadline has passed.
+        use crate::test_runtime::interpreter::scope::{CallFrame, ScopeStack};
+        use crate::test_runtime::interpreter::value::Value;
+        use crate::workspace::Workspace;
+        use std::sync::Arc;
+
+        let wrapper = "codeunit 50100 \"X\"\n{\n    procedure Test()\n    var\n        x: Integer;\n    begin\n        x := 0; while x >= 0 do x := x + 1;\n    end;\n}";
+        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).unwrap();
+
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("X", "Test");
+        frame.bind("x", Value::Integer(0));
+        stack.push(frame);
+
+        let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
+        ctx.deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(5));
+
+        let eval = eval_stmt(body, bytes, &mut stack, &mut ctx);
+        match eval {
+            Eval::Error(e) => assert!(
+                e.message.contains("deadline exceeded"),
+                "expected deadline message, got: {}",
+                e.message
+            ),
+            other => panic!("expected deadline error, got {other:?}"),
+        }
     }
 
     // ── Sequence in begin_end_block ───────────────────────────────────────────
