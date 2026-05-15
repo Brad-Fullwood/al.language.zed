@@ -89,6 +89,20 @@ New audit: NuGet client (`crates/al-core/src/symbols/nuget.rs`). **Mostly well-h
 
 Workspace test count: 1818 (unchanged; setBreakpoints fix is concurrency, not feature). All gates green.
 
+### Iteration 5 (2026-05-15, +120m)
+
+Two commits, one NuGet follow-up closed, one new audit on the .NET semantic bridge:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-018 | P3 → fixed | `nuget::fetch_metadata_json` helper caps service-index and version-list JSON responses at 16 MB with mandatory `Content-Length`. Both metadata fetch sites refactored to use it. 3 wiremock-backed tests. |
+| F-OPEN-022 | P2 → fixed | (New from .NET audit.) `AlBridge.Init` was swallowing exceptions and returning a bare `-2`, making remote diagnosis of missing CodeAnalysis dependencies impossible. Now captures `ex.ToString()` into `_lastInitError`, cleared on success. |
+| F-OPEN-023 | P2 → fixed | (New from .NET audit.) `AlBridge.HandleRequest` previously let `_bridge?.Handle*` silently return null for any pre-init call, producing `{"result": null}` indistinguishable from "no results". Now throws `InvalidOperationException` carrying the captured Init error. `ping` reports `initialized: bool` so health probes can tell the two states apart. |
+
+New audit: .NET semantic bridge (`crates/al-core/src/semantic/host.rs` + `bridge.rs` + `lifecycle.rs` + `bridge/Bridge.cs`). Every `unsafe` block verified sound — pointer lifetime tied to RAII guards, field drop ordering, std-FFI marshalling correct. No new findings beyond the two already fixed above; the documented timeout-doesn't-actually-release-the-Mutex gap is the only real concurrency limitation and is mitigated by the existing cooldown mechanism.
+
+Workspace test count: 1818 → 1821. All gates green.
+
 
 
 | Phase | Status | Output |
