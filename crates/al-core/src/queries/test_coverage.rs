@@ -331,6 +331,10 @@ fn collect_coverage_from_tree(
                 continue;
             }
         }
+        // Same shape as the iterative cursor walk in queries/tests.rs:
+        // the first two arms set the same flag but trigger different
+        // tree-sitter cursor moves. Collapsing them would short-circuit
+        // and break the walk.
         #[allow(clippy::if_same_then_else)]
         if !did_visit && cursor.goto_first_child() {
             did_visit = false;

@@ -343,6 +343,10 @@ fn extract_receiver_before(suffix_node: tree_sitter::Node<'_>, source: &[u8]) ->
     }
 }
 
+// Two allows: (1) `lsp_types::*` deprecation around inlay-hint label parts
+// in older tower-lsp versions — we can't avoid the API; (2) eight unrelated
+// inputs (workspace, source/tree/cursor context, resolver state) that don't
+// gain clarity from being bundled.
 #[allow(deprecated)]
 #[allow(clippy::too_many_arguments)]
 fn lookup_parameter_names(
@@ -412,6 +416,9 @@ fn lookup_parameter_names(
     Vec::new()
 }
 
+// Member-call resolution needs workspace + func + receiver + the tree-walk
+// state. Bundling into a struct adds an indirection layer without removing
+// any of the inputs.
 #[allow(clippy::too_many_arguments)]
 fn lookup_via_receiver(
     workspace: &Workspace,

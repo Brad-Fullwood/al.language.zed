@@ -154,6 +154,11 @@ pub fn has_test_subtype(root: tree_sitter::Node, source: &[u8]) -> bool {
                 }
             }
         }
+        // The first two arms LOOK identical (both set did_visit = false) but
+        // they're triggered by different cursor moves — `goto_first_child` vs
+        // `goto_next_sibling`. Collapsing them via `||` would short-circuit
+        // and only attempt one of the two tree-sitter cursor moves, breaking
+        // the iterative walk. Hence the allow.
         #[allow(clippy::if_same_then_else)]
         if !did_visit && cursor.goto_first_child() {
             did_visit = false;
