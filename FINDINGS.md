@@ -785,6 +785,16 @@ One commit. F-OPEN-075 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 38 (2026-05-16, +1110m)
+
+One commit. F-OPEN-094 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-065 | P3 | F-OPEN-094 closed. `run_mutation_testing` parsed every test file twice — once in `collect_mutation_files` to detect has_tests, again in `generate_variants_for_file`. Each `get_cached_parse` clones (text, tree). `collect_mutation_files` now returns `Vec<(path, Option<(text, tree)>)>` carrying the already-fetched parse forward; the run loop reuses it via `generate_variants` directly and only refetches on cache miss. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
