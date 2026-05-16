@@ -53,6 +53,20 @@ pub const CATALOGS: &[StubCatalog] = &[
     },
 ];
 
+/// Reset every thread-local piece of stub state to its post-init default.
+///
+/// Called by the interpreter backend between tests so one test's
+/// `LibraryRandom.SetSeed(42)` or `LibraryVariableStorage.Enqueue(x)`
+/// can't bleed into the next test that happens to run on the same
+/// thread. Without this, parallel test runs are non-deterministic when
+/// `JoinSet::spawn_blocking` reuses a worker thread.
+///
+/// F-OPEN-032.
+pub fn reset_thread_local_state() {
+    library_variable_storage::reset_queue();
+    library_random::reset_lcg();
+}
+
 /// Look up a `(codeunit_name_or_id, procedure_name)` pair across all
 /// catalogs. Returns the first matching procedure, or None.
 pub fn resolve(receiver: &str, procedure: &str) -> Option<StubFn> {
@@ -163,5 +177,49 @@ mod tests {
         // Negative: known codeunit, unknown procedure.
         assert!(resolve("Any", "DoesNotExist").is_none());
         assert!(resolve("130500", "RandInt").is_none());
+    }
+
+    #[test]
+    fn reset_thread_local_state_clears_queue_and_lcg() {
+        // Positive regression for F-OPEN-032. Prime the LVS queue and
+        // advance the LCG (via SetSeed) — the reset must wipe both
+        // back to "fresh thread" defaults so the next test can't see
+        // either.
+        let _ = library_variable_storage::enqueue(&[Value::Integer(42)]);
+        let _ = library_random::set_seed(&[Value::Integer(99)]);
+
+        // After reset, the LCG is back to its initial seed and the
+        // queue is empty. We verify the queue by trying a Peek which
+        // returns an "index out of bounds" error on empty queue; the
+        // LCG by checking the first rand_int(100) is the same as it
+        // would be on a fresh thread.
+        reset_thread_local_state();
+
+        // 1. Queue is empty: Dequeue must fail with "underflow".
+        let dq = library_variable_storage::dequeue(&[]);
+        match dq {
+            Eval::Error(e) => assert!(e.message.contains("underflow")),
+            other => panic!("expected Dequeue underflow after reset, got {other:?}"),
+        }
+
+        // 2. LCG starts at seed 1: rand_int(100) is deterministic
+        // (specifically `((1 * 214013 + 2531011) >> 16) & 0x7FFF) % 100 + 1`
+        // = `((2745024) >> 16 & 0x7FFF) % 100 + 1` = `41 % 100 + 1` = 42.
+        // We don't hard-code 42 here in case the LCG ever changes — instead
+        // we run rand_int twice on freshly-reset state and compare; both
+        // must produce identical results.
+        reset_thread_local_state();
+        let a = library_random::rand_int(&[Value::Integer(100)]);
+        reset_thread_local_state();
+        let b = library_random::rand_int(&[Value::Integer(100)]);
+        match (a, b) {
+            (Eval::Normal(Value::Integer(x)), Eval::Normal(Value::Integer(y))) => {
+                assert_eq!(
+                    x, y,
+                    "post-reset rand_int(100) must be deterministic across resets"
+                );
+            }
+            (other_a, other_b) => panic!("unexpected eval results: {other_a:?} vs {other_b:?}"),
+        }
     }
 }

@@ -161,6 +161,14 @@ pub fn rand_text(args: &[Value]) -> Eval {
     ok(Value::Text(s))
 }
 
+/// Reset the thread-local LCG to its initial state (seed 1, matching BC
+/// behaviour before `Randomize` is called). Called between test runs so
+/// one test's `SetSeed(42)` doesn't bleed into the next test's
+/// expectations on the same thread.
+pub fn reset_lcg() {
+    LCG_STATE.with(|cell| cell.set(1));
+}
+
 /// `LibraryRandom.SetSeed(Seed: Integer)`
 ///
 /// Seeds the thread-local RNG.  A seed of 0 is treated as 1 (BC convention).

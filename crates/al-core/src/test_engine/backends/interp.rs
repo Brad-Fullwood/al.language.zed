@@ -237,6 +237,11 @@ fn run_codeunit_interp(
         };
         events.push(TestEvent::CaseStarted { id: id.clone() });
 
+        // Reset thread-local stub state so this test starts from a
+        // clean LCG seed + empty LibraryVariableStorage queue, even if
+        // the previous test on this thread mutated them. F-OPEN-032.
+        crate::test_runtime::stubs::reset_thread_local_state();
+
         let start = Instant::now();
         let result = run_procedure_interp(workspace, cu, codeunit_name, proc_name, timeout_dur);
         let duration_ms = start.elapsed().as_millis() as u64;
