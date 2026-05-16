@@ -119,6 +119,17 @@ pub async fn run_dap_server(toolchain: &AlToolchain) -> Result<(), DapError> {
 
 /// Spawn EditorServices.Host in DAP mode and proxy stdin/stdout,
 /// patching messages for compatibility in both directions.
+/// Run the legacy EditorServices.Host DAP proxy.
+///
+/// **Cancellation note** (F-OPEN-041). Unlike the native DAP backend
+/// (`crate::dap::native_dap`), this proxy does NOT implement the DAP
+/// `cancel` request. Cancellation is delegated to EditorServices.Host
+/// itself; if the BC server takes a long time to honour a Step / Continue
+/// the user can't cancel from Zed via DAP. The proxy DOES however kill
+/// the subprocess cleanly on `disconnect` / shutdown, so a stuck session
+/// gets torn down at the OS level. If the legacy proxy ever needs
+/// in-flight cancellation, route it through the existing watch channel
+/// the native backend already uses (`cancel_rx` in `native_dap.rs`).
 pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Result<(), DapError> {
     let host_path = find_editor_services(toolchain)?;
 
