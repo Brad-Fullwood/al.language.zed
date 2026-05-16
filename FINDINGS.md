@@ -552,6 +552,31 @@ False positive caught:
 
 Workspace test count: 1890 → 1894 (+4 daemon integer-cast tests). All gates green.
 
+### Iteration 25 (2026-05-16, +720m)
+
+Two commits. Audit focus: semantic bridge + launch.rs (~2.3K LOC across `semantic/{bridge,host,lifecycle,cache,mod}.rs` and `launch.rs`).
+
+**Audit verdict:** the CLR bridge is the most defensively-written FFI code in the crate. Every `unsafe` block has an accurate SAFETY comment. `ClrBuf` RAII guard frees CLR buffers even on panic. `c_int::try_from` prevents truncation-on-cast. `Send`/`Sync` impls document why the pointers are safe to share. Function-pointer ABI is locked at load time via `extern "system"` + `unmanaged_callers_only`. No production unwrap/panic anywhere.
+
+Found one P1 (launch.json size cap parity with project.rs) and one P2 (bridge restart counter accumulated forever).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-043 | P1 | `parse_zed_debug_file` and `parse_vscode_launch_file` (launch.rs:218-238) read with no size check. Pathological inputs would OOM the daemon. Mirror the `project.rs:175-184` 1 MiB cap via a `read_launch_file_capped` helper. 3 regression tests (under-cap parses, oversize VS Code rejected, oversize Zed rejected). |
+| F-FIX-044 | P2 | `bridge_restart_count` was monotonically incremented and never reset. After MAX_RESTARTS=3 successful crash-and-recovery cycles, the bridge becomes permanently disabled — even if those 3 restarts were well-spaced over hours. Reset to 0 on the `restart_bridge` success branch. Thrash protection preserved: 3 *consecutive* failed restarts (each crashing before reset) still trip the cap. |
+
+Carry-forwards (P2/P3 — design or low-impact):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-072 | P1 | The serializing mutex on bridge calls (`SemanticBridge::call`) has a 30 s timeout, but the doc comment at `bridge.rs:226-229` admits the timeout doesn't release the Mutex or interrupt the .NET call. A permanently-wedged CLR call blocks every semantic feature forever. The cooldown / `try_lock` mitigation at `bridge.rs:264-302` reduces the blast radius but no path force-aborts the wedged blocking thread. Plumbing a real cancellation signal across FFI is non-trivial — design first. |
+| F-OPEN-073 | P3 | `launch.rs:285-295` `parse_environment_type` silently drops a config on unknown env type — user sees only a `warn!` in logs. Consider surfacing as a structured error so the debug-launch path can report "configuration X has bad environmentType=Y" to the UI. |
+| F-OPEN-074 | P3 | `launch.rs` `server` field accepts any scheme (e.g. `file:///etc/passwd`). It eventually flows into `bc_client` which has its own validation, but defence-in-depth allowlist at the launch layer would catch malformed configs sooner. |
+| F-OPEN-075 | P3 | `bridge.rs:148` `Poisoned` error variant is reused for cooldown short-circuiting at `bridge.rs:262, 288, 300` — three distinct conditions share one error string. Split or rename. |
+| F-OPEN-076 | P3 | Cache filename built from `sanitize_version` has no length cap (`cache.rs:31`). A pathological version string creates an oversized filename. Trivial. |
+
+Workspace test count: 1894 → 1897 (+3 launch.json size-cap tests). All gates green.
+
 
 
 | Phase | Status | Output |
