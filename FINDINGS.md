@@ -755,6 +755,16 @@ One commit. Two P3 follow-ups closed:
 
 Workspace test count: 1920 unchanged. All gates green.
 
+### Iteration 35 (2026-05-16, +1020m)
+
+One commit. F-OPEN-074 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-062 | P3 | F-OPEN-074 closed. `BcServerConfig::dev_packages_url` (OnPrem) interpolated the user-supplied `server` field into an HTTP URL handed to the BC dev client unfiltered. Now passes through `is_safe_http_server` which allowlists `http`/`https` explicit schemes and bare hostnames; rejects `file://`, `gopher://`, `javascript:`, `ftp://`, and empty/whitespace inputs with a warn-log. 2 regression tests. |
+
+Workspace test count: 1920 → 1922 (+2 server-scheme allowlist tests). All gates green.
+
 
 
 | Phase | Status | Output |
