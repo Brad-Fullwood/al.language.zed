@@ -852,4 +852,89 @@ mod tests {
         let tmp = dir.path().join(format!("no-such-subdir/foo.al.{pid}.tmp"));
         assert!(!tmp.exists());
     }
+
+    // --- Round-trip parse: generated .al must actually parse (F-OPEN-035) ---
+
+    /// Asserts that the given AL source parses through tree-sitter-al with
+    /// no errors. Used to guard against generator templates that drift
+    /// out-of-sync with the grammar (e.g. property renames, syntax
+    /// tightening). A string-content assertion would not catch this.
+    fn assert_al_parses(label: &str, source: &str) {
+        let result = crate::syntax::parser::AlParser::parse_quick(source);
+        assert!(
+            result.errors.is_empty(),
+            "{label} did not parse cleanly:\n{source}\nerrors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn generated_starter_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_starter_codeunit(&config);
+        assert_al_parses("starter codeunit", &src);
+    }
+
+    #[test]
+    fn generated_library_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_library_codeunit(&config);
+        assert_al_parses("library codeunit", &src);
+    }
+
+    #[test]
+    fn generated_test_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_test_codeunit(&config);
+        assert_al_parses("test codeunit", &src);
+    }
+
+    #[test]
+    fn generated_copilot_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_copilot_codeunit(&config);
+        assert_al_parses("copilot participant", &src);
+    }
+
+    #[test]
+    fn generated_azure_openai_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_azure_openai_codeunit(&config);
+        assert_al_parses("azure openai helper", &src);
+    }
+
+    #[test]
+    fn generated_agent_codeunit_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_agent_codeunit(&config);
+        assert_al_parses("agent codeunit", &src);
+    }
+
+    #[test]
+    fn generated_agent_job_handler_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_agent_job_handler(&config);
+        assert_al_parses("agent job handler", &src);
+    }
+
+    #[test]
+    fn generated_api_page_parses() {
+        let config = ScaffoldConfig::default();
+        let src = generate_api_page(&config);
+        assert_al_parses("api page", &src);
+    }
+
+    #[test]
+    fn generated_codeunit_with_escaped_quote_in_name_parses() {
+        // Regression for the iteration-9 escape fix: if a name contains
+        // `"`, the doubled-quote escape must produce parseable AL.
+        let config = ScaffoldConfig {
+            name: r#"My"App"#.to_string(),
+            ..Default::default()
+        };
+        let src = generate_library_codeunit(&config);
+        // The header must end up as "My""App Library".
+        assert!(src.contains(r#""My""App Library""#));
+        assert_al_parses("library codeunit with escaped quote", &src);
+    }
 }

@@ -507,4 +507,89 @@ mod tests {
             "page-name identifier body should contain no bare `\"`"
         );
     }
+
+    // --- Round-trip parse: generated .al must actually parse (F-OPEN-035) ---
+
+    fn assert_al_parses(label: &str, source: &str) {
+        let result = crate::syntax::parser::AlParser::parse_quick(source);
+        assert!(
+            result.errors.is_empty(),
+            "{label} did not parse cleanly:\n{source}\nerrors: {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn generate_page_list_round_trip_parses() {
+        let table = make_table(
+            "Customer",
+            vec![
+                make_field(1, "No.", "Code[20]"),
+                make_field(2, "Name", "Text[100]"),
+            ],
+        );
+        let config = GeneratePageConfig {
+            object_id: 50100,
+            page_name: "Customer List".to_string(),
+            page_type: PageType::List,
+            source_table: table,
+        };
+        let src = generate_page(&config);
+        assert_al_parses("generated list page", &src);
+    }
+
+    #[test]
+    fn generate_page_card_round_trip_parses() {
+        let table = make_table("Item", vec![make_field(1, "No.", "Code[20]")]);
+        let config = GeneratePageConfig {
+            object_id: 50101,
+            page_name: "Item Card".to_string(),
+            page_type: PageType::Card,
+            source_table: table,
+        };
+        let src = generate_page(&config);
+        assert_al_parses("generated card page", &src);
+    }
+
+    #[test]
+    fn generate_report_round_trip_parses() {
+        let table = make_table(
+            "Sales Header",
+            vec![
+                make_field(1, "Document No.", "Code[20]"),
+                make_field(2, "Posting Date", "Date"),
+            ],
+        );
+        let config = GenerateReportConfig {
+            object_id: 50100,
+            report_name: "Sales Report".to_string(),
+            source_table: table,
+        };
+        let src = generate_report(&config);
+        assert_al_parses("generated report", &src);
+    }
+
+    #[test]
+    fn generate_test_with_subject_round_trip_parses() {
+        let mut subject = make_table("Posting Codeunit", vec![]);
+        subject.kind = crate::symbols::model::ObjectKind::Codeunit;
+        let config = GenerateTestConfig {
+            object_id: 50100,
+            test_name: "Posting Tests".to_string(),
+            subject: Some(subject),
+        };
+        let src = generate_test(&config);
+        assert_al_parses("generated test codeunit with subject", &src);
+    }
+
+    #[test]
+    fn generate_test_without_subject_round_trip_parses() {
+        let config = GenerateTestConfig {
+            object_id: 50100,
+            test_name: "Bare Tests".to_string(),
+            subject: None,
+        };
+        let src = generate_test(&config);
+        assert_al_parses("generated test codeunit without subject", &src);
+    }
 }
