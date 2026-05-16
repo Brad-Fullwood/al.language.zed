@@ -491,6 +491,37 @@ Carry-forwards (P2 — known fragility, not currently exploited):
 
 Workspace test count: 1882 → 1887 (+5 timeout/error-variant tests). All gates green.
 
+### Iteration 23 (2026-05-16, +660m)
+
+Two commits, two real fixes (P1 + P2), several false positives caught.
+
+Audit focus: `config.rs` (974 LOC settings merge), `project.rs` (304 LOC app.json), `parsing.rs` (117 LOC parse-cache hot path). The "user input gets trusted" surface.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-040 | **P1** | `get_or_parse` had no per-URI synchronisation. A keystroke fires hover + completion + semantic-tokens near-simultaneously; without a lock they all missed the cache, raced into `AlParser::parse_quick`, and each paid the 30-50 ms parse cost on a large file. Fix: `DocumentStore::parse_lock(uri) -> Arc<Mutex<()>>` lazily created; `get_or_parse` keeps the fast-path cache check (no contention on the cache-hit path) then acquires the lock and re-checks before parsing. Correctness preserved by `get_cached_tree`'s version check. Regression test spawns 16 threads on the same URI. |
+| F-FIX-041 | P2 | `app.json` was read with `std::fs::read_to_string` and no size check. Pathological inputs (sparse-file or adversarial) would OOM the daemon. Now `metadata().len()` checked against 1 MiB cap before read. Largest legitimate manifest observed is ~20 KB; cap leaves two orders of magnitude headroom. 2 regression tests. |
+
+False positives caught:
+
+| ID | Where | Why not a bug |
+|---|---|---|
+| F-FP-017 | "Unbounded tree cache" (P1 candidate) | `documents.close()` (documents.rs:68-71) evicts both the doc and the tree entry. Each open file caps at 1 tree; total bounded by Zed's tab count. Not a leak. |
+| F-FP-018 | "TOCTOU on version in get_or_parse" (P1 candidate) | `get_cached_tree` (documents.rs:161-169) explicitly checks the stored version against the live `doc.version` and returns None on mismatch. A stale tree cached under an old version is never served. The existing test `apply_changes_version_bump_and_tree_remove_are_consistent` pins this invariant. With F-FIX-040's per-URI lock added, the brief-wasted-parse window is also closed. |
+| F-FP-019 | "config.rs::merge has no observer notifications" | Out of audit scope — wiring lives in `workspace.rs`. Verified: symbols cache, NuGet client, semantic bridge all read config at action time, so a post-init merge takes effect on the next operation. Not a bug. |
+
+Carry-forwards (P2/P3 — defensible-in-depth, defer):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-060 | P2 | `config.rs::merge` accepts arbitrary string paths for `editorServicesPath`, `assemblyProbingPaths`, `ruleSetPath`, etc. No canonicalisation; consumers (build/DAP/symbols) trust the path. Settings are user-owned so the realistic exposure is narrow, but a canonicalise-at-boundary pattern would be cleaner. |
+| F-OPEN-061 | P3 | `config.rs::AlConfig::load` accepts unknown JSON keys silently (no `unknown_keys` reporting on disk-loaded config). Inconsistent with `merge()`, which collects them. |
+| F-OPEN-062 | P3 | `config.rs` enum merges silently retain current value on unrecognised variant (`diagnosticsScope`, `diagnosticsTrigger`, log-level, malformed nuget feed entries). Should surface as `unknown_keys` so the user sees the typo. |
+| F-OPEN-063 | P3 | `config.rs` `null` semantics are inconsistent. Optional `PathBuf`/`String` honour `null` as "clear"; booleans/arrays/enums silently ignore it. User can't reset most fields to default without removing the key entirely. |
+| F-OPEN-064 | P3 | `project.rs:92` hardcodes `"26.0.0.0"` as fallback for `platform` when `application` is unset. Will go stale with each major BC release. Lift to a `const` with a note that it tracks current BC. |
+
+Workspace test count: 1887 → 1890 (+1 concurrent-parse regression, +2 app.json size-cap tests). All gates green.
+
 
 
 | Phase | Status | Output |
