@@ -125,32 +125,34 @@ fn trace_from_node(
                 object: object_name.clone(),
             });
 
-            // Find events published by the same object
+            // Find events published by the same object. `graph.index` is a
+            // HashMap; collect matching event indices into a Vec and sort by
+            // NodeIndex so the fanout is stable across rebuilds. Mirrors the
+            // root-side discipline at search.rs:69 (`trace_event`).
             let sub_obj_lower = object_name.to_lowercase();
-            for (key, indices) in &graph.index {
-                if let NodeKey::Event(_, ref obj, _) = key {
-                    if *obj == sub_obj_lower {
-                        for &evt_idx in indices {
-                            let evt_node = &graph.graph[evt_idx];
-                            if let InsightNode::Event { name: ename, .. } = evt_node {
-                                steps.push(TraceStep {
-                                    depth: depth + 1,
-                                    edge_type: "publishes".to_string(),
-                                    node_type: "event".to_string(),
-                                    name: ename.clone(),
-                                    object: object_name.clone(),
-                                });
-                                trace_from_node(
-                                    graph,
-                                    evt_idx,
-                                    depth + 2,
-                                    max_depth,
-                                    visited,
-                                    steps,
-                                );
-                            }
-                        }
+            let mut event_indices: Vec<petgraph::graph::NodeIndex> = graph
+                .index
+                .iter()
+                .filter_map(|(key, indices)| match key {
+                    NodeKey::Event(_, ref obj, _) if *obj == sub_obj_lower => {
+                        Some(indices.iter().copied())
                     }
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            event_indices.sort_by_key(|idx| idx.index());
+            for evt_idx in event_indices {
+                let evt_node = &graph.graph[evt_idx];
+                if let InsightNode::Event { name: ename, .. } = evt_node {
+                    steps.push(TraceStep {
+                        depth: depth + 1,
+                        edge_type: "publishes".to_string(),
+                        node_type: "event".to_string(),
+                        name: ename.clone(),
+                        object: object_name.clone(),
+                    });
+                    trace_from_node(graph, evt_idx, depth + 2, max_depth, visited, steps);
                 }
             }
         }
@@ -226,7 +228,11 @@ pub fn trace_event_chain(
 ) -> EventChain {
     let event_lower = event_name.to_lowercase();
 
-    // Find all event nodes matching the name.
+    // Find all event nodes matching the name. `insight.index` is a HashMap so
+    // the natural iteration order is non-deterministic across rebuilds. Sort
+    // by NodeIndex to make the emitted chain order stable for downstream
+    // diffing — `trace_event` has the same fix at search.rs:69 (with a
+    // dedicated regression test), this path mirrors it.
     let mut roots: Vec<(NodeId, String)> = Vec::new();
     for (key, indices) in &insight.index {
         if let NodeKey::Event(_, _, ref name) = key {
@@ -241,6 +247,7 @@ pub fn trace_event_chain(
             }
         }
     }
+    roots.sort_by_key(|(id, _)| id.0);
 
     let publisher_object = roots
         .first()
@@ -981,6 +988,37 @@ mod tests {
         let chain = trace_event_chain(&insight, &cg, "NonExistent", 10);
         assert!(chain.chains.is_empty());
         assert_eq!(chain.nodes_visited, 0);
+    }
+
+    #[test]
+    fn trace_event_chain_is_deterministic_across_repeated_builds() {
+        // Regression: trace_event_chain (the richer twin of trace_event)
+        // collected roots from `insight.index` (HashMap) without sorting,
+        // so the chain order was arbitrary across rebuilds. trace_event was
+        // already fixed and has its own determinism test; this asserts
+        // parity for trace_event_chain.
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_cu(1, "Pub A", vec![("Shared", "IntegrationEvent")], vec![]),
+            make_cu(2, "Pub B", vec![("Shared", "IntegrationEvent")], vec![]),
+            make_cu(3, "Pub C", vec![("Shared", "IntegrationEvent")], vec![]),
+        ]);
+
+        let mut reference: Option<Vec<String>> = None;
+        for _ in 0..5 {
+            let mut insight = InsightGraph::new();
+            insight.build_from_index(&index);
+            let cg = CallGraph::build_from_insight(&insight);
+            let chain = trace_event_chain(&insight, &cg, "Shared", 5);
+            let objects: Vec<String> = chain.chains.iter().map(|c| c.object.clone()).collect();
+            match &reference {
+                None => reference = Some(objects),
+                Some(prev) => assert_eq!(
+                    prev, &objects,
+                    "trace_event_chain root order must be deterministic across rebuilds"
+                ),
+            }
+        }
     }
 
     #[test]
