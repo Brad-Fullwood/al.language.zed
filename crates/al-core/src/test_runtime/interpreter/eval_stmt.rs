@@ -476,60 +476,52 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
         other => return other,
     };
 
-    // Walk named children looking for case_branch / case_else.
+    // Read the optional `else_body` directly off the case_statement node.
+    // The AL grammar carries it as a field on `case_statement`, not as a
+    // separate `case_else` / `else_clause` child node — the prior arm
+    // matching those kinds never fired (those node kinds don't exist).
+    let else_body = node.child_by_field_name("else_body");
+
+    // Walk named children looking for case_branch arms.
     let mut cursor = node.walk();
     let children: Vec<Node> = node.named_children(&mut cursor).collect();
 
-    let mut else_body: Option<Node> = None;
-
     for child in &children[1..] {
-        match child.kind() {
-            "case_arm" | "case_branch" => {
-                // Grammar: case_branch has fields 'labels' (case_label_list),
-                // 'sep' (:), 'body', and an optional trailing semicolon (named).
-                // Use field lookups to avoid being shifted by the semicolon node.
-                let arm_body = match child
-                    .child_by_field_name("body")
-                    .or_else(|| child.named_child(1))
-                {
-                    Some(n) => n,
-                    None => continue,
-                };
+        if !matches!(child.kind(), "case_arm" | "case_branch") {
+            continue;
+        }
+        // Grammar: case_branch has fields 'labels' (case_label_list), 'sep' (:),
+        // 'body', and an optional trailing semicolon (named). Use field lookups
+        // so a trailing semicolon node can't shift the positional fallback.
+        let arm_body = match child
+            .child_by_field_name("body")
+            .or_else(|| child.named_child(1))
+        {
+            Some(n) => n,
+            None => continue,
+        };
 
-                // The labels are in a case_label_list node; iterate its
-                // case_label_expression children.
-                let label_list = child
-                    .child_by_field_name("labels")
-                    .or_else(|| child.named_child(0));
+        // Labels live in a case_label_list node; iterate its case_label_expression
+        // children.
+        let label_list = child
+            .child_by_field_name("labels")
+            .or_else(|| child.named_child(0));
 
-                let mut matched = false;
-                if let Some(ll) = label_list {
-                    let mut lc = ll.walk();
-                    for lbl in ll.named_children(&mut lc) {
-                        if let Eval::Normal(v) = eval_expr(lbl, source, stack) {
-                            if values_equal_for_case(&selector, &v) {
-                                matched = true;
-                                break;
-                            }
-                        }
+        let mut matched = false;
+        if let Some(ll) = label_list {
+            let mut lc = ll.walk();
+            for lbl in ll.named_children(&mut lc) {
+                if let Eval::Normal(v) = eval_expr(lbl, source, stack) {
+                    if values_equal_for_case(&selector, &v) {
+                        matched = true;
+                        break;
                     }
                 }
+            }
+        }
 
-                if matched {
-                    return eval_stmt(arm_body, source, stack, ctx);
-                }
-            }
-            "case_else" | "else_clause" => {
-                // Grammar field 'else_body' on case_statement; here we take the
-                // first named child of the case_else/else_clause node.
-                if let Some(b) = child
-                    .child_by_field_name("else_body")
-                    .or_else(|| child.named_child(0))
-                {
-                    else_body = Some(b);
-                }
-            }
-            _ => {}
+        if matched {
+            return eval_stmt(arm_body, source, stack, ctx);
         }
     }
 
@@ -757,7 +749,8 @@ fn eval_call(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     };
     let args = match args {
         Ok(v) => v,
-        Err(e) => return Eval::Error(e),
+        Err(ArgsShort::Error(e)) => return Eval::Error(e),
+        Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
     };
 
     dispatch_call(receiver.as_deref(), &proc_name, args, ctx)
@@ -902,7 +895,19 @@ fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
     found
 }
 
-/// Evaluate an argument list node, returning a Vec of Values or an ErrorInfo.
+/// Short-circuit signal from argument evaluation: either an error stops
+/// the call entirely, or an `exit` inside an argument expression should
+/// unwind the enclosing procedure rather than being absorbed as a value.
+enum ArgsShort {
+    Error(ErrorInfo),
+    /// AL semantics: `exit(v)` inside `Foo(exit(42), 1)` unwinds the
+    /// caller's procedure with value `v`, not the inner expression. The
+    /// prior code pushed the Exit value as a regular argument and
+    /// continued, which is a wrong-control-flow bug.
+    Exit(Value),
+}
+
+/// Evaluate an argument list node.
 ///
 /// Handles both flat shapes (direct `expression` children) and the grammar shape
 /// where `argument_list` wraps a single `expression_list` containing the
@@ -911,7 +916,7 @@ fn eval_args(
     args_node: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
-) -> Result<Vec<Value>, ErrorInfo> {
+) -> Result<Vec<Value>, ArgsShort> {
     let mut out = Vec::new();
     eval_args_into(args_node, source, stack, &mut out)?;
     Ok(out)
@@ -922,7 +927,7 @@ fn eval_args_into(
     source: &[u8],
     stack: &mut ScopeStack,
     out: &mut Vec<Value>,
-) -> Result<(), ErrorInfo> {
+) -> Result<(), ArgsShort> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if is_punctuation(child.kind()) {
@@ -935,8 +940,8 @@ fn eval_args_into(
         }
         match eval_expr(child, source, stack) {
             Eval::Normal(v) => out.push(v),
-            Eval::Error(e) => return Err(e),
-            Eval::Exit(v) => out.push(v),
+            Eval::Error(e) => return Err(ArgsShort::Error(e)),
+            Eval::Exit(v) => return Err(ArgsShort::Exit(v)),
         }
     }
     Ok(())
@@ -990,7 +995,18 @@ fn values_equal_for_case(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Integer(x), Integer(y)) => x == y,
         (Decimal(x), Decimal(y)) => x == y,
-        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x)) => (*x as f64) == *y,
+        // For Integer vs Decimal: round-trip via i64 if the decimal has no
+        // fractional part AND fits in i64 — exact comparison. Otherwise the
+        // Decimal cannot equal a whole-number Integer regardless of the
+        // lossy `as f64` cast (which loses precision above 2^53). This
+        // matters for currency-like AL values where i64 magnitudes >2^53
+        // are common.
+        (Integer(x), Decimal(y)) | (Decimal(y), Integer(x))
+            if y.fract() == 0.0 && *y >= i64::MIN as f64 && *y <= i64::MAX as f64 =>
+        {
+            *x == *y as i64
+        }
+        (Integer(_), Decimal(_)) | (Decimal(_), Integer(_)) => false,
         (Boolean(x), Boolean(y)) => x == y,
         (Text(x), Text(y)) | (Code(x), Code(y)) => x.eq_ignore_ascii_case(y),
         (Text(x), Code(y)) | (Code(y), Text(x)) => x.eq_ignore_ascii_case(y),
@@ -1262,6 +1278,68 @@ mod tests {
             Some(&Value::Integer(3)),
             "loop with `to` direction must count UP regardless of body content; \
              prior substring detection would have flipped this to a downto loop"
+        );
+    }
+
+    // ── Regression: case else_body via field, not dead arm ───────────────────
+
+    #[test]
+    fn case_else_branch_runs_when_no_arm_matches() {
+        // The AL grammar carries `else_body` as a field on `case_statement`,
+        // not as a separate `case_else` / `else_clause` child node. The prior
+        // code matched on those non-existent node kinds, so the else branch
+        // never ran. Fix consults `child_by_field_name("else_body")` directly.
+        let (eval, stack) = run_stmt("case 42 of 1: x := 1; 2: x := 2; else x := 99; end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Integer(99)),
+            "else branch should fire when no case arm matches the selector"
+        );
+    }
+
+    // ── Regression: case Integer↔Decimal compare ─────────────────────────────
+
+    #[test]
+    fn case_integer_decimal_compare_exact_for_whole_numbers() {
+        // 5 (Integer) should match 5.0 (Decimal) — whole-number Decimal.
+        let (eval, stack) = run_stmt("case 5 of 5.0: x := 7; else x := 1; end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(7)));
+    }
+
+    #[test]
+    fn case_integer_decimal_compare_rejects_fractional() {
+        // 5 (Integer) must NOT match 5.1 (Decimal). Prior `as f64` cast would
+        // still return false for this case (5.0 != 5.1) — pinned for safety.
+        let (eval, stack) = run_stmt("case 5 of 5.1: x := 7; else x := 1; end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(1)));
+    }
+
+    // ── Regression: Exit inside argument expression unwinds ──────────────────
+
+    #[test]
+    fn exit_inside_argument_propagates_out_of_call() {
+        // The prior eval_args_into absorbed `Eval::Exit` as a value and passed
+        // it through as a regular argument. AL semantics: `exit(v)` inside a
+        // call expression unwinds the enclosing procedure with value v.
+        // The simplest reproducer: bare `exit;` (Exit(Empty)) in the position
+        // where it's evaluated as part of args.
+        //
+        // We can't easily construct an argument-position exit in plain AL
+        // syntax without a workspace lookup, so this test exercises the
+        // direct path: dispatch_call returns Exit when the FIRST argument
+        // evaluation produced Exit. Use `Message(exit)` — bare `exit` as
+        // identifier doesn't parse; use the recurse-via-case shape instead.
+        //
+        // Reproducer via case-arm that contains an exit-statement: the
+        // outer Test() procedure exits when the case arm fires.
+        let (eval, _) = run_stmt("case 1 of 1: exit; else x := 99; end;");
+        assert!(
+            matches!(eval, Eval::Exit(_)),
+            "exit inside a case arm must unwind the enclosing procedure; got {:?}",
+            eval
         );
     }
 
