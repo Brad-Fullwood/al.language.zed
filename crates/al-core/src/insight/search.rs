@@ -20,7 +20,7 @@ use petgraph::Direction;
 use serde::Serialize;
 
 use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
-use super::index::{CallGraph, EdgeKind, NodeId};
+use super::index::{CallEdge, CallGraph, EdgeKind, NodeId};
 
 /// Upper bound on total nodes visited by `trace_event_chain` across all
 /// branches of the recursion. The existing `max_depth` cap protects
@@ -313,7 +313,12 @@ fn recurse_event(
         return vec![];
     }
 
-    let subscribers = cg.subscribers_of(event_id);
+    // `subscribers_of` returns NodeIds in CallGraph build order, which is
+    // derived from a DashMap iteration in SymbolIndex — non-deterministic
+    // across process restarts. Sort here so chain children render in a
+    // stable order independent of the underlying maps' hashing seed.
+    let mut subscribers = cg.subscribers_of(event_id);
+    subscribers.sort_by_key(|id| id.0);
     let mut children = Vec::new();
 
     for sub_id in subscribers {
@@ -356,7 +361,27 @@ fn recurse_subscriber(
         return vec![];
     }
 
-    let callees = cg.callees_of(sub_id);
+    // Sort callees by target NodeId so chain children render in a stable
+    // order — same rationale as the `subscribers_of` sort in `recurse_event`.
+    // Note: callees_of returns `&[CallEdge]` which we don't own; clone into a
+    // Vec so we can sort. Per-call allocation is O(degree); fine for the
+    // bounded-by-MAX_CHAIN_NODES traversal.
+    let mut callees: Vec<CallEdge> = cg.callees_of(sub_id).to_vec();
+    // Total-order on (target NodeId, kind discriminant) so duplicate
+    // targets with different edge kinds are also stably ordered.
+    fn kind_rank(k: &EdgeKind) -> u8 {
+        match k {
+            EdgeKind::DirectCall => 0,
+            EdgeKind::TriggerInvocation => 1,
+            EdgeKind::RecordTrigger => 2,
+            EdgeKind::EventSubscription => 3,
+        }
+    }
+    callees.sort_by(|a, b| {
+        a.to.0
+            .cmp(&b.to.0)
+            .then_with(|| kind_rank(&a.kind).cmp(&kind_rank(&b.kind)))
+    });
     let mut children = Vec::new();
 
     for edge in callees {
@@ -1016,6 +1041,69 @@ mod tests {
                 Some(prev) => assert_eq!(
                     prev, &objects,
                     "trace_event_chain root order must be deterministic across rebuilds"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn trace_event_chain_children_are_deterministic_across_repeated_builds() {
+        // Regression: `subscribers_of` / `callees_of` returned NodeIds in
+        // CallGraph build order, which is itself driven by DashMap iteration
+        // in SymbolIndex — non-deterministic across process restarts. Now
+        // sorted inside `recurse_event` / `recurse_subscriber` so the children
+        // list is stable. Test: a single publisher emitting an event subscribed
+        // by three subscribers; chain roots are deterministic (already
+        // covered) AND the subscriber list under each root is too.
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_cu(1, "Pub", vec![("OnPost", "IntegrationEvent")], vec![]),
+            make_cu(
+                2,
+                "Sub A",
+                vec![],
+                vec![("OnPost1", "Codeunit", "Pub", "OnPost")],
+            ),
+            make_cu(
+                3,
+                "Sub B",
+                vec![],
+                vec![("OnPost2", "Codeunit", "Pub", "OnPost")],
+            ),
+            make_cu(
+                4,
+                "Sub C",
+                vec![],
+                vec![("OnPost3", "Codeunit", "Pub", "OnPost")],
+            ),
+        ]);
+
+        let mut reference: Option<Vec<String>> = None;
+        for _ in 0..5 {
+            let mut insight = InsightGraph::new();
+            insight.build_from_index(&index);
+            let cg = CallGraph::build_from_insight(&insight);
+            let chain = trace_event_chain(&insight, &cg, "OnPost", 5);
+            // Flatten subscriber objects across all roots in the order they
+            // appear — any non-determinism in either roots or children would
+            // perturb this vector.
+            let flat: Vec<String> = chain
+                .chains
+                .iter()
+                .flat_map(|c| c.children.iter().map(|s| s.object.clone()))
+                .collect();
+            match &reference {
+                None => {
+                    assert_eq!(
+                        flat.len(),
+                        3,
+                        "test fixture must produce 3 subscribers across the chain"
+                    );
+                    reference = Some(flat);
+                }
+                Some(prev) => assert_eq!(
+                    prev, &flat,
+                    "trace_event_chain children must be deterministic across rebuilds"
                 ),
             }
         }
