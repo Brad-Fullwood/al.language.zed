@@ -257,6 +257,30 @@ One minor observation recorded as P3 follow-up:
 
 Workspace test count: 1857 unchanged (no behaviour changes this iteration). All gates green.
 
+### Iteration 13 (2026-05-16, +360m)
+
+Two commits, two carry-forwards closed, one audit on semantic_tokens / inlay_hints / signature.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-017 | P3 → fixed | SignalR general event channel switched from unbounded to bounded (4096-cap). On overflow the reader task drops the non-Break message with a `warn!` log. Break events kept on their separate unbounded `bool` channel — losing one would silently stick the debugger, and ~1 MB per 1M entries is acceptable. |
+| F-OPEN-027 | P3 → fixed | `MAX_CHAIN_NODES = 10_000` added to `recurse_event` / `recurse_subscriber`. Existing depth cap protected against deep chains; this protects against wide-but-shallow fan-out. Same empty-vec early-return as the depth cap, so no API change. |
+
+New audit: rendering-style LSP queries (`crates/al-core/src/queries/{semantic_tokens,inlay_hints,signature}.rs` + `crates/al-core/src/syntax/tokens.rs`). Two findings flagged as CRITICAL/HIGH by the audit, both **verified as false positives** on direct read:
+
+| ID | Where | Why not a bug |
+|---|---|---|
+| F-FP-010 | "Multi-line semantic token UTF-16 length uses full line not span" (`syntax/tokens.rs:251`) | `line` is from `current.utf8_text(source).lines()` — i.e. the token's own bytes split by newline, **not** the full source line. So `line.encode_utf16().count()` is exactly the token's span on that row. Verified by hand-walking a 3-line block-comment example. |
+| F-FP-011 | "`build_line_starts` allocates per call" (`syntax/tokens.rs:221`) | One O(n) pass producing a ~50K-entry Vec for a 50K-line file is dwarfed by the tree-walk it precedes. Caching across requests would force invalidation on every edit, more complex than the gain. |
+
+One P3 follow-up recorded:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-040 | P3 | `signature::pick_active_signature` falls back to index 0 when no overload has ≥active_param parameters; can highlight the wrong arg at trailing commas. Tighten with documented semantics on the fallback. |
+
+Workspace test count: 1857 unchanged (concurrency / DoS protection, not feature). All gates green.
+
 
 
 | Phase | Status | Output |
