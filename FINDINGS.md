@@ -656,6 +656,27 @@ False positive caught:
 
 Workspace test count: 1907 → 1910 (+3 case-insensitive subscriber + 2 tier1 threshold tests). All gates green.
 
+### Iteration 29 (2026-05-16, +840m)
+
+One commit. Audit focus: `insight/search.rs` (1052 LOC) — the graph-traversal layer powering trace_event, trace_event_chain, find_entry_points, deadcode walks.
+
+**Audit verdict:** cycle safety / depth caps / DashMap discipline / NodeIndex hygiene / `lsp_types::*` isolation all clean. F-OPEN-027's `MAX_CHAIN_NODES = 10_000` cap is still in place. But two determinism gaps in `trace_event_chain` and `trace_from_node` slipped through when the earlier `trace_event` fix landed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-051 | **P1** | `trace_event_chain` (search.rs:231) and `trace_from_node` (search.rs:130) iterated `insight.index` (HashMap) without sorting. `trace_event` had the matching fix at search.rs:69 with a regression test, but its richer siblings did not. Combined with F-OPEN-066 (graph wiped every keystroke), the unstable order surfaces immediately as flaky diffs in DOT/JSON exports and any test that snapshots trace output. Fix: collect-then-sort by NodeIndex at both sites; collapsed a nested `for/for` pyramid into a single iter-filter-sort matching the trace_event style. New regression test asserts root order is identical across 5 graph rebuilds of the same workspace. |
+
+Carry-forwards (P2/P3 — defer):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-088 | P2 | `trace_from_node` re-scans the entire `graph.index` HashMap to find events for each subscriber's object — O(N·V) on a 50K-node graph with N subscribers. The index is keyed by `NodeKey::Event(_, obj, _)` but there's no obj-only secondary index. Add one when graph size makes this a measurable hot path. |
+| F-OPEN-089 | P2 | `recurse_event` / `recurse_subscriber` (search.rs:309, 352) emit children in `cg.subscribers_of(...)` / `cg.callees_of(...)` order. Stability depends on CallGraph internals; not obviously sorted. Worth a determinism test on the wider chain output, not just root order. |
+| F-OPEN-090 | P2 | `serde_json::to_value(node).unwrap_or_default()` at search.rs:500 silently emits `{}` if serialization fails. The struct is a plain `Serialize` derive so failure is unreachable in practice, but the silent-default pattern hides a future regression. Log-or-panic-on-error would surface a real bug. |
+| F-OPEN-091 | P3 | `match node_type { "event" => ..., "procedure" => ... }` dispatches on stringly-typed `NodeInfo.node_type`. An enum match over `InsightNode` variants would be safer. Borderline against CLAUDE.md (not AL language, but stringly-typed graph-internal dispatch). |
+
+Workspace test count: 1910 → 1911 (+1 trace_event_chain determinism regression). All gates green.
+
 
 
 | Phase | Status | Output |
