@@ -112,9 +112,39 @@ impl DocumentStore {
                     let start =
                         position_to_offset(&doc.text, range.start_line, range.start_character);
                     let end = position_to_offset(&doc.text, range.end_line, range.end_character);
-                    if let (Some(start), Some(end)) = (start, end) {
-                        doc.text.remove(start..end);
-                        doc.text.insert(start, &change.text);
+                    match (start, end) {
+                        // Well-formed forward range — apply.
+                        (Some(s), Some(e)) if s <= e => {
+                            doc.text.remove(s..e);
+                            doc.text.insert(s, &change.text);
+                        }
+                        // Backward range (end < start). Silently dropping the
+                        // change would mean the editor and server diverge with
+                        // no obvious cause. Log a warn so the bug surfaces in
+                        // daemon logs and skip this change. F-OPEN-(docstore-audit-2).
+                        (Some(s), Some(e)) => {
+                            tracing::warn!(
+                                uri = %uri,
+                                start = s,
+                                end = e,
+                                "DocumentStore: skipping malformed TextChange with end<start"
+                            );
+                        }
+                        // One or both endpoints out-of-bounds. The position
+                        // came from the LSP client; almost always a client bug.
+                        // Same treatment: warn + skip rather than silently
+                        // diverge.
+                        _ => {
+                            tracing::warn!(
+                                uri = %uri,
+                                start_line = range.start_line,
+                                start_char = range.start_character,
+                                end_line = range.end_line,
+                                end_char = range.end_character,
+                                doc_lines = doc.text.len_lines(),
+                                "DocumentStore: skipping TextChange with out-of-bounds range"
+                            );
+                        }
                     }
                 } else {
                     doc.text = Rope::from_str(&change.text);
@@ -508,5 +538,71 @@ mod tests {
             let uri = Url::parse(&format!("file:///race/{i}.al")).unwrap();
             assert!(store.get_text(&uri).is_none(), "doc{i} should be closed");
         }
+    }
+
+    #[test]
+    fn apply_changes_skips_backward_range_and_logs() {
+        // Negative regression: a malformed TextChange with end before start
+        // should be skipped (not panic, not silently apply garbage). The
+        // doc version still bumps because subsequent valid changes in the
+        // same batch should still take effect; only THIS change is dropped.
+        let store = DocumentStore::new();
+        let uri = test_uri("backward");
+        store.open(uri.clone(), "hello\n".to_string());
+        let before = store.get_text(&uri).unwrap();
+
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: Some(TextRange {
+                    start_line: 0,
+                    start_character: 5, // after "hello"
+                    end_line: 0,
+                    end_character: 1, // BEFORE start
+                }),
+                text: "BAD".to_string(),
+            }],
+        );
+
+        // Text must not contain the bad inserted string.
+        let after = store.get_text(&uri).unwrap();
+        assert!(
+            !after.contains("BAD"),
+            "backward TextRange should not have been applied; got: {after}"
+        );
+        // Original text content survives (the change was skipped).
+        assert_eq!(
+            after, before,
+            "doc should be unchanged after skipped change"
+        );
+    }
+
+    #[test]
+    fn apply_changes_skips_out_of_bounds_range_and_logs() {
+        // Negative regression: range pointing past EOF must be skipped, not
+        // panicked over. The Ropey `remove` would itself accept an invalid
+        // index path, but `position_to_offset` returns None for
+        // out-of-bounds lines, which gets caught here.
+        let store = DocumentStore::new();
+        let uri = test_uri("oob");
+        store.open(uri.clone(), "abc\n".to_string());
+
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: Some(TextRange {
+                    start_line: 999,
+                    start_character: 0,
+                    end_line: 999,
+                    end_character: 5,
+                }),
+                text: "EVIL".to_string(),
+            }],
+        );
+
+        // No panic and no insertion.
+        let after = store.get_text(&uri).unwrap();
+        assert!(!after.contains("EVIL"));
+        assert_eq!(after, "abc\n");
     }
 }
