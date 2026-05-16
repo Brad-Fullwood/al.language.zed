@@ -368,6 +368,15 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
     match init_bridge_inner(workspace, toolchain).await {
         Ok(()) => {
             tracing::info!(attempt = count, "Semantic bridge restarted successfully");
+            // A successful restart proves the bridge can start cleanly again;
+            // reset the counter so future, well-spaced crashes don't gradually
+            // exhaust the 3-restart cap over a long-running daemon session.
+            //
+            // Thrash protection is preserved: if the freshly restarted bridge
+            // crashes on its very next request, `restart_bridge` will run again
+            // and fetch_add back to 1. Three *consecutive* failed restarts
+            // (each ending in a crash before reset) still trip the cap.
+            workspace.bridge_restart_count.store(0, Ordering::Relaxed);
             Ok(())
         }
         Err(e) => Err(e),
