@@ -440,6 +440,34 @@ Carry-forwards (not fixed this iteration):
 
 Workspace test count: 1878 → 1881 (+3 for the protocol round-trip tests). All gates green.
 
+### Iteration 21 (2026-05-16, +600m)
+
+Two commits, one new audit (LSP textDocument-sync lifecycle: `documents.rs` + `server/{lsp,diagnostics,workspace,handlers}.rs`, ~3.7K LOC).
+
+The hottest LSP path in the codebase — every keystroke flows through here. Audit found one real P1, one stale doc comment, and two P2 follow-ups.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-036 | **P1** | Ghost diagnostics on `did_close` during the 400 ms debounce window. The spawned `schedule_diagnostics` closure had no document-still-open guard, and `did_close` did not abort the task. Sequence: keystroke → task A armed → user closes tab (did_close clears diagnostics) → task A wakes, computes from cached parse tree, publishes diagnostics for the closed doc → ghost squiggles in Zed. Fix: in-task `documents.contains(&uri)` guard PLUS `did_close` now aborts `diag_task`. New E2E regression test in `al-test-harness/tests/regression.rs` reproduces and pins the fix. |
+| F-FIX-037 | P3 | Stale doc comment on `syntax_diag_to_lsp` claimed `SyntaxDiagnostic.range` carried byte columns. In fact `ts_range_to_query_range` (queries/diagnostics.rs:134) runs `byte_col_to_utf16_col` at the query layer. The shim is correct; only the comment was misleading. |
+
+False positive caught:
+
+| ID | Where | Why not a bug |
+|---|---|---|
+| F-FP-016 | "byte vs UTF-16 columns in `syntax_diag_to_lsp`" (P1 candidate) | Audit was misled by the stale doc comment. The actual data flow runs the conversion at the query layer; `SyntaxDiagnostic.range.character` is already UTF-16. Verified at queries/diagnostics.rs:134-150. Doc comment fixed in F-FIX-037. |
+
+Carry-forwards (P2 — known fragility under refactor, not currently exploited):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-053 | P2 | `apply_changes` ignores `DidChangeTextDocumentParams.text_document.version`. LSP requires the client's version to be monotonic; we don't validate. Out-of-order delivery (rare under tower-lsp, but possible) silently corrupts the rope. Adding a version-mismatch warning + skip-with-resync would catch this. |
+| F-OPEN-054 | P2 | `apply_changes` + separate `get_text` in `did_change` is not atomic — a concurrent notification could interleave so the text fed into `schedule_diagnostics` is one version ahead of the keystroke that triggered the call. Not data corruption (rope is internally consistent) but the version captured by the spawned diag task doesn't match the keystroke. With the F-FIX-036 close-guard in place this no longer produces ghost diagnostics, but a version check inside the diag task would still be sounder. |
+| F-OPEN-055 | P2 | `al.reindex` does not coordinate with the initial `init_task` from `initialized`. Two concurrent `initialize_workspace` runs are possible if the user invokes `al.reindex` before initial init completes. Each component's internal locking saves us today, but a global init-mutex would be defence-in-depth. |
+| F-OPEN-056 | P3 | `did_change_watched_files` is not implemented. External-to-Zed file changes (git checkout, generator scripts, sibling editor) don't refresh the workspace index until the user manually invokes `al.reindex` or restarts. Low priority; Zed itself rescans on focus. |
+
+Workspace test count: 1881 → 1882 (+1 for the ghost-squiggle regression). All gates green.
+
 
 
 | Phase | Status | Output |
