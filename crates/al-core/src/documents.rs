@@ -30,6 +30,13 @@ pub struct TextRange {
 pub struct DocumentStore {
     docs: DashMap<Url, Document>,
     trees: DashMap<Url, (i32, tree_sitter::Tree)>,
+    /// Per-URI parse-coordination locks. Acquired by `parse_lock` so that
+    /// concurrent `get_or_parse` calls for the same URI serialize on the
+    /// expensive `AlParser::parse_quick` step instead of all racing into it.
+    /// Distinct URIs still parse in parallel. Entries are never removed —
+    /// the map grows with the number of files ever opened in a session,
+    /// which is bounded by the editor's tab count.
+    parse_locks: DashMap<Url, std::sync::Arc<std::sync::Mutex<()>>>,
 }
 
 struct Document {
@@ -51,7 +58,23 @@ impl DocumentStore {
         Self {
             docs: DashMap::new(),
             trees: DashMap::new(),
+            parse_locks: DashMap::new(),
         }
+    }
+
+    /// Acquire (or lazily create) the parse-coordination lock for `uri`.
+    ///
+    /// `parsing::get_or_parse` holds this across the parse-and-cache step so a
+    /// keystroke-triggered burst of LSP requests (hover + completion +
+    /// semantic-tokens fire near-simultaneously) doesn't trigger N concurrent
+    /// `AlParser::parse_quick` calls for the same file. The first acquirer
+    /// parses and caches; subsequent acquirers find the cache populated and
+    /// short-circuit.
+    pub fn parse_lock(&self, uri: &Url) -> std::sync::Arc<std::sync::Mutex<()>> {
+        self.parse_locks
+            .entry(uri.clone())
+            .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn open(&self, uri: Url, text: String) {

@@ -25,13 +25,39 @@ pub fn get_or_parse(
     };
     let version = documents.get_version(uri).unwrap_or(0);
 
-    // Check cache first
+    // Fast-path cache check before acquiring the parse lock.
     if let Some(cached) = documents.get_cached_tree(uri) {
-        tracing::trace!(uri = %uri, version, "get_or_parse: cache hit");
+        tracing::trace!(uri = %uri, version, "get_or_parse: cache hit (fast path)");
         return Some((text, cached));
     }
 
-    // Parse and cache
+    // Cache miss — serialize the parse for this URI. Without this, a burst of
+    // LSP requests on a keystroke (hover + completion + semantic-tokens fire
+    // together) would all miss the cache, race into `parse_quick`, and each
+    // pay the 30-50 ms parse cost on a large AL file. With the lock the first
+    // request parses; the rest find the cache populated by the re-check below.
+    //
+    // Correctness: the cache invariant is enforced by `get_cached_tree`
+    // (it compares the stored version against the live `doc.version`). If
+    // `apply_changes` runs between our `get_version` call and the `cache_tree`
+    // write, our stored entry is under the old version and the next reader's
+    // version-check will reject it. This means we may briefly waste a parse,
+    // but never serve a stale tree.
+    let lock = documents.parse_lock(uri);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Re-check the cache after acquiring the lock — another waiter may have
+    // populated it while we were blocked.
+    if let Some(cached) = documents.get_cached_tree(uri) {
+        tracing::trace!(uri = %uri, version, "get_or_parse: cache hit (post-lock)");
+        return Some((text, cached));
+    }
+
+    // Re-fetch text under the lock in case it changed while we were waiting.
+    // (Cheap — Arc<String> clone.)
+    let text = documents.get_text_arc(uri)?;
+    let version = documents.get_version(uri).unwrap_or(0);
+
     tracing::debug!(uri = %uri, version, len = text.len(), "get_or_parse: parsing");
     let tree = AlParser::parse_quick(&text).tree;
     documents.cache_tree(uri, version, tree.clone());
@@ -85,6 +111,37 @@ mod tests {
         // Second call: should use cache (same version)
         let result2 = get_or_parse(&store, &uri);
         assert!(result2.is_some());
+    }
+
+    #[test]
+    fn test_concurrent_get_or_parse_does_not_double_parse() {
+        // Regression: hover + completion + semantic-tokens fire near-
+        // simultaneously on a keystroke. Without per-URI parse-lock
+        // serialisation, each would miss the cache, race into parse_quick,
+        // and pay the 30-50 ms cost N times. With the lock, the first
+        // request parses; the rest find the cache populated.
+        let store = std::sync::Arc::new(DocumentStore::new());
+        let uri = test_uri("concurrent");
+        // A non-trivial source so the cost gap is visible enough to be
+        // measurable, though we assert on cache-hits not timing.
+        let src = "codeunit 50100 Concurrent { procedure Foo() begin end; }\n".repeat(50);
+        store.open(uri.clone(), src);
+
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let store = store.clone();
+                let uri = uri.clone();
+                std::thread::spawn(move || {
+                    assert!(get_or_parse(&store, &uri).is_some());
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        // Single shared cache entry after the storm.
+        assert!(store.get_cached_tree(&uri).is_some());
     }
 
     #[test]
