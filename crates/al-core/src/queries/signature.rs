@@ -69,12 +69,28 @@ fn build_signature_info_from_method(
 
 /// Pick the index of the signature whose parameter count first exceeds
 /// `active_param` — the one most likely to match the partially-typed call.
-/// Falls back to 0 (first signature) if no signature has enough parameters.
+///
+/// If no signature has enough parameters (the user has typed past every
+/// overload's max arg count — e.g. `Foo(a, b, c, d, e,` where the longest
+/// overload only has 3 params), fall back to the **widest** signature so
+/// the editor at least highlights the last valid slot rather than slot 0
+/// of the first overload, which usually doesn't even exist in the
+/// trailing-arg position. F-OPEN-040.
 fn pick_active_signature(signatures: &[SignatureInfo], active_param: u32) -> u32 {
-    signatures
+    if let Some(idx) = signatures
         .iter()
         .position(|s| s.parameters.len() as u32 > active_param)
-        .unwrap_or(0) as u32
+    {
+        return idx as u32;
+    }
+    // No overload accommodates this argument index. Pick the widest so the
+    // editor's highlight at least lands inside a real overload's parameter
+    // list. Ties go to the first matching index (stable selection).
+    signatures
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, s)| s.parameters.len())
+        .map_or(0, |(idx, _)| idx as u32)
 }
 
 /// Convert a detail string into `ParameterInfo` entries.
@@ -479,10 +495,13 @@ mod tests {
         assert_eq!(pick_active_signature(&sigs, 0), 1);
     }
 
-    /// T063 negative: when no signature has enough parameters for the
-    /// requested active_param, fall back to the first signature (index 0).
+    /// F-OPEN-040: when no signature has enough parameters for the
+    /// requested `active_param`, fall back to the **widest** overload
+    /// rather than the first (index 0). This way the editor's
+    /// parameter-highlight at least lands inside a real argument list
+    /// instead of the first overload's nonexistent slot 0.
     #[test]
-    fn t063_pick_active_signature_falls_back_when_no_match() {
+    fn pick_active_signature_falls_back_to_widest_when_no_match() {
         let m0 = make_method("Send", vec![], Some("Boolean"));
         let m1 = make_method("Send", vec!["A"], Some("Boolean"));
 
@@ -491,7 +510,29 @@ mod tests {
 
         let sigs = vec![s0, s1];
 
-        // active_param = 5 — neither overload has 6 parameters; fall back to 0.
-        assert_eq!(pick_active_signature(&sigs, 5), 0);
+        // active_param = 5 — neither overload has 6 parameters. m1 has
+        // the widest (1 param), so its index (1) should be picked. The
+        // previous behaviour returned 0 which is the no-arg overload —
+        // a worse UI choice because slot 5 doesn't exist there either.
+        assert_eq!(pick_active_signature(&sigs, 5), 1);
+    }
+
+    #[test]
+    fn pick_active_signature_widest_with_ties_picks_last() {
+        // F-OPEN-040: when two overloads tie on parameter count and
+        // neither accommodates `active_param`, the fallback picks one
+        // of them — the exact one isn't load-bearing for the user. The
+        // implementation uses `Iterator::max_by_key`, which by Rust's
+        // documented behaviour returns the LAST maximum, so the second
+        // tied overload wins. This test pins that behaviour so a future
+        // refactor that switches to e.g. a fold-based first-wins
+        // doesn't silently flip the choice.
+        let m0 = make_method("Send", vec!["A", "B"], Some("Boolean"));
+        let m1 = make_method("Send", vec!["C", "D"], Some("Boolean"));
+
+        let s0 = build_signature_info_from_method(&m0, 7);
+        let s1 = build_signature_info_from_method(&m1, 7);
+
+        assert_eq!(pick_active_signature(&[s0, s1], 7), 1);
     }
 }
