@@ -22,6 +22,17 @@ use serde::Serialize;
 use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
 use super::index::{CallGraph, EdgeKind, NodeId};
 
+/// Upper bound on total nodes visited by `trace_event_chain` across all
+/// branches of the recursion. The existing `max_depth` cap protects
+/// against deep chains, but a wide-but-shallow event tree (one publisher
+/// with thousands of subscribers, each fanning out further) can clone
+/// thousands of `ChainNode` strings before exhausting depth. F-OPEN-027.
+///
+/// 10_000 nodes × ~100-byte chain entries = ~1 MB worst-case response —
+/// the bound is per-query so well-behaved BC workspaces (typically <1k
+/// nodes per trace) never hit it.
+const MAX_CHAIN_NODES: usize = 10_000;
+
 /// A single step in an event trace.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -291,7 +302,7 @@ fn recurse_event(
     visited: &mut HashSet<NodeId>,
     total: &mut usize,
 ) -> Vec<ChainNode> {
-    if depth > max_depth {
+    if depth > max_depth || *total >= MAX_CHAIN_NODES {
         return vec![];
     }
 
@@ -334,7 +345,7 @@ fn recurse_subscriber(
     visited: &mut HashSet<NodeId>,
     total: &mut usize,
 ) -> Vec<ChainNode> {
-    if depth > max_depth {
+    if depth > max_depth || *total >= MAX_CHAIN_NODES {
         return vec![];
     }
 
