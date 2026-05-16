@@ -677,6 +677,18 @@ Carry-forwards (P2/P3 — defer):
 
 Workspace test count: 1910 → 1911 (+1 trace_event_chain determinism regression). All gates green.
 
+### Iteration 30 (2026-05-16, +870m)
+
+One commit. Closing F-OPEN-089 from iter-29 — the chain-children determinism follow-up.
+
+Iter-29 sorted trace_event_chain root order; this iteration sorts the children under each root. `subscribers_of` / `callees_of` returned NodeIds in CallGraph build order, which tracks DashMap iteration in SymbolIndex — non-deterministic across process restarts. The graph IS rebuilt every keystroke, so the unstable child order surfaces in test output and DOT/JSON exports of any non-trivial chain.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-052 | P1 | F-OPEN-089 closed. `recurse_event` sorts subscribers by NodeId; `recurse_subscriber` clones callees and sorts by `(target NodeId, kind_rank)` with a total-order discriminant so duplicate targets with different edge kinds are also stable. Bounded by MAX_CHAIN_NODES (10K) so per-call sort cost is negligible. Strengthened regression test asserts a flattened subscriber list under the chain root is byte-identical across 5 rebuilds — catches drift in either roots OR children. |
+
+Workspace test count: 1911 → 1912 (+1 chain-children determinism regression). All gates green.
+
 
 
 | Phase | Status | Output |
