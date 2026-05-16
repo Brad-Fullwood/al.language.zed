@@ -1669,6 +1669,23 @@ pub(super) async fn dispatch_xlf_refresh(
             .unwrap_or_else(|| xlf_path.with_extension("g.xlf"))
     };
 
+    // F-OPEN-045: refuse to load either .xlf past the 64 MB cap.
+    for (label, p) in [
+        ("generated", generated_path.as_path()),
+        ("lang", xlf_path.as_path()),
+    ] {
+        if matches!(crate::xliff::xlf_exceeds_cap(p), Some(true)) {
+            return rpc_error(
+                id,
+                al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
+                &format!(
+                    "{label} xlf {} exceeds {} byte size limit — refusing to parse",
+                    p.display(),
+                    crate::xliff::MAX_XLF_FILE_BYTES
+                ),
+            );
+        }
+    }
     let gen_content = match tokio::fs::read_to_string(&generated_path).await {
         Ok(c) => c,
         Err(e) => {
@@ -1740,6 +1757,22 @@ pub(super) fn dispatch_xlf_untranslated(id: u64, params: &serde_json::Value) -> 
             "'xlf' must be an absolute path",
         );
     }
+    // F-OPEN-045: refuse to load .xlf files past the 64 MB cap. Real BC
+    // translation files are tiny; anything larger is a misconfigured or
+    // hostile input we shouldn't even start to parse.
+    if matches!(
+        crate::xliff::xlf_exceeds_cap(std::path::Path::new(xlf_path)),
+        Some(true)
+    ) {
+        return rpc_error(
+            id,
+            al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
+            &format!(
+                "{xlf_path} exceeds {} byte .xlf size limit — refusing to parse",
+                crate::xliff::MAX_XLF_FILE_BYTES
+            ),
+        );
+    }
     let xlf_content = match tokio::task::block_in_place(|| std::fs::read_to_string(xlf_path)) {
         Ok(c) => c,
         Err(e) => {
@@ -1797,6 +1830,20 @@ pub(super) async fn dispatch_xlf_suggest(
         );
     }
 
+    // F-OPEN-045: refuse to load .xlf files past the 64 MB cap.
+    if matches!(
+        crate::xliff::xlf_exceeds_cap(std::path::Path::new(xlf_path)),
+        Some(true)
+    ) {
+        return rpc_error(
+            id,
+            al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
+            &format!(
+                "{xlf_path} exceeds {} byte .xlf size limit — refusing to parse",
+                crate::xliff::MAX_XLF_FILE_BYTES
+            ),
+        );
+    }
     let xlf_content = match tokio::task::block_in_place(|| std::fs::read_to_string(xlf_path)) {
         Ok(c) => c,
         Err(e) => {

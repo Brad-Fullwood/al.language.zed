@@ -19,6 +19,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::workspace::Workspace;
 
+/// Upper bound on `.xlf` files we'll read into memory. Real AL translation
+/// files are at most a few MB even on huge BC apps; a 64 MB cap is a
+/// defence-in-depth bound that lets `parse_xliff` keep its simple
+/// in-memory line-based parser without risking OOM from a malformed or
+/// hostile input. F-OPEN-045.
+pub const MAX_XLF_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Return whether `path`'s on-disk size exceeds `MAX_XLF_FILE_BYTES`.
+/// Callers should refuse to parse the file if this returns `Some(true)`.
+/// `Some(false)` means the file is below the cap; `None` means metadata
+/// could not be read (file missing or perms error) — caller decides
+/// whether to surface that error itself.
+pub fn xlf_exceeds_cap(path: &Path) -> Option<bool> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some(meta.len() > MAX_XLF_FILE_BYTES)
+}
+
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -1134,6 +1151,35 @@ le monde</target>
         let unit = parsed.get("multiline.2").expect("unit should parse");
         assert_eq!(unit.target.as_deref(), Some("Bonjour\nle monde"));
         assert_eq!(unit.state, TranslationState::Translated);
+    }
+
+    #[test]
+    fn xlf_exceeds_cap_small_file_returns_some_false() {
+        // Positive: a normal-sized .xlf is allowed through.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.xlf");
+        std::fs::write(&path, b"<xliff/>").unwrap();
+        assert_eq!(xlf_exceeds_cap(&path), Some(false));
+    }
+
+    #[test]
+    fn xlf_exceeds_cap_huge_file_returns_some_true() {
+        // Negative: a virtual 100 MB .xlf is refused. Sparse-file trick
+        // — disk usage is one block, but metadata reports the full size.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.xlf");
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(100 * 1024 * 1024).unwrap();
+        drop(f);
+        assert_eq!(xlf_exceeds_cap(&path), Some(true));
+    }
+
+    #[test]
+    fn xlf_exceeds_cap_missing_file_returns_none() {
+        // Negative: a path that doesn't exist returns None — caller
+        // decides whether to surface the error.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(xlf_exceeds_cap(&dir.path().join("nope.xlf")), None);
     }
 
     #[test]
