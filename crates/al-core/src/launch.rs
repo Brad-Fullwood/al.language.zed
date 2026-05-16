@@ -65,6 +65,13 @@ impl BcServerConfig {
         match self.environment_type {
             EnvironmentType::OnPrem => {
                 let server = self.server.as_deref()?;
+                if !is_safe_http_server(server) {
+                    warn!(
+                        server = %server,
+                        "BC server URL must start with http:// or https:// (or be a bare host); refusing to construct dev-packages URL"
+                    );
+                    return None;
+                }
                 let instance = self.server_instance.as_deref()?;
                 let base = if let Some(port) = self.port {
                     format!("{}:{}", server.trim_end_matches('/'), port)
@@ -224,6 +231,29 @@ const MAX_LAUNCH_FILE_BYTES: u64 = 1_048_576;
 
 /// Read a launch/debug config file, refusing inputs larger than
 /// `MAX_LAUNCH_FILE_BYTES` before allocating.
+/// Allowlist check on the `server` field of an OnPrem BC config.
+///
+/// AL launch configs let users specify the BC server URL freely. A misconfigured
+/// or adversarial config could use `file:///etc/passwd` or `gopher://...` and
+/// that URL would be handed unchanged to the BC HTTP client. Restrict to
+/// http(s):// (the only two schemes the BC dev API uses) or bare hostnames
+/// (e.g. `localhost`, where the BC client default-prepends http://).
+fn is_safe_http_server(server: &str) -> bool {
+    let s = server.trim();
+    if s.is_empty() {
+        return false;
+    }
+    // Explicit schemes — only http(s) accepted.
+    if let Some(rest) = s.split_once("://") {
+        let scheme = rest.0.to_ascii_lowercase();
+        return scheme == "http" || scheme == "https";
+    }
+    // Bare host (no scheme): reject if it contains a `:` followed by what looks
+    // like an unknown-scheme separator. A `:` for port-only (e.g. `localhost:7048`)
+    // is fine; that's a port number, not a scheme. Accept the rest.
+    true
+}
+
 fn read_launch_file_capped(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
     let size = std::fs::metadata(path)?.len();
     if size > MAX_LAUNCH_FILE_BYTES {
@@ -416,5 +446,25 @@ mod tests {
             err.contains("refusing to parse"),
             "error must mention size refusal: {err}"
         );
+    }
+
+    #[test]
+    fn server_scheme_allowlist_accepts_http_and_bare_host() {
+        assert!(is_safe_http_server("http://localhost"));
+        assert!(is_safe_http_server("https://bc.example.com"));
+        assert!(is_safe_http_server("HTTP://CASE-INSENSITIVE"));
+        assert!(is_safe_http_server("localhost"));
+        assert!(is_safe_http_server("localhost:7048"));
+        assert!(is_safe_http_server("bc.example.com"));
+    }
+
+    #[test]
+    fn server_scheme_allowlist_rejects_unsafe_schemes() {
+        assert!(!is_safe_http_server("file:///etc/passwd"));
+        assert!(!is_safe_http_server("gopher://example.com"));
+        assert!(!is_safe_http_server("javascript://alert(1)"));
+        assert!(!is_safe_http_server("ftp://example.com"));
+        assert!(!is_safe_http_server(""));
+        assert!(!is_safe_http_server("   "));
     }
 }
