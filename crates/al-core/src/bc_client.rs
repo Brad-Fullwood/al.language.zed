@@ -105,6 +105,31 @@ pub enum BcClientError {
     CompilationErrors,
     #[error("Timeout after {secs}s waiting for BC server")]
     Timeout { secs: u64 },
+    #[error(".app file too large to upload: {bytes} bytes exceeds {limit} byte limit")]
+    AppFileTooLarge { bytes: u64, limit: u64 },
+}
+
+/// Maximum size of a `.app` file we'll buffer into memory for upload.
+///
+/// 500 MB. Typical BC extensions are 1–50 MB, with the largest BaseApp
+/// builds around 200 MB. Anything past 500 MB is almost certainly a
+/// build mistake or a malformed input we shouldn't be loading into the
+/// daemon's address space. F-OPEN-(xliff-publish-audit-3).
+const MAX_UPLOADABLE_APP_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Read an `.app` file into memory after verifying its size doesn't
+/// exceed `MAX_UPLOADABLE_APP_BYTES`. Returns `AppFileTooLarge` if the
+/// file is bigger than the cap, without ever buffering the body.
+async fn read_app_capped(app_path: &Path) -> Result<Vec<u8>, BcClientError> {
+    let metadata = tokio::fs::metadata(app_path).await?;
+    let size = metadata.len();
+    if size > MAX_UPLOADABLE_APP_BYTES {
+        return Err(BcClientError::AppFileTooLarge {
+            bytes: size,
+            limit: MAX_UPLOADABLE_APP_BYTES,
+        });
+    }
+    Ok(tokio::fs::read(app_path).await?)
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +226,7 @@ impl BcClient {
         app_path: &Path,
     ) -> Result<ExtensionPublishResponse, BcClientError> {
         let url = format!("{}/dev/extensions", self.base_url);
-        let app_bytes = tokio::fs::read(app_path).await?;
+        let app_bytes = read_app_capped(app_path).await?;
         let file_name = app_path
             .file_name()
             .and_then(|n| n.to_str())
@@ -237,7 +262,7 @@ impl BcClient {
         app_path: &Path,
     ) -> Result<ApplicationStateResponse, BcClientError> {
         let url = format!("{}/dev/applications/{}", self.base_url, app_id);
-        let app_bytes = tokio::fs::read(app_path).await?;
+        let app_bytes = read_app_capped(app_path).await?;
 
         debug!(url = %url, app_id = %app_id, bytes = app_bytes.len(), "RAD incremental deploy");
 
@@ -506,5 +531,43 @@ mod tests {
         let out = sanitize_error_body(&body);
         // Should not panic and should be valid UTF-8.
         assert!(out.is_char_boundary(out.len()));
+    }
+
+    // --- read_app_capped (F-OPEN-(xliff-publish-audit-3)) -------------------
+
+    #[tokio::test]
+    async fn read_app_capped_accepts_normal_sized_file() {
+        // Positive: a small `.app` file under the cap loads successfully.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.app");
+        let payload = vec![0u8; 1024];
+        tokio::fs::write(&path, &payload).await.unwrap();
+
+        let bytes = read_app_capped(&path).await.unwrap();
+        assert_eq!(bytes.len(), 1024);
+    }
+
+    #[tokio::test]
+    async fn read_app_capped_rejects_oversize_without_reading() {
+        // Negative: a `.app` larger than `MAX_UPLOADABLE_APP_BYTES` must
+        // be refused with `AppFileTooLarge` BEFORE the body is read into
+        // memory. Producing a 500+ MB file in the test would be wasteful;
+        // we use a sparse file via `set_len` so the metadata reports a
+        // huge size but the actual disk usage is one block.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.app");
+        let file = std::fs::File::create(&path).unwrap();
+        // 600 MB virtual size — past the 500 MB cap.
+        file.set_len(600 * 1024 * 1024).unwrap();
+        drop(file);
+
+        let err = read_app_capped(&path).await.unwrap_err();
+        match err {
+            BcClientError::AppFileTooLarge { bytes, limit } => {
+                assert_eq!(bytes, 600 * 1024 * 1024);
+                assert_eq!(limit, MAX_UPLOADABLE_APP_BYTES);
+            }
+            other => panic!("expected AppFileTooLarge, got {other:?}"),
+        }
     }
 }
