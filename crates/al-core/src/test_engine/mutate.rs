@@ -561,8 +561,15 @@ pub async fn run_mutation_testing(
 
     let mut outcomes: Vec<VariantOutcome> = Vec::new();
 
-    for file_path in &files {
-        let variants = generate_variants_for_file(workspace, file_path);
+    for (file_path, cached) in &files {
+        // Reuse the parse cached by `collect_mutation_files` to avoid a
+        // second `get_cached_parse` clone of (text, tree) per file
+        // (F-OPEN-094). If the cache was invalidated between the two reads
+        // (user edit mid-run), fall back to the legacy refetch path.
+        let variants = match cached {
+            Some((text, tree)) => generate_variants(file_path, text, tree),
+            None => generate_variants_for_file(workspace, file_path),
+        };
 
         for variant in variants {
             let variant_id = variant.id.clone();
@@ -614,16 +621,28 @@ pub async fn run_mutation_testing(
 ///
 /// With `affected_only = true`, only files that contain `[Test]` codeunits are
 /// included — this keeps the default scope tight.
-fn collect_mutation_files(workspace: &Workspace, opts: &MutationOptions) -> Vec<String> {
-    let mut files: Vec<String> = Vec::new();
+///
+/// Returns `(path_string, Option<(text, tree)>)` per file. The cached parse is
+/// carried forward to the variant-generation step so the run loop doesn't
+/// re-fetch from `file_index` and pay a second `(String, Tree)` clone per
+/// file (F-OPEN-094). When the cache is missed (rare — files added but not
+/// indexed), the tuple's second element is None and the run loop falls back
+/// to the document-store path inside `generate_variants_for_file`.
+fn collect_mutation_files(
+    workspace: &Workspace,
+    opts: &MutationOptions,
+) -> Vec<(String, Option<(String, tree_sitter::Tree)>)> {
+    let mut files: Vec<(String, Option<(String, tree_sitter::Tree)>)> = Vec::new();
 
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
         let path_str = path.to_string_lossy().to_string();
 
+        let cached = workspace.file_index.get_cached_parse(path);
+
         if opts.affected_only {
-            // Only include files that have test procedures
-            let Some((text, tree)) = workspace.file_index.get_cached_parse(path) else {
+            // Only include files that have test procedures.
+            let Some((text, tree)) = cached.as_ref() else {
                 continue;
             };
             let root = tree.root_node();
@@ -635,14 +654,15 @@ fn collect_mutation_files(workspace: &Workspace, opts: &MutationOptions) -> Vec<
             }
         }
 
-        files.push(path_str);
+        files.push((path_str, cached));
     }
 
     // Sort so mutation reports are deterministic across runs — `file_index.files`
     // is a DashMap whose iteration order tracks the shard hash and varies across
     // process restarts. Without this sort, CI snapshots and human review of
-    // mutation results would diff spuriously.
-    files.sort();
+    // mutation results would diff spuriously. Sort by path only; cached parses
+    // are equal-by-path semantically.
+    files.sort_by(|a, b| a.0.cmp(&b.0));
 
     files
 }
