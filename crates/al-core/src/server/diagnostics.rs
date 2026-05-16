@@ -188,6 +188,8 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
             // semantic pipeline is broken. Throttle to once per session via
             // `should_report_semantic_failure` so opening many files with a
             // poisoned bridge does not spam the editor.
+            // Cooldown is transient (recovers in ~30s) — do NOT notify the user.
+            // Timeout and Poisoned indicate persistent breakage.
             let is_persistent = matches!(
                 &error,
                 crate::semantic::SemanticError::Timeout(_)

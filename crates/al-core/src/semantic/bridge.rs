@@ -147,6 +147,13 @@ pub enum SemanticError {
 
     #[error("Bridge Mutex is poisoned -- CLR state may be corrupt after a panic")]
     Poisoned,
+
+    /// The bridge is in a temporary cooldown window after a prior call timed
+    /// out or hung. Distinct from `Poisoned` (true mutex poison) so callers
+    /// can choose to retry after the cooldown elapses without triggering a
+    /// full bridge restart.
+    #[error("Bridge in cooldown after recent timeout/hang ({0})")]
+    Cooldown(&'static str),
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +266,7 @@ impl SemanticBridge {
                     cooldown_secs = TIMEOUT_COOLDOWN.as_secs(),
                     "semantic bridge: short-circuiting (cooldown window)"
                 );
-                return Err(SemanticError::Poisoned);
+                return Err(SemanticError::Cooldown("cooldown window after timeout"));
             }
             // Cooldown elapsed — probe the Mutex before releasing the gate.
             // If it's still held, the previous call is stuck; re-stamp the
@@ -285,7 +292,7 @@ impl SemanticBridge {
                         elapsed,
                         "semantic bridge: cooldown elapsed but lock STILL held — extending cooldown"
                     );
-                    return Err(SemanticError::Poisoned);
+                    return Err(SemanticError::Cooldown("hung call still holding the lock"));
                 }
                 Err(std::sync::TryLockError::Poisoned(_)) => {
                     // Mutex was poisoned by a panicking call — we know the
