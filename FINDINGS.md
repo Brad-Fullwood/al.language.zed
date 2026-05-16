@@ -711,6 +711,27 @@ Carry-forwards (P2/P3 — design / future-phase concerns):
 
 Workspace test count: 1912 → 1913 (+1 stub-phase contract test). All gates green.
 
+### Iteration 32 (2026-05-16, +930m)
+
+One commit. Audit focus: `test_runtime/interpreter/eval_stmt.rs` (1200 LOC) — the statement evaluator. Daemon-critical because it runs user test bodies in-process; a panic here kills the daemon.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-055 | **P0** | `eval_stmt` recursed directly for every nested block, branch, loop body. `dispatch.rs::MAX_RECURSION_DEPTH` (100) caps call recursion only — a single procedure body containing thousands of nested `begin/end` or `if … then if …` would blow the Rust stack and kill the daemon. Added `DispatchCtx::ast_depth` counter (cap `MAX_AST_DEPTH = 1024`) incremented around the recursive call. Sized above the cumulative AST levels a 100-deep call chain can produce (~4 levels per frame) so infinite-call tests still trip the cleaner `recursion_depth` error first. Pathological single-procedure nesting now aborts with a clear `Eval::Error("AST nesting depth exceeded …")`. Iterative rewrite deferred — the cap is the load-bearing fix. |
+| F-FIX-056 | **P1** | `for ... to` direction detection used `node_text(node).to_ascii_lowercase().contains("downto")` — matched anywhere in the for-statement text, including the body. Any identifier or string literal containing the substring (e.g. `MyDownToValue`) silently flipped direction. Now consults the grammar's `direction` field (`kw_downto` / `kw_to`); substring check kept as fallback for malformed parses. |
+
+Carry-forwards (P1/P2 — design or out of scope for this iteration):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-096 | P1 | Cancellation token (F-OPEN-093) still not plumbed. `eval_stmt` loop bodies check `ctx.deadline_exceeded()` but not a separate `is_cancelled` signal. A daemon `$/cancelRequest` mid-test cannot interrupt the interpreter before the wall-clock deadline. Needs a Notify or atomic bool threaded through. |
+| F-OPEN-097 | P1 | `eval_case`'s `case_else` body lookup falls through to `named_child(0)` if the field isn't set — could pick a `kw_else` keyword node instead of the actual body. Similar pattern to F-FIX-056. Verify in a follow-up. |
+| F-OPEN-098 | P2 | `apply_variant` UTF-8 boundary risk (mutate.rs): `source.len()` clamp doesn't enforce char boundary. Variants today come from tree-sitter (char-safe) but a future user-supplied variant API would need `floor_char_boundary`. |
+| F-OPEN-099 | P2 | `values_equal_for_case` (line 962) compares Integer↔Decimal via `*x as f64 == *y` — lossy above 2^53. Edge case for currency-like values. |
+| F-OPEN-100 | P2 | `eval_args_into` absorbs `Eval::Exit` as a value rather than unwinding the enclosing procedure. AL semantics: `exit` in an argument expression should propagate. |
+
+Workspace test count: 1913 → 1916 (+3 ast_depth + downto regression tests). All gates green.
+
 
 
 | Phase | Status | Output |
