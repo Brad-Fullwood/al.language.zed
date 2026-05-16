@@ -27,6 +27,72 @@ use tracing::{debug, error, info, warn};
 
 pub use editor_services::find_editor_services;
 
+/// Redact known credential / secret fields from a DAP message body before
+/// writing to the `AL_DAP_CAPTURE` log. The DAP `launch` request carries
+/// `arguments` like `password`, `accessToken`, `apiKey`, `clientSecret` —
+/// fields that should never end up in a developer's debug log file.
+///
+/// Parses the body as JSON, walks the tree, replaces the string value of
+/// any field whose lowercased name appears in `SENSITIVE_FIELDS` with
+/// `<redacted>`. If the body doesn't parse as JSON, returns it via lossy
+/// UTF-8 unchanged — capture is opt-in via env var, and an unparseable
+/// body in the capture log is no worse than the pre-fix behaviour.
+///
+/// Defence-in-depth only. Stops a developer's accidentally-shared log
+/// file from leaking credentials.
+fn redact_dap_body_for_log(body: &[u8]) -> String {
+    /// Field names (lowercased) whose string value should be replaced.
+    const SENSITIVE_FIELDS: &[&str] = &[
+        "password",
+        "accesstoken",
+        "access_token",
+        "refreshtoken",
+        "refresh_token",
+        "token",
+        "apikey",
+        "api_key",
+        "clientsecret",
+        "client_secret",
+        "bearer",
+        "authorization",
+        "secret",
+    ];
+
+    fn walk(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, v) in map.iter_mut() {
+                    if SENSITIVE_FIELDS.contains(&key.to_lowercase().as_str()) {
+                        if let serde_json::Value::String(s) = v {
+                            // Preserve "empty value" — there's nothing to hide.
+                            if !s.is_empty() {
+                                *s = "<redacted>".to_string();
+                            }
+                        }
+                    } else {
+                        walk(v);
+                    }
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for v in arr.iter_mut() {
+                    walk(v);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(mut v) => {
+            walk(&mut v);
+            serde_json::to_string(&v).unwrap_or_else(|_| String::from_utf8_lossy(body).into_owned())
+        }
+        // Non-JSON body — pass through. Capture log is best-effort.
+        Err(_) => String::from_utf8_lossy(body).into_owned(),
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DapError {
     #[error("IO error: {0}")]
@@ -166,7 +232,7 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                     if let Some(ref log) = capture_out {
                         if let Ok(mut f) = log.lock() {
                             use std::io::Write as _;
-                            let _ = writeln!(f, ">>> ZED→ES: {}", String::from_utf8_lossy(&body));
+                            let _ = writeln!(f, ">>> ZED→ES: {}", redact_dap_body_for_log(&body));
                         }
                     }
                     let patched = {
@@ -195,7 +261,7 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
                     if let Some(ref log) = capture_in {
                         if let Ok(mut f) = log.lock() {
                             use std::io::Write as _;
-                            let _ = writeln!(f, "<<< ES→ZED: {}", String::from_utf8_lossy(&body));
+                            let _ = writeln!(f, "<<< ES→ZED: {}", redact_dap_body_for_log(&body));
                         }
                     }
                     let patched = patch_incoming(&body, &seq_counter);
@@ -430,4 +496,62 @@ fn patch_incoming(body: &[u8], counter: &AtomicI64) -> Vec<u8> {
     }
 
     serde_json::to_vec(&msg).unwrap_or_else(|_| body.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- redact_dap_body_for_log (F-OPEN-(dap-audit-1)) ---------------------
+
+    #[test]
+    fn redacts_password_in_launch_arguments() {
+        let body =
+            br#"{"type":"request","command":"launch","arguments":{"password":"supersecret"}}"#;
+        let out = redact_dap_body_for_log(body);
+        assert!(!out.contains("supersecret"), "got: {out}");
+        assert!(out.contains("\"password\":\"<redacted>\""), "got: {out}");
+    }
+
+    #[test]
+    fn redacts_access_token_field_variants() {
+        // Both camelCase and snake_case, both compact and with space.
+        let body = br#"{"accessToken":"AAA","access_token": "BBB"}"#;
+        let out = redact_dap_body_for_log(body);
+        assert!(!out.contains("AAA"));
+        assert!(!out.contains("BBB"));
+    }
+
+    #[test]
+    fn redactor_preserves_non_sensitive_fields() {
+        // Positive: a field like "name" must NOT be redacted.
+        let body = br#"{"name":"keep me","password":"drop me"}"#;
+        let out = redact_dap_body_for_log(body);
+        assert!(out.contains("\"name\":\"keep me\""));
+        assert!(!out.contains("drop me"));
+    }
+
+    #[test]
+    fn redactor_handles_empty_value() {
+        let body = br#"{"password":""}"#;
+        let out = redact_dap_body_for_log(body);
+        // Empty value stays empty (nothing between the quotes to redact).
+        assert!(out.contains("\"password\":\"\""), "got: {out}");
+    }
+
+    #[test]
+    fn redactor_is_case_insensitive_on_field_name() {
+        let body = br#"{"Password":"foo","BEARER":"bar"}"#;
+        let out = redact_dap_body_for_log(body);
+        assert!(!out.contains("foo"));
+        assert!(!out.contains("bar"));
+    }
+
+    #[test]
+    fn redactor_handles_multiple_occurrences_of_same_field() {
+        let body = br#"{"password":"first","other":{"password":"second"}}"#;
+        let out = redact_dap_body_for_log(body);
+        assert!(!out.contains("first"));
+        assert!(!out.contains("second"));
+    }
 }
