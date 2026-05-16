@@ -689,6 +689,28 @@ Iter-29 sorted trace_event_chain root order; this iteration sorts the children u
 
 Workspace test count: 1911 → 1912 (+1 chain-children determinism regression). All gates green.
 
+### Iteration 31 (2026-05-16, +900m)
+
+One commit. Audit focus: `test_engine/mutate.rs` (1004 LOC) — mutation testing engine, called from the daemon `tests.mutate` endpoint and `al mutate` CLI.
+
+**Audit verdict:** the mutation generator is structurally sound (iterative traversal, no panics, no DashMap-across-await, no `lsp_types::*`, operators matched on tokens not keywords). But a P0 leaked through the scaffolding: the test-execution layer is a stub that unconditionally reports "survived", and the public `mutation_score()` returned 0.0 instead of signalling "no real signal yet".
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-053 | **P0** | `run_single_variant` (mutate.rs:611) was a scaffolding stub that always returned `killed: false` — `mutation_score()` then dutifully divided 0 by total and returned 0.0. The daemon `tests.mutate` and `al mutate` CLI surfaced this as a definitive-looking report. Added `MutationExecutorPhase { Stub, Interpreter }` to `MutationReport`; `mutation_score()` now returns `Option<f64>` (`None` under stub or no-variants). All three construction sites (in-process driver, daemon dispatch, daemon empty-files early-return) tagged as `Stub`. Consumers can now warn the user that the score is not yet meaningful. Tests updated to the `Option<f64>` API; one new test pins the stub-phase contract. |
+| F-FIX-054 | P1 | `collect_mutation_files` (mutate.rs:578) iterated `file_index.files` (DashMap) so `report.variants` was ordered by shard hash — different across process restarts. CI snapshots and human review diffed spuriously. Now `files.sort()` before returning. |
+
+Carry-forwards (P2/P3 — design / future-phase concerns):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-092 | P2 | `apply_variant` (mutate.rs:473) clamps `variant.byte_start` to `source.len()` but not to a char boundary. Stale variants from a between-mutation source edit would panic on `&source[..start]`. Variant byte positions today come from tree-sitter so are char-safe; a future user-supplied variant API needs `floor_char_boundary` or a `Result` return. |
+| F-OPEN-093 | P2 | `run_mutation_testing` has no `CancellationToken`. Once the interpreter backend lands, a daemon `$/cancelRequest` mid-run leaves the current variant running to completion. Plumb cancellation through before the stub is replaced. |
+| F-OPEN-094 | P3 | `affected_only` mode double-parses every file — once in `collect_mutation_files`, again in `generate_variants_for_file`. Pass `(text, tree)` through. |
+| F-OPEN-095 | P3 | `generate_variants` takes `&tree_sitter::Tree` in its public signature — leaks tree-sitter into the API. Consider `pub(crate)` and exposing only the workspace-aware variant. |
+
+Workspace test count: 1912 → 1913 (+1 stub-phase contract test). All gates green.
+
 
 
 | Phase | Status | Output |
