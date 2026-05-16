@@ -407,6 +407,39 @@ Continued chip on F-OPEN-001: justified 4 more `#[allow(clippy::*)]` attrs (quer
 
 Workspace test count: 1878 unchanged. All gates green.
 
+### Iteration 20 (2026-05-16, +570m)
+
+Two commits, one new audit (al-test-harness library — the E2E test harness itself, 11.7K LOC across `src/` + `tests/`).
+
+Audit context: the harness spawns the real `al-lsp` binary over stdio. Bugs here don't crash users — they produce flaky tests, or worse, silent test passes that don't actually exercise the LSP path under test. So a P1 here is "subtly undermines the regression-detection apparatus", not a user-visible crash.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-031 | P2 | `protocol::semantic_token_data` used `arr.chunks(5)` then indexed `chunk[1..=4]`. A misbehaving server emitting a non-multiple-of-5 `data` array would panic on the trailing partial chunk. Switched to `chunks_exact(5)` (silently drops the malformed tail — LSP spec mandates multiples of 5). 3 regression tests. |
+| F-FIX-032 | P1 | `wait_for_diagnostics` swallowed timeouts at WARN level. Tests calling `open_file().await; client.drain_diagnostics();` would silently see an empty map when the 5 s hardcoded cap fired on slow CI. Bumped to ERROR-level logging, made the wait configurable via `AL_TEST_DIAG_TIMEOUT_MS`, and changed the internal return type to `bool` so future tests can opt to fail loudly. |
+| F-FIX-033 | P1 | `request()` had a hardcoded 10 s timeout. Under debug-build CI / debugger-attached runs, slow queries (`completion`, `references` on a large workspace, `formatting` on big files) would silently return `None`/`[]` instead of the real response. Now configurable via `AL_TEST_REQUEST_TIMEOUT_MS` (default 10 s). Error message includes the env-var name. |
+| F-FIX-034 | P3 | `spawn` unconditionally forced `RUST_LOG=debug` on the child. Now only forces it if the test author hasn't already set `RUST_LOG`. `RUST_LOG=warn cargo test -p al-test-harness` now produces a quiet run. |
+| F-FIX-035 | P3 | `scopeguard_remove` doc comment had `id` shell output pasted into it (`uid=1000(braf) gid=1000(braf) groups=…`). Removed. |
+
+False positives caught:
+
+| ID | Where | Why not a bug |
+|---|---|---|
+| F-FP-014 | "`stderr` inheritance creates backpressure deadlock with `RUST_LOG=debug`" | Audit later acknowledged: `Stdio::inherit()` connects the child's stderr to the parent's stderr fd directly, not via a captured pipe. No kernel backpressure path through the harness. |
+| F-FP-015 | "`read_loop` `header_buf` not cleared on `continue`" | Audit self-withdrew on re-read; `header_buf.clear()` at the top of the inner loop covers every iteration. |
+
+Carry-forwards (not fixed this iteration):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-048 | P2 | `mpsc::unbounded_channel()` for notifications. A misbehaving server flooding `$/progress` or `window/logMessage` would grow memory unbounded between `drain_notifications` calls. Long-running tests (`performance.rs`, `integration_full.rs`) the most exposed. Bound to e.g. 10K and warn on overflow. |
+| F-OPEN-049 | P2 | `scopeguard_remove` Drop uses `try_lock`. On a contended map (rare — only `read_loop` holds the lock briefly) the cleanup silently no-ops, leaving a stale oneshot `Sender`. Map grows during a single long test, drops at process exit. Switch to `tokio::task::spawn` an async-locked cleanup, or use a different lock. |
+| F-OPEN-050 | P2 | `read_loop` only matches numeric response ids (`msg.get("id").and_then(\|v\| v.as_i64())`). LSP allows string ids. tower-lsp and al-lsp use numeric, so this is latent — but a future server change to echo string ids would orphan responses. |
+| F-OPEN-051 | P3 | `Lifecycle` enum has one variant (`Stdio(Child)`). Documented as historical (`connect()` was the other variant). Either re-introduce the variant or collapse to `Child` directly. |
+| F-OPEN-052 | P3 | `file_uri` uses `path.to_str().unwrap_or("")` for non-UTF-8 paths. Linux/macOS dev environments aren't exposed to this; flagged for completeness. |
+
+Workspace test count: 1878 → 1881 (+3 for the protocol round-trip tests). All gates green.
+
 
 
 | Phase | Status | Output |
