@@ -468,6 +468,29 @@ Carry-forwards (P2 — known fragility under refactor, not currently exploited):
 
 Workspace test count: 1881 → 1882 (+1 for the ghost-squiggle regression). All gates green.
 
+### Iteration 22 (2026-05-16, +630m)
+
+One commit, one P1 closed (compile timeout + kill), one P3 justified inline (hardcoded analyzer names).
+
+Audit focus: the compile-and-ship path — `crates/al-core/src/{toolchain,build,publish}.rs` (1.5K LOC). Subprocess invocation safety, path traversal, error propagation, TLS, cancellation.
+
+**Audit verdict:** mostly clean. Subprocess args always use per-arg passing (no `sh -c`). All public functions return `Result`. No `unwrap`/`panic`/`todo`/`unreachable` in production. `publish.rs` delegates entirely to `bc_client` for TLS/auth (covered by earlier iterations). One real P1 surfaced — child processes were not killable.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-038 | **P1** | `compile_project` ran `cmd.output().await?` with no timeout, no kill on cancel. tokio does NOT propagate task cancellation to child processes; a rapid-cancel sequence (or upstream `$/cancelRequest` dropping the spawning task) would leave the `alc` child running to completion uncollected, ~200 MB of working set each. Fix: `kill_on_drop(true)` + `tokio::time::timeout` (default 600s, configurable via `AL_COMPILE_TIMEOUT_SECS`, 0 disables). New `AlError::BuildTimeout(u64)` variant. 5 regression tests pin the env-var parsing contract. |
+| F-FIX-039 | P3 | Justified four hardcoded analyzer DLL identifiers (`CodeCop`/`AppSourceCop`/`UICop`/`PerTenantCop`) inline. These are toolchain-side identifiers (Microsoft's published names for the built-in AL static analysers), not AL *language* values — they don't drift with BC releases, so they're exempt from CLAUDE.md's no-hardcoded-AL-values rule. Comment now explains the distinction. |
+
+Carry-forwards (P2 — known fragility, not currently exploited):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-057 | P2 | `build.rs:86` does not canonicalise `project_root` before interpolating into `/project:{}` / `/out:{}`. A workspace folder containing `..` would be honoured by alc; the LSP/CLI caller controls this path so the attack surface is narrow, but `std::fs::canonicalize` at the entry would be defence-in-depth. |
+| F-OPEN-058 | P2 | `build.rs:84-95` writes the `.app` artifact directly into `project_root` via `/out:`. A failed compile that crashes mid-write leaves a partial `.app`; `find_app_file_from_manifest` sorts by mtime as fallback and could pick up the partial. Atomic write would help but requires alc-side cooperation. |
+| F-OPEN-059 | P2 | `toolchain.rs:82-90` honours `$AL_TOOL_PATH` without provenance checks. Consistent with how `dotnet` itself works; documented here for the threat model. The realistic attacker would need ENV access to the daemon process — at which point all bets are off anyway. |
+
+Workspace test count: 1882 → 1887 (+5 timeout/error-variant tests). All gates green.
+
 
 
 | Phase | Status | Output |
