@@ -76,6 +76,15 @@ pub struct TestRunnerClient {
 impl TestRunnerClient {
     /// Build a test runner client from server configuration.
     pub fn new(config: &BcServerConfig) -> Self {
+        if config.accept_invalid_certs {
+            // Parity with bc_server / bc_debug / native_dap / http_auth so
+            // an operator watching daemon logs sees the same "TLS disabled"
+            // warning regardless of which BC client path runs.
+            warn!(
+                "TLS certificate verification disabled for test runner \
+                 (accept_invalid_certs=true) — traffic is vulnerable to MITM substitution."
+            );
+        }
         let client = Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .timeout(Duration::from_secs(300))
@@ -128,7 +137,9 @@ impl TestRunnerClient {
         let status = response.status();
 
         if !status.is_success() {
-            let text = response.text().await.unwrap_or_else(|_| status.to_string());
+            let text = crate::bc_client::sanitize_error_body(
+                &response.text().await.unwrap_or_else(|_| status.to_string()),
+            );
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Err(TestRunnerError::AuthenticationFailed {
                     status: status.as_u16(),
@@ -171,7 +182,9 @@ impl TestRunnerClient {
         let status = response.status();
 
         if !status.is_success() {
-            let text = response.text().await.unwrap_or_else(|_| status.to_string());
+            let text = crate::bc_client::sanitize_error_body(
+                &response.text().await.unwrap_or_else(|_| status.to_string()),
+            );
             return Err(TestRunnerError::ServerError {
                 status: status.as_u16(),
                 message: text,

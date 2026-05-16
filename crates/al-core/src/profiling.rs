@@ -110,7 +110,7 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
     let status = resp.status();
 
     if !status.is_success() {
-        let message = resp.text().await.unwrap_or_default();
+        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
         warn!(status = status.as_u16(), %message, "profiling: start failed");
         return Err(ProfilingError::ServerError {
             status: status.as_u16(),
@@ -161,7 +161,7 @@ pub async fn stop_profiling(
     let status = resp.status();
 
     if !status.is_success() {
-        let message = resp.text().await.unwrap_or_default();
+        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
         warn!(status = status.as_u16(), %message, "profiling: stop failed");
         return Err(ProfilingError::ServerError {
             status: status.as_u16(),

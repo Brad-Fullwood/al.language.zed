@@ -100,7 +100,7 @@ pub async fn start_snapshot(
     let status = resp.status();
 
     if !status.is_success() {
-        let message = resp.text().await.unwrap_or_default();
+        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
         warn!(status = status.as_u16(), %message, "snapshot: start failed");
         return Err(SnapshotError::ServerError {
             status: status.as_u16(),
@@ -138,7 +138,7 @@ pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>
     let status = resp.status();
 
     if !status.is_success() {
-        let message = resp.text().await.unwrap_or_default();
+        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
         return Err(SnapshotError::ServerError {
             status: status.as_u16(),
             message,
@@ -213,7 +213,7 @@ pub async fn download_snapshot(
     let status = resp.status();
 
     if !status.is_success() {
-        let message = resp.text().await.unwrap_or_default();
+        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
         return Err(SnapshotError::ServerError {
             status: status.as_u16(),
             message,
