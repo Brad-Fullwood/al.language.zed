@@ -118,8 +118,11 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
         });
     }
 
-    let json: serde_json::Value = resp
-        .json()
+    // Content-Length-capped read (F-OPEN-044). BC dev API responses for
+    // session start are tiny (a few hundred bytes); 16 MB is a generous
+    // defence-in-depth bound. Wrap the cross-crate BcClientError into our
+    // local error variant so the caller doesn't see a foreign type.
+    let json: serde_json::Value = crate::bc_client::read_json_body_capped(resp)
         .await
         .map_err(|e| ProfilingError::ParseError(format!("Failed to parse start response: {e}")))?;
     let session_id = json

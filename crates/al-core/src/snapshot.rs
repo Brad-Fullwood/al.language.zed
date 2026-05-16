@@ -108,7 +108,15 @@ pub async fn start_snapshot(
         });
     }
 
-    let json: serde_json::Value = resp.json().await?;
+    // Content-Length-capped read (F-OPEN-044). Same defence-in-depth as
+    // the NuGet metadata cap: refuse server responses without a length
+    // header or exceeding 16 MB.
+    let json: serde_json::Value = crate::bc_client::read_json_body_capped(resp)
+        .await
+        .map_err(|e| SnapshotError::ServerError {
+            status: 0,
+            message: e.to_string(),
+        })?;
     let id = json
         .get("id")
         .or_else(|| json.get("snapshotId"))
@@ -145,7 +153,13 @@ pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>
         });
     }
 
-    let json: serde_json::Value = resp.json().await?;
+    // Content-Length-capped read (F-OPEN-044).
+    let json: serde_json::Value = crate::bc_client::read_json_body_capped(resp)
+        .await
+        .map_err(|e| SnapshotError::ServerError {
+            status: 0,
+            message: e.to_string(),
+        })?;
 
     // BC may return either an array or { "value": [...] } (OData envelope).
     let entries = if let Some(arr) = json.as_array() {

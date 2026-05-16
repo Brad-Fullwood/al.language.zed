@@ -152,7 +152,14 @@ impl TestRunnerClient {
             });
         }
 
-        let raw: DevTestRunResponse = response.json().await?;
+        // Content-Length-capped read (F-OPEN-044). BC test-run responses
+        // are typically a few KB; 16 MB is a defence-in-depth bound.
+        let raw: DevTestRunResponse = crate::bc_client::read_json_body_capped(response)
+            .await
+            .map_err(|e| TestRunnerError::ServerError {
+                status: 0,
+                message: e.to_string(),
+            })?;
         let methods = raw
             .value
             .unwrap_or_default()
@@ -191,7 +198,13 @@ impl TestRunnerClient {
             });
         }
 
-        let raw: DevTestListResponse = response.json().await?;
+        // Content-Length-capped read (F-OPEN-044).
+        let raw: DevTestListResponse = crate::bc_client::read_json_body_capped(response)
+            .await
+            .map_err(|e| TestRunnerError::ServerError {
+                status: 0,
+                message: e.to_string(),
+            })?;
         let names = raw
             .value
             .unwrap_or_default()

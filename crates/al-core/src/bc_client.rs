@@ -132,6 +132,51 @@ async fn read_app_capped(app_path: &Path) -> Result<Vec<u8>, BcClientError> {
     Ok(tokio::fs::read(app_path).await?)
 }
 
+/// Upper bound on JSON response bodies from the BC dev API.
+/// Snapshot lists, profile-start replies, test-run results — all tiny
+/// in practice (under 1 MB). 16 MB is a generous defence-in-depth bound
+/// that mirrors the NuGet metadata cap (F-OPEN-018) and stops a
+/// misbehaving server from streaming gigabytes through `serde_json`.
+pub(crate) const MAX_BC_JSON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Read a JSON response body, refusing bodies larger than
+/// `MAX_BC_JSON_RESPONSE_BYTES`. Requires a `Content-Length` header so
+/// the cap is enforceable without first buffering the whole body —
+/// responses without one are refused. Same hardening pattern as
+/// `NuGetClient::fetch_metadata_json` (F-OPEN-018).
+pub(crate) async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, BcClientError> {
+    let content_length = response
+        .content_length()
+        .ok_or_else(|| BcClientError::ServerError {
+            status: response.status().as_u16(),
+            message: "JSON response missing Content-Length header — refusing".to_string(),
+        })?;
+    if content_length > MAX_BC_JSON_RESPONSE_BYTES {
+        return Err(BcClientError::ServerError {
+            status: response.status().as_u16(),
+            message: format!(
+                "JSON response body {content_length} bytes exceeds {MAX_BC_JSON_RESPONSE_BYTES} byte limit"
+            ),
+        });
+    }
+    let bytes = response.bytes().await?;
+    if bytes.len() as u64 > MAX_BC_JSON_RESPONSE_BYTES {
+        return Err(BcClientError::ServerError {
+            status: 0,
+            message: format!(
+                "JSON response actual body {actual} bytes exceeds {MAX_BC_JSON_RESPONSE_BYTES} byte limit — server lied about Content-Length",
+                actual = bytes.len(),
+            ),
+        });
+    }
+    serde_json::from_slice(&bytes).map_err(|e| BcClientError::ServerError {
+        status: 0,
+        message: format!("Failed to parse JSON response: {e}"),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // BC Dev API response types
 // ---------------------------------------------------------------------------
@@ -568,6 +613,89 @@ mod tests {
                 assert_eq!(limit, MAX_UPLOADABLE_APP_BYTES);
             }
             other => panic!("expected AppFileTooLarge, got {other:?}"),
+        }
+    }
+
+    // --- read_json_body_capped (F-OPEN-044) ---------------------------------
+
+    #[derive(Debug, serde::Deserialize)]
+    struct DummyResp {
+        ok: bool,
+    }
+
+    #[tokio::test]
+    async fn read_json_body_capped_accepts_small_response() {
+        // Positive: a Content-Length under the cap deserialises fine.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", "11")
+                    .set_body_string(r#"{"ok":true}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap();
+        let v: DummyResp = read_json_body_capped(resp).await.unwrap();
+        assert!(v.ok);
+    }
+
+    #[tokio::test]
+    async fn read_json_body_capped_refuses_missing_content_length() {
+        // Negative: chunked / no-length responses are refused — the cap
+        // would be unenforceable.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Transfer-Encoding", "chunked")
+                    .set_body_string(r#"{"ok":true}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap();
+        let res: Result<DummyResp, _> = read_json_body_capped(resp).await;
+        assert!(res.is_err(), "missing Content-Length must be refused");
+    }
+
+    #[tokio::test]
+    async fn read_json_body_capped_refuses_oversize_content_length() {
+        // Negative: a Content-Length above the cap is rejected before
+        // the body is read. Wiremock can't actually serve a body shorter
+        // than the claimed length without hyper aborting on the way in;
+        // either reqwest's transport error OR our cap-rejection means
+        // "bogus oversize length doesn't yield Ok JSON".
+        let oversize = (MAX_BC_JSON_RESPONSE_BYTES + 1).to_string();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", oversize.as_str())
+                    .set_body_string(r#"{"ok":true}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new().get(server.uri()).send().await;
+        match resp {
+            Ok(r) => {
+                let res: Result<DummyResp, _> = read_json_body_capped(r).await;
+                assert!(res.is_err(), "oversized Content-Length must not yield Ok");
+            }
+            Err(_) => {
+                // reqwest aborted the response — also acceptable: the
+                // mismatch was caught one layer below.
+            }
         }
     }
 }
