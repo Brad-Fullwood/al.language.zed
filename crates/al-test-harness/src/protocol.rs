@@ -34,12 +34,16 @@ pub fn symbol_names<'a>(symbols: &'a [Value]) -> Vec<&'a str> {
 }
 
 /// Extract semantic token data as groups of 5 integers.
+///
+/// The LSP semantic-tokens spec requires `data` length to be a multiple of 5.
+/// `chunks_exact(5)` silently discards any malformed trailing partial chunk
+/// rather than panicking on indexing past its end.
 pub fn semantic_token_data(result: &Value) -> Vec<[u32; 5]> {
     result
         .get("data")
         .and_then(|d| d.as_array())
         .map(|arr| {
-            arr.chunks(5)
+            arr.chunks_exact(5)
                 .map(|chunk| {
                     [
                         chunk[0].as_u64().unwrap_or(0) as u32,
@@ -111,4 +115,33 @@ pub fn folding_range_lines(ranges: &[Value]) -> Vec<(u32, u32)> {
             Some((start, end))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn semantic_token_data_handles_partial_trailing_chunk_without_panicking() {
+        // Server bug: emits 7 ints instead of a multiple of 5. We must not panic.
+        let result = json!({ "data": [0, 0, 1, 0, 0, 1, 2] });
+        let tokens = semantic_token_data(&result);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], [0, 0, 1, 0, 0]);
+    }
+
+    #[test]
+    fn semantic_token_data_missing_field_returns_empty() {
+        assert!(semantic_token_data(&json!({})).is_empty());
+        assert!(semantic_token_data(&json!({ "data": null })).is_empty());
+        assert!(semantic_token_data(&json!({ "data": [] })).is_empty());
+    }
+
+    #[test]
+    fn semantic_token_data_well_formed_two_tokens() {
+        let result = json!({ "data": [0, 0, 3, 1, 0, 0, 5, 4, 1, 0] });
+        let tokens = semantic_token_data(&result);
+        assert_eq!(tokens, vec![[0, 0, 3, 1, 0], [0, 5, 4, 1, 0]]);
+    }
 }
