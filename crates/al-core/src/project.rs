@@ -157,10 +157,30 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
     })
 }
 
+/// Maximum bytes accepted for an `app.json`. The largest legitimate manifest
+/// we've observed across hundreds of AL projects is ~20 KB (heavy
+/// `dependencies` + `idRanges` arrays). 1 MiB is two orders of magnitude past
+/// that — more than enough headroom for any real project while still refusing
+/// pathological inputs that would OOM the daemon on `read_to_string`.
+const MAX_APP_JSON_BYTES: u64 = 1_048_576;
+
 fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
     let app_json_path = dir.join("app.json");
     if !app_json_path.is_file() {
         return Ok(None);
+    }
+
+    // Refuse pathological inputs before allocating. A 100 GB `app.json` on a
+    // sparse filesystem would have OOM'd the daemon in `read_to_string`.
+    let size = std::fs::metadata(&app_json_path)?.len();
+    if size > MAX_APP_JSON_BYTES {
+        return Err(DiscoveryError::InvalidAppJson {
+            path: app_json_path.clone(),
+            error: format!(
+                "app.json is {} bytes — refusing to parse (cap = {} bytes)",
+                size, MAX_APP_JSON_BYTES
+            ),
+        });
     }
 
     let content = std::fs::read_to_string(&app_json_path)?;
@@ -260,6 +280,52 @@ mod tests {
         let project = find_project(&project_dir).unwrap();
         assert_eq!(project.root, project_dir);
         assert_eq!(project.app_json.name, "Test");
+    }
+
+    #[test]
+    fn test_app_json_oversize_is_rejected() {
+        // Regression: pathological app.json should be refused before
+        // `read_to_string` allocates. A 1 MiB cap is two orders of magnitude
+        // past any legitimate manifest we've seen.
+        let tmp = tempdir();
+        let project_dir = tmp.join("oversize-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        // 2 MiB of valid JSON wrapping: well past the 1 MiB cap.
+        let huge = format!(
+            r#"{{"id":"00000000-0000-0000-0000-000000000000","name":"Test","publisher":"Test","version":"1.0.0.0","_pad":"{}"}}"#,
+            "x".repeat(2 * 1024 * 1024)
+        );
+        std::fs::write(project_dir.join("app.json"), huge).unwrap();
+
+        let result = try_load_project(&project_dir);
+        assert!(result.is_err(), "oversize app.json must be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("refusing to parse"),
+            "error must mention size refusal: {err}"
+        );
+    }
+
+    #[test]
+    fn test_app_json_at_cap_is_accepted() {
+        // Manifests just under the cap should still load — we don't want the
+        // size guard to clip legitimate (if unusual) projects.
+        let tmp = tempdir();
+        let project_dir = tmp.join("just-under-cap-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        // ~512 KiB of padding well within the 1 MiB cap.
+        let manifest = format!(
+            r#"{{"id":"00000000-0000-0000-0000-000000000000","name":"Test","publisher":"Test","version":"1.0.0.0","_pad":"{}"}}"#,
+            "x".repeat(512 * 1024)
+        );
+        std::fs::write(project_dir.join("app.json"), manifest).unwrap();
+
+        let result = try_load_project(&project_dir);
+        assert!(
+            result.is_ok(),
+            "manifest under the cap must load: {result:?}"
+        );
+        assert!(result.unwrap().is_some());
     }
 
     #[test]
