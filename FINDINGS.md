@@ -229,6 +229,34 @@ The audit raised a handful of speculative concerns. None reproduced as real bugs
 
 Workspace test count: 1843 → 1857. All gates green.
 
+### Iteration 12 (2026-05-16, +330m)
+
+Two commits, two carry-forwards closed, one new audit (references/rename/code_actions).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-020 | P3 → fixed | `http_auth::build_http_client` (used by `snapshot` and `profiling`) now emits the same `tracing::warn!` as `bc_server`/`bc_debug`/`bc_client`/`native_dap` when `accept_invalid_certs = true`. Operators see consistent "TLS disabled" warnings regardless of which builder ran. |
+| F-OPEN-038 | P3 → fixed | Added a "Cycle-safety invariant" block to `composition::get_composed`'s docstring. Names the exact requirement for any future walker that wants to follow `extends` chains (HashSet visited param). |
+| F-OPEN-026 | P3 → deferred | Acknowledged as "adversarial input only" in the original finding. Per-line scanning of unterminated strings is intentional — the rest of the line IS broken AL, and the formatter doesn't promise correctness there. No-op. |
+
+New audit: references / rename / code_actions queries (`crates/al-core/src/queries/{references,rename,code_actions}.rs` — the 5199-LOC code_actions, production half only). **Audit verdict: clean.** Every concern checked turned out passing:
+
+- Rename correctness: matches only `identifier` / `quoted_identifier` / `name` tree-sitter node kinds — string literals and comments are different node kinds, so no corruption is possible by construction.
+- Rename scope (F-038 follow-up): two-tier scoping is in place — local procedure-scoped identifiers stay within their procedure byte range; workspace-level names flow through `file_index.files.iter()`.
+- References completeness: snapshot pattern on `file_index.files` is correct (no DashMap-across-await), all workspace files scanned.
+- Panic surfaces in 2620 LOC of production code_actions: only safe `.unwrap_or(fallback)` patterns; all tree-sitter children indexing guarded.
+- UTF-16 conversion: `byte_col_to_utf16_col` / `encode_utf16().count()` used wherever a byte offset is emitted as an LSP column.
+- All traversal verified iterative (even `find_record_type_recursive`, which is misnamed but is actually a stack-based loop).
+- No `lsp_types::*` in the `queries::*` `pub fn` signatures.
+
+One minor observation recorded as P3 follow-up:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-039 | P3 | `code_actions` emits AL property names as string literals in code-fix templates (`ApplicationArea`, `PromotedCategory`, `tooltip`, etc.) rather than reading them from `LanguageData`. Borderline against the CLAUDE.md "no hardcoded AL language values" rule — these are emitted output, not validation lists. Defer unless the property names actually change. |
+
+Workspace test count: 1857 unchanged (no behaviour changes this iteration). All gates green.
+
 
 
 | Phase | Status | Output |
