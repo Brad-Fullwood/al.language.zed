@@ -32,7 +32,7 @@
 
 use tree_sitter::Node;
 
-use crate::test_runtime::interpreter::dispatch::{dispatch_call, DispatchCtx};
+use crate::test_runtime::interpreter::dispatch::{dispatch_call, DispatchCtx, MAX_AST_DEPTH};
 use crate::test_runtime::interpreter::eval_expr::eval_expr;
 use crate::test_runtime::interpreter::scope::{Eval, ScopeStack};
 use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
@@ -49,6 +49,30 @@ use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 /// - `Eval::Exit(v)` when `exit(v)` (or bare `exit`) is reached.
 /// - `Eval::Error(info)` on any runtime error (propagates immediately).
 pub fn eval_stmt(
+    node: Node<'_>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    // Stack-overflow guard. AL test sources with thousands of nested
+    // `begin/end` or `if … then if …` blocks would otherwise recurse into
+    // `eval_stmt` deeply enough to blow the Rust stack and kill the daemon.
+    // Cap at MAX_AST_DEPTH (256) — well clear of typical test nesting (~10)
+    // and well below the OS stack limit when accounting for each frame's
+    // locals + Node payload.
+    if ctx.ast_depth >= MAX_AST_DEPTH {
+        return Eval::Error(simple_error(&format!(
+            "AST nesting depth exceeded (max {} levels) — likely a pathological or generated test source",
+            MAX_AST_DEPTH
+        )));
+    }
+    ctx.ast_depth += 1;
+    let result = eval_stmt_inner(node, source, stack, ctx);
+    ctx.ast_depth -= 1;
+    result
+}
+
+fn eval_stmt_inner(
     node: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
@@ -250,10 +274,17 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
         None => return Eval::Error(simple_error("for_statement: missing end value")),
     };
 
-    // Determine direction: check for "DOWNTO" keyword.
-    let is_downto = node_text(node, source)
-        .to_ascii_lowercase()
-        .contains("downto");
+    // Determine direction by consulting the grammar's `direction` field,
+    // which is `kw_downto` or `kw_to`. The prior implementation lower-cased
+    // the whole for_statement text and substring-matched "downto" — that
+    // mis-fires when an identifier inside the loop body or range contains
+    // "downto" (e.g. `for i := 1 to MyDownToValue do ...`).
+    let is_downto = match node.child_by_field_name("direction") {
+        Some(dir) => dir.kind() == "kw_downto",
+        None => node_text(node, source)
+            .to_ascii_lowercase()
+            .contains("downto"),
+    };
 
     let start_i = match &start_val {
         Value::Integer(n) => *n,
@@ -1195,6 +1226,75 @@ mod tests {
             matches!(eval, Eval::Exit(_)),
             "asserterror wrapping exit must propagate Eval::Exit, got: {:?}",
             eval
+        );
+    }
+
+    // ── Regression: downto direction detection ───────────────────────────────
+
+    #[test]
+    fn for_downto_decrements_when_direction_field_is_downto() {
+        // Sanity check that the new grammar-field path works for a real downto.
+        // Loop body binds x to each iteration value; after the last iteration
+        // (i=1) the local counter decrements to 0, the loop exits, and x is
+        // left at the last bound value (1).
+        let (eval, stack) = run_stmt("for x := 3 downto 1 do begin end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(1)));
+    }
+
+    #[test]
+    fn for_to_with_substring_downto_in_body_still_counts_up() {
+        // Regression: prior `is_downto` substring check matched anywhere in
+        // the for_statement text — including the loop body. Any identifier
+        // or string literal containing "downto" (e.g. `mydowntoval`) flipped
+        // direction silently. With the grammar-field fix, body content is
+        // irrelevant.
+        //
+        // Test: a to-loop whose body sets `s` to a string containing the
+        // substring "downto". The fix asserts the loop ran upward: x ends
+        // at 3 (the last bound value). With the prior bug, the loop would
+        // have been treated as downto and immediately broken (since 1 < 3),
+        // leaving x at 0.
+        let (eval, stack) = run_stmt(r#"for x := 1 to 3 do begin s := 'mydowntoval'; end;"#);
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Integer(3)),
+            "loop with `to` direction must count UP regardless of body content; \
+             prior substring detection would have flipped this to a downto loop"
+        );
+    }
+
+    // ── Regression: AST nesting depth cap ─────────────────────────────────────
+
+    #[test]
+    fn deep_nesting_errors_instead_of_stack_overflow() {
+        // Build a string with > MAX_AST_DEPTH (1024) levels of nested
+        // begin/end blocks. The prior code would recurse into eval_stmt
+        // that many times and could blow the Rust stack. The depth cap
+        // aborts with a clean error well before any stack risk.
+        let depth = 1500;
+        let mut body = String::new();
+        for _ in 0..depth {
+            body.push_str("begin ");
+        }
+        body.push_str("x := 1; ");
+        for _ in 0..depth {
+            body.push_str("end; ");
+        }
+        let (eval, _) = run_stmt(&body);
+        assert!(
+            eval.is_error(),
+            "deep nesting must produce a clean Eval::Error, got {:?}",
+            eval
+        );
+        let msg = match eval {
+            Eval::Error(info) => info.message,
+            _ => String::new(),
+        };
+        assert!(
+            msg.contains("AST nesting depth exceeded"),
+            "error message must name the depth cap, got: {msg}"
         );
     }
 }

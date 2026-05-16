@@ -24,6 +24,18 @@ use crate::workspace::Workspace;
 /// Maximum allowed recursion depth before the interpreter returns an error.
 const MAX_RECURSION_DEPTH: usize = 100;
 
+/// Maximum syntactic nesting depth `eval_stmt` will descend into before
+/// aborting with an error. The counter is cumulative across nested
+/// procedure calls (a 100-deep call chain stacks ~4 AST levels per frame),
+/// so we set the cap above what `MAX_RECURSION_DEPTH` (100) can reach via
+/// call recursion alone — that way an infinite-call test trips the call
+/// cap first (clearer error message) and only truly pathological single-
+/// procedure nesting trips this AST cap. 1024 leaves plenty of headroom
+/// for the OS stack (each `eval_stmt` frame is ~256 B of locals plus the
+/// Node payload, so 1024 frames is ~1-2 MiB — well under the default
+/// 8 MiB stack).
+pub const MAX_AST_DEPTH: usize = 1024;
+
 // ---------------------------------------------------------------------------
 // DispatchMode and DispatchCtx
 // ---------------------------------------------------------------------------
@@ -53,6 +65,13 @@ pub struct DispatchCtx {
     /// Current call depth — incremented on each workspace-procedure call and
     /// decremented on return. Capped at `MAX_RECURSION_DEPTH`.
     pub recursion_depth: usize,
+    /// Current AST-evaluation depth — incremented when `eval_stmt` recurses
+    /// into a nested block/branch/loop body, decremented on return. Capped at
+    /// `MAX_AST_DEPTH` so a pathological test source with thousands of
+    /// nested `begin/end` or `if … then if …` cannot blow the Rust stack and
+    /// kill the daemon. Distinct from `recursion_depth`, which counts only
+    /// call frames.
+    pub ast_depth: usize,
     /// Optional wall-clock deadline for this dispatch. `eval_stmt` loop
     /// constructs (while / repeat / for) check this on every iteration so
     /// an adversarial `while true do …` test can't pin the daemon thread
@@ -69,6 +88,7 @@ impl DispatchCtx {
             records: HashMap::new(),
             mode: DispatchMode::PureLogic,
             recursion_depth: 0,
+            ast_depth: 0,
             deadline: None,
         }
     }
@@ -80,6 +100,7 @@ impl DispatchCtx {
             records,
             mode: DispatchMode::WithRecords,
             recursion_depth: 0,
+            ast_depth: 0,
             deadline: None,
         }
     }

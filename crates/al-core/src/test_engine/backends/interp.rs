@@ -335,6 +335,7 @@ fn run_procedure_interp(
         records: HashMap::new(),
         mode: DispatchMode::PureLogic,
         recursion_depth: 0,
+        ast_depth: 0,
         deadline: Some(std::time::Instant::now() + timeout_dur),
     };
 
