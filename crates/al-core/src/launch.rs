@@ -215,8 +215,31 @@ pub fn find_launch_config(project_root: &Path) -> Option<DebugConfigFile> {
     None
 }
 
+/// Maximum bytes accepted for a debug-config file (Zed `debug.json` or
+/// VS Code `launch.json`). Real launch configs are kilobytes at most; 1 MiB
+/// is two orders of magnitude past anything legitimate while refusing
+/// pathological inputs (sparse files / adversarial commit) that would OOM
+/// the daemon on `read_to_string`.
+const MAX_LAUNCH_FILE_BYTES: u64 = 1_048_576;
+
+/// Read a launch/debug config file, refusing inputs larger than
+/// `MAX_LAUNCH_FILE_BYTES` before allocating.
+fn read_launch_file_capped(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let size = std::fs::metadata(path)?.len();
+    if size > MAX_LAUNCH_FILE_BYTES {
+        return Err(format!(
+            "{} is {} bytes — refusing to parse (cap = {} bytes)",
+            path.display(),
+            size,
+            MAX_LAUNCH_FILE_BYTES
+        )
+        .into());
+    }
+    Ok(std::fs::read_to_string(path)?)
+}
+
 fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::error::Error>> {
-    let content = std::fs::read_to_string(path)?;
+    let content = read_launch_file_capped(path)?;
     let clean = strip_json_comments(&content);
     let configs_raw: Vec<ZedDebugConfigJson> = serde_json::from_str(&clean)?;
 
@@ -233,7 +256,7 @@ fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::err
 }
 
 fn parse_vscode_launch_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::error::Error>> {
-    let content = std::fs::read_to_string(path)?;
+    let content = read_launch_file_capped(path)?;
     let clean = strip_json_comments(&content);
     let raw: VsCodeLaunchJson = serde_json::from_str(&clean)?;
 
@@ -319,5 +342,79 @@ fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> AuthMethod 
             );
             fallback
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_tempdir(name: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "al-core-launch-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            id
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn vscode_launch_under_cap_parses() {
+        let dir = make_tempdir("under-cap");
+        let path = dir.join("launch.json");
+        let body = r#"{
+            "version": "0.2.0",
+            "configurations": [
+                {
+                    "type": "al",
+                    "name": "OnPrem",
+                    "environmentType": "OnPrem",
+                    "server": "http://localhost",
+                    "serverInstance": "BC"
+                }
+            ]
+        }"#;
+        std::fs::write(&path, body).unwrap();
+        let result = parse_vscode_launch_file(&path).expect("under-cap must parse");
+        assert_eq!(result.configs.len(), 1);
+    }
+
+    #[test]
+    fn vscode_launch_oversize_is_rejected() {
+        let dir = make_tempdir("over-cap");
+        let path = dir.join("launch.json");
+        // 2 MiB of valid JSON wrapping — well past the 1 MiB cap.
+        let body = format!(
+            r#"{{"version":"0.2.0","_pad":"{}","configurations":[]}}"#,
+            "x".repeat(2 * 1024 * 1024)
+        );
+        std::fs::write(&path, body).unwrap();
+        let err = parse_vscode_launch_file(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("refusing to parse"),
+            "error must mention size refusal: {err}"
+        );
+    }
+
+    #[test]
+    fn zed_debug_oversize_is_rejected() {
+        let dir = make_tempdir("zed-over-cap");
+        let path = dir.join("debug.json");
+        let body = format!(
+            r#"[{{"_pad":"{}","adapter":"al","environmentType":"OnPrem","label":"x","server":"http://x","serverInstance":"BC"}}]"#,
+            "x".repeat(2 * 1024 * 1024)
+        );
+        std::fs::write(&path, body).unwrap();
+        let err = parse_zed_debug_file(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("refusing to parse"),
+            "error must mention size refusal: {err}"
+        );
     }
 }
