@@ -560,7 +560,12 @@ pub fn populate_call_edges_for_procedure(
                 }
             }
             CallSite::MemberCall { object, method } => {
-                // Resolve the object against the symbol index
+                // Resolve the object against the symbol index. `get_by_name` can
+                // return multiple entries (object name reused across kinds, e.g.
+                // both a Codeunit and a Page named "Foo"). Connecting to ALL
+                // matching procedures is correct — downstream consumers (find
+                // references, code lens) dedupe or rank as needed. The prior
+                // `break` after the first hit silently dropped legitimate edges.
                 let entries = symbols.get_by_name(object);
                 for entry in &entries {
                     let callee_key = NodeKey::Procedure(
@@ -570,7 +575,6 @@ pub fn populate_call_edges_for_procedure(
                     );
                     if let Some(callee_id) = CallGraph::node_id_for(insight, &callee_key) {
                         call_graph.add_direct_call(caller_id, callee_id);
-                        break;
                     }
                 }
             }
@@ -725,7 +729,6 @@ pub fn register_workspace_nodes(
             ok,
             &info.name,
             obj_idx,
-            symbols,
             insight,
         );
 
@@ -935,7 +938,6 @@ fn register_procedures_from_tree(
     object_kind: ObjectKind,
     object_name: &str,
     obj_idx: petgraph::graph::NodeIndex,
-    _symbols: &SymbolIndex,
     insight: &mut InsightGraph,
 ) {
     let mut stack = vec![node];
@@ -987,15 +989,19 @@ fn register_single_procedure(
     // Collect attribute names from the procedure
     let attributes = collect_procedure_attributes(proc_node, source);
 
+    // AL attributes are case-insensitive at the language level — `[eventsubscriber(...)]`,
+    // `[EventSubscriber(...)]`, and `[EVENTSUBSCRIBER(...)]` are all valid. Attribute
+    // names here come from raw tree-sitter text (preserves source case), unlike
+    // `AttributeSymbol.name` in .app metadata which is normalised.
     let is_integration_event = attributes
         .iter()
-        .any(|(name, _)| name == super::attr_names::INTEGRATION_EVENT);
+        .any(|(name, _)| name.eq_ignore_ascii_case(super::attr_names::INTEGRATION_EVENT));
     let is_business_event = attributes
         .iter()
-        .any(|(name, _)| name == super::attr_names::BUSINESS_EVENT);
+        .any(|(name, _)| name.eq_ignore_ascii_case(super::attr_names::BUSINESS_EVENT));
     let is_subscriber = attributes
         .iter()
-        .any(|(name, _)| name == super::attr_names::EVENT_SUBSCRIBER);
+        .any(|(name, _)| name.eq_ignore_ascii_case(super::attr_names::EVENT_SUBSCRIBER));
     let is_local = has_local_modifier(proc_node, source);
 
     if is_integration_event || is_business_event {
@@ -1101,7 +1107,9 @@ fn has_local_modifier(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
 /// We extract arg[1] (object name) and arg[2] (event name).
 fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> (String, String) {
     for (name, args_text) in attrs {
-        if name == super::attr_names::EVENT_SUBSCRIBER {
+        // Case-insensitive: see the corresponding comment at the procedure-attribute
+        // collection site — raw tree-sitter text preserves source case.
+        if name.eq_ignore_ascii_case(super::attr_names::EVENT_SUBSCRIBER) {
             // Parse args from the raw text: split by comma inside parens
             let args = extract_attribute_args(args_text);
             let target_object = args.get(1).map(|s| clean_attr_arg(s)).unwrap_or_default();
@@ -1302,7 +1310,12 @@ fn tier1_threshold(
     let cutoff_idx = scores.len() * 8 / 10; // 80th percentile index
     let percentile_threshold = scores.get(cutoff_idx).copied().unwrap_or(5);
 
-    percentile_threshold.max(1)
+    // Tier 1 rule per the doc-comment: include a file if score >= 5 OR it is in
+    // the top 20%. The gate downstream is `score >= threshold`; to express the
+    // union we take the SMALLER of the two so either condition admits the file.
+    // `.max(1)` keeps the threshold positive so a workspace of all-zero scores
+    // still excludes everything.
+    percentile_threshold.clamp(1, 5)
 }
 
 /// Collect all procedure names from the AST (not just locally — recursively).
@@ -1740,7 +1753,6 @@ mod tests {
             ObjectKind::Codeunit,
             "Test Publisher",
             obj_idx,
-            &index,
             &mut insight,
         );
 
@@ -1809,5 +1821,84 @@ mod tests {
             Some(RecordOp::Validate)
         );
         assert_eq!(RecordOp::from_method_name("Post"), None);
+    }
+
+    #[test]
+    fn parse_subscriber_target_is_case_insensitive() {
+        // Regression: prior code used `name == "EventSubscriber"` which silently
+        // dropped lower/mixed-case attribute spellings — AL is case-insensitive.
+        let attrs = vec![(
+            "eventsubscriber".to_string(),
+            r#"(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPost')"#.to_string(),
+        )];
+        let (obj, ev) = parse_subscriber_target_from_attrs(&attrs);
+        assert_eq!(obj, "Sales-Post");
+        assert_eq!(ev, "OnAfterPost");
+
+        let attrs = vec![(
+            "EVENTSUBSCRIBER".to_string(),
+            r#"(ObjectType::Codeunit, Codeunit::"Foo", 'OnX')"#.to_string(),
+        )];
+        let (obj, ev) = parse_subscriber_target_from_attrs(&attrs);
+        assert_eq!(obj, "Foo");
+        assert_eq!(ev, "OnX");
+    }
+
+    /// Build a (path, source, tree, info, score) tuple with the given score —
+    /// the other fields are placeholder values, only `score` matters for
+    /// `tier1_threshold`.
+    fn mk_scored_file(
+        score: usize,
+    ) -> (
+        std::path::PathBuf,
+        String,
+        tree_sitter::Tree,
+        crate::file_index::CachedObjectInfo,
+        usize,
+    ) {
+        let result = crate::syntax::AlParser::parse_quick("");
+        (
+            std::path::PathBuf::from("x"),
+            String::new(),
+            result.tree,
+            crate::file_index::CachedObjectInfo {
+                kind: "codeunit".to_string(),
+                id: Some(0),
+                name: "X".to_string(),
+                range: tree_sitter::Range {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_point: tree_sitter::Point { row: 0, column: 0 },
+                    end_point: tree_sitter::Point { row: 0, column: 0 },
+                },
+            },
+            score,
+        )
+    }
+
+    #[test]
+    fn tier1_threshold_admits_score_five_in_busy_workspace() {
+        // Regression: doc said "score >= 5 OR top 20%" but code only honoured
+        // the percentile gate. A workspace where the 80th percentile is 20
+        // would drop files with scores 5-19 even though they crossed the 5
+        // floor. With the fix, threshold = min(percentile, 5) so the 5 floor
+        // is always honoured.
+        let files: Vec<_> = [0, 0, 0, 0, 0, 5, 8, 10, 20, 40]
+            .into_iter()
+            .map(mk_scored_file)
+            .collect();
+        assert_eq!(tier1_threshold(&files), 5);
+    }
+
+    #[test]
+    fn tier1_threshold_uses_percentile_when_below_five() {
+        // Small/quiet workspace where 80th percentile is below 5 — we use
+        // the percentile so we don't gate out everything.
+        let files: Vec<_> = [0, 1, 2, 2, 3, 3, 3, 3, 4, 4]
+            .into_iter()
+            .map(mk_scored_file)
+            .collect();
+        // 80th percentile index is 8 (len * 8 / 10), value is 4. min(4, 5) = 4.
+        assert_eq!(tier1_threshold(&files), 4);
     }
 }
