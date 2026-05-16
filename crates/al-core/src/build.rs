@@ -14,6 +14,26 @@ use tokio::process::Command;
 
 use crate::errors::AlError;
 
+/// Default cap on a single `alc` invocation. Sane AL projects compile in well
+/// under a minute; 10 minutes is well past the largest legitimate workload
+/// we've observed. The cap exists to prevent zombie `alc` children when the
+/// LSP daemon serves a rapid-cancel loop (the awaiting task drops on cancel
+/// but tokio does NOT propagate cancellation to child processes, so without
+/// a timeout the child runs to completion uncollected). Override with
+/// `AL_COMPILE_TIMEOUT_SECS`; values <= 0 disable the cap.
+const DEFAULT_COMPILE_TIMEOUT_SECS: u64 = 600;
+
+fn compile_timeout() -> Option<std::time::Duration> {
+    match std::env::var("AL_COMPILE_TIMEOUT_SECS") {
+        Ok(s) => match s.trim().parse::<i64>() {
+            Ok(n) if n <= 0 => None,
+            Ok(n) => Some(std::time::Duration::from_secs(n as u64)),
+            Err(_) => Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS)),
+        },
+        Err(_) => Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS)),
+    }
+}
+
 /// Result of a compilation attempt.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -95,6 +115,10 @@ pub async fn compile_project_with_analyzers(
     }
 
     // Add analyzers — MS named analyzers filtered by name, custom DLL paths by absolute path.
+    // These are toolchain-side analyzer DLL identifiers (Microsoft's published names for the
+    // four built-in AL static analysers), not AL *language* keywords / object types / built-ins,
+    // so they are exempt from the "no hardcoded AL values" rule in CLAUDE.md. The set is
+    // fixed by Microsoft and does not drift with BC releases.
     let named_analyzers: [(&str, &PathBuf); 4] = [
         ("CodeCop", &toolchain.analyzers.code_cop),
         ("AppSourceCop", &toolchain.analyzers.app_source_cop),
@@ -169,8 +193,27 @@ pub async fn compile_project_with_analyzers(
 
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // kill_on_drop ensures the child receives SIGKILL when the awaiting future
+    // is dropped — covers both the timeout branch below and tokio task
+    // cancellation upstream (e.g. $/cancelRequest dropping the spawning task).
+    cmd.kill_on_drop(true);
 
-    let output = cmd.output().await?;
+    let child = cmd.spawn()?;
+    let output = match compile_timeout() {
+        Some(timeout) => match tokio::time::timeout(timeout, child.wait_with_output()).await {
+            Ok(result) => result?,
+            Err(_) => {
+                // Timeout: the future owns Child, dropping it triggers SIGKILL
+                // via kill_on_drop. The await completes after the timeout fires.
+                tracing::warn!(
+                    timeout_secs = timeout.as_secs(),
+                    "alc compilation exceeded timeout — killed child process"
+                );
+                return Err(AlError::BuildTimeout(timeout.as_secs()));
+            }
+        },
+        None => child.wait_with_output().await?,
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -501,5 +544,80 @@ Build failed.";
 
         let result = find_app_file(root).unwrap();
         assert_eq!(result.file_name().unwrap(), "Some_1.0.0.0.app");
+    }
+
+    /// Serialize env-var access to avoid races between concurrent #[test] threads.
+    /// (cargo test runs tests in parallel; AL_COMPILE_TIMEOUT_SECS is a process-
+    /// global.)
+    static COMPILE_TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn compile_timeout_default_when_env_unset() {
+        let _g = COMPILE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        unsafe {
+            std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
+        }
+        assert_eq!(
+            compile_timeout(),
+            Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS))
+        );
+    }
+
+    #[test]
+    fn compile_timeout_zero_disables_cap() {
+        let _g = COMPILE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "0");
+        }
+        assert_eq!(compile_timeout(), None);
+        unsafe {
+            std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "-1");
+        }
+        assert_eq!(compile_timeout(), None);
+        unsafe {
+            std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
+        }
+    }
+
+    #[test]
+    fn compile_timeout_valid_number_used() {
+        let _g = COMPILE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "30");
+        }
+        assert_eq!(compile_timeout(), Some(std::time::Duration::from_secs(30)));
+        unsafe {
+            std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
+        }
+    }
+
+    #[test]
+    fn compile_timeout_garbage_falls_back_to_default() {
+        let _g = COMPILE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "not-a-number");
+        }
+        assert_eq!(
+            compile_timeout(),
+            Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS))
+        );
+        unsafe {
+            std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
+        }
+    }
+
+    #[test]
+    fn build_timeout_error_displays_seconds() {
+        let err = AlError::BuildTimeout(42);
+        assert_eq!(err.to_string(), "alc compile timed out after 42 seconds");
     }
 }

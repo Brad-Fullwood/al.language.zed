@@ -62,6 +62,10 @@ pub enum AlError {
     /// JSON serialization/deserialization errors.
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// AL compilation (`alc`) exceeded the configured timeout.
+    #[error("alc compile timed out after {0} seconds")]
+    BuildTimeout(u64),
 }
 
 #[cfg(test)]
