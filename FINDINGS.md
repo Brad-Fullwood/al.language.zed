@@ -522,6 +522,36 @@ Carry-forwards (P2/P3 — defensible-in-depth, defer):
 
 Workspace test count: 1887 → 1890 (+1 concurrent-parse regression, +2 app.json size-cap tests). All gates green.
 
+### Iteration 24 (2026-05-16, +690m)
+
+One commit. Audit focus: daemon LSP/debug dispatch + workspace init (~2K LOC across `daemon/{mod,lsp_dispatch,debug_dispatch}.rs` and `workspace.rs`).
+
+**Audit verdict:** the daemon main loop is robust — bounded connection semaphore (64), exponential backoff on accept errors, signal-handler cleanup, F-FIX-011 idle-race fix verified intact, no production unwrap/panic. The dispatch layer correctly returns `METHOD_NOT_FOUND -32601` on unknown methods, applies the 64 MB line cap, and the boundary between `queries::*` and `lsp_types::*` is clean. Found three integer-cast issues plus several P2 follow-ups.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-042 | P3 | Three `as_i64() as i32` / `as_u64() as u32` sites silently wrapped on overflow. `dispatch_by_id` (lsp_dispatch.rs:412) would map an object ID >2³¹-1 to a negative i32 and either miss legitimate objects or hit unintended ones. `dispatch_debug` breakpoint `line` defaulted to 0 on missing/bad input — a phantom breakpoint at the top of the file. `objectType`/`objectId` followed the same wrap pattern. Added `daemon::extract_i32(params, key) -> Option<i32>` helper (mirrors existing `extract_position` discipline), routed all three sites through it, and gated `line` behind an `INVALID_PARAMS` error instead of the silent default-to-0. 4 regression tests pin the contract. |
+
+Carry-forwards (P2/P3 — fragility or design decisions, not bugs):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-065 | P2 | No `$/cancelRequest` support in daemon mode. Long-running endpoints (`deadCode`, `impact`, `compile`, `tests.mutate`, `xlf.generate`, `downloadSymbols`) cannot be cancelled; a client that abandons still pays full daemon-side cost. Worse, a buggy/malicious client can pin all 64 connection slots on expensive queries. F-FIX-038 (alc timeout) partly mitigated this for compile; the rest still need plumbed cancel tokens. |
+| F-OPEN-066 | P2 | `workspace::on_document_change` (workspace.rs:524-552) invalidates BOTH `insight_graph` AND `call_graph` caches on every keystroke. The next cross-file query (`deadcode`, `impact`, `find references`-via-graph) pays the 100-200 ms rebuild. Most keystrokes don't trigger graph rebuilds, so user-visible impact is bounded, but a typing-then-impact sequence is observable. Debounce or finer-grained invalidation. |
+| F-OPEN-067 | P2 | `daemon::run_daemon` idle-timeout `try_lock` defaults to "active" if `debug_session` mutex is held (daemon/mod.rs:101-108). Currently safe — a held debug-session mutex DOES mean we have an active debug session — but if the mutex were ever held permanently by a bug elsewhere, the daemon would never time out. Worth a comment naming the invariant. |
+| F-OPEN-068 | P3 | `last_activity` is a `tokio::sync::Mutex<Instant>` taken on every connection accept + every dispatch. Under high RPS this serialises. An `AtomicU64` storing `Instant`-as-millis would remove the bottleneck. |
+| F-OPEN-069 | P3 | Daemon dispatchers handle `std::sync::RwLock` poison by returning `INTERNAL_ERROR` rather than the `unwrap_or_else(\|e\| e.into_inner())` poison-recovery pattern used in `workspace.rs`. A single poisoned `package_info`/`project` lock permanently breaks `dispatch_packages`/`dispatch_deps`. |
+| F-OPEN-070 | P3 | No graceful in-flight drain on SIGTERM. The accept loop breaks but in-flight connection tasks are not joined — a 64 MB read or compile in-flight is cut off. Socket cleanup runs first so it's just request-loss, not corruption. |
+| F-OPEN-071 | P3 | `initialize_core_workspace` swallows package-load errors (workspace.rs:431-435). A corrupt `.app` silently lowers the symbol count; daemon `status` reports the partial count but the user has no other surface. |
+
+False positive caught:
+
+| ID | Where | Why not a bug |
+|---|---|---|
+| F-FP-020 | F-OPEN-055 / concurrent init blast radius | The audit re-verified: two concurrent `initialize_core_workspace` calls would each run the FS scan and package load — wasted work, but `SymbolIndex` is DashMap-backed (concurrent insertion safe) and `package_info`/`project` writes overwrite atomically (last-writer-wins). Net result: cycles wasted, not data corrupted. Downgraded from "fragile" to "wasteful". |
+
+Workspace test count: 1890 → 1894 (+4 daemon integer-cast tests). All gates green.
+
 
 
 | Phase | Status | Output |
