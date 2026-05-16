@@ -365,6 +365,24 @@ Recorded follow-up:
 
 Workspace test count: 1867 unchanged (defensive hardening, not feature). All gates green.
 
+### Iteration 17 (2026-05-16, +480m)
+
+Two commits from a combined audit of `xliff.rs` (translation file handling) and `publish.rs` + `bc_client.rs` (.app upload).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-025 | **P1** | (New from xliff audit.) `parse_xliff::extract_xml_text` truncated `<source>` / `<target>` / `<note>` bodies at the first `<` on the opening line, silently dropping line 2+ of any multi-line translation. Restructured the parser into a multi-line-accumulator state machine that closes on `</tag>` regardless of which line it's on. 3 regression tests (multi-line source, multi-line target, single-line still works). Removed the now-dead `extract_xml_text` helper. |
+| F-FIX-026 | P2 | (New from publish audit.) `BcClient::publish_extension` and `rad_publish` slurped the entire `.app` binary into memory via `tokio::fs::read` with no size check. Added `MAX_UPLOADABLE_APP_BYTES = 500 MB` + new error variant `AppFileTooLarge { bytes, limit }` returned BEFORE any read. 2 regression tests including a sparse-file trick for the oversize negative path. |
+
+The audit also raised concerns I marked as **not actionable this pass**:
+
+| ID | Status | Notes |
+|---|---|---|
+| F-FP-013 | (false pos.) | "XXE / billion-laughs in `parse_xliff`" — verified: the hand-rolled parser only recognises specific named tags (`<trans-unit `, `<source`, `<target`, `<note>`) and ignores `<!DOCTYPE` declarations entirely. `xml_unescape` only knows 5 standard entities, no recursion. Not exploitable. |
+| F-OPEN-045 | P3 | `parse_xliff` reads its input via `&str` so a 1 GB `.xlf` consumes 1 GB before parsing. Add a size check at the call sites (`build_xliff`, `refresh_xliff`) — same pattern as `read_app_capped`. |
+
+Workspace test count: 1867 → 1872. All gates green.
+
 
 
 | Phase | Status | Output |
