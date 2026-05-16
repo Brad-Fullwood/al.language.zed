@@ -744,6 +744,17 @@ One commit. Closing three iter-32 follow-ups in a single batch — all single-fi
 
 Workspace test count: 1916 → 1920 (+4 batch regression tests). All gates green.
 
+### Iteration 34 (2026-05-16, +990m)
+
+One commit. Two P3 follow-ups closed:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-060 | P3 | F-OPEN-064 closed. `project.rs` hardcoded `"26.0.0.0"` BC fallback pulled out to `CURRENT_BC_MAJOR_FALLBACK` const with a docstring naming the maintenance contract. |
+| F-FIX-061 | P3 | F-OPEN-079 closed. `table_impact` no longer allocates a lowercased `table_lower`; downstream compares already used `eq_ignore_ascii_case`. `is_record_of` parameter renamed for clarity. |
+
+Workspace test count: 1920 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
