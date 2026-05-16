@@ -394,6 +394,19 @@ Two commits, two carry-forwards closed — both Content-Length / size-cap harden
 
 Workspace test count: 1872 → 1878. All gates green.
 
+### Iteration 19 (2026-05-16, +540m)
+
+One commit. Audit of `al-explorer` CLI surface (7K LOC, 77 subcommands) — **verdict: clean**. Dep direction correct (no `al-core` import), no shell injection (no `Command::new` in CLI layer; paths delegated to daemon), TUI has a panic-recovery hook, daemon handshake retries on startup, types-duplication bounded to `ObjectKind` enum (ISSUE-017 contract), edition-2024 used correctly. Two LOW findings recorded but not actioned:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-046 | P3 | TUI daemon-socket reads have no timeout (Ctrl+C is the user's only escape on a stuck query). Per-op timeouts would help but require design (different ops have different latency budgets). |
+| F-OPEN-047 | P3 | `crates/al-explorer/src/cli/commands/mod.rs:64` test-only `current_dir().unwrap()` — cosmetic, in a test helper. |
+
+Continued chip on F-OPEN-001: justified 4 more `#[allow(clippy::*)]` attrs (queries/tests.rs `if_same_then_else` on cursor walk, queries/test_coverage.rs same pattern, queries/inlay_hints.rs `lookup_parameter_names` + `lookup_via_receiver`). Eight bare allows remain.
+
+Workspace test count: 1878 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
