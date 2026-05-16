@@ -111,7 +111,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
         // 1. Extends: TableExtension pointing at this table.
         if entry.kind == ObjectKind::TableExtension {
             if let Some(ref ext_target) = entry.extends {
-                if ext_target.to_lowercase() == table_lower {
+                if ext_target.eq_ignore_ascii_case(&table_lower) {
                     impacts.push(TableImpact {
                         operation: TableOperationKind::Extends,
                         location_hint: Some(format!("extends {}", ext_target)),
@@ -125,20 +125,13 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
             for field in &entry.fields {
                 for prop in &field.properties {
                     if prop.name.eq_ignore_ascii_case("TableRelation") {
-                        let related = prop.value.trim_matches('"').trim_matches('\'');
-                        // TableRelation can be "Table Name" or "Table Name"."Field"
-                        // Extract just the table part (before any dot or WHERE).
-                        let table_part = related
-                            .split_once('.')
-                            .map(|(t, _)| t.trim())
-                            .unwrap_or(related)
-                            .trim_matches('"')
-                            .trim_matches('\'');
-                        if table_part.to_lowercase() == table_lower {
-                            impacts.push(TableImpact {
-                                operation: TableOperationKind::Relation,
-                                location_hint: Some(format!("field {}", field.name)),
-                            });
+                        if let Some(table_part) = extract_table_relation_table(&prop.value) {
+                            if table_part.eq_ignore_ascii_case(&table_lower) {
+                                impacts.push(TableImpact {
+                                    operation: TableOperationKind::Relation,
+                                    location_hint: Some(format!("field {}", field.name)),
+                                });
+                            }
                         }
                     }
                 }
@@ -208,6 +201,50 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Extract the leading table-name component of a `TableRelation` property value.
+///
+/// AL `TableRelation` values can take several shapes:
+/// - `Customer` — bare identifier
+/// - `"Customer"` — quoted identifier
+/// - `"Sales Header"` — quoted multi-word
+/// - `Customer."No."` — table dot field
+/// - `"Sales Header"."No."`
+/// - `"Item" WHERE("Type" = CONST(Inventory))` — with filter clause
+/// - `Customer WHERE(...)`
+///
+/// Returns `None` if the value is empty after stripping. Pre-allocates no
+/// `String` on the happy path; returns a borrowed `&str` of the table-name
+/// slice. Used by `table_impact` to detect cross-table relations.
+fn extract_table_relation_table(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Quoted form: `"Table Name"` — body is everything inside the first
+    // matching pair of `"`. Multi-word and embedded-special-char identifiers
+    // require quotes in AL.
+    if let Some(after_open) = trimmed.strip_prefix('"') {
+        let end = after_open.find('"')?;
+        let name = &after_open[..end];
+        if name.is_empty() {
+            return None;
+        }
+        return Some(name);
+    }
+    // Bare form: identifier terminates at the first whitespace, dot, or
+    // opening paren (start of a `WHERE` / `IF` / `FIELD` clause). Trim any
+    // residual single-quote wrapping (AL accepts `'Customer'` rarely).
+    let end = trimmed
+        .find(|c: char| c.is_whitespace() || c == '.' || c == '(')
+        .unwrap_or(trimmed.len());
+    let bare = trimmed[..end].trim_matches('\'');
+    if bare.is_empty() {
+        None
+    } else {
+        Some(bare)
+    }
+}
+
 /// Returns true if `type_name` is a Record reference to `table_lower`.
 ///
 /// AL type strings from SymbolReference.json look like:
@@ -220,8 +257,9 @@ fn is_record_of(type_name: &str, table_lower: &str) -> bool {
         return false;
     }
     let t = type_name.trim();
-    // Must start with "Record" (case-insensitive)
-    let rest = match t.split_once(' ') {
+    // Must start with "Record" (case-insensitive). Split on ANY whitespace
+    // (the prior `split_once(' ')` missed tabs).
+    let rest = match t.split_once(|c: char| c.is_whitespace()) {
         Some((prefix, rest)) if prefix.eq_ignore_ascii_case("Record") => rest.trim(),
         _ => return false,
     };
@@ -231,7 +269,8 @@ fn is_record_of(type_name: &str, table_lower: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    name.to_lowercase() == table_lower
+    // Compare case-insensitively without allocating a lowercased copy.
+    name.eq_ignore_ascii_case(table_lower)
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +533,110 @@ mod tests {
     }
 
     // --- table_impact: subscriber attribute not confused ---
+
+    // --- extract_table_relation_table: shape coverage ---
+
+    #[test]
+    fn extract_table_relation_bare_identifier() {
+        assert_eq!(extract_table_relation_table("Customer"), Some("Customer"));
+    }
+
+    #[test]
+    fn extract_table_relation_quoted_identifier() {
+        assert_eq!(
+            extract_table_relation_table(r#""Customer""#),
+            Some("Customer")
+        );
+    }
+
+    #[test]
+    fn extract_table_relation_quoted_multi_word() {
+        assert_eq!(
+            extract_table_relation_table(r#""Sales Header""#),
+            Some("Sales Header")
+        );
+    }
+
+    #[test]
+    fn extract_table_relation_table_dot_field() {
+        assert_eq!(
+            extract_table_relation_table(r#""Customer"."No.""#),
+            Some("Customer")
+        );
+    }
+
+    #[test]
+    fn extract_table_relation_bare_with_where_clause() {
+        // Real AL: `Customer WHERE("Blocked" = CONST(""))`. Prior code did
+        // not split on whitespace, so this fell through and never matched.
+        assert_eq!(
+            extract_table_relation_table(r#"Customer WHERE("Blocked" = CONST(""))"#),
+            Some("Customer")
+        );
+    }
+
+    #[test]
+    fn extract_table_relation_quoted_with_where_clause() {
+        assert_eq!(
+            extract_table_relation_table(r#""Item" WHERE("Type" = CONST(Inventory))"#),
+            Some("Item")
+        );
+    }
+
+    #[test]
+    fn extract_table_relation_quoted_multiword_with_filter() {
+        assert_eq!(
+            extract_table_relation_table(r#""Sales Header" WHERE("Document Type" = CONST(Order))"#),
+            Some("Sales Header")
+        );
+    }
+
+    #[test]
+    fn extract_table_relation_rejects_empty() {
+        assert_eq!(extract_table_relation_table(""), None);
+        assert_eq!(extract_table_relation_table(r#""""#), None);
+        assert_eq!(extract_table_relation_table("   "), None);
+    }
+
+    #[test]
+    fn table_impact_detects_relation_with_where_clause() {
+        // Regression: TableRelation = `"Customer" WHERE("Blocked" = CONST(""))`
+        // must be detected as an impact on Customer.
+        let index = SymbolIndex::new();
+
+        let customer = base_entry(ObjectKind::Table, 18, "Customer");
+        let mut sales_header = base_entry(ObjectKind::Table, 36, "Sales Header");
+        sales_header.fields = vec![FieldSymbol {
+            id: 2,
+            name: "Sell-to Customer No.".to_string(),
+            type_name: "Code".to_string(),
+            properties: vec![PropertyValue {
+                name: "TableRelation".to_string(),
+                value: r#""Customer" WHERE("Blocked" = CONST(""))"#.to_string(),
+            }],
+        }];
+        index.add_entries(&[customer, sales_header]);
+
+        let result = table_impact(&index, "Customer");
+        let sh = result
+            .objects
+            .iter()
+            .find(|o| o.object_name == "Sales Header")
+            .expect("Sales Header must show up as impacted via WHERE-clause relation");
+        assert!(
+            sh.impacts
+                .iter()
+                .any(|i| i.operation == TableOperationKind::Relation),
+            "Relation impact must be detected even when filter clause is present"
+        );
+    }
+
+    #[test]
+    fn is_record_of_handles_tab_separator() {
+        // Prior code split on a literal space only; tab-separated type strings
+        // from external symbol JSON would fall through.
+        assert!(is_record_of("Record\t\"Customer\"", "customer"));
+    }
 
     #[test]
     fn method_attributes_not_treated_as_record_refs() {
