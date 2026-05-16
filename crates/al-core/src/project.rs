@@ -60,6 +60,13 @@ const BUSINESS_FOUNDATION_APP_ID: &str = "f3552374-a1f2-4356-848e-196002525837";
 const SYSTEM_APPLICATION_APP_ID: &str = "63ca2fa4-4f03-4f2b-a480-172fef340d3f";
 const SYSTEM_APP_ID: &str = "8874ed3a-0643-4247-9ced-7a7002f7135d";
 
+/// Fallback major version for implicit System package when an `app.json` has
+/// `platform` set but no `application` to extract the major from. Tracks the
+/// "current shipping" major BC release — bump on each major BC milestone.
+/// Used only as a last resort; the typical happy path derives the major from
+/// `app.json.application` (e.g. "26.0.0.0" → "26").
+const CURRENT_BC_MAJOR_FALLBACK: &str = "26.0.0.0";
+
 impl AlProject {
     /// Compute the full dependency list including implicit BC dependencies.
     pub fn all_dependencies(&self) -> Vec<AppDependency> {
@@ -90,7 +97,7 @@ impl AlProject {
                 .as_ref()
                 .and_then(|v| v.split('.').next())
                 .map(|major| format!("{}.0.0.0", major))
-                .unwrap_or_else(|| "26.0.0.0".to_string());
+                .unwrap_or_else(|| CURRENT_BC_MAJOR_FALLBACK.to_string());
             deps.push(AppDependency {
                 id: SYSTEM_APP_ID.to_string(),
                 name: "System".to_string(),

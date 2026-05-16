@@ -90,8 +90,8 @@ pub struct TableImpactResult {
 ///
 /// Results are grouped by object and sorted by object name for stable output.
 pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResult {
-    let table_lower = table_name.to_lowercase();
-
+    // All comparisons use `eq_ignore_ascii_case` so we can pass `table_name`
+    // directly without allocating a lowercased copy. AL identifiers are ASCII.
     // Resolve canonical name from the index (use the first exact Table match).
     let canonical_name = symbols
         .get_by_name(table_name)
@@ -111,7 +111,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
         // 1. Extends: TableExtension pointing at this table.
         if entry.kind == ObjectKind::TableExtension {
             if let Some(ref ext_target) = entry.extends {
-                if ext_target.eq_ignore_ascii_case(&table_lower) {
+                if ext_target.eq_ignore_ascii_case(table_name) {
                     impacts.push(TableImpact {
                         operation: TableOperationKind::Extends,
                         location_hint: Some(format!("extends {}", ext_target)),
@@ -126,7 +126,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
                 for prop in &field.properties {
                     if prop.name.eq_ignore_ascii_case("TableRelation") {
                         if let Some(table_part) = extract_table_relation_table(&prop.value) {
-                            if table_part.eq_ignore_ascii_case(&table_lower) {
+                            if table_part.eq_ignore_ascii_case(table_name) {
                                 impacts.push(TableImpact {
                                     operation: TableOperationKind::Relation,
                                     location_hint: Some(format!("field {}", field.name)),
@@ -140,7 +140,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
 
         // 3. RecordVariable: global variables whose type is `Record "<TableName>"`.
         for var in &entry.variables {
-            if is_record_of(&var.type_name, &table_lower) {
+            if is_record_of(&var.type_name, table_name) {
                 impacts.push(TableImpact {
                     operation: TableOperationKind::RecordVariable,
                     location_hint: Some(format!("var {}", var.name)),
@@ -151,7 +151,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
         // 4. RecordParameter: procedure parameters typed as Record of the target table.
         for method in &entry.methods {
             for param in &method.parameters {
-                if is_record_of(&param.type_name, &table_lower) {
+                if is_record_of(&param.type_name, table_name) {
                     impacts.push(TableImpact {
                         operation: TableOperationKind::RecordParameter,
                         location_hint: Some(format!(
@@ -251,9 +251,9 @@ fn extract_table_relation_table(value: &str) -> Option<&str> {
 /// - `Record "Customer"`
 /// - `Record Customer`
 /// - `Record "Sales Header"`
-fn is_record_of(type_name: &str, table_lower: &str) -> bool {
+fn is_record_of(type_name: &str, table_name: &str) -> bool {
     // Guard: an empty table name cannot be a valid match.
-    if table_lower.is_empty() {
+    if table_name.is_empty() {
         return false;
     }
     let t = type_name.trim();
@@ -270,7 +270,7 @@ fn is_record_of(type_name: &str, table_lower: &str) -> bool {
         return false;
     }
     // Compare case-insensitively without allocating a lowercased copy.
-    name.eq_ignore_ascii_case(table_lower)
+    name.eq_ignore_ascii_case(table_name)
 }
 
 // ---------------------------------------------------------------------------
