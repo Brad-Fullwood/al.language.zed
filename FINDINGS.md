@@ -624,6 +624,38 @@ Carry-forwards (P2/P3 — design, low-impact):
 
 Workspace test count: 1907 unchanged (refactor + comment changes only). All gates green.
 
+### Iteration 28 (2026-05-16, +810m)
+
+One commit. Audit focus: `insight/calls.rs` (1809 LOC, second-largest file) — call-graph builder powering `find references`, `code lens`, `deadcode`, `impact`, `breaking_changes`.
+
+**Audit verdict:** structurally sound (iterative traversal everywhere, no `unwrap`/panic, no DashMap-across-await, fully sync). But three real correctness bugs surfaced in the resolution layer.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-047 | **P1** | Attribute-name comparisons were case-sensitive (`name == "EventSubscriber"`) at 4 sites. AL attributes are case-insensitive — `[eventsubscriber(...)]`, `[EVENTSUBSCRIBER(...)]` are both valid. Tree-sitter preserves source case in raw text, so non-canonical spellings silently lost their event/subscriber classification, breaking deadcode/impact analysis on real-world code that doesn't capitalise canonically. Fix: `eq_ignore_ascii_case` everywhere we compare AST-derived attribute names. (graph.rs is unaffected — it operates on `AttributeSymbol` from `.app` metadata, already normalised.) |
+| F-FIX-048 | **P1** | `MemberCall` resolution broke after the first successful edge insert. `symbols.get_by_name(object)` returns ALL entries with that name — workspaces with the same name across kinds had calls resolved against only the first hit, dropping the rest. Removed the `break`; downstream consumers (find references / code lens) dedupe as they need. |
+| F-FIX-049 | **P1** | `tier1_threshold` doc says "score >= 5 OR top 20%" but the code returned only the percentile cutoff. In a busy workspace where 80th percentile sat at 20, files with scores 5-19 were gated OUT despite crossing the documented `>= 5` floor. Fix: `clamp(1, 5)` on percentile so either condition admits. |
+| F-FIX-050 | P3 | Removed unused `_symbols: &SymbolIndex` parameter from `register_procedures_from_tree` (1 production + 1 test call site). |
+
+Carry-forwards (P2/P3 — defer):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-082 | P2 | `RecordOp::from_method_name` (`calls.rs:42-50`) hardcodes the AL built-in record method tokens `insert`/`modify`/`delete`/`validate`. These are stable BC API names since NAV 2.0 — borderline against CLAUDE.md's no-hardcoded-AL-values rule. Source of truth would be `LanguageData::builtin_methods` if/when that surface exists. Defer. |
+| F-OPEN-083 | P2 | `record_op_event_names` (`calls.rs:615-626`) hardcodes the BC table-event naming pattern `OnBefore{Op}Event` / `OnAfter{Op}Event`. If Microsoft introduces a new naming convention this silently misses edges. Either derive from symbol-scan of `IntegrationEvent` attributes on Table objects, or document the assumption. |
+| F-OPEN-084 | P2 | Member-call object lookup (`calls.rs:386, 564`) uses the *variable name* as a symbol lookup key — only resolves when the variable name happens to equal a real object name. The semantically-correct lookup is variable → declared type → object. `extract_procedure_var_types` already builds the variable-to-Record-type map; extending to all object-typed variables would catch missing edges for codeunit and page variables. The biggest missed-edges class in the file. |
+| F-OPEN-085 | P2 | `populate_call_edges_for_procedure` re-walks the tree multiple times per procedure (find proc node, extract call sites, extract var types). A single walk that collects everything would amortise. Hot path on graph build. |
+| F-OPEN-086 | P3 | `extract_return_type` doc-comment claims "check if preceded by `:`" but no actual colon check; relies on field order. Document or implement. |
+| F-OPEN-087 | P3 | `parse_run_trigger_arg` returns `true` on parse failure (AL default). Correct behaviour but produces false-positive trigger edges when the call expression is complex. Worth a debug-log warning so the false-positive rate is visible. |
+
+False positive caught:
+
+| ID | Where | Why not a bug |
+|---|---|---|
+| F-FP-022 | "`"workspace"` magic string used as package key" (P0 candidate) | The audit flagged the literal string `"workspace"` at three call sites as fragile stringly-typed coupling. Verified: this is a sentinel for "this object lives in user workspace code, not a .app package". The convention is documented at the SymbolEntry struct level — not AL language data, not an external contract. Worth a constant for grep-ability but not a CLAUDE.md violation. Recording as a possible cleanup. |
+
+Workspace test count: 1907 → 1910 (+3 case-insensitive subscriber + 2 tier1 threshold tests). All gates green.
+
 
 
 | Phase | Status | Output |
