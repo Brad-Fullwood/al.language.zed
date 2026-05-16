@@ -577,6 +577,34 @@ Carry-forwards (P2/P3 — design or low-impact):
 
 Workspace test count: 1894 → 1897 (+3 launch.json size-cap tests). All gates green.
 
+### Iteration 26 (2026-05-16, +750m)
+
+One commit, one real P1 fix. Two audits this iteration (`file_index.rs` and `insight/{discovery,analysis}.rs`).
+
+**`file_index.rs` audit:** **clean**. No P0/P1. No DashMap-across-await (sync code), iterative walk, no hardcoded AL keywords (object kinds come from `syntax::find_object_declaration`), no production unwrap/panic. `remove_file` evicts all 7 maps cleanly. F-010 deletion sweep and F-040 collision-safe removal are pinned by existing tests. Two P3 hot-path observations recorded as F-OPEN-077/078 below.
+
+**`insight/discovery.rs` + `insight/analysis.rs` audit:** one real P1 + minor housekeeping.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-045 | **P1** | `table_impact` (`insight/analysis.rs:127`) detected cross-table references via `TableRelation`. Comment promised "extract table part (before any dot or WHERE)" but implementation only split on `.`. Filter-clause values like `"Customer" WHERE("Blocked" = CONST(""))` silently fell through — the related table was never recorded as impacted. Common across BC standard tables (Sales Header, Purchase Line, GL Entry). Fix: new `extract_table_relation_table` helper handles all 6 documented shapes (bare, quoted, dot-field, WHERE, quoted+WHERE, multi-word+WHERE). Also chipped two hot-path allocations: `TableExtension extends` uses `eq_ignore_ascii_case` (was `to_lowercase()` per entry); `is_record_of` splits on any whitespace (was literal space — missed tab-separated type strings) and uses `eq_ignore_ascii_case`. 10 new tests. |
+
+False positive caught:
+
+| ID | Where | Why not a bug |
+|---|---|---|
+| F-FP-021 | "hardcoded AL string `TableRelation`" (P3) | The audit flagged `prop.name.eq_ignore_ascii_case("TableRelation")` as a hardcoded AL value. Verified: this is a property *name* in `.app` metadata that we're reading FROM `al_core::symbols` — i.e. we are consuming the canonical source, not redefining it. Same for the literal `"Record"` prefix in `is_record_of`. Both are reading external AL toolchain output, not redefining AL semantics. Not a CLAUDE.md violation. |
+
+Carry-forwards (P2/P3 — housekeeping):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-077 | P3 | `file_index.rs::index_from_result` is non-atomic across 7 DashMaps — a panic between `file_trees.insert` and `files.insert` leaves the index split. Tree-sitter parse + symbol extraction are unlikely to panic, but a future contributor adding a new map mutation could widen the window. Worth a comment. |
+| F-OPEN-078 | P3 | `file_index.rs::index_from_result` allocates a fresh `Vec<String>` for `proc_names` and `al_doc_symbols` on every keystroke; also calls `to_lowercase()` per procedure name. Bench-worthy only on 1K+ procedures-per-file (none observed in real codebases). Defer. |
+| F-OPEN-079 | P3 | `insight/analysis.rs::table_impact` allocates a fresh `String` for `table_lower` at the entry. Worth eliminating only if the function becomes very hot — currently only called from CLI `impact` subcommand. Defer. |
+
+Workspace test count: 1897 → 1907 (+10 TableRelation parser + helper tests). All gates green.
+
 
 
 | Phase | Status | Output |
