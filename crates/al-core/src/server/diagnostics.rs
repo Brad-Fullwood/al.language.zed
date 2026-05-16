@@ -208,15 +208,10 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
 
 /// Convert a transport-agnostic `SyntaxDiagnostic` (from al-core) to an LSP `Diagnostic`.
 ///
-/// tree-sitter column offsets are byte positions; the existing `ts_range_to_lsp` helper
-/// in crate::syntax converts them to UTF-16 code unit columns (which LSP requires). Since
-/// `SyntaxDiagnostic.range` is already a `queries::Range` using byte columns, we re-use
-/// the raw values and let the LSP layer handle UTF-16 via the existing helpers at call sites
-/// that need it. For `schedule_diagnostics` the source text is available, so we perform
-/// the conversion there via `syntax_error_to_diagnostic` / `lint_to_diagnostic`.
-///
-/// This helper is a thin shim used where the source bytes are not readily available, i.e.
-/// where the caller only has the pre-computed `SyntaxDiagnostic`.
+/// `SyntaxDiagnostic.range` already carries UTF-16 code unit columns — the
+/// `queries::diagnostics::ts_range_to_query_range` helper runs `byte_col_to_utf16_col`
+/// at the query layer. This is a thin shim that maps the already-converted
+/// `queries::Range` to LSP `Range` without re-walking the source.
 pub(crate) fn syntax_diag_to_lsp(
     diag: &crate::queries::diagnostics::SyntaxDiagnostic,
 ) -> Diagnostic {
