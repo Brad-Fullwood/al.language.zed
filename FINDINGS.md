@@ -341,6 +341,30 @@ Two follow-ups recorded:
 
 Workspace test count: 1864 → 1867. All gates green.
 
+### Iteration 16 (2026-05-16, +450m)
+
+One commit, one audit on the BC REST client surface, two real fixes in five call sites.
+
+New audit: BC server REST client and its peers (`bc_client.rs`, `profiling.rs`, `snapshot.rs`, `test_runner.rs`, `publish.rs`, `http_auth.rs`).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-023 | P1 | (New.) `bc_client::sanitize_error_body` redacts `Bearer …` / `access_token=…` / `password=…` / etc. and truncates at 512 B. Three sibling modules (`profiling`, `snapshot`, `test_runner`) forwarded raw error bodies into `warn!` logs and RPC error responses — bypass of the existing redaction. Routed all 5 sites through the sanitizer. |
+| F-FIX-024 | P3 | (New.) `test_runner.rs::TestRunnerClient::new` constructed an HTTP client with `danger_accept_invalid_certs` from config but did NOT emit the parity `"TLS verification disabled"` warn that the other 4 BC client builders all emit. Operators watching daemon logs now see consistent disclosure regardless of code path. |
+
+The audit also called out two MEDIUM findings that don't justify code change this pass:
+
+- Unbounded JSON response parsing in `profiling.rs:121`, `snapshot.rs:111/148`, `test_runner.rs:144/181` — same surface exists in `bc_client.rs` and was accepted as acceptable given the trusted-server threat model. Add a Content-Length cap as a follow-up if BC server reliability becomes a concern.
+- No retry/backoff on transient failures — by design (single-shot endpoints).
+
+Recorded follow-up:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-044 | P3 | Add Content-Length caps on JSON parsing in `profiling`/`snapshot`/`test_runner` for parity with the NuGet metadata cap (F-OPEN-018). Defence-in-depth against a misbehaving BC server. |
+
+Workspace test count: 1867 unchanged (defensive hardening, not feature). All gates green.
+
 
 
 | Phase | Status | Output |
