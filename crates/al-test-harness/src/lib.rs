@@ -127,13 +127,17 @@ impl LspClient {
 
         tracing::info!(binary = %binary.display(), root = %root_path.display(), "spawning al-lsp");
 
-        let mut child = tokio::process::Command::new(&binary)
-            .stdin(Stdio::piped())
+        let mut cmd = tokio::process::Command::new(&binary);
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .current_dir(&root_path)
-            .env("RUST_LOG", "debug")
-            .spawn()?;
+            .current_dir(&root_path);
+        // Only force RUST_LOG=debug if the test author hasn't already set it.
+        // Allows quiet CI runs via `RUST_LOG=warn cargo test -p al-test-harness`.
+        if std::env::var_os("RUST_LOG").is_none() {
+            cmd.env("RUST_LOG", "debug");
+        }
+        let mut child = cmd.spawn()?;
 
         let stdin = child
             .stdin
@@ -306,7 +310,10 @@ impl LspClient {
     ///
     /// Waits for `textDocument/publishDiagnostics` for the opened URI, which
     /// signals that parsing + linting are complete. Falls back to a 5-second
-    /// timeout so tests don't hang if the server never publishes.
+    /// timeout (configurable via `AL_TEST_DIAG_TIMEOUT_MS`) so tests don't
+    /// hang if the server never publishes. On timeout an ERROR-level log is
+    /// emitted so flaky CI runs surface the missed signal even when test
+    /// stdout is captured.
     pub async fn open_file(&mut self, relative_path: &str, content: &str) {
         let uri = self.file_uri(relative_path);
         let version = 1;
@@ -324,8 +331,7 @@ impl LspClient {
         if let Err(e) = self.notify("textDocument/didOpen", params).await {
             tracing::warn!("textDocument/didOpen notify failed: {e}");
         }
-        self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5))
-            .await;
+        self.wait_for_diagnostics(&uri, diag_wait_timeout()).await;
     }
 
     /// Send a text change to an already-open file (simulates Zed keystroke).
@@ -351,15 +357,20 @@ impl LspClient {
         if let Err(e) = self.notify("textDocument/didChange", params).await {
             tracing::warn!("textDocument/didChange notify failed: {e}");
         }
-        self.wait_for_diagnostics(&uri, tokio::time::Duration::from_secs(5))
-            .await;
+        self.wait_for_diagnostics(&uri, diag_wait_timeout()).await;
     }
 
     /// Wait for `textDocument/publishDiagnostics` for `uri`, up to `timeout`.
     ///
-    /// Notifications consumed while waiting are buffered so tests can still
-    /// inspect them via `drain_notifications`.
-    async fn wait_for_diagnostics(&mut self, uri: &str, timeout: tokio::time::Duration) {
+    /// Returns `true` if the diagnostic arrived, `false` on timeout or channel
+    /// close. Notifications consumed while waiting are buffered so tests can
+    /// still inspect them via `drain_notifications`.
+    ///
+    /// On timeout we log at ERROR (not WARN) so flaky CI runs surface the
+    /// missed signal even when test stdout is captured — silent timeouts here
+    /// can produce passing tests that never actually exercised the diagnostic
+    /// path.
+    async fn wait_for_diagnostics(&mut self, uri: &str, timeout: tokio::time::Duration) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             match tokio::time::timeout_at(deadline, self.notifications.recv()).await {
@@ -368,20 +379,20 @@ impl LspClient {
                         && params.get("uri").and_then(|v| v.as_str()) == Some(uri);
                     self.buffered_notifications.push((method, params));
                     if is_our_diag {
-                        break;
+                        return true;
                     }
                 }
                 Ok(None) => {
-                    tracing::warn!(uri, "wait_for_diagnostics: notification channel closed before publishDiagnostics");
-                    break;
+                    tracing::error!(uri, "wait_for_diagnostics: notification channel closed before publishDiagnostics");
+                    return false;
                 }
                 Err(_) => {
-                    tracing::warn!(
+                    tracing::error!(
                         uri,
                         timeout_ms = timeout.as_millis(),
-                        "wait_for_diagnostics: timed out — server did not publish diagnostics in time"
+                        "wait_for_diagnostics: timed out — server did not publish diagnostics in time (set AL_TEST_DIAG_TIMEOUT_MS to extend)"
                     );
-                    break;
+                    return false;
                 }
             }
         }
@@ -874,9 +885,14 @@ impl LspClient {
         let writer = self.writer.as_mut().ok_or("writer closed")?;
         send_message(writer, &msg).await?;
 
-        let response = tokio::time::timeout(tokio::time::Duration::from_secs(10), rx)
+        let response = tokio::time::timeout(request_timeout(), rx)
             .await
-            .map_err(|_| format!("timeout waiting for response to {method} (id={id})"))?
+            .map_err(|_| {
+                format!(
+                    "timeout waiting for response to {method} (id={id}); \
+                     set AL_TEST_REQUEST_TIMEOUT_MS to extend"
+                )
+            })?
             .map_err(|_| "channel closed")?;
 
         // Successful response — read_loop already removed the entry; the
@@ -1029,13 +1045,37 @@ pub async fn read_loop(
     }
 }
 
-/// F-023 helper: returns a guard whose Drop removes the pending entry
-/// for uid=1000(braf) gid=1000(braf) groups=1000(braf),3(sys),90(network),957(nopasswdlogin),979(rfkill),982(users),983(video),985(storage),989(lp),995(audio),998(wheel) from the shared  map. Used by
-/// so that EVERY exit path — write failure, timeout, channel close,
-/// LSP error, panic in the calling test — drains the map. Only the
-/// happy path triggers a no-op (the read_loop already removed the
-/// entry by the time the guard fires; `pending.remove(&id)` for an
-/// absent id is fine).
+/// Per-request timeout, configurable via `AL_TEST_REQUEST_TIMEOUT_MS`.
+///
+/// Defaults to 10 s. Under load (debug builds in CI, debugger attached,
+/// running with sanitisers) individual queries can exceed 10 s and a test
+/// will see `None`/`[]` instead of the real response. Tests that exercise
+/// slow code paths (`completion`, `references` over a large workspace,
+/// `formatting` on big files) should bump this.
+fn request_timeout() -> tokio::time::Duration {
+    let ms = std::env::var("AL_TEST_REQUEST_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(10_000);
+    tokio::time::Duration::from_millis(ms)
+}
+
+/// Diagnostic-publish wait, configurable via `AL_TEST_DIAG_TIMEOUT_MS`.
+/// Defaults to 5 s.
+fn diag_wait_timeout() -> tokio::time::Duration {
+    let ms = std::env::var("AL_TEST_DIAG_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(5_000);
+    tokio::time::Duration::from_millis(ms)
+}
+
+/// F-023 helper: returns a guard whose Drop removes the pending-request
+/// entry from the shared map, so that EVERY exit path — write failure,
+/// timeout, channel close, LSP error, panic in the calling test — drains
+/// the map. Only the happy path triggers a no-op (the read_loop already
+/// removed the entry by the time the guard fires; `pending.remove(&id)`
+/// for an absent id is fine).
 fn scopeguard_remove(
     pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
     id: i64,
