@@ -28,6 +28,20 @@ use super::{DapError, Result};
 /// Maximum number of pending debug events buffered before being consumed.
 const PENDING_EVENT_CAPACITY: usize = 64;
 
+/// Capacity of the SignalR event channel that the reader task forwards
+/// every server-push message into. A misbehaving (or malicious) BC server
+/// flooding the daemon used to grow this channel unboundedly, since the
+/// previous channel was `mpsc::unbounded_channel`. F-OPEN-017.
+///
+/// 4096 messages × ~few-KB-each = ~MB-scale bound. Variable-expansion
+/// responses can be large (deep AL records); Break / step-complete events
+/// are small. If the channel ever fills, the reader task drops the
+/// offending message with a `warn!` log — that's preferable to OOM.
+/// Break events have a *separate* dedicated channel (`break_event_*`)
+/// that stays unbounded because each entry is a single `bool` and a
+/// dropped Break event leaves the debugger silently stuck.
+const EVENT_CHANNEL_CAPACITY: usize = 4096;
+
 /// Parse a DAP arg value that may be a `bool` or a `string` ("none"/"false" → false).
 /// `default` is returned for non-bool, non-string variants.
 fn parse_bool_or_string(v: &serde_json::Value, default: bool) -> bool {
@@ -331,7 +345,7 @@ pub struct BcDebugSession {
     /// Send SignalR messages to the hub
     ws_tx: mpsc::Sender<String>,
     /// Receive events/completions from the hub (unbounded — never drops events)
-    event_rx: Mutex<mpsc::UnboundedReceiver<SignalRMessage>>,
+    event_rx: Mutex<mpsc::Receiver<SignalRMessage>>,
     /// Invocation ID counter
     next_id: AtomicI64,
     /// SignalR connection ID — used in browser URL for debug context
@@ -511,11 +525,16 @@ impl BcDebugSession {
 
         // Set up message channels
         let (ws_tx, mut ws_rx) = mpsc::channel::<String>(32);
-        // Unbounded event channel — losing a Break event would leave the debugger silent.
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<SignalRMessage>();
+        // Deep-but-bounded event channel. Break events take a dedicated
+        // unbounded path below to preserve the "Break must never be lost"
+        // invariant; everything else drops with a warn on overflow so a
+        // hostile or misbehaving server can't OOM the daemon. F-OPEN-017.
+        let (event_tx, event_rx) = mpsc::channel::<SignalRMessage>(EVENT_CHANNEL_CAPACITY);
         // Dedicated channel for Break/Detached/FatalError notifications.
         // Using an unbounded channel ensures events buffered before wait_for_break_event
-        // is called are never lost.
+        // is called are never lost. Each entry is one `bool`, so even a
+        // pathological 1M-deep backlog is ~1 MB — bounded in practice by
+        // the number of break events the BC server emits in one session.
         let (break_event_tx, break_event_rx) = mpsc::unbounded_channel::<bool>();
 
         // Writer task: send messages from channel to WebSocket
@@ -599,8 +618,23 @@ impl BcDebugSession {
                                     _ => {}
                                 }
                             }
-                            if event_tx.send(msg).is_err() {
-                                break;
+                            // try_send so a full channel drops the message
+                            // with a warn instead of awaiting (which would
+                            // hold up the WS reader task and back-pressure
+                            // the BC server). The dedicated break-event
+                            // channel above carries the don't-lose-this
+                            // signal separately. F-OPEN-017.
+                            if let Err(e) = event_tx.try_send(msg) {
+                                match e {
+                                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                                        warn!(
+                                            cap = EVENT_CHANNEL_CAPACITY,
+                                            "SignalR event channel full — dropping non-Break message; \
+                                             debug consumer is not draining fast enough"
+                                        );
+                                    }
+                                    tokio::sync::mpsc::error::TrySendError::Closed(_) => break,
+                                }
                             }
                         }
                         Err(e) => {
