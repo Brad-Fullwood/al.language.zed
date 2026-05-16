@@ -208,6 +208,27 @@ New audit: symbol index + cross-symbol resolution (`crates/al-core/src/symbols/{
 
 Workspace test count: 1837 → 1843. All gates green.
 
+### Iteration 11 (2026-05-16, +300m)
+
+One commit, one carry-forward closed, one new audit on completions/hover/definition.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-035 | P3 → fixed | 14 new round-trip parse tests (9 in scaffold.rs, 5 in generators.rs). Every generator template now has its output fed back through `AlParser::parse_quick` with `assert!(errors.is_empty())`. Includes the iteration-9 escape regression. Catches grammar / template drift that string-content asserts cannot. |
+
+New audit: completions / hover / definition (`crates/al-core/src/queries/{completions,hover,definition}.rs` + transport-boundary `crates/al-core/src/server/{completions,hover,definition}.rs`). **Largely clean** — return-type discipline correct (no `lsp_types::*` in `pub fn` signatures), tree-sitter traversal iterative, DashMap borrows scoped, position-out-of-bounds handled by `detect_context` (line 27-30) via `text.lines().nth().or(default)` and the UTF-16→byte conversion via `utf16_col_to_byte_offset` (line 33).
+
+The audit raised a handful of speculative concerns. None reproduced as real bugs once verified:
+
+| ID | Status | Notes |
+|---|---|---|
+| F-FP-006 | (false pos.) | "UTF-16 vs byte offset in `position.into()` calls" — verified: `detect_context` does its own UTF-16→byte conversion via `utf16_col_to_byte_offset`. Downstream `TypeResolver` uses `SyntaxPosition` (LSP-equivalent line/character semantics). |
+| F-FP-007 | (false pos.) | "Position past EOF panics" — `detect_context` returns `Default` if `text.lines().nth(line_idx)` is None. Other entry points use `find_node_at_position`, which returns `Option`. |
+| F-FP-008 | (false pos.) | "Hot-path keyword iteration not cached" — `language_data::keywords()` returns `&'static KeywordsData`, no per-call allocation. Iteration is O(N) over a fixed ~150-entry set. |
+| F-FP-009 | (false pos.) | "`definition.rs:112` — missing `crate::syntax_lsp` import" — file compiles cleanly under both `cargo check` and `cargo test`; the audit misread the module name. |
+
+Workspace test count: 1843 → 1857. All gates green.
+
 
 
 | Phase | Status | Output |
