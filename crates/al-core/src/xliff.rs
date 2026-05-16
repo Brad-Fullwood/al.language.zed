@@ -433,6 +433,11 @@ fn xml_escape(s: &str) -> String {
 ///
 /// Uses a simple line-based parser that handles typical AL XLIFF output without
 /// requiring a full XML parser dependency.
+///
+/// Multi-line `<source>` / `<target>` / `<note>` bodies are collected until
+/// their closing tag is found on a later line. Earlier versions truncated at
+/// the first newline, silently losing the rest of the translation
+/// (F-OPEN-(xliff-audit-1)).
 pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
     let mut units: HashMap<String, TranslationUnit> = HashMap::new();
     let mut current_id: Option<String> = None;
@@ -441,8 +446,76 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
     let mut current_state = TranslationState::New;
     let mut current_note: Option<String> = None;
 
+    /// Per-tag state for multi-line accumulation. When `accumulator` is
+    /// `Some(buf)` the next line(s) are body content of the named tag and
+    /// get appended (with a leading `\n` between them) until we see the
+    /// closing tag.
+    #[derive(Default)]
+    struct MultiLine {
+        target_tag: Option<&'static str>, // "source" | "target" | "note"
+        accumulator: String,
+    }
+    let mut multi = MultiLine::default();
+
+    /// Try to extract a single-line `<tag …>body</tag>` payload from a line.
+    /// Returns Some(body) if both opening `>` and closing `</tag>` are
+    /// present on the same line. Returns None if the closing tag isn't
+    /// on this line (caller will switch to multi-line accumulation).
+    fn extract_single_line(line: &str, tag: &str) -> Option<String> {
+        let open_end = line.find('>')?;
+        let close_marker = format!("</{tag}>");
+        let close_start = line[open_end + 1..].find(&close_marker)?;
+        let body = &line[open_end + 1..open_end + 1 + close_start];
+        if body.is_empty() {
+            None
+        } else {
+            Some(xml_unescape(body))
+        }
+    }
+
+    /// Extract a partial body when the opening tag is on this line but the
+    /// closing tag isn't. Returns the body portion (everything after `>`).
+    fn extract_open_only(line: &str) -> Option<String> {
+        let open_end = line.find('>')?;
+        let after = &line[open_end + 1..];
+        // Self-closing form `<tag .../>` — open_end falls on the `/` so the
+        // body would be empty.
+        if line[..open_end].trim_end().ends_with('/') {
+            return None;
+        }
+        Some(xml_unescape(after))
+    }
+
     for line in content.lines() {
         let trimmed = line.trim();
+
+        // Are we collecting a multi-line body? Append until we find the
+        // closing tag on the current line.
+        if let Some(tag) = multi.target_tag {
+            let close_marker = format!("</{tag}>");
+            if let Some(close_idx) = line.find(&close_marker) {
+                // Last chunk — append everything up to the close marker.
+                let last = &line[..close_idx];
+                if !multi.accumulator.is_empty() {
+                    multi.accumulator.push('\n');
+                }
+                multi.accumulator.push_str(&xml_unescape(last));
+                let body = std::mem::take(&mut multi.accumulator);
+                match tag {
+                    "source" => current_source = Some(body),
+                    "target" => current_target = Some(body),
+                    "note" => current_note = Some(body),
+                    _ => {}
+                }
+                multi.target_tag = None;
+            } else {
+                if !multi.accumulator.is_empty() {
+                    multi.accumulator.push('\n');
+                }
+                multi.accumulator.push_str(&xml_unescape(line));
+            }
+            continue;
+        }
 
         if trimmed.starts_with("<trans-unit ") {
             current_id = extract_xml_attr(trimmed, "id");
@@ -451,13 +524,28 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
             current_state = TranslationState::New;
             current_note = None;
         } else if trimmed.starts_with("<source") {
-            current_source = extract_xml_text(trimmed);
+            if let Some(body) = extract_single_line(trimmed, "source") {
+                current_source = Some(body);
+            } else if let Some(partial) = extract_open_only(trimmed) {
+                multi.target_tag = Some("source");
+                multi.accumulator = partial;
+            }
         } else if trimmed.starts_with("<target") {
             let state_str = extract_xml_attr(trimmed, "state").unwrap_or_default();
             current_state = TranslationState::from_xliff_state(&state_str);
-            current_target = extract_xml_text(trimmed);
+            if let Some(body) = extract_single_line(trimmed, "target") {
+                current_target = Some(body);
+            } else if let Some(partial) = extract_open_only(trimmed) {
+                multi.target_tag = Some("target");
+                multi.accumulator = partial;
+            }
         } else if trimmed.starts_with("<note>") {
-            current_note = extract_xml_text(trimmed);
+            if let Some(body) = extract_single_line(trimmed, "note") {
+                current_note = Some(body);
+            } else if let Some(partial) = extract_open_only(trimmed) {
+                multi.target_tag = Some("note");
+                multi.accumulator = partial;
+            }
         } else if trimmed.starts_with("</trans-unit>") {
             if let (Some(id), Some(source)) = (current_id.take(), current_source.take()) {
                 let unit = TranslationUnit {
@@ -486,24 +574,6 @@ fn extract_xml_attr(tag: &str, attr: &str) -> Option<String> {
     let end = tag[start..].find('"')? + start;
     let raw = &tag[start..end];
     Some(xml_unescape(raw))
-}
-
-/// Extract text content between XML tags (handles `<tag>text</tag>` on one line).
-fn extract_xml_text(tag: &str) -> Option<String> {
-    // Find > ... </
-    let content_start = tag.find('>')? + 1;
-    let content = &tag[content_start..];
-    if content.starts_with('/') || content.is_empty() {
-        // Self-closing or no content
-        return None;
-    }
-    let content_end = content.find('<').unwrap_or(content.len());
-    let raw = &content[..content_end];
-    if raw.is_empty() {
-        None
-    } else {
-        Some(xml_unescape(raw))
-    }
 }
 
 fn xml_unescape(s: &str) -> String {
@@ -1013,5 +1083,80 @@ mod tests {
             result[0].confidence, 1.0,
             "exact match should have confidence 1.0"
         );
+    }
+
+    // --- multi-line body regression (F-OPEN-(xliff-audit-1)) ----------------
+
+    #[test]
+    fn parse_xliff_preserves_multi_line_source_body() {
+        // Regression: extract_xml_text previously stopped at the first
+        // newline, silently dropping line 2+ of a multi-line <source>.
+        // The new parser accumulates until </source>.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xliff version="1.2">
+  <file>
+    <body>
+      <group>
+        <trans-unit id="multiline.1">
+          <source>Line one
+Line two
+Line three</source>
+          <target state="new"/>
+        </trans-unit>
+      </group>
+    </body>
+  </file>
+</xliff>"#;
+        let parsed = parse_xliff(xml);
+        let unit = parsed.get("multiline.1").expect("unit should parse");
+        assert_eq!(unit.source, "Line one\nLine two\nLine three");
+    }
+
+    #[test]
+    fn parse_xliff_preserves_multi_line_target_body() {
+        // Same regression for translated content. A real translator's
+        // newline in `<target>` text must survive parse + round-trip.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xliff version="1.2">
+  <file>
+    <body>
+      <group>
+        <trans-unit id="multiline.2">
+          <source>Hello</source>
+          <target state="translated">Bonjour
+le monde</target>
+        </trans-unit>
+      </group>
+    </body>
+  </file>
+</xliff>"#;
+        let parsed = parse_xliff(xml);
+        let unit = parsed.get("multiline.2").expect("unit should parse");
+        assert_eq!(unit.target.as_deref(), Some("Bonjour\nle monde"));
+        assert_eq!(unit.state, TranslationState::Translated);
+    }
+
+    #[test]
+    fn parse_xliff_single_line_body_still_works() {
+        // Positive: the common single-line case must continue to work
+        // exactly as before — this is what 99% of BC-generated XLIFF
+        // files look like.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xliff version="1.2">
+  <file>
+    <body>
+      <group>
+        <trans-unit id="single">
+          <source>Hello</source>
+          <target state="needs-review-translation">Bonjour</target>
+        </trans-unit>
+      </group>
+    </body>
+  </file>
+</xliff>"#;
+        let parsed = parse_xliff(xml);
+        let unit = parsed.get("single").expect("unit should parse");
+        assert_eq!(unit.source, "Hello");
+        assert_eq!(unit.target.as_deref(), Some("Bonjour"));
     }
 }
