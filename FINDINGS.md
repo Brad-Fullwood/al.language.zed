@@ -605,6 +605,25 @@ Carry-forwards (P2/P3 — housekeeping):
 
 Workspace test count: 1897 → 1907 (+10 TableRelation parser + helper tests). All gates green.
 
+### Iteration 27 (2026-05-16, +780m)
+
+One commit. Audit focus: `insight/graph.rs` (1076 LOC) — the InsightGraph constructor powering cross-file queries (deadcode, impact, suggest_event, code_lens references).
+
+**Audit verdict:** structurally sound — iterative construction, no panic surface, no DashMap-across-await (sync code), cycle-tested. The earlier iteration-26 audit flagged "hardcoded attribute name strings" (IntegrationEvent / BusinessEvent / EventSubscriber) appearing at 9 production sites across graph.rs + calls.rs. Re-examined here: these are runtime-ABI strings emitted into `.app` symbol JSON by Microsoft's compiler, not AL language surface — they don't fall under the CLAUDE.md no-hardcoded-AL-values rule. But they are worth centralising for grep-ability and to localise any future rename.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-046 | P3 | Extracted `INTEGRATION_EVENT`/`BUSINESS_EVENT`/`EVENT_SUBSCRIBER` to `insight::attr_names` mod with a docstring distinguishing "BC event-system runtime ABI" from "AL language values". 9 production call sites migrated; test-only literals inside `#[cfg(test)]` left as bare strings (those are the contract under test). Also clarified the `break` at `graph.rs:386` (subscriber kind fallback) — it's intentional kind disambiguation, not a premature exit. Comment updated to match the behaviour. |
+
+Carry-forwards (P2/P3 — design, low-impact):
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-080 | P2 | `InsightGraph::add_edge` runs `edges_connecting(from, to)` on every insert for dedup. For an Object node with N method-Contains edges, building those is O(N²). On a 200-method table extension that's ~40K ops — fast in practice; on adversarial 5K-method workspaces it'd be noticeable. Track inserted `(from, to, edge)` in a `HashSet` during `build_from_index` to amortise. Not urgent (build budget is documented at 50-200 ms). |
+| F-OPEN-081 | P3 | `InsightGraph` public API returns `petgraph::graph::NodeIndex` from `ensure_node`/`get_node`/`get_nodes`/`add_edge`/`remove_edges_from`. This bakes `petgraph` into the contract; the struct docstring at L104-108 acknowledges. Wrap in a newtype (`pub struct InsightNodeId(NodeIndex)`) if you ever need to swap graph backends. |
+
+Workspace test count: 1907 unchanged (refactor + comment changes only). All gates green.
+
 
 
 | Phase | Status | Output |
