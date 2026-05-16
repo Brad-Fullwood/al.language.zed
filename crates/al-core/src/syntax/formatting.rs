@@ -429,6 +429,17 @@ pub fn format_range(
 ///
 /// The formatter collapses consecutive blank lines (two → one). We walk orig and fmt
 /// in lockstep, skipping orig-only collapsed blanks without advancing the fmt cursor.
+///
+/// **Invariant** (F-OPEN-025). The only documented asymmetry between
+/// `orig_lines` and `fmt_lines` is collapsed double-blanks. If a future
+/// formatter rule drops or duplicates any other line, the lockstep walk
+/// here silently mis-aligns and emits the wrong fmt rows for the requested
+/// range. To make that regression loud instead of silent, a `debug_assert`
+/// at the bottom of this function verifies that the fmt cursor advanced by
+/// the same count as the non-collapsed-blank orig rows we visited up to
+/// `end`. Release builds skip the check (the function still returns a
+/// best-effort slice — wrong but non-crashing) so production never panics
+/// on a benign mismatch.
 fn extract_formatted_region<'a>(
     orig_lines: &[&str],
     fmt_lines: &[&'a str],
@@ -439,6 +450,7 @@ fn extract_formatted_region<'a>(
     let mut fmt_idx = 0usize;
     let mut result: Vec<&'a str> = Vec::new();
     let mut prev_orig_blank = false;
+    let mut visited_non_collapsed = 0usize;
 
     while orig_idx <= end && fmt_idx < fmt_lines.len() {
         let orig_is_blank = orig_lines[orig_idx].trim().is_empty();
@@ -456,7 +468,18 @@ fn extract_formatted_region<'a>(
 
         orig_idx += 1;
         fmt_idx += 1;
+        visited_non_collapsed += 1;
     }
+
+    // Invariant: we advanced fmt_idx exactly as often as we advanced
+    // through orig rows that weren't collapsed blanks. Any other formatter
+    // asymmetry (drop, duplicate, reorder) would manifest as fmt_idx
+    // diverging from visited_non_collapsed.
+    debug_assert_eq!(
+        fmt_idx, visited_non_collapsed,
+        "extract_formatted_region: fmt cursor diverged from orig walk — \
+         formatter introduced a line-count asymmetry beyond blank collapse"
+    );
 
     result
 }
