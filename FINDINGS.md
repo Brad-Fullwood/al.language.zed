@@ -383,6 +383,17 @@ The audit also raised concerns I marked as **not actionable this pass**:
 
 Workspace test count: 1867 → 1872. All gates green.
 
+### Iteration 18 (2026-05-16, +510m)
+
+Two commits, two carry-forwards closed — both Content-Length / size-cap hardening, parallel to the existing NuGet metadata cap (F-OPEN-018).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-044 | P3 → fixed | Five BC dev API JSON parse sites in `profiling`, `snapshot`, `test_runner` ran `resp.json::<T>()` with no bound. Added `bc_client::read_json_body_capped` with the same Content-Length-required + 16 MB cap pattern as NuGet's `fetch_metadata_json`. Routed all 5 sites through it. 3 regression tests. |
+| F-OPEN-045 | P3 → fixed | `parse_xliff` consumed `&str` so a 1 GB `.xlf` was loaded into memory before any size check. New `xliff::xlf_exceeds_cap(path)` checks on-disk size against `MAX_XLF_FILE_BYTES = 64 MB`. Three daemon dispatch sites (xlf-refresh, xlf-untranslated, xlf-suggest) now refuse oversize files before reading. 3 regression tests using a sparse-file trick. |
+
+Workspace test count: 1872 → 1878. All gates green.
+
 
 
 | Phase | Status | Output |
