@@ -80,6 +80,23 @@ pub struct VariantOutcome {
     pub error: Option<String>,
 }
 
+/// Identifies which test-execution phase produced this report.
+///
+/// The current implementation does NOT actually run the test suite against
+/// each mutant — that's reserved for the interpreter-backed phase. Surfacing
+/// the phase explicitly prevents callers from interpreting a 0% mutation
+/// score as a real result.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationExecutorPhase {
+    /// Variants are generated and applied but tests are NOT executed; every
+    /// outcome is reported as `survived` and `mutation_score()` is `None`.
+    /// Tooling should treat the report as scaffolding output, not a result.
+    Stub,
+    /// Variants are run against the AL interpreter in-process.
+    Interpreter,
+}
+
 /// Aggregated report for a full mutation-testing run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,17 +105,33 @@ pub struct MutationReport {
     pub killed: usize,
     pub survived: usize,
     pub errored: usize,
+    /// Which test-execution backend produced this report. CLI/daemon
+    /// consumers should warn the user when this is `Stub` so a 0% score
+    /// isn't taken as a real signal.
+    #[serde(default = "default_executor_phase")]
+    pub executor_phase: MutationExecutorPhase,
+}
+
+fn default_executor_phase() -> MutationExecutorPhase {
+    // Older serialised reports (pre-`executor_phase`) default to the stub
+    // phase — they were produced by the same code path, just without the
+    // explicit tag.
+    MutationExecutorPhase::Stub
 }
 
 impl MutationReport {
-    /// Mutation score as a percentage in `[0, 100]`.  Returns 0 when no
-    /// variants were generated (avoids divide-by-zero).
-    pub fn mutation_score(&self) -> f64 {
+    /// Mutation score as a percentage in `[0, 100]`. Returns `None` when no
+    /// real test execution ran (stub phase) OR when no variants were
+    /// generated — both cases produce a meaningless 0% under the prior API.
+    pub fn mutation_score(&self) -> Option<f64> {
+        if self.executor_phase == MutationExecutorPhase::Stub {
+            return None;
+        }
         let total = self.killed + self.survived;
         if total == 0 {
-            return 0.0;
+            return None;
         }
-        self.killed as f64 * 100.0 / total as f64
+        Some(self.killed as f64 * 100.0 / total as f64)
     }
 }
 
@@ -560,6 +593,12 @@ pub async fn run_mutation_testing(
         killed,
         survived,
         errored,
+        // run_single_variant is still the scaffolding stub — no real test
+        // execution happens. Surface that explicitly so downstream consumers
+        // (al-explorer CLI, daemon clients) don't interpret a 0% score as
+        // a real signal. Promote this to `Interpreter` once the interpreter
+        // backend is wired into run_single_variant.
+        executor_phase: MutationExecutorPhase::Stub,
     };
 
     let _ = tx
@@ -598,6 +637,12 @@ fn collect_mutation_files(workspace: &Workspace, opts: &MutationOptions) -> Vec<
 
         files.push(path_str);
     }
+
+    // Sort so mutation reports are deterministic across runs — `file_index.files`
+    // is a DashMap whose iteration order tracks the shard hash and varies across
+    // process restarts. Without this sort, CI snapshots and human review of
+    // mutation results would diff spuriously.
+    files.sort();
 
     files
 }
@@ -859,14 +904,15 @@ mod tests {
     // --- Positive: MutationReport helpers ------------------------------------
 
     #[test]
-    fn mutation_report_score_zero_when_no_variants() {
+    fn mutation_report_score_none_when_no_variants_under_interpreter() {
         let report = MutationReport {
             variants: vec![],
             killed: 0,
             survived: 0,
             errored: 0,
+            executor_phase: MutationExecutorPhase::Interpreter,
         };
-        assert_eq!(report.mutation_score(), 0.0);
+        assert_eq!(report.mutation_score(), None);
     }
 
     #[test]
@@ -876,8 +922,12 @@ mod tests {
             killed: 5,
             survived: 0,
             errored: 0,
+            executor_phase: MutationExecutorPhase::Interpreter,
         };
-        assert!((report.mutation_score() - 100.0).abs() < 0.001);
+        let score = report
+            .mutation_score()
+            .expect("score must be Some under interpreter phase");
+        assert!((score - 100.0).abs() < 0.001);
     }
 
     #[test]
@@ -887,8 +937,26 @@ mod tests {
             killed: 5,
             survived: 5,
             errored: 0,
+            executor_phase: MutationExecutorPhase::Interpreter,
         };
-        assert!((report.mutation_score() - 50.0).abs() < 0.001);
+        let score = report
+            .mutation_score()
+            .expect("score must be Some under interpreter phase");
+        assert!((score - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn mutation_report_score_none_under_stub_phase() {
+        // The whole point of the executor_phase flag: a stub run must NOT
+        // report a numeric score (which would be a meaningless 0%).
+        let report = MutationReport {
+            variants: vec![],
+            killed: 0,
+            survived: 100,
+            errored: 0,
+            executor_phase: MutationExecutorPhase::Stub,
+        };
+        assert_eq!(report.mutation_score(), None);
     }
 
     // --- Negative: invalid / edge-case paths ----------------------------------

@@ -4263,6 +4263,7 @@ pub(super) async fn dispatch_tests_mutate(
                     killed: 0,
                     survived: 0,
                     errored: 0,
+                    executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Stub,
                 })
                 .unwrap_or(serde_json::Value::Null),
             ),
@@ -4301,6 +4302,9 @@ pub(super) async fn dispatch_tests_mutate(
         killed,
         survived,
         errored,
+        // Daemon dispatch path mirrors the in-process scaffolding: test
+        // execution is stubbed pending the interpreter backend.
+        executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Stub,
     };
 
     match serde_json::to_value(&report) {
