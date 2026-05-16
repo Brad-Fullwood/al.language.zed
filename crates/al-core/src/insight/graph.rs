@@ -239,17 +239,21 @@ impl InsightGraph {
         );
 
         for method in &entry.methods {
-            let is_event = method
-                .attributes
-                .iter()
-                .any(|a| a.name == "IntegrationEvent" || a.name == "BusinessEvent");
+            let is_event = method.attributes.iter().any(|a| {
+                a.name == super::attr_names::INTEGRATION_EVENT
+                    || a.name == super::attr_names::BUSINESS_EVENT
+            });
             let is_subscriber = method
                 .attributes
                 .iter()
-                .any(|a| a.name == "EventSubscriber");
+                .any(|a| a.name == super::attr_names::EVENT_SUBSCRIBER);
 
             if is_event {
-                let event_type = if method.attributes.iter().any(|a| a.name == "BusinessEvent") {
+                let event_type = if method
+                    .attributes
+                    .iter()
+                    .any(|a| a.name == super::attr_names::BUSINESS_EVENT)
+                {
                     EventNodeType::Business
                 } else {
                     EventNodeType::Integration
@@ -334,7 +338,7 @@ impl InsightGraph {
             if method
                 .attributes
                 .iter()
-                .any(|a| a.name == "EventSubscriber")
+                .any(|a| a.name == super::attr_names::EVENT_SUBSCRIBER)
             {
                 let (target_kind, target_object, target_event) =
                     parse_subscriber_target_full(&method.attributes);
@@ -372,7 +376,12 @@ impl InsightGraph {
                 for kind in &kinds_to_try {
                     let event_key =
                         NodeKey::Event(*kind, target_obj_lower.clone(), target_event_lower.clone());
-                    // Connect subscriber to ALL matching event nodes (across packages).
+                    // Connect subscriber to ALL matching event nodes across packages,
+                    // but only within the first kind that has matches. Cross-kind
+                    // events that happen to share a name are semantically distinct;
+                    // linking to both would create false-positive subscriptions.
+                    // Kind disambiguation is best-effort when the subscriber attribute
+                    // omits ObjectType — well-formed AL always includes it.
                     let event_indices: Vec<NodeIndex> = self.get_nodes(&event_key).to_vec();
                     if event_indices.is_empty() {
                         continue;
@@ -382,7 +391,6 @@ impl InsightGraph {
                             self.add_edge(sub, event_idx, InsightEdge::SubscribesTo);
                         }
                     }
-                    // Stop trying fallback kinds once we found a matching kind.
                     break;
                 }
             }
@@ -430,7 +438,7 @@ fn parse_subscriber_target_full(
     attributes: &[crate::symbols::AttributeSymbol],
 ) -> (Option<ObjectKind>, String, String) {
     for attr in attributes {
-        if attr.name == "EventSubscriber" {
+        if attr.name == super::attr_names::EVENT_SUBSCRIBER {
             // arg[0]: "ObjectType::Codeunit" — extract the type name
             let kind = attr.arguments.first().and_then(|s| {
                 let s = s.trim();

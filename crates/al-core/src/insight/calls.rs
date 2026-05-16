@@ -989,9 +989,13 @@ fn register_single_procedure(
 
     let is_integration_event = attributes
         .iter()
-        .any(|(name, _)| name == "IntegrationEvent");
-    let is_business_event = attributes.iter().any(|(name, _)| name == "BusinessEvent");
-    let is_subscriber = attributes.iter().any(|(name, _)| name == "EventSubscriber");
+        .any(|(name, _)| name == super::attr_names::INTEGRATION_EVENT);
+    let is_business_event = attributes
+        .iter()
+        .any(|(name, _)| name == super::attr_names::BUSINESS_EVENT);
+    let is_subscriber = attributes
+        .iter()
+        .any(|(name, _)| name == super::attr_names::EVENT_SUBSCRIBER);
     let is_local = has_local_modifier(proc_node, source);
 
     if is_integration_event || is_business_event {
@@ -1097,7 +1101,7 @@ fn has_local_modifier(proc_node: tree_sitter::Node, source: &[u8]) -> bool {
 /// We extract arg[1] (object name) and arg[2] (event name).
 fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> (String, String) {
     for (name, args_text) in attrs {
-        if name == "EventSubscriber" {
+        if name == super::attr_names::EVENT_SUBSCRIBER {
             // Parse args from the raw text: split by comma inside parens
             let args = extract_attribute_args(args_text);
             let target_object = args.get(1).map(|s| clean_attr_arg(s)).unwrap_or_default();

@@ -7,6 +7,20 @@
 //!
 //! Used by `al trace`, `al callgraph`, `al subscribers`, and `al intercept` queries.
 
+/// AL attribute identifiers used by the BC event system.
+///
+/// These are runtime-ABI strings emitted into `.app` symbol JSON by
+/// Microsoft's compiler. They are NOT AL language keywords / built-in
+/// functions / object types (which the CLAUDE.md "no hardcoded AL values"
+/// rule targets) — they are stable identifiers in the event system that
+/// have not been renamed since BC's introduction. Centralised here so any
+/// future rename happens in one place and a `grep` for usage is easy.
+pub mod attr_names {
+    pub const INTEGRATION_EVENT: &str = "IntegrationEvent";
+    pub const BUSINESS_EVENT: &str = "BusinessEvent";
+    pub const EVENT_SUBSCRIBER: &str = "EventSubscriber";
+}
+
 pub mod analysis;
 pub mod calls;
 pub mod discovery;
