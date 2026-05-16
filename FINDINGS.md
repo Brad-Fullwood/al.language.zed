@@ -309,6 +309,38 @@ One P3 follow-up:
 
 Workspace test count: 1857 → 1864. All gates green.
 
+### Iteration 15 (2026-05-16, +420m)
+
+Three commits, two carry-forwards closed, one new audit on DocumentStore producing one fix + one false-positive verification.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-032 | P3 → fixed | `LibraryRandom` LCG and `LibraryVariableStorage` queue both live in `thread_local!`. Parallel tests on the same worker thread saw bleed-through (`SetSeed(42)` survived across boundaries). Added `library_random::reset_lcg()` + a single `stubs::reset_thread_local_state()` facade; called from `run_codeunit_interp` before every test method. Regression test primes both pieces of state, resets, asserts queue empty + LCG-deterministic. |
+| F-OPEN-041 | P3 → fixed | Added a docstring on `run_dap_proxy` explaining that the legacy DAP path does not implement `cancel` (unlike `native_dap` which uses a watch channel). Subprocess kill on shutdown is the only cancellation primitive. |
+| F-FIX-022 | P2 | (New from DocumentStore audit.) `apply_changes` previously silently dropped any TextChange whose range was backward or out-of-bounds. Worst diagnostic shape: client thinks edit landed, server diverges, no log. Restructured into an explicit match with `warn!` + skip on each bad-range branch. 2 regression tests. |
+
+New audit: `DocumentStore` + `parsing::get_or_parse` (`crates/al-core/src/documents.rs` + `parsing.rs`). Verified clean overall:
+
+- DashMap-across-await: not present (all `apply_changes` etc. are sync).
+- Lock-ordering: no nested locks.
+- No `lsp_types::*` in store types — uses internal `TextRange` / `TextChange`.
+- Memmap, panic surfaces: none in production paths (all `.unwrap()` in test code).
+
+One CRITICAL audit claim caught as **false positive**:
+
+| ID | Where | Why not a bug |
+|---|---|---|
+| F-FP-012 | "TOCTOU race in `get_cached_tree`: read doc.version then trees[uri], not atomic" | Verified: DashMap's `Ref` on `docs[uri]` is a reader-lock on that shard. Concurrent `apply_changes` calls `get_mut(uri)` which needs a writer-lock on the SAME shard, so it blocks until `get_cached_tree`'s Ref drops. The two-step read is internally consistent. |
+
+Two follow-ups recorded:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-042 | P3 | No per-document size cap. A workspace could open a 10 GB file and consume memory unbounded. Add an optional config-driven cap. |
+| F-OPEN-043 | P3 | Tree-sitter parse-tree cache has no eviction. Long-running daemon with many opened files accumulates parsed trees forever. LRU or sweep on idle would help. |
+
+Workspace test count: 1864 → 1867. All gates green.
+
 
 
 | Phase | Status | Output |
