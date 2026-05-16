@@ -732,6 +732,18 @@ Carry-forwards (P1/P2 — design or out of scope for this iteration):
 
 Workspace test count: 1913 → 1916 (+3 ast_depth + downto regression tests). All gates green.
 
+### Iteration 33 (2026-05-16, +960m)
+
+One commit. Closing three iter-32 follow-ups in a single batch — all single-file fixes in `eval_stmt.rs`.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-057 | P1 | F-OPEN-097 closed. `eval_case` matched on `"case_else" \| "else_clause"` — those node kinds don't exist in the AL grammar (`else_body` is a field on `case_statement` directly). The dead arm meant the else branch never ran. Now reads `child_by_field_name("else_body")` once at the top of eval_case. |
+| F-FIX-058 | P2 | F-OPEN-099 closed. `values_equal_for_case` did `*x as f64 == *y` for Integer↔Decimal — lossy above 2^53 (e.g. currency-magnitude i64 values would falsely compare equal to a Decimal that lost precision in the cast). Now: round-trip via i64 if the Decimal has zero fractional part AND fits in i64; otherwise the values cannot be equal. |
+| F-FIX-059 | P2 | F-OPEN-100 closed. `eval_args_into` absorbed `Eval::Exit(v) => out.push(v)`, silently passing the exit value through as a regular argument. AL semantics: `exit(v)` in argument position should unwind the enclosing procedure. Introduced private `ArgsShort { Error, Exit }` short-circuit enum; the call site maps `ArgsShort::Exit` back to `Eval::Exit`. |
+
+Workspace test count: 1916 → 1920 (+4 batch regression tests). All gates green.
+
 
 
 | Phase | Status | Output |
