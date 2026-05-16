@@ -775,6 +775,16 @@ One commit. F-OPEN-076 closed.
 
 Workspace test count: 1922 → 1924 (+2 sanitize_version tests). All gates green.
 
+### Iteration 37 (2026-05-16, +1080m)
+
+One commit. F-OPEN-075 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-064 | P3 | F-OPEN-075 closed. `SemanticError::Poisoned` was overloaded for true mutex poisoning AND cooldown short-circuiting. Split into `Poisoned` (CLR corrupt, restart required) and `Cooldown(&'static str)` (transient throttle, will recover). The `is_persistent` check in `diagnostics.rs` keeps the user-notification throttle on Timeout/Poisoned only — Cooldown no longer surfaces a "restart the editor" warning during normal load. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
