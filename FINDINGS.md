@@ -765,6 +765,16 @@ One commit. F-OPEN-074 closed.
 
 Workspace test count: 1920 → 1922 (+2 server-scheme allowlist tests). All gates green.
 
+### Iteration 36 (2026-05-16, +1050m)
+
+One commit. F-OPEN-076 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-063 | P3 | F-OPEN-076 closed. `sanitize_version` had no length cap — a pathological caller passing a multi-KB version string would have built a filename the OS rejects (NAME_MAX = 255). Now truncates at `MAX_SANITIZED_VERSION_LEN = 64`. Real AL toolchain versions are ~13 chars so 64 leaves comfortable headroom. 2 regression tests. |
+
+Workspace test count: 1922 → 1924 (+2 sanitize_version tests). All gates green.
+
 
 
 | Phase | Status | Output |
