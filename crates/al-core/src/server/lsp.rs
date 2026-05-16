@@ -240,6 +240,16 @@ impl AlServer {
             // syntax_diagnostics is CPU-bound (tree-sitter parse + lint walk).
             // Off-load to the blocking pool so concurrent async LSP requests
             // are not stalled for the duration of the parse on large files.
+            //
+            // Stale-document guard: between the keystroke that scheduled this task
+            // and the 400 ms debounce expiry, the user may have closed the document
+            // (did_close already cleared diagnostics with an empty publish). If we
+            // computed and published now we'd resurrect ghost squiggles on a
+            // closed document.
+            if !workspace.documents.contains(&uri) {
+                tracing::debug!(uri = %uri, "debounced diagnostics: document no longer open, skipping publish");
+                return;
+            }
             let diag_uri = uri.clone();
             let lsp_diags: Vec<Diagnostic> = match tokio::task::spawn_blocking(move || {
                 crate::queries::diagnostics::syntax_diagnostics(&workspace, &diag_uri, &config)
@@ -505,6 +515,14 @@ impl LanguageServer for AlServer {
         let uri = params.text_document.uri;
         tracing::info!(uri = %uri, "did_close");
         self.workspace.documents.close(&uri);
+
+        // Cancel any pending debounced diagnostics task. Without this, a task
+        // armed by the last keystroke can wake after the close and publish
+        // ghost squiggles. The in-task `contains` check is the primary guard;
+        // this abort is the belt to its braces.
+        if let Some(old) = self.diag_task.lock().await.take() {
+            old.abort();
+        }
 
         // Targeted composed invalidation — only evict the object from this file (ISSUE-146)
         crate::workspace::on_document_close(&self.workspace, &uri);

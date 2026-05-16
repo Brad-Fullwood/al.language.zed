@@ -312,3 +312,60 @@ async fn test_regression_prepare_rename_returns_range() {
 
     client.shutdown().await;
 }
+
+// ===========================================================================
+// Regression: Ghost diagnostics after did_close-during-debounce
+//
+// `schedule_diagnostics` spawns a tokio task that sleeps for the debounce
+// interval (400 ms) before computing and publishing. If the user closed the
+// tab during that window, the prior code would still wake, compute, and
+// publish — resurrecting "ghost squiggles" on a closed document immediately
+// after did_close had cleared them with an empty publish.
+//
+// Fix: did_close aborts the pending task, AND the in-task closure checks
+// `documents.contains(&uri)` before computing/publishing. Either guard is
+// sufficient; both are present for resilience.
+// ===========================================================================
+
+#[tokio::test]
+async fn test_regression_no_ghost_diagnostics_after_close_during_debounce() {
+    let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
+
+    // File with a tree-sitter parse error — guarantees the diagnostics path
+    // would have something to publish if it ran.
+    let code = "codeunit 50100 \"Ghost Test\"\n{\n    procedure Broken(\n    begin\n    end;\n}\n";
+    client.open_file("src/ghost_test.al", code).await;
+
+    // Drain the open-time diagnostics so the post-close drain only sees
+    // anything our race could resurrect.
+    let _ = client.drain_diagnostics();
+
+    // Schedule a debounced diagnostics task and immediately close.
+    // change_file_no_wait does NOT wait for diagnostics, so this races the
+    // 400 ms debounce against the did_close.
+    let edit = "codeunit 50100 \"Ghost Test\"\n{\n    procedure Broken(arg: Integer\n    begin\n    end;\n}\n";
+    client.change_file_no_wait("src/ghost_test.al", edit).await;
+    client.close_file("src/ghost_test.al").await;
+
+    // Wait well past the 400 ms debounce window plus parse time.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+    let diags = client.drain_diagnostics();
+    let uri = format!("file://{}/src/ghost_test.al", test_project_dir().display());
+
+    // The only publish after close should be the explicit clear (empty array).
+    // A non-empty publish here proves a ghost-squiggle regression.
+    if let Some(published) = diags.get(&uri) {
+        for entry in published {
+            let arr = entry
+                .as_array()
+                .expect("publishDiagnostics.diagnostics is an array");
+            assert!(
+                arr.is_empty(),
+                "ghost diagnostic published after did_close: {entry}"
+            );
+        }
+    }
+
+    client.shutdown().await;
+}
