@@ -402,14 +402,17 @@ pub(super) fn dispatch_by_id(
     let Some(kind_str) = params.get("kind").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let Some(obj_id) = params.get("id").and_then(|v| v.as_i64()) else {
+    // Reject overflowing object IDs (>2³¹-1) instead of silently wrapping to a
+    // negative i32 — the resulting `get_by_id` would either miss legitimate
+    // objects or hit unintended ones.
+    let Some(obj_id) = super::extract_i32(params, "id") else {
         return invalid_params(id);
     };
     let kind = match super::parse_object_kind(id, kind_str) {
         Ok(k) => k,
         Err(e) => return e,
     };
-    let results = workspace.symbols.get_by_id(kind, obj_id as i32);
+    let results = workspace.symbols.get_by_id(kind, obj_id);
     let value: Vec<serde_json::Value> = results
         .iter()
         .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail

@@ -191,7 +191,25 @@ pub(super) async fn dispatch_debug(
                     };
                 }
             };
-            let line = params.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            // Reject missing/overflowing `line` rather than silently defaulting
+            // to line 0 — a client bug that omits the field would otherwise
+            // create a phantom breakpoint at the top of the file.
+            let Some(line) = params
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u32::try_from(n).ok())
+            else {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: "Missing or out-of-range 'line' parameter (must be 0..=u32::MAX)"
+                            .to_string(),
+                    }),
+                    ..Default::default()
+                };
+            };
             let condition = params
                 .get("condition")
                 .and_then(|v| v.as_str())
@@ -201,16 +219,20 @@ pub(super) async fn dispatch_debug(
             // resolve from the workspace file_index. Defaulting to (0, 0)
             // routes the breakpoint at the wrong object — BC accepts the
             // request but never hits the line.
+            //
+            // `as i32` would silently wrap an out-of-range value; `try_from`
+            // rejects it so an upstream caller bug surfaces instead of
+            // silently routing at the wrong object.
             let resolved = resolve_object_metadata(workspace, &file);
             let obj_type = params
                 .get("objectType")
                 .and_then(|v| v.as_i64())
-                .map(|v| v as i32)
+                .and_then(|v| i32::try_from(v).ok())
                 .or(resolved.map(|(t, _)| t));
             let obj_id = params
                 .get("objectId")
                 .and_then(|v| v.as_i64())
-                .map(|v| v as i32)
+                .and_then(|v| i32::try_from(v).ok())
                 .or(resolved.map(|(_, i)| i));
 
             let (obj_type, obj_id) = match (obj_type, obj_id) {

@@ -571,6 +571,17 @@ pub(crate) fn extract_position(params: &serde_json::Value) -> Option<crate::quer
     Some(crate::queries::Position { line, character })
 }
 
+/// Extract a JSON-RPC integer parameter as `i32` without silent truncation.
+///
+/// AL object IDs are i32 in the BC metadata; the JSON-RPC wire form is i64.
+/// `params.get(key).as_i64()? as i32` would silently wrap on values >2³¹-1
+/// (or < -2³¹). Use `try_from` so an out-of-range integer returns `None`
+/// and the caller can return `INVALID_PARAMS` instead of corrupting the
+/// query.
+pub(crate) fn extract_i32(params: &serde_json::Value, key: &str) -> Option<i32> {
+    i32::try_from(params.get(key)?.as_i64()?).ok()
+}
+
 pub(crate) fn invalid_params(id: u64) -> Response {
     Response {
         id,
@@ -712,7 +723,48 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
 
 #[cfg(test)]
 mod tests {
-    use super::read_bounded_line;
+    use super::{extract_i32, extract_position, read_bounded_line};
+
+    #[test]
+    fn extract_i32_accepts_in_range() {
+        let params = serde_json::json!({ "id": 50_100 });
+        assert_eq!(extract_i32(&params, "id"), Some(50_100));
+        let params = serde_json::json!({ "id": -1 });
+        assert_eq!(extract_i32(&params, "id"), Some(-1));
+        let params = serde_json::json!({ "id": i32::MAX });
+        assert_eq!(extract_i32(&params, "id"), Some(i32::MAX));
+        let params = serde_json::json!({ "id": i32::MIN });
+        assert_eq!(extract_i32(&params, "id"), Some(i32::MIN));
+    }
+
+    #[test]
+    fn extract_i32_rejects_overflow() {
+        // i32::MAX + 1 — would silently wrap to i32::MIN under `as i32`.
+        let params = serde_json::json!({ "id": (i32::MAX as i64) + 1 });
+        assert_eq!(extract_i32(&params, "id"), None);
+        let params = serde_json::json!({ "id": (i32::MIN as i64) - 1 });
+        assert_eq!(extract_i32(&params, "id"), None);
+        // Very large u64 that exceeds i64::MAX is rejected at the as_i64 step.
+        let params = serde_json::json!({ "id": u64::MAX });
+        assert_eq!(extract_i32(&params, "id"), None);
+    }
+
+    #[test]
+    fn extract_i32_rejects_missing_or_wrong_type() {
+        let params = serde_json::json!({});
+        assert_eq!(extract_i32(&params, "id"), None);
+        let params = serde_json::json!({ "id": "fifty" });
+        assert_eq!(extract_i32(&params, "id"), None);
+        let params = serde_json::json!({ "id": 3.14 });
+        assert_eq!(extract_i32(&params, "id"), None);
+    }
+
+    #[test]
+    fn extract_position_rejects_overflow() {
+        // Matches the existing hardening — make sure we don't regress it.
+        let params = serde_json::json!({ "line": (u32::MAX as u64) + 1, "character": 0 });
+        assert!(extract_position(&params).is_none());
+    }
 
     /// Verify socket_path produces the same result for the same canonical path.
     #[test]
