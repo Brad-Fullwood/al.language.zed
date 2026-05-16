@@ -281,6 +281,34 @@ One P3 follow-up recorded:
 
 Workspace test count: 1857 unchanged (concurrency / DoS protection, not feature). All gates green.
 
+### Iteration 14 (2026-05-16, +390m)
+
+Three commits, two carry-forwards closed, one new audit on DAP proxy
+producing a real **P1** fix.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-040 | P3 → fixed | `signature::pick_active_signature` now falls back to the **widest** overload (via `max_by_key`) when no overload accommodates `active_param`. Previously fell back to index 0 — the no-arg overload, where the trailing arg slot doesn't exist either. T063's positive-case test still passes; the fallback test was updated to reflect the new contract. |
+| F-OPEN-025 | P3 → fixed | `extract_formatted_region` now `debug_assert!`s that `fmt_idx` advanced exactly as often as the non-collapsed-blank orig rows visited. Catches any future formatter rule that drops / duplicates / reorders lines beyond the one documented asymmetry (blank-collapse). Release builds skip the check (no panic), test runs surface the bug. |
+| F-FIX-021 | **P1** | (New from DAP-proxy audit.) `AL_DAP_CAPTURE` env-var-gated capture log dumped raw DAP bodies — including `launch` arguments carrying `password` / `accessToken` / `apiKey` / `bearer` — to a file. Developer-shared logs leaked credentials. Added `redact_dap_body_for_log` that walks the JSON tree and replaces matching field values with `<redacted>`. 6 regression tests. |
+
+New audit: DAP framing + EditorServices proxy (`crates/al-core/src/server/dap_mode/`, `crates/al-core/src/dap/{framing,protocol,client,types,config}.rs`). Findings:
+
+- Framing parser correctly bounds Content-Length (≤20 MB) and headers (≤8 KiB) — verified clean.
+- Stdout writer lock guards against interleaving between `stdin_to_child` and `child_to_stdout` paths (F-012 already in place).
+- Subprocess lifecycle: stderr task pinned, child killed on shutdown; no orphan-process risk.
+- Message-ID round-trip Zed → ES → Zed verified.
+- Launch-config paths fixed by spec (no path traversal).
+- Native DAP cancellation via watch channel works; legacy proxy delegates to EditorServices.Host.
+
+One P3 follow-up:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-041 | P3 | Legacy DAP proxy doesn't implement DAP `cancel` (delegates to EditorServices.Host). Native DAP handles it. Acceptable for legacy adapter — but worth a comment so the cross-mode asymmetry is visible to future maintainers. |
+
+Workspace test count: 1857 → 1864. All gates green.
+
 
 
 | Phase | Status | Output |
