@@ -12,6 +12,18 @@ use super::model::{ComposedObject, ObjectKind, SymbolEntry};
 /// Get a composed view of an object by merging the base with all extensions.
 ///
 /// Returns `None` if no base object with the given kind and name is found.
+///
+/// **Cycle-safety invariant** (F-OPEN-038). This function walks *only* the
+/// direct `extends` relationship — it asks the index for `base` of kind X
+/// and for every extension that extends `name`, then merges fields/methods/
+/// controls/enum-values from each into a flat view. It does NOT recurse
+/// through the extension's own `extends` chain (BC's extension model is
+/// flat — a `TableExtension` extends a base `Table`, never another
+/// `TableExtension`). Any future code that does start walking `extends`
+/// chains MUST add a `visited: HashSet<(ObjectKind, String)>` parameter
+/// or the daemon will infinitely recurse on a malformed package where a
+/// `TableExtension Foo extends Bar` and `TableExtension Bar extends Foo`
+/// reference each other.
 pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option<ComposedObject> {
     // Don't compose extension objects themselves
     if kind.is_extension() {
