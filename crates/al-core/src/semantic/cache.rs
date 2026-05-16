@@ -10,11 +10,33 @@ use tracing::{debug, info, warn};
 
 use super::{BuiltinType, ErrorCodeInfo};
 
+/// Maximum length for the version-derived portion of a cache filename.
+/// Real AL toolchain versions are <20 chars (e.g. "17.0.34.45391"); 64 is
+/// well past anything legitimate while keeping the filename well within the
+/// OS NAME_MAX (typically 255). A pathological caller passing a multi-KB
+/// "version" string could otherwise build a filename the OS rejects.
+const MAX_SANITIZED_VERSION_LEN: usize = 64;
+
 /// Sanitize a version string for use as part of a file name.
 ///
-/// Replaces any character that is not an ASCII alphanumeric or `.` with `_`.
+/// Replaces any character that is not an ASCII alphanumeric or `.` with `_`,
+/// then truncates at `MAX_SANITIZED_VERSION_LEN` so the resulting filename
+/// cannot exceed the OS limit.
 fn sanitize_version(v: &str) -> String {
-    v.replace(|c: char| !c.is_ascii_alphanumeric() && c != '.', "_")
+    let mut s: String = v
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if s.len() > MAX_SANITIZED_VERSION_LEN {
+        s.truncate(MAX_SANITIZED_VERSION_LEN);
+    }
+    s
 }
 
 /// Cache directory: `~/.cache/al-lsp/semantic/`
@@ -137,6 +159,24 @@ mod tests {
         // Cleanup
         let path = cache_dir().join(format!("builtins-{version}.json"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn sanitize_version_replaces_unsafe_chars() {
+        assert_eq!(sanitize_version("17.0.34.45391"), "17.0.34.45391");
+        assert_eq!(sanitize_version("v17.0/beta"), "v17.0_beta");
+        assert_eq!(sanitize_version("../etc/passwd"), ".._etc_passwd");
+        assert_eq!(sanitize_version("v🙂1.0"), "v_1.0");
+    }
+
+    #[test]
+    fn sanitize_version_truncates_to_cap() {
+        // A pathological multi-KB "version" must not produce a multi-KB
+        // filename that the OS would reject.
+        let huge: String = "a".repeat(10_000);
+        let sanitized = sanitize_version(&huge);
+        assert_eq!(sanitized.len(), MAX_SANITIZED_VERSION_LEN);
+        assert!(sanitized.chars().all(|c| c == 'a'));
     }
 
     #[test]
