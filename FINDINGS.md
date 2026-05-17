@@ -795,6 +795,19 @@ One commit. F-OPEN-094 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 39 (2026-05-17, +1140m)
+
+One batch commit, 4 P3 follow-ups closed in a single pass.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-066 | P3 | F-OPEN-095 closed. `generate_variants` and `generate_variants_for_file` are `pub(crate)` — no external callers, and keeping tree-sitter out of the public mutate API surface is a cheap win. |
+| F-FIX-067 | P3 | F-OPEN-082 documented in-place. `RecordOp::from_method_name` tokens are stable BC record ABI (Insert/Modify/Delete/Validate fire OnBefore/OnAfter events), not AL *language* surface. Comment names the rationale so a future audit doesn't re-flag. |
+| F-FIX-068 | P3 | F-OPEN-073 closed. `parse_environment_type` now logs ERROR (not WARN) on unknown env type and names the valid set (OnPrem / Sandbox / Production) in the message so the user can fix a typo without docs. |
+| F-FIX-069 | P3 | F-OPEN-047 closed. Test-only `current_dir().unwrap()` in al-explorer/cli/commands/mod.rs promoted to `expect(...)` with a justifying message. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
