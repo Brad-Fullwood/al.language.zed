@@ -359,19 +359,24 @@ impl AlConfig {
                 }
                 "diagnosticsScope" => {
                     if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
-                        if let Ok(scope) =
-                            serde_json::from_value(serde_json::Value::String(s.to_string()))
-                        {
-                            self.diagnostics_scope = scope;
+                        match serde_json::from_value::<DiagnosticsScope>(serde_json::Value::String(
+                            s.to_string(),
+                        )) {
+                            Ok(scope) => self.diagnostics_scope = scope,
+                            // F-OPEN-062: an invalid enum variant was silently
+                            // retained as the current value. Now surfaced as
+                            // unknown so the user sees a typo in their settings.
+                            Err(_) => unknown_keys.push(format!("diagnosticsScope={s:?}")),
                         }
                     }
                 }
                 "diagnosticsTrigger" => {
                     if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
-                        if let Ok(trigger) =
-                            serde_json::from_value(serde_json::Value::String(s.to_string()))
-                        {
-                            self.diagnostics_trigger = trigger;
+                        match serde_json::from_value::<DiagnosticsTrigger>(
+                            serde_json::Value::String(s.to_string()),
+                        ) {
+                            Ok(trigger) => self.diagnostics_trigger = trigger,
+                            Err(_) => unknown_keys.push(format!("diagnosticsTrigger={s:?}")),
                         }
                     }
                 }
@@ -416,12 +421,17 @@ impl AlConfig {
                 }
                 "nugetFeeds" => {
                     if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
-                        self.nuget_feeds = arr
-                            .iter()
-                            .filter_map(|v| {
-                                serde_json::from_value::<NuGetFeedConfig>(v.clone()).ok()
-                            })
-                            .collect();
+                        let mut accepted: Vec<NuGetFeedConfig> = Vec::with_capacity(arr.len());
+                        for (i, v) in arr.iter().enumerate() {
+                            match serde_json::from_value::<NuGetFeedConfig>(v.clone()) {
+                                Ok(f) => accepted.push(f),
+                                // F-OPEN-062: malformed feed entries were
+                                // silently dropped. Surface so the user
+                                // notices their typo. Index lets them find it.
+                                Err(_) => unknown_keys.push(format!("nugetFeeds[{i}]")),
+                            }
+                        }
+                        self.nuget_feeds = accepted;
                     }
                 }
                 "symbolsCountryRegion" => {
@@ -437,10 +447,11 @@ impl AlConfig {
                 }
                 "editorServicesLogLevel" => {
                     if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
-                        if let Ok(level) =
-                            serde_json::from_value(serde_json::Value::String(s.to_string()))
-                        {
-                            self.editor_services_log_level = level;
+                        match serde_json::from_value::<LogLevel>(serde_json::Value::String(
+                            s.to_string(),
+                        )) {
+                            Ok(level) => self.editor_services_log_level = level,
+                            Err(_) => unknown_keys.push(format!("editorServicesLogLevel={s:?}")),
                         }
                     }
                 }
