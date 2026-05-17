@@ -821,6 +821,16 @@ One batch commit. 4 P3 follow-ups closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 41 (2026-05-17, +1200m)
+
+One commit. F-OPEN-062 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-074 | P3 | F-OPEN-062 closed. Four config-merge sites (`diagnosticsScope`, `diagnosticsTrigger`, `editorServicesLogLevel`, `nugetFeeds`) silently retained current value or dropped bad entries on invalid input. All four now push the offending value into `unknown_keys` so the existing F-OPEN-061 WARN path surfaces typos. Nuget index included for findability. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
