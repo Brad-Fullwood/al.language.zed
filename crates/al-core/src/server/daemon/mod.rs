@@ -12,6 +12,7 @@ mod insight_dispatch;
 mod lsp_dispatch;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,21 @@ use al_protocol::socket_path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixListener;
-use tokio::sync::{Mutex, Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore};
+
+/// Process-start `Instant` used as the epoch for `last_activity` millis.
+///
+/// `Instant` is not directly storable in an atomic, so we keep a captured
+/// base and store millis-since-base in `AtomicU64`. The base is initialised
+/// the first time `now_activity_ms` is called and lives for the process
+/// lifetime (lazy `OnceLock`).
+static DAEMON_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// Millis since the daemon epoch — monotonic, atomic-storable.
+fn now_activity_ms() -> u64 {
+    let epoch = DAEMON_EPOCH.get_or_init(Instant::now);
+    Instant::now().duration_since(*epoch).as_millis() as u64
+}
 
 /// Global socket path for cleanup on exit.
 static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -85,7 +100,10 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
 
     initialize_daemon_workspace(&workspace, &project_root).await;
 
-    let last_activity = Arc::new(Mutex::new(Instant::now()));
+    // F-OPEN-068: stored as millis-since-`DAEMON_EPOCH` in an AtomicU64 so
+    // the hot per-connection-accept + per-dispatch update is lock-free.
+    // Previous `Arc<Mutex<Instant>>` serialised every connection at the lock.
+    let last_activity = Arc::new(AtomicU64::new(now_activity_ms()));
     let shutdown_signal = Arc::new(Notify::new());
 
     // Idle timeout checker
@@ -95,7 +113,9 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     let idle_timeout_handle = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
-            let elapsed = activity_clone.lock().await.elapsed();
+            let elapsed = Duration::from_millis(
+                now_activity_ms().saturating_sub(activity_clone.load(Ordering::Relaxed)),
+            );
             if elapsed >= IDLE_TIMEOUT {
                 // Don't shut down if a debug session is active
                 let has_debug_session = ws_clone
@@ -176,7 +196,7 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                         // connection. The spawned task still updates the
                         // timer per-request; this just closes the accept->
                         // first-request gap.
-                        *last_activity.lock().await = std::time::Instant::now();
+                        last_activity.store(now_activity_ms(), Ordering::Relaxed);
 
                         // Acquire a connection slot. If at the limit, drop this connection
                         // rather than blocking the accept loop.
@@ -280,7 +300,7 @@ async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     workspace: Arc<Workspace>,
-    last_activity: Arc<Mutex<Instant>>,
+    last_activity: Arc<AtomicU64>,
     shutdown: Arc<Notify>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (reader, mut writer) = stream.into_split();
@@ -343,7 +363,7 @@ async fn handle_connection(
             // Mark activity AFTER dispatch returns so the idle reaper can't
             // kill the daemon mid-request — a long-running build / download
             // keeps the timer fresh until completion.
-            *last_activity.lock().await = Instant::now();
+            last_activity.store(now_activity_ms(), Ordering::Relaxed);
             resp
         };
 
