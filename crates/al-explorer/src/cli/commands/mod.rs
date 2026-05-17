@@ -61,7 +61,7 @@ mod path_tests {
     #[test]
     fn absolutize_path_resolves_relative_paths_against_cwd() {
         // Positive: relative paths must come out absolute (F-050).
-        let cwd = std::env::current_dir().unwrap();
+        let cwd = std::env::current_dir().expect("current_dir is required for this test");
         let resolved = absolutize_path("MyApp");
         assert!(
             std::path::Path::new(&resolved).is_absolute(),

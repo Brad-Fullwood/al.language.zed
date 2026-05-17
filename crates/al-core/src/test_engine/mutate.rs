@@ -186,7 +186,7 @@ pub enum MutationEvent {
 ///   `operator` named nodes nested inside `binary_operator` named nodes.
 /// - Boolean literals `true` / `false` as `name` nodes (case-insensitive).
 /// - Integer literals as `integer` named nodes.
-pub fn generate_variants(
+pub(crate) fn generate_variants(
     file: &str,
     source: &str,
     tree: &tree_sitter::Tree,
@@ -520,7 +520,10 @@ pub fn apply_variant(source: &str, variant: &MutationVariant) -> String {
 /// Generate mutation variants for a specific file in the workspace.
 ///
 /// Returns an empty `Vec` if the file is not found or cannot be parsed.
-pub fn generate_variants_for_file(workspace: &Workspace, file_path: &str) -> Vec<MutationVariant> {
+pub(crate) fn generate_variants_for_file(
+    workspace: &Workspace,
+    file_path: &str,
+) -> Vec<MutationVariant> {
     let path = std::path::Path::new(file_path);
     let Some((text, tree)) = workspace.file_index.get_cached_parse(path) else {
         // Try via documents store

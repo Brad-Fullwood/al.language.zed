@@ -39,6 +39,15 @@ pub enum RecordOp {
 
 impl RecordOp {
     /// Parse from a method name (case-insensitive).
+    ///
+    /// The four operations are the stable AL record-runtime tokens since
+    /// NAV 2.0 — they're part of the BC record ABI (each fires OnBefore/OnAfter
+    /// table events), not AL *language* keywords or built-in functions. The
+    /// CLAUDE.md no-hardcoded-AL-values rule targets the surface that drifts
+    /// with BC releases; this set is fixed by Microsoft and has not changed in
+    /// 20+ years. Locked in here rather than fetched from `LanguageData` so
+    /// the call-graph builder has no runtime dependency on language data load
+    /// order.
     pub fn from_method_name(name: &str) -> Option<Self> {
         match name.to_lowercase().as_str() {
             "insert" => Some(RecordOp::Insert),

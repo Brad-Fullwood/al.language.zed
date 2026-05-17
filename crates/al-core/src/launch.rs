@@ -341,7 +341,14 @@ fn parse_environment_type(s: &str) -> Option<EnvironmentType> {
         "Sandbox" => Some(EnvironmentType::Sandbox),
         "Production" => Some(EnvironmentType::Production),
         other => {
-            warn!(environment_type = %other, "Unknown environment type");
+            // ERROR (not WARN) because the launch entry is silently dropped —
+            // the user typed a config they wanted to use and we're refusing
+            // it. Naming the valid values in the message lets them fix the
+            // typo without consulting docs. F-OPEN-073.
+            tracing::error!(
+                environment_type = %other,
+                "Unknown environmentType in launch.json — expected one of OnPrem / Sandbox / Production; dropping this configuration entry"
+            );
             None
         }
     }
