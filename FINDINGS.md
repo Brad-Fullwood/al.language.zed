@@ -808,6 +808,19 @@ One batch commit, 4 P3 follow-ups closed in a single pass.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 40 (2026-05-17, +1170m)
+
+One batch commit. 4 P3 follow-ups closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-070 | P3 | F-OPEN-061 closed. `AlConfig::load` now routes through `merge()` so disk-loaded configs report unknown keys at WARN. Falls back to direct deserialize on Value-parse failure. |
+| F-FIX-071 | P3 | F-OPEN-077 documented in-place. `file_index::index_from_result` mutates 7 DashMaps sequentially; atomicity docstring names the latent split-state window. |
+| F-FIX-072 | P3 | F-OPEN-086 doc-vs-impl mismatch fixed in `extract_return_type`. The grammar's child ordering (parameter type-refs nested under `parameter_list`) makes the unused `:` check unnecessary; doc rewritten. |
+| F-FIX-073 | P3 | F-OPEN-087 closed. `parse_run_trigger_arg` now matches `"true"`/`"false"` literals exactly; complex expressions log at DEBUG and default to `true` (AL's documented default — produces over-approximation, not missed edges). |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
