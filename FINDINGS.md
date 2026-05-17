@@ -831,6 +831,16 @@ One commit. F-OPEN-062 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 42 (2026-05-17, +1230m)
+
+One commit. F-OPEN-068 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-075 | P3 | F-OPEN-068 closed. Daemon `last_activity` was `Arc<tokio::sync::Mutex<Instant>>` — every accept and every dispatch lock-contended on the same mutex. Switched to `Arc<AtomicU64>` holding millis since a captured `DAEMON_EPOCH` (process-start Instant in OnceLock). Reads/writes are now lock-free Relaxed atomic ops. Behaviour unchanged: same 60s poll, 30-min idle cutoff, debug-session guard, accept-vs-dispatch race window closure (F-FIX-011). |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
