@@ -501,7 +501,26 @@ fn parse_run_trigger_arg(
         if kind != "(" && kind != ")" && kind != "," {
             if let Ok(text) = child.utf8_text(source) {
                 let trimmed = text.trim().to_lowercase();
-                return trimmed != "false";
+                // Trivial literal cases — match exactly.
+                if trimmed == "false" {
+                    return false;
+                }
+                if trimmed == "true" {
+                    return true;
+                }
+                // Complex expression — we can't evaluate it statically. AL's
+                // documented default is "trigger fires", so producing a
+                // trigger edge is the safe over-approximation: false-positive
+                // edges show up as extra entries in deadcode/impact, not
+                // missed dependencies. Logged at debug so the false-positive
+                // rate is observable when investigating dead-code reports.
+                // F-OPEN-087.
+                tracing::debug!(
+                    expr = %text.trim(),
+                    op = ?op,
+                    "parse_run_trigger_arg: non-literal RunTrigger expression — assuming true (default)"
+                );
+                return true;
             }
         }
     }
@@ -898,11 +917,22 @@ fn extract_single_parameter(
 }
 
 /// Extract return type from a procedure declaration.
+///
+/// Relies on the AL grammar putting the parameter list ahead of the return
+/// type as named children — by the time a `type_reference` named child
+/// appears, parameter `type_reference` nodes have already been consumed via
+/// the `parameter_list` parent. The previous comment ("Check if preceded by
+/// `:`") was aspirational and not implemented; the grammar's child ordering
+/// makes that check unnecessary in practice. F-OPEN-086.
 fn extract_return_type(proc_node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut cursor = proc_node.walk();
     for child in proc_node.children(&mut cursor) {
+        // `return_type` is a dedicated grammar node when present; the legacy
+        // `type_reference` fallback exists for grammars that emitted a bare
+        // type reference without the wrapper. Either path is the return type
+        // because parameter type references are nested under `parameter_list`,
+        // not direct children of the procedure node.
         if child.kind() == "return_type" || child.kind() == "type_reference" {
-            // Check if preceded by ":" which indicates return type
             let text = child.utf8_text(source).ok()?.trim().to_string();
             if !text.is_empty() {
                 return Some(text);

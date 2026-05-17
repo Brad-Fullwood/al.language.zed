@@ -319,6 +319,16 @@ impl FileIndex {
     /// Called by both `add_file_with_meta` (after an internal parse) and
     /// `add_file_with_tree` (after a caller-supplied parse). The tree must
     /// correspond to `content`.
+    ///
+    /// **Atomicity:** this function mutates 7 DashMaps (`file_trees`,
+    /// `objects`, `path_to_object`, `object_info`, `file_symbols`, `files`,
+    /// `path_to_procedures`). A panic between any two of those mutations
+    /// would leave the index in a split state — e.g. `file_trees` populated
+    /// but `files` missing the text. Tree-sitter parsing and symbol
+    /// extraction are well-tested and don't panic on real inputs, so this is
+    /// latent (F-OPEN-077). Any future contributor adding a new map mutation
+    /// here should consider widening the window or grouping mutations into
+    /// a single transactional helper if the cost becomes meaningful.
     fn index_from_result(&self, path: PathBuf, content: String, tree: &tree_sitter::Tree) {
         // Cache the tree unconditionally — all files benefit from it.
         self.file_trees.insert(path.clone(), tree.clone());

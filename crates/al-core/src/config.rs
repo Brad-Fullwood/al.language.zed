@@ -310,9 +310,32 @@ impl AlConfig {
     /// Load config from a persisted JSON file.
     ///
     /// Returns `None` if the file does not exist or cannot be parsed.
+    ///
+    /// Unknown top-level keys are logged at WARN — symmetrical with `merge`'s
+    /// `unknown_keys` return value, so disk-loaded configs surface typos the
+    /// same way as init-options. Unknown keys do not block loading; the
+    /// known fields take effect. (F-OPEN-061.)
     pub fn load(path: &Path) -> Option<Self> {
         let data = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&data).ok()
+        // Route through `merge` so disk-loaded configs benefit from the same
+        // unknown-key reporting as runtime-merged init-options. Failing the
+        // Value-parse step falls back to the old direct path so a deeply-
+        // structured config that merge() doesn't yet support still loads.
+        match serde_json::from_str::<serde_json::Value>(&data) {
+            Ok(value) => {
+                let mut cfg = AlConfig::default();
+                let unknown = cfg.merge(&value);
+                if !unknown.is_empty() {
+                    tracing::warn!(
+                        path = %path.display(),
+                        unknown_keys = ?unknown,
+                        "AlConfig::load: unrecognised top-level keys in settings file"
+                    );
+                }
+                Some(cfg)
+            }
+            Err(_) => serde_json::from_str(&data).ok(),
+        }
     }
 
     /// Merge new settings into this config. Only fields present in
