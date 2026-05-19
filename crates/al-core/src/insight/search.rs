@@ -54,6 +54,27 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
     let mut steps = Vec::new();
     let mut visited = std::collections::HashSet::new();
 
+    // F-OPEN-088: pre-compute the obj→event-indices index once per call.
+    // The recursive `trace_from_node` previously scanned the entire
+    // `graph.index` HashMap per subscriber to find "events published by the
+    // same object" — O(V) per subscriber, O(N·V) total on a workspace with
+    // N subscribers and V graph nodes. With the per-call obj index, each
+    // fanout lookup is O(1).
+    let mut events_by_object: std::collections::HashMap<String, Vec<petgraph::graph::NodeIndex>> =
+        std::collections::HashMap::new();
+    for (key, indices) in &graph.index {
+        if let NodeKey::Event(_, obj, _) = key {
+            events_by_object
+                .entry(obj.clone())
+                .or_default()
+                .extend(indices.iter().copied());
+        }
+    }
+    // Sort each bucket once for stable trace output across rebuilds.
+    for v in events_by_object.values_mut() {
+        v.sort_by_key(|idx| idx.index());
+    }
+
     // Find all Event nodes matching the name. Sort by NodeIndex so the
     // emitted trace order is deterministic across runs — `graph.index`
     // is a HashMap and would otherwise yield arbitrary order, making
@@ -86,7 +107,15 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
             object: obj_name,
         });
 
-        trace_from_node(graph, idx, 1, max_depth, &mut visited, &mut steps);
+        trace_from_node(
+            graph,
+            idx,
+            1,
+            max_depth,
+            &events_by_object,
+            &mut visited,
+            &mut steps,
+        );
     }
 
     steps
@@ -97,6 +126,7 @@ fn trace_from_node(
     node_idx: petgraph::graph::NodeIndex,
     depth: usize,
     max_depth: usize,
+    events_by_object: &std::collections::HashMap<String, Vec<petgraph::graph::NodeIndex>>,
     visited: &mut std::collections::HashSet<petgraph::graph::NodeIndex>,
     steps: &mut Vec<TraceStep>,
 ) {
@@ -126,24 +156,13 @@ fn trace_from_node(
                 object: object_name.clone(),
             });
 
-            // Find events published by the same object. `graph.index` is a
-            // HashMap; collect matching event indices into a Vec and sort by
-            // NodeIndex so the fanout is stable across rebuilds. Mirrors the
-            // root-side discipline at search.rs:69 (`trace_event`).
+            // Events published by the same object — O(1) lookup via the
+            // pre-computed index. The bucket is already sorted by NodeIndex
+            // (see `trace_event`) so the fanout order is stable.
             let sub_obj_lower = object_name.to_lowercase();
-            let mut event_indices: Vec<petgraph::graph::NodeIndex> = graph
-                .index
-                .iter()
-                .filter_map(|(key, indices)| match key {
-                    NodeKey::Event(_, ref obj, _) if *obj == sub_obj_lower => {
-                        Some(indices.iter().copied())
-                    }
-                    _ => None,
-                })
-                .flatten()
-                .collect();
-            event_indices.sort_by_key(|idx| idx.index());
-            for evt_idx in event_indices {
+            let empty: Vec<petgraph::graph::NodeIndex> = Vec::new();
+            let event_indices = events_by_object.get(&sub_obj_lower).unwrap_or(&empty);
+            for &evt_idx in event_indices {
                 let evt_node = &graph.graph[evt_idx];
                 if let InsightNode::Event { name: ename, .. } = evt_node {
                     steps.push(TraceStep {
@@ -153,7 +172,15 @@ fn trace_from_node(
                         name: ename.clone(),
                         object: object_name.clone(),
                     });
-                    trace_from_node(graph, evt_idx, depth + 2, max_depth, visited, steps);
+                    trace_from_node(
+                        graph,
+                        evt_idx,
+                        depth + 2,
+                        max_depth,
+                        events_by_object,
+                        visited,
+                        steps,
+                    );
                 }
             }
         }
