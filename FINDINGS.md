@@ -841,6 +841,18 @@ One commit. F-OPEN-068 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 43 (2026-05-19, +1260m)
+
+One batch commit. 3 P3 follow-ups closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-076 | P3 | F-OPEN-071 closed. Workspace init now error-logs AND notifies via `notify_sink` when one or more `.app` packages fail to load — LSP/CLI clients can surface "symbol index is partial" instead of silent partial state. |
+| F-FIX-077 | P3 | F-OPEN-067 documented in-place. Daemon idle-timeout `try_lock` pattern's invariant ("`debug_session` mutex only held briefly during in-flight debug RPCs") named so a future contributor can spot the implicit trade-off. |
+| F-FIX-078 | P3 | F-OPEN-052 closed. `LspClient::file_uri` now `debug_assert!`s on non-UTF-8 paths; release-mode fallback unchanged. Test authors see the mismatch immediately. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
