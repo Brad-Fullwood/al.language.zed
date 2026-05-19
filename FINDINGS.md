@@ -853,6 +853,17 @@ One batch commit. 3 P3 follow-ups closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 44 (2026-05-19, +1290m)
+
+One commit. F-OPEN-057 and F-OPEN-080 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-079 | P2 | F-OPEN-057 closed. `compile_project_with_analyzers` now canonicalises `project_root` before interpolating into alc's `/project:` and `/out:` flags. Fall-back to the original path on canonicalize() failure preserves happy-path. |
+| F-FIX-080 | P2 | F-OPEN-080 closed. `InsightGraph::add_edge` uses `HashSet<(from, to, edge)>` for O(1) dedup. Was O(degree) per call → O(degree²) overall on hot Object nodes. `remove_edges_from` updated to keep the set in sync. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
