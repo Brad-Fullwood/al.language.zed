@@ -948,6 +948,66 @@ One commit. F-OPEN-083 documented and closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 53 (2026-05-19, +1560m)
+
+Consolidation pass. CI gates re-verified and remaining open items audited for closeability:
+
+**CI snapshot (re-verified at iter-53):**
+- `cargo fmt --all -- --check` — green
+- `cargo clippy --workspace --exclude zed-al -- -D warnings` — green
+- `cargo test --workspace --exclude zed-al` — 1924 passed, 86 ignored
+- `cargo audit` — 0 advisories; 2 informational `rand` unsound-with-custom-logger warnings (we don't install one)
+- `cargo deny check` — green (1 wildcard on `zed_extension_api`, intentional)
+- `cargo machete` — 0 unused deps
+- Production `unwrap()`/`expect()` audit (`grep -v cfg(test)`) — clean except for documented-infallible `writeln!(String, ...)` and `serde_json::to_value` on bespoke types where failure is unreachable
+- Production `TODO`/`FIXME` comments — 2, both intent-level not action-level
+- `panic!`/`todo!`/`unreachable!` in production paths — none
+
+**Remaining open follow-ups — closing status:**
+
+The audits and chip-aways have left a residual list of items that are either (a) design-heavy and require dedicated effort outside the rapid-chip loop, (b) accepted risk with documented rationale, or (c) test-only / informational. Closing the rapid-iteration phase with these explicitly catalogued so the next /loop run can pick up cleanly.
+
+| ID | Status | Rationale |
+|---|---|---|
+| F-OPEN-001 | done | All 25 `#[allow(clippy::*)]` have justifying context or are inside test-only scopes. |
+| F-OPEN-002 | deferred | 6 files >1500 LOC. Splitting them is mechanical refactor; in-pass churn rejected per scope discipline. |
+| F-OPEN-003 | informational | Test-only `unsafe` blocks; no production unsafe to audit. |
+| F-OPEN-004 | release-time | `zed_extension_api` wildcard; pin SHA at release prep. |
+| F-OPEN-009 | deferred | Bulk graph-export streaming; requires API design. |
+| F-OPEN-010 | needs-dep | Token zeroization via `zeroize` crate addition. |
+| F-OPEN-013 | defence-in-depth | GitHub release SHA verify; Zed's API already pins TLS. |
+| F-OPEN-016 | design | BC protocol version detection; needs runbook. |
+| F-OPEN-026 | adversarial-only | Per-line unterminated-string scanning intentional. |
+| F-OPEN-028 | low-ROI | `discover_events` string cloning; cycles per call already small. |
+| F-OPEN-030 | borderline | `test_runtime` hardcoded builtins; like F-FIX-067/F-FIX-092 — runtime ABI. |
+| F-OPEN-036 | won't-fix | `writeln!` cosmetic. |
+| F-OPEN-037 | test-only | `add_entries` clone; only test code calls the clone path. |
+| F-OPEN-040 | design | (per its record) |
+| F-OPEN-042 | design | Per-doc size cap; need policy. |
+| F-OPEN-043 | design | Parse-tree LRU; need eviction policy. |
+| F-OPEN-046 | design | TUI socket timeout; different ops have different latency budgets. |
+| F-OPEN-051 | deliberate | `Lifecycle` enum single-variant documented as historical. |
+| F-OPEN-054 | design | `apply_changes` atomicity; would require rope-replace transaction. |
+| F-OPEN-055 | wasted-not-corrupt | Concurrent init wastes cycles; data is DashMap-safe. |
+| F-OPEN-056 | deferred | `didChangeWatchedFiles`; Zed rescans on focus so workaround exists. |
+| F-OPEN-058 | design | Atomic `.app` write; requires changing alc `/out:` strategy. |
+| F-OPEN-059 | accepted-risk | `AL_TOOL_PATH` honoured without provenance — env access implies trust. |
+| F-OPEN-060 | partial-cover | F-FIX-079 canonicalised the most exposed site (build); per-consumer canonicalisation is the right model. |
+| F-OPEN-063 | design | Config null semantics need a deprecation plan. |
+| F-OPEN-065 | design | Daemon `$/cancelRequest` plumbing — invasive. F-FIX-038 (alc timeout) mitigates the worst case. |
+| F-OPEN-066 | design | Per-keystroke graph invalidation; needs diff-aware rebuild. |
+| F-OPEN-072 | design | Wedged CLR call; needs OS-level interrupt. F-FIX-044 reset and F-FIX-064 Cooldown variant partly mitigate. |
+| F-OPEN-078 | low-ROI | `file_index` per-keystroke allocations; bench shows hot path is parse not alloc. |
+| F-OPEN-081 | design | `petgraph::NodeIndex` leak through public API; newtype wrap deferred. |
+| F-OPEN-084 | invasive | Member-call var-type lookup; needs threading var-type map through call resolution. Biggest remaining missed-edges class — flagged as a future targeted fix, not a rapid-chip item. |
+| F-OPEN-085 | done | `generate_variants` made `pub(crate)` in F-FIX-066. |
+| F-OPEN-093 | design | Interpreter cancellation token; needs Notify plumbed through DispatchCtx. |
+| F-OPEN-096 | design | Same as F-OPEN-093 from the eval_stmt side. |
+
+**Rapid-chip phase summary:** 92 fix IDs landed across 53 iterations. The follow-up list went from "all items considered open" to "every item has a status: done, deferred-with-rationale, design, or accepted-risk." Anything remaining unaddressed in this table is a deliberate, named trade-off rather than an undiscovered gap.
+
+Workspace test count: 1924 (held steady — recent iterations were refactors and perf chips, not feature additions). All gates green.
+
 
 
 | Phase | Status | Output |
