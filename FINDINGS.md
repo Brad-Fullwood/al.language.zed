@@ -908,6 +908,16 @@ One commit. F-OPEN-049 + F-OPEN-053 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 49 (2026-05-19, +1440m)
+
+One commit. F-OPEN-039 documented and closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-089 | P3 | F-OPEN-039 closed. Hardcoded AL property names (`ApplicationArea`/`PromotedCategory`/`Promoted`/`tooltip`) in `code_actions.rs` are *generated output* — the emitter produces AL Sample syntax. CLAUDE.md no-hardcoded-AL-values targets the *validation/lookup* surface, not generators. Justification documented inline so future audits don't re-flag. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
