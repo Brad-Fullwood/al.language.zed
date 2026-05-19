@@ -876,6 +876,16 @@ One batch commit. 3 P3 follow-ups closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 46 (2026-05-19, +1350m)
+
+One commit. F-OPEN-048 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-084 | P2 | F-OPEN-048 closed. Notification channel bounded at `mpsc::channel(10_000)`; reader uses `try_send` to avoid backpressuring on slow consumers. Overflow is logged + dropped. Test-only `transport.rs` infra updated. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
