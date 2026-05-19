@@ -502,15 +502,38 @@ fn make_variant(
 /// Return a copy of `source` with the mutation described by `variant` applied.
 ///
 /// Replaces exactly `variant.byte_start..variant.byte_end` with `variant.mutated`.
-/// Panics are not possible — the range is validated before replacement.
+/// Panics are not possible — byte indices are clamped to source length AND
+/// snapped to char boundaries before slicing (F-OPEN-092). Variants produced
+/// by `generate_variants` always sit on char boundaries because the byte
+/// positions come from tree-sitter nodes, but a stale variant from a between-
+/// mutation source edit could end up pointing mid-UTF-8.
 pub fn apply_variant(source: &str, variant: &MutationVariant) -> String {
-    let start = variant.byte_start.min(source.len());
-    let end = variant.byte_end.min(source.len());
+    let start = floor_char_boundary(source, variant.byte_start.min(source.len()));
+    let end = floor_char_boundary(source, variant.byte_end.min(source.len()));
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
     let mut result = String::with_capacity(source.len() + variant.mutated.len());
     result.push_str(&source[..start]);
     result.push_str(&variant.mutated);
     result.push_str(&source[end..]);
     result
+}
+
+/// Walk `idx` down to the nearest char boundary at or below it. `&str` slice
+/// indexing requires char-boundary positions; UTF-8 continuation bytes
+/// (0b10xxxxxx) panic. `std::str::floor_char_boundary` is unstable, so we
+/// implement it locally.
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 // ---------------------------------------------------------------------------

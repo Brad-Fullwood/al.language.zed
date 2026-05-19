@@ -529,7 +529,15 @@ pub fn export_json(graph: &InsightGraph) -> GraphJson {
         .node_indices()
         .map(|idx| {
             let node = &graph.graph[idx];
-            let mut v = serde_json::to_value(node).unwrap_or_default();
+            // `InsightNode` is a plain `Serialize` derive, so to_value cannot
+            // fail in practice. Failure here would be a programmer error (a
+            // future derive change that breaks Serialize); we log it loudly
+            // and emit a placeholder object with just the id so the export
+            // still has a valid JSON shape. F-OPEN-090.
+            let mut v = serde_json::to_value(node).unwrap_or_else(|e| {
+                tracing::error!(error = %e, idx = idx.index(), "export_json: InsightNode serialization failed — emitting id-only placeholder");
+                serde_json::json!({})
+            });
             if let serde_json::Value::Object(ref mut m) = v {
                 m.insert("id".to_string(), serde_json::json!(idx.index()));
             }

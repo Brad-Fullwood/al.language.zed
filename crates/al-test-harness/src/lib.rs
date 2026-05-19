@@ -1047,6 +1047,16 @@ pub async fn read_loop(
             if let Some(tx) = pending.remove(&id) {
                 let _ = tx.send(msg);
             }
+        } else if msg.get("id").is_some() && msg.get("method").is_none() {
+            // F-OPEN-050: response carries a non-numeric id (LSP allows string
+            // ids per JSON-RPC 2.0 §5). The harness only ever issues numeric
+            // ids so a string id here means the server echoed one we didn't
+            // send — which is a server bug. Log loudly so a future server
+            // change that accidentally rewrites ids surfaces immediately.
+            tracing::warn!(
+                id = ?msg.get("id"),
+                "harness: dropped response with non-numeric id — server returned an id we never issued"
+            );
         } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
             // Notification from server (has method, no id)
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
