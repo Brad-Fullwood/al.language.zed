@@ -864,6 +864,18 @@ One commit. F-OPEN-057 and F-OPEN-080 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 45 (2026-05-19, +1320m)
+
+One batch commit. 3 P3 follow-ups closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-081 | P3 | F-OPEN-092 closed. `apply_variant` snaps byte indices to char boundaries via local `floor_char_boundary`. Stale variants pointing mid-UTF-8 no longer risk panicking on slice. |
+| F-FIX-082 | P3 | F-OPEN-090 closed. `export_json` replaces silent `unwrap_or_default()` with explicit error-log + id-only placeholder. Failure is unreachable in practice but no longer silent if a future Serialize change breaks. |
+| F-FIX-083 | P3 | F-OPEN-050 closed. al-test-harness `read_loop` now warns when a response carries a non-numeric id — server bug surfaces immediately rather than being silently dropped. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
