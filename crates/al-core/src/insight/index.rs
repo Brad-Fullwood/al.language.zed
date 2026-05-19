@@ -327,10 +327,11 @@ impl CallGraph {
 // ---------------------------------------------------------------------------
 
 fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
+    use super::node_kind;
     match node {
         InsightNode::Object { kind, name, .. } => NodeInfo {
             id,
-            node_type: "object".to_string(),
+            node_type: node_kind::OBJECT.to_string(),
             name: name.clone(),
             object: format!("{kind}"),
         },
@@ -338,7 +339,7 @@ fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
             object_name, name, ..
         } => NodeInfo {
             id,
-            node_type: "procedure".to_string(),
+            node_type: node_kind::PROCEDURE.to_string(),
             name: name.clone(),
             object: object_name.clone(),
         },
@@ -346,7 +347,7 @@ fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
             object_name, name, ..
         } => NodeInfo {
             id,
-            node_type: "event".to_string(),
+            node_type: node_kind::EVENT.to_string(),
             name: name.clone(),
             object: object_name.clone(),
         },
@@ -354,7 +355,7 @@ fn node_info(id: NodeId, node: &InsightNode) -> NodeInfo {
             object_name, name, ..
         } => NodeInfo {
             id,
-            node_type: "subscriber".to_string(),
+            node_type: node_kind::SUBSCRIBER.to_string(),
             name: name.clone(),
             object: object_name.clone(),
         },

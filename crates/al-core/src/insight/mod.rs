@@ -21,6 +21,18 @@ pub mod attr_names {
     pub const EVENT_SUBSCRIBER: &str = "EventSubscriber";
 }
 
+/// Stringly-typed node-kind tags emitted by `CallGraph::node_info` and matched
+/// by `search.rs`. Centralised so a typo at either end is caught by the
+/// compiler (the alternative — `match node_type { "even" => ... }` — would
+/// silently fall through). Not AL language surface; these are internal
+/// graph-node discriminants. F-OPEN-091.
+pub mod node_kind {
+    pub const EVENT: &str = "event";
+    pub const PROCEDURE: &str = "procedure";
+    pub const SUBSCRIBER: &str = "subscriber";
+    pub const OBJECT: &str = "object";
+}
+
 pub mod analysis;
 pub mod calls;
 pub mod discovery;

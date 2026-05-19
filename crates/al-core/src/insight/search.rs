@@ -21,6 +21,7 @@ use serde::Serialize;
 
 use super::graph::{InsightEdge, InsightGraph, InsightNode, NodeKey};
 use super::index::{CallEdge, CallGraph, EdgeKind, NodeId};
+use super::node_kind;
 
 /// Upper bound on total nodes visited by `trace_event_chain` across all
 /// branches of the recursion. The existing `max_depth` cap protects
@@ -80,7 +81,7 @@ pub fn trace_event(graph: &InsightGraph, event_name: &str, max_depth: usize) -> 
         steps.push(TraceStep {
             depth: 0,
             edge_type: "origin".to_string(),
-            node_type: "event".to_string(),
+            node_type: node_kind::EVENT.to_string(),
             name: event_label,
             object: obj_name,
         });
@@ -120,7 +121,7 @@ fn trace_from_node(
             steps.push(TraceStep {
                 depth,
                 edge_type: "subscribes_to".to_string(),
-                node_type: "subscriber".to_string(),
+                node_type: node_kind::SUBSCRIBER.to_string(),
                 name: name.clone(),
                 object: object_name.clone(),
             });
@@ -148,7 +149,7 @@ fn trace_from_node(
                     steps.push(TraceStep {
                         depth: depth + 1,
                         edge_type: "publishes".to_string(),
-                        node_type: "event".to_string(),
+                        node_type: node_kind::EVENT.to_string(),
                         name: ename.clone(),
                         object: object_name.clone(),
                     });
@@ -268,7 +269,7 @@ pub fn trace_event_chain(
             let root_info = call_graph.node_info(event_id);
             let chain = ChainNode {
                 edge_kind: "origin".to_string(),
-                node_type: "event".to_string(),
+                node_type: node_kind::EVENT.to_string(),
                 name: root_info
                     .map(|i| i.name.as_str())
                     .unwrap_or(event_name)
@@ -334,7 +335,7 @@ fn recurse_event(
 
         children.push(ChainNode {
             edge_kind: EdgeKind::EventSubscription.to_string(),
-            node_type: "subscriber".to_string(),
+            node_type: node_kind::SUBSCRIBER.to_string(),
             name: info.map(|i| i.name.clone()).unwrap_or_default(),
             object: info.map(|i| i.object.clone()).unwrap_or_default(),
             depth,
@@ -390,7 +391,7 @@ fn recurse_subscriber(
         let node_type = info.map(|i| i.node_type.as_str()).unwrap_or("unknown");
 
         match node_type {
-            "event" => {
+            t if t == node_kind::EVENT => {
                 // This subscriber's object also publishes an event — recurse into it.
                 let is_cycle = visited.contains(&callee_id);
                 let grandchildren = if is_cycle || depth >= max_depth {
@@ -402,7 +403,7 @@ fn recurse_subscriber(
                 };
                 children.push(ChainNode {
                     edge_kind: edge.kind.to_string(),
-                    node_type: "event".to_string(),
+                    node_type: node_kind::EVENT.to_string(),
                     name: info.map(|i| i.name.clone()).unwrap_or_default(),
                     object: info.map(|i| i.object.clone()).unwrap_or_default(),
                     depth,
@@ -410,7 +411,7 @@ fn recurse_subscriber(
                     children: grandchildren,
                 });
             }
-            "procedure" => {
+            t if t == node_kind::PROCEDURE => {
                 // Follow the procedure's own callees one hop to detect event re-publications.
                 let is_cycle = visited.contains(&callee_id);
                 let grandchildren = if is_cycle || depth >= max_depth {
@@ -423,7 +424,7 @@ fn recurse_subscriber(
                 if !grandchildren.is_empty() {
                     children.push(ChainNode {
                         edge_kind: edge.kind.to_string(),
-                        node_type: "procedure".to_string(),
+                        node_type: node_kind::PROCEDURE.to_string(),
                         name: info.map(|i| i.name.clone()).unwrap_or_default(),
                         object: info.map(|i| i.object.clone()).unwrap_or_default(),
                         depth,
