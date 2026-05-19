@@ -1118,12 +1118,25 @@ fn scopeguard_remove(
     }
     impl Drop for Guard {
         fn drop(&mut self) {
-            // try_lock to avoid blocking inside Drop; if the map is locked
-            // (currently held by another caller), skip — the next request()
-            // on the map will see the stale Sender's receiver dropped and
-            // its send() will fail silently.
+            // F-OPEN-049: drop must be sync, but the tokio::sync::Mutex
+            // requires an async lock. Strategy:
+            //   1. Best-effort try_lock — covers the happy path with no
+            //      runtime call (the read_loop already removed the entry).
+            //   2. On contention, hand off to a spawned async task so the
+            //      cleanup runs eventually even when the map is busy. This
+            //      requires a tokio runtime handle; if none is available
+            //      (drop in a pure-sync test teardown), fall back to a
+            //      silent no-op — the map dies with the LspClient anyway.
             if let Ok(mut guard) = self.pending.try_lock() {
                 guard.remove(&self.id);
+                return;
+            }
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let pending = self.pending.clone();
+                let id = self.id;
+                handle.spawn(async move {
+                    pending.lock().await.remove(&id);
+                });
             }
         }
     }

@@ -473,7 +473,26 @@ impl LanguageServer for AlServer {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.clone();
-        tracing::debug!(uri = %uri, change_count = params.content_changes.len(), "did_change");
+        let client_version = params.text_document.version;
+        tracing::debug!(uri = %uri, version = client_version, change_count = params.content_changes.len(), "did_change");
+
+        // F-OPEN-053: LSP requires client `version` to be monotonically
+        // increasing for a given document. tower-lsp can in theory interleave
+        // notifications under load; an out-of-order delivery would otherwise
+        // silently corrupt the rope. Compare against our stored version and
+        // warn (not error) on a stale delivery — the editor will likely
+        // re-sync on the next keystroke, and rejecting would create a
+        // visible divergence between client and server text.
+        if let Some(server_version) = self.workspace.documents.get_version(&uri) {
+            if client_version < server_version {
+                tracing::warn!(
+                    uri = %uri,
+                    client_version,
+                    server_version,
+                    "did_change: client version went backwards — applying anyway; editor should resync"
+                );
+            }
+        }
 
         // Convert LSP types → al-core types at the boundary
         let changes: Vec<crate::documents::TextChange> = params
