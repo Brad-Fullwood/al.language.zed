@@ -539,20 +539,16 @@ pub(super) fn dispatch_composed(
 }
 
 pub(super) fn dispatch_packages(workspace: &Workspace, id: u64) -> Response {
-    let pkgs = match workspace.package_info.read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: "Lock poisoned".to_string(),
-                }),
-                ..Default::default()
-            };
-        }
-    };
+    // F-OPEN-069: recover from a poisoned lock via the workspace.rs-wide
+    // pattern (`unwrap_or_else(|e| e.into_inner())`). A single poisoned
+    // lock no longer permanently bricks this endpoint; the stale data
+    // visible after recovery is the same data the panicking writer was
+    // about to commit, so reads remain consistent with the rest of the
+    // workspace.
+    let pkgs = workspace
+        .package_info
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
     let value = serde_json::to_value(pkgs.as_slice()).unwrap_or(serde_json::json!([]));
     Response {
         id,

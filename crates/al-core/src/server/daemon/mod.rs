@@ -258,6 +258,31 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     // Stop the idle-timeout watcher so it doesn't fire after the accept loop exits.
     idle_timeout_handle.abort();
 
+    // F-OPEN-070: graceful drain. The accept loop has broken; new connections
+    // are no longer accepted. In-flight connection tasks still hold a
+    // semaphore permit each, so when ALL permits are available again every
+    // connection has finished cleanly. Wait for that (with a timeout) so a
+    // build / download in progress completes rather than being cut off
+    // mid-write. If the grace period elapses, the tasks are dropped on
+    // tokio runtime shutdown — same as before.
+    const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+    let acquire_all = connection_limit.acquire_many(MAX_CONNECTIONS as u32);
+    match tokio::time::timeout(SHUTDOWN_GRACE, acquire_all).await {
+        Ok(Ok(_permits)) => {
+            tracing::info!("daemon: all in-flight connections drained");
+        }
+        Ok(Err(_)) => {
+            // Semaphore closed — should not happen; we don't close it.
+            tracing::warn!("daemon: connection semaphore closed during drain");
+        }
+        Err(_) => {
+            tracing::warn!(
+                grace_secs = SHUTDOWN_GRACE.as_secs(),
+                "daemon: graceful drain timed out, dropping in-flight tasks"
+            );
+        }
+    }
+
     Ok(())
 }
 
