@@ -918,6 +918,16 @@ One commit. F-OPEN-039 documented and closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 50 (2026-05-19, +1470m)
+
+One commit. F-OPEN-091 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-090 | P3 | F-OPEN-091 closed. Centralised the four `NodeInfo.node_type` tags (`event`/`procedure`/`subscriber`/`object`) into `insight::node_kind` consts. Both producer (`index.rs`) and consumer (`search.rs`) reference the same symbol — typos caught at compile time. Wire format preserved. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
