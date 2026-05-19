@@ -644,6 +644,18 @@ pub fn populate_call_edges_for_procedure(
 /// Return the event names for a record operation.
 ///
 /// BC table events follow the pattern: `OnBefore{Op}Event` / `OnAfter{Op}Event`.
+///
+/// **Hardcoded naming convention (F-OPEN-083):** the `OnBefore{Op}Event` /
+/// `OnAfter{Op}Event` pattern is part of the BC record runtime contract,
+/// not AL language surface — Microsoft has not changed the convention since
+/// the introduction of `IntegrationEvent` on tables. The CLAUDE.md
+/// no-hardcoded-AL-values rule targets the language surface that drifts
+/// with BC releases; this is a stable ABI string format. If a future BC
+/// release introduces a new table-event naming scheme (e.g.
+/// `OnValidateField{Op}`) this function will need extending — at which
+/// point the right move is to derive the patterns from a symbol scan of
+/// real `IntegrationEvent` attributes on Table objects, not to chase
+/// per-release additions here.
 fn record_op_event_names(op: RecordOp) -> (String, String) {
     let op_str = match op {
         RecordOp::Insert => "Insert",
