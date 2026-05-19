@@ -938,6 +938,16 @@ One commit. F-OPEN-088 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 52 (2026-05-19, +1530m)
+
+One commit. F-OPEN-083 documented and closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-092 | P3 | F-OPEN-083 closed. `record_op_event_names` BC `OnBefore{Op}Event` / `OnAfter{Op}Event` pattern is record-runtime ABI not AL language surface. Documented inline with migration path. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
