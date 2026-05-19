@@ -101,6 +101,17 @@ pub async fn compile_project_with_analyzers(
         )));
     }
 
+    // F-OPEN-057: canonicalise `project_root` before interpolating into
+    // alc's `/project:` and `/out:` flags. Defence-in-depth — alc honours
+    // `..` segments and a misconfigured caller passing `/tmp/proj/../etc`
+    // would let alc write its output where the caller didn't intend.
+    // canonicalize() may fail on a freshly-created path that doesn't yet
+    // exist; fall back to the original path so happy-path behaviour is
+    // preserved.
+    let project_root_buf =
+        std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    let project_root = project_root_buf.as_path();
+
     let mut cmd = Command::new("dotnet");
     cmd.arg(toolchain.alc.display().to_string());
     cmd.arg(format!("/project:{}", project_root.display()));

@@ -55,7 +55,7 @@ pub enum EventNodeType {
 }
 
 /// An edge in the insight graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum InsightEdge {
     /// Object A extends Object B (table extension, page extension, etc.)
     Extends,
@@ -117,6 +117,11 @@ pub struct InsightGraph {
     /// `get_node` return the first (and usually only) match for callers that
     /// only care about name resolution.
     pub(crate) index: HashMap<NodeKey, Vec<NodeIndex>>,
+    /// Inserted-edge set used by `add_edge` for O(1) dedup. Replaces the
+    /// previous `edges_connecting(...).any(...)` scan which was O(degree)
+    /// per insert — O(degree²) overall on hot Object nodes that accumulate
+    /// thousands of `Contains` edges. F-OPEN-080.
+    pub(crate) edge_set: std::collections::HashSet<(NodeIndex, NodeIndex, InsightEdge)>,
 }
 
 impl InsightGraph {
@@ -125,6 +130,7 @@ impl InsightGraph {
         Self {
             graph: DiGraph::new(),
             index: HashMap::new(),
+            edge_set: std::collections::HashSet::new(),
         }
     }
 
@@ -159,13 +165,14 @@ impl InsightGraph {
     }
 
     /// Add an edge between two nodes (idempotent — won't duplicate the same edge type).
+    ///
+    /// O(1) dedup via `edge_set`. Previous implementation scanned
+    /// `edges_connecting(from, to)` on every insert, which was O(degree) per
+    /// call and O(degree²) on hot Object nodes with thousands of edges
+    /// (F-OPEN-080). The HashSet is paid for once at graph-build time;
+    /// the InsightGraph is short-lived (rebuilt on workspace mutations).
     pub fn add_edge(&mut self, from: NodeIndex, to: NodeIndex, edge: InsightEdge) {
-        // Check if an edge of the same type already exists
-        let already_exists = self
-            .graph
-            .edges_connecting(from, to)
-            .any(|e| *e.weight() == edge);
-        if !already_exists {
+        if self.edge_set.insert((from, to, edge)) {
             self.graph.add_edge(from, to, edge);
         }
     }
@@ -173,9 +180,14 @@ impl InsightGraph {
     /// Remove all outgoing edges from `node`. Used for invalidation when
     /// a file changes and its call edges need re-extraction.
     pub fn remove_edges_from(&mut self, node: NodeIndex) {
-        let to_remove: Vec<_> = self.graph.edges(node).map(|e| e.id()).collect();
-        for edge_id in to_remove {
+        let to_remove: Vec<_> = self
+            .graph
+            .edges(node)
+            .map(|e| (e.id(), e.source(), e.target(), *e.weight()))
+            .collect();
+        for (edge_id, src, tgt, weight) in to_remove {
             self.graph.remove_edge(edge_id);
+            self.edge_set.remove(&(src, tgt, weight));
         }
     }
 
