@@ -928,6 +928,16 @@ One commit. F-OPEN-091 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 51 (2026-05-19, +1500m)
+
+One commit. F-OPEN-088 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-091 | P2 | F-OPEN-088 closed. `trace_from_node` pre-computes the obj→event-indices map once per call instead of re-scanning `graph.index` per subscriber. O(N·V) → O(N + V). Buckets pre-sorted so trace fanout order remains deterministic. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
