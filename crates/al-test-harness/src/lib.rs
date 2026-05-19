@@ -838,8 +838,18 @@ impl LspClient {
         // tower-lsp Url's encoding closely enough for assertion equality. Path
         // separators ('/') and unreserved characters pass through; everything
         // else is percent-encoded.
+        //
+        // F-OPEN-052: non-UTF-8 paths produce a "" prefix here. The harness
+        // only runs against test fixtures we control (all ASCII), so the
+        // fallback is acceptable — but assert in debug builds so a future
+        // contributor handing in an OsStr path that isn't valid UTF-8 sees
+        // the mismatch immediately rather than silently building `file://`.
+        let path_str = full_path.to_str().unwrap_or_else(|| {
+            debug_assert!(false, "non-UTF-8 path in test harness: {full_path:?}");
+            ""
+        });
         let mut encoded = String::new();
-        for b in full_path.to_str().unwrap_or("").bytes() {
+        for b in path_str.bytes() {
             let unreserved = b.is_ascii_alphanumeric()
                 || b == b'-'
                 || b == b'_'

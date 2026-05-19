@@ -117,7 +117,18 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                 now_activity_ms().saturating_sub(activity_clone.load(Ordering::Relaxed)),
             );
             if elapsed >= IDLE_TIMEOUT {
-                // Don't shut down if a debug session is active
+                // Don't shut down if a debug session is active.
+                //
+                // F-OPEN-067: the `try_lock` here is intentional — if the
+                // `debug_session` mutex is currently held by another task
+                // (mid-RPC) we treat that as "session active" via the
+                // `unwrap_or(true)` fallback. The invariant: the only way
+                // this mutex is held for >60 ms is during an in-flight
+                // debug-session RPC, which by definition means a session
+                // exists. If a future contributor ever changes this mutex
+                // to be held for long stretches outside debug RPCs, the
+                // daemon will never time out — flag it as a deliberate
+                // trade-off rather than a bug.
                 let has_debug_session = ws_clone
                     .debug_session
                     .try_lock()

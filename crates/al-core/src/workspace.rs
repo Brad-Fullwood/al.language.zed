@@ -439,6 +439,25 @@ pub async fn initialize_core_workspace(
                 symbols = total_symbols,
                 "workspace: loaded symbol packages"
             );
+            // F-OPEN-071: when one or more `.app` packages fail to load, the
+            // symbol count is silently lower and the user sees no surface
+            // beyond a daemon-log warn. Notify via the workspace's sink so
+            // editor clients (LSP) and CLI tooling can report partial state.
+            let attempted = project.packages.len();
+            if package_count < attempted {
+                let missing = attempted - package_count;
+                tracing::error!(
+                    attempted,
+                    loaded = package_count,
+                    missing,
+                    "workspace: {missing}/{attempted} .app packages failed to load — check earlier warnings for paths"
+                );
+                if let Some(sink) = workspace.notify_sink.get() {
+                    sink(&format!(
+                        "AL workspace: {missing}/{attempted} symbol packages failed to load. Symbol index is partial; some completions and references may be missing. See al-lsp log for details."
+                    ));
+                }
+            }
 
             // Load runtime enum definitions (compiler built-ins not in any package).
             workspace.symbols.load_runtime_enums();
