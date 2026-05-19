@@ -110,7 +110,7 @@ pub struct LspClient {
     lifecycle: Lifecycle,
     next_id: AtomicI64,
     pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
-    notifications: mpsc::UnboundedReceiver<(String, Value)>,
+    notifications: mpsc::Receiver<(String, Value)>,
     /// Notifications consumed by internal waits that should still be visible to tests.
     buffered_notifications: Vec<(String, Value)>,
     root_path: PathBuf,
@@ -172,7 +172,13 @@ impl LspClient {
     ) -> Self {
         let pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let (notif_tx, notif_rx) = mpsc::unbounded_channel();
+        // F-OPEN-048: bounded so a misbehaving server flooding $/progress or
+        // window/logMessage notifications can't grow memory unbounded. 10k is
+        // huge for a test session — well above the largest legitimate burst
+        // we've seen. On overflow `read_loop` logs+drops the notification
+        // rather than backpressuring (which would stall the reader and break
+        // request/response routing).
+        let (notif_tx, notif_rx) = mpsc::channel(10_000);
 
         // Spawn reader task — generic over the concrete reader type
         let pending_clone = pending.clone();
@@ -971,7 +977,7 @@ async fn send_message(
 pub async fn read_loop(
     mut reader: impl tokio::io::AsyncBufRead + Unpin,
     pending: Arc<Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Value>>>>,
-    notif_tx: mpsc::UnboundedSender<(String, Value)>,
+    notif_tx: mpsc::Sender<(String, Value)>,
 ) {
     let mut header_buf = String::new();
 
@@ -1040,7 +1046,11 @@ pub async fn read_loop(
                 }
                 _ => serde_json::json!({ "__server_req_id__": id_value }),
             };
-            let _ = notif_tx.send((method, params_with_id));
+            // try_send so a slow consumer can't backpressure the reader.
+            // Overflow is logged + dropped per F-OPEN-048.
+            if let Err(e) = notif_tx.try_send((method, params_with_id)) {
+                tracing::warn!(error = ?e, "harness: dropping server-request notification (channel full)");
+            }
         } else if let Some(id) = msg.get("id").and_then(|v| v.as_i64()) {
             // Response to a client request (has id, no method)
             let mut pending = pending.lock().await;
@@ -1060,7 +1070,9 @@ pub async fn read_loop(
         } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
             // Notification from server (has method, no id)
             let params = msg.get("params").cloned().unwrap_or(Value::Null);
-            let _ = notif_tx.send((method.to_string(), params));
+            if let Err(e) = notif_tx.try_send((method.to_string(), params)) {
+                tracing::warn!(error = ?e, method, "harness: dropping server notification (channel full)");
+            }
         }
     }
 }

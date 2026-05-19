@@ -617,7 +617,7 @@ type PendingMap = std::sync::Arc<
         std::collections::HashMap<i64, tokio::sync::oneshot::Sender<serde_json::Value>>,
     >,
 >;
-type NotifRx = tokio::sync::mpsc::UnboundedReceiver<(String, serde_json::Value)>;
+type NotifRx = tokio::sync::mpsc::Receiver<(String, serde_json::Value)>;
 
 fn make_dispatch_pair(
     reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -628,7 +628,7 @@ fn make_dispatch_pair(
     use tokio::sync::{mpsc, Mutex};
 
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
-    let (notif_tx, notif_rx) = mpsc::unbounded_channel();
+    let (notif_tx, notif_rx) = mpsc::channel(10_000);
     let pending_clone = pending.clone();
 
     tokio::spawn(async move {
