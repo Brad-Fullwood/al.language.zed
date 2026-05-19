@@ -897,6 +897,17 @@ One commit. F-OPEN-069 + F-OPEN-070 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 48 (2026-05-19, +1410m)
+
+One commit. F-OPEN-049 + F-OPEN-053 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-087 | P2 | F-OPEN-049 closed. `scopeguard_remove`'s Drop now uses a two-stage cleanup: fast-path `try_lock` for the common case; on contention spawns an async task via the current tokio runtime handle. Map entries no longer leak silently under contention. |
+| F-FIX-088 | P2 | F-OPEN-053 closed. `did_change` compares client `version` against stored server version; warns on backwards-version delivery (still applies the change — rejecting would diverge from the editor's text). Surfaces tower-lsp ordering issues that would otherwise corrupt the rope silently. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
