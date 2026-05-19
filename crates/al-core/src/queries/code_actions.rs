@@ -2112,6 +2112,16 @@ fn find_actions_block_end(text: &str) -> Option<u32> {
 ///   - The object is a `page`, `pageextension`, or `report`.
 ///   - The object does NOT yet have a top-level `ApplicationArea` property.
 ///   - At least one field/column control has `ApplicationArea = All`.
+///
+/// **Hardcoded AL property names (F-OPEN-039):** `ApplicationArea` /
+/// `PromotedCategory` / `Promoted` / `tooltip` appear as string literals
+/// throughout the code-actions emitter because they are *generated output* —
+/// AL source the user can run through alc. The CLAUDE.md no-hardcoded-AL-
+/// values rule targets the *validation/lookup* surface that drifts with BC
+/// releases; an emitter that produces specific AL syntax must by definition
+/// know that syntax. Routing these through `LanguageData` would be circular
+/// (LanguageData reads property names from the grammar/symbols at runtime;
+/// the emitter encodes the AL Sample that uses those names).
 fn source_action_set_application_area(
     uri: &Url,
     text: &str,
