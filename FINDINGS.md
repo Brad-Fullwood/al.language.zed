@@ -886,6 +886,17 @@ One commit. F-OPEN-048 closed.
 
 Workspace test count: 1924 unchanged. All gates green.
 
+### Iteration 47 (2026-05-19, +1380m)
+
+One commit. F-OPEN-069 + F-OPEN-070 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-085 | P3 | F-OPEN-069 closed. `dispatch_packages` now recovers from a poisoned `package_info` lock via `unwrap_or_else(\|e\| e.into_inner())` — matches the workspace-wide pattern. A single poisoned lock no longer permanently bricks the endpoint. |
+| F-FIX-086 | P3 | F-OPEN-070 closed. Daemon accept-loop break adds a 10s graceful-drain wait for all connection-semaphore permits to return. Builds/downloads/tests-runs in flight finish cleanly instead of being cut off mid-write. Timeout fallback retains the prior drop-on-runtime-shutdown behaviour. |
+
+Workspace test count: 1924 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
