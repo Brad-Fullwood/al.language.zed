@@ -1136,6 +1136,16 @@ One commit. F-OPEN-105 closed.
 
 Workspace test count: 1928 unchanged. All gates green.
 
+### Iteration 63 (2026-05-21, +1860m)
+
+One commit. F-OPEN-066 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-104 | P2 | F-OPEN-066 closed. `on_document_change` now snapshots the file's procedure-name set before and after re-index. Same set → only `invalidate_call_graph_only()` (insight_graph preserved). Different set → full `invalidate_insight_graph()`. Body-only typing keeps insight_graph cached across keystrokes. Saves ~20 ms on the next insight-only query in the typing-burst case. New `FileIndex::procedures_snapshot` + `Workspace::invalidate_call_graph_only`. |
+
+Workspace test count: 1928 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
