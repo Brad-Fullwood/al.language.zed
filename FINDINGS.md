@@ -1156,6 +1156,16 @@ One commit. F-OPEN-101 closed.
 
 Workspace test count: 1928 unchanged. All gates green.
 
+### Iteration 65 (2026-05-21, +1920m)
+
+One commit. F-OPEN-109 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-106 | P3 | F-OPEN-109 closed. Two identical `tracing::trace!` blocks in `classify_name_like_node` collapsed into a shared `log_unclassified` helper. |
+
+Workspace test count: 1928 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
