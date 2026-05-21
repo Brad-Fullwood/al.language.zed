@@ -1146,6 +1146,16 @@ One commit. F-OPEN-066 closed.
 
 Workspace test count: 1928 unchanged. All gates green.
 
+### Iteration 64 (2026-05-21, +1890m)
+
+One commit. F-OPEN-101 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-105 | P2 | F-OPEN-101 closed. `extract_dataitem_symbol` captured the outer wrapper range as `selection_range` instead of the inner identifier — outline "go to" landed on the whole `(Name; "Table")` block. Inner identifier range now captured in the resolve loop. |
+
+Workspace test count: 1928 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
