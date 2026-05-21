@@ -1057,6 +1057,24 @@ Carry-forwards from the audit:
 
 Workspace test count: 1928 unchanged. All gates green.
 
+### Iteration 58 (2026-05-21, +1710m)
+
+One commit. Fresh audit of `syntax/type_resolver.rs` (1288 LOC — unaudited); 1 perf fix landed.
+
+**Audit verdict:** clean. Iterative traversal, no production panics, UTF-16 conversion correct, no recursive walks. Two P2 perf observations recorded:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-098 | P2 | F-OPEN-104 closed. `variables_at` (called per cursor position) ran `find_source_table` twice — once at the gating check and again inside `add_record_implicit_vars`. Split into `add_record_implicit_vars_for(table, ...)` that takes a pre-resolved table; the caller now amortises the root-walk. Halves the cost on this hot LSP path. |
+
+Carry-forward:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-105 | P2 | `collect_dataitem_vars` rebuilds a per-line byte-offset table on every `variables_at` call (O(N) bytes per LSP request). The `DocumentStore` already maintains a rope with line indices — passing that through instead of rebuilding would eliminate the per-keystroke scan. Design — defer. |
+
+Workspace test count: 1928 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
