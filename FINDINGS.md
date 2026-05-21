@@ -1075,6 +1075,28 @@ Carry-forward:
 
 Workspace test count: 1928 unchanged. All gates green.
 
+### Iteration 59 (2026-05-21, +1740m)
+
+One commit. Fresh audit of `syntax/tokens.rs` (1220 LOC — unaudited). 1 perf fix + 1 doc justification landed.
+
+**Audit verdict:** clean. Iterative DFS, no production panics, UTF-16 conversion via shared helper.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-099 | P2 | `classify_parenthesized_block_name` no longer allocates per token. Const-table + `eq_ignore_ascii_case` replaces per-call `to_lowercase()`. Same semantics; zero allocation on the hot semanticTokens path. |
+| F-FIX-100 | P3 | Hardcoded AL structural-keyword lists in both classify functions justified inline as grammar-ABI strings (same pattern as `record_op_event_names`). Fall-through default named. |
+
+Carry-forwards:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-106 | P2 | `text.lines()` in multi-line emission strips trailing `\r` on CRLF source — the resulting `encode_utf16().count()` is the length of the visible line content, which matches the LSP spec (positions don't include `\r` before `\n`). Audit flagged as "wrong by 1"; on re-inspection it appears correct. Filing as carry-forward to revisit if real-world CRLF AL files show drift in highlighting. |
+| F-OPEN-107 | P1 | `directive` and `inactive_code` subtree pruning skips children — preprocessor `#if EXPR` and inactive-code-block contents lose highlighting. Real fix is to recurse into the directive's expression children, not blanket prune. Design — defer. |
+| F-OPEN-108 | P2 | `child_count()` + `child(i)` in tree-sitter is linked-list per index → O(n²). Use `walk()` + `goto_first_child()` / `goto_next_sibling()` for O(n) total. Multiple sites. |
+| F-OPEN-109 | P3 | Duplicate `trace!` blocks at L501-516; `has_ancestor_kind` is a thin shim. Cosmetic. |
+
+Workspace test count: 1928 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
