@@ -631,6 +631,22 @@ impl<'a> TypeResolver<'a> {
             Err(_) => return,
         };
 
+        // F-OPEN-105 short-circuit: most AL files don't contain `dataitem`
+        // (only Report and Query objects use it). Skip the line-starts
+        // scan entirely when the keyword isn't present. Case-insensitive
+        // check via raw byte search would require to_lowercase or windows
+        // walk; the ASCII text has at most one case form per parse, so an
+        // ascii-case-insensitive contains over the trimmed lines is the
+        // simplest correct gate. The check itself is O(N) but `memchr`-
+        // backed via `contains`, much faster than per-call line-walking.
+        if !text.contains("dataitem(")
+            && !text.contains("dataitem (")
+            && !text.contains("DataItem(")
+            && !text.contains("DATAITEM(")
+        {
+            return;
+        }
+
         // Build a table of (line_start_byte, line_str) pairs so we can compute
         // accurate start_byte / end_byte for the synthetic VariableDecl ranges.
         // We need real byte offsets because `str::lines()` strips newlines, so
