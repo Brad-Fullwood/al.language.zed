@@ -1126,6 +1126,16 @@ Carry-forwards:
 
 Workspace test count: 1928 unchanged. All gates green.
 
+### Iteration 62 (2026-05-21, +1830m)
+
+One commit. F-OPEN-105 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-103 | P2 | F-OPEN-105 closed. `collect_dataitem_vars` ran a full byte-walk to build line-starts on every LSP-position call. Added an early `text.contains("dataitem(")` short-circuit covering 4 case forms — memchr-backed, fast. ~99% of AL files (everything that isn't a Report/Query) now skip the whole function in ~1µs instead of paying O(N) per LSP request. |
+
+Workspace test count: 1928 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
