@@ -259,10 +259,17 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
             continue;
         }
         // Push children in reverse order for left-to-right DFS.
-        for i in (0..current.child_count()).rev() {
-            if let Some(child) = current.child(i) {
-                stack.push(child);
-            }
+        //
+        // F-OPEN-108: previously used `(0..child_count()).rev()` with
+        // `child(i)`. Each `child(i)` call is a linked-list walk in
+        // tree-sitter — that loop was O(n²) per node. Collect via cursor
+        // (O(n) total) then iterate in reverse for the stack push.
+        let mut cursor = current.walk();
+        let mut children: Vec<Node> = current.children(&mut cursor).collect();
+        while let Some(child) = children.pop() {
+            // pop() iterates back-to-front, so the first sibling ends up on
+            // top of the stack — same left-to-right DFS as before.
+            stack.push(child);
         }
     }
 }
