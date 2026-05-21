@@ -78,6 +78,14 @@ pub struct DispatchCtx {
     /// past the configured per-test budget. `None` means "no deadline" —
     /// used by unit-test paths that need full determinism. F-OPEN-015b.
     pub deadline: Option<std::time::Instant>,
+    /// Optional external cancellation signal. Loop constructs in
+    /// `eval_stmt` check this on every iteration alongside `deadline_exceeded`.
+    /// Closes F-OPEN-093/F-OPEN-096: a daemon `$/cancelRequest` can now
+    /// interrupt the interpreter mid-loop without waiting for the wall-clock
+    /// deadline. The token is `Arc<AtomicBool>` so it can be cheaply shared
+    /// across the call and signalled from a different task. `None` means
+    /// "not cancellable" — unit-test path and CLI default.
+    pub cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl DispatchCtx {
@@ -90,6 +98,7 @@ impl DispatchCtx {
             recursion_depth: 0,
             ast_depth: 0,
             deadline: None,
+            cancel: None,
         }
     }
 
@@ -102,6 +111,7 @@ impl DispatchCtx {
             recursion_depth: 0,
             ast_depth: 0,
             deadline: None,
+            cancel: None,
         }
     }
 
@@ -112,6 +122,22 @@ impl DispatchCtx {
             Some(d) => std::time::Instant::now() >= d,
             None => false,
         }
+    }
+
+    /// True when an external cancel signal has been raised. Cheap atomic
+    /// load — safe to call on every loop iteration. Returns false when no
+    /// token is attached.
+    pub fn is_cancelled(&self) -> bool {
+        match &self.cancel {
+            Some(flag) => flag.load(std::sync::atomic::Ordering::Relaxed),
+            None => false,
+        }
+    }
+
+    /// Combined check: deadline OR cancellation. Use this from loop bodies
+    /// that previously only checked `deadline_exceeded()`.
+    pub fn should_stop(&self) -> bool {
+        self.deadline_exceeded() || self.is_cancelled()
     }
 }
 

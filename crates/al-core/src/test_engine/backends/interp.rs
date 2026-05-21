@@ -337,6 +337,7 @@ fn run_procedure_interp(
         recursion_depth: 0,
         ast_depth: 0,
         deadline: Some(std::time::Instant::now() + timeout_dur),
+        cancel: None,
     };
 
     eval_stmt(body, source, &mut stack, &mut ctx)

@@ -209,6 +209,9 @@ fn eval_while(
         .or_else(|| named_stmt_child(node, 1));
 
     loop {
+        if ctx.is_cancelled() {
+            return Eval::Error(simple_error("interpreter cancelled in while loop"));
+        }
         if ctx.deadline_exceeded() {
             return Eval::Error(simple_error("interpreter deadline exceeded in while loop"));
         }
@@ -307,6 +310,9 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
 
     let mut i = start_i;
     loop {
+        if ctx.is_cancelled() {
+            return Eval::Error(simple_error("interpreter cancelled in for loop"));
+        }
         if ctx.deadline_exceeded() {
             return Eval::Error(simple_error("interpreter deadline exceeded in for loop"));
         }
@@ -394,6 +400,9 @@ fn eval_foreach(
     };
 
     for item in items {
+        if ctx.is_cancelled() {
+            return Eval::Error(simple_error("interpreter cancelled in foreach loop"));
+        }
         if ctx.deadline_exceeded() {
             return Eval::Error(simple_error(
                 "interpreter deadline exceeded in foreach loop",
@@ -433,6 +442,9 @@ fn eval_repeat(
         .or_else(|| named_stmt_child(node, 1));
 
     loop {
+        if ctx.is_cancelled() {
+            return Eval::Error(simple_error("interpreter cancelled in repeat loop"));
+        }
         if ctx.deadline_exceeded() {
             return Eval::Error(simple_error("interpreter deadline exceeded in repeat loop"));
         }
@@ -1199,6 +1211,86 @@ mod tests {
                 e.message
             ),
             other => panic!("expected deadline error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cancel_token_interrupts_while_loop() {
+        // F-OPEN-093 / F-OPEN-096: an external cancel signal must interrupt
+        // a running loop without waiting for the wall-clock deadline. Set the
+        // cancel token from a different thread once the loop has started;
+        // the loop's per-iteration check should fire on the next iteration.
+        use crate::test_runtime::interpreter::scope::{CallFrame, ScopeStack};
+        use crate::test_runtime::interpreter::value::Value;
+        use crate::workspace::Workspace;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let wrapper = "codeunit 50100 \"X\"\n{\n    procedure Test()\n    var\n        x: Integer;\n    begin\n        x := 0; while x >= 0 do x := x + 1;\n    end;\n}";
+        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).unwrap();
+
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("X", "Test");
+        frame.bind("x", Value::Integer(0));
+        stack.push(frame);
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
+        // Long deadline — must be cancel that fires, not deadline.
+        ctx.deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+        ctx.cancel = Some(cancel.clone());
+
+        // Signal cancel from a background thread after a tiny delay so the
+        // loop is already running when the flag flips.
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            cancel.store(true, Ordering::Relaxed);
+        });
+
+        let eval = eval_stmt(body, bytes, &mut stack, &mut ctx);
+        canceller.join().unwrap();
+
+        match eval {
+            Eval::Error(e) => assert!(
+                e.message.contains("cancelled"),
+                "expected cancel message, got: {}",
+                e.message
+            ),
+            other => panic!("expected cancel error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cancel_token_can_be_attached_and_pre_signalled() {
+        // Sanity: a pre-set cancel token aborts the loop on the very first
+        // iteration check. No threading, fully deterministic.
+        use crate::test_runtime::interpreter::scope::{CallFrame, ScopeStack};
+        use crate::test_runtime::interpreter::value::Value;
+        use crate::workspace::Workspace;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        let wrapper = "codeunit 50100 \"X\"\n{\n    procedure Test()\n    var\n        x: Integer;\n    begin\n        x := 0; while x >= 0 do x := x + 1;\n    end;\n}";
+        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).unwrap();
+
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("X", "Test");
+        frame.bind("x", Value::Integer(0));
+        stack.push(frame);
+
+        let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
+        ctx.cancel = Some(Arc::new(AtomicBool::new(true)));
+
+        let eval = eval_stmt(body, bytes, &mut stack, &mut ctx);
+        assert!(eval.is_error());
+        if let Eval::Error(e) = eval {
+            assert!(e.message.contains("cancelled"), "got: {}", e.message);
         }
     }
 
