@@ -112,10 +112,48 @@ pub async fn compile_project_with_analyzers(
         std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     let project_root = project_root_buf.as_path();
 
+    // F-OPEN-058: atomic `.app` write. Route alc's `/out:` to a per-build
+    // temp directory inside the project, then `rename(2)` the resulting
+    // `.app` into the project root on success. A crashed/killed alc leaves
+    // its partial output in the tmp dir, which we always clean up. The
+    // prior approach wrote directly to `project_root`, so a crashed alc
+    // could leave a partial `.app` that `find_app_file_from_manifest`
+    // (mtime-sorted) would then pick up as the "latest build".
+    //
+    // Sibling-of-project rather than `target/` so the dir is inside the
+    // workspace and is automatically gitignored alongside the existing
+    // `*.app` ignore patterns.
+    let build_tmp = project_root.join(format!(".al-build-tmp.{}", std::process::id()));
+    // Best-effort cleanup of any leftover dir from a previous crashed run.
+    let _ = std::fs::remove_dir_all(&build_tmp);
+    if let Err(e) = std::fs::create_dir_all(&build_tmp) {
+        tracing::warn!(
+            path = %build_tmp.display(),
+            error = %e,
+            "alc build: failed to create tmp output dir, falling back to in-place /out:"
+        );
+    }
+    // RAII drop guard so we always sweep the tmp dir, even on error/panic.
+    struct TmpDirGuard(PathBuf);
+    impl Drop for TmpDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let tmp_guard = TmpDirGuard(build_tmp.clone());
+    // Use tmp dir only if it was created successfully; otherwise fall back
+    // to the legacy in-place behaviour so the build path doesn't break in
+    // environments where we can't write a sibling dir.
+    let out_dir = if build_tmp.is_dir() {
+        build_tmp.as_path()
+    } else {
+        project_root
+    };
+
     let mut cmd = Command::new("dotnet");
     cmd.arg(toolchain.alc.display().to_string());
     cmd.arg(format!("/project:{}", project_root.display()));
-    cmd.arg(format!("/out:{}", project_root.display()));
+    cmd.arg(format!("/out:{}", out_dir.display()));
 
     // Use explicit package cache path, or fall back to .alpackages
     let pkg_dir = package_cache
@@ -232,12 +270,49 @@ pub async fn compile_project_with_analyzers(
 
     let diagnostics = parse_alc_output(&combined);
 
-    // Find .app file in project root
+    // Find .app file in the output dir; on success, atomically move it
+    // into project_root so the result appears only once the build is
+    // complete (F-OPEN-058). If we fell back to in-place /out: (tmp dir
+    // creation failed), the .app is already in project_root.
     let app_path = if output.status.success() {
-        find_app_file(project_root)
+        let produced = find_app_file(out_dir);
+        if let Some(src) = produced {
+            if out_dir == project_root {
+                Some(src)
+            } else {
+                // Cross-directory rename within the same filesystem (we
+                // created out_dir as a sibling of project_root, so the same
+                // mount). On success the .app appears atomically in
+                // project_root from the consumer's perspective.
+                let file_name = match src.file_name() {
+                    Some(n) => n.to_os_string(),
+                    None => return Err(AlError::BuildTimeout(0)),
+                };
+                let dst = project_root.join(&file_name);
+                match std::fs::rename(&src, &dst) {
+                    Ok(()) => Some(dst),
+                    Err(e) => {
+                        tracing::warn!(
+                            src = %src.display(),
+                            dst = %dst.display(),
+                            error = %e,
+                            "alc build: failed to move .app from tmp dir to project root; build artefact left in tmp"
+                        );
+                        Some(src)
+                    }
+                }
+            }
+        } else {
+            None
+        }
     } else {
         None
     };
+
+    // TmpDirGuard drops here — sweeps `out_dir` if it was the tmp dir. The
+    // .app has already been moved out on success; everything else (logs,
+    // intermediates) is alc transient state that we don't keep.
+    drop(tmp_guard);
 
     Ok(CompileResult {
         success: output.status.success(),
