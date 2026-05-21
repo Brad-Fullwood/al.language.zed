@@ -1097,6 +1097,16 @@ Carry-forwards:
 
 Workspace test count: 1928 unchanged. All gates green.
 
+### Iteration 60 (2026-05-21, +1770m)
+
+One commit. F-OPEN-108 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-101 | P2 | F-OPEN-108 closed. Outer DFS in `semantic_tokens` was O(n²) per node via `(0..child_count()).rev()` + `child(i)` (linked-list walk per index). Replaced with cursor-based `children().collect()` then `pop()`-to-stack — preserves left-to-right DFS order, O(n) total. |
+
+Workspace test count: 1928 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
