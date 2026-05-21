@@ -1008,6 +1008,16 @@ The audits and chip-aways have left a residual list of items that are either (a)
 
 Workspace test count: 1924 (held steady — recent iterations were refactors and perf chips, not feature additions). All gates green.
 
+### Iteration 54 (2026-05-21, +1590m)
+
+One commit. F-OPEN-093 and F-OPEN-096 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-093 | P1 | F-OPEN-093 + F-OPEN-096 closed. `DispatchCtx` now carries an optional `cancel: Arc<AtomicBool>` token. All four `eval_stmt` loop constructs (while/for/foreach/repeat) check it on every iteration alongside the wall-clock deadline. A daemon `$/cancelRequest` (or any other source) can now interrupt the interpreter without waiting for the deadline. New `is_cancelled()` + `should_stop()` helpers. 2 regression tests pin the race-and-deterministic paths. |
+
+Workspace test count: 1924 → 1926 (+2 cancel-token tests). All gates green.
+
 
 
 | Phase | Status | Output |
