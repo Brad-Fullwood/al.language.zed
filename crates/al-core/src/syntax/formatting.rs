@@ -48,19 +48,29 @@ pub enum BraceStyle {
 }
 
 /// Formatting options.
+///
+/// **Wiring status (F-OPEN-110):** the formatter currently honours
+/// `tab_size` and `insert_spaces` only. The remaining fields
+/// (`keyword_casing`, `blank_lines_between_procedures`, `max_line_length`,
+/// `brace_style`, `sort_properties`) are declared so the public type matches
+/// the user-facing `.alformat.json` schema and config-merge layer, but they
+/// are NOT applied during formatting yet. The unconsumed-field warning in
+/// `queries::format` (logged via `tracing::warn!`) surfaces them so users
+/// notice the gap. Wiring them is tracked as follow-up rather than per-field
+/// drift.
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
     pub tab_size: usize,
     pub insert_spaces: bool,
-    /// Keyword casing to apply.
+    /// Keyword casing to apply. **Currently a no-op** — see struct-level doc.
     pub keyword_casing: KeywordCasing,
-    /// Blank lines between procedures.
+    /// Blank lines between procedures. **Currently a no-op.**
     pub blank_lines_between_procedures: BlankLinesBetweenProcedures,
-    /// Maximum line length (0 = no limit).
+    /// Maximum line length (0 = no limit). **Currently a no-op.**
     pub max_line_length: usize,
-    /// Brace placement style.
+    /// Brace placement style. **Currently a no-op.**
     pub brace_style: BraceStyle,
-    /// Sort object properties alphabetically.
+    /// Sort object properties alphabetically. **Currently a no-op.**
     pub sort_properties: bool,
 }
 
