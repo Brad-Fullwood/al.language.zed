@@ -585,6 +585,13 @@ fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -
         keyword_node.utf8_text(source).ok()?.to_lowercase()
     };
 
+    // These keyword names are AL structural declarations driven by the
+    // tree-sitter grammar (`key_declaration` covers table keys, dataitems,
+    // columns, table-elements, etc.). Like `record_op_event_names`, they are
+    // grammar-ABI strings — fixed by the AL grammar revision, not BC release-
+    // to-release. If a future grammar revision adds a new declaration kind
+    // here, fall-through to `TABLE_KEY` is the safe default (an outline entry
+    // still shows up; only its semantic-token highlight class is generic).
     match kw.as_str() {
         "dataitem" => Some(token_types::QUERY_DATA_ITEM),
         "column" => Some(token_types::QUERY_COLUMN),
@@ -621,18 +628,25 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
     let prev_sibling = prev_named_sibling(paren_block)?;
     let kw = prev_sibling.utf8_text(source).ok()?;
 
-    match kw.to_lowercase().as_str() {
-        "view" => Some(token_types::PAGE_VIEW),
-        "layout" => Some(token_types::REPORT_LAYOUT),
-        "textelement" => Some(token_types::XMLPORT_TEXT_ELEMENT),
-        "fieldelement" => Some(token_types::XMLPORT_FIELD_ELEMENT),
-        "fieldattribute" => Some(token_types::XMLPORT_FIELD_ATTRIBUTE),
-        "filter" => Some(token_types::QUERY_FILTER),
-        "dataitem" => Some(token_types::QUERY_DATA_ITEM),
-        "column" => Some(token_types::QUERY_COLUMN),
-        "tableelement" => Some(token_types::XMLPORT_TABLE_ELEMENT),
-        _ => None,
-    }
+    // F-OPEN-tokens-1: avoid per-token `to_lowercase()` allocation by using
+    // `eq_ignore_ascii_case` against literal table entries. AL keywords are
+    // ASCII so the check is exact. Same grammar-fixity rationale as
+    // `classify_key_declaration_name` above.
+    const TABLE: &[(&str, u32)] = &[
+        ("view", token_types::PAGE_VIEW),
+        ("layout", token_types::REPORT_LAYOUT),
+        ("textelement", token_types::XMLPORT_TEXT_ELEMENT),
+        ("fieldelement", token_types::XMLPORT_FIELD_ELEMENT),
+        ("fieldattribute", token_types::XMLPORT_FIELD_ATTRIBUTE),
+        ("filter", token_types::QUERY_FILTER),
+        ("dataitem", token_types::QUERY_DATA_ITEM),
+        ("column", token_types::QUERY_COLUMN),
+        ("tableelement", token_types::XMLPORT_TABLE_ELEMENT),
+    ];
+    TABLE
+        .iter()
+        .find(|(name, _)| kw.eq_ignore_ascii_case(name))
+        .map(|(_, ty)| *ty)
 }
 
 #[cfg(test)]
