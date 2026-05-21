@@ -347,6 +347,17 @@ fn extract_section_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> {
         }
     }
 
+    // AL object section-keyword → outline symbol-kind mapping.
+    //
+    // These are top-level grammar fixtures (sections inside `table`, `page`,
+    // `report`, etc.). They are stable AL grammar forms — the set is fixed by
+    // the AL grammar revision Microsoft ships, not BC release-to-release. The
+    // grammar JSON corpus does not currently have a `section_keywords.json`
+    // file; when one is added, replace this with
+    // `language_data::section_kind_by_keyword(keyword)`. A new section that
+    // doesn't yet appear here falls through to `Namespace` which is the
+    // correct generic outline kind — symbols are still extracted, just under
+    // a generic label.
     let sym_kind = match keyword.to_lowercase().as_str() {
         "fields" => SymbolKind::Struct,
         "keys" => SymbolKind::Key,
@@ -1097,7 +1108,14 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
         }
 
         let line_no = node.start_position().row as u32 + offset as u32;
-        let start_byte = line.find(name_part).unwrap_or_default();
+        // F-OPEN-syntax-symbols-1: skip this entry if we can't locate the
+        // identifier within the source line. `unwrap_or_default()` was
+        // producing a (0, 0) range at column 0 — visually wrong for the
+        // outline. Real ASCII identifiers always match; this guard handles
+        // the edge case of whitespace-collapsing surprises.
+        let Some(start_byte) = line.find(name_part) else {
+            continue;
+        };
         let start_col = super::byte_col_to_utf16_col(line, start_byte);
         let end_col = super::byte_col_to_utf16_col(line, start_byte + name_part.len());
         symbols.push(DocumentSymbol {
@@ -1122,6 +1140,8 @@ fn collect_label_symbols_from_text(node: Node, source: &[u8], symbols: &mut Vec<
 
 /// Find the first `parenthesized_block` child of a node (non-body, non-named-field).
 fn find_parenthesized_block(node: Node) -> Option<Node> {
+    // `cursor` is bound separately because the lifetime of the borrowed cursor
+    // doesn't extend through `find` when chained inline.
     let mut cursor = node.walk();
     let result = node
         .children(&mut cursor)
