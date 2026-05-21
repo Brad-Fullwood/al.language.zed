@@ -265,6 +265,128 @@ fn collect_record_from_parameter(
     }
 }
 
+/// Extract object-typed (codeunit / page / report / xmlport / query /
+/// interface) variable declarations from a procedure's `var` section and
+/// parameters. Returns a map of lowercase var-name → object name.
+///
+/// Companion to `extract_procedure_var_types` (which handles only `Record`);
+/// used by member-call resolution to translate `MyVar.Method()` →
+/// `<ObjectName>.Method()` when the variable's declared type is an object
+/// reference. Closes F-OPEN-084. Excludes `Record` because those don't act
+/// as method-call receivers in the same sense (their methods live on the
+/// table object, but the call-graph already routes those via the
+/// `RecordOp` trigger path).
+pub fn extract_procedure_object_var_types(
+    tree: &tree_sitter::Tree,
+    source: &str,
+    procedure_name: &str,
+) -> HashMap<String, String> {
+    let source_bytes = source.as_bytes();
+    let mut result = HashMap::new();
+
+    let Some(proc_node) = find_procedure_node(tree, source_bytes, procedure_name) else {
+        return result;
+    };
+
+    let mut cursor = proc_node.walk();
+    for child in proc_node.children(&mut cursor) {
+        match child.kind() {
+            "var_section" => collect_object_vars_from_var_section(child, source_bytes, &mut result),
+            "parameter_list" => {
+                collect_object_vars_from_parameter_list(child, source_bytes, &mut result)
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+fn collect_object_vars_from_var_section(
+    section: tree_sitter::Node,
+    source: &[u8],
+    result: &mut HashMap<String, String>,
+) {
+    let mut cursor = section.walk();
+    for child in section.children(&mut cursor) {
+        if child.kind() == "variable_declaration" {
+            // Walk inner regular_variable_declaration(s).
+            let mut inner_cursor = child.walk();
+            for inner in child.children(&mut inner_cursor) {
+                if inner.kind() == "regular_variable_declaration" {
+                    collect_object_var_from_regular_decl(inner, source, result);
+                }
+            }
+            if child.kind() == "regular_variable_declaration" {
+                collect_object_var_from_regular_decl(child, source, result);
+            }
+        }
+    }
+}
+
+fn collect_object_vars_from_parameter_list(
+    param_list: tree_sitter::Node,
+    source: &[u8],
+    result: &mut HashMap<String, String>,
+) {
+    let mut cursor = param_list.walk();
+    for child in param_list.children(&mut cursor) {
+        if child.kind() == "parameter" {
+            let Some(name_node) = child.child_by_field_name("name") else {
+                continue;
+            };
+            let Some(type_node) = child.child_by_field_name("type") else {
+                continue;
+            };
+            extract_object_subtype(name_node, type_node, source, result);
+        }
+    }
+}
+
+fn collect_object_var_from_regular_decl(
+    node: tree_sitter::Node,
+    source: &[u8],
+    result: &mut HashMap<String, String>,
+) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
+    extract_object_subtype(name_node, type_node, source, result);
+}
+
+fn extract_object_subtype(
+    name_node: tree_sitter::Node,
+    type_node: tree_sitter::Node,
+    source: &[u8],
+    result: &mut HashMap<String, String>,
+) {
+    let Some(name) = name_node
+        .utf8_text(source)
+        .ok()
+        .map(|t| t.trim_matches('"').trim().to_string())
+    else {
+        return;
+    };
+    if name.is_empty() {
+        return;
+    }
+    let (type_kw, subtype) = parse_type_reference_for_record(type_node, source);
+    // Object-typed var kinds whose subtype is the receiver-object name.
+    // Lowercased so the match handles "Codeunit"/"codeunit"/"CODEUNIT".
+    let kw_lower = type_kw.to_ascii_lowercase();
+    let is_object_var = matches!(
+        kw_lower.as_str(),
+        "codeunit" | "page" | "report" | "xmlport" | "query" | "interface"
+    );
+    if is_object_var {
+        if let Some(obj_name) = subtype {
+            result.insert(name.to_lowercase(), obj_name);
+        }
+    }
+}
+
 /// Parse a `type_reference` node, returning `(type_keyword, optional_subtype)`.
 fn parse_type_reference_for_record(
     node: tree_sitter::Node,
@@ -556,6 +678,12 @@ pub fn populate_call_edges_for_procedure(
 ) {
     let call_sites = extract_call_sites(tree, source, procedure_name);
     let var_types = extract_procedure_var_types(tree, source, procedure_name);
+    // F-OPEN-084: collect ALL object-typed var declarations (codeunit / page /
+    // report / xmlport / query / interface), not just Record. Used to resolve
+    // `MyVar.Method()` where `MyVar` is e.g. `Codeunit "Sales-Post"` — the
+    // prior code looked up `MyVar` itself in the symbol index, only matching
+    // when the variable name happened to equal a real object name.
+    let object_var_types = extract_procedure_object_var_types(tree, source, procedure_name);
 
     let caller_key = NodeKey::Procedure(
         object_kind,
@@ -588,13 +716,17 @@ pub fn populate_call_edges_for_procedure(
                 }
             }
             CallSite::MemberCall { object, method } => {
-                // Resolve the object against the symbol index. `get_by_name` can
-                // return multiple entries (object name reused across kinds, e.g.
-                // both a Codeunit and a Page named "Foo"). Connecting to ALL
-                // matching procedures is correct — downstream consumers (find
-                // references, code lens) dedupe or rank as needed. The prior
-                // `break` after the first hit silently dropped legitimate edges.
-                let entries = symbols.get_by_name(object);
+                // F-OPEN-084: prefer the variable's declared type when known.
+                // `MyVar.Method()` where `MyVar: Codeunit "Sales-Post"` should
+                // resolve against "Sales-Post" methods, not against a hypothetical
+                // object literally named "MyVar". Fall back to the bare name
+                // for the (common) case where the call's left side is itself
+                // an object reference like `Customer.Get()`.
+                let resolved_object = object_var_types
+                    .get(&object.to_lowercase())
+                    .map(String::as_str)
+                    .unwrap_or(object.as_str());
+                let entries = symbols.get_by_name(resolved_object);
                 for entry in &entries {
                     let callee_key = NodeKey::Procedure(
                         entry.kind,
@@ -1516,6 +1648,64 @@ mod tests {
             !types.contains_key("counter"),
             "Integer vars should not appear"
         );
+    }
+
+    #[test]
+    fn extract_object_var_types_finds_codeunit_and_page_and_report_vars() {
+        // F-OPEN-084 regression: object-typed variables (Codeunit / Page /
+        // Report etc.) should be captured so member-call resolution can
+        // translate `MyVar.Method()` to `<ObjectName>.Method()`.
+        let source = r#"codeunit 50100 "Test CU"
+{
+    procedure DoWork()
+    var
+        SalesPost: Codeunit "Sales-Post";
+        MyPage: Page "Customer List";
+        Rep: Report "Sales Order";
+        Counter: Integer;
+        Cust: Record "Customer";
+    begin
+    end;
+}
+"#;
+        let result = crate::syntax::AlParser::parse_quick(source);
+        let types = extract_procedure_object_var_types(&result.tree, source, "DoWork");
+
+        assert_eq!(
+            types.get("salespost").map(|s| s.as_str()),
+            Some("Sales-Post")
+        );
+        assert_eq!(
+            types.get("mypage").map(|s| s.as_str()),
+            Some("Customer List")
+        );
+        assert_eq!(types.get("rep").map(|s| s.as_str()), Some("Sales Order"));
+        // Integer not an object kind — excluded.
+        assert!(!types.contains_key("counter"));
+        // Record is intentionally NOT here (use extract_procedure_var_types
+        // for that — the trigger path handles record method calls separately).
+        assert!(!types.contains_key("cust"));
+    }
+
+    #[test]
+    fn extract_object_var_types_picks_up_parameters() {
+        // Codeunit-typed parameters should be captured too — calling
+        // `SalesPostParam.Method()` inside the body needs the same lookup.
+        let source = r#"codeunit 50100 "Test CU"
+{
+    procedure DoWork(SalesPostParam: Codeunit "Sales-Post"; var Cust: Record "Customer")
+    begin
+    end;
+}
+"#;
+        let result = crate::syntax::AlParser::parse_quick(source);
+        let types = extract_procedure_object_var_types(&result.tree, source, "DoWork");
+        assert_eq!(
+            types.get("salespostparam").map(|s| s.as_str()),
+            Some("Sales-Post")
+        );
+        // Record param not captured here (separate path).
+        assert!(!types.contains_key("cust"));
     }
 
     #[test]
