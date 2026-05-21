@@ -1018,6 +1018,16 @@ One commit. F-OPEN-093 and F-OPEN-096 closed.
 
 Workspace test count: 1924 → 1926 (+2 cancel-token tests). All gates green.
 
+### Iteration 55 (2026-05-21, +1620m)
+
+One commit. F-OPEN-058 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-094 | P2 | F-OPEN-058 closed. alc `/out:` now routes through a per-build sibling tmp dir; the produced `.app` is `rename(2)`'d into `project_root` only on success. RAII guard sweeps the tmp dir on every exit path. Falls back to in-place `/out:` if tmp-dir creation fails (read-only project root etc.) so existing environments still work. Eliminates the partial-`.app` race where `find_app_file_from_manifest` (mtime-sorted) could pick up a truncated artefact from a crashed alc. |
+
+Workspace test count: 1926 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
