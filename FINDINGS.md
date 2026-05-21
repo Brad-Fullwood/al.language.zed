@@ -1028,6 +1028,16 @@ One commit. F-OPEN-058 closed.
 
 Workspace test count: 1926 unchanged. All gates green.
 
+### Iteration 56 (2026-05-21, +1650m)
+
+One commit. F-OPEN-084 closed — the largest single missed-edges class in the call graph.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-095 | **P1** | F-OPEN-084 closed. New `extract_procedure_object_var_types` covers Codeunit / Page / Report / XmlPort / Query / Interface variable declarations and parameters. `populate_call_edges_for_procedure` consults this map before resolving member calls, translating `MyVar.Method()` → `<DeclaredObject>.Method()`. Prior code looked up the variable name itself in the symbol index — produced edges only when the var name happened to equal a real object name. Most workspace member calls produced zero edges. Record vars intentionally route through the existing trigger path (unchanged). 2 regression tests. |
+
+Workspace test count: 1926 → 1928 (+2 object-var-type tests). All gates green.
+
 
 
 | Phase | Status | Output |
