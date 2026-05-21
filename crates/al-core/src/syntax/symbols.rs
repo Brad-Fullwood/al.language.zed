@@ -898,11 +898,18 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
                     // Use index-based child access to avoid iterator borrow issues.
                     let raw = child.utf8_text(source).unwrap_or("");
                     let mut resolved = raw.to_string();
+                    // F-OPEN-101: also capture the inner identifier's RANGE
+                    // so the selection_range points at just the name, not the
+                    // enclosing wrapper (e.g. parenthesized_block). Without
+                    // this the outline's "go to definition" target was the
+                    // whole `(Name; ...)` block.
+                    let mut resolved_range = child.range();
                     for ci in 0..child.child_count() {
                         if let Some(inner) = child.child(ci) {
                             if matches!(inner.kind(), "identifier" | "quoted_identifier" | "name") {
                                 if let Ok(t) = inner.utf8_text(source) {
                                     resolved = t.to_string();
+                                    resolved_range = inner.range();
                                     break;
                                 }
                             }
@@ -911,7 +918,7 @@ fn extract_dataitem_symbol(node: Node, source: &[u8]) -> Option<DocumentSymbol> 
                     let trimmed = resolved.trim_matches('"').trim().to_string();
                     if !trimmed.is_empty() {
                         name = trimmed;
-                        name_node_range = child.range();
+                        name_node_range = resolved_range;
                         break;
                     }
                 }
