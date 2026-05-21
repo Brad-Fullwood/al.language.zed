@@ -1038,6 +1038,25 @@ One commit. F-OPEN-084 closed — the largest single missed-edges class in the c
 
 Workspace test count: 1926 → 1928 (+2 object-var-type tests). All gates green.
 
+### Iteration 57 (2026-05-21, +1680m)
+
+One commit. Fresh audit of `syntax/symbols.rs` (1349 LOC — unaudited until now); 2 small fixes landed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-096 | P2 | Label-detection loop at `symbols.rs:1111` used `line.find(name_part).unwrap_or_default()` — produced (0,0) range when the identifier wasn't located in the line. Changed to `let Some(...) else { continue }` so malformed entries are dropped from the outline. |
+| F-FIX-097 | P3 | AL object section-keyword → SymbolKind table at `symbols.rs:350` documented inline. Stable AL grammar fixture (not BC-release surface). Migration path to `language_data::section_kind_by_keyword` named for future contributors. |
+
+Carry-forwards from the audit:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-101 | P2 | `extract_dataitem_symbol` (symbols.rs:888) — selection range can overshoot when parenthesized-block wrapper isn't unwrapped. Real fix requires grammar-level disambiguation, deferred. |
+| F-OPEN-102 | P2 | Dataitem/page-control bodies are scanned twice (extract_section_body_children + extract_triggers_from_braced_block). Single-pass refactor would amortise. |
+| F-OPEN-103 | P3 | `is_variable_name_node` accepts only `kw_function` as identifier-fallback; would silently miss outline entries for any future grammar additions emitting other keyword nodes in identifier positions. |
+
+Workspace test count: 1928 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
