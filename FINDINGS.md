@@ -1107,6 +1107,25 @@ One commit. F-OPEN-108 closed.
 
 Workspace test count: 1928 unchanged. All gates green.
 
+### Iteration 61 (2026-05-21, +1800m)
+
+One commit. Audit of `syntax/formatting.rs` (952 LOC). 1 doc fix landed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-102 | P3 | 5 `FormatOptions` fields (`keyword_casing` / `blank_lines_between_procedures` / `max_line_length` / `brace_style` / `sort_properties`) are declared but not consumed by `format_al`. Marked each as "currently a no-op" in doc comments + struct-level wiring-status note. Schema mirrors `.alformat.json` so removing them would break config parsing. |
+
+Carry-forwards:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-110 | P1 | Wire up the 5 dormant FormatOptions fields. Real feature work; design + tests required. |
+| F-OPEN-111 | P1 | Hardcoded AL block-keyword text matches (`begin`/`end`/`var`/`repeat`/`until`/`else`/`case`/`of`) in the text-based formatter. Pattern matches existing `is_single_statement_opener` which uses `language_data::single_stmt_openers()`; corresponding `block_keywords.json` would centralise. Defer until other AL data files land. |
+| F-OPEN-112 | P1 | `format_range` can change indent of unselected lines because the whole-doc formatter pass is then sliced. By-design per AL formatter convention; document at the LSP boundary. Trailing-newline edge case on last-line range also worth covering. |
+| F-OPEN-113 | P2 | Multi-line paren-continuation idempotency not covered by tests. Add a regression test once the multi-line indent semantics are stable. |
+
+Workspace test count: 1928 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
