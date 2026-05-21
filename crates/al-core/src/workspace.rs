@@ -227,6 +227,15 @@ impl Workspace {
         *cg = None;
     }
 
+    /// Invalidate ONLY the call_graph, leaving the insight_graph intact.
+    /// Used by `on_document_change` when the edit is body-only (procedure
+    /// signatures unchanged) — the insight graph's node topology stays
+    /// valid; only call-edge edges might have shifted. F-OPEN-066.
+    pub fn invalidate_call_graph_only(&self) {
+        let mut cg = self.call_graph.write().unwrap_or_else(|e| e.into_inner());
+        *cg = None;
+    }
+
     /// Get (or lazily build) the cached CallGraph.
     ///
     /// Builds a workspace-enriched InsightGraph (symbol index + workspace file
@@ -549,10 +558,21 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
         .documents
         .cache_tree(uri, version, result.tree.clone());
 
-    if let Ok(path) = uri.to_file_path() {
+    // F-OPEN-066: capture the procedure-name set BEFORE re-indexing so we
+    // can tell whether this edit changed graph topology (added/removed/
+    // renamed a procedure) or was body-only. Body-only edits invalidate
+    // just the call_graph; topology changes invalidate the full graph.
+    let topology_change = if let Ok(path) = uri.to_file_path() {
+        let prev_procs: std::collections::HashSet<String> = workspace
+            .file_index
+            .procedures_snapshot(&path)
+            .into_iter()
+            .collect();
+
         workspace
             .file_index
             .add_file_with_tree(path.clone(), text.to_string(), result.tree);
+
         // Invalidate only the composed view for the object in this file.
         // add_file_with_tree already updated object_info, so we can read the name immediately.
         if let Some(info) = workspace.file_index.object_info.get(&path) {
@@ -560,14 +580,31 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
         } else {
             workspace.symbols.invalidate_all_composed();
         }
+
+        // Compare new procedure set to the snapshot — same set ⇒ no topology
+        // change ⇒ insight_graph stays valid.
+        let new_procs: std::collections::HashSet<String> = workspace
+            .file_index
+            .procedures_snapshot(&path)
+            .into_iter()
+            .collect();
+        prev_procs != new_procs
     } else {
         workspace.symbols.invalidate_all_composed();
-    }
+        // Non-file URI (virtual buffer etc.) — conservative: full invalidate.
+        true
+    };
 
-    // Edits change call edges and reference counts in the insight graph;
-    // drop the cached graph so the next /insight query rebuilds against
-    // the new file_index state.
-    workspace.invalidate_insight_graph();
+    if topology_change {
+        // Procedure/event/subscriber set changed — both graphs need rebuild.
+        workspace.invalidate_insight_graph();
+    } else {
+        // Body-only edit — call edges may have shifted, but the insight
+        // graph's node topology is still valid. Drop only call_graph so
+        // the next cross-file query pays the (~smaller) call-graph rebuild
+        // instead of the full insight + call build.
+        workspace.invalidate_call_graph_only();
+    }
 }
 
 /// Invalidate the composed symbol cache when a file is closed.

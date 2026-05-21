@@ -314,6 +314,17 @@ impl FileIndex {
         self.index_from_result(path, content, &tree);
     }
 
+    /// Snapshot the per-path procedure-name list as it currently stands in
+    /// the index. Used to detect topology changes between two consecutive
+    /// indexings of the same file: if the post-edit set equals the pre-edit
+    /// set, only the call-edge cache needs to be invalidated. F-OPEN-066.
+    pub fn procedures_snapshot(&self, path: &Path) -> Vec<String> {
+        self.path_to_procedures
+            .get(path)
+            .map(|v| v.value().clone())
+            .unwrap_or_default()
+    }
+
     /// Core indexing body: populate all index maps from a parsed tree.
     ///
     /// Called by both `add_file_with_meta` (after an internal parse) and
