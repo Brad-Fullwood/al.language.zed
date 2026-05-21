@@ -151,8 +151,14 @@ impl<'a> TypeResolver<'a> {
 
         // Rec/xRec are available across table-bound object members, including
         // page/report layout expressions outside procedure bodies.
-        if self.find_source_table(root).is_some() {
-            self.add_record_implicit_vars(root, &mut result);
+        //
+        // F-OPEN-104: resolve the source table once and hand it to
+        // `add_record_implicit_vars`. The function previously called
+        // `find_source_table` itself, so this branch ran two full root-children
+        // walks per LSP request — wasted work on every hover/definition/etc.
+        let source_table = self.find_source_table(root);
+        if let Some(ref table) = source_table {
+            self.add_record_implicit_vars_for(table, root, &mut result);
         }
 
         // Collect global variables from object_var_section(s)
@@ -481,27 +487,40 @@ impl<'a> TypeResolver<'a> {
     }
 
     fn add_record_implicit_vars(&self, root: Node<'a>, result: &mut Vec<VariableDecl>) {
-        // Determine the source table name for Record types (if applicable)
-        let source_table = self.find_source_table(root);
-
-        if let Some(ref table) = source_table {
-            result.push(VariableDecl {
-                name: "Rec".to_string(),
-                type_name: "Record".to_string(),
-                type_subtype: Some(table.clone()),
-                is_var: false,
-                scope: VariableScope::TriggerImplicit,
-                range: root.range(),
-            });
-            result.push(VariableDecl {
-                name: "xRec".to_string(),
-                type_name: "Record".to_string(),
-                type_subtype: Some(table.clone()),
-                is_var: false,
-                scope: VariableScope::TriggerImplicit,
-                range: root.range(),
-            });
+        // Determine the source table name for Record types (if applicable).
+        // Retained for any external callers that still take this entry point;
+        // `variables_at` uses the more efficient `add_record_implicit_vars_for`
+        // path with a pre-computed table name.
+        if let Some(table) = self.find_source_table(root) {
+            self.add_record_implicit_vars_for(&table, root, result);
         }
+    }
+
+    /// Inner helper that injects Rec/xRec given a pre-resolved table name.
+    /// Splits the work so the caller can amortise `find_source_table` (a full
+    /// root-children walk) across multiple consumers in `variables_at`.
+    fn add_record_implicit_vars_for(
+        &self,
+        table: &str,
+        root: Node<'a>,
+        result: &mut Vec<VariableDecl>,
+    ) {
+        result.push(VariableDecl {
+            name: "Rec".to_string(),
+            type_name: "Record".to_string(),
+            type_subtype: Some(table.to_string()),
+            is_var: false,
+            scope: VariableScope::TriggerImplicit,
+            range: root.range(),
+        });
+        result.push(VariableDecl {
+            name: "xRec".to_string(),
+            type_name: "Record".to_string(),
+            type_subtype: Some(table.to_string()),
+            is_var: false,
+            scope: VariableScope::TriggerImplicit,
+            range: root.range(),
+        });
     }
 
     /// Add trigger-implicit variables based on the object type.
