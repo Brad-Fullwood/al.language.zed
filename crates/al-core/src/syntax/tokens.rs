@@ -505,22 +505,10 @@ fn classify_name_like_node(node: Node, source: &[u8]) -> Option<u32> {
                         return Some(token_types::SELF_KEYWORD);
                     }
                 }
-                trace!(
-                    node_kind = node.kind(),
-                    parent_kind = parent.kind(),
-                    line = node.start_position().row,
-                    col = node.start_position().column,
-                    "classify_name_like_node: unclassified name-like node"
-                );
+                log_unclassified(node, parent);
                 None
             } else {
-                trace!(
-                    node_kind = node.kind(),
-                    parent_kind = parent.kind(),
-                    line = node.start_position().row,
-                    col = node.start_position().column,
-                    "classify_name_like_node: unclassified name-like node"
-                );
+                log_unclassified(node, parent);
                 None
             }
         }
@@ -540,6 +528,19 @@ fn is_regular_variable_name(node: Node, declaration: Node) -> bool {
     };
 
     node.start_byte() < sep_start
+}
+
+/// Trace-log an unclassified name-like node. Shared helper so the two
+/// callers in `classify_name_like_node` don't have to duplicate the same
+/// `tracing::trace!` block.
+fn log_unclassified(node: Node, parent: Node) {
+    trace!(
+        node_kind = node.kind(),
+        parent_kind = parent.kind(),
+        line = node.start_position().row,
+        col = node.start_position().column,
+        "classify_name_like_node: unclassified name-like node"
+    );
 }
 
 fn is_object_name(node: Node, declaration: Node) -> bool {
