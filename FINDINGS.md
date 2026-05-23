@@ -1219,6 +1219,16 @@ One commit. F-OPEN-117 closed.
 
 Workspace test count: 1934 unchanged. All gates green.
 
+### Iteration 74 (2026-05-23)
+
+One commit. F-OPEN-118 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-115 | P2 | F-OPEN-118 closed. Per-file dead-code scans parallelised via rayon. Each file's procedure/field/subscriber checks were already independent given the workspace-global pre-pass sets — no shared mutable state needed. Per-file results accumulate into per-thread local Vecs then flat-extend preserving F-FIX-113's path-sorted determinism. CPU-bound dead-code now scales with cores. |
+
+Workspace test count: 1934 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
