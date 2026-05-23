@@ -1190,6 +1190,25 @@ The remaining items from F-OPEN-110 (blank_lines_between_procedures, max_line_le
 
 Workspace test count: 1934 unchanged. All gates green.
 
+### Iteration 72 (2026-05-23)
+
+Fresh audit of `queries/dead_code.rs` (1049 LOC — unaudited). 1 fix.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-113 | P1 | F-OPEN-114 closed. `parsed_files` from DashMap iteration was non-deterministic across runs; `results` inherited it. Added a single `sort_by` on path before the main loop. CI snapshots and human review of deadcode output now stable across process restarts. Plus doc-comment in `has_event_attribute` ties the substring literals to `insight::attr_names::*` so future renames are grep-able. |
+
+Carry-forwards from audit:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-115 | P1 | Cross-object procedure-name collision: workspace-global `all_call_names` set means `Foo` in codeunit A is "referenced" if any file contains `Foo(`. No object-scoping. Design — needs receiver-aware call resolution similar to F-OPEN-084's. |
+| F-OPEN-116 | P1 | `extract_text_call_names` skips `//` line comments but not `'...'` string literals or `/* */` blocks — false negatives when an identifier appears in a string. |
+| F-OPEN-117 | P2 | `find_unused_fields` is O(F²·L); should consult a workspace-global member-access set built in the same pre-pass as `all_call_names`. |
+| F-OPEN-118 | P2 | `dead_code` is CPU-bound and single-threaded; rayon over files would parallelise the per-object scans. |
+
+Workspace test count: 1934 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
