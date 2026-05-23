@@ -1166,6 +1166,21 @@ One commit. F-OPEN-109 closed.
 
 Workspace test count: 1928 unchanged. All gates green.
 
+### Iterations 66-69 (2026-05-23)
+
+Four commits closing four follow-ups.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-107 | P1 | F-OPEN-110 (part 1) closed. KeywordCasing actually does something now. `apply_keyword_casing` walks each line's tokens, case-folding only those matching `language_data::is_keyword`. Skips string literals, quoted identifiers, line comments, and the existing `in_block_comment` path. 4 regression tests pin the contract. |
+| F-FIX-108 | P3 | F-OPEN-103 closed. `is_variable_name_node` now accepts any `kw_*` node as identifier fallback, not just `kw_function`. Outline-completeness restored for any future grammar additions. |
+| F-FIX-109 | P3 | F-OPEN-111 closed via documentation. Block-syntax keywords (begin/end/var/repeat/until/else/case/of) are AL Pascal-grammar terminals, not BC-release surface. Module doc names the exemption + `block_keywords.json` migration path. |
+| F-FIX-110 | P2 | F-OPEN-113 closed. Two new idempotency regression tests covering multi-line argument call and multi-line function call inside an if-condition. Both pass against current formatter; now prevent regression. |
+
+Workspace test count: 1928 → 1934 (+6 tests: 4 KeywordCasing + 2 multi-line paren idempotency). All gates green.
+
+The remaining items from F-OPEN-110 (blank_lines_between_procedures, max_line_length, brace_style, sort_properties) are real feature work — each needs its own design + tests. Carried forward as **F-OPEN-110 part 2**.
+
 
 
 | Phase | Status | Output |
