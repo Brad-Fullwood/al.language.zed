@@ -1066,6 +1066,13 @@ fn collect_variable_name_nodes(
 }
 
 fn is_variable_name_node(kind: &str) -> bool {
+    // F-OPEN-103: accept any `kw_*` node as an identifier fallback, not just
+    // the single `kw_function` we hardcoded before. AL grammar sometimes
+    // tokenises identifier-positioned reserved words (e.g. `record`, `query`,
+    // `trigger`) as their dedicated `kw_*` nodes when they appear inside
+    // `var FunctionRef: Codeunit ...`-style declarations. The pre-fix list
+    // silently dropped outline entries for those positions whenever a new
+    // grammar release added a `kw_*` not in the literal match list.
     matches!(
         kind,
         "identifier"
@@ -1074,8 +1081,7 @@ fn is_variable_name_node(kind: &str) -> bool {
             | "object_keyword"
             | "metadata_keyword"
             | "property_keyword"
-            | "kw_function"
-    )
+    ) || kind.starts_with("kw_")
 }
 
 fn extract_node_text(node: Option<Node>, source: &[u8]) -> Option<String> {
