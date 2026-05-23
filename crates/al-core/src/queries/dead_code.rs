@@ -253,8 +253,30 @@ fn extract_text_call_names(line: &str) -> Vec<String> {
     let lower = line.to_ascii_lowercase();
     let bytes = lower.as_bytes();
     let mut i = 0;
+    // F-OPEN-116: track string-literal state so `(` inside `'...'` or
+    // `"..."` doesn't trigger a phantom call-site capture. Previously a
+    // `Message('DoStuff(')` literal suppressed dead-code detection of a
+    // real `DoStuff` procedure elsewhere because the literal's `(` was
+    // captured as a call site for the literal text.
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
     while i < bytes.len() {
-        if bytes[i] == b'(' && i > 0 {
+        let b = bytes[i];
+        if b == b'"' && !in_single_quote {
+            in_double_quote = !in_double_quote;
+            i += 1;
+            continue;
+        }
+        if b == b'\'' && !in_double_quote {
+            in_single_quote = !in_single_quote;
+            i += 1;
+            continue;
+        }
+        if in_single_quote || in_double_quote {
+            i += 1;
+            continue;
+        }
+        if b == b'(' && i > 0 {
             // Walk left over identifier chars.
             let mut start = i;
             while start > 0 {
@@ -1073,6 +1095,48 @@ mod tests {
                 .iter()
                 .any(|u| u.name == "Name" && u.kind == UnusedKind::Procedure),
             "Procedure 'Name' must be flagged as unused despite Rec.Name field accesses. Got: {:?}",
+            unused
+        );
+    }
+
+    /// F-OPEN-116 regression: a procedure name that appears ONLY inside a
+    /// string literal must NOT count as a reference. Previously
+    /// `extract_text_call_names` walked any `ident(` token in the line
+    /// regardless of quote state — so a literal like `Message('DoStuff(')`
+    /// suppressed dead-code detection of a real unused `DoStuff` procedure.
+    #[test]
+    fn dead_code_procedure_in_string_literal_does_not_count_as_call() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/Definer.al",
+                r#"codeunit 50300 "Definer"
+{
+    procedure DoStuff()
+    begin
+    end;
+}"#,
+            ),
+            (
+                "/src/Other.al",
+                r#"codeunit 50301 "Other"
+{
+    procedure Run()
+    var
+        msg: Text;
+    begin
+        msg := 'DoStuff(';
+    end;
+}"#,
+            ),
+        ]);
+
+        let unused = dead_code(&ws);
+        assert!(
+            unused
+                .iter()
+                .any(|u| u.name == "DoStuff" && u.kind == UnusedKind::Procedure),
+            "DoStuff is referenced ONLY inside a string literal — must still be reported as unused. \
+             Got: {:?}",
             unused
         );
     }
