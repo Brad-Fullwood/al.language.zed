@@ -1239,6 +1239,17 @@ One commit. F-OPEN-116 closed.
 
 Workspace test count: 1934 → 1935 (+1 string-literal-call regression). All gates green.
 
+### Iteration 76 (2026-05-23)
+
+Two commits.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (chore) | — | Clippy `--all-targets -- -D warnings` cleanup across the workspace. 14 lint failures fixed mechanically: items-after-test-module (relocated 3 test mods to EOF), single-arm `match` → `if let`, `sort_by` → `sort_by_key + Reverse`, `Default + assign` → struct-literal `..Default::default()`, `3.14` → `3.5` to silence `approx_constant`, useless `format!()`, `(10.0..=20.0).contains()`, drop unused import + `vec!` of fixed bytes → `[b'X'; 100]`, unused params underscore-prefixed. No behavioural change. |
+| F-FIX-117 | P2 | F-OPEN-007 closed for the `dispatch_find_duplicates` endpoint. Extracted `clamp_min_tokens` (caps at `MAX_DUPLICATES_MIN_TOKENS = 10_000`, defaults to 20) and `clamp_min_similarity` (clamps finite values to `[0.0, 1.0]`; NaN / ±inf fall back to 0.8). Without the second helper, a NaN passed in would silently disable the `similarity >= min_similarity` filter — every duplicate would be skipped. 7 regression tests pin defaults, caps, the saturating `u64::MAX` path, the range clamp, and the NaN / ±inf fallback. F-OPEN-005 + F-OPEN-006 verified already addressed (`d54d096 perf: build call graph outside the data lock` + `SAFETY` comment + F-OPEN-006 reference in `build_dispatch.rs:994`). |
+
+Workspace test count: 1939 → 1946 (+7 boundary-clamp regressions). All gates green.
+
 
 
 | Phase | Status | Output |
