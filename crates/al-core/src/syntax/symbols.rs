@@ -511,8 +511,9 @@ fn extract_dataitem_from_section(node: Node, source: &[u8]) -> Option<DocumentSy
 
     let mut children = Vec::new();
     if let Some(body) = node.child_by_field_name("body") {
+        // F-OPEN-102: extract_section_body_children now folds in the
+        // raw-trigger pass inline (was a second full sweep).
         extract_section_body_children(body, source, &mut children);
-        extract_triggers_from_braced_block(body, source, &mut children);
     }
 
     Some(DocumentSymbol {
@@ -609,12 +610,66 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
             "braced_block" => {
                 extract_section_body_children(child, source, symbols);
             }
+            // F-OPEN-102: fold the trigger-extraction pass into this walk
+            // instead of running `extract_triggers_from_braced_block` as a
+            // second full sweep. Raw `trigger OnFoo()` patterns inside
+            // dataitem/action bodies have a `control_keyword` parent (text
+            // "trigger") followed by an identifier + parenthesized_block.
+            // Handle inline here; the standalone function is retained for
+            // callers that walk a single braced_block in isolation
+            // (extract_dataitem_symbol body scan).
+            "control_keyword" => {
+                if let Some(sym) = try_extract_inline_trigger(child, source) {
+                    symbols.push(sym);
+                }
+            }
             _ => {}
         }
         if !cursor.goto_next_sibling() {
             break;
         }
     }
+}
+
+/// Try to extract a "trigger Name()" symbol starting at a `control_keyword`
+/// node. Returns None when the node isn't the "trigger" keyword or the
+/// expected siblings aren't present. Closes F-OPEN-102.
+fn try_extract_inline_trigger(kw_node: Node, source: &[u8]) -> Option<DocumentSymbol> {
+    let text = kw_node.utf8_text(source).ok()?;
+    if !text.eq_ignore_ascii_case("trigger") {
+        return None;
+    }
+    let name_node = kw_node.next_sibling()?;
+    if !matches!(
+        name_node.kind(),
+        "identifier" | "name" | "name_or_keyword" | "quoted_identifier"
+    ) {
+        return None;
+    }
+    let name_text = name_node.utf8_text(source).ok()?;
+    let name = name_text.trim_matches('"').to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let trigger_kw_range = kw_node.range();
+    let range = ts_range_to_lsp(
+        &tree_sitter::Range {
+            start_byte: trigger_kw_range.start_byte,
+            end_byte: name_node.range().end_byte,
+            start_point: trigger_kw_range.start_point,
+            end_point: name_node.range().end_point,
+        },
+        source,
+    );
+    let selection_range = ts_range_to_lsp(&name_node.range(), source);
+    Some(DocumentSymbol {
+        name,
+        detail: Some("trigger".to_string()),
+        kind: SymbolKind::Event,
+        range,
+        selection_range,
+        children: None,
+    })
 }
 
 /// Scan a `braced_block` for trigger declarations that the grammar parses as raw tokens.
@@ -739,13 +794,13 @@ fn try_extract_page_control(kw_node: Node, source: &[u8]) -> Option<DocumentSymb
         .map(|p| ts_range_to_lsp(&p.range(), source))
         .unwrap_or(ts_range_to_lsp(&kw_node.range(), source));
 
-    // Extract children from the body braced_block.
-    // Also scan for trigger declarations that the grammar parses as raw tokens
-    // (e.g., `trigger OnPreDataItem()` inside a dataitem body).
+    // Extract children from the body braced_block. F-OPEN-102:
+    // extract_section_body_children folds in the raw-trigger pass inline
+    // (recognises `trigger OnFoo()` patterns parsed as control_keyword +
+    // identifier rather than a trigger_declaration node).
     let mut nested = Vec::new();
     if let Some(body) = body_node {
         extract_section_body_children(body, source, &mut nested);
-        extract_triggers_from_braced_block(body, source, &mut nested);
     }
 
     Some(DocumentSymbol {
