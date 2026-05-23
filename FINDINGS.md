@@ -1209,6 +1209,16 @@ Carry-forwards from audit:
 
 Workspace test count: 1934 unchanged. All gates green.
 
+### Iteration 73 (2026-05-23)
+
+One commit. F-OPEN-117 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-114 | P2 | F-OPEN-117 closed. `find_unused_fields` was O(F²·L) — walked every other file's text per field. Added workspace-global `all_member_access_names: HashSet<String>` built in the same pre-pass as `all_call_names`. Per-field check is now O(1). New `extract_member_access_names` helper tracks `'`/`"` quote state so a `.` inside `"No."` or `'foo.bar'` isn't mistaken for a member-access dot. The existing field-name test caught the first iteration's miscategorisation. |
+
+Workspace test count: 1934 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
