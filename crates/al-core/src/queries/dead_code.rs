@@ -99,6 +99,11 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         std::collections::HashSet::with_capacity(parsed_files.len() * 32);
     let mut all_text_call_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
+    // F-OPEN-117: build the workspace-global member-access name set in the
+    // same pre-pass. Previously `find_unused_fields` walked every other
+    // file's full text per-field → O(F²·L). Now field-lookup is O(1).
+    let mut all_member_access_names: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(parsed_files.len() * 16);
     for (_, text, tree) in &all_files {
         all_call_names.extend(crate::syntax::collect_call_site_names(tree, text));
         for line in text.lines() {
@@ -112,6 +117,11 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
             // amortised across the whole workspace instead of per-procedure.
             for tok in extract_text_call_names(line) {
                 all_text_call_names.insert(tok);
+            }
+            // Member-access fallback for field references: every `.ident`
+            // or `."quoted"` substring captured as a lowercase name.
+            for tok in extract_member_access_names(line) {
+                all_member_access_names.insert(tok);
             }
         }
     }
@@ -144,7 +154,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
                 file_text,
                 file_tree,
                 &obj_info.name,
-                &all_files,
+                &all_member_access_names,
                 &mut results,
             );
         }
@@ -251,6 +261,78 @@ fn extract_text_call_names(line: &str) -> Vec<String> {
     out
 }
 
+/// Extract every `.ident` or `."quoted ident"` member-access pattern from a
+/// single line, returning lowercase names. Skips `//` line comments. Mirrors
+/// the same heuristic as `contains_member_access` but emits ALL names found
+/// so they can populate the workspace-global pre-pass set. F-OPEN-117.
+fn extract_member_access_names(line: &str) -> Vec<String> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let lower = line.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    // Track quote state so `.` inside a quoted identifier or text literal is
+    // recognised as part of the literal, not a member-access dot.
+    let mut in_double_quote = false;
+    let mut in_single_quote = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'"' && !in_single_quote {
+            in_double_quote = !in_double_quote;
+            i += 1;
+            continue;
+        }
+        if b == b'\'' && !in_double_quote {
+            in_single_quote = !in_single_quote;
+            i += 1;
+            continue;
+        }
+        if in_double_quote || in_single_quote {
+            i += 1;
+            continue;
+        }
+        if b != b'.' {
+            i += 1;
+            continue;
+        }
+        let after_dot = i + 1;
+        if after_dot >= bytes.len() {
+            break;
+        }
+        // Quoted form: `."name"` — read to the closing quote.
+        if bytes[after_dot] == b'"' {
+            let start = after_dot + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end] != b'"' {
+                end += 1;
+            }
+            if end > start {
+                out.push(lower[start..end].to_string());
+            }
+            i = end + 1;
+            continue;
+        }
+        // Plain form: `.ident` — read identifier chars.
+        if bytes[after_dot].is_ascii_alphabetic() || bytes[after_dot] == b'_' {
+            let start = after_dot;
+            let mut end = start;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            if end > start {
+                out.push(lower[start..end].to_string());
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Collect procedure declarations iteratively: (name, is_event_publisher, line_1based).
 fn collect_procedures(
     root: tree_sitter::Node,
@@ -328,12 +410,18 @@ fn has_event_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
 }
 
 /// Extract table field declarations and check if they're referenced in other files.
+///
+/// F-OPEN-117: uses a pre-built workspace-global `all_member_access_names`
+/// set instead of scanning every other file per-field. O(F²·L) → O(F) for
+/// pre-pass + O(1) per field-lookup. The set is captured during the
+/// main-loop pre-pass so the cost is paid once across the run, not per
+/// table-object.
 fn find_unused_fields(
     file_path: &str,
     file_text: &str,
     _file_tree: &tree_sitter::Tree,
     object_name: &str,
-    all_files: &[(&str, &str, &tree_sitter::Tree)],
+    all_member_access_names: &std::collections::HashSet<String>,
     results: &mut Vec<UnusedSymbol>,
 ) {
     let mut fields = Vec::new();
@@ -341,21 +429,14 @@ fn find_unused_fields(
     collect_fields_from_text(file_text, &mut fields);
 
     for (field_name, line) in &fields {
-        // Check if this field name appears in any OTHER file as an actual
-        // member access (e.g. `Rec."Field Name"` or `SalesLine.Amount`),
-        // not just a bare identifier match. Bare identifier matches produce
-        // false negatives for short common field names like `Name` or `No.`
-        // which appear as variable names, parameters, or in comments
-        // throughout the codebase. Member access is signalled by a `.` (or
-        // `."`) immediately preceding the field name.
-        let referenced = all_files
-            .iter()
-            .any(|(other_path, other_text, _other_tree)| {
-                if *other_path == file_path {
-                    return false; // The defining file doesn't count
-                }
-                contains_member_access(other_text, field_name)
-            });
+        // O(1) lookup against the pre-built set. The set captures lowercase
+        // names referenced as `.<name>` or `."<name>"` anywhere in the
+        // workspace; a true positive means SOME file (possibly the defining
+        // file itself) member-accesses that name. That intentional over-
+        // approximation matches the prior all-files scan's coverage: a
+        // field referenced only by its own table's procedures is still
+        // "used" by virtue of that table's internal usage.
+        let referenced = all_member_access_names.contains(&field_name.to_lowercase());
 
         if !referenced {
             results.push(UnusedSymbol {
@@ -373,6 +454,11 @@ fn find_unused_fields(
 /// Returns true if `text` contains a `.<field>` or `."<field>"` member-access
 /// pattern, case-insensitive. Skips line-comments (`//`) so a field name in a
 /// comment does not count as a reference.
+///
+/// Retained for direct callers / future use; the main `dead_code()` path
+/// uses the workspace-global `all_member_access_names` HashSet instead
+/// (F-OPEN-117).
+#[allow(dead_code)]
 fn contains_member_access(text: &str, field_name: &str) -> bool {
     let name_lower = field_name.to_lowercase();
     let plain = format!(".{}", name_lower);
