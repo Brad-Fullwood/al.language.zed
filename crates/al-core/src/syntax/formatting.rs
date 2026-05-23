@@ -1089,4 +1089,51 @@ codeunit 50100 Test
         let lowered = apply_keyword_casing(input, &KeywordCasing::Lower);
         assert_eq!(lowered, "if x then // IF this comment, IF that");
     }
+
+    // F-OPEN-113: multi-line paren continuation idempotency
+
+    #[test]
+    fn test_multiline_paren_call_is_idempotent() {
+        let input = r#"codeunit 50100 Test
+{
+    procedure DoWork()
+    begin
+        Foo(
+            1,
+            2,
+            3);
+    end;
+}
+"#;
+        let opts = FormatOptions::default();
+        let pass1 = format_al(input, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(
+            pass1, pass2,
+            "second-pass formatting of multi-line paren call should be a no-op\n\
+             pass1:\n{pass1}\npass2:\n{pass2}"
+        );
+    }
+
+    #[test]
+    fn test_multiline_paren_in_expression_is_idempotent() {
+        // Trickier shape: a call inside an if-condition, opening parens on
+        // the if line. Whatever pass1 picks, pass2 must match.
+        let input = r#"codeunit 50100 Test
+{
+    procedure DoWork()
+    begin
+        if MyFunc(
+            a,
+            b
+        ) then
+            Message('hit');
+    end;
+}
+"#;
+        let opts = FormatOptions::default();
+        let pass1 = format_al(input, &opts);
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(pass1, pass2);
+    }
 }
