@@ -321,8 +321,18 @@ fn classify_node(kind: &str, node: Node, source: &[u8]) -> Option<u32> {
         // Comments
         "comment" => Some(token_types::COMMENT),
 
-        // Directives (preprocessor) — distinguished from comments
-        "directive" => Some(token_types::PREPROCESSOR_KEYWORD),
+        // Directives (preprocessor): we DON'T classify the whole directive
+        // node as a single PREPROCESSOR_KEYWORD — that would prune children
+        // and lose highlighting on the inner expression (e.g. `#if EXPR`
+        // where EXPR contains an identifier that should still highlight as
+        // an identifier). Instead return None so the DFS recurses into the
+        // directive's children; the directive's leading `#` token and any
+        // `kw_*` child (`kw_if`, `kw_endif`, etc.) end up classified
+        // individually via the existing kw_* path. F-OPEN-107.
+        "directive" => None,
+        // `inactive_code` is left as a single EXCLUDED_CODE span by design
+        // (the whole block is dimmed by clients; recursing into it would
+        // emit conflicting tokens on top of the EXCLUDED_CODE block).
         "inactive_code" => Some(token_types::EXCLUDED_CODE),
 
         // All kw_* nodes are classified via the token_classification data.
