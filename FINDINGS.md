@@ -1229,6 +1229,16 @@ One commit. F-OPEN-118 closed.
 
 Workspace test count: 1934 unchanged. All gates green.
 
+### Iteration 75 (2026-05-23)
+
+One commit. F-OPEN-116 closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-116 | P1 | F-OPEN-116 closed. `extract_text_call_names` tracks single+double-quote state so a `Message('DoStuff(')` literal no longer suppresses dead-code detection of a real unused `DoStuff` procedure. 1 regression test. |
+
+Workspace test count: 1934 → 1935 (+1 string-literal-call regression). All gates green.
+
 
 
 | Phase | Status | Output |
