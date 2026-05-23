@@ -126,48 +126,66 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
         }
     }
 
-    for (file_path, file_text, file_tree) in &all_files {
-        let Some(obj_info) = crate::syntax::find_object_declaration(file_tree, file_text) else {
-            continue;
-        };
+    // F-OPEN-118: parallelise per-file scans with rayon. Each file's
+    // procedure / field / subscriber checks are independent given the
+    // pre-built workspace-global sets — no shared mutable state needed.
+    // Per-file results accumulate into thread-local Vecs and flat_map back
+    // out preserving the path-sorted input order. CPU-bound dead-code on
+    // 1000+ file workspaces drops from "sequential single-thread" to
+    // "scales with cores".
+    use rayon::prelude::*;
+    let per_file_results: Vec<Vec<UnusedSymbol>> = all_files
+        .par_iter()
+        .map(|(file_path, file_text, file_tree)| {
+            let mut local = Vec::new();
+            let Some(obj_info) = crate::syntax::find_object_declaration(file_tree, file_text)
+            else {
+                return local;
+            };
 
-        // 1. Find unused procedures
-        find_unused_procedures(
-            file_path,
-            file_text,
-            file_tree,
-            &obj_info.name,
-            &all_files,
-            &all_call_names,
-            &all_text_call_names,
-            &mut results,
-        );
-
-        // 2. Find unused table fields (only for table objects)
-        let obj_kind_lower = obj_info.kind.to_lowercase();
-        let is_table = crate::syntax::language_data::object_type_by_keyword(&obj_kind_lower)
-            .map(|ot| ot.node_kind == "kw_table")
-            .unwrap_or(false);
-        if is_table {
-            find_unused_fields(
+            // 1. Find unused procedures
+            find_unused_procedures(
                 file_path,
                 file_text,
                 file_tree,
                 &obj_info.name,
-                &all_member_access_names,
-                &mut results,
+                &all_files,
+                &all_call_names,
+                &all_text_call_names,
+                &mut local,
             );
-        }
 
-        // 3. Find orphaned subscribers
-        find_orphaned_subscribers(
-            file_path,
-            file_text,
-            file_tree,
-            &obj_info.name,
-            workspace,
-            &mut results,
-        );
+            // 2. Find unused table fields (only for table objects)
+            let obj_kind_lower = obj_info.kind.to_lowercase();
+            let is_table = crate::syntax::language_data::object_type_by_keyword(&obj_kind_lower)
+                .map(|ot| ot.node_kind == "kw_table")
+                .unwrap_or(false);
+            if is_table {
+                find_unused_fields(
+                    file_path,
+                    file_text,
+                    file_tree,
+                    &obj_info.name,
+                    &all_member_access_names,
+                    &mut local,
+                );
+            }
+
+            // 3. Find orphaned subscribers
+            find_orphaned_subscribers(
+                file_path,
+                file_text,
+                file_tree,
+                &obj_info.name,
+                workspace,
+                &mut local,
+            );
+            local
+        })
+        .collect();
+
+    for v in per_file_results {
+        results.extend(v);
     }
 
     results
