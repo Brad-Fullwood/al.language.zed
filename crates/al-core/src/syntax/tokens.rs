@@ -240,7 +240,17 @@ fn collect_tokens(node: Node, source: &[u8], tokens: &mut Vec<(u32, u32, u32, u3
                     tokens.push((start.row as u32, utf16_col, len, token_type));
                 }
             } else {
-                // Multi-line token (block comment, multi-line string): one entry per line.
+                // Multi-line token (block comment, multi-line string): one
+                // entry per line.
+                //
+                // F-OPEN-106 (verified correct): `text.lines()` strips BOTH
+                // `\r` and `\n` line terminators on each iteration. The
+                // resulting `line.encode_utf16().count()` is the visible-
+                // content length, which matches the LSP semantic-tokens
+                // spec: positions/lengths exclude line terminators (the
+                // next line starts at column 0 of `row + 1`, regardless of
+                // whether the terminator is `\n` or `\r\n`). No adjustment
+                // needed for CRLF input.
                 if let Ok(text) = current.utf8_text(source) {
                     for (i, line) in text.lines().enumerate() {
                         let row = start.row + i;
