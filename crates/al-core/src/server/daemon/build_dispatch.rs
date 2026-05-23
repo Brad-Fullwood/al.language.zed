@@ -26,6 +26,32 @@ fn clamp_timeout_ms(t: Option<u64>) -> Option<u64> {
     t.map(|ms| ms.min(MAX_TIMEOUT_MS))
 }
 
+/// Largest realistic AL procedure body is ~5k tokens; cap the
+/// `minTokens` duplicate-detection threshold at 10k so a hostile or
+/// fat-fingered client can't (a) push the threshold above any real
+/// procedure (effectively disabling detection) or (b) drive the
+/// scan loop into pathological territory. F-OPEN-007.
+const MAX_DUPLICATES_MIN_TOKENS: u64 = 10_000;
+
+/// Clamp the duplicate-detection `minTokens` param to a sensible upper
+/// bound; default 20 when absent.
+fn clamp_min_tokens(t: Option<u64>) -> usize {
+    t.unwrap_or(20).min(MAX_DUPLICATES_MIN_TOKENS) as usize
+}
+
+/// Clamp the duplicate-detection `minSimilarity` ratio to `[0.0, 1.0]`.
+/// NaN / ±inf fall back to the default (0.8) so a hostile or garbage
+/// value can't disable the filter or cause downstream comparison
+/// surprises. F-OPEN-007.
+fn clamp_min_similarity(s: Option<f64>) -> f32 {
+    let raw = s.unwrap_or(0.8);
+    if raw.is_finite() {
+        raw.clamp(0.0, 1.0) as f32
+    } else {
+        0.8
+    }
+}
+
 /// Resolve a user-provided output-file path against `project_root` and reject
 /// anything that escapes it (path traversal). Used for JUnit / Cobertura
 /// output paths in `dispatch_tests_run_batch`, where a malicious or
@@ -3168,14 +3194,9 @@ pub(super) fn dispatch_find_duplicates(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let min_tokens = params
-        .get("minTokens")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20) as usize;
-    let min_similarity = params
-        .get("minSimilarity")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.8) as f32;
+    // F-OPEN-007: bound user-supplied numeric params at the daemon boundary.
+    let min_tokens = clamp_min_tokens(params.get("minTokens").and_then(|v| v.as_u64()));
+    let min_similarity = clamp_min_similarity(params.get("minSimilarity").and_then(|v| v.as_f64()));
     let duplicates =
         crate::queries::duplicates::find_duplicates(workspace, min_tokens, min_similarity);
     let value = serde_json::to_value(&duplicates).unwrap_or(serde_json::Value::Null);
@@ -3578,6 +3599,67 @@ mod p1_5_tests {
     fn clamp_timeout_ms_propagates_none() {
         // None (param omitted entirely) stays None — caller decides the default.
         assert_eq!(clamp_timeout_ms(None), None);
+    }
+
+    // --- clamp_min_tokens / clamp_min_similarity (F-OPEN-007) ----------------
+
+    #[test]
+    fn clamp_min_tokens_defaults_when_absent() {
+        // None → the documented default of 20.
+        assert_eq!(clamp_min_tokens(None), 20);
+    }
+
+    #[test]
+    fn clamp_min_tokens_passes_through_sensible_values() {
+        assert_eq!(clamp_min_tokens(Some(0)), 0);
+        assert_eq!(clamp_min_tokens(Some(50)), 50);
+        assert_eq!(
+            clamp_min_tokens(Some(MAX_DUPLICATES_MIN_TOKENS)),
+            MAX_DUPLICATES_MIN_TOKENS as usize
+        );
+    }
+
+    #[test]
+    fn clamp_min_tokens_caps_oversized_input() {
+        // Hostile / fat-fingered values cap at MAX, not panic and not pass through.
+        assert_eq!(
+            clamp_min_tokens(Some(u64::MAX)),
+            MAX_DUPLICATES_MIN_TOKENS as usize
+        );
+        assert_eq!(
+            clamp_min_tokens(Some(MAX_DUPLICATES_MIN_TOKENS + 1)),
+            MAX_DUPLICATES_MIN_TOKENS as usize
+        );
+    }
+
+    #[test]
+    fn clamp_min_similarity_defaults_when_absent() {
+        // None → the documented default of 0.8.
+        assert!((clamp_min_similarity(None) - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clamp_min_similarity_clamps_in_range() {
+        assert!((clamp_min_similarity(Some(0.0)) - 0.0).abs() < 1e-6);
+        assert!((clamp_min_similarity(Some(0.5)) - 0.5).abs() < 1e-6);
+        assert!((clamp_min_similarity(Some(1.0)) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clamp_min_similarity_rejects_out_of_range() {
+        // Negative reals clamp to 0, super-1 to 1.
+        assert!((clamp_min_similarity(Some(-1.0)) - 0.0).abs() < 1e-6);
+        assert!((clamp_min_similarity(Some(2.5)) - 1.0).abs() < 1e-6);
+        assert!((clamp_min_similarity(Some(1e308)) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clamp_min_similarity_rejects_non_finite() {
+        // NaN / ±inf must fall back to the safe default, not propagate and
+        // poison downstream `>=` comparisons.
+        assert!((clamp_min_similarity(Some(f64::NAN)) - 0.8).abs() < 1e-6);
+        assert!((clamp_min_similarity(Some(f64::INFINITY)) - 0.8).abs() < 1e-6);
+        assert!((clamp_min_similarity(Some(f64::NEG_INFINITY)) - 0.8).abs() < 1e-6);
     }
 
     // --- resolve_output_path_within_project ----------------------------------
