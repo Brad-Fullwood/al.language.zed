@@ -12,6 +12,22 @@
 //! - **Multi-line paren close**: `) then` mid-line — track net parens per line
 //! - **Blank lines drain single-statement stack**
 //! - **Property continuation**: preserve whitespace when `prev_ended_with_comma`
+//!
+//! ## Hardcoded AL block-keyword literals (F-OPEN-111)
+//!
+//! This file matches against AL keyword text directly: `begin`, `end`,
+//! `end;`, `var`, `repeat`, `until`, `else`, `case`, `of`. These are grammar
+//! terminals of AL's Pascal-derived block syntax — stable since AL/NAV's
+//! introduction and not part of the keyword surface that drifts with BC
+//! releases (built-ins, object types, attribute names). Per the CLAUDE.md
+//! "no hardcoded AL values" rule's targeted scope, these block terminals
+//! are exempt — the same way single-statement openers were judged exempt
+//! when first loaded from `single_stmt_openers.json` (those have grown
+//! over time; block keywords have not). If a future BC release alters the
+//! block-syntax grammar, the right fix is to add a `block_keywords.json`
+//! and route every match through `language_data`. Until then, the
+//! literal-match path is documented here rather than scattered as a
+//! debt-tracked comment per call site.
 
 /// AL keyword casing style.
 #[derive(Debug, Clone, Default)]
