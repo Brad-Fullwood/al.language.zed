@@ -1181,6 +1181,15 @@ Workspace test count: 1928 → 1934 (+6 tests: 4 KeywordCasing + 2 multi-line pa
 
 The remaining items from F-OPEN-110 (blank_lines_between_procedures, max_line_length, brace_style, sort_properties) are real feature work — each needs its own design + tests. Carried forward as **F-OPEN-110 part 2**.
 
+### Iterations 70-71 (2026-05-23)
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-FIX-111 | P1 | F-OPEN-107 closed. `directive` no longer classifies as a single PREPROCESSOR_KEYWORD span — recurses into children so `kw_if`/`kw_endif`/etc. classify individually and inner expression identifiers/strings get their proper highlights. `inactive_code` retained as a single EXCLUDED_CODE span (correct — clients dim the whole block). |
+| F-FIX-112 | P2 | F-OPEN-102 closed. `extract_section_body_children` now folds the raw-trigger pass inline via a `try_extract_inline_trigger` helper; both call sites drop their second sweep. The standalone helper is kept for `extract_dataitem_symbol`'s single-block scan. |
+
+Workspace test count: 1934 unchanged. All gates green.
+
 
 
 | Phase | Status | Output |
