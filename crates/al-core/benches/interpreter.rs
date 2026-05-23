@@ -28,7 +28,7 @@ fn bench_arithmetic(c: &mut Criterion) {
     let base_int = Value::Integer(0);
     let step_int = Value::Integer(7);
     let base_dec = Value::Decimal(0.0);
-    let step_dec = Value::Decimal(3.14);
+    let step_dec = Value::Decimal(3.5);
 
     c.bench_function("arithmetic/integer_accumulate_1000", |b| {
         b.iter(|| {
@@ -91,7 +91,7 @@ fn bench_string_ops(c: &mut Criterion) {
 
     // ── StrSubstNo ───────────────────────────────────────────────────────────
     for (label, s) in [("small", &small), ("medium", &medium), ("large", &large)] {
-        let fmt_str = format!("Result: %1, Again: %2, Third: %3");
+        let fmt_str = "Result: %1, Again: %2, Third: %3".to_string();
         let arg1 = Value::Text(s.clone());
         let arg2 = Value::Integer(42);
         let arg3 = Value::Boolean(true);

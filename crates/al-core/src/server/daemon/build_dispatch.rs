@@ -3401,6 +3401,139 @@ pub(super) fn dispatch_profiler_hints(
     }
 }
 
+// WP18 / Phase 5: Mutation testing
+// ---------------------------------------------------------------------------
+
+/// `tests.mutate` — run mutation testing on workspace files.
+///
+/// Params:
+/// - `files` (optional, array of str): restrict to these file paths. When omitted,
+///   all workspace test files are mutated.
+/// - `parallel` (optional, bool): hint to enable parallel execution (default false).
+/// - `timeoutMs` (optional, u64): per-variant timeout in ms.
+///
+/// Returns: serialized `MutationReport` JSON.
+pub(super) async fn dispatch_tests_mutate(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    use crate::test_engine::mutate::{
+        generate_variants_for_file, MutationOptions, MutationReport, VariantOutcome,
+    };
+    use al_protocol::jsonrpc::error_codes;
+
+    // Require a loaded project
+    let _project_root = match workspace
+        .project
+        .try_read()
+        .ok()
+        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
+    {
+        Some(root) => root,
+        None => {
+            return super::rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
+        }
+    };
+
+    // Parse options
+    let parallel = params
+        .get("parallel")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let timeout_ms = clamp_timeout_ms(params.get("timeoutMs").and_then(|v| v.as_u64()));
+
+    let opts = MutationOptions {
+        affected_only: true,
+        parallel,
+        timeout_ms,
+    };
+
+    // Collect file paths to mutate — from params or from workspace
+    let file_paths: Vec<String> = if let Some(arr) = params.get("files").and_then(|v| v.as_array())
+    {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect()
+    } else {
+        // Default: all test files in workspace
+        workspace
+            .file_index
+            .files
+            .iter()
+            .map(|e| e.key().to_string_lossy().to_string())
+            .collect()
+    };
+
+    if file_paths.is_empty() {
+        return Response {
+            id,
+            result: Some(
+                serde_json::to_value(&MutationReport {
+                    variants: vec![],
+                    killed: 0,
+                    survived: 0,
+                    errored: 0,
+                    executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Stub,
+                })
+                .unwrap_or(serde_json::Value::Null),
+            ),
+            error: None,
+            ..Default::default()
+        };
+    }
+
+    // Generate and run variants (sequential for the starter phase)
+    let mut all_outcomes: Vec<VariantOutcome> = Vec::new();
+    let timeout = opts.timeout_ms.map(std::time::Duration::from_millis);
+
+    for file_path in &file_paths {
+        let variants = generate_variants_for_file(workspace, file_path);
+        for variant in variants {
+            // Apply the mutation to a copy of source, then record outcome.
+            // Full interpreter integration is in the next phase; for now every
+            // variant is recorded as "survived" so the endpoint is exercisable.
+            let outcome = crate::test_engine::mutate::VariantOutcome {
+                variant: variant.clone(),
+                killed: false,
+                killing_test: None,
+                error: None,
+            };
+            let _ = timeout; // will be used when interpreter is wired
+            all_outcomes.push(outcome);
+        }
+    }
+
+    let killed = all_outcomes.iter().filter(|o| o.killed).count();
+    let errored = all_outcomes.iter().filter(|o| o.error.is_some()).count();
+    let survived = all_outcomes.len() - killed - errored;
+
+    let report = MutationReport {
+        variants: all_outcomes,
+        killed,
+        survived,
+        errored,
+        // Daemon dispatch path mirrors the in-process scaffolding: test
+        // execution is stubbed pending the interpreter backend.
+        executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Stub,
+    };
+
+    match serde_json::to_value(&report) {
+        Ok(value) => Response {
+            id,
+            result: Some(value),
+            error: None,
+            ..Default::default()
+        },
+        Err(e) => super::rpc_error(
+            id,
+            error_codes::INTERNAL_ERROR,
+            &format!("Serialization error: {e}"),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // p1-5 dispatcher tests — parameter validation + no-project paths
 // ---------------------------------------------------------------------------
@@ -3575,13 +3708,12 @@ mod p1_5_tests {
 
         // If the collision check fired wrongly it'd carry the "already in use"
         // string. The success / table-not-found path won't.
-        match resp.error {
-            Some(e) => assert!(
+        if let Some(e) = resp.error {
+            assert!(
                 !e.message.contains("already in use"),
                 "must NOT report a Codeunit/Table cross-kind collision: {}",
                 e.message
-            ),
-            None => {} // also acceptable
+            );
         }
     }
 
@@ -4190,136 +4322,3 @@ mod p1_5_tests {
         ));
     }
 }
-// WP18 / Phase 5: Mutation testing
-// ---------------------------------------------------------------------------
-
-/// `tests.mutate` — run mutation testing on workspace files.
-///
-/// Params:
-/// - `files` (optional, array of str): restrict to these file paths. When omitted,
-///   all workspace test files are mutated.
-/// - `parallel` (optional, bool): hint to enable parallel execution (default false).
-/// - `timeoutMs` (optional, u64): per-variant timeout in ms.
-///
-/// Returns: serialized `MutationReport` JSON.
-pub(super) async fn dispatch_tests_mutate(
-    workspace: &Workspace,
-    id: u64,
-    params: &serde_json::Value,
-) -> Response {
-    use crate::test_engine::mutate::{
-        generate_variants_for_file, MutationOptions, MutationReport, VariantOutcome,
-    };
-    use al_protocol::jsonrpc::error_codes;
-
-    // Require a loaded project
-    let _project_root = match workspace
-        .project
-        .try_read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
-    {
-        Some(root) => root,
-        None => {
-            return super::rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
-        }
-    };
-
-    // Parse options
-    let parallel = params
-        .get("parallel")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let timeout_ms = clamp_timeout_ms(params.get("timeoutMs").and_then(|v| v.as_u64()));
-
-    let opts = MutationOptions {
-        affected_only: true,
-        parallel,
-        timeout_ms,
-    };
-
-    // Collect file paths to mutate — from params or from workspace
-    let file_paths: Vec<String> = if let Some(arr) = params.get("files").and_then(|v| v.as_array())
-    {
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
-    } else {
-        // Default: all test files in workspace
-        workspace
-            .file_index
-            .files
-            .iter()
-            .map(|e| e.key().to_string_lossy().to_string())
-            .collect()
-    };
-
-    if file_paths.is_empty() {
-        return Response {
-            id,
-            result: Some(
-                serde_json::to_value(&MutationReport {
-                    variants: vec![],
-                    killed: 0,
-                    survived: 0,
-                    errored: 0,
-                    executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Stub,
-                })
-                .unwrap_or(serde_json::Value::Null),
-            ),
-            error: None,
-            ..Default::default()
-        };
-    }
-
-    // Generate and run variants (sequential for the starter phase)
-    let mut all_outcomes: Vec<VariantOutcome> = Vec::new();
-    let timeout = opts.timeout_ms.map(std::time::Duration::from_millis);
-
-    for file_path in &file_paths {
-        let variants = generate_variants_for_file(workspace, file_path);
-        for variant in variants {
-            // Apply the mutation to a copy of source, then record outcome.
-            // Full interpreter integration is in the next phase; for now every
-            // variant is recorded as "survived" so the endpoint is exercisable.
-            let outcome = crate::test_engine::mutate::VariantOutcome {
-                variant: variant.clone(),
-                killed: false,
-                killing_test: None,
-                error: None,
-            };
-            let _ = timeout; // will be used when interpreter is wired
-            all_outcomes.push(outcome);
-        }
-    }
-
-    let killed = all_outcomes.iter().filter(|o| o.killed).count();
-    let errored = all_outcomes.iter().filter(|o| o.error.is_some()).count();
-    let survived = all_outcomes.len() - killed - errored;
-
-    let report = MutationReport {
-        variants: all_outcomes,
-        killed,
-        survived,
-        errored,
-        // Daemon dispatch path mirrors the in-process scaffolding: test
-        // execution is stubbed pending the interpreter backend.
-        executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Stub,
-    };
-
-    match serde_json::to_value(&report) {
-        Ok(value) => Response {
-            id,
-            result: Some(value),
-            error: None,
-            ..Default::default()
-        },
-        Err(e) => super::rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("Serialization error: {e}"),
-        ),
-    }
-}
-
-// ---------------------------------------------------------------------------

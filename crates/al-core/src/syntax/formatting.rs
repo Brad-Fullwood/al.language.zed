@@ -1058,8 +1058,10 @@ codeunit 50100 Test
     #[test]
     fn keyword_casing_preserve_is_identity() {
         let input = "if X then Message('hi');\n";
-        let mut opts = FormatOptions::default();
-        opts.keyword_casing = KeywordCasing::Preserve;
+        let opts = FormatOptions {
+            keyword_casing: KeywordCasing::Preserve,
+            ..Default::default()
+        };
         assert_eq!(apply_keyword_casing(input, &opts.keyword_casing), input);
     }
 

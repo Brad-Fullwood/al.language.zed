@@ -508,8 +508,6 @@ mod tests {
     async fn library_assert_fixture_passes_in_interpreter() {
         // We wire up a fresh workspace, inject a synthetic AL file into the
         // file_index, and verify the interpreter runs it correctly.
-        use crate::file_index::FileIndex;
-
         let source = r#"codeunit 50101 "My Assert Tests"
 {
     Subtype = Test;

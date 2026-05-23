@@ -961,13 +961,12 @@ mod cache_io_tests {
         let reader_path = path.clone();
         let mut partial_reads = 0u32;
         for _ in 0..200 {
-            match std::fs::read_to_string(&reader_path) {
-                Ok(content) => {
-                    if serde_json::from_str::<CachedToken>(&content).is_err() {
-                        partial_reads += 1;
-                    }
+            // File transiently missing during rename is fine; ignore Err.
+            let content = std::fs::read_to_string(&reader_path).ok();
+            if let Some(c) = content {
+                if serde_json::from_str::<CachedToken>(&c).is_err() {
+                    partial_reads += 1;
                 }
-                Err(_) => {} // File transiently missing during rename is fine.
             }
             thread::sleep(Duration::from_micros(50));
         }

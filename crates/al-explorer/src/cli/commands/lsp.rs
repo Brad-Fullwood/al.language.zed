@@ -102,36 +102,6 @@ fn al_lsp_index_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/index"))
 }
 
-#[cfg(test)]
-mod clear_cache_tests {
-    use super::*;
-
-    #[test]
-    fn al_lsp_index_dir_targets_index_subdir() {
-        // Positive: F-049 invariant — al-explorer points at `…/al-lsp/index`,
-        // matching the daemon's `clearCache` target. Previously it pointed
-        // at `…/al-lsp/packages` (a stale cache location).
-        let dir = al_lsp_index_dir();
-        let s = dir.to_string_lossy();
-        assert!(
-            s.ends_with("/al-lsp/index") || s.ends_with("\\al-lsp\\index"),
-            "expected …/al-lsp/index, got {s}"
-        );
-    }
-
-    #[test]
-    fn al_lsp_index_dir_is_not_packages_subdir() {
-        // Negative: explicitly assert we never resolve to the legacy
-        // `…/al-lsp/packages` path that F-049 flagged.
-        let dir = al_lsp_index_dir();
-        let s = dir.to_string_lossy();
-        assert!(
-            !s.ends_with("/al-lsp/packages") && !s.ends_with("\\al-lsp\\packages"),
-            "regression: clear-cache resolves back to legacy packages path: {s}"
-        );
-    }
-}
-
 fn fetch_setup_result(json: bool) -> Result<serde_json::Value, ExitCode> {
     let mut client = connect(None).map_err(|e| report_error(&e, json))?;
     client
@@ -2771,5 +2741,35 @@ pub fn cmd_test_mutate(
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+#[cfg(test)]
+mod clear_cache_tests {
+    use super::*;
+
+    #[test]
+    fn al_lsp_index_dir_targets_index_subdir() {
+        // Positive: F-049 invariant — al-explorer points at `…/al-lsp/index`,
+        // matching the daemon's `clearCache` target. Previously it pointed
+        // at `…/al-lsp/packages` (a stale cache location).
+        let dir = al_lsp_index_dir();
+        let s = dir.to_string_lossy();
+        assert!(
+            s.ends_with("/al-lsp/index") || s.ends_with("\\al-lsp\\index"),
+            "expected …/al-lsp/index, got {s}"
+        );
+    }
+
+    #[test]
+    fn al_lsp_index_dir_is_not_packages_subdir() {
+        // Negative: explicitly assert we never resolve to the legacy
+        // `…/al-lsp/packages` path that F-049 flagged.
+        let dir = al_lsp_index_dir();
+        let s = dir.to_string_lossy();
+        assert!(
+            !s.ends_with("/al-lsp/packages") && !s.ends_with("\\al-lsp\\packages"),
+            "regression: clear-cache resolves back to legacy packages path: {s}"
+        );
     }
 }

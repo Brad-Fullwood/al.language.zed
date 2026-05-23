@@ -47,40 +47,6 @@ pub fn bc_server_params(
     p
 }
 
-#[cfg(test)]
-mod path_tests {
-    use super::absolutize_path;
-
-    #[test]
-    fn absolutize_path_passes_through_absolute_paths() {
-        // Positive: already-absolute paths must round-trip unchanged.
-        let abs = "/tmp/foo/bar";
-        assert_eq!(absolutize_path(abs), abs);
-    }
-
-    #[test]
-    fn absolutize_path_resolves_relative_paths_against_cwd() {
-        // Positive: relative paths must come out absolute (F-050).
-        let cwd = std::env::current_dir().expect("current_dir is required for this test");
-        let resolved = absolutize_path("MyApp");
-        assert!(
-            std::path::Path::new(&resolved).is_absolute(),
-            "expected absolute, got {resolved}"
-        );
-        assert!(resolved.starts_with(&cwd.to_string_lossy().to_string()));
-        assert!(resolved.ends_with("MyApp"));
-    }
-
-    #[test]
-    fn absolutize_path_does_not_require_target_to_exist() {
-        // Negative: must NOT depend on filesystem state (canonicalize would
-        // fail on `trace.alcpuprofile` before the file is captured).
-        let resolved = absolutize_path("nonexistent.alcpuprofile");
-        assert!(std::path::Path::new(&resolved).is_absolute());
-        assert!(!std::path::Path::new(&resolved).exists());
-    }
-}
-
 /// Make a user-supplied path absolute relative to the current working
 /// directory, without requiring the path to exist yet.
 ///
@@ -319,4 +285,38 @@ pub fn print_lint_diag(file: Option<&str>, d: &serde_json::Value) {
     let col = d.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
     let prefix = file.unwrap_or("?");
     eprintln!("{prefix}:{line}:{col}: {sev} [{code}] {msg}");
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::absolutize_path;
+
+    #[test]
+    fn absolutize_path_passes_through_absolute_paths() {
+        // Positive: already-absolute paths must round-trip unchanged.
+        let abs = "/tmp/foo/bar";
+        assert_eq!(absolutize_path(abs), abs);
+    }
+
+    #[test]
+    fn absolutize_path_resolves_relative_paths_against_cwd() {
+        // Positive: relative paths must come out absolute (F-050).
+        let cwd = std::env::current_dir().expect("current_dir is required for this test");
+        let resolved = absolutize_path("MyApp");
+        assert!(
+            std::path::Path::new(&resolved).is_absolute(),
+            "expected absolute, got {resolved}"
+        );
+        assert!(resolved.starts_with(&cwd.to_string_lossy().to_string()));
+        assert!(resolved.ends_with("MyApp"));
+    }
+
+    #[test]
+    fn absolutize_path_does_not_require_target_to_exist() {
+        // Negative: must NOT depend on filesystem state (canonicalize would
+        // fail on `trace.alcpuprofile` before the file is captured).
+        let resolved = absolutize_path("nonexistent.alcpuprofile");
+        assert!(std::path::Path::new(&resolved).is_absolute());
+        assert!(!std::path::Path::new(&resolved).exists());
+    }
 }

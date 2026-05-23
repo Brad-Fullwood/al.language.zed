@@ -811,7 +811,7 @@ mod tests {
         assert_eq!(extract_i32(&params, "id"), None);
         let params = serde_json::json!({ "id": "fifty" });
         assert_eq!(extract_i32(&params, "id"), None);
-        let params = serde_json::json!({ "id": 3.14 });
+        let params = serde_json::json!({ "id": 3.5 });
         assert_eq!(extract_i32(&params, "id"), None);
     }
 

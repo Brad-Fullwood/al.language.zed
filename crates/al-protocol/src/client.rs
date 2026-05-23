@@ -333,7 +333,6 @@ pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::jsonrpc::RpcError;
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -488,7 +487,7 @@ mod tests {
     #[test]
     fn f022_bounded_read_rejects_line_exceeding_cap() {
         // 100 bytes, no newline; cap is 5 bytes.
-        let payload = vec![b'X'; 100];
+        let payload = [b'X'; 100];
         let mut reader = std::io::BufReader::new(&payload[..]);
         let err = read_bounded_line(&mut reader, 5).expect_err("must reject oversized line");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);

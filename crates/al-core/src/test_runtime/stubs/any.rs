@@ -480,7 +480,7 @@ mod tests {
         for _ in 0..50 {
             match decimal_in_range(&[Value::Integer(10), Value::Integer(20), Value::Integer(2)]) {
                 Eval::Normal(Value::Decimal(d)) => {
-                    assert!(d >= 10.0 && d <= 20.0, "out of range: {d}")
+                    assert!((10.0..=20.0).contains(&d), "out of range: {d}")
                 }
                 other => panic!("unexpected: {other:?}"),
             }

@@ -1971,7 +1971,7 @@ mod tests {
 "#;
         let result = crate::syntax::AlParser::parse_quick(source);
 
-        let index = SymbolIndex::new();
+        let _index = SymbolIndex::new();
         let mut insight = InsightGraph::new();
 
         // Simulate file_index registration by directly testing register_single_procedure

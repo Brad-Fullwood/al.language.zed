@@ -101,7 +101,7 @@ fn perf_audit_index_build() {
         ));
     }
 
-    per_pkg_times.sort_by(|a, b| b.1.cmp(&a.1)); // Slowest first
+    per_pkg_times.sort_by_key(|p| std::cmp::Reverse(p.1)); // Slowest first
     for (name, dur, objs) in &per_pkg_times {
         eprintln!("  {:>8.2?}  {:>5} objects  {}", dur, objs, name);
     }

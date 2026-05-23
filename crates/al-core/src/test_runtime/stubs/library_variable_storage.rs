@@ -737,9 +737,9 @@ mod tests {
     #[test]
     fn dequeue_decimal_returns_decimal() {
         setup();
-        enqueue(&[Value::Decimal(3.14)]);
+        enqueue(&[Value::Decimal(3.5)]);
         match assert_value(dequeue_decimal(&[])) {
-            Value::Decimal(d) => assert!((d - 3.14).abs() < 1e-9),
+            Value::Decimal(d) => assert!((d - 3.5).abs() < 1e-9),
             other => panic!("expected Decimal, got {other:?}"),
         }
     }

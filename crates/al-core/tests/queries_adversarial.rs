@@ -299,9 +299,8 @@ fn bulk_fix_add_application_area_nonexistent_dir_returns_err_or_empty() {
         "All",
         true, // dry-run — never write to disk
     );
-    match result {
-        Ok(r) => assert_eq!(r.changes_count, 0, "nonexistent dir must produce 0 changes"),
-        Err(_) => {} // also acceptable
+    if let Ok(r) = result {
+        assert_eq!(r.changes_count, 0, "nonexistent dir must produce 0 changes");
     }
 }
 

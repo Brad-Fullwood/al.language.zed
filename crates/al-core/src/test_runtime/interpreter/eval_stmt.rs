@@ -1069,7 +1069,7 @@ mod tests {
         (eval, stack)
     }
 
-    fn find_proc_body<'a>(node: Node<'a>, source: &[u8]) -> Option<Node<'a>> {
+    fn find_proc_body<'a>(node: Node<'a>, _source: &[u8]) -> Option<Node<'a>> {
         // Iterative walk looking for begin_end_block inside procedure_declaration.
         let mut stack = vec![node];
         while let Some(current) = stack.pop() {
