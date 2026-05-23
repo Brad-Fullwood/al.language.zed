@@ -49,20 +49,21 @@ pub enum BraceStyle {
 
 /// Formatting options.
 ///
-/// **Wiring status (F-OPEN-110):** the formatter currently honours
-/// `tab_size` and `insert_spaces` only. The remaining fields
-/// (`keyword_casing`, `blank_lines_between_procedures`, `max_line_length`,
-/// `brace_style`, `sort_properties`) are declared so the public type matches
-/// the user-facing `.alformat.json` schema and config-merge layer, but they
-/// are NOT applied during formatting yet. The unconsumed-field warning in
+/// **Wiring status:** the formatter currently honours `tab_size`,
+/// `insert_spaces`, and `keyword_casing`. The remaining fields
+/// (`blank_lines_between_procedures`, `max_line_length`, `brace_style`,
+/// `sort_properties`) are declared so the public type matches the user-
+/// facing `.alformat.json` schema and config-merge layer, but they are NOT
+/// applied during formatting yet. The unconsumed-field warning in
 /// `queries::format` (logged via `tracing::warn!`) surfaces them so users
-/// notice the gap. Wiring them is tracked as follow-up rather than per-field
-/// drift.
+/// notice the gap.
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
     pub tab_size: usize,
     pub insert_spaces: bool,
-    /// Keyword casing to apply. **Currently a no-op** — see struct-level doc.
+    /// Keyword casing to apply. `Preserve` is the no-op default; `Lower` and
+    /// `Upper` walk each non-comment, non-string token and case-fold it when
+    /// the token matches a known AL keyword.
     pub keyword_casing: KeywordCasing,
     /// Blank lines between procedures. **Currently a no-op.**
     pub blank_lines_between_procedures: BlankLinesBetweenProcedures,
@@ -252,7 +253,17 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         for _ in 0..indent_level {
             result.push_str(&indent_str);
         }
-        result.push_str(trimmed);
+        // F-OPEN-110: apply keyword casing transformation. Skips work entirely
+        // for Preserve (no allocation). For Lower/Upper, walks the line and
+        // case-folds only AL keyword tokens (matched via word boundaries +
+        // language_data lookup) — keeps identifiers and string literals
+        // untouched.
+        if !in_block_comment {
+            let transformed = apply_keyword_casing(trimmed, &options.keyword_casing);
+            result.push_str(&transformed);
+        } else {
+            result.push_str(trimmed);
+        }
         result.push('\n');
 
         // --- Post-indent adjustments (indent after writing this line) ---
@@ -498,6 +509,72 @@ fn extract_formatted_region<'a>(
 /// Delegates to the crate-level `count_net_delimiters` which skips string literals.
 fn count_net_parens(line: &str) -> i32 {
     super::count_net_delimiters(line, '(', ')')
+}
+
+/// Apply `KeywordCasing` to a single source line. Walks the line token-by-
+/// token, transforming runs of ASCII alphabetic characters (the only legal
+/// AL identifier/keyword shape) when they match a known AL keyword in
+/// `language_data::keywords()`. Identifiers, string literals, comments, and
+/// numeric literals pass through unchanged.
+///
+/// Returns the input string when casing is `Preserve` (no allocation).
+fn apply_keyword_casing(line: &str, casing: &KeywordCasing) -> String {
+    if matches!(casing, KeywordCasing::Preserve) {
+        return line.to_string();
+    }
+
+    let mut out = String::with_capacity(line.len());
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // String literal — copy verbatim until the matching quote.
+        if b == b'\'' || b == b'"' {
+            let quote = b;
+            out.push(b as char);
+            i += 1;
+            while i < bytes.len() && bytes[i] != quote {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+            if i < bytes.len() {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+            continue;
+        }
+        // Line comment — emit the rest of the line as-is.
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            // SAFETY: bytes is the original UTF-8 line; `&line[i..]` is a
+            // valid str slice because i lies on a char boundary (we only
+            // advanced past ASCII bytes above).
+            out.push_str(&line[i..]);
+            break;
+        }
+        // Identifier-shaped word (letters + digits + underscore, starting
+        // with letter or underscore). AL is ASCII-only so byte-level scan
+        // is safe.
+        if b.is_ascii_alphabetic() || b == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let word = &line[start..i];
+            if super::language_data::is_keyword(word) {
+                match casing {
+                    KeywordCasing::Lower => out.push_str(&word.to_ascii_lowercase()),
+                    KeywordCasing::Upper => out.push_str(&word.to_ascii_uppercase()),
+                    KeywordCasing::Preserve => out.push_str(word),
+                }
+            } else {
+                out.push_str(word);
+            }
+            continue;
+        }
+        out.push(b as char);
+        i += 1;
+    }
+    out
 }
 
 /// Returns true if trimmed_lower represents a single-statement control flow opener.
@@ -958,5 +1035,42 @@ codeunit 50100 Test
             pass1, pass2,
             "second-pass formatting with block comments should be a no-op"
         );
+    }
+
+    // F-OPEN-110: KeywordCasing wiring
+
+    #[test]
+    fn keyword_casing_preserve_is_identity() {
+        let input = "if X then Message('hi');\n";
+        let mut opts = FormatOptions::default();
+        opts.keyword_casing = KeywordCasing::Preserve;
+        assert_eq!(apply_keyword_casing(input, &opts.keyword_casing), input);
+    }
+
+    #[test]
+    fn keyword_casing_lower_folds_keywords_only() {
+        // IF/THEN are keywords — lowered. Message/X are identifiers — preserved.
+        // The literal 'IF' inside the string MUST NOT be touched.
+        let input = "IF X THEN Message('IF inside string');";
+        let lowered = apply_keyword_casing(input, &KeywordCasing::Lower);
+        assert_eq!(
+            lowered, "if X then Message('IF inside string');",
+            "got: {lowered}"
+        );
+    }
+
+    #[test]
+    fn keyword_casing_upper_folds_keywords_only() {
+        let input = "if X then Message('hi');";
+        let uppered = apply_keyword_casing(input, &KeywordCasing::Upper);
+        assert_eq!(uppered, "IF X THEN Message('hi');", "got: {uppered}");
+    }
+
+    #[test]
+    fn keyword_casing_skips_line_comments() {
+        // After // anything goes, including "IF" tokens that look like keywords.
+        let input = "if x then // IF this comment, IF that";
+        let lowered = apply_keyword_casing(input, &KeywordCasing::Lower);
+        assert_eq!(lowered, "if x then // IF this comment, IF that");
     }
 }
