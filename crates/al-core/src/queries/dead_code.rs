@@ -63,7 +63,13 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
     // Collect all cached (path, text, tree) triples in one pass — no re-parsing needed.
     // The owned Vec is required so that `all_files` borrows below have a stable backing store
     // for the lifetime of the cross-file reference scans.
-    let parsed_files: Vec<(String, String, tree_sitter::Tree)> = workspace
+    //
+    // F-OPEN-114: sort by path BEFORE the main loop so output is stable
+    // across runs. `file_trees` is a DashMap whose iteration order varies
+    // across process restarts, and the results Vec inherits that order.
+    // CI snapshots and human diff review of deadcode output need
+    // deterministic ordering.
+    let mut parsed_files: Vec<(String, String, tree_sitter::Tree)> = workspace
         .file_index
         .file_trees
         .iter()
@@ -74,6 +80,7 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
             Some((path.to_string_lossy().to_string(), text, tree))
         })
         .collect();
+    parsed_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Create borrow-slices once; all inner functions take `&[(&str, &str, &Tree)]`.
     let all_files: Vec<(&str, &str, &tree_sitter::Tree)> = parsed_files
@@ -284,6 +291,11 @@ fn has_event_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
         if s.kind() == "attribute" || s.kind() == "attribute_list" {
             if let Ok(text) = s.utf8_text(source) {
                 let t = text.to_lowercase();
+                // Lowercase literals correspond to `insight::attr_names::INTEGRATION_EVENT`
+                // / `BUSINESS_EVENT`. `t` is already lowercased so substring match
+                // is case-insensitive. Update both call sites if the canonical
+                // names ever change (compile-time link via static_assertions
+                // would be over-engineering for two strings).
                 if t.contains("integrationevent") || t.contains("businessevent") {
                     return true;
                 }
@@ -300,6 +312,11 @@ fn has_event_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
         if child.kind() == "attribute" || child.kind() == "attribute_list" {
             if let Ok(text) = child.utf8_text(source) {
                 let t = text.to_lowercase();
+                // Lowercase literals correspond to `insight::attr_names::INTEGRATION_EVENT`
+                // / `BUSINESS_EVENT`. `t` is already lowercased so substring match
+                // is case-insensitive. Update both call sites if the canonical
+                // names ever change (compile-time link via static_assertions
+                // would be over-engineering for two strings).
                 if t.contains("integrationevent") || t.contains("businessevent") {
                     return true;
                 }
