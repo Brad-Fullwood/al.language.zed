@@ -508,9 +508,18 @@ impl LanguageServer for AlServer {
                 text: c.text.clone(),
             })
             .collect();
-        self.workspace.documents.apply_changes(&uri, &changes);
-
-        if let Some(text) = self.workspace.documents.get_text(&uri) {
+        // F-OPEN-054: apply the changes and capture the resulting text under a
+        // single write lock. A separate `apply_changes` + `get_text` pair would
+        // leave a TOCTOU window where a concurrent `did_change` (tower-lsp can
+        // interleave handlers under load) applies a later keystroke between the
+        // mutation and the read, feeding a version-skewed snapshot into the
+        // debounced diagnostics task.
+        if let Some((text_arc, _version)) = self
+            .workspace
+            .documents
+            .apply_changes_and_get(&uri, &changes)
+        {
+            let text = text_arc.as_ref().clone();
             crate::workspace::on_document_change(&self.workspace, &uri, &text);
             // ISSUE-025 fix: diagnostics are debounced and run async.
             // Each keystroke cancels the previous pending task to avoid bridge calls

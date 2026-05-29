@@ -13,7 +13,6 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-042 | P3 | No per-document size cap — a 10 GB open file consumes memory unbounded |
 | F-OPEN-043 | P3 | Tree-sitter parse-tree cache has no eviction (LRU / idle sweep) |
 | F-OPEN-046 | P3 | TUI daemon-socket reads have no timeout (only Ctrl+C escapes a stuck query) |
-| F-OPEN-054 | P2 | `apply_changes` + `get_text` in `did_change` not atomic; diag task can capture a version-skewed snapshot |
 | F-OPEN-060 | P2 | `config.rs::merge` path fields not canonicalised at boundary (per-consumer canonicalisation still pending) |
 | F-OPEN-063 | P3 | Inconsistent `config.rs` `null` semantics — most fields can't be reset to default via `null` |
 | F-OPEN-065 | P2 | No daemon `$/cancelRequest` support; abandoned long-running endpoints still pay full cost / pin slots |
@@ -74,6 +73,7 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-051 | P3 | documented | `Lifecycle` single-variant documented as historical (iteration 53) |
 | F-OPEN-052 | P3 | fixed | `file_uri` debug_assert on non-UTF-8 paths (iteration 43) |
 | F-OPEN-053 | P2 | fixed | `did_change` warns on backwards version delivery (iteration 48) |
+| F-OPEN-054 | P2 | fixed | `apply_changes` + `get_text` in `did_change` not atomic; diag task can capture a version-skewed snapshot — added `DocumentStore::apply_changes_and_get` returning the post-change `(text, version)` under the same write lock, `did_change` now feeds that snapshot into `schedule_diagnostics` (closes the TOCTOU window vs a concurrent `did_change`); +2 tests (iteration 92) |
 | F-OPEN-055 | P2 | documented | Concurrent init wastes cycles, DashMap-safe (F-FP-020, iteration 53) |
 | F-OPEN-056 | P3 | deferred | `didChangeWatchedFiles` unimplemented; Zed rescans on focus (iteration 53) |
 | F-OPEN-057 | P2 | fixed | `compile_project` canonicalises project_root (iteration 44) |

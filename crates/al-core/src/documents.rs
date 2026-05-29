@@ -150,6 +150,29 @@ impl DocumentStore {
     }
 
     pub fn apply_changes(&self, uri: &Url, changes: &[TextChange]) {
+        let _ = self.apply_changes_and_get(uri, changes);
+    }
+
+    /// Apply `changes` and return the resulting `(text, version)` pair captured
+    /// under the **same** write lock that performed the mutation.
+    ///
+    /// `did_change` must feed the post-change text into the debounced
+    /// diagnostics task. Doing that as `apply_changes(...)` followed by a
+    /// separate `get_text(...)`/`get_version(...)` opens a TOCTOU window: a
+    /// concurrent `did_change` notification (tower-lsp can interleave handlers
+    /// under load) can run its own `apply_changes` between this call's mutation
+    /// and the subsequent read, so the text/version handed to the diagnostics
+    /// task belongs to a *later* keystroke than the one that scheduled it
+    /// (F-OPEN-054). Returning the pair from inside the `get_mut` borrow closes
+    /// that window — the returned text and version are always mutually
+    /// consistent and reflect exactly the changes this call applied.
+    ///
+    /// Returns `None` only if the document is not open.
+    pub fn apply_changes_and_get(
+        &self,
+        uri: &Url,
+        changes: &[TextChange],
+    ) -> Option<(std::sync::Arc<String>, i32)> {
         if let Some(mut doc) = self.docs.get_mut(uri) {
             for change in changes {
                 if let Some(range) = change.range {
@@ -198,6 +221,9 @@ impl DocumentStore {
             doc.version += 1;
             // Invalidate cached tree since the document changed
             self.trees.remove(uri);
+            Some((std::sync::Arc::clone(&doc.text_cache), doc.version))
+        } else {
+            None
         }
     }
 
@@ -607,6 +633,57 @@ mod tests {
         // apply_changes ever leaks the v0 tree under v1's version, this fails.
         assert_eq!(store.get_version(&uri), Some(1));
         assert!(store.get_cached_tree(&uri).is_none());
+    }
+
+    /// F-OPEN-054 regression: `apply_changes_and_get` returns the text and
+    /// version produced by *this* call, captured under the same write lock that
+    /// performed the mutation. `did_change` relies on this so the snapshot fed
+    /// into the debounced diagnostics task can never be skewed forward by a
+    /// concurrent `did_change` that interleaves between mutate and read.
+    #[test]
+    fn apply_changes_and_get_returns_post_change_snapshot() {
+        let store = DocumentStore::new();
+        let uri = test_uri("atomic_snapshot");
+        store.open(uri.clone(), "v0".to_string());
+
+        let (text, version) = store
+            .apply_changes_and_get(
+                &uri,
+                &[TextChange {
+                    range: None,
+                    text: "v1".to_string(),
+                }],
+            )
+            .expect("document is open");
+
+        // The returned pair reflects exactly the change just applied — the new
+        // text paired with the bumped version, never an older or newer mix.
+        assert_eq!(text.as_str(), "v1");
+        assert_eq!(version, 1);
+        // And it matches the store's own atomic accessor.
+        assert_eq!(
+            store.get_text_and_version(&uri),
+            Some((text, version)),
+            "returned snapshot must equal the store's live (text, version)"
+        );
+    }
+
+    /// F-OPEN-054: `apply_changes_and_get` returns `None` (rather than a stale
+    /// snapshot) when the document is not open, so `did_change` skips scheduling
+    /// diagnostics for a URI that was closed out from under it.
+    #[test]
+    fn apply_changes_and_get_returns_none_for_unopened_document() {
+        let store = DocumentStore::new();
+        let uri = test_uri("never_opened");
+        let result = store.apply_changes_and_get(
+            &uri,
+            &[TextChange {
+                range: None,
+                text: "ignored".to_string(),
+            }],
+        );
+        assert!(result.is_none());
+        assert!(!store.contains(&uri));
     }
 
     #[test]
