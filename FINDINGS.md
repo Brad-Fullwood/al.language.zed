@@ -1352,6 +1352,23 @@ Workspace test count: 1972 → 1983 (+11: 9 inlay_hints parameter-pipeline tests
 
 Workspace test count: 1983 → 1988 (+5: 3 resolution composition tests, 2 DAP framing tests). All gates green.
 
+### Iteration 83 (2026-05-29)
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (new) impact substring matching false positives | **P1** | **Fixed.** `queries/impact.rs` used `.contains()` on parameter types and TableRelation values, so `Customer` matched `Record "CustomerBank"` and `TableRelation = CustomerVendor`. Now uses the precise `is_record_of()` / `extract_table_relation_table()` parsers from `insight::analysis` (promoted to `pub(crate)`). +2 false-positive regression tests, +1 exact-match positive test. |
+| (new) member-scoped param check ignores member | **P1** | **Fixed.** Parameter-type and TableRelation references depend only on the object, but were evaluated inside the member-scoped scan where they ignored the member — so `Customer.OnBeforePost` reported every method taking a `Record Customer` parameter. Split into a new object-scoped `check_object_consumers` (run only for object-only queries); `check_member_consumers` now handles EventSubscriber matching alone. +1 member-isolation regression test. |
+| (new) EventSubscriber parse bounds + test gap | P2 | **Fixed.** `check_member_consumers` now requires `attr.arguments.len() >= 3` before identifying an event. Added a positive `impact_finds_event_subscriber` test (none previously asserted `ImpactType::Subscribe`). |
+| (new) OnPrem dev_packages_url instance not encoded | **P1** | **Fixed.** `launch.rs::dev_packages_url` inserted `server_instance` into the URL path without encoding (unlike the Cloud tenant/env path). Now `urlencoding::encode`'d. Added 7 `dev_packages_url` unit tests (function previously had none). |
+| (new) dev_packages_url test gap | P2 | **Fixed (covered by the same 7 tests above).** |
+| (new) CLI raw-path fallback (lint/format/parse/fix/metrics) | **P1** | **Fixed.** These commands forwarded the user's raw path as `params["file"]` when `file_to_uri()` failed, causing a confusing second daemon error. They now `report_error` immediately, matching `cmd_hover`/`cmd_rename` and the documented `file_to_uri` design intent. |
+| (new) cmd_test_affected uncanonicalized paths | P2 | **Fixed.** Now canonicalizes each changed file client-side (against the CLI CWD) and errors on failure, matching the test-snapshot diff pattern; the daemon canonicalizes from its own CWD so relative paths would not have matched. |
+| (new) unknown environment_type logged at WARN | P2 | **Fixed.** `dap/config.rs` now logs unknown `environmentType` at ERROR naming the valid values, matching `launch.rs` (F-OPEN-073). |
+| (new) stale-lock recovery fails on backward clock | P3 | **Fixed.** `al-protocol::try_acquire_spawn_lock` used `elapsed().unwrap_or_default()`; a backward clock turned the error into `Duration::ZERO` and wedged a crashed spawner's lock. An `elapsed()` error now means "assume stale" → drop the lock. |
+| F-OPEN-001, 005, 006, 007, 009, 128 | P2/P3 | Carried forward — design / breadth items, not addressed this iteration (a large batch of confirmed new P1/P2 findings consumed the budget). |
+
+Workspace test count: 1988 → 2000 (+12: 5 impact-matching tests, 7 dev_packages_url tests). All gates green.
+
 
 
 | Phase | Status | Output |
