@@ -17,7 +17,6 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-060 | P2 | `config.rs::merge` path fields not canonicalised at boundary (per-consumer canonicalisation still pending) |
 | F-OPEN-063 | P3 | Inconsistent `config.rs` `null` semantics — most fields can't be reset to default via `null` |
 | F-OPEN-065 | P2 | No daemon `$/cancelRequest` support; abandoned long-running endpoints still pay full cost / pin slots |
-| F-OPEN-072 | P1 | Wedged CLR call blocks every semantic feature forever; 30 s timeout doesn't release the serializing mutex |
 | F-OPEN-081 | P3 | `InsightGraph` public API leaks `petgraph::NodeIndex`; wrap in a newtype to allow backend swap |
 | F-OPEN-135 | P2 | No test for the timeout-cooldown `try_lock` race (T047); needs a wedge-able bridge seam to test deterministically |
 | F-OPEN-136 | P2 | No regression tests for `signalr_to_bc_event` conversion (private fn, Value-shape dependent) |
@@ -89,6 +88,7 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-069 | P3 | fixed | `dispatch_packages` poison-recovery via into_inner (iteration 47) |
 | F-OPEN-070 | P3 | fixed | 10 s graceful in-flight drain on accept-loop break (iteration 47) |
 | F-OPEN-071 | P3 | fixed | Workspace init notifies on partial package-load failure (iteration 43) |
+| F-OPEN-072 | P1 | documented | Wedged CLR call: interrupting an in-process CLR call across the netcorehost FFI boundary is unsafe (thread-abort corrupts CLR state) — confirmed architectural limitation, the wedged thread is accepted to leak; the *recoverable* path is already mitigated — `SemanticBridge::call` cooldown + `try_lock` probe (`bridge.rs:281-338`) auto-recovers when the stuck call returns and prevents a thundering herd, and `restart_bridge` (`lifecycle.rs:320`) can build a fresh `DotNetHost`/Mutex so features resume; auto-wiring `restart_bridge` into the persistent-failure path (`diagnostics.rs:182-207`) is real design work (restart-counter interaction, thrash-vs-slow heuristics) warranting its own finding (iteration 89) |
 | F-OPEN-073 | P3 | fixed | `parse_environment_type` logs ERROR + valid set (iteration 39) |
 | F-OPEN-074 | P3 | fixed | `dev_packages_url` server field via `is_safe_http_server` allowlist (iteration 35) |
 | F-OPEN-075 | P3 | fixed | Split `Poisoned` vs `Cooldown` SemanticError variants (iteration 37) |
