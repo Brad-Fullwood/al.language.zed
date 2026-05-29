@@ -302,10 +302,16 @@ impl LanguageServer for AlServer {
         // Parse initialization options into config
         if let Some(init_opts) = params.initialization_options {
             let al_settings = extract_al_settings(init_opts);
-            let unknown = self.workspace.config.write().await.merge(&al_settings);
-            if !unknown.is_empty() {
-                tracing::warn!("Unknown settings in initializationOptions: {:?}", unknown);
-            }
+            let cap = {
+                let mut config = self.workspace.config.write().await;
+                let unknown = config.merge(&al_settings);
+                if !unknown.is_empty() {
+                    tracing::warn!("Unknown settings in initializationOptions: {:?}", unknown);
+                }
+                config.max_document_size_bytes
+            };
+            // F-OPEN-042: apply the per-document size cap to the store.
+            self.workspace.documents.set_max_doc_bytes(cap);
             tracing::info!("Parsed initialization options into config");
         }
 
@@ -586,11 +592,17 @@ impl LanguageServer for AlServer {
         tracing::info!("did_change_configuration");
         // Zed sends settings nested under "al" key, or as a flat object
         let al_settings = extract_al_settings(params.settings);
-        let unknown = self.workspace.config.write().await.merge(&al_settings);
+        let (unknown, cap) = {
+            let mut config = self.workspace.config.write().await;
+            let unknown = config.merge(&al_settings);
+            (unknown, config.max_document_size_bytes)
+        };
         if !unknown.is_empty() {
             let msg = format!("Unknown AL settings: {}", unknown.join(", "));
             self.client.show_message(MessageType::WARNING, &msg).await;
         }
+        // F-OPEN-042: re-apply the per-document size cap after a config change.
+        self.workspace.documents.set_max_doc_bytes(cap);
         tracing::info!("Configuration updated");
     }
 

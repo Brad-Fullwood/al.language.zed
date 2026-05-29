@@ -132,6 +132,17 @@ pub struct AlConfig {
 
     /// Suggested folder for AL:Go scaffolding.
     pub algo_suggested_folder: Option<PathBuf>,
+
+    // -----------------------------------------------------------------------
+    // Resource limits
+    // -----------------------------------------------------------------------
+    /// Optional per-document size cap, in bytes. When set, the language server
+    /// refuses to ingest a single document whose content exceeds this many
+    /// bytes (e.g. a multi-gigabyte file accidentally opened in the workspace),
+    /// keeping it out of the in-memory rope/parse-tree store rather than letting
+    /// it consume memory unbounded (F-OPEN-042). `None` (the default) means no
+    /// cap, matching prior behaviour.
+    pub max_document_size_bytes: Option<usize>,
 }
 
 /// NuGet feed configuration for symbol download.
@@ -232,6 +243,8 @@ impl Default for AlConfig {
             publisher: None,
             namespace_template: None,
             algo_suggested_folder: None,
+            // Resource limits
+            max_document_size_bytes: None,
         }
     }
 }
@@ -464,6 +477,17 @@ impl AlConfig {
                 "algoSuggestedFolder" => {
                     merge_optional_path(obj, key, &mut self.algo_suggested_folder)
                 }
+                // -- Resource limits --
+                "maxDocumentSizeBytes" => match obj.get(key) {
+                    Some(serde_json::Value::Null) => self.max_document_size_bytes = None,
+                    Some(v) => match v.as_u64() {
+                        Some(n) => self.max_document_size_bytes = Some(n as usize),
+                        // A non-integer / negative value is a typo; surface it
+                        // rather than silently retaining the current value.
+                        None => unknown_keys.push(format!("maxDocumentSizeBytes={v}")),
+                    },
+                    None => {}
+                },
                 _ => {
                     unknown_keys.push(key.clone());
                 }
@@ -619,6 +643,30 @@ mod tests {
         assert!(config.background_code_analysis);
         assert!(config.enable_code_actions);
         assert!(unknown.is_empty());
+    }
+
+    #[test]
+    fn merge_max_document_size_bytes() {
+        // F-OPEN-042: the per-document size cap is config-driven, defaults to
+        // None (unbounded), accepts an unsigned integer, and supports null reset.
+        let mut config = AlConfig::default();
+        assert_eq!(config.max_document_size_bytes, None);
+
+        let unknown = config.merge(&serde_json::json!({ "maxDocumentSizeBytes": 1048576 }));
+        assert_eq!(config.max_document_size_bytes, Some(1_048_576));
+        assert!(unknown.is_empty());
+
+        // null resets to None (unbounded).
+        config.merge(&serde_json::json!({ "maxDocumentSizeBytes": null }));
+        assert_eq!(config.max_document_size_bytes, None);
+
+        // A non-integer value is surfaced as unknown, leaving the field intact.
+        config.max_document_size_bytes = Some(42);
+        let unknown = config.merge(&serde_json::json!({ "maxDocumentSizeBytes": "huge" }));
+        assert_eq!(config.max_document_size_bytes, Some(42));
+        assert!(unknown
+            .iter()
+            .any(|k| k.starts_with("maxDocumentSizeBytes")));
     }
 
     #[test]

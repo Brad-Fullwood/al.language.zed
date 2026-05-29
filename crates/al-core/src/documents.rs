@@ -37,6 +37,14 @@ pub struct DocumentStore {
     /// alongside `docs`/`trees`, so a long-running daemon that opens and closes
     /// many distinct files over its lifetime does not accumulate stale locks.
     parse_locks: DashMap<Url, std::sync::Arc<std::sync::Mutex<()>>>,
+    /// Optional per-document byte cap (F-OPEN-042). `0` means "no cap" (the
+    /// default, preserving prior unbounded behaviour). When non-zero, `open`
+    /// and full-document replacements refuse content larger than this many
+    /// bytes so a single oversized file (e.g. a multi-gigabyte blob opened by
+    /// accident) cannot consume memory unbounded in the rope/parse-tree store.
+    /// Atomic so the daemon can apply a config update without locking the
+    /// whole store.
+    max_doc_bytes: std::sync::atomic::AtomicUsize,
 }
 
 struct Document {
@@ -59,6 +67,44 @@ impl DocumentStore {
             docs: DashMap::new(),
             trees: DashMap::new(),
             parse_locks: DashMap::new(),
+            max_doc_bytes: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Set the per-document byte cap (F-OPEN-042). `None` (or `Some(0)`) clears
+    /// the cap, restoring unbounded ingestion. Applied at the boundary from
+    /// `AlConfig::max_document_size_bytes` whenever configuration is (re)loaded.
+    pub fn set_max_doc_bytes(&self, cap: Option<usize>) {
+        self.max_doc_bytes
+            .store(cap.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the active per-document byte cap, or `None` when unbounded.
+    #[inline]
+    fn doc_cap(&self) -> Option<usize> {
+        match self
+            .max_doc_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => None,
+            n => Some(n),
+        }
+    }
+
+    /// Whether `len` bytes exceed the configured cap. Logs a warning and
+    /// returns `true` when the content should be rejected.
+    fn exceeds_cap(&self, uri: &Url, len: usize) -> bool {
+        match self.doc_cap() {
+            Some(cap) if len > cap => {
+                tracing::warn!(
+                    uri = %uri,
+                    bytes = len,
+                    cap,
+                    "DocumentStore: refusing document exceeding configured max_document_size_bytes (F-OPEN-042)"
+                );
+                true
+            }
+            _ => false,
         }
     }
 
@@ -78,6 +124,12 @@ impl DocumentStore {
     }
 
     pub fn open(&self, uri: Url, text: String) {
+        // F-OPEN-042: refuse to ingest an oversized document. Any previously
+        // open version of this URI is left untouched, and crucially the giant
+        // text is never copied into the rope/cache.
+        if self.exceeds_cap(&uri, text.len()) {
+            return;
+        }
         self.docs.insert(
             uri,
             Document {
@@ -213,6 +265,11 @@ impl DocumentStore {
                             );
                         }
                     }
+                } else if self.exceeds_cap(uri, change.text.len()) {
+                    // F-OPEN-042: an oversized full-document replacement is
+                    // skipped rather than ingested. Like the malformed-range
+                    // case above, the prior text is left intact; the editor
+                    // should resync on the next edit.
                 } else {
                     doc.text = Rope::from_str(&change.text);
                 }
@@ -354,6 +411,80 @@ mod tests {
             }],
         );
         assert_eq!(store.get_text(&uri), Some("new content".to_string()));
+    }
+
+    #[test]
+    fn test_max_doc_bytes_rejects_oversized_open() {
+        // F-OPEN-042: with a cap set, an oversized open() must not ingest the
+        // document — neither the rope nor the cache should hold the giant text.
+        let store = DocumentStore::new();
+        store.set_max_doc_bytes(Some(8));
+        let uri = test_uri("huge");
+        store.open(uri.clone(), "0123456789".to_string()); // 10 bytes > cap
+        assert!(!store.contains(&uri), "oversized open() must be refused");
+        assert_eq!(store.get_text(&uri), None);
+    }
+
+    #[test]
+    fn test_max_doc_bytes_allows_within_cap() {
+        let store = DocumentStore::new();
+        store.set_max_doc_bytes(Some(8));
+        let uri = test_uri("small");
+        store.open(uri.clone(), "01234".to_string()); // 5 bytes <= cap
+        assert!(store.contains(&uri));
+        assert_eq!(store.get_text(&uri), Some("01234".to_string()));
+    }
+
+    #[test]
+    fn test_max_doc_bytes_boundary_equal_is_allowed() {
+        // Exactly at the cap is allowed; only strictly-greater is refused.
+        let store = DocumentStore::new();
+        store.set_max_doc_bytes(Some(5));
+        let uri = test_uri("edge");
+        store.open(uri.clone(), "01234".to_string()); // 5 bytes == cap
+        assert!(store.contains(&uri));
+    }
+
+    #[test]
+    fn test_no_cap_by_default_is_unbounded() {
+        // Default (no cap) preserves prior unbounded behaviour.
+        let store = DocumentStore::new();
+        let uri = test_uri("nocap");
+        let big = "x".repeat(1_000_000);
+        store.open(uri.clone(), big.clone());
+        assert_eq!(store.get_text(&uri), Some(big));
+    }
+
+    #[test]
+    fn test_max_doc_bytes_cleared_restores_unbounded() {
+        let store = DocumentStore::new();
+        store.set_max_doc_bytes(Some(4));
+        let uri = test_uri("cleared");
+        store.open(uri.clone(), "toolong".to_string());
+        assert!(!store.contains(&uri), "should be refused while cap active");
+        // Clearing the cap (None) restores unbounded ingestion.
+        store.set_max_doc_bytes(None);
+        store.open(uri.clone(), "toolong".to_string());
+        assert_eq!(store.get_text(&uri), Some("toolong".to_string()));
+    }
+
+    #[test]
+    fn test_max_doc_bytes_rejects_oversized_full_replace() {
+        // A full-document replacement larger than the cap is skipped, leaving
+        // the prior text intact rather than ingesting the giant payload.
+        let store = DocumentStore::new();
+        store.set_max_doc_bytes(Some(8));
+        let uri = test_uri("replace_huge");
+        store.open(uri.clone(), "small".to_string());
+        store.apply_changes(
+            &uri,
+            &[TextChange {
+                range: None,
+                text: "this is far too long".to_string(),
+            }],
+        );
+        // Unchanged — the oversized replacement was refused.
+        assert_eq!(store.get_text(&uri), Some("small".to_string()));
     }
 
     #[test]

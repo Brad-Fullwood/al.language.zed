@@ -10,7 +10,6 @@ FINDINGS.md remains the narrative history; this is the index.
 |---|---|---|
 | F-OPEN-010 | P2 | Token zeroization — `access_token`/`refresh_token` are plain `String`s in a long-lived daemon; adopt `zeroize` |
 | F-OPEN-016 | P3 | Hardcoded BC protocol version assumptions in `bc_debug.rs`; needs version-detection / capability probe |
-| F-OPEN-042 | P3 | No per-document size cap — a 10 GB open file consumes memory unbounded |
 | F-OPEN-043 | P3 | Tree-sitter parse-tree cache has no eviction (LRU / idle sweep) |
 | F-OPEN-046 | P3 | TUI daemon-socket reads have no timeout (only Ctrl+C escapes a stuck query) |
 | F-OPEN-063 | P3 | Inconsistent `config.rs` `null` semantics — most fields can't be reset to default via `null` |
@@ -21,6 +20,7 @@ FINDINGS.md remains the narrative history; this is the index.
 
 | ID | Severity | Status | Title |
 |---|---|---|---|
+| F-OPEN-042 | P3 | fixed | No per-document size cap — a 10 GB open file consumes memory unbounded (iteration 94) — added optional config-driven cap `al.maxDocumentSizeBytes` (`AlConfig::max_document_size_bytes`, default `None` = unbounded, `null` resets, non-integer surfaced as unknown). Enforced at the store boundary in `DocumentStore` via an atomic `max_doc_bytes` (`0` = no cap): `open()` and full-document replacements in `apply_changes_and_get()` refuse oversized content (warn + skip, prior text untouched) so the giant payload is never copied into the rope/cache. Wired in `server::lsp` `initialize` + `did_change_configuration` via `set_max_doc_bytes`; +7 documents tests, +1 config merge test. Incremental edits left unguarded (the scenario is opening a huge file); daemon defaults to no cap |
 | F-OPEN-137 | P1 | fixed | SignalR negotiate-response version validation (`negotiateVersion=1`, `version:1`) (iteration 94) — added `resolve_negotiate_connection()` in `bc_debug.rs`: reads the server-echoed `negotiateVersion`, uses `connectionToken` as the WebSocket `?id=` for v1, falls back to `connectionId` for v0/missing (previously hard-failed "No connectionToken"), errors on redirect (`url`) responses, and warns on unexpected versions instead of panicking; +8 regression tests. The broader BC capability probe stays separate as F-OPEN-016 |
 | F-OPEN-001 | P3 | fixed | All 25 `#[allow(clippy::*)]` justified/test-only (iteration 53) |
 | F-OPEN-002 | P3 | wontfix | Split 6 files >1500 LOC — restructuring forbidden by CLAUDE.md scope discipline (iteration 81) |
