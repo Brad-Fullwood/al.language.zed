@@ -465,10 +465,23 @@ impl BcDebugSession {
             .ok_or_else(|| {
                 DapError::ConnectionFailed("No connectionToken in negotiate".to_string())
             })?;
-        let connection_id = negotiate
-            .get("connectionId")
-            .and_then(|v| v.as_str())
-            .unwrap_or(connection_token)
+        // The SignalR session id is reported as `connectionId`, but BC versions
+        // (and the underlying SignalR implementation) have varied the casing, so
+        // accept the common variants. Falling back to the connection *token* is
+        // semantically wrong — the token is a WebSocket auth credential, not a
+        // session id — so log a warning when no recognised id field is present
+        // rather than silently substituting it (F-OPEN-137).
+        let connection_id = ["connectionId", "ConnectionId", "connection_id"]
+            .iter()
+            .find_map(|key| negotiate.get(*key).and_then(|v| v.as_str()))
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "SignalR negotiate response has no connectionId field (checked \
+                     connectionId/ConnectionId/connection_id); falling back to connection token \
+                     as session id — debug context may be incorrect"
+                );
+                connection_token
+            })
             .to_string();
 
         // Connect WebSocket
@@ -785,12 +798,7 @@ impl BcDebugSession {
                     info!("Detached from debug connection (terminate={terminate})");
                 }
                 "OnFatalDebuggerException" => {
-                    let message = msg
-                        .arguments
-                        .as_ref()
-                        .and_then(|a| a.first())
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
+                    let message = fatal_exception_message(&msg.arguments);
                     error!("Fatal debugger exception: {message}");
                 }
                 _ => {
@@ -900,12 +908,22 @@ impl BcDebugSession {
             .await
         {
             Ok(_) => Ok(()),
-            Err(_) => {
-                // Older BC: no args
-                if let Err(e) = self.invoke("DebugAdapterConfigurationDone", vec![]).await {
-                    tracing::warn!("configurationDone fallback failed: {e}");
+            Err(first_err) => {
+                // Older BC: no args. If this also fails, both forms were
+                // rejected — surface the second error instead of silently
+                // returning Ok, so the caller (which uses `?`) can abort the
+                // debug session rather than proceeding with an unconfigured
+                // adapter that will misbehave on later operations.
+                match self.invoke("DebugAdapterConfigurationDone", vec![]).await {
+                    Ok(_) => Ok(()),
+                    Err(second_err) => {
+                        tracing::warn!(
+                            "configurationDone failed both with debug options ({first_err}) \
+                             and with no args ({second_err})"
+                        );
+                        Err(second_err)
+                    }
                 }
-                Ok(())
             }
         }
     }
@@ -1097,6 +1115,42 @@ impl BcDebugSession {
 }
 
 /// Convert a raw `SignalRMessage` (type-1 server callback) to a `BcEvent`.
+/// Extract an informative message from an `OnFatalDebuggerException` callback.
+///
+/// BC sends the fatal message as the first element of the `arguments` array.
+/// When that is unavailable, collapsing every failure into the opaque string
+/// `"unknown"` makes production troubleshooting of BC fatal errors very hard
+/// (F-OPEN-138). Instead, distinguish the three distinct failure shapes so the
+/// log line tells the operator *why* no message was extracted:
+///
+/// - `arguments` field absent entirely,
+/// - `arguments` present but an empty array,
+/// - first element present but not a JSON string (report its type).
+fn fatal_exception_message(arguments: &Option<Vec<serde_json::Value>>) -> String {
+    match arguments {
+        None => "<no message provided: arguments field absent — check BC server logs>".to_string(),
+        Some(args) => match args.first() {
+            None => {
+                "<no message provided: empty arguments array — check BC server logs>".to_string()
+            }
+            Some(v) => match v.as_str() {
+                Some(s) => s.to_string(),
+                None => {
+                    let kind = match v {
+                        serde_json::Value::Null => "null",
+                        serde_json::Value::Bool(_) => "bool",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::Array(_) => "array",
+                        serde_json::Value::Object(_) => "object",
+                        serde_json::Value::String(_) => "string",
+                    };
+                    format!("<non-string fatal message (received JSON {kind}); raw={v}>")
+                }
+            },
+        },
+    }
+}
+
 /// Returns `None` for messages that don't need to be forwarded to the DAP layer.
 fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
     let target = msg.target.as_deref()?;
@@ -1121,13 +1175,7 @@ fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
             Some(BcEvent::Detached { terminate })
         }
         "OnFatalDebuggerException" => {
-            let message = msg
-                .arguments
-                .as_ref()
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
+            let message = fatal_exception_message(&msg.arguments);
             Some(BcEvent::FatalError { message })
         }
         "IsAlive" | "OnAttachedToConnection" => None, // handled internally
@@ -1365,5 +1413,62 @@ mod tests {
     #[test]
     fn percent_encode_url_empty_string() {
         assert_eq!(percent_encode_url(""), "");
+    }
+
+    // --- fatal_exception_message (F-OPEN-138) --------------------------------
+
+    #[test]
+    fn fatal_message_returns_actual_string() {
+        let args = Some(vec![serde_json::json!("disk full")]);
+        assert_eq!(fatal_exception_message(&args), "disk full");
+    }
+
+    #[test]
+    fn fatal_message_distinguishes_absent_arguments() {
+        let msg = fatal_exception_message(&None);
+        assert!(
+            msg.contains("arguments field absent"),
+            "absent arguments must be distinguished: {msg}"
+        );
+        assert_ne!(msg, "unknown");
+    }
+
+    #[test]
+    fn fatal_message_distinguishes_empty_array() {
+        let msg = fatal_exception_message(&Some(vec![]));
+        assert!(
+            msg.contains("empty arguments array"),
+            "empty array must be distinguished: {msg}"
+        );
+        assert_ne!(msg, "unknown");
+    }
+
+    #[test]
+    fn fatal_message_reports_non_string_type_and_raw_value() {
+        let args = Some(vec![serde_json::json!(42)]);
+        let msg = fatal_exception_message(&args);
+        assert!(msg.contains("number"), "must report JSON type: {msg}");
+        assert!(msg.contains("42"), "must include raw value: {msg}");
+        assert_ne!(msg, "unknown");
+    }
+
+    #[test]
+    fn fatal_message_via_signalr_to_bc_event_is_informative() {
+        // Absent arguments on the actual conversion path must surface an
+        // informative FatalError, not the opaque "unknown" of old.
+        let msg = SignalRMessage {
+            type_: 1,
+            target: Some("OnFatalDebuggerException".to_string()),
+            arguments: None,
+            invocation_id: None,
+            result: None,
+            error: None,
+        };
+        match signalr_to_bc_event(&msg) {
+            Some(BcEvent::FatalError { message }) => {
+                assert!(message.contains("arguments field absent"), "{message}");
+            }
+            other => panic!("expected FatalError, got {other:?}"),
+        }
     }
 }
