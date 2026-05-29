@@ -1369,6 +1369,24 @@ Workspace test count: 1983 → 1988 (+5: 3 resolution composition tests, 2 DAP f
 
 Workspace test count: 1988 → 2000 (+12: 5 impact-matching tests, 7 dev_packages_url tests). All gates green.
 
+### Iteration 84 (2026-05-29)
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (new) AL identifier not escaped in generate_test() | **P1** | **Fixed.** `generators::generate_test` interpolated the user-supplied test name into a quoted AL codeunit identifier without escaping embedded `"`. Now runs it through `crate::permissions::al_escape_name`, matching `generate_page`/`generate_report`. +1 regression test. |
+| (new) Field names not escaped in generate_field_controls() | **P1** | **Fixed.** Field names were interpolated into `Rec."{name}"` page controls without escaping. Now escaped via `al_escape_name`. +1 regression test. |
+| (new) Field names not escaped in generate_report_columns() | **P1** | **Fixed.** Field names were interpolated into `column(...; "{name}")` report columns without escaping. Now escaped via `al_escape_name`. +1 regression test (same fix family as the two above). |
+| (new) Unbounded binary response read in profiling.rs stop_profiling | **P1** | **Fixed.** `resp.bytes().await?` on the `.alcpuprofile` download had no Content-Length cap. Added `bc_client::read_binary_body_capped` (500 MB, pre- and post-read check) and routed the download through it. |
+| (new) Unbounded binary response read in snapshot.rs download_snapshot | **P1** | **Fixed.** Same gap on the `.alvsc` download; now uses `read_binary_body_capped`. |
+| (new) Unbounded error-body reads in profiling.rs (2 paths) | P2 | **Fixed.** `resp.text().await` on non-2xx responses buffered the whole body before the 512-byte sanitize. Promoted `read_error_body_capped` (64 KiB pre-read cap) from `bc_server.rs` into `bc_client.rs` as a shared `pub(crate)` helper and routed both error paths through it. |
+| (new) Unbounded error-body reads in snapshot.rs (3 paths) | P2 | **Fixed.** Same fix applied to all three error paths via the shared helper. |
+| (new) Unbounded error-body reads in test_runner.rs (2 paths) | P2 | **Fixed.** Same fix applied to both error paths; `bc_server.rs` now delegates to the shared helper so all BC clients share one cap. |
+| (new) Missing regression tests for response capping | P3 | **Fixed.** Added 3 `read_binary_body_capped` tests (small body passes, oversize Content-Length rejected, chunked allowed + post-read bound) and 2 `read_error_body_capped` tests (small body returned, oversize Content-Length not buffered) to `bc_client.rs`, mirroring the F-OPEN-044 JSON-cap tests. |
+| F-OPEN-007 | P2 | **Closed.** Re-audited the daemon numeric-param surface: `timeoutMs` is clamped at both call sites (`clamp_timeout_ms`, cap 1 h), `minTokens`/`minSimilarity` clamped (iteration 76), `topN` capped at 1000. No `depth` param exists in `build_dispatch`. The only remaining numeric params (`thresholdCyclomatic`/`thresholdCognitive`) are filter comparison values with no allocation/DoS surface. The original "`timeoutMs`, `depth`" concern is fully addressed; removed from the active open count. |
+| F-OPEN-001, 005, 006, 009, 128 | P2/P3 | Carried forward — design / breadth / release-time items, not addressed this iteration (a large batch of confirmed new P1/P2 findings consumed the budget). |
+
+Workspace test count: 2000 → 2008 (+8: 3 generators escape tests, 3 `read_binary_body_capped` tests, 2 `read_error_body_capped` tests). All gates green.
+
 
 
 | Phase | Status | Output |
