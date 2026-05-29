@@ -256,6 +256,16 @@ impl FileIndex {
                     cap = MAX_AL_FILE_BYTES,
                     "skipping .al file: exceeds per-file size cap"
                 );
+                // If this path was previously indexed (it was small enough at
+                // the time) and has since grown past the cap, its old content,
+                // parse tree, and object/procedure mappings are now stale and
+                // will never be refreshed. Evict it so the index never serves
+                // outdated data for an oversized file. Record it as removed so
+                // callers can invalidate dependent caches.
+                if self.files.contains_key(path) {
+                    self.remove_file(path);
+                    delta.removed.push(path.clone());
+                }
                 continue;
             }
             let needs_index = match self.file_metadata.get(path) {
@@ -454,11 +464,18 @@ impl FileIndex {
     fn remove_procedures_for_file(&self, path: &Path) {
         if let Some((_, old_proc_names)) = self.path_to_procedures.remove(path) {
             for proc_name in old_proc_names {
-                if let Some(mut entries) = self.procedures.get_mut(&proc_name) {
-                    entries.retain(|e| e.file != path);
-                    if entries.is_empty() {
-                        drop(entries);
-                        self.procedures.remove(&proc_name);
+                // Use the entry API so the retain-then-maybe-remove sequence
+                // happens under a single, continuously-held shard lock. The
+                // previous get_mut → drop → remove sequence released the lock
+                // between the empty check and the removal: a concurrent
+                // `index_from_result` could push a fresh, legitimate entry for
+                // the same proc name in that window, which `remove` would then
+                // wipe out, causing intermittent go-to-definition misses.
+                use dashmap::mapref::entry::Entry;
+                if let Entry::Occupied(mut occ) = self.procedures.entry(proc_name) {
+                    occ.get_mut().retain(|e| e.file != path);
+                    if occ.get().is_empty() {
+                        occ.remove();
                     }
                 }
             }
@@ -687,6 +704,38 @@ mod tests {
         assert_eq!(index.len(), 1, "oversized .al file should not be indexed");
         assert!(index.get_content(&dir.path().join("ok.al")).is_some());
         assert!(index.get_content(&big).is_none());
+    }
+
+    #[test]
+    fn incremental_scan_evicts_file_that_grew_oversized() {
+        // A file indexed while small, then grown past the cap, must be evicted
+        // from the index on the next incremental scan rather than left serving
+        // stale content/parse-trees/object mappings.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Grower.al");
+        fs::write(&path, "codeunit 50100 \"Grower\" { }").unwrap();
+
+        let index = FileIndex::new();
+        let first = index.incremental_scan(dir.path());
+        assert_eq!(first.changed.len(), 1, "small file indexed on first scan");
+        assert!(index.get_content(&path).is_some());
+        assert_eq!(index.len(), 1);
+
+        // Grow the file past the cap (sparse) so the next scan must skip it.
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.set_len(MAX_AL_FILE_BYTES + 1).unwrap();
+        drop(f);
+
+        let second = index.incremental_scan(dir.path());
+        assert!(
+            second.removed.contains(&path),
+            "oversized-grown file should be reported removed"
+        );
+        assert!(
+            index.get_content(&path).is_none(),
+            "oversized-grown file must be evicted, not left stale"
+        );
+        assert_eq!(index.len(), 0);
     }
 
     #[test]
