@@ -104,16 +104,6 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
     // file's full text per-field → O(F²·L). Now field-lookup is O(1).
     let mut all_member_access_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
-    // F-OPEN-115 partial: also collect (object_lower, method_lower) pairs
-    // from text-extracted `Object.Method(` patterns. Used downstream as a
-    // POSITIVE signal when we want to know "was Foo.Bar() ever called
-    // qualified-with-Foo specifically" — but the existing flat bare-name
-    // sets are still consulted first to preserve the permissive behaviour
-    // (no false positives introduced; receiver-aware detection only ADDS
-    // information). Full receiver-scoping requires variable-type
-    // resolution (F-OPEN-084 territory) and stays open.
-    let mut all_qualified_calls: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::with_capacity(parsed_files.len() * 16);
     for (_, text, tree) in &all_files {
         all_call_names.extend(crate::syntax::collect_call_site_names(tree, text));
         for line in text.lines() {
@@ -133,15 +123,8 @@ pub fn dead_code(workspace: &Workspace) -> Vec<UnusedSymbol> {
             for tok in extract_member_access_names(line) {
                 all_member_access_names.insert(tok);
             }
-            // Qualified-call pairs: `Object.Method(` — for future
-            // receiver-scoping work.
-            for pair in extract_qualified_call_pairs(line) {
-                all_qualified_calls.insert(pair);
-            }
         }
     }
-    // Silence unused-var warning until receiver-scoping consumer lands.
-    let _ = &all_qualified_calls;
 
     // F-OPEN-118: parallelise per-file scans with rayon. Each file's
     // procedure / field / subscriber checks are independent given the
@@ -385,88 +368,6 @@ fn extract_member_access_names(line: &str) -> Vec<String> {
             i = end;
             continue;
         }
-        i += 1;
-    }
-    out
-}
-
-/// Extract `Object.Method(` qualified-call pairs from a single line. Returns
-/// `(object_lowercase, method_lowercase)` for each occurrence. Skips
-/// content inside `'`/`"` string/identifier literals (same quote-state
-/// discipline as `extract_text_call_names`). F-OPEN-115 partial — used as
-/// a positive signal alongside the flat bare-call sets.
-fn extract_qualified_call_pairs(line: &str) -> Vec<(String, String)> {
-    let trimmed = line.trim_start();
-    if trimmed.starts_with("//") {
-        return Vec::new();
-    }
-    let lower = line.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    let mut out = Vec::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'"' && !in_single {
-            in_double = !in_double;
-            i += 1;
-            continue;
-        }
-        if b == b'\'' && !in_double {
-            in_single = !in_single;
-            i += 1;
-            continue;
-        }
-        if in_single || in_double {
-            i += 1;
-            continue;
-        }
-        // Look for `(`. Walk left over identifier chars to form `method`,
-        // then require a `.` immediately before, and identifier chars
-        // before that for `object`.
-        if b != b'(' || i == 0 {
-            i += 1;
-            continue;
-        }
-        let m_end = i;
-        let mut m_start = m_end;
-        while m_start > 0 {
-            let prev = bytes[m_start - 1];
-            if !(prev.is_ascii_alphanumeric() || prev == b'_') {
-                break;
-            }
-            m_start -= 1;
-        }
-        if m_start == m_end {
-            i += 1;
-            continue;
-        }
-        // Require a `.` immediately before `method`.
-        if m_start == 0 || bytes[m_start - 1] != b'.' {
-            i += 1;
-            continue;
-        }
-        let dot = m_start - 1;
-        // Walk left for `object`.
-        let o_end = dot;
-        let mut o_start = o_end;
-        while o_start > 0 {
-            let prev = bytes[o_start - 1];
-            if !(prev.is_ascii_alphanumeric() || prev == b'_') {
-                break;
-            }
-            o_start -= 1;
-        }
-        // Skip if no object identifier (e.g. `."Method"(` quoted form is
-        // out of scope here — F-OPEN-115 needs proper var-type info anyway).
-        if o_start == o_end {
-            i += 1;
-            continue;
-        }
-        let object = &lower[o_start..o_end];
-        let method = &lower[m_start..m_end];
-        out.push((object.to_string(), method.to_string()));
         i += 1;
     }
     out
@@ -1198,35 +1099,6 @@ mod tests {
         );
     }
 
-    /// F-OPEN-115 (partial) — verify the qualified-call extractor.
-    #[test]
-    fn extract_qualified_call_pairs_basic() {
-        let pairs = extract_qualified_call_pairs("    SalesPost.Run(Rec);");
-        assert!(pairs.contains(&("salespost".to_string(), "run".to_string())));
-    }
-
-    #[test]
-    fn extract_qualified_call_pairs_skips_string_literal_content() {
-        let pairs = extract_qualified_call_pairs("Message('Foo.Bar(');");
-        // The Foo.Bar( inside the single-quoted string must not register.
-        assert!(pairs.is_empty(), "got: {:?}", pairs);
-    }
-
-    #[test]
-    fn extract_qualified_call_pairs_skips_bare_calls() {
-        let pairs = extract_qualified_call_pairs("    Run(Rec);");
-        // No qualifier dot → no pair emitted.
-        assert!(pairs.is_empty(), "got: {:?}", pairs);
-    }
-
-    #[test]
-    fn extract_qualified_call_pairs_multiple_per_line() {
-        let pairs = extract_qualified_call_pairs("if A.X() then B.Y() else C.Z();");
-        assert!(pairs.contains(&("a".to_string(), "x".to_string())));
-        assert!(pairs.contains(&("b".to_string(), "y".to_string())));
-        assert!(pairs.contains(&("c".to_string(), "z".to_string())));
-    }
-
     /// F-OPEN-116 regression: a procedure name that appears ONLY inside a
     /// string literal must NOT count as a reference. Previously
     /// `extract_text_call_names` walked any `ident(` token in the line
@@ -1358,5 +1230,129 @@ mod tests {
             "Procedure 'Post' is called from another file; must NOT be flagged unused. Got: {:?}",
             unused
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Unit tests for the quote-aware parsing helpers. These functions are on
+    // the dead-code hot path and track string-literal state; without direct
+    // coverage a refactor to quote handling could silently reintroduce false
+    // positives/negatives. (test-gap closed iteration 86)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn extract_text_call_names_basic() {
+        let names = extract_text_call_names("    DoStuff(Rec);");
+        assert!(names.contains(&"dostuff".to_string()), "got: {names:?}");
+    }
+
+    #[test]
+    fn extract_text_call_names_skips_procedure_declaration() {
+        // `procedure Foo(` is a declaration, not a call site.
+        let names = extract_text_call_names("    procedure Foo(x: Integer)");
+        assert!(!names.contains(&"foo".to_string()), "got: {names:?}");
+    }
+
+    #[test]
+    fn extract_text_call_names_skips_single_quoted_literal() {
+        // A `(` inside a single-quoted text literal must not register a call.
+        let names = extract_text_call_names("Message('DoStuff(');");
+        assert!(!names.contains(&"dostuff".to_string()), "got: {names:?}");
+        // The outer Message( call IS a real call site.
+        assert!(names.contains(&"message".to_string()), "got: {names:?}");
+    }
+
+    #[test]
+    fn extract_text_call_names_skips_double_quoted_literal() {
+        let names = extract_text_call_names("Foo := \"Bar(\";");
+        assert!(!names.contains(&"bar".to_string()), "got: {names:?}");
+    }
+
+    #[test]
+    fn extract_text_call_names_multiple_per_line() {
+        let names = extract_text_call_names("A() + B() + C()");
+        assert!(names.contains(&"a".to_string()));
+        assert!(names.contains(&"b".to_string()));
+        assert!(names.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn extract_member_access_names_plain() {
+        let names = extract_member_access_names("Rec.Amount := 5;");
+        assert!(names.contains(&"amount".to_string()), "got: {names:?}");
+    }
+
+    #[test]
+    fn extract_member_access_names_quoted_field() {
+        let names = extract_member_access_names("Rec.\"No. Series\" := '';");
+        assert!(names.contains(&"no. series".to_string()), "got: {names:?}");
+    }
+
+    #[test]
+    fn extract_member_access_names_skips_comment_line() {
+        let names = extract_member_access_names("    // Rec.Amount is set later");
+        assert!(names.is_empty(), "got: {names:?}");
+    }
+
+    #[test]
+    fn extract_member_access_names_skips_dot_inside_literal() {
+        // A `.ident` inside a string literal must not register.
+        let names = extract_member_access_names("Msg := 'see Rec.Hidden field';");
+        assert!(!names.contains(&"hidden".to_string()), "got: {names:?}");
+    }
+
+    #[test]
+    fn split_args_respects_quoted_comma() {
+        let args = split_args("Codeunit::\"Sales, Post\", 'OnAfter, Run'");
+        assert_eq!(args.len(), 2, "got: {args:?}");
+        assert_eq!(args[0], "Codeunit::\"Sales, Post\"");
+        assert_eq!(args[1], "'OnAfter, Run'");
+    }
+
+    #[test]
+    fn split_args_empty_input() {
+        assert!(split_args("").is_empty());
+    }
+
+    #[test]
+    fn parse_subscriber_args_well_formed() {
+        let (obj, event) = parse_subscriber_args(
+            "[EventSubscriber(ObjectType::Codeunit, Codeunit::\"Sales-Post\", 'OnAfterPostSalesDoc', '', false, false)]",
+        );
+        assert_eq!(obj, "Sales-Post");
+        assert_eq!(event, "OnAfterPostSalesDoc");
+    }
+
+    #[test]
+    fn parse_subscriber_args_missing_closing_paren() {
+        // No matching ')': inner is empty, so both fields default to "".
+        let (obj, event) = parse_subscriber_args("[EventSubscriber(ObjectType::Codeunit");
+        assert_eq!(obj, "");
+        assert_eq!(event, "");
+    }
+
+    #[test]
+    fn parse_subscriber_args_strips_type_prefix_and_quotes() {
+        let (obj, _) =
+            parse_subscriber_args("[EventSubscriber(ObjectType::Table, Table::\"Item\", 'OnX')]");
+        assert_eq!(obj, "Item");
+    }
+
+    #[test]
+    fn t045_collect_fields_handles_unclosed_quoted_name() {
+        // Malformed AL: the field name opens a quote but never closes it. The
+        // helper must drop it gracefully (no panic, no garbage name).
+        let mut fields: Vec<(String, u32)> = Vec::new();
+        extract_field_name_from_args("(1; \"UnclosedName; Integer)", 0, &mut fields);
+        assert!(
+            fields.is_empty(),
+            "unclosed quoted field name should be dropped, got: {fields:?}"
+        );
+    }
+
+    #[test]
+    fn t045_collect_fields_extracts_quoted_name() {
+        let mut fields: Vec<(String, u32)> = Vec::new();
+        extract_field_name_from_args("(1; \"My Field\"; Integer)", 4, &mut fields);
+        assert_eq!(fields, vec![("My Field".to_string(), 5)]);
     }
 }
