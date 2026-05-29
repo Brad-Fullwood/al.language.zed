@@ -4,13 +4,22 @@ mod settings;
 #[cfg(test)]
 mod merge_json_test;
 #[cfg(test)]
+mod repo_consistency_test;
+#[cfg(test)]
 mod settings_test;
 
 use serde_json::{json, Value};
 use std::fs;
 use zed_extension_api::{self as zed, settings::LspSettings, Result};
 
-const GITHUB_REPO: &str = "Brad-Fullwood/zed-al";
+/// GitHub repository that publishes the `al-lsp` release assets the extension
+/// downloads in step 4 of `find_or_download_binary`. This MUST match the actual
+/// repository (the `origin` git remote / `extension.toml` `repository` field),
+/// otherwise `latest_github_release` fails with "repository not found" and a
+/// fresh user's language server never spawns. A CI consistency check
+/// (`scripts/check-repo-consistency.sh`) and the `github_repo_matches_extension_toml`
+/// unit test guard against this drifting.
+const GITHUB_REPO: &str = "Brad-Fullwood/al.language.zed";
 
 struct AlExtension {
     /// Path to a previously downloaded al-lsp binary in the extension work dir.

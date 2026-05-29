@@ -230,7 +230,7 @@ The WASM extension resolves `al-lsp` in this order:
 1. `lsp.al-lsp.binary.path` in Zed settings, if set
 2. Previously downloaded binary in the extension work directory
 3. `al-lsp` on `$PATH`
-4. Download from the latest GitHub release of `Brad-Fullwood/zed-al`
+4. Download from the latest GitHub release of `Brad-Fullwood/al.language.zed`
    (`al-<os>-<arch>.tar.gz`)
 
 ---

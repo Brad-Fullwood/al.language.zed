@@ -110,3 +110,16 @@ jobs:
 
       - name: Build zed-al WASM extension
         run: cargo build -p zed-al --target wasm32-wasip1 --release
+
+      # The main `ci` job excludes zed-al (it targets wasm), so the WASM
+      # crate's host-runnable unit tests — including the repo-slug guard that
+      # keeps GITHUB_REPO in sync with extension.toml so the LSP download
+      # never points at the wrong repository — are exercised here on the host.
+      - name: Test zed-al (host)
+        run: cargo test -p zed-al
+
+      # Fail the build if the al-lsp download target (GITHUB_REPO in src/lib.rs)
+      # drifts from extension.toml / the git remote. A mismatch silently breaks
+      # binary resolution for every new user (latest_github_release -> not found).
+      - name: Check repository slug consistency
+        run: ./scripts/check-repo-consistency.sh
