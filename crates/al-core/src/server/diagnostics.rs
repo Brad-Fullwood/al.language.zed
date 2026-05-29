@@ -348,17 +348,25 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
         _ => DiagnosticSeverity::WARNING,
     };
 
+    // Normalize the range so start <= end. A malformed bridge entry (e.g.
+    // end_line < line) would otherwise produce a backwards LSP Range, which
+    // violates the spec and can be silently discarded or mis-rendered by editors.
+    let start = Position {
+        line: entry.line.saturating_sub(1),
+        character: entry.column.saturating_sub(1),
+    };
+    let end = Position {
+        line: entry.end_line.saturating_sub(1),
+        character: entry.end_column.saturating_sub(1),
+    };
+    let (start, end) = if (end.line, end.character) < (start.line, start.character) {
+        (end, start)
+    } else {
+        (start, end)
+    };
+
     Diagnostic {
-        range: Range {
-            start: Position {
-                line: entry.line.saturating_sub(1),
-                character: entry.column.saturating_sub(1),
-            },
-            end: Position {
-                line: entry.end_line.saturating_sub(1),
-                character: entry.end_column.saturating_sub(1),
-            },
-        },
+        range: Range { start, end },
         severity: Some(severity),
         code: Some(NumberOrString::String(entry.code.clone())),
         source: Some("al-analyzer".to_string()),
@@ -469,6 +477,32 @@ mod tests {
         // Lines are 1-based in semantic, 0-based in LSP
         assert_eq!(diag.range.start.line, 9);
         assert_eq!(diag.range.start.character, 4);
+    }
+
+    #[test]
+    fn semantic_to_diagnostic_normalizes_backwards_range() {
+        // A malformed bridge entry with end before start must be normalized so
+        // the resulting LSP Range satisfies start <= end (LSP spec requirement).
+        let entry = crate::semantic::DiagnosticEntry {
+            file: std::path::PathBuf::from("/src/test.al"),
+            line: 10,
+            column: 15,
+            end_line: 5,
+            end_column: 2,
+            severity: "Error".to_string(),
+            code: "AL0001".to_string(),
+            message: "Backwards".to_string(),
+        };
+
+        let diag = semantic_to_diagnostic(&entry);
+        let start = (diag.range.start.line, diag.range.start.character);
+        let end = (diag.range.end.line, diag.range.end.character);
+        assert!(
+            start <= end,
+            "Range must not be backwards: start={:?} end={:?}",
+            start,
+            end
+        );
     }
 
     // T1503: test diagnostic conversion

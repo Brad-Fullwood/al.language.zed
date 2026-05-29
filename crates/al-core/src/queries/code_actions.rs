@@ -358,14 +358,15 @@ fn source_action_add_region(uri: &Url, text: &str, range: Range) -> Option<CodeA
         },
         new_text: format!("{}//region MyRegion\n", indent),
     };
+    let end_line = range.end.line.saturating_add(1);
     let region_end = TextEdit {
         range: Range {
             start: super::Position {
-                line: range.end.line + 1,
+                line: end_line,
                 character: 0,
             },
             end: super::Position {
-                line: range.end.line + 1,
+                line: end_line,
                 character: 0,
             },
         },
@@ -1724,15 +1725,16 @@ fn source_action_move_tooltip(
         return None;
     }
 
-    // Delete from start of line to start of next line
+    // Delete from start of line to start of next line. Use checked conversion so
+    // a pathological cursor_line near u32::MAX cannot wrap the next-line index.
     let edit = TextEdit {
         range: Range {
             start: super::Position {
-                line: cursor_line as u32,
+                line: u32::try_from(cursor_line).unwrap_or(u32::MAX),
                 character: 0,
             },
             end: super::Position {
-                line: (cursor_line + 1) as u32,
+                line: u32::try_from(cursor_line.saturating_add(1)).unwrap_or(u32::MAX),
                 character: 0,
             },
         },
@@ -2519,9 +2521,12 @@ fn source_action_convert_event_subscriber(
     // is typically on the same line as the cursor or we look within a small window.
     let cursor_line = range.start.line as usize;
 
-    // Scan a few lines around the cursor for the EventSubscriber attribute
-    let search_start = cursor_line.saturating_sub(2);
-    let search_end = (cursor_line + 3).min(text.lines().count());
+    // Scan a few lines around the cursor for the EventSubscriber attribute.
+    // Clamp both bounds against the document length so a stale/extreme cursor
+    // line cannot make `search_end - search_start` underflow below.
+    let line_count = text.lines().count();
+    let search_start = cursor_line.saturating_sub(2).min(line_count);
+    let search_end = cursor_line.saturating_add(3).min(line_count);
 
     let mut attr_line_idx: Option<usize> = None;
     let mut attr_line_text = String::new();
@@ -5205,5 +5210,72 @@ codeunit 50100 "My Codeunit"
             "Out-of-range line must not yield an if-to-case action; got: {:?}",
             action
         );
+    }
+
+    /// Regression: source_action_add_region used to compute `range.end.line + 1`
+    /// with unchecked u32 arithmetic. A malformed client sending
+    /// `range.end.line == u32::MAX` would panic in debug builds or wrap to 0 in
+    /// release. With saturating_add the endregion edit clamps at u32::MAX.
+    #[test]
+    fn source_action_add_region_does_not_overflow_on_max_line() {
+        let al_code = "codeunit 50100 T { }\n";
+        let uri = Url::parse("file:///test/Region.al").unwrap();
+        let range = Range {
+            start: super::super::Position {
+                line: 0,
+                character: 0,
+            },
+            end: super::super::Position {
+                line: u32::MAX,
+                character: 0,
+            },
+        };
+        // Must not panic.
+        let action = source_action_add_region(&uri, al_code, range);
+        assert!(action.is_some(), "Region action should still be produced");
+    }
+
+    /// Regression / test-gap: handle_code_action passes the raw LSP Range
+    /// straight into source_actions(). Malformed ranges (u32::MAX line, start
+    /// past document end, backwards range) must be handled without panicking.
+    #[test]
+    fn source_actions_handles_malformed_ranges_without_panic() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "Test"
+{
+    procedure DoIt(x: Integer)
+    begin
+        if x = 1 then
+            Message('one');
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/Malformed.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+        let total = al_code.lines().count() as u32;
+
+        let cases = [
+            // end line at the u32 boundary
+            (0u32, u32::MAX),
+            // start well past the document
+            (total + 100, total + 100),
+            // backwards range (end < start)
+            (5, 1),
+        ];
+
+        for (start_line, end_line) in cases {
+            let range = Range {
+                start: super::super::Position {
+                    line: start_line,
+                    character: 0,
+                },
+                end: super::super::Position {
+                    line: end_line,
+                    character: 0,
+                },
+            };
+            // The contract is simply: no panic. Return value may be empty or not.
+            let _ = source_actions(&ws, &uri, range);
+        }
     }
 }

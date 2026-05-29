@@ -493,11 +493,15 @@ async fn download_symbols_from_server(
     let results = client.download_all(&url_deps, &dest).await;
 
     let mut downloaded = Vec::new();
-    for (i, result) in results.into_iter().enumerate() {
+    // `results` is parallel to `url_deps` (not `deps`): some dependencies are
+    // filtered out above when they lack a dev_packages_url, so indexing into
+    // `deps[i]` would be out of bounds. Pair each result with its originating
+    // dependency from `url_deps` instead.
+    for ((_, dep), result) in url_deps.iter().zip(results) {
         match result {
             Ok(path) => {
                 info!(
-                    package = %deps[i].name,
+                    package = %dep.name,
                     path = %path.display(),
                     "Downloaded from BC server"
                 );
@@ -505,7 +509,7 @@ async fn download_symbols_from_server(
             }
             Err(e) => {
                 warn!(
-                    package = %deps[i].name,
+                    package = %dep.name,
                     error = %e,
                     "Failed to download from BC server"
                 );
