@@ -108,7 +108,16 @@ fn try_acquire_spawn_lock(sock_path: &Path) -> std::io::Result<SpawnLockResult> 
     // Stale-lock recovery: the previous spawner died mid-spawn.
     if let Ok(meta) = std::fs::metadata(&lock_path) {
         if let Ok(modified) = meta.modified() {
-            if modified.elapsed().unwrap_or_default() > STALE_LOCK_AGE {
+            // `elapsed()` errors when the system clock has moved backward since
+            // the lock was written. Treat that as "assume stale" and drop the
+            // lock, rather than `unwrap_or_default()` → `Duration::ZERO`, which
+            // would wedge a genuinely-crashed spawner's lock in place until the
+            // clock catches back up past `STALE_LOCK_AGE`.
+            let is_stale = match modified.elapsed() {
+                Ok(age) => age > STALE_LOCK_AGE,
+                Err(_) => true,
+            };
+            if is_stale {
                 let _ = std::fs::remove_file(&lock_path);
             }
         }
