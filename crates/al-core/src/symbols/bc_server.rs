@@ -65,6 +65,13 @@ pub struct BcServerClient {
     /// dead token after the disk cache had already been invalidated
     /// (F-OPEN-013).
     cached_token: tokio::sync::RwLock<Option<String>>,
+    /// Set once a 401/403 is seen while the `BC_ACCESS_TOKEN` env var was the
+    /// auth source. The env var is a manual one-shot override; if it is stale
+    /// there is no way to refresh it in-process, and re-presenting it on every
+    /// retry just burns requests against the same dead credential. Once this
+    /// flag is set, `add_auth` stops honouring the env var and falls through to
+    /// the OAuth acquisition flow, which *can* recover (F-OPEN-129).
+    stale_env_token: std::sync::atomic::AtomicBool,
 }
 
 impl BcServerClient {
@@ -101,6 +108,7 @@ impl BcServerClient {
             tenant,
             message_sink,
             cached_token: tokio::sync::RwLock::new(None),
+            stale_env_token: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -196,6 +204,15 @@ impl BcServerClient {
                 // token; the disk-cache invalidation above does not touch it
                 // (F-OPEN-013).
                 self.reset_cached_token().await;
+                // If the auth came from the BC_ACCESS_TOKEN env var, mark it
+                // stale so subsequent retries fall through to the OAuth flow
+                // instead of re-presenting the same dead token on every call
+                // (F-OPEN-129).
+                if matches!(self.auth, AuthMethod::AAD) && std::env::var("BC_ACCESS_TOKEN").is_ok()
+                {
+                    self.stale_env_token
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 Err(BcServerError::AuthenticationFailed {
                     status,
                     // Truncate + scrub: never propagate the full BC error body
@@ -232,6 +249,25 @@ impl BcServerClient {
         futures::future::join_all(futures).await
     }
 
+    /// Whether the `BC_ACCESS_TOKEN` env-var override should still be honoured.
+    ///
+    /// Returns `false` once a 401/403 has flagged the env token as stale, so
+    /// `add_auth` falls through to the OAuth acquisition flow instead of
+    /// re-presenting a dead credential on every retry (F-OPEN-129).
+    fn env_token_active(&self) -> bool {
+        !self
+            .stale_env_token
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Mark the `BC_ACCESS_TOKEN` env-var override as stale (test seam mirror of
+    /// the 401/403 handler).
+    #[cfg(test)]
+    fn mark_env_token_stale(&self) {
+        self.stale_env_token
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Add authentication headers to the request based on the auth method.
     async fn add_auth(
         &self,
@@ -252,9 +288,14 @@ impl BcServerClient {
             }
             AuthMethod::AAD => {
                 // Azure AD / Microsoft Entra ID — device code flow with token caching
-                // Check for explicit env var first (manual override)
-                if let Ok(token) = std::env::var("BC_ACCESS_TOKEN") {
-                    return Ok(request.bearer_auth(token));
+                // Check for explicit env var first (manual override). Skip it
+                // once a 401/403 has flagged that env token as stale, so we can
+                // recover via the OAuth flow instead of re-presenting a dead
+                // credential on every retry (F-OPEN-129).
+                if self.env_token_active() {
+                    if let Ok(token) = std::env::var("BC_ACCESS_TOKEN") {
+                        return Ok(request.bearer_auth(token));
+                    }
                 }
 
                 let tenant = self.tenant.as_deref().unwrap_or("common");
@@ -381,6 +422,28 @@ mod tests {
         assert_eq!(sanitize_path_component(""), "_");
         // A drive-letter style prefix is neutralised.
         assert_eq!(sanitize_path_component("C:\\x"), "C__x");
+    }
+
+    #[test]
+    fn test_stale_env_token_disables_env_override() {
+        // A fresh client honours the BC_ACCESS_TOKEN env override; once a
+        // 401/403 marks it stale, the override is skipped so add_auth can fall
+        // through to the OAuth flow and recover (F-OPEN-129).
+        let sink: MessageSink = Arc::new(|_: &str| {});
+        let client =
+            BcServerClient::new(AuthMethod::AAD, Some("tenant".to_string()), sink, false).unwrap();
+
+        assert!(
+            client.env_token_active(),
+            "env override should be active on a fresh client"
+        );
+
+        client.mark_env_token_stale();
+
+        assert!(
+            !client.env_token_active(),
+            "env override must be skipped once flagged stale"
+        );
     }
 
     #[test]
