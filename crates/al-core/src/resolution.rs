@@ -684,9 +684,19 @@ pub(crate) fn format_xml_doc(s: &str) -> String {
         summary = text;
     }
 
-    // Extract all <param name="X">...</param>
+    // Extract all <param name="X">...</param>.
+    //
+    // Cap the number of params we extract. A real AL signature has a handful of
+    // parameters; an adversarial or malformed documentation string with
+    // thousands of `<param>` tags (or unclosed ones forcing repeated rescans)
+    // would otherwise drive an O(params * doc_len) search. 256 is far above any
+    // legitimate signature while keeping the worst case bounded.
+    const MAX_PARAMS: usize = 256;
     let mut search_from = 0;
-    while let Some(start) = s[search_from..].find("<param ") {
+    while params.len() < MAX_PARAMS {
+        let Some(start) = s[search_from..].find("<param ") else {
+            break;
+        };
         let abs_start = search_from + start;
         if let Some(name) = extract_attribute(&s[abs_start..], "name") {
             if let Some(end_tag) = s[abs_start..].find("</param>") {
@@ -1703,6 +1713,31 @@ mod tests {
         let result = format_xml_doc(xml);
         assert!(result.contains("Compute total."));
         assert!(result.contains("Values are rounded."));
+    }
+
+    #[test]
+    fn format_xml_doc_caps_pathological_param_count() {
+        // Adversarial / malformed documentation: thousands of <param> tags must
+        // not drive an unbounded extraction. The cap (256) keeps the worst case
+        // bounded; we just assert it returns promptly and does not blow up.
+        let mut xml = String::from("<summary>x</summary>");
+        for i in 0..5000 {
+            xml.push_str(&format!("<param name=\"p{i}\">d{i}</param>"));
+        }
+        let result = format_xml_doc(&xml);
+        assert!(result.contains("Parameters") || result.contains("p0"));
+        // Only the first MAX_PARAMS (256) params are rendered; param 300 is past
+        // the cap and must be absent.
+        assert!(!result.contains("p300"));
+    }
+
+    #[test]
+    fn format_xml_doc_unclosed_param_terminates() {
+        // A <param> with no closing tag would, without the cap, still terminate
+        // via the `break` on missing </param>. Assert it doesn't hang or panic.
+        let xml = "<summary>s</summary><param name=\"x\">no close here";
+        let result = format_xml_doc(xml);
+        assert!(result.contains("s"));
     }
 
     // ------------------------------------------------------------------
