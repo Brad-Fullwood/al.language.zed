@@ -1324,6 +1324,21 @@ New follow-up recorded:
 Workspace test count: 1968 → 1972 (+4: var-modifier, case-insensitive return type, human-readable return-type description in `breaking_changes`; HTTP-status preservation in `bc_client`. The strengthened zed-al settings test runs under the separate WASM crate and is not counted in the `--exclude zed-al` total). All gates green.
 
 
+### Iteration 81 (2026-05-29)
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (new) zero/missing breakpoint id | **P2** | **Fixed.** `native_dap.rs` setBreakpoints extracted the BC breakpoint id with `unwrap_or(0)`. BC's `AddBreakpoint` can return `Ok(Value::Null)` or a payload with no `Id`/`id` field (`bc_debug.rs:945`), so a failed extraction silently recorded id `0`, reported `verified: true`, and orphaned the real breakpoint (the next setBreakpoints could not remove it). Added a standalone `extract_breakpoint_id` helper that maps missing/null/zero to `None`; the handler now reports `verified: false` with an explanatory message and does not track the breakpoint. +2 regression tests (Pascal/camel id read; null/missing/zero rejection). |
+| (new) parameter inlay-hint test-gap | **P2** | **Fixed (test-gap closed).** The parameter-hint pipeline (`collect_inlay_hints` → `infer_argument_types` → `lookup_parameter_names` → `add_parameter_hints`) had zero unit coverage; all 5 prior inline tests exercised only return-type hints. Added 8 unit tests: local-procedure hints, overload selection by arity, overload selection by type match, literal argument-type inference (Integer/Decimal/Boolean/Text), plain-call info extraction, member-call receiver extraction, UTF-16 hint placement with a non-ASCII argument, and arg/param-count-mismatch handling. |
+| (new) `extract_call_info` empty-name path | P3 | **Fixed.** All three match arms used `utf8_text(source).unwrap_or("")`, so a UTF-8 decode failure or an empty quoted identifier produced `Some(("", ..))` and ran the full lookup pipeline with a blank name. Now returns `None` on decode failure or empty-after-trim. +1 regression test (empty quoted name → not `Some("")`). |
+| F-OPEN-002 | P3 | **Closed — won't-fix-by-policy.** "Split 6 files >1500 LOC" requires renaming/restructuring files, which CLAUDE.md Scope Discipline explicitly forbids. Removed from the active open count. |
+| F-OPEN-004 | P3 | **Deferred-to-release.** Pinning `zed_extension_api` from its `main`-branch git ref to a SHA is a release-time action (the extension must track upstream during development). Recorded as a release checklist item; removed from the active open count. |
+| F-OPEN-008 | P2 | **Closed — verified by-design.** GitHub release download integrity is delegated to `zed::download_file`, which uses Zed's host HTTP client (rustls + platform-verifier, validating against the OS root-CA store). SHA verification against `asset.digest` is impractical: the WASM sandbox has no hashing primitive. The rationale is already documented in `src/lib.rs:173-179`. Trusting platform TLS is sufficient; closed. |
+| F-OPEN-005, 006, 007, 009, 001, 128 | P2/P3 | Carried forward — design / breadth items, not addressed this iteration. |
+
+Workspace test count: 1972 → 1983 (+11: 9 inlay_hints parameter-pipeline tests, 2 native_dap breakpoint-id tests). All gates green.
+
+
 
 | Phase | Status | Output |
 |---|---|---|
