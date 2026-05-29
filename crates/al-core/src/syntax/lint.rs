@@ -98,6 +98,6 @@ mod tests {
     #[test]
     fn lint_config_has_default() {
         // LintConfig::default() must compile and produce a value.
-        let _cfg = LintConfig;
+        let _cfg = LintConfig::default();
     }
 }
