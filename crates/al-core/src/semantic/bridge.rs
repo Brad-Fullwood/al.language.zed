@@ -154,6 +154,34 @@ pub enum SemanticError {
     /// full bridge restart.
     #[error("Bridge in cooldown after recent timeout/hang ({0})")]
     Cooldown(&'static str),
+
+    /// The caller-supplied document buffer exceeds `MAX_TEXT_BYTES`. Rejected
+    /// at the bridge boundary before JSON serialization so a pathologically
+    /// large open document can't balloon the bridge's memory footprint.
+    #[error("Input document too large ({size} bytes, max {max})")]
+    InputTooLarge { size: usize, max: usize },
+}
+
+/// Maximum size (in bytes) of a caller-supplied unsaved-text buffer accepted by
+/// position-based bridge calls (`type_at` / `completions_at`). Buffers larger
+/// than this are rejected before JSON serialization to bound the bridge's
+/// memory use; a real AL source file is orders of magnitude smaller. This is a
+/// transport/resource limit, not an AL language value.
+pub const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Reject a caller-supplied unsaved-text buffer that exceeds [`MAX_TEXT_BYTES`].
+/// Pulled out of `type_at` / `completions_at` so the boundary check is shared
+/// and unit-testable without a live CLR.
+fn check_text_size(text: Option<&str>) -> Result<(), SemanticError> {
+    if let Some(t) = text {
+        if t.len() > MAX_TEXT_BYTES {
+            return Err(SemanticError::InputTooLarge {
+                size: t.len(),
+                max: MAX_TEXT_BYTES,
+            });
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +405,7 @@ impl SemanticBridge {
             "line": pos.0,
             "column": pos.1,
         });
+        check_text_size(text)?;
         if let Some(t) = text {
             params["text"] = serde_json::Value::String(t.to_string());
         }
@@ -407,6 +436,7 @@ impl SemanticBridge {
             "line": pos.0,
             "column": pos.1,
         });
+        check_text_size(text)?;
         if let Some(t) = text {
             params["text"] = serde_json::Value::String(t.to_string());
         }
@@ -721,5 +751,42 @@ mod tests {
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json["analyzers"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_check_text_size_none_ok() {
+        assert!(check_text_size(None).is_ok());
+    }
+
+    #[test]
+    fn test_check_text_size_small_ok() {
+        assert!(check_text_size(Some("codeunit 50000 Foo { }")).is_ok());
+    }
+
+    #[test]
+    fn test_check_text_size_at_limit_ok() {
+        // Exactly MAX_TEXT_BYTES is accepted (the check is strictly greater-than).
+        let buf = "a".repeat(MAX_TEXT_BYTES);
+        assert!(check_text_size(Some(&buf)).is_ok());
+    }
+
+    #[test]
+    fn test_check_text_size_over_limit_rejected() {
+        let buf = "a".repeat(MAX_TEXT_BYTES + 1);
+        match check_text_size(Some(&buf)) {
+            Err(SemanticError::InputTooLarge { size, max }) => {
+                assert_eq!(size, MAX_TEXT_BYTES + 1);
+                assert_eq!(max, MAX_TEXT_BYTES);
+            }
+            other => panic!("expected InputTooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_input_too_large_error_display() {
+        let err = SemanticError::InputTooLarge { size: 99, max: 16 };
+        let msg = err.to_string();
+        assert!(msg.contains("99"), "message should contain size: {msg}");
+        assert!(msg.contains("16"), "message should contain max: {msg}");
     }
 }

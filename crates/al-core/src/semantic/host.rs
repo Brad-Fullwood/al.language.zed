@@ -30,6 +30,14 @@ type HandleRequestFn = unsafe extern "system" fn(*const u8, c_int, *mut c_int) -
 #[cfg(feature = "semantic")]
 type FreeBufferFn = unsafe extern "system" fn(*mut u8);
 
+/// Defensive upper bound on a single bridge response, in bytes. A buggy or
+/// misbehaving bridge could report a `response_len` larger than the buffer it
+/// actually allocated; this cap prevents `from_raw_parts` from constructing an
+/// out-of-bounds slice. No legitimate CodeAnalysis response approaches this
+/// size. This is a resource/safety limit, not an AL language value.
+#[cfg(feature = "semantic")]
+const MAX_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
+
 /// In-process .NET host wrapping the bridge DLL.
 ///
 /// Thread-safe: the .NET runtime is initialized once and function pointers
@@ -188,6 +196,22 @@ impl DotNetHost {
             unsafe { (self.free_buffer_fn)(response_ptr) };
             return Err(SemanticError::HostInit(format!(
                 "HandleRequest returned negative response length: {response_len}"
+            )));
+        }
+
+        // Defensive upper bound on the reported response length. The buffer was
+        // allocated by the bridge, but a buggy bridge could report a length far
+        // larger than what it actually allocated; passing that to
+        // `from_raw_parts` below would create an out-of-bounds slice and an OOB
+        // read in `to_vec`. Cap at a generous limit (no legitimate bridge
+        // response approaches it) and free + error out otherwise. Mirrors the
+        // request-side `c_int::try_from` bound above.
+        if response_len as usize > MAX_RESPONSE_BYTES {
+            // SAFETY: response_ptr is non-null (checked above); free_buffer_fn
+            // frees the buffer this CLR allocated.
+            unsafe { (self.free_buffer_fn)(response_ptr) };
+            return Err(SemanticError::HostInit(format!(
+                "HandleRequest returned implausible response length: {response_len} bytes (max {MAX_RESPONSE_BYTES})"
             )));
         }
 
