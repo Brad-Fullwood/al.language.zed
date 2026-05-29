@@ -1469,6 +1469,19 @@ Focused backlog drain: one code fix plus two triage dispositions, each committed
 
 Workspace test count: 2044 → 2047 (+3, all from F-OPEN-112 range-format regression tests). All gates green (fmt, check, clippy `-D warnings`, test, WASM build).
 
+### Iteration 90 (2026-05-29)
+
+Cleared the entire new-confirmed-findings batch (8 items spanning one P0, three P1, two P2, one P3 test-gap; the P1 TableRelation test-gap is satisfied by the same regression test added for the P2 parser fix). Three logical code commits.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-147 | **P0** | **Fixed.** `profiling::stop_profiling` created `output_dir` and wrote the downloaded `.alcpuprofile` without validating `is_absolute()`; in the long-lived daemon a relative path resolves against the process cwd and escapes to an arbitrary location. The `ProfilingError::RelativeOutputDir` variant existed but was unused. Now validated up front, before the network round-trip (fail fast), mirroring the `snapshot.rs` guard. +1 regression test (`relative_output_dir_rejected`). |
+| F-OPEN-148 | P2 | **Fixed.** `insight::graph::build_from_index` extracted the related table from a `TableRelation` value with a naive `trim_matches('"')`, leaving trailing `WHERE`/`FIELD`/`IF` clauses and dotted field refs intact (`"Item" WHERE(...)` → bogus node key), so the `RelatesTo` edge was never created for real relations. Now delegates to `analysis::extract_table_relation_table`. +1 regression test (`table_relation_edges_with_clauses`) — this also closes the paired P1 test-gap finding. |
+| F-OPEN-149 | P1 | **Fixed.** `file_index::incremental_scan` skipped a file that had grown past `MAX_AL_FILE_BYTES` but left it in `on_disk`, so the deletion sweep never removed it — its stale content/parse-tree/object mappings persisted indefinitely. Now evicts such a file (and reports it in `ScanDelta.removed`) when skipped for size. +1 regression test (`incremental_scan_evicts_file_that_grew_oversized`); this also satisfies the P3 size-cap-transition test-gap finding. |
+| F-OPEN-150 | P2 | **Fixed.** `file_index::remove_procedures_for_file` released the DashMap shard lock between the empty-check and the removal (`get_mut → retain → drop → remove`); a concurrent `index_from_result` could push a fresh legitimate entry in that window which `remove` then wiped, causing intermittent go-to-definition misses. Now uses the `Entry` API to hold the lock across the whole retain-then-maybe-remove. |
+
+Workspace test count: 2047 → 2050 (+3 regression tests). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
+
 
 
 | Phase | Status | Output |
