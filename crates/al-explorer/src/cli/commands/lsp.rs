@@ -510,11 +510,13 @@ pub fn cmd_lint(file: Option<&str>, all: bool, analyzers: Option<&str>, json: bo
         params["analyzers"] = serde_json::json!(analyzer_list);
     }
     if let Some(f) = file {
-        if let Some(uri) = file_to_uri(f) {
-            params["uri"] = serde_json::json!(uri);
-        } else {
-            params["file"] = serde_json::json!(f);
-        }
+        // file_to_uri() prints "file not found" on failure; surface a clear
+        // client-side error instead of forwarding an unresolvable raw path that
+        // would only trigger a second, confusing error from the daemon.
+        let Some(uri) = file_to_uri(f) else {
+            return report_error(&format!("Cannot resolve path: {f}"), json);
+        };
+        params["uri"] = serde_json::json!(uri);
     }
     match client.request("lint", Some(params)) {
         Ok(result) => {
@@ -580,12 +582,10 @@ pub fn cmd_format(file: Option<&str>, check: bool, stdin: bool, all: bool, json:
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let mut params = serde_json::json!({ "check": check });
-    if let Some(uri) = file_to_uri(file) {
-        params["uri"] = serde_json::json!(uri);
-    } else {
-        params["file"] = serde_json::json!(file);
-    }
+    let Some(uri) = file_to_uri(file) else {
+        return report_error(&format!("Cannot resolve path: {file}"), json);
+    };
+    let params = serde_json::json!({ "check": check, "uri": uri });
     match client.request("format", Some(params)) {
         Ok(result) => {
             let changed = result
@@ -1180,12 +1180,10 @@ pub fn cmd_parse(file: &str, json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let mut params = serde_json::json!({});
-    if let Some(uri) = file_to_uri(file) {
-        params["uri"] = serde_json::json!(uri);
-    } else {
-        params["file"] = serde_json::json!(file);
-    }
+    let Some(uri) = file_to_uri(file) else {
+        return report_error(&format!("Cannot resolve path: {file}"), json);
+    };
+    let params = serde_json::json!({ "uri": uri });
     match client.request("parse", Some(params)) {
         Ok(result) => {
             if json {
@@ -1264,11 +1262,10 @@ pub fn cmd_fix(file: Option<&str>, dry_run: bool, rule: Option<&str>, json: bool
     };
     let mut params = serde_json::json!({ "dryRun": dry_run });
     if let Some(f) = file {
-        if let Some(uri) = file_to_uri(f) {
-            params["uri"] = serde_json::json!(uri);
-        } else {
-            params["file"] = serde_json::json!(f);
-        }
+        let Some(uri) = file_to_uri(f) else {
+            return report_error(&format!("Cannot resolve path: {f}"), json);
+        };
+        params["uri"] = serde_json::json!(uri);
     }
     if let Some(r) = rule {
         params["rule"] = serde_json::json!(r);
@@ -1558,11 +1555,10 @@ pub fn cmd_metrics(
     });
 
     if let Some(f) = file {
-        if let Some(uri) = file_to_uri(f) {
-            params["uri"] = serde_json::json!(uri);
-        } else {
-            params["file"] = serde_json::json!(f);
-        }
+        let Some(uri) = file_to_uri(f) else {
+            return report_error(&format!("Cannot resolve path: {f}"), json);
+        };
+        params["uri"] = serde_json::json!(uri);
     }
 
     match client.request("metrics", Some(params)) {
@@ -1890,7 +1886,18 @@ pub fn cmd_test_run(
 
 /// `al-explorer test-affected <files...>` — show which tests touch any of the given files.
 pub fn cmd_test_affected(files: &[String], json: bool) -> ExitCode {
-    let params = serde_json::json!({ "changedFiles": files });
+    // Canonicalize client-side against the CLI's working directory. The daemon
+    // canonicalizes from its own CWD, so a relative path supplied here would not
+    // match the absolute paths in the daemon's file index. Resolve each path now
+    // and error if any cannot be found, matching the test-snapshot diff pattern.
+    let mut abs_files = Vec::with_capacity(files.len());
+    for f in files {
+        match std::path::Path::new(f).canonicalize() {
+            Ok(p) => abs_files.push(p.display().to_string()),
+            Err(e) => return report_error(&format!("Cannot resolve path '{f}': {e}"), json),
+        }
+    }
+    let params = serde_json::json!({ "changedFiles": abs_files });
     run_command("tests.affected", Some(params), json, None, |result| {
         let affected = result
             .get("affected")
