@@ -1551,6 +1551,18 @@ Triaged worklist: two genuine bug fixes, one regression-test backfill, one false
 
 Workspace test count: 2084 → 2094 (+10 regression tests; the new client.rs UTF-8/empty-line cases plus harness-side counting). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
 
+### Iteration 96 (2026-05-29)
+
+Focused backlog drain: two genuine bug fixes and one architectural-limitation triage, each committed individually with its ledger move.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-043 | P1 | **Fixed.** Daemon-specific unbounded memory leak — `server/daemon/mod.rs` opens every scanned file in `initialize_daemon_workspace` and lazily loads more in `ensure_document`, but never `close()`s; only the LSP `did_close` path evicts, so `DocumentStore::trees` grew once per file ever touched and never shrank. Fix (all in `documents.rs`): `trees` now stores `CachedTree { version, tree, last_access }` stamped from a monotonic `tree_access_counter` (`AtomicU64`); `cache_tree` calls `evict_trees_over_cap()` which drops the lowest-stamped (LRU) entries once `len > cap`. Cap is an atomic `max_cached_trees` seeded with `DEFAULT_MAX_CACHED_TREES = 256`, retunable via `set_max_cached_trees(Option<usize>)` (None/0 = unbounded, preserving historical behaviour). Trees are a pure derived cache (re-parse ~30–50 ms), so eviction only forces a future re-parse; version-pinned validation keeps correctness. DashMap discipline preserved (reads drop the docs ref before touching trees; eviction collects keys into a Vec before removing). +4 regression tests. Prior partial work had only fixed the `parse_locks` leak. |
+| F-OPEN-016 | P2 | **Fixed.** Capability/version probe so BC protocol mismatches surface loudly. Two of the three named surfaces were already closed (negotiate version by F-OPEN-137; `DebugAdapterConfigurationDone` signature by F-OPEN-139). The remaining silent fall-through was the SignalR handshake response in `connect()` (`dap/bc_debug.rs`): after the client sends `{"protocol":"json","version":1}`, a server signals a protocol/version rejection via `{"error":"<reason>"}`, but the code only `debug!`-logged the frame. Added pure helper `validate_signalr_handshake_response(frame) -> Result<()>` that splits on the `\x1e` record separator, parses the first frame, and turns a present non-empty `error` into a loud `DapError::ConnectionFailed` carrying the server's reason. Conservative: empty/`{}`/non-JSON/empty-error frames are accepted so a working handshake never regresses. +5 regression tests. |
+| F-OPEN-065 | — | **Wontfix.** "No daemon `$/cancelRequest` support." Genuine architectural limitation: the per-connection read loop (`handle_connection`) is strictly request-at-a-time — while a long `deadCode`/`impact`/`compile` is in-flight inside the awaited `dispatch_request`, the reader is parked, so a same-connection cancel is never read. None of the named endpoints are cancellation-aware (zero `CancelToken` references across `queries`/`insight`). Supporting cancel would require a separate cancel connection plus a daemon-global in-flight registry and threading a token through every endpoint — invasive cross-cutting plumbing. Worst case (64-slot exhaustion) is already mitigated by the 64-slot non-blocking semaphore, the 30-min idle reaper, and the per-build alc SIGKILL timeout. Matches the F-OPEN-072 architectural-limitation precedent. No code change. |
+
+Workspace test count: 2094 → 2103 (+9 regression tests: F-OPEN-043 +4, F-OPEN-016 +5). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
+
 
 
 | Phase | Status | Output |
