@@ -1424,6 +1424,22 @@ Two code commits. Hardened the semantic-bridge FFI boundary against unbounded in
 
 Workspace test count: 2012 → 2029 (+17: +21 new tests − 4 removed `extract_qualified_call_pairs` tests). All gates green.
 
+### Iteration 87 (2026-05-29)
+
+Two code commits. Made the BC DAP layer's failure reporting honest (informative fatal-exception messages, propagated configurationDone failure, robust connectionId casing) and stopped the per-URI parse-lock map from leaking on a long-running daemon.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-138 | P3 | **Fixed.** `OnFatalDebuggerException` no longer collapses three distinct failure shapes into the opaque `"unknown"`. A shared `fatal_exception_message()` distinguishes (a) absent `arguments`, (b) empty array, (c) non-string first element (reporting its JSON type + raw value), used by both `handle_server_callback` and `signalr_to_bc_event`. +5 tests. |
+| F-OPEN-139 (new) | P2 | **Fixed.** `configuration_done()` previously returned `Ok(())` even when both the debug-options and the no-args forms of `DebugAdapterConfigurationDone` failed, masking protocol issues from callers that use `?`. Now propagates the second error (still warns with both error texts). |
+| F-OPEN-140 (new) | P2 | **Fixed.** SignalR negotiate parsing accepts `connectionId`/`ConnectionId`/`connection_id` casing variants and warns instead of silently substituting the WebSocket auth *token* as the session id when none is present. Tightens the negotiate-response handling foreshadowed by F-OPEN-137. |
+| F-OPEN-141 (new) | P2 | **Fixed.** `DocumentStore::close()` now evicts the per-URI `parse_locks` entry alongside `docs`/`trees`. Previously the lock map grew with every distinct file ever opened — a slow leak on a multi-week daemon. +1 regression test (`test_close_evicts_parse_lock`). |
+| F-OPEN-136 | P2 | **Partially addressed.** `signalr_to_bc_event` now has direct regression coverage for the `OnFatalDebuggerException` path (informative message via the conversion). Break/Detached/Other shapes remain for the dedicated F-OPEN-016 pass; left open. |
+| F-OPEN-043 | P3 | Reviewed; carried forward. Tree cache eviction (LRU/idle sweep) is a larger design change than the targeted `parse_locks` leak fixed here; deferred to a focused caching pass. |
+| F-OPEN-010, 016, 042, 046, 054, 060, 063, 065, 072, 081, 110, 112, 135, 137 | P1/P2/P3 | Carried forward — budget this iteration went to the bc_debug honesty cluster and the parse-lock leak. |
+
+Workspace test count: 2029 → 2035 (+6). All gates green.
+
 
 
 | Phase | Status | Output |

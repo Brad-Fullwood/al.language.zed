@@ -24,7 +24,6 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-135 | P2 | No test for the timeout-cooldown `try_lock` race (T047); needs a wedge-able bridge seam to test deterministically |
 | F-OPEN-136 | P2 | No regression tests for `signalr_to_bc_event` conversion (private fn, Value-shape dependent) |
 | F-OPEN-137 | P1 | Hardcoded SignalR protocol version (`negotiateVersion=1`, `version:1`) lacks negotiate-response validation — bundle with F-OPEN-016 |
-| F-OPEN-138 | P3 | `OnFatalDebuggerException` falls back to "unknown" without logging the raw args shape — bundle with F-OPEN-137/016 |
 
 ## Resolved / parked (not actionable — do not re-open)
 
@@ -151,3 +150,7 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-132 | P2 | fixed | Removed dead `all_qualified_calls` set + `extract_qualified_call_pairs` (unused F-OPEN-115 partial infra) (iteration 86) |
 | F-OPEN-133 | P1 | fixed | Direct unit tests for dead_code parsing helpers (extract_text_call_names/extract_member_access_names/split_args/parse_subscriber_args) (iteration 86) |
 | F-OPEN-134 | P3 | fixed | Tests for `extract_field_name_from_args` unclosed-quote + quoted-name cases (iteration 86) |
+| F-OPEN-138 | P3 | fixed | `OnFatalDebuggerException` reports informative message (absent/empty/non-string args distinguished) via shared `fatal_exception_message()` — both call sites; +5 tests (iteration 87) |
+| F-OPEN-139 | P2 | fixed | `configuration_done()` propagates the second `DebugAdapterConfigurationDone` failure instead of masking it with `Ok(())` (iteration 87) |
+| F-OPEN-140 | P2 | fixed | SignalR negotiate parsing accepts `connectionId`/`ConnectionId`/`connection_id` and warns instead of silently using the auth token as session id (iteration 87) |
+| F-OPEN-141 | P2 | fixed | `DocumentStore::close()` evicts the per-URI `parse_locks` entry — stops the lock map leaking over a long-running daemon's lifetime; +1 test (iteration 87) |
