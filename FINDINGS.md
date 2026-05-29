@@ -1537,6 +1537,20 @@ Focused backlog drain: one P1 protocol-correctness fix, one P3 feature, and two 
 
 Workspace test count: 2076 → 2084 (+16 regression tests: F-OPEN-137 +8, F-OPEN-042 +8). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
 
+### Iteration 95 (2026-05-29)
+
+Triaged worklist: two genuine bug fixes, one regression-test backfill, one false-positive disposition, and one backlog close.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-162 | P2 | **Fixed.** Daemon parse-error context was lost on response-write failure (`server/daemon/mod.rs`). When a malformed JSON-RPC line arrived, the daemon built a `PARSE_ERROR` reply and wrote it with `?`, so a broken-pipe / dead-client I/O failure propagated to `handle_connection` as a generic "connection error" and the malformed-JSON reason vanished. Now logs the parse error before the write, and handles write/flush failure explicitly (logs + breaks the loop) so the diagnostic survives either path. |
+| F-OPEN-163 | P3 | **Fixed.** Integer truncation in `find_member_line_in_file` (`al-explorer/src/main.rs`). `i as u32` would wrap modulo 2^32 for a (pathological) >4-billion-line file, returning a bogus line number to the editor. Changed to `u32::try_from(i).unwrap_or(u32::MAX)` to saturate. (No dedicated test: the path requires a 4-billion-line file; the conversion is self-evidently correct.) |
+| F-OPEN-164 | P2/P3 | **Fixed (test-gap).** `read_bounded_line` / `read_response` in `al-protocol/src/client.rs` had no coverage for malformed-byte edge cases. Added 3 regression tests: incomplete UTF-8 at EOF → `InvalidData`; incomplete UTF-8 before a newline → `InvalidData`; a bare blank line yields an empty `String` and a graceful client-side parse error (never a panic), documenting the daemon-skips/client-trusts asymmetry. |
+| F-OPEN-165 | — | **False positive.** "notify_sink fire-and-forget task silently loses errors" (`server/lsp.rs:68`). `tower_lsp::Client::show_message` returns `()`, not a `Result` — it is a fire-and-forget notification with no error value to capture or log. The spawned task already does the only thing the API permits. No code change. |
+| F-OPEN-063 | P3 | **Documented (wontfix-by-design).** "Inconsistent null semantics — most fields can't be reset to default via null." Examined `AlConfig::merge`: `Option`-typed fields (`merge_optional_path`/`merge_optional_string`/`maxDocumentSizeBytes`) already reset to `None` on `null`. Scalar fields (bools/enums/arrays) intentionally treat `null`/missing as "keep current" — the correct standard LSP `workspace/configuration` merge semantic (the client sends the full desired config, not deltas). No bug, no panic; the distinction between nullable-Option and required-scalar fields is by-design. No code change. |
+
+Workspace test count: 2084 → 2094 (+10 regression tests; the new client.rs UTF-8/empty-line cases plus harness-side counting). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
+
 
 
 | Phase | Status | Output |
