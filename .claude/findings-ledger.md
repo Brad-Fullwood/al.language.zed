@@ -19,7 +19,6 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-065 | P2 | No daemon `$/cancelRequest` support; abandoned long-running endpoints still pay full cost / pin slots |
 | F-OPEN-072 | P1 | Wedged CLR call blocks every semantic feature forever; 30 s timeout doesn't release the serializing mutex |
 | F-OPEN-081 | P3 | `InsightGraph` public API leaks `petgraph::NodeIndex`; wrap in a newtype to allow backend swap |
-| F-OPEN-110 | P1 | Wire up remaining dormant FormatOptions (blank-lines, max-line-length, brace-style, sort-properties) — part 2 |
 | F-OPEN-135 | P2 | No test for the timeout-cooldown `try_lock` race (T047); needs a wedge-able bridge seam to test deterministically |
 | F-OPEN-136 | P2 | No regression tests for `signalr_to_bc_event` conversion (private fn, Value-shape dependent) |
 | F-OPEN-137 | P1 | Hardcoded SignalR protocol version (`negotiateVersion=1`, `version:1`) lacks negotiate-response validation — bundle with F-OPEN-016 |
@@ -126,6 +125,7 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-107 | P1 | fixed | `directive` recurses into children for highlighting (iteration 70-71) |
 | F-OPEN-108 | P2 | fixed | semantic_tokens DFS O(n) via cursor children (iteration 60) |
 | F-OPEN-109 | P3 | fixed | Duplicate trace! blocks collapsed (iteration 65) |
+| F-OPEN-110 | P1 | deferred | Wire up remaining dormant FormatOptions (blank-lines, max-line-length, brace-style, sort-properties) — part 2; each is real feature work requiring structural support the line-based formatter lacks (safe wrapping/brace-moving/property-reorder needs AST-level transforms), warrants its own design + finding; values are parsed/stored and a per-field warn already tells users they're inert (iteration 89) |
 | F-OPEN-111 | P1 | documented | Block-keyword text matches are AL Pascal-grammar terminals (iteration 66-69) |
 | F-OPEN-112 | P1 | fixed | `format_range` last-line trailing-newline edge case fixed; unselected-line indent documented as by-design at the LSP boundary (iteration 89) |
 | F-OPEN-113 | P2 | fixed | Multi-line paren-continuation idempotency tests added (iteration 66-69) |
