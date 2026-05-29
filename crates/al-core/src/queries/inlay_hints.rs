@@ -93,8 +93,13 @@ fn collect_inlay_hints(
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         let node_start = node.start_position().row as u32;
+        // tree-sitter's end_position().row is exclusive (the row after the
+        // node), whereas LSP Range.end.line is inclusive. A node whose
+        // end_position().row == range.start.line occupies rows up to
+        // range.start.line - 1, i.e. entirely before the range, so it must be
+        // skipped with `<=` rather than `<`.
         let node_end = node.end_position().row as u32;
-        if node_end < range.start.line || node_start > range.end.line {
+        if node_end <= range.start.line || node_start > range.end.line {
             // Entire subtree is outside the visible range — skip it.
             continue;
         }
@@ -545,8 +550,11 @@ fn collect_return_type_hints(
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         let node_start = node.start_position().row as u32;
+        // end_position().row is exclusive (see note in the argument-hints
+        // walker above): use `<=` so a node ending exactly on the row before
+        // the range is correctly skipped.
         let node_end = node.end_position().row as u32;
-        if node_end < range.start.line || node_start > range.end.line {
+        if node_end <= range.start.line || node_start > range.end.line {
             // Entire subtree is outside the visible range — skip it.
             continue;
         }
@@ -700,6 +708,34 @@ mod tests {
         assert_eq!(h.kind, Some(AlInlayHintKind::Type));
         let AlInlayHintLabel::String(s) = &h.label;
         assert_eq!(s, ": Boolean");
+    }
+
+    #[test]
+    fn return_type_walker_skips_node_ending_on_row_before_range() {
+        // The procedure spans rows 2..=4 (end_position().row == 5, exclusive).
+        // Requesting a range starting at line 5 must skip the procedure subtree
+        // entirely: tree-sitter's end row is exclusive, so a `<` boundary check
+        // would wrongly descend into a node that occupies only rows up to 4.
+        let src =
+            "codeunit 50100 Test\n{\n    procedure IsValid(): Boolean\n    begin\n    end;\n}";
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let range = Range {
+            start: Position {
+                line: 5,
+                character: 0,
+            },
+            end: Position {
+                line: 5,
+                character: 1,
+            },
+        };
+        let mut hints = Vec::new();
+        collect_return_type_hints(tree.root_node(), source, &range, &mut hints);
+        assert!(
+            hints.is_empty(),
+            "procedure ending before the range must yield no hints, got: {hints:?}"
+        );
     }
 
     #[test]
