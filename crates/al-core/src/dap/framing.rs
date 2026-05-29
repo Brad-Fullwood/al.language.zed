@@ -90,6 +90,18 @@ async fn read_headers<R: tokio::io::AsyncRead + Unpin>(
             break;
         }
         if let Some(val) = trimmed.strip_prefix("Content-Length:") {
+            // Reject frames carrying more than one Content-Length header.
+            // RFC 7230 §3.3.2 treats conflicting Content-Length values as a
+            // protocol error; accepting a last-one-wins value could desync the
+            // frame boundary if a buggy or malicious peer sends mismatched
+            // headers. Defending here keeps the parser strict (matches the
+            // oversized-value / oversized-line guards above).
+            if content_length.is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Multiple Content-Length headers in DAP frame",
+                ));
+            }
             content_length = Some(
                 val.trim()
                     .parse::<usize>()
@@ -331,6 +343,27 @@ mod tests {
         let long_value = "X".repeat(9000);
         let header = format!("Content-Length: {long_value}\r\n\r\n");
         let mut reader = BufReader::new(header.as_bytes());
+        let result = read_dap_body(&mut reader).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn rejects_multiple_content_length() {
+        // Two Content-Length headers must be rejected, not silently
+        // last-one-wins (RFC 7230 §3.3.2).
+        let data = b"Content-Length: 10\r\nContent-Length: 20\r\n\r\n";
+        let mut reader = BufReader::new(&data[..]);
+        let result = read_dap_body(&mut reader).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn rejects_malformed_content_length() {
+        // A non-numeric Content-Length value must surface as InvalidData.
+        let data = b"Content-Length: abc\r\n\r\n";
+        let mut reader = BufReader::new(&data[..]);
         let result = read_dap_body(&mut reader).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
