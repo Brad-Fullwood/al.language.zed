@@ -56,22 +56,37 @@ pub fn apply_al_settings_to_config(
 /// For path ["compilationOptions", "parallelBuild"], sets
 /// result.compilationOptions.parallelBuild = value.
 fn set_nested_value(target: &mut serde_json::Value, path: &[&str], value: &serde_json::Value) {
+    set_nested_value_inner(target, path, value, 0);
+}
+
+/// Recursive worker that tracks the current nesting `depth` so the cap
+/// limits *recursion*, not path length. Up to `MAX_SETTINGS_KEY_DEPTH`
+/// levels nest as ordinary objects; only when the cap is reached do we
+/// collapse the remaining segments into a single literal key. This bounds
+/// stack usage from pathologically deep user-controlled keys while
+/// preserving the intended nesting for everything under the cap.
+fn set_nested_value_inner(
+    target: &mut serde_json::Value,
+    path: &[&str],
+    value: &serde_json::Value,
+    depth: usize,
+) {
     if path.is_empty() {
         return;
     }
 
-    // Cap recursion depth: collapse an over-deep path into a single literal
-    // key so a key like "a.b.c.<...1000 segments...>" cannot blow the stack.
-    if path.len() == 1 || path.len() > MAX_SETTINGS_KEY_DEPTH {
-        if let Some(obj) = target.as_object_mut() {
-            obj.insert(path.join("."), value.clone());
-        }
+    let Some(obj) = target.as_object_mut() else {
+        return;
+    };
+
+    // Single remaining segment: insert it directly. At/over the depth cap,
+    // stop recursing and store the remaining path as one joined literal key.
+    if path.len() == 1 || depth >= MAX_SETTINGS_KEY_DEPTH {
+        obj.insert(path.join("."), value.clone());
         return;
     }
 
-    // Ensure intermediate objects exist
-    if let Some(obj) = target.as_object_mut() {
-        let child = obj.entry(path[0].to_string()).or_insert_with(|| json!({}));
-        set_nested_value(child, &path[1..], value);
-    }
+    // Ensure the intermediate object exists, then recurse one level deeper.
+    let child = obj.entry(path[0].to_string()).or_insert_with(|| json!({}));
+    set_nested_value_inner(child, &path[1..], value, depth + 1);
 }

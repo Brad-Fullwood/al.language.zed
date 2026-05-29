@@ -70,9 +70,10 @@ fn f027_non_object_al_key_is_treated_as_literal_value() {
 }
 
 /// Defensive: a pathologically deep dotted key (hundreds of segments) must
-/// not overflow the stack. Beyond MAX_SETTINGS_KEY_DEPTH (64) the remaining
-/// path is collapsed into a single literal key. Parity with merge_json's
-/// depth guard. Regression for the unbounded-recursion finding.
+/// not overflow the stack. Up to MAX_SETTINGS_KEY_DEPTH (64) levels nest as
+/// ordinary objects; the remaining segments are then collapsed into a single
+/// literal key. Parity with merge_json's depth guard. Regression for the
+/// unbounded-recursion finding AND the depth-cap nesting-semantics finding.
 #[test]
 fn deeply_nested_key_does_not_overflow_and_collapses() {
     // 500 segments after the `al.` prefix.
@@ -81,27 +82,40 @@ fn deeply_nested_key_does_not_overflow_and_collapses() {
     let user_settings = json!({ deep_key.clone(): true });
     let merged = apply_al_settings_to_config(&config, &user_settings);
 
-    // An over-cap path collapses into a single literal key rather than
-    // recursing — the property under test is that it returns at all (no
-    // stack overflow) and the value is preserved.
+    // The property under test is that it returns at all (no stack overflow)
+    // and the value is preserved somewhere in the result.
     let serialized = serde_json::to_string(&merged).expect("serializable");
     assert!(serialized.contains("true"));
 
-    // Walk down the nested `x` objects; the deepest level must contain the
-    // boolean value, not infinite nesting.
+    // Walk down the nested `x` objects. The cap limits recursion to 64
+    // levels: we expect exactly 64 nested `x` objects, after which the
+    // remaining ~435 segments are stored as a single joined literal key
+    // (e.g. "x.x.x..."). The deepest object must contain that joined key,
+    // not another `x` object — proving recursion stopped at the cap.
     let mut cursor = &merged;
     let mut depth = 0;
     while let Some(next) = cursor.get("x") {
-        if next.is_object() {
-            cursor = next;
-            depth += 1;
-        } else {
-            assert_eq!(next, &json!(true));
-            break;
-        }
+        assert!(next.is_object(), "intermediate `x` must be an object");
+        cursor = next;
+        depth += 1;
     }
-    // We descended at most the configured cap, never the full 500.
-    assert!(depth <= 64, "descended {depth} levels, expected <= 64");
+    assert_eq!(
+        depth, 64,
+        "must nest exactly the configured cap (64 levels)"
+    );
+
+    // At depth 64 there is no further plain `x` child; instead the remaining
+    // path lives under a single joined key whose value is the boolean.
+    let deepest = cursor.as_object().expect("deepest level is an object");
+    let collapsed_key = deepest
+        .keys()
+        .find(|k| k.contains('.'))
+        .expect("remaining segments stored as a joined literal key");
+    assert!(
+        collapsed_key.starts_with("x.x"),
+        "collapsed key should be the joined remainder, got {collapsed_key}"
+    );
+    assert_eq!(deepest.get(collapsed_key), Some(&json!(true)));
 }
 
 /// A key with exactly a few segments under the cap nests normally — the
