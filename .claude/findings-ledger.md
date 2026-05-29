@@ -16,12 +16,12 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-063 | P3 | Inconsistent `config.rs` `null` semantics — most fields can't be reset to default via `null` |
 | F-OPEN-065 | P2 | No daemon `$/cancelRequest` support; abandoned long-running endpoints still pay full cost / pin slots |
 | F-OPEN-081 | P3 | `InsightGraph` public API leaks `petgraph::NodeIndex`; wrap in a newtype to allow backend swap |
-| F-OPEN-137 | P1 | Hardcoded SignalR protocol version (`negotiateVersion=1`, `version:1`) lacks negotiate-response validation — bundle with F-OPEN-016 |
 
 ## Resolved / parked (not actionable — do not re-open)
 
 | ID | Severity | Status | Title |
 |---|---|---|---|
+| F-OPEN-137 | P1 | fixed | SignalR negotiate-response version validation (`negotiateVersion=1`, `version:1`) (iteration 94) — added `resolve_negotiate_connection()` in `bc_debug.rs`: reads the server-echoed `negotiateVersion`, uses `connectionToken` as the WebSocket `?id=` for v1, falls back to `connectionId` for v0/missing (previously hard-failed "No connectionToken"), errors on redirect (`url`) responses, and warns on unexpected versions instead of panicking; +8 regression tests. The broader BC capability probe stays separate as F-OPEN-016 |
 | F-OPEN-001 | P3 | fixed | All 25 `#[allow(clippy::*)]` justified/test-only (iteration 53) |
 | F-OPEN-002 | P3 | wontfix | Split 6 files >1500 LOC — restructuring forbidden by CLAUDE.md scope discipline (iteration 81) |
 | F-OPEN-003 | P3 | documented | `build_dispatch.rs` unsafe blocks confirmed test-only / informational (iteration 53) |

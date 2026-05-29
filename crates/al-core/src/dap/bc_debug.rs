@@ -459,36 +459,21 @@ impl BcDebugSession {
             ))
         })?;
 
-        let connection_token = negotiate
-            .get("connectionToken")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                DapError::ConnectionFailed("No connectionToken in negotiate".to_string())
-            })?;
-        // The SignalR session id is reported as `connectionId`, but BC versions
-        // (and the underlying SignalR implementation) have varied the casing, so
-        // accept the common variants. Falling back to the connection *token* is
-        // semantically wrong — the token is a WebSocket auth credential, not a
-        // session id — so log a warning when no recognised id field is present
-        // rather than silently substituting it (F-OPEN-137).
-        let connection_id = ["connectionId", "ConnectionId", "connection_id"]
-            .iter()
-            .find_map(|key| negotiate.get(*key).and_then(|v| v.as_str()))
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    "SignalR negotiate response has no connectionId field (checked \
-                     connectionId/ConnectionId/connection_id); falling back to connection token \
-                     as session id — debug context may be incorrect"
-                );
-                connection_token
-            })
-            .to_string();
+        // Resolve the WebSocket connection identifier from the negotiate
+        // response, validating the version the server actually negotiated
+        // (F-OPEN-137). We request `negotiateVersion=1`; a spec-compliant
+        // server echoes the version it agreed to and, for v1, returns a
+        // `connectionToken` distinct from `connectionId`. A server that
+        // negotiates down to v0 returns no `connectionToken` and the
+        // `connectionId` doubles as the `?id=` value.
+        let resolved = resolve_negotiate_connection(&negotiate)?;
+        let connection_id = resolved.connection_id;
 
         // Connect WebSocket
         let ws_url = hub_url
             .replace("https://", "wss://")
             .replace("http://", "ws://");
-        let ws_url = format!("{ws_url}?id={}", percent_encode_url(connection_token));
+        let ws_url = format!("{ws_url}?id={}", percent_encode_url(&resolved.ws_id));
         // Redact the connection_token from the log line — it grants access to
         // the active debug session and must not appear in plaintext logs.
         let log_url = ws_url.split('?').next().unwrap_or(&ws_url);
@@ -1212,6 +1197,120 @@ fn percent_encode_url(s: &str) -> String {
     out
 }
 
+/// Outcome of parsing a SignalR `/negotiate?negotiateVersion=1` response.
+#[derive(Debug)]
+struct NegotiateConnection {
+    /// The SignalR session id (`connectionId`), surfaced in debug context.
+    connection_id: String,
+    /// The value to pass as the WebSocket `?id=` query parameter. For a
+    /// negotiateVersion-1 server this is the `connectionToken`; for a server
+    /// that negotiated down to version 0 (no `connectionToken` present) it is
+    /// the `connectionId`, per the SignalR transport protocol.
+    ws_id: String,
+}
+
+/// Resolve the WebSocket connection identifiers from a SignalR negotiate
+/// response, validating the version the server negotiated (F-OPEN-137).
+///
+/// The client requests `negotiateVersion=1`. A spec-compliant server echoes
+/// the version it actually agreed to via the `negotiateVersion` field:
+///   - **1** — the response carries a `connectionToken` (used as the `?id=`
+///     value) distinct from `connectionId` (the session id).
+///   - **0** — older protocol: no `connectionToken` is returned and
+///     `connectionId` doubles as the `?id=` value.
+///
+/// A missing `negotiateVersion` field is treated as 0 for backward
+/// compatibility (pre-versioning SignalR servers). An unrecognised version is
+/// logged but handled on a best-effort basis (token if present, else id).
+fn resolve_negotiate_connection(negotiate: &serde_json::Value) -> Result<NegotiateConnection> {
+    // SignalR redirect responses carry a `url` (and `accessToken`) instead of
+    // a connection id. We do not follow redirects, so surface a clear error
+    // rather than failing later with a confusing "no connectionId".
+    if negotiate.get("url").and_then(|v| v.as_str()).is_some() {
+        return Err(DapError::ConnectionFailed(
+            "SignalR negotiate returned a redirect response (`url`); redirects are not \
+             supported by the BC debug client"
+                .to_string(),
+        ));
+    }
+
+    // The session id is reported as `connectionId`, but BC versions (and the
+    // underlying SignalR implementation) have varied the casing, so accept the
+    // common variants.
+    let connection_id = ["connectionId", "ConnectionId", "connection_id"]
+        .iter()
+        .find_map(|key| negotiate.get(*key).and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+
+    let connection_token = negotiate
+        .get("connectionToken")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    // Absent field defaults to 0 (pre-versioning servers). A non-integer is
+    // ignored and treated as absent.
+    let negotiated_version = negotiate
+        .get("negotiateVersion")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    match negotiated_version {
+        1 => {
+            // v1 requires both connectionId and connectionToken.
+            let connection_id = connection_id.ok_or_else(|| {
+                DapError::ConnectionFailed(
+                    "SignalR negotiateVersion=1 response has no connectionId field (checked \
+                     connectionId/ConnectionId/connection_id)"
+                        .to_string(),
+                )
+            })?;
+            let connection_token = connection_token.ok_or_else(|| {
+                DapError::ConnectionFailed(
+                    "SignalR negotiateVersion=1 response has no connectionToken".to_string(),
+                )
+            })?;
+            Ok(NegotiateConnection {
+                ws_id: connection_token,
+                connection_id,
+            })
+        }
+        0 => {
+            // v0: no connectionToken; connectionId is the session id AND the
+            // ?id= value.
+            let connection_id = connection_id.ok_or_else(|| {
+                DapError::ConnectionFailed(
+                    "SignalR negotiateVersion=0 response has no connectionId field (checked \
+                     connectionId/ConnectionId/connection_id)"
+                        .to_string(),
+                )
+            })?;
+            Ok(NegotiateConnection {
+                ws_id: connection_id.clone(),
+                connection_id,
+            })
+        }
+        other => {
+            // Unexpected version the BC server claims to speak. Don't hard-fail
+            // — handle best-effort (token if present, else id) and warn so the
+            // mismatch is visible if the debug session misbehaves.
+            warn!(
+                "SignalR negotiate returned unexpected negotiateVersion={other} (client \
+                 requested 1); proceeding best-effort"
+            );
+            let connection_id = connection_id.ok_or_else(|| {
+                DapError::ConnectionFailed(format!(
+                    "SignalR negotiateVersion={other} response has no connectionId field"
+                ))
+            })?;
+            let ws_id = connection_token.unwrap_or_else(|| connection_id.clone());
+            Ok(NegotiateConnection {
+                ws_id,
+                connection_id,
+            })
+        }
+    }
+}
+
 /// Replace the value of `connectionToken` (SignalR session credential) in a
 /// JSON response body with a `<redacted>` placeholder before logging or
 /// surfacing in errors. Falls back to the original text if the body is not
@@ -1315,6 +1414,119 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["foo"], "bar");
         assert!(parsed.get("connectionToken").is_none());
+    }
+
+    // --- resolve_negotiate_connection (F-OPEN-137) --------------------------
+
+    #[test]
+    fn negotiate_v1_uses_token_as_ws_id_and_id_as_session() {
+        // negotiateVersion=1: the WebSocket ?id= must be the connectionToken,
+        // while the surfaced session id is the connectionId — they differ.
+        let v = serde_json::json!({
+            "negotiateVersion": 1,
+            "connectionId": "session-abc",
+            "connectionToken": "token-xyz",
+        });
+        let r = resolve_negotiate_connection(&v).unwrap();
+        assert_eq!(r.ws_id, "token-xyz");
+        assert_eq!(r.connection_id, "session-abc");
+    }
+
+    #[test]
+    fn negotiate_v0_uses_connection_id_for_both() {
+        // negotiateVersion=0: no connectionToken is returned; connectionId is
+        // both the session id and the ?id= value. Old code hard-failed here
+        // with "No connectionToken in negotiate".
+        let v = serde_json::json!({
+            "negotiateVersion": 0,
+            "connectionId": "session-only",
+        });
+        let r = resolve_negotiate_connection(&v).unwrap();
+        assert_eq!(r.ws_id, "session-only");
+        assert_eq!(r.connection_id, "session-only");
+    }
+
+    #[test]
+    fn negotiate_missing_version_defaults_to_v0() {
+        // A pre-versioning server omits negotiateVersion entirely; treat as v0
+        // and use connectionId for the WebSocket ?id=.
+        let v = serde_json::json!({
+            "connectionId": "legacy-session",
+        });
+        let r = resolve_negotiate_connection(&v).unwrap();
+        assert_eq!(r.ws_id, "legacy-session");
+        assert_eq!(r.connection_id, "legacy-session");
+    }
+
+    #[test]
+    fn negotiate_v1_missing_token_errors() {
+        // negotiateVersion=1 without a connectionToken is malformed and must
+        // surface a clear error rather than silently substituting the id.
+        let v = serde_json::json!({
+            "negotiateVersion": 1,
+            "connectionId": "session-abc",
+        });
+        let err = resolve_negotiate_connection(&v).unwrap_err();
+        assert!(
+            matches!(&err, DapError::ConnectionFailed(m) if m.contains("connectionToken")),
+            "expected connectionToken error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn negotiate_missing_connection_id_errors() {
+        // No connectionId in any recognised casing must error, not panic or
+        // produce an empty ?id=.
+        let v = serde_json::json!({
+            "negotiateVersion": 0,
+            "somethingElse": "value",
+        });
+        let err = resolve_negotiate_connection(&v).unwrap_err();
+        assert!(
+            matches!(&err, DapError::ConnectionFailed(m) if m.contains("connectionId")),
+            "expected connectionId error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn negotiate_accepts_connection_id_casing_variants() {
+        // BC has shipped PascalCase ConnectionId; accept it under v0.
+        let v = serde_json::json!({
+            "negotiateVersion": 0,
+            "ConnectionId": "pascal-session",
+        });
+        let r = resolve_negotiate_connection(&v).unwrap();
+        assert_eq!(r.connection_id, "pascal-session");
+        assert_eq!(r.ws_id, "pascal-session");
+    }
+
+    #[test]
+    fn negotiate_redirect_response_errors() {
+        // SignalR redirect responses carry `url`; we don't follow them, so
+        // surface a clear error instead of a confusing missing-id failure.
+        let v = serde_json::json!({
+            "url": "https://other.example/hub",
+            "accessToken": "redir-token",
+        });
+        let err = resolve_negotiate_connection(&v).unwrap_err();
+        assert!(
+            matches!(&err, DapError::ConnectionFailed(m) if m.contains("redirect")),
+            "expected redirect error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn negotiate_unexpected_version_best_effort_uses_token() {
+        // An unexpected negotiateVersion (e.g. a future 2) must not hard-fail;
+        // prefer the token when present.
+        let v = serde_json::json!({
+            "negotiateVersion": 2,
+            "connectionId": "session-abc",
+            "connectionToken": "token-xyz",
+        });
+        let r = resolve_negotiate_connection(&v).unwrap();
+        assert_eq!(r.ws_id, "token-xyz");
+        assert_eq!(r.connection_id, "session-abc");
     }
 
     fn cloud_config(tenant: &str, env_name: &str) -> BcDebugConfig {
