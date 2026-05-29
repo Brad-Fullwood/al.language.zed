@@ -1482,6 +1482,19 @@ Cleared the entire new-confirmed-findings batch (8 items spanning one P0, three 
 
 Workspace test count: 2047 → 2050 (+3 regression tests). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
 
+### Iteration 91 (2026-05-29)
+
+Cleared the entire new-confirmed-findings batch (one P1 correctness bug, two P2, one P3; the P2 Unicode test-gap is satisfied alongside the P1 fix). Three logical code commits.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-151 | **P1** | **Fixed.** `syntax::context::extract_last_identifier` walked the string byte-by-byte and cast each raw byte to `char`, so UTF-8 continuation bytes (0x80–0xBF) were misclassified (0xA9→'©', 0xB1→'±'), failing `is_alphanumeric()` and truncating the identifier — "Café"→"", "Mañana"→"ana". Now iterates via `char_indices()` tracking byte offsets. `find_call_context` (which delegates extraction) is fixed transitively. +2 tests. |
+| F-OPEN-152 | P2 | **Fixed.** Added Unicode-identifier regression tests for `extract_last_identifier` (Café/Mañana/Città/München) and `find_call_context` (`Table.Mañana(`), closing the test-gap left by the byte-cast bug. |
+| F-OPEN-153 | P2 | **Fixed (perf).** Inlay-hints range filter used `node_end < range.start.line`, but tree-sitter's `end_position().row` is exclusive (the row after the node) while LSP `Range.end.line` is inclusive. Nodes ending exactly on the row before the range were traversed anyway, only to be filtered at hint emission. Switched both walker sites (`collect_inlay_hints`, `collect_return_type_hints`) to `<=`. +1 regression test. |
+| F-OPEN-154 | P3 | **Fixed (test).** `lint::lint_config_has_default` commented that `LintConfig::default()` must compile but instantiated the unit struct directly; now calls `::default()` to exercise the documented path. |
+
+Workspace test count: 2050 → 2053 (+3 regression tests). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
+
 
 
 | Phase | Status | Output |
