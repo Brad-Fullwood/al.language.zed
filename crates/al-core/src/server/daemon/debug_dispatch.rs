@@ -2,6 +2,62 @@
 
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{Response, RpcError};
+use serde::Serialize;
+
+/// Serialize `state` into a `Response`'s `result`. On serialization failure
+/// return an `INTERNAL_ERROR` rather than producing a JSON-RPC response with
+/// both `result` and `error` absent (which violates JSON-RPC 2.0 §5.1, since
+/// both fields are `skip_serializing_if = "Option::is_none"`). Mirrors the
+/// `ok_response` helper in `lsp_dispatch.rs`.
+fn state_response<T: Serialize>(id: u64, state: &T, cmd: &str) -> Response {
+    match serde_json::to_value(state) {
+        Ok(v) => Response {
+            id,
+            result: Some(v),
+            error: None,
+            ..Default::default()
+        },
+        Err(e) => {
+            tracing::error!(cmd, error = %e, "serialization failed for debug result");
+            Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
+                    message: format!("serialization failed for {cmd}: {e}"),
+                }),
+                ..Default::default()
+            }
+        }
+    }
+}
+
+/// Serialize each item of `items` into a JSON array, returning an
+/// `INTERNAL_ERROR` `Response` (as `Err`) if any element fails. This surfaces
+/// serialization failures instead of silently dropping items
+/// (`filter_map(...ok())`) or emitting empty objects (`unwrap_or_default()`).
+fn serialize_each<T: Serialize>(
+    id: u64,
+    items: impl IntoIterator<Item = T>,
+    cmd: &str,
+) -> Result<Vec<serde_json::Value>, Response> {
+    items
+        .into_iter()
+        .map(|item| serde_json::to_value(&item))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| {
+            tracing::error!(cmd, error = %e, "serialization failed for debug item");
+            Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: al_protocol::jsonrpc::error_codes::INTERNAL_ERROR,
+                    message: format!("serialization failed for {cmd}: {e}"),
+                }),
+                ..Default::default()
+            }
+        })
+}
 
 fn no_session(id: u64) -> Response {
     Response::error(
@@ -260,12 +316,8 @@ pub(super) async fn dispatch_debug(
                 Some(session) => {
                     let bps: Vec<(u32, Option<&str>)> = vec![(line, condition.as_deref())];
                     match session.set_breakpoints(&file, &bps, obj_type, obj_id).await {
-                        Ok(verified) => {
-                            let bp_json: Vec<serde_json::Value> = verified
-                                .iter()
-                                .map(|bp| serde_json::to_value(bp).unwrap_or_default())
-                                .collect();
-                            Response {
+                        Ok(verified) => match serialize_each(id, verified, "breakpoint") {
+                            Ok(bp_json) => Response {
                                 id,
                                 result: Some(serde_json::json!({
                                     "cmd": "breakpoint",
@@ -273,8 +325,9 @@ pub(super) async fn dispatch_debug(
                                 })),
                                 error: None,
                                 ..Default::default()
-                            }
-                        }
+                            },
+                            Err(err_response) => err_response,
+                        },
                         Err(e) => Response {
                             id,
                             result: None,
@@ -294,12 +347,7 @@ pub(super) async fn dispatch_debug(
             match guard.as_mut() {
                 None => no_session(id),
                 Some(session) => match session.state().await {
-                    Ok(state) => Response {
-                        id,
-                        result: serde_json::to_value(state).ok(),
-                        error: None,
-                        ..Default::default()
-                    },
+                    Ok(state) => state_response(id, &state, "state"),
                     Err(e) => Response {
                         id,
                         result: None,
@@ -361,12 +409,7 @@ pub(super) async fn dispatch_debug(
             match guard.as_mut() {
                 None => no_session(id),
                 Some(session) => match session.continue_exec().await {
-                    Ok(state) => Response {
-                        id,
-                        result: serde_json::to_value(state).ok(),
-                        error: None,
-                        ..Default::default()
-                    },
+                    Ok(state) => state_response(id, &state, "continue"),
                     Err(e) => Response {
                         id,
                         result: None,
@@ -391,12 +434,7 @@ pub(super) async fn dispatch_debug(
             match guard.as_mut() {
                 None => no_session(id),
                 Some(session) => match session.step(&step_type).await {
-                    Ok(state) => Response {
-                        id,
-                        result: serde_json::to_value(state).ok(),
-                        error: None,
-                        ..Default::default()
-                    },
+                    Ok(state) => state_response(id, &state, "step"),
                     Err(e) => Response {
                         id,
                         result: None,
@@ -417,19 +455,18 @@ pub(super) async fn dispatch_debug(
             match guard.as_ref() {
                 None => no_session(id),
                 Some(session) => {
-                    let hits: Vec<serde_json::Value> = session
-                        .history(var_filter.as_deref())
-                        .iter()
-                        .filter_map(|h| serde_json::to_value(h).ok())
-                        .collect();
-                    Response {
-                        id,
-                        result: Some(serde_json::json!({
-                            "cmd": "history",
-                            "hits": hits,
-                        })),
-                        error: None,
-                        ..Default::default()
+                    let history = session.history(var_filter.as_deref());
+                    match serialize_each(id, history, "history") {
+                        Ok(hits) => Response {
+                            id,
+                            result: Some(serde_json::json!({
+                                "cmd": "history",
+                                "hits": hits,
+                            })),
+                            error: None,
+                            ..Default::default()
+                        },
+                        Err(err_response) => err_response,
                     }
                 }
             }
@@ -566,5 +603,71 @@ mod resolve_object_metadata_tests {
         // cleanly instead of silently using (0, 0).
         let ws = Workspace::new();
         assert!(resolve_object_metadata(&ws, "/nonexistent/Foo.al").is_none());
+    }
+}
+
+#[cfg(test)]
+mod serialization_helper_tests {
+    use super::{serialize_each, state_response};
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct Ok {
+        a: i32,
+    }
+
+    // serde_json cannot serialize a map with non-string keys → forces an error
+    // without relying on panics, so we can exercise the failure branch.
+    #[derive(Serialize)]
+    struct Bad {
+        m: std::collections::HashMap<Vec<u8>, i32>,
+    }
+
+    fn bad() -> Bad {
+        let mut m = std::collections::HashMap::new();
+        m.insert(vec![1u8, 2], 3);
+        Bad { m }
+    }
+
+    #[test]
+    fn state_response_ok_has_result_no_error() {
+        let r = state_response(7, &Ok { a: 1 }, "state");
+        assert_eq!(r.id, 7);
+        assert!(r.result.is_some());
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn state_response_failure_returns_error_not_null_result() {
+        // JSON-RPC §5.1: exactly one of result/error must be present. A
+        // serialization failure must produce an error, never a response with
+        // both fields None.
+        let r = state_response(9, &bad(), "state");
+        assert_eq!(r.id, 9);
+        assert!(r.result.is_none());
+        let err = r.error.expect("must surface error, not null result");
+        assert_eq!(err.code, al_protocol::jsonrpc::error_codes::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn serialize_each_ok_collects_all() {
+        let items = vec![Ok { a: 1 }, Ok { a: 2 }];
+        let out = serialize_each(1, items, "breakpoint").expect("all serialize");
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn serialize_each_failure_returns_error_response_not_silent_drop() {
+        // The old code used unwrap_or_default() (empty object) or
+        // filter_map(...ok()) (silent drop). The helper must instead surface
+        // an INTERNAL_ERROR so the client knows the response is incomplete.
+        let items = vec![bad()];
+        let err = serialize_each(3, items, "history").expect_err("must error");
+        assert_eq!(err.id, 3);
+        assert!(err.result.is_none());
+        assert_eq!(
+            err.error.expect("error present").code,
+            al_protocol::jsonrpc::error_codes::INTERNAL_ERROR
+        );
     }
 }
