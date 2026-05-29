@@ -85,7 +85,10 @@ impl BcServerConfig {
                     .unwrap_or_default();
                 Some(format!(
                     "{}/{}/dev/packages?{}{}",
-                    base, instance, query, tenant_param
+                    base,
+                    urlencoding::encode(instance),
+                    query,
+                    tenant_param
                 ))
             }
             EnvironmentType::Sandbox | EnvironmentType::Production => {
@@ -473,5 +476,126 @@ mod tests {
         assert!(!is_safe_http_server("ftp://example.com"));
         assert!(!is_safe_http_server(""));
         assert!(!is_safe_http_server("   "));
+    }
+
+    fn make_dep() -> AppDependency {
+        AppDependency {
+            id: "00000000-0000-0000-0000-000000000000".to_string(),
+            name: "My App".to_string(),
+            publisher: "Acme".to_string(),
+            version: "1.0.0.0".to_string(),
+        }
+    }
+
+    fn onprem_config() -> BcServerConfig {
+        BcServerConfig {
+            name: "OnPrem".to_string(),
+            environment_type: EnvironmentType::OnPrem,
+            server: Some("http://localhost".to_string()),
+            server_instance: Some("BC".to_string()),
+            port: None,
+            environment_name: None,
+            tenant: None,
+            authentication: AuthMethod::Windows,
+            accept_invalid_certs: false,
+        }
+    }
+
+    #[test]
+    fn dev_packages_url_onprem_minimal() {
+        let url = onprem_config().dev_packages_url(&make_dep()).unwrap();
+        assert!(
+            url.starts_with("http://localhost/BC/dev/packages?"),
+            "unexpected URL: {url}"
+        );
+        // Query params are percent-encoded ("My App" -> "My%20App").
+        assert!(url.contains("appName=My%20App"), "unexpected URL: {url}");
+        assert!(url.contains("publisher=Acme"), "unexpected URL: {url}");
+        assert!(!url.contains("tenant="), "no tenant expected: {url}");
+    }
+
+    #[test]
+    fn dev_packages_url_onprem_with_port_and_tenant() {
+        let mut cfg = onprem_config();
+        cfg.port = Some(7049);
+        cfg.tenant = Some("default".to_string());
+        let url = cfg.dev_packages_url(&make_dep()).unwrap();
+        assert!(
+            url.starts_with("http://localhost:7049/BC/dev/packages?"),
+            "unexpected URL: {url}"
+        );
+        assert!(url.contains("&tenant=default"), "unexpected URL: {url}");
+    }
+
+    /// Regression for the OnPrem path-encoding gap: a server instance with
+    /// reserved characters must be percent-encoded in the URL path, matching
+    /// the Cloud path's encoding of tenant/environment.
+    #[test]
+    fn dev_packages_url_onprem_instance_path_encoded() {
+        let mut cfg = onprem_config();
+        cfg.server_instance = Some("../admin".to_string());
+        let url = cfg.dev_packages_url(&make_dep()).unwrap();
+        assert!(
+            !url.contains("/../admin/"),
+            "instance path components must be percent-encoded: {url}"
+        );
+        assert!(
+            url.contains("%2F") || url.contains("..%2Fadmin") || url.contains("%2E"),
+            "instance reserved chars must be encoded: {url}"
+        );
+    }
+
+    #[test]
+    fn dev_packages_url_onprem_missing_instance_returns_none() {
+        let mut cfg = onprem_config();
+        cfg.server_instance = None;
+        assert!(cfg.dev_packages_url(&make_dep()).is_none());
+    }
+
+    #[test]
+    fn dev_packages_url_onprem_unsafe_server_returns_none() {
+        let mut cfg = onprem_config();
+        cfg.server = Some("file:///etc/passwd".to_string());
+        assert!(cfg.dev_packages_url(&make_dep()).is_none());
+    }
+
+    #[test]
+    fn dev_packages_url_cloud() {
+        let cfg = BcServerConfig {
+            name: "Cloud".to_string(),
+            environment_type: EnvironmentType::Sandbox,
+            server: None,
+            server_instance: None,
+            port: None,
+            environment_name: Some("My Sandbox".to_string()),
+            tenant: Some("contoso.onmicrosoft.com".to_string()),
+            authentication: AuthMethod::AAD,
+            accept_invalid_certs: false,
+        };
+        let url = cfg.dev_packages_url(&make_dep()).unwrap();
+        assert!(
+            url.starts_with(
+                "https://api.businesscentral.dynamics.com/v2.0/contoso.onmicrosoft.com/My%20Sandbox/dev/packages?"
+            ),
+            "unexpected URL: {url}"
+        );
+    }
+
+    #[test]
+    fn dev_packages_url_cloud_missing_fields_returns_none() {
+        let mut cfg = BcServerConfig {
+            name: "Cloud".to_string(),
+            environment_type: EnvironmentType::Production,
+            server: None,
+            server_instance: None,
+            port: None,
+            environment_name: None,
+            tenant: None,
+            authentication: AuthMethod::AAD,
+            accept_invalid_certs: false,
+        };
+        assert!(cfg.dev_packages_url(&make_dep()).is_none());
+        cfg.tenant = Some("t".to_string());
+        assert!(cfg.dev_packages_url(&make_dep()).is_none());
     }
 }
