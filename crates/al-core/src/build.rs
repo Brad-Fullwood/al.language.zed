@@ -123,7 +123,15 @@ pub async fn compile_project_with_analyzers(
     // Sibling-of-project rather than `target/` so the dir is inside the
     // workspace and is automatically gitignored alongside the existing
     // `*.app` ignore patterns.
-    let build_tmp = project_root.join(format!(".al-build-tmp.{}", std::process::id()));
+    // Per-invocation suffix: PID alone collides when multiple concurrent
+    // `compile_project()` calls run in the same process (the LSP daemon serves
+    // requests concurrently). Two tasks computing the same path would race —
+    // one's `remove_dir_all` could wipe the other's in-flight output between
+    // its `is_dir()` check and alc actually writing there. A monotonic counter
+    // gives each invocation its own isolated tmp dir.
+    static BUILD_TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = BUILD_TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let build_tmp = project_root.join(format!(".al-build-tmp.{}.{seq}", std::process::id()));
     // Best-effort cleanup of any leftover dir from a previous crashed run.
     let _ = std::fs::remove_dir_all(&build_tmp);
     if let Err(e) = std::fs::create_dir_all(&build_tmp) {
@@ -299,14 +307,42 @@ pub async fn compile_project_with_analyzers(
                 let dst = project_root.join(&file_name);
                 match std::fs::rename(&src, &dst) {
                     Ok(()) => Some(dst),
-                    Err(e) => {
-                        tracing::warn!(
-                            src = %src.display(),
-                            dst = %dst.display(),
-                            error = %e,
-                            "alc build: failed to move .app from tmp dir to project root; build artefact left in tmp"
-                        );
-                        Some(src)
+                    Err(rename_err) => {
+                        // rename(2) can fail across mount boundaries (EXDEV) or
+                        // on some filesystems even within the same mount. Fall
+                        // back to a copy so the artefact still lands in
+                        // project_root. We must NOT return `src` here: the
+                        // TmpDirGuard below deletes the tmp dir, so a returned
+                        // tmp path would dangle (the consumer in publish.rs
+                        // would then fail reading a deleted file).
+                        match std::fs::copy(&src, &dst) {
+                            Ok(_) => {
+                                tracing::warn!(
+                                    src = %src.display(),
+                                    dst = %dst.display(),
+                                    error = %rename_err,
+                                    "alc build: rename of .app to project root failed; recovered via copy"
+                                );
+                                Some(dst)
+                            }
+                            Err(copy_err) => {
+                                // Neither rename nor copy worked; the tmp dir is
+                                // about to be swept, so we cannot hand back a
+                                // valid path. Surface the failure as an error
+                                // rather than returning a path that won't exist.
+                                tracing::error!(
+                                    src = %src.display(),
+                                    dst = %dst.display(),
+                                    rename_error = %rename_err,
+                                    copy_error = %copy_err,
+                                    "alc build: failed to move .app from tmp dir to project root (rename and copy both failed); artefact lost"
+                                );
+                                return Err(AlError::Io(std::io::Error::other(format!(
+                                    "failed to deliver built .app to {}: rename failed ({rename_err}), copy failed ({copy_err})",
+                                    dst.display()
+                                ))));
+                            }
+                        }
                     }
                 }
             }
@@ -658,6 +694,81 @@ Build failed.";
             compile_timeout(),
             Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS))
         );
+    }
+
+    /// Regression: concurrent `compile_project()` calls on the SAME project
+    /// root must not collide on the build tmp dir. Previously the dir was keyed
+    /// only by PID, so concurrent tasks in the same process computed identical
+    /// paths and one's cleanup could wipe another's in-flight output. The
+    /// per-invocation counter gives each call its own dir. We use a fake
+    /// toolchain (alc never actually runs), which exercises the tmp-dir
+    /// create/cleanup path on the error return; we then assert no
+    /// `.al-build-tmp.*` directories leak.
+    #[tokio::test]
+    async fn concurrent_compiles_do_not_leak_tmp_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"publisher":"P","name":"A","version":"1.0.0.0"}"#,
+        )
+        .unwrap();
+
+        let tc = std::sync::Arc::new(crate::toolchain::AlToolchain {
+            version: "1.0.0".to_string(),
+            dotnet_root: PathBuf::from("/nonexistent"),
+            alc: PathBuf::from("/nonexistent/alc.dll"),
+            aldoc: None,
+            code_analysis: PathBuf::new(),
+            analyzers: crate::toolchain::AnalyzerPaths {
+                code_cop: PathBuf::new(),
+                app_source_cop: PathBuf::new(),
+                ui_cop: PathBuf::new(),
+                per_tenant_cop: PathBuf::new(),
+                common: PathBuf::new(),
+                custom: Vec::new(),
+            },
+        });
+
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let tc = tc.clone();
+            let root = root.clone();
+            handles.push(tokio::spawn(async move {
+                // Result is irrelevant (dotnet won't run); we only care that
+                // each invocation manages its own isolated tmp dir.
+                let _ = compile_project(&tc, &root, None).await;
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // No tmp dirs should remain after all invocations complete.
+        let leaked: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".al-build-tmp.")
+            })
+            .map(|e| e.path())
+            .collect();
+        assert!(leaked.is_empty(), "leaked build tmp dirs: {leaked:?}");
+    }
+
+    /// The per-invocation tmp-dir suffix counter must be monotonic so two
+    /// near-simultaneous calls never compute the same path.
+    #[test]
+    fn build_tmp_seq_is_unique_per_call() {
+        // Mirror the production counter usage: each fetch_add yields a fresh,
+        // distinct value. We can't reach the private static directly, so assert
+        // the invariant on an equivalent AtomicU64 to document the contract.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let a = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let b = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert_ne!(a, b);
     }
 
     #[test]

@@ -1193,6 +1193,23 @@ async fn write_dap(
     write_dap_frame(writer, &body).await
 }
 
+/// Default cap on a single `alc` invocation in the DAP path. Kept in sync with
+/// `crate::build::DEFAULT_COMPILE_TIMEOUT_SECS` and honouring the same
+/// `AL_COMPILE_TIMEOUT_SECS` override; values <= 0 disable the cap. Duplicated
+/// here (rather than imported) because `crate::dap` is kept self-contained.
+const DAP_COMPILE_TIMEOUT_SECS: u64 = 600;
+
+fn compile_timeout() -> Option<std::time::Duration> {
+    match std::env::var("AL_COMPILE_TIMEOUT_SECS") {
+        Ok(s) => match s.trim().parse::<i64>() {
+            Ok(n) if n <= 0 => None,
+            Ok(n) => Some(std::time::Duration::from_secs(n as u64)),
+            Err(_) => Some(std::time::Duration::from_secs(DAP_COMPILE_TIMEOUT_SECS)),
+        },
+        Err(_) => Some(std::time::Duration::from_secs(DAP_COMPILE_TIMEOUT_SECS)),
+    }
+}
+
 /// Compile via `dotnet alc` and return raw output.
 ///
 /// This is a DAP-local version of compilation. It returns raw output as a string
@@ -1218,11 +1235,31 @@ async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<
 
     cmd.stderr(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
+    // F-FIX-038 parity: tokio does NOT propagate task cancellation to child
+    // processes. Without kill_on_drop + an explicit timeout, a hung or
+    // cancelled DAP session leaves a zombie `alc` running to completion.
+    cmd.kill_on_drop(true);
 
-    let output = cmd
-        .output()
-        .await
-        .map_err(|e| DapError::CompilationFailed(format!("Failed to run alc: {e}")))?;
+    let output = match compile_timeout() {
+        Some(dur) => match tokio::time::timeout(dur, cmd.output()).await {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => {
+                return Err(DapError::CompilationFailed(format!(
+                    "Failed to run alc: {e}"
+                )))
+            }
+            Err(_) => {
+                return Err(DapError::CompilationFailed(format!(
+                    "alc compilation timed out after {}s",
+                    dur.as_secs()
+                )))
+            }
+        },
+        None => cmd
+            .output()
+            .await
+            .map_err(|e| DapError::CompilationFailed(format!("Failed to run alc: {e}")))?,
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
