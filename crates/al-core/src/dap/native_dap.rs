@@ -683,17 +683,35 @@ where
 
                             match s.add_breakpoint(obj_type, obj_id, line, 0, condition).await {
                                 Ok(result) => {
-                                    let bp_id = result
-                                        .get("Id")
-                                        .or(result.get("id"))
-                                        .and_then(|v| v.as_i64())
-                                        .unwrap_or(0);
-                                    new_ids.push(bp_id);
-                                    result_bps.push(serde_json::json!({
-                                        "id": bp_id,
-                                        "verified": true,
-                                        "line": line,
-                                    }));
+                                    // BC's add_breakpoint can return Ok(Value::Null) or a
+                                    // payload without an Id field (bc_debug.rs:945). A
+                                    // breakpoint id of 0 is not a usable handle: we could
+                                    // neither remove it on a later setBreakpoints nor honour
+                                    // a "verified: true" claim. Treat a missing/zero id as a
+                                    // failure rather than recording an orphaned breakpoint.
+                                    match extract_breakpoint_id(&result) {
+                                        Some(bp_id) => {
+                                            new_ids.push(bp_id);
+                                            result_bps.push(serde_json::json!({
+                                                "id": bp_id,
+                                                "verified": true,
+                                                "line": line,
+                                            }));
+                                        }
+                                        None => {
+                                            tracing::warn!(
+                                                line = line,
+                                                ?result,
+                                                "DAP setBreakpoints: BC accepted the breakpoint \
+                                                 but returned no usable id; not tracking it"
+                                            );
+                                            result_bps.push(serde_json::json!({
+                                                "verified": false,
+                                                "line": line,
+                                                "message": "Breakpoint created but ID could not be extracted from BC response",
+                                            }));
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     result_bps.push(serde_json::json!({
@@ -1278,6 +1296,20 @@ fn try_spawn(cmd: &str, args: &[&str]) -> bool {
 ///
 /// `resolve_path` maps a BC (ObjectType integer, ObjectNumber) to a workspace source file path.
 /// When a match is found the DAP `source` object is populated so Zed can navigate to the frame.
+/// Pull a usable breakpoint id out of BC's `AddBreakpoint` response.
+///
+/// BC may answer with `Value::Null` or a payload lacking an `Id`/`id` field
+/// (see `bc_debug::add_breakpoint`). An id of `0` is not a valid handle — we
+/// could neither later remove it nor truthfully report `verified: true` — so a
+/// missing or zero id maps to `None`.
+fn extract_breakpoint_id(result: &serde_json::Value) -> Option<i64> {
+    result
+        .get("Id")
+        .or_else(|| result.get("id"))
+        .and_then(|v| v.as_i64())
+        .filter(|&id| id != 0)
+}
+
 fn bc_stack_to_dap<P>(frames: serde_json::Value, resolve_path: &P) -> Vec<serde_json::Value>
 where
     P: Fn(i32, i32) -> Option<PathBuf>,
@@ -1364,6 +1396,32 @@ mod tests {
             Some(42),
             "response missing camelCase `requestSeq`"
         );
+    }
+
+    #[test]
+    fn extract_breakpoint_id_reads_pascal_and_camel_case() {
+        assert_eq!(
+            extract_breakpoint_id(&serde_json::json!({ "Id": 42 })),
+            Some(42)
+        );
+        assert_eq!(
+            extract_breakpoint_id(&serde_json::json!({ "id": 7 })),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn extract_breakpoint_id_rejects_null_missing_and_zero() {
+        // A null response, a payload without an id, and an explicit zero are
+        // all unusable handles — recording them would orphan breakpoints on BC
+        // and let us falsely report verified: true.
+        assert_eq!(extract_breakpoint_id(&serde_json::Value::Null), None);
+        assert_eq!(
+            extract_breakpoint_id(&serde_json::json!({ "Other": 1 })),
+            None
+        );
+        assert_eq!(extract_breakpoint_id(&serde_json::json!({ "Id": 0 })), None);
+        assert_eq!(extract_breakpoint_id(&serde_json::json!({ "id": 0 })), None);
     }
 
     #[test]
