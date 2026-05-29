@@ -1289,6 +1289,17 @@ Workspace test count: 1960 → 1966 (+6: 2 bc_server path/sanitize, 1 bc_server 
 
 Open findings F-OPEN-001..009 carried forward (design / release-time / larger-refactor items) — not actionable as small in-scope fixes this iteration.
 
+### Iteration 79 (2026-05-29)
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-126 | **P1** | **Fixed.** `dap::config::parse_auth_method` always defaulted an unknown/typo `authentication` value to `AuthMethod::AAD` (cloud OAuth), ignoring the environment type. A misconfigured OnPrem launch.json would silently switch to cloud auth instead of Windows. Backported the T032 fallback from `launch.rs` (env-type-aware: Windows for OnPrem, AAD otherwise) with an env+fallback-tagged `warn`. This path is reachable via the public `dap::config` module (`find_launch_config` → `parse_*_file` → `convert_*` → `build_launch_config`), so it is API surface even though the in-tree active path is `launch.rs`. 2 regression tests pin the env-type fallback and the unchanged known/None arms. |
+| F-OPEN-127 | P2 | **Fixed (defensive).** `zed-al` `settings::set_nested_value` recursed once per dotted segment of a settings key with no depth bound, so a user-controlled key with hundreds of dots could blow the WASM stack. Added `MAX_SETTINGS_KEY_DEPTH = 64` (parity with `merge_json`'s `MERGE_JSON_MAX_DEPTH`): an over-cap path collapses into a single literal key rather than recursing further. 2 regression tests (a 500-segment key returns without overflow; a moderate `a.b.c` key still nests normally). |
+
+Workspace test count: 1966 → 1968 (+2 dap auth-fallback regressions; the 2 new zed-al settings tests run under the separate WASM crate and are not counted in the `--exclude zed-al` total). All gates green.
+
+Open findings F-OPEN-001..009 carried forward (design / release-time / larger-refactor items) — not actionable as small in-scope fixes this iteration. No new follow-ups discovered.
+
 
 
 | Phase | Status | Output |
