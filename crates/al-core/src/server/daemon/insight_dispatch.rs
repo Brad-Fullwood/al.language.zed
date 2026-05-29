@@ -118,9 +118,11 @@ pub(super) fn dispatch_insight_stats(workspace: &Workspace, id: u64) -> Response
 
 pub(super) fn dispatch_dead_code(workspace: &Workspace, id: u64) -> Response {
     let unused = crate::queries::dead_code::dead_code(workspace);
+    // SILENT: serialization of valid Vec<DeadCodeEntry> should not fail
+    let value = serde_json::to_value(&unused).unwrap_or(serde_json::Value::Null);
     Response {
         id,
-        result: Some(serde_json::to_value(&unused).unwrap_or_default()),
+        result: Some(value),
         error: None,
         ..Default::default()
     }
@@ -181,10 +183,68 @@ pub(super) fn dispatch_suggest_event(
     };
 
     let result = crate::queries::suggest_event::suggest_event(workspace, &query);
+    // SILENT: serialization of valid SuggestEventResult should not fail
+    let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
     Response {
         id,
-        result: Some(serde_json::to_value(&result).unwrap_or_default()),
+        result: Some(value),
         error: None,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_invalid_params(resp: &Response) {
+        assert!(
+            resp.result.is_none(),
+            "error response must not carry a result"
+        );
+        let err = resp.error.as_ref().expect("expected an RpcError");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn dispatch_trace_missing_event_is_invalid_params() {
+        let ws = Workspace::new();
+        let resp = dispatch_trace(&ws, 1, &serde_json::json!({}));
+        assert_invalid_params(&resp);
+        assert_eq!(resp.id, 1);
+    }
+
+    #[test]
+    fn dispatch_impact_missing_symbol_is_invalid_params() {
+        let ws = Workspace::new();
+        let resp = dispatch_impact(&ws, 2, &serde_json::json!({}));
+        assert_invalid_params(&resp);
+        assert_eq!(resp.id, 2);
+    }
+
+    #[test]
+    fn dispatch_impact_empty_symbol_is_invalid_params() {
+        let ws = Workspace::new();
+        let resp = dispatch_impact(&ws, 3, &serde_json::json!({ "symbol": "" }));
+        assert_invalid_params(&resp);
+    }
+
+    #[test]
+    fn dispatch_suggest_event_malformed_query_is_invalid_params() {
+        let ws = Workspace::new();
+        // `query` is present but the wrong shape (a string, not an object),
+        // so deserialization into EventQuery must fail and surface as an error.
+        let resp = dispatch_suggest_event(&ws, 4, &serde_json::json!({ "query": "not-an-object" }));
+        assert_invalid_params(&resp);
+    }
+
+    #[test]
+    fn dispatch_trace_valid_event_returns_result() {
+        let ws = Workspace::new();
+        // Empty workspace: the trace is empty, but the call must still succeed
+        // (a well-formed result, not an error).
+        let resp = dispatch_trace(&ws, 5, &serde_json::json!({ "event": "OnAfterPost" }));
+        assert!(resp.error.is_none(), "valid event must not error");
+        assert!(resp.result.is_some());
     }
 }
