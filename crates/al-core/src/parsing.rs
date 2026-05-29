@@ -17,16 +17,25 @@ pub fn get_or_parse(
     documents: &DocumentStore,
     uri: &Url,
 ) -> Option<(Arc<String>, tree_sitter::Tree)> {
-    let Some(text) = documents.get_text_arc(uri) else {
+    // Capture text and version under a single read lock so the pair cannot be
+    // skewed by a concurrent `apply_changes` (see `get_text_and_version`).
+    let Some((text, version)) = documents.get_text_and_version(uri) else {
         // Downgrade to debug — this fires on every keystroke against a
         // closed/virtual document and is not actionable for the user.
         tracing::debug!(uri = %uri, "get_or_parse: document not in store (not opened?)");
         return None;
     };
-    let version = documents.get_version(uri).unwrap_or(0);
 
     // Fast-path cache check before acquiring the parse lock.
-    if let Some(cached) = documents.get_cached_tree(uri) {
+    //
+    // `get_cached_tree` validates the cached entry against the *live* document
+    // version, not our captured `version`. If `apply_changes` ran after we read
+    // `text` (advancing the document to a newer version) and another thread
+    // already parsed that newer version, the live-version check would pass and
+    // we'd return that newer tree paired with our *older* `text` — a mismatched
+    // (old-text, new-tree) pair. Guard against that by also requiring the cached
+    // tree's version to equal the version we captured `text` at.
+    if let Some(cached) = documents.get_cached_tree_at_version(uri, version) {
         tracing::trace!(uri = %uri, version, "get_or_parse: cache hit (fast path)");
         return Some((text, cached));
     }
@@ -46,17 +55,17 @@ pub fn get_or_parse(
     let lock = documents.parse_lock(uri);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
 
+    // Re-fetch text + version atomically under the lock in case the document
+    // changed while we were waiting. (Cheap — Arc<String> clone + i32 copy.)
+    let (text, version) = documents.get_text_and_version(uri)?;
+
     // Re-check the cache after acquiring the lock — another waiter may have
-    // populated it while we were blocked.
-    if let Some(cached) = documents.get_cached_tree(uri) {
+    // populated it while we were blocked. Match against the version we just
+    // captured `text` at, so we never pair stale text with a newer tree.
+    if let Some(cached) = documents.get_cached_tree_at_version(uri, version) {
         tracing::trace!(uri = %uri, version, "get_or_parse: cache hit (post-lock)");
         return Some((text, cached));
     }
-
-    // Re-fetch text under the lock in case it changed while we were waiting.
-    // (Cheap — Arc<String> clone.)
-    let text = documents.get_text_arc(uri)?;
-    let version = documents.get_version(uri).unwrap_or(0);
 
     tracing::debug!(uri = %uri, version, len = text.len(), "get_or_parse: parsing");
     let tree = AlParser::parse_quick(&text).tree;
@@ -142,6 +151,52 @@ mod tests {
 
         // Single shared cache entry after the storm.
         assert!(store.get_cached_tree(&uri).is_some());
+    }
+
+    #[test]
+    fn test_cache_at_version_rejects_version_skew() {
+        // Regression for the get_or_parse TOCTOU race: a tree cached for a newer
+        // document version must NOT be served to a caller that captured text at
+        // an older version, even though the cached tree matches the *live*
+        // version. Otherwise the caller pairs old text with a new tree and
+        // indexes text.as_bytes() with mismatched node ranges.
+        let store = DocumentStore::new();
+        let uri = test_uri("skew");
+        store.open(uri.clone(), "codeunit 50100 A { }".to_string());
+
+        // Caller captures text + version atomically (version 0).
+        let (_old_text, captured_version) = store.get_text_and_version(&uri).unwrap();
+        assert_eq!(captured_version, 0);
+
+        // Concurrent edit advances the document to version 1 and another thread
+        // parses + caches the new version.
+        store.apply_changes(
+            &uri,
+            &[crate::documents::TextChange {
+                range: None,
+                text: "codeunit 50100 B { } // longer".to_string(),
+            }],
+        );
+        let new_version = store.get_version(&uri).unwrap();
+        assert_eq!(new_version, 1);
+        let new_tree = AlParser::parse_quick("codeunit 50100 B { } // longer").tree;
+        store.cache_tree(&uri, new_version, new_tree);
+
+        // The live-version-only check would (incorrectly) hand back the new tree.
+        assert!(store.get_cached_tree(&uri).is_some());
+
+        // The version-pinned check must reject it for our captured version.
+        assert!(
+            store
+                .get_cached_tree_at_version(&uri, captured_version)
+                .is_none(),
+            "must not serve a newer-version tree to a caller holding older text"
+        );
+
+        // It does serve the matching version.
+        assert!(store
+            .get_cached_tree_at_version(&uri, new_version)
+            .is_some());
     }
 
     #[test]

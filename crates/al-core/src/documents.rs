@@ -115,6 +115,22 @@ impl DocumentStore {
             .map(|d| std::sync::Arc::clone(&d.text_cache))
     }
 
+    /// Return the document text and version captured under a **single** read
+    /// lock, so the pair is guaranteed to be mutually consistent.
+    ///
+    /// Fetching text and version with two separate calls (`get_text_arc` then
+    /// `get_version`) can interleave with `apply_changes` between them, yielding
+    /// an `Arc<String>` for one version paired with the integer of another. The
+    /// parse cache then keys on version, so a mismatched (old-text, new-tree)
+    /// pair can escape — callers index `text.as_bytes()` with node ranges from a
+    /// tree parsed against different text, producing wrong `utf8_text()` results
+    /// or out-of-bounds slices. Capturing both atomically prevents that skew.
+    pub fn get_text_and_version(&self, uri: &Url) -> Option<(std::sync::Arc<String>, i32)> {
+        self.docs
+            .get(uri)
+            .map(|d| (std::sync::Arc::clone(&d.text_cache), d.version))
+    }
+
     pub fn get_version(&self, uri: &Url) -> Option<i32> {
         self.docs.get(uri).map(|d| d.version)
     }
@@ -190,6 +206,28 @@ impl DocumentStore {
         let doc = self.docs.get(uri)?;
         let cached = self.trees.get(uri)?;
         if cached.0 == doc.version {
+            Some(cached.1.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Return the cached parse tree only if it matches **both** the live
+    /// document version and the caller's `expected_version`.
+    ///
+    /// `get_cached_tree` validates against the live version alone, which lets a
+    /// caller pair a tree for a newer version with text it captured at an older
+    /// version (a TOCTOU race against `apply_changes`). Callers that hold an
+    /// `Arc<String>` captured at a known version use this to ensure the returned
+    /// tree was parsed against *that same* text.
+    pub fn get_cached_tree_at_version(
+        &self,
+        uri: &Url,
+        expected_version: i32,
+    ) -> Option<tree_sitter::Tree> {
+        let doc = self.docs.get(uri)?;
+        let cached = self.trees.get(uri)?;
+        if cached.0 == doc.version && cached.0 == expected_version {
             Some(cached.1.clone())
         } else {
             None
