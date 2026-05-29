@@ -320,11 +320,22 @@ pub async fn get_or_init_bridge(
 pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::AlError> {
     use crate::errors::AlError;
 
-    // Drop the old bridge. `drop()` is explicit (over `let _ =`) because the
-    // taken `Option<SemanticBridge>`'s Drop chain runs the CLR teardown via
-    // `DotNetHost::_context: HostfxrContext` — the value MUST be dropped here,
-    // not held in `_`.
-    drop(workspace.semantic.write().await.take());
+    // Capture the old bridge's timeout cooldown stamp BEFORE dropping it. A
+    // hung CLR call from the old bridge may still be in flight on a
+    // spawn_blocking thread (which keeps the old host's Arc<Mutex> alive); the
+    // new bridge starts with last_timeout_secs = 0 and would otherwise let its
+    // first call bypass the cooldown gate. We carry the stamp forward so the
+    // cooldown contract survives the restart.
+    let prior_timeout_secs;
+    {
+        let old = workspace.semantic.write().await.take();
+        prior_timeout_secs = old.as_ref().map(|b| b.last_timeout_secs()).unwrap_or(0);
+        // `drop()` is explicit (over `let _ =`) because the taken
+        // `Option<SemanticBridge>`'s Drop chain runs the CLR teardown via
+        // `DotNetHost::_context: HostfxrContext` — the value MUST be dropped
+        // here, not held in `_`.
+        drop(old);
+    }
 
     // NOTE: Between take() above and re-acquiring the write lock below, another
     // task could start its own init via get_or_init_bridge. This race is safe:
@@ -367,6 +378,14 @@ pub async fn restart_bridge(workspace: &Workspace) -> Result<(), crate::errors::
 
     match init_bridge_inner(workspace, toolchain).await {
         Ok(()) => {
+            // Carry the old bridge's cooldown stamp into the freshly-created
+            // bridge so a still-in-flight hung call from the old generation
+            // cannot be bypassed by the new bridge's first request.
+            if prior_timeout_secs != 0 {
+                if let Some(bridge) = workspace.semantic.read().await.as_ref() {
+                    bridge.seed_last_timeout_secs(prior_timeout_secs);
+                }
+            }
             tracing::info!(attempt = count, "Semantic bridge restarted successfully");
             // A successful restart proves the bridge can start cleanly again;
             // reset the counter so future, well-spaced crashes don't gradually

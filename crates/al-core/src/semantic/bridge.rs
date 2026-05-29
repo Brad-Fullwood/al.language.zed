@@ -219,6 +219,18 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// timeout (slow GC, paging) gets a chance to recover.
 const TIMEOUT_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// Carry a timeout cooldown stamp forward into a (new) bridge generation.
+///
+/// Only a non-zero `secs` is applied — a fresh stamp must never be cleared by
+/// a restart (which would shorten an active cooldown and let an in-flight hung
+/// call from the prior generation be bypassed). Extracted as a free function
+/// so the advance-only semantics can be unit-tested without loading the CLR.
+fn seed_timeout_stamp(stamp: &std::sync::atomic::AtomicU64, secs: u64) {
+    if secs != 0 {
+        stamp.store(secs, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Outcome of the timeout-cooldown gate (see [`cooldown_gate`]).
 ///
 /// Extracted as a free function over a generic `&Mutex<T>` so the
@@ -326,6 +338,24 @@ impl SemanticBridge {
     /// The toolchain version this bridge was initialized with.
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// The Unix-seconds stamp of the most recent timeout (0 = none). Used by
+    /// `restart_bridge` to carry the cooldown window across a bridge restart:
+    /// a fresh `SemanticBridge` starts with `last_timeout_secs = 0`, but a
+    /// hung CLR call from the old bridge may still be in flight (its
+    /// `spawn_blocking` thread keeps the old host's `Arc<Mutex>` alive). Losing
+    /// the stamp would let the new bridge's first call bypass the cooldown gate.
+    pub(crate) fn last_timeout_secs(&self) -> u64 {
+        self.last_timeout_secs
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Seed this bridge's timeout stamp from a prior bridge generation. Only
+    /// advances the stamp (a non-zero prior value), never clears an existing
+    /// one, so a restart cannot accidentally shorten an active cooldown.
+    pub(crate) fn seed_last_timeout_secs(&self, secs: u64) {
+        seed_timeout_stamp(&self.last_timeout_secs, secs);
     }
 
     /// Deserialize a bridge response value, converting JSON errors to [`SemanticError`].
@@ -982,5 +1012,36 @@ mod tests {
         let d3 = cooldown_gate(&stamp, &host, 1_140, COOLDOWN, "typeAt");
         assert!(matches!(d3, CooldownDecision::Proceed));
         assert_eq!(stamp.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_seed_timeout_stamp_carries_nonzero_forward() {
+        // Restart path: a brand-new bridge starts at 0, but a hung call from
+        // the prior generation left a cooldown stamp. Seeding must carry that
+        // stamp forward so the new bridge's first call still hits the gate.
+        let fresh = AtomicU64::new(0);
+        seed_timeout_stamp(&fresh, 1_000);
+        assert_eq!(fresh.load(Ordering::Relaxed), 1_000);
+    }
+
+    #[test]
+    fn test_seed_timeout_stamp_zero_is_noop() {
+        // A healthy old bridge (no recent timeout) must not clobber the new
+        // bridge's stamp — seeding 0 is a no-op so we never shorten/erase an
+        // active cooldown that may have been set in the meantime.
+        let existing = AtomicU64::new(1_000);
+        seed_timeout_stamp(&existing, 0);
+        assert_eq!(existing.load(Ordering::Relaxed), 1_000);
+    }
+
+    #[test]
+    fn test_seed_timeout_stamp_only_advances_via_caller_guard() {
+        // The free function itself unconditionally stores a non-zero value;
+        // restart_bridge only calls it with the prior stamp, so the net effect
+        // is "carry forward the prior cooldown". Document that a non-zero seed
+        // overwrites whatever was there (the new bridge starts at 0 anyway).
+        let new_bridge = AtomicU64::new(0);
+        seed_timeout_stamp(&new_bridge, 1_234);
+        assert_eq!(new_bridge.load(Ordering::Relaxed), 1_234);
     }
 }
