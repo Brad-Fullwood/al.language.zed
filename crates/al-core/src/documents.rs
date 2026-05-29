@@ -26,10 +26,42 @@ pub struct TextRange {
     pub end_character: u32,
 }
 
+/// Default upper bound on the number of cached parse trees (F-OPEN-043).
+///
+/// A long-running daemon opens every scanned workspace file (and lazily loads
+/// more from disk on demand) without ever calling [`DocumentStore::close`], so
+/// the tree cache would otherwise grow once per file ever touched and never
+/// shrink. Parse trees are a pure derived cache — re-parsing a file costs
+/// ~30-50 ms via `AlParser::parse_quick` — so bounding the cache and evicting
+/// the least-recently-used entries trades a rare re-parse for a hard memory
+/// ceiling. A typical BC project has thousands of `.al` files but only a
+/// handful are hot at once, so 256 keeps the working set resident while
+/// capping growth.
+pub const DEFAULT_MAX_CACHED_TREES: usize = 256;
+
+/// A cached parse tree plus the metadata needed for version validation and
+/// approximate-LRU eviction (F-OPEN-043).
+struct CachedTree {
+    /// Document version the tree was parsed against.
+    version: i32,
+    tree: tree_sitter::Tree,
+    /// Monotonic access stamp, bumped on every cache read/write. The lowest
+    /// stamps are the least-recently-used entries and are evicted first when
+    /// the cache exceeds its cap.
+    last_access: u64,
+}
+
 /// Store for open documents.
 pub struct DocumentStore {
     docs: DashMap<Url, Document>,
-    trees: DashMap<Url, (i32, tree_sitter::Tree)>,
+    trees: DashMap<Url, CachedTree>,
+    /// Monotonic source of access stamps for the approximate-LRU tree cache.
+    tree_access_counter: std::sync::atomic::AtomicU64,
+    /// Maximum number of parse trees to retain (F-OPEN-043). `0` means
+    /// "unbounded" (the historical behaviour); the constructor seeds it with
+    /// [`DEFAULT_MAX_CACHED_TREES`]. Atomic so the daemon can retune it on a
+    /// config update without locking the whole store.
+    max_cached_trees: std::sync::atomic::AtomicUsize,
     /// Per-URI parse-coordination locks. Acquired by `parse_lock` so that
     /// concurrent `get_or_parse` calls for the same URI serialize on the
     /// expensive `AlParser::parse_quick` step instead of all racing into it.
@@ -66,8 +98,63 @@ impl DocumentStore {
         Self {
             docs: DashMap::new(),
             trees: DashMap::new(),
+            tree_access_counter: std::sync::atomic::AtomicU64::new(0),
+            max_cached_trees: std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_CACHED_TREES),
             parse_locks: DashMap::new(),
             max_doc_bytes: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Set the maximum number of parse trees the cache will retain (F-OPEN-043).
+    /// `None` (or `Some(0)`) disables the cap, restoring unbounded caching;
+    /// any other value bounds the cache and triggers least-recently-used
+    /// eviction once exceeded. Safe to call at any time — the next
+    /// [`cache_tree`](Self::cache_tree) enforces the new bound.
+    pub fn set_max_cached_trees(&self, cap: Option<usize>) {
+        self.max_cached_trees
+            .store(cap.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Next monotonic access stamp for the LRU tree cache.
+    #[inline]
+    fn next_tree_stamp(&self) -> u64 {
+        self.tree_access_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Evict least-recently-used parse trees until the cache is within its cap.
+    ///
+    /// Called from [`cache_tree`](Self::cache_tree) after an insert. With a
+    /// `0` (unbounded) cap this is a no-op. Eviction is approximate-LRU: it
+    /// drops entries with the smallest `last_access` stamps, which are the
+    /// ones least recently parsed or read. Evicting a tree only forces a
+    /// future re-parse (correctness is unaffected — trees are a derived cache).
+    fn evict_trees_over_cap(&self) {
+        let cap = self
+            .max_cached_trees
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if cap == 0 {
+            return;
+        }
+        // Cheap fast-path: nothing to do while under the cap.
+        let len = self.trees.len();
+        if len <= cap {
+            return;
+        }
+        // Collect (stamp, uri) pairs, sort ascending by stamp, and remove the
+        // oldest until we are back within the cap. DashMap has no ordered
+        // iteration, so we materialise the keys once per overflow. Overflow is
+        // rare (only when the working set exceeds the cap), so the O(n log n)
+        // sort is acceptable and bounded by `len`.
+        let mut stamps: Vec<(u64, Url)> = self
+            .trees
+            .iter()
+            .map(|e| (e.value().last_access, e.key().clone()))
+            .collect();
+        stamps.sort_unstable_by_key(|(stamp, _)| *stamp);
+        let to_remove = stamps.len().saturating_sub(cap);
+        for (_, uri) in stamps.into_iter().take(to_remove) {
+            self.trees.remove(&uri);
         }
     }
 
@@ -286,10 +373,13 @@ impl DocumentStore {
 
     /// Return the cached parse tree if the version matches the current document version.
     pub fn get_cached_tree(&self, uri: &Url) -> Option<tree_sitter::Tree> {
-        let doc = self.docs.get(uri)?;
-        let cached = self.trees.get(uri)?;
-        if cached.0 == doc.version {
-            Some(cached.1.clone())
+        let stamp = self.next_tree_stamp();
+        let doc_version = self.docs.get(uri)?.version;
+        let mut cached = self.trees.get_mut(uri)?;
+        if cached.version == doc_version {
+            // Mark recently used so eviction prefers colder entries.
+            cached.last_access = stamp;
+            Some(cached.tree.clone())
         } else {
             None
         }
@@ -308,18 +398,41 @@ impl DocumentStore {
         uri: &Url,
         expected_version: i32,
     ) -> Option<tree_sitter::Tree> {
-        let doc = self.docs.get(uri)?;
-        let cached = self.trees.get(uri)?;
-        if cached.0 == doc.version && cached.0 == expected_version {
-            Some(cached.1.clone())
+        let stamp = self.next_tree_stamp();
+        let doc_version = self.docs.get(uri)?.version;
+        let mut cached = self.trees.get_mut(uri)?;
+        if cached.version == doc_version && cached.version == expected_version {
+            cached.last_access = stamp;
+            Some(cached.tree.clone())
         } else {
             None
         }
     }
 
     /// Cache a parse tree for the given document URI and version.
+    ///
+    /// Bounded by [`set_max_cached_trees`](Self::set_max_cached_trees)
+    /// (F-OPEN-043): after inserting, the least-recently-used trees are evicted
+    /// if the cache exceeds its cap, so a long-running daemon that opens many
+    /// files cannot accumulate parse trees without limit.
     pub fn cache_tree(&self, uri: &Url, version: i32, tree: tree_sitter::Tree) {
-        self.trees.insert(uri.clone(), (version, tree));
+        let stamp = self.next_tree_stamp();
+        self.trees.insert(
+            uri.clone(),
+            CachedTree {
+                version,
+                tree,
+                last_access: stamp,
+            },
+        );
+        self.evict_trees_over_cap();
+    }
+
+    /// Number of cached parse trees. Test-only accessor used to assert the
+    /// LRU cap bounds cache growth (F-OPEN-043).
+    #[cfg(test)]
+    pub(crate) fn cached_trees_len(&self) -> usize {
+        self.trees.len()
     }
 
     /// Number of live parse-coordination locks. Test-only accessor used to
@@ -396,6 +509,112 @@ mod tests {
                 "close() must evict the parse lock for {uri}"
             );
         }
+    }
+
+    fn parse_al(src: &str) -> tree_sitter::Tree {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&crate::syntax::parser::language())
+            .unwrap();
+        parser.parse(src, None).unwrap()
+    }
+
+    #[test]
+    fn test_tree_cache_evicts_lru_when_over_cap() {
+        // F-OPEN-043 regression: a long-running daemon opens (and parses) many
+        // distinct files without ever closing them. The tree cache must not
+        // grow without bound — once it exceeds the cap, the least-recently-used
+        // trees are evicted so memory stays bounded.
+        let store = DocumentStore::new();
+        store.set_max_cached_trees(Some(4));
+
+        // Open and cache trees for 10 distinct files.
+        let mut uris = Vec::new();
+        for i in 0..10 {
+            let uri = test_uri(&format!("f{i}"));
+            store.open(uri.clone(), "codeunit 50100 X { }".to_string());
+            store.cache_tree(&uri, 0, parse_al("codeunit 50100 X { }"));
+            uris.push(uri);
+        }
+
+        // Never more than the cap, despite caching 10 trees.
+        assert!(
+            store.cached_trees_len() <= 4,
+            "tree cache must stay within cap; got {}",
+            store.cached_trees_len()
+        );
+
+        // The most-recently cached entry survives; an early one was evicted.
+        assert!(
+            store.get_cached_tree(&uris[9]).is_some(),
+            "most-recent tree must still be cached"
+        );
+        assert!(
+            store.get_cached_tree(&uris[0]).is_none(),
+            "oldest tree must have been evicted"
+        );
+    }
+
+    #[test]
+    fn test_tree_cache_lru_keeps_hot_entries() {
+        // The eviction policy is least-recently-*used*, not least-recently-
+        // *inserted*: an entry kept hot by reads must survive even though it
+        // was cached early.
+        let store = DocumentStore::new();
+        store.set_max_cached_trees(Some(3));
+
+        let hot = test_uri("hot");
+        store.open(hot.clone(), "codeunit 50100 H { }".to_string());
+        store.cache_tree(&hot, 0, parse_al("codeunit 50100 H { }"));
+
+        // Insert several colder entries, touching `hot` between each so its
+        // access stamp stays the newest.
+        for i in 0..6 {
+            let uri = test_uri(&format!("cold{i}"));
+            store.open(uri.clone(), "codeunit 50100 C { }".to_string());
+            store.cache_tree(&uri, 0, parse_al("codeunit 50100 C { }"));
+            // Touch hot to refresh its LRU stamp.
+            assert!(store.get_cached_tree(&hot).is_some());
+        }
+
+        assert!(store.cached_trees_len() <= 3);
+        assert!(
+            store.get_cached_tree(&hot).is_some(),
+            "hot entry refreshed by reads must not be evicted"
+        );
+    }
+
+    #[test]
+    fn test_tree_cache_unbounded_when_cap_cleared() {
+        // Setting the cap to None (or 0) restores the historical unbounded
+        // behaviour — every cached tree is retained.
+        let store = DocumentStore::new();
+        store.set_max_cached_trees(None);
+        for i in 0..50 {
+            let uri = test_uri(&format!("u{i}"));
+            store.open(uri.clone(), "codeunit 50100 U { }".to_string());
+            store.cache_tree(&uri, 0, parse_al("codeunit 50100 U { }"));
+        }
+        assert_eq!(store.cached_trees_len(), 50);
+    }
+
+    #[test]
+    fn test_default_cap_bounds_daemon_style_growth() {
+        // Simulates the daemon path: open every file and parse it, never
+        // closing. With the default cap the tree cache is bounded even though
+        // far more files than the cap are opened.
+        let store = DocumentStore::new();
+        let n = DEFAULT_MAX_CACHED_TREES * 3;
+        for i in 0..n {
+            let uri = test_uri(&format!("daemon{i}"));
+            store.open(uri.clone(), "codeunit 50100 D { }".to_string());
+            store.cache_tree(&uri, 0, parse_al("codeunit 50100 D { }"));
+        }
+        assert!(
+            store.cached_trees_len() <= DEFAULT_MAX_CACHED_TREES,
+            "default cap must bound the cache; got {}",
+            store.cached_trees_len()
+        );
     }
 
     #[test]
