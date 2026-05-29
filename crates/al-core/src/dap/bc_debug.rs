@@ -1471,4 +1471,113 @@ mod tests {
             other => panic!("expected FatalError, got {other:?}"),
         }
     }
+
+    // --- signalr_to_bc_event conversion shapes (F-OPEN-136) ------------------
+
+    /// Build a type-1 (invocation) SignalR message with the given target and
+    /// arguments, leaving the completion-only fields empty. Mirrors the shape
+    /// produced by the WebSocket reader for server → client callbacks.
+    fn invocation(
+        target: Option<&str>,
+        arguments: Option<Vec<serde_json::Value>>,
+    ) -> SignalRMessage {
+        SignalRMessage {
+            type_: 1,
+            target: target.map(|t| t.to_string()),
+            arguments,
+            invocation_id: None,
+            result: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_break_maps_to_breakpoint_on_thread_1() {
+        // A "Break" callback always yields a Break event with reason
+        // "breakpoint" on AL's single thread (id 1), regardless of arguments.
+        let msg = invocation(Some("Break"), None);
+        match signalr_to_bc_event(&msg) {
+            Some(BcEvent::Break { reason, thread_id }) => {
+                assert_eq!(reason, "breakpoint");
+                assert_eq!(thread_id, 1);
+            }
+            other => panic!("expected Break, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_detached_reads_terminate_true() {
+        // First argument `true` means the session should terminate.
+        let msg = invocation(
+            Some("OnDetachedFromConnection"),
+            Some(vec![serde_json::json!(true)]),
+        );
+        match signalr_to_bc_event(&msg) {
+            Some(BcEvent::Detached { terminate }) => assert!(terminate),
+            other => panic!("expected Detached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_detached_reads_terminate_false() {
+        // First argument `false` means detach without terminating.
+        let msg = invocation(
+            Some("OnDetachedFromConnection"),
+            Some(vec![serde_json::json!(false)]),
+        );
+        match signalr_to_bc_event(&msg) {
+            Some(BcEvent::Detached { terminate }) => assert!(!terminate),
+            other => panic!("expected Detached, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_detached_defaults_terminate_false_when_missing() {
+        // Absent / non-boolean arguments must default to `terminate = false`
+        // rather than panicking or terminating the session unexpectedly.
+        for args in [
+            None,
+            Some(vec![]),
+            Some(vec![serde_json::json!("not a bool")]),
+        ] {
+            let msg = invocation(Some("OnDetachedFromConnection"), args.clone());
+            match signalr_to_bc_event(&msg) {
+                Some(BcEvent::Detached { terminate }) => {
+                    assert!(!terminate, "args {args:?} should default terminate=false")
+                }
+                other => panic!("expected Detached for args {args:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_internal_targets_are_dropped() {
+        // IsAlive / OnAttachedToConnection are handled internally and must not
+        // be forwarded to the DAP layer.
+        for target in ["IsAlive", "OnAttachedToConnection"] {
+            let msg = invocation(Some(target), None);
+            assert!(
+                signalr_to_bc_event(&msg).is_none(),
+                "{target} must not produce a BcEvent"
+            );
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_unknown_target_preserved_as_other() {
+        // An unrecognised callback is preserved verbatim as Other so it can be
+        // logged without losing the target name.
+        let msg = invocation(Some("SomeFutureCallback"), None);
+        match signalr_to_bc_event(&msg) {
+            Some(BcEvent::Other { target }) => assert_eq!(target, "SomeFutureCallback"),
+            other => panic!("expected Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signalr_to_bc_event_missing_target_is_dropped() {
+        // Type-3/6 frames carry no target; they must not be forwarded.
+        let msg = invocation(None, None);
+        assert!(signalr_to_bc_event(&msg).is_none());
+    }
 }
