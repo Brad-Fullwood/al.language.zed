@@ -119,8 +119,16 @@ pub fn arch_lint(workspace: &Workspace, config: &ArchConfig) -> Vec<ArchViolatio
     violations
 }
 
+/// Whether a rule scoped by `rule_pattern` applies to an object of kind
+/// `obj_kind_lower`.
+///
+/// An empty pattern matches every object kind. A non-empty pattern is matched
+/// **exactly** (case-insensitively) against the object kind keyword — AL object
+/// types are atomic keywords (`codeunit`, `page`, `table`, …), so a substring
+/// match would let a pattern like `"code"` incorrectly target `codeunit`. Use
+/// the exact keyword to scope a rule to a single object type.
 fn applies_to_kind(rule_pattern: &str, obj_kind_lower: &str) -> bool {
-    rule_pattern.is_empty() || obj_kind_lower.contains(&rule_pattern.to_lowercase())
+    rule_pattern.is_empty() || obj_kind_lower == rule_pattern.to_lowercase()
 }
 
 fn apply_rule(
@@ -191,6 +199,13 @@ fn apply_rule(
         }
         ArchRuleKind::RequiredProperty => {
             if let (Some(id), Some(range)) = (obj_info.id, rule.values.first()) {
+                // Only a single `LO-HI` range is supported. Reject anything
+                // with zero or multiple dashes (e.g. `"100-200-300"`) rather
+                // than silently parsing `LO` and falling back to u32::MAX for
+                // the upper bound, which would let out-of-range IDs slip past.
+                if range.matches('-').count() != 1 {
+                    return;
+                }
                 if let Some(dash) = range.find('-') {
                     let lo: u32 = range[..dash].parse().unwrap_or(0);
                     let hi: u32 = range[dash + 1..].parse().unwrap_or(u32::MAX);
@@ -335,6 +350,205 @@ mod tests {
         assert!(
             !violations.is_empty(),
             "Literal [A-Z] pattern must flag a lowercase object name"
+        );
+    }
+
+    /// Regression: `applies_to_kind` must match the object-kind keyword
+    /// EXACTLY, not as a substring. A rule scoped to pattern `"code"` must NOT
+    /// fire on a `codeunit`, while pattern `"codeunit"` must.
+    #[test]
+    fn applies_to_kind_is_exact_match_not_substring() {
+        let ws = workspace_with(vec![(
+            "/src/Bad.al",
+            r#"codeunit 50100 "MyCodeunit"
+{
+    procedure DoWork()
+    begin
+        Sleep(1000);
+    end;
+}"#,
+        )]);
+
+        // Substring of the real kind ("code" ⊂ "codeunit") must NOT match.
+        let substring_pattern = ArchConfig {
+            rules: vec![ArchRule {
+                id: "ARCH-SUB".to_string(),
+                description: "No Sleep".to_string(),
+                kind: ArchRuleKind::ForbiddenPattern,
+                pattern: "code".to_string(),
+                values: vec!["Sleep(1000)".to_string()],
+            }],
+        };
+        assert!(
+            arch_lint(&ws, &substring_pattern).is_empty(),
+            "Substring pattern 'code' must NOT match object kind 'codeunit'"
+        );
+
+        // Exact kind keyword must match.
+        let exact_pattern = ArchConfig {
+            rules: vec![ArchRule {
+                id: "ARCH-EXACT".to_string(),
+                description: "No Sleep".to_string(),
+                kind: ArchRuleKind::ForbiddenPattern,
+                pattern: "codeunit".to_string(),
+                values: vec!["Sleep(1000)".to_string()],
+            }],
+        };
+        assert!(
+            arch_lint(&ws, &exact_pattern)
+                .iter()
+                .any(|v| v.rule_id == "ARCH-EXACT"),
+            "Exact pattern 'codeunit' must match object kind 'codeunit'"
+        );
+    }
+
+    fn required_property_rule(range: &str) -> ArchConfig {
+        ArchConfig {
+            rules: vec![ArchRule {
+                id: "ARCH-RANGE".to_string(),
+                description: "ID must be in range".to_string(),
+                kind: ArchRuleKind::RequiredProperty,
+                pattern: String::new(),
+                values: vec![range.to_string()],
+            }],
+        }
+    }
+
+    #[test]
+    fn required_property_id_within_range_no_violation() {
+        let ws = workspace_with(vec![(
+            "/src/InRange.al",
+            "codeunit 50100 \"InRange\"\n{\n}\n",
+        )]);
+        let v = arch_lint(&ws, &required_property_rule("50000-50100"));
+        assert!(
+            v.is_empty(),
+            "ID 50100 inside 50000-50100 must not violate: {v:?}"
+        );
+    }
+
+    #[test]
+    fn required_property_id_outside_range_violation() {
+        let ws = workspace_with(vec![(
+            "/src/OutOfRange.al",
+            "codeunit 50500 \"OutOfRange\"\n{\n}\n",
+        )]);
+        let v = arch_lint(&ws, &required_property_rule("50000-50100"));
+        assert_eq!(v.len(), 1, "ID 50500 outside 50000-50100 must violate");
+        assert_eq!(v[0].rule_id, "ARCH-RANGE");
+        assert!(v[0].message.contains("50500"));
+    }
+
+    #[test]
+    fn required_property_no_id_no_violation() {
+        // An object without a numeric ID (e.g. an interface) has obj_info.id
+        // == None, so the rule cannot fire.
+        let ws = workspace_with(vec![("/src/NoId.al", "interface \"IFoo\"\n{\n}\n")]);
+        let v = arch_lint(&ws, &required_property_rule("50000-50100"));
+        assert!(v.is_empty(), "Object without ID must not violate: {v:?}");
+    }
+
+    /// Regression: a malformed range with multiple dashes (`"50000-50100-50200"`)
+    /// must be rejected, NOT silently parsed as `50000-u32::MAX`. Before the
+    /// fix, an out-of-range ID (here 50500, which is between 50100 and 50200)
+    /// would slip through because the upper bound defaulted to u32::MAX.
+    #[test]
+    fn required_property_malformed_range_is_rejected() {
+        let ws = workspace_with(vec![("/src/Mal.al", "codeunit 50500 \"Mal\"\n{\n}\n")]);
+        // The buggy code would treat this as 50000..=u32::MAX and NOT flag
+        // 50500. The correct behaviour is to reject the malformed range
+        // entirely (no violation, no false pass-through to u32::MAX).
+        let v = arch_lint(&ws, &required_property_rule("50000-50100-50200"));
+        assert!(
+            v.is_empty(),
+            "Malformed multi-dash range must be rejected, not parsed to u32::MAX: {v:?}"
+        );
+
+        // A range with no dash at all is likewise ignored.
+        let v2 = arch_lint(&ws, &required_property_rule("50000"));
+        assert!(
+            v2.is_empty(),
+            "Range without a dash must be ignored: {v2:?}"
+        );
+    }
+
+    fn max_complexity_rule(threshold: &str) -> ArchConfig {
+        ArchConfig {
+            rules: vec![ArchRule {
+                id: "ARCH-CX".to_string(),
+                description: "Too complex".to_string(),
+                kind: ArchRuleKind::MaxComplexity,
+                pattern: String::new(),
+                values: vec![threshold.to_string()],
+            }],
+        }
+    }
+
+    #[test]
+    fn max_complexity_below_threshold_no_violation() {
+        let ws = workspace_with(vec![(
+            "/src/Simple.al",
+            r#"codeunit 50100 "Simple"
+{
+    procedure DoWork()
+    begin
+        Message('hi');
+    end;
+}"#,
+        )]);
+        let v = arch_lint(&ws, &max_complexity_rule("10"));
+        assert!(
+            v.is_empty(),
+            "Straight-line procedure must not violate: {v:?}"
+        );
+    }
+
+    #[test]
+    fn max_complexity_exceeds_threshold_violation() {
+        // A procedure with several decision points easily exceeds a low
+        // threshold of 1. Use a threshold of 1 so any branch triggers it.
+        let ws = workspace_with(vec![(
+            "/src/Complex.al",
+            r#"codeunit 50100 "Complex"
+{
+    procedure DoWork(x: Integer)
+    begin
+        if x > 0 then
+            Message('pos')
+        else
+            Message('neg');
+        if x > 10 then
+            Message('big');
+    end;
+}"#,
+        )]);
+        let v = arch_lint(&ws, &max_complexity_rule("1"));
+        assert!(
+            v.iter().any(|x| x.rule_id == "ARCH-CX"),
+            "Branching procedure must exceed threshold 1: {v:?}"
+        );
+        // The violation line must point at the procedure, not always line 1.
+        assert!(v[0].line.unwrap() >= 1);
+    }
+
+    #[test]
+    fn max_complexity_non_numeric_threshold_uses_default_10() {
+        // A non-numeric / empty threshold falls back to the default of 10.
+        // A simple procedure stays well under 10, so no violation.
+        let ws = workspace_with(vec![(
+            "/src/Default.al",
+            r#"codeunit 50100 "Default"
+{
+    procedure DoWork()
+    begin
+        Message('hi');
+    end;
+}"#,
+        )]);
+        let v = arch_lint(&ws, &max_complexity_rule("not-a-number"));
+        assert!(
+            v.is_empty(),
+            "Simple procedure under default threshold 10 must not violate: {v:?}"
         );
     }
 }
