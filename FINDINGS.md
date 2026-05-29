@@ -1440,6 +1440,22 @@ Two code commits. Made the BC DAP layer's failure reporting honest (informative 
 
 Workspace test count: 2029 → 2035 (+6). All gates green.
 
+### Iteration 88 (2026-05-29)
+
+Four code commits resolving the two new P1 bugs plus two new P2 issues surfaced in triage.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-142 (new) | P1 | **Fixed.** `get_or_parse` TOCTOU race: text and version were read with two separate calls, then the parse cache was checked against the *live* version, so a concurrent `apply_changes` (plus another thread parsing the new version) could return a new tree paired with old text. Added `DocumentStore::get_text_and_version` (atomic) and `get_cached_tree_at_version` (matches both live and captured version); `get_or_parse` uses both on the fast and post-lock paths. +1 regression test. |
+| F-OPEN-143 (new) | P1 | **Fixed.** `find_workspace_field` used byte offsets (`line.find`, `name_part.len()`) directly as LSP UTF-16 `Position.character` values, mis-reporting columns for non-ASCII field names (hover/goto/rename). Now converts via `byte_col_to_utf16_col`. |
+| F-OPEN-144 (new) | P2 | **Fixed.** Zero test coverage for `find_workspace_field` / `workspace_field_items`. Added 4 regression tests: ASCII baseline, leading multibyte (`Ørnamental`), mid-name multibyte (`München`), and field-listing including a non-ASCII name. |
+| F-OPEN-145 (new) | P2 | **Fixed.** `format_xml_doc` `<param>` extraction loop was unbounded (O(params·doc_len) worst case on malformed/adversarial docs). Capped at 256 params. +2 tests (pathological count, unclosed tag). |
+| F-OPEN-146 (new) | P2 | **Fixed.** `compose()` concatenated extension fields without dedup; duplicate `(id, name)` from a malformed index would double-list in completions/hover. Dedup by `(id, lowercased name)` with a warn log. +2 tests. |
+| F-OPEN-136 | P2 | Carried forward — remaining Break/Detached/Other SignalR conversion shapes still belong to the F-OPEN-016 pass. |
+| F-OPEN-010, 016, 042, 043, 046, 054, 060, 063, 065, 072, 081, 110, 112, 135, 137 | P1/P2/P3 | Carried forward — budget this iteration went to the two new P1 bugs and the associated P2 cluster. |
+
+Workspace test count: 2035 → 2044 (+9). All gates green.
+
 
 
 | Phase | Status | Output |

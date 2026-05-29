@@ -154,3 +154,8 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-139 | P2 | fixed | `configuration_done()` propagates the second `DebugAdapterConfigurationDone` failure instead of masking it with `Ok(())` (iteration 87) |
 | F-OPEN-140 | P2 | fixed | SignalR negotiate parsing accepts `connectionId`/`ConnectionId`/`connection_id` and warns instead of silently using the auth token as session id (iteration 87) |
 | F-OPEN-141 | P2 | fixed | `DocumentStore::close()` evicts the per-URI `parse_locks` entry — stops the lock map leaking over a long-running daemon's lifetime; +1 test (iteration 87) |
+| F-OPEN-142 | P1 | fixed | `get_or_parse` TOCTOU: atomic `get_text_and_version` + `get_cached_tree_at_version` (matches live AND captured version) prevent serving a new tree with old text; +1 test (iteration 88) |
+| F-OPEN-143 | P1 | fixed | `find_workspace_field` reports UTF-16 columns via `byte_col_to_utf16_col` instead of byte offsets (correct hover/goto/rename for non-ASCII field names) (iteration 88) |
+| F-OPEN-144 | P2 | fixed | Added regression tests for `find_workspace_field`/`workspace_field_items` covering ASCII + leading/mid-name multibyte field names (iteration 88) |
+| F-OPEN-145 | P2 | fixed | `format_xml_doc` `<param>` extraction capped at 256 to bound O(params·doc_len) on malformed docs; +2 tests (iteration 88) |
+| F-OPEN-146 | P2 | fixed | `compose()` deduplicates fields by `(id, lowercased name)` to defend against malformed symbol index; warns on removal; +2 tests (iteration 88) |
