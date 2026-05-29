@@ -594,11 +594,17 @@ fn extract_xml_attr(tag: &str, attr: &str) -> Option<String> {
 }
 
 fn xml_unescape(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
+    // `&amp;` MUST be unescaped last. With chained `str::replace`, doing it
+    // first would let the `&` it produces be re-interpreted as the start of a
+    // later entity: e.g. user text `&lt;` is escaped to `&amp;lt;`, and an
+    // `&amp;`-first order would turn that back into `&lt;` → `<`, silently
+    // losing the original literal. Unescaping the named entities first and
+    // `&amp;` last keeps the escape/unescape cycle lossless.
+    s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 // ---------------------------------------------------------------------------
@@ -902,6 +908,52 @@ mod tests {
         let translated = &parsed["Table 50100 MyTable - ToolTip 10 Name"];
         assert_eq!(translated.target.as_deref(), Some("Gibt den Namen an"));
         assert_eq!(translated.state, TranslationState::Translated);
+    }
+
+    #[test]
+    fn test_generate_xliff_roundtrip_escaped_chars() {
+        // Source text containing every XML-special character, including
+        // literal entity-looking strings, must survive a generate → parse
+        // roundtrip without data loss. A naive unescape that handles `&amp;`
+        // first would turn `&lt;` (escaped to `&amp;lt;`) back into `<`.
+        let cases = [
+            "Use &lt; for less-than",
+            "A & B",
+            "Cost > Limit & < Budget",
+            "Quote: \"hello\" and 'world'",
+            "XML: &amp;lt; nested",
+        ];
+        for (i, source) in cases.iter().enumerate() {
+            let units = vec![TranslationUnit {
+                id: format!("Table 50100 MyTable - Caption {i}"),
+                object_type: "Table".to_string(),
+                object_id: 50100,
+                object_name: "MyTable".to_string(),
+                source: (*source).to_string(),
+                target: Some((*source).to_string()),
+                state: TranslationState::Translated,
+                note: Some((*source).to_string()),
+            }];
+
+            let xml = generate_xliff("MyApp", "en-US", "de-DE", &units);
+            let parsed = parse_xliff(&xml);
+            let id = format!("Table 50100 MyTable - Caption {i}");
+            let unit = parsed.get(&id).expect("unit present after roundtrip");
+            assert_eq!(
+                unit.source, *source,
+                "source roundtrip failed for {source:?}"
+            );
+            assert_eq!(
+                unit.target.as_deref(),
+                Some(*source),
+                "target roundtrip failed for {source:?}"
+            );
+            assert_eq!(
+                unit.note.as_deref(),
+                Some(*source),
+                "note roundtrip failed for {source:?}"
+            );
+        }
     }
 
     #[test]
