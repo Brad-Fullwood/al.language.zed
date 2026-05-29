@@ -513,10 +513,19 @@ impl BcDebugSession {
             .await
             .map_err(|e| DapError::ConnectionFailed(format!("SignalR handshake failed: {e}")))?;
 
-        // Read handshake response
+        // Read handshake response. A SignalR server signals a
+        // protocol/version mismatch here via `{"error":...}`; validate it so a
+        // rejected handshake fails loudly instead of limping on against an
+        // adapter that will misbehave on every later invoke (F-OPEN-016).
         if let Some(msg) = ws_source.next().await {
             let msg = msg.map_err(|e| DapError::ConnectionFailed(format!("WS read error: {e}")))?;
             debug!("SignalR handshake response: {:?}", msg);
+            if let tokio_tungstenite::tungstenite::Message::Text(text) = &msg {
+                // SignalR frames are record-separator (\x1e) delimited; the
+                // handshake response is the first frame.
+                let first = text.split('\x1e').next().unwrap_or(text.as_str());
+                validate_signalr_handshake_response(first)?;
+            }
         }
 
         info!("SignalR connection established");
@@ -1315,6 +1324,46 @@ fn resolve_negotiate_connection(negotiate: &serde_json::Value) -> Result<Negotia
 /// JSON response body with a `<redacted>` placeholder before logging or
 /// surfacing in errors. Falls back to the original text if the body is not
 /// valid JSON or has no such field.
+/// Validate the SignalR handshake response (F-OPEN-016).
+///
+/// After the client sends `{"protocol":"json","version":1}`, a spec-compliant
+/// SignalR server replies with one of:
+/// - `{}` — handshake accepted; the client may proceed.
+/// - `{"error":"<reason>"}` — handshake **rejected** (e.g. the server does not
+///   support the requested protocol/version). The connection is unusable.
+///
+/// Older code only `debug!`-logged this frame, so a protocol/version mismatch
+/// fell through silently and the session limped on against an adapter that
+/// would misbehave on every later invoke. This surfaces the rejection loudly
+/// as a `ConnectionFailed`, which is exactly the "version-detection /
+/// capability probe should fail loudly" guarantee F-OPEN-016 asks for.
+///
+/// A frame that does not parse as JSON, or that parses but carries no `error`
+/// field, is treated as accepted (`Ok(())`): some servers send the success
+/// frame coalesced with the first real message, and we must not regress a
+/// working handshake. The strict signal we act on is solely a present,
+/// non-empty `error`.
+fn validate_signalr_handshake_response(frame: &str) -> Result<()> {
+    let trimmed = frame.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        // Not JSON we can interpret — don't fail a possibly-fine handshake.
+        return Ok(());
+    };
+    if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
+        if !err.is_empty() {
+            return Err(DapError::ConnectionFailed(format!(
+                "SignalR handshake rejected by BC server: {err}. The debug \
+                 protocol/version the client offered (json v1) was refused — \
+                 the server may speak an incompatible SignalR protocol version."
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn redact_connection_token(body: &str) -> String {
     let Ok(mut v) = serde_json::from_str::<serde_json::Value>(body) else {
         return body.to_string();
@@ -1405,6 +1454,53 @@ mod tests {
     fn redact_connection_token_passthrough_on_invalid_json() {
         let body = "not-json garbage";
         assert_eq!(redact_connection_token(body), "not-json garbage");
+    }
+
+    // --- validate_signalr_handshake_response (F-OPEN-016) --------------------
+
+    #[test]
+    fn handshake_empty_frame_is_accepted() {
+        // The canonical SignalR success response is `{}`; some servers also
+        // send a coalesced/empty frame. Neither is a rejection.
+        assert!(validate_signalr_handshake_response("").is_ok());
+        assert!(validate_signalr_handshake_response("   ").is_ok());
+        assert!(validate_signalr_handshake_response("{}").is_ok());
+    }
+
+    #[test]
+    fn handshake_non_json_frame_is_accepted() {
+        // A frame we cannot parse must not regress an otherwise-working
+        // handshake; only an explicit `error` field is treated as a rejection.
+        assert!(validate_signalr_handshake_response("not json at all").is_ok());
+    }
+
+    #[test]
+    fn handshake_empty_error_field_is_accepted() {
+        // An empty `error` string is not a real rejection signal.
+        assert!(validate_signalr_handshake_response(r#"{"error":""}"#).is_ok());
+    }
+
+    #[test]
+    fn handshake_error_field_fails_loudly() {
+        // The protocol/version-mismatch signal: a non-empty `error` must
+        // surface as a ConnectionFailed carrying the server's reason, instead
+        // of falling through silently (F-OPEN-016).
+        let res = validate_signalr_handshake_response(
+            r#"{"error":"Requested protocol version is not supported"}"#,
+        );
+        let err = res.expect_err("non-empty handshake error must fail");
+        assert!(
+            matches!(&err, DapError::ConnectionFailed(m)
+                if m.contains("handshake rejected")
+                    && m.contains("Requested protocol version is not supported")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn handshake_no_error_field_with_other_keys_is_accepted() {
+        // A success frame may carry additional non-error keys; still accepted.
+        assert!(validate_signalr_handshake_response(r#"{"minorVersion":2}"#).is_ok());
     }
 
     #[test]
