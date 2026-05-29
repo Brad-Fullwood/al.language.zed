@@ -284,9 +284,17 @@ pub async fn compile_project_with_analyzers(
                 // created out_dir as a sibling of project_root, so the same
                 // mount). On success the .app appears atomically in
                 // project_root from the consumer's perspective.
+                // A produced .app path always has a file name; if it somehow
+                // doesn't (root path / "..") it's a path error, not a timeout.
+                // Report it as an Io error so callers see the true failure mode.
                 let file_name = match src.file_name() {
                     Some(n) => n.to_os_string(),
-                    None => return Err(AlError::BuildTimeout(0)),
+                    None => {
+                        return Err(AlError::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!("produced .app path has no file name: {}", src.display()),
+                        )))
+                    }
                 };
                 let dst = project_root.join(&file_name);
                 match std::fs::rename(&src, &dst) {
