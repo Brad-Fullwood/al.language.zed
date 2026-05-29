@@ -283,40 +283,14 @@ impl BcServerClient {
     }
 }
 
-/// Maximum number of bytes to buffer from a non-200 (error) response body
-/// before truncating. `sanitize_error_body` ultimately trims to 512 bytes for
-/// display, but without an up-front cap a malicious or misbehaving BC server
-/// could stream a multi-gigabyte error body that `response.text()` would
-/// buffer entirely into memory first (F-OPEN-014).
-const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024; // 64 KiB — far more than any real error page
-
-/// Read an error response body, refusing to buffer more than
-/// `MAX_ERROR_BODY_BYTES`, then scrub/truncate it via `sanitize_error_body`.
+/// Read an error response body with a Content-Length cap before buffering,
+/// then scrub/truncate it via `sanitize_error_body`.
 ///
-/// Mirrors the `read_json_body_capped` hardening pattern in `bc_client`:
-/// a body whose advertised `Content-Length` exceeds the cap (or that omits
-/// the header entirely) is not buffered at all, since `reqwest`'s default
-/// `text()`/`bytes()` would otherwise pull the whole body into memory. A
-/// server that lies about a small `Content-Length` and then streams a huge
-/// body is still bounded by the post-read size re-check (F-OPEN-014).
+/// Thin wrapper over the shared `bc_client::read_error_body_capped` helper so
+/// every BC client path (bc_server, profiling, snapshot, test_runner) enforces
+/// the same 64 KiB pre-read cap (F-OPEN-014).
 async fn read_error_body_capped(response: reqwest::Response) -> String {
-    match response.content_length() {
-        Some(len) if len <= MAX_ERROR_BODY_BYTES => {
-            let bytes = match response.bytes().await {
-                Ok(b) => b,
-                Err(_) => return String::new(),
-            };
-            // Defend against a lied Content-Length: only retain the cap.
-            let end = (MAX_ERROR_BODY_BYTES as usize).min(bytes.len());
-            crate::bc_client::sanitize_error_body(&String::from_utf8_lossy(&bytes[..end]))
-        }
-        Some(len) => crate::bc_client::sanitize_error_body(&format!(
-            "<error body {len} bytes exceeds {MAX_ERROR_BODY_BYTES} byte cap — not read>"
-        )),
-        None => {
-            crate::bc_client::sanitize_error_body("<error body has no Content-Length — not read>")
-        }
-    }
+    crate::bc_client::read_error_body_capped(response).await
 }
 
 /// Build a safe `.app` filename from a dependency's publisher and name.

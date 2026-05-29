@@ -180,6 +180,83 @@ pub(crate) async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
     })
 }
 
+/// Upper bound on binary download bodies (profile / snapshot files) from the
+/// BC dev API. 500 MB mirrors `MAX_UPLOADABLE_APP_BYTES`: profiling
+/// `.alcpuprofile` and snapshot `.alvsc` files are typically a few MB to tens
+/// of MB; anything past 500 MB is almost certainly a misbehaving server and
+/// we refuse to buffer it into the daemon's address space. F-OPEN-044
+/// hardened JSON reads but left binary downloads (`resp.bytes().await`)
+/// uncapped — this closes that gap with the same two-stage Content-Length
+/// pre-check + post-read re-check used by `bc_server::download_one`.
+pub(crate) const MAX_BC_BINARY_RESPONSE_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Read a binary response body, refusing bodies larger than
+/// `MAX_BC_BINARY_RESPONSE_BYTES`. A body whose advertised `Content-Length`
+/// exceeds the cap is rejected before any bytes are buffered; a server that
+/// lies about (or omits) `Content-Length` is still bounded by the post-read
+/// size re-check. Same defensive shape as `read_json_body_capped` and
+/// `bc_server::download_one`.
+pub(crate) async fn read_binary_body_capped(
+    response: reqwest::Response,
+) -> Result<Vec<u8>, BcClientError> {
+    let status = response.status().as_u16();
+    if let Some(content_length) = response.content_length() {
+        if content_length > MAX_BC_BINARY_RESPONSE_BYTES {
+            return Err(BcClientError::ServerError {
+                status,
+                message: format!(
+                    "binary response body {content_length} bytes exceeds {MAX_BC_BINARY_RESPONSE_BYTES} byte limit — refusing download"
+                ),
+            });
+        }
+    }
+    let bytes = response.bytes().await?;
+    if bytes.len() as u64 > MAX_BC_BINARY_RESPONSE_BYTES {
+        return Err(BcClientError::ServerError {
+            status,
+            message: format!(
+                "binary response actual body {actual} bytes exceeds {MAX_BC_BINARY_RESPONSE_BYTES} byte limit — server lied about Content-Length",
+                actual = bytes.len(),
+            ),
+        });
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Maximum number of bytes to buffer from a non-2xx (error) response body
+/// before truncating. `sanitize_error_body` ultimately trims to 512 bytes for
+/// display, but without an up-front cap a misbehaving BC server could stream a
+/// multi-gigabyte error body that `response.text()` would buffer entirely into
+/// memory first (F-OPEN-014).
+pub(crate) const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024; // 64 KiB — far more than any real error page
+
+/// Read an error response body, refusing to buffer more than
+/// `MAX_ERROR_BODY_BYTES`, then scrub/truncate it via `sanitize_error_body`.
+///
+/// Mirrors the `read_json_body_capped` hardening pattern: a body whose
+/// advertised `Content-Length` exceeds the cap (or that omits the header
+/// entirely) is not buffered at all, since `reqwest`'s `text()`/`bytes()`
+/// would otherwise pull the whole body into memory. A server that lies about a
+/// small `Content-Length` and then streams a huge body is still bounded by the
+/// post-read size re-check (F-OPEN-014).
+pub(crate) async fn read_error_body_capped(response: reqwest::Response) -> String {
+    match response.content_length() {
+        Some(len) if len <= MAX_ERROR_BODY_BYTES => {
+            let bytes = match response.bytes().await {
+                Ok(b) => b,
+                Err(_) => return String::new(),
+            };
+            // Defend against a lied Content-Length: only retain the cap.
+            let end = (MAX_ERROR_BODY_BYTES as usize).min(bytes.len());
+            sanitize_error_body(&String::from_utf8_lossy(&bytes[..end]))
+        }
+        Some(len) => sanitize_error_body(&format!(
+            "<error body {len} bytes exceeds {MAX_ERROR_BODY_BYTES} byte cap — not read>"
+        )),
+        None => sanitize_error_body("<error body has no Content-Length — not read>"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BC Dev API response types
 // ---------------------------------------------------------------------------
@@ -730,6 +807,138 @@ mod tests {
                 assert_eq!(status, 503, "parse-failure error must keep the HTTP status");
             }
             other => panic!("expected ServerError with status 503, got {other:?}"),
+        }
+    }
+
+    // --- read_binary_body_capped (profiling / snapshot downloads) -----------
+
+    #[tokio::test]
+    async fn read_binary_body_capped_accepts_small_response() {
+        // Positive: a small binary body under the cap is returned verbatim.
+        let body = b"\x00\x01\x02profile-data";
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_bytes(body.to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap();
+        let bytes = read_binary_body_capped(resp).await.unwrap();
+        assert_eq!(bytes, body);
+    }
+
+    #[tokio::test]
+    async fn read_binary_body_capped_refuses_oversize_content_length() {
+        // Negative: an advertised Content-Length above the cap is rejected
+        // before the body is buffered.
+        let oversize = (MAX_BC_BINARY_RESPONSE_BYTES + 1).to_string();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", oversize.as_str())
+                    .set_body_bytes(b"small".to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new().get(server.uri()).send().await;
+        match resp {
+            Ok(r) => {
+                let res = read_binary_body_capped(r).await;
+                assert!(
+                    res.is_err(),
+                    "oversized Content-Length must not yield Ok bytes"
+                );
+            }
+            Err(_) => {
+                // reqwest aborted on the length mismatch — also acceptable.
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn read_binary_body_capped_allows_missing_content_length() {
+        // A chunked binary download (no Content-Length) is still allowed —
+        // unlike JSON, file downloads are commonly chunked — but the
+        // post-read size re-check still bounds it. Here the body is tiny.
+        let body = b"chunked-binary";
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Transfer-Encoding", "chunked")
+                    .set_body_bytes(body.to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap();
+        let bytes = read_binary_body_capped(resp).await.unwrap();
+        assert_eq!(bytes, body);
+    }
+
+    // --- read_error_body_capped (shared error-body cap, F-OPEN-014) ---------
+
+    #[tokio::test]
+    async fn read_error_body_capped_reads_small_error_body() {
+        let body = "boom: something went wrong";
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(500)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap();
+        let msg = read_error_body_capped(resp).await;
+        assert!(
+            msg.contains("boom"),
+            "small error body must be returned: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_error_body_capped_refuses_oversize_content_length() {
+        // An error body whose advertised length exceeds the 64 KiB cap is
+        // not buffered at all — the helper returns a sentinel instead.
+        let oversize = (MAX_ERROR_BODY_BYTES + 1).to_string();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(500)
+                    .insert_header("Content-Length", oversize.as_str())
+                    .set_body_string("x"),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new().get(server.uri()).send().await;
+        if let Ok(r) = resp {
+            let msg = read_error_body_capped(r).await;
+            assert!(
+                msg.contains("exceeds") || msg.contains("not read"),
+                "oversize error body must not be buffered: {msg}"
+            );
         }
     }
 }

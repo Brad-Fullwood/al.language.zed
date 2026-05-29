@@ -100,7 +100,7 @@ pub async fn start_snapshot(
     let status = resp.status();
 
     if !status.is_success() {
-        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
+        let message = crate::bc_client::read_error_body_capped(resp).await;
         warn!(status = status.as_u16(), %message, "snapshot: start failed");
         return Err(SnapshotError::ServerError {
             status: status.as_u16(),
@@ -146,7 +146,7 @@ pub async fn list_snapshots(config: &SnapshotConfig) -> Result<Vec<SnapshotInfo>
     let status = resp.status();
 
     if !status.is_success() {
-        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
+        let message = crate::bc_client::read_error_body_capped(resp).await;
         return Err(SnapshotError::ServerError {
             status: status.as_u16(),
             message,
@@ -227,7 +227,7 @@ pub async fn download_snapshot(
     let status = resp.status();
 
     if !status.is_success() {
-        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
+        let message = crate::bc_client::read_error_body_capped(resp).await;
         return Err(SnapshotError::ServerError {
             status: status.as_u16(),
             message,
@@ -258,7 +258,15 @@ pub async fn download_snapshot(
     let file_name = format!("{safe_id}.alvsc");
     let dest = config.output_dir.join(&file_name);
 
-    let bytes = resp.bytes().await?;
+    // Content-Length-capped binary read (F-OPEN-044 follow-up). A misbehaving
+    // server could otherwise stream gigabytes through `bytes()` straight into
+    // the daemon's memory; the helper enforces a 500 MB cap pre- and post-read.
+    let bytes = crate::bc_client::read_binary_body_capped(resp)
+        .await
+        .map_err(|e| SnapshotError::ServerError {
+            status: 0,
+            message: e.to_string(),
+        })?;
     tokio::fs::write(&dest, &bytes).await?;
 
     info!(

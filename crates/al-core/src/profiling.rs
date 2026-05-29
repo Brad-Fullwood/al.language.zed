@@ -110,7 +110,7 @@ pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, Profili
     let status = resp.status();
 
     if !status.is_success() {
-        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
+        let message = crate::bc_client::read_error_body_capped(resp).await;
         warn!(status = status.as_u16(), %message, "profiling: start failed");
         return Err(ProfilingError::ServerError {
             status: status.as_u16(),
@@ -164,7 +164,7 @@ pub async fn stop_profiling(
     let status = resp.status();
 
     if !status.is_success() {
-        let message = crate::bc_client::sanitize_error_body(&resp.text().await.unwrap_or_default());
+        let message = crate::bc_client::read_error_body_capped(resp).await;
         warn!(status = status.as_u16(), %message, "profiling: stop failed");
         return Err(ProfilingError::ServerError {
             status: status.as_u16(),
@@ -182,7 +182,12 @@ pub async fn stop_profiling(
     let file_name = format!("profile-{timestamp}.alcpuprofile");
     let dest = config.output_dir.join(&file_name);
 
-    let bytes = resp.bytes().await?;
+    // Content-Length-capped binary read (F-OPEN-044 follow-up). A misbehaving
+    // server could otherwise stream gigabytes through `bytes()` straight into
+    // the daemon's memory; the helper enforces a 500 MB cap pre- and post-read.
+    let bytes = crate::bc_client::read_binary_body_capped(resp)
+        .await
+        .map_err(|e| ProfilingError::ParseError(format!("Failed to read profile data: {e}")))?;
     tokio::fs::write(&dest, &bytes).await?;
 
     info!(

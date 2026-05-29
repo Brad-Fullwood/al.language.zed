@@ -137,9 +137,7 @@ impl TestRunnerClient {
         let status = response.status();
 
         if !status.is_success() {
-            let text = crate::bc_client::sanitize_error_body(
-                &response.text().await.unwrap_or_else(|_| status.to_string()),
-            );
+            let text = crate::bc_client::read_error_body_capped(response).await;
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 return Err(TestRunnerError::AuthenticationFailed {
                     status: status.as_u16(),
@@ -189,9 +187,7 @@ impl TestRunnerClient {
         let status = response.status();
 
         if !status.is_success() {
-            let text = crate::bc_client::sanitize_error_body(
-                &response.text().await.unwrap_or_else(|_| status.to_string()),
-            );
+            let text = crate::bc_client::read_error_body_capped(response).await;
             return Err(TestRunnerError::ServerError {
                 status: status.as_u16(),
                 message: text,
