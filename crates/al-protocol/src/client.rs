@@ -513,6 +513,74 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// F-022 UTF-8 safety: a stream that ends mid-UTF-8-sequence at EOF
+    /// (e.g. the daemon dies after writing the lead byte `0xC3` of `é`)
+    /// must surface an `InvalidData` error, never panic or silently
+    /// truncate. The buffered bytes go through `String::from_utf8`.
+    #[test]
+    fn f022_bounded_read_rejects_incomplete_utf8_at_eof() {
+        // 0xC3 is a 2-byte-sequence lead byte; no continuation, no newline.
+        let payload: &[u8] = &[b'o', b'k', 0xC3];
+        let mut reader = std::io::BufReader::new(payload);
+        let err =
+            read_bounded_line(&mut reader, 64).expect_err("incomplete UTF-8 at EOF must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// F-022 UTF-8 safety: the newline-terminated path (lines 66-72) also
+    /// runs through `String::from_utf8`, so an incomplete sequence right
+    /// before the `\n` must likewise yield `InvalidData`.
+    #[test]
+    fn f022_bounded_read_rejects_incomplete_utf8_before_newline() {
+        // Lead byte 0xC3 followed immediately by the newline terminator.
+        let payload: &[u8] = &[b'o', b'k', 0xC3, b'\n'];
+        let mut reader = std::io::BufReader::new(payload);
+        let err = read_bounded_line(&mut reader, 64)
+            .expect_err("incomplete UTF-8 before newline must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// F-OPEN: the client's `read_bounded_line` returns an empty `String`
+    /// for a bare `\n` line (the daemon skips these, but the client must
+    /// not panic). `read_response` then surfaces a graceful parse error
+    /// for the empty payload rather than corrupting the stream.
+    #[test]
+    fn empty_line_yields_empty_string_then_graceful_parse_error() {
+        let payload: &[u8] = b"\n";
+        let mut reader = std::io::BufReader::new(payload);
+        let result = read_bounded_line(&mut reader, 64).expect("bare newline must not error");
+        assert_eq!(result.as_deref(), Some(""));
+
+        // A mock daemon that replies with a blank line before the real
+        // response would make the client see an empty payload. Confirm the
+        // client turns that into a graceful Err, never a panic.
+        let sock = unique_sock();
+        fn mock_blank_then_ok(sock_path: &Path) -> (UnixListener, std::thread::JoinHandle<()>) {
+            let listener = UnixListener::bind(sock_path).expect("test");
+            let listener_clone = listener.try_clone().expect("test");
+            let handle = std::thread::spawn(move || {
+                let (stream, _) = listener_clone.accept().expect("test");
+                let reader = std::io::BufReader::new(&stream);
+                let mut writer = &stream;
+                for line in reader.lines() {
+                    let _ = line.expect("test");
+                    // Send a blank line as the "response".
+                    writer.write_all(b"\n").expect("test");
+                    writer.flush().expect("test");
+                }
+            });
+            (listener, handle)
+        }
+        let (_listener, _handle) = mock_blank_then_ok(&sock);
+        let stream = UnixStream::connect(&sock).expect("test");
+        let mut client = DaemonClient::from_stream(stream).expect("test");
+        let result = client.request("test/ping", None);
+        assert!(
+            result.is_err(),
+            "blank-line response must surface a graceful error, got: {result:?}"
+        );
+    }
+
     /// F-046: first acquirer of the per-socket spawn lock gets `Acquired`
     /// with a real path; the lock file exists on disk.
     #[test]
