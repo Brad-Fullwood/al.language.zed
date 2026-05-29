@@ -144,6 +144,17 @@ pub async fn stop_profiling(
     config: &ProfilingConfig,
     session_id: &str,
 ) -> Result<PathBuf, ProfilingError> {
+    // Validate that output_dir is an absolute path before doing any work
+    // (F-OPEN path traversal guard; mirrors snapshot.rs). A relative output_dir
+    // would be resolved against the long-lived daemon's cwd, allowing the
+    // downloaded profile to escape to an arbitrary location. Fail fast, before
+    // the network round-trip.
+    if !config.output_dir.is_absolute() {
+        return Err(ProfilingError::RelativeOutputDir {
+            path: config.output_dir.display().to_string(),
+        });
+    }
+
     let client = make_client(config)?;
 
     let url = format!(
@@ -172,7 +183,8 @@ pub async fn stop_profiling(
         });
     }
 
-    // Ensure output directory exists
+    // Ensure output directory exists (output_dir already validated absolute at
+    // the top of this function).
     tokio::fs::create_dir_all(&config.output_dir).await?;
 
     let timestamp = std::time::SystemTime::now()
@@ -428,6 +440,20 @@ mod tests {
     fn analyze_profile_invalid_json() {
         let result = analyze_profile(b"not json", 10);
         assert!(matches!(result, Err(ProfilingError::ParseError(_))));
+    }
+
+    #[tokio::test]
+    async fn relative_output_dir_rejected() {
+        // A relative output_dir must be rejected up front, before any network
+        // round-trip, to prevent the downloaded profile from escaping to an
+        // arbitrary location relative to the daemon's cwd (path-traversal guard).
+        let mut cfg = test_config();
+        cfg.output_dir = PathBuf::from("relative/path");
+        let err = stop_profiling(&cfg, "test-session").await;
+        assert!(
+            matches!(err, Err(ProfilingError::RelativeOutputDir { .. })),
+            "expected RelativeOutputDir, got {err:?}"
+        );
     }
 
     #[test]
