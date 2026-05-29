@@ -1524,6 +1524,19 @@ Cleared the full new-confirmed-findings batch: two P1 silent-integer-truncation 
 
 Workspace test count: 2068 → 2076 (+8 regression tests). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
 
+### Iteration 94 (2026-05-29)
+
+Focused backlog drain: one P1 protocol-correctness fix, one P3 feature, and two triage dispositions, each committed individually with its ledger move.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-137 | **P1** | **Fixed.** The BC SignalR debug client (`dap/bc_debug.rs`) never validated the server-negotiated transport version and unconditionally required a `connectionToken`, hard-failing against a server that negotiates down to v0 (which returns only a `connectionId`). Extracted a pure `resolve_negotiate_connection(&Value) -> Result<NegotiateConnection>` helper: v1 requires both id+token (token as `?id=`), v0/missing-version uses connectionId for both, errors on a SignalR redirect (`url` present), warns best-effort on an unexpected version, and preserves the connectionId casing variants. `connect()` now calls the helper. +8 regression tests. |
+| F-OPEN-042 | P3 | **Fixed.** No per-document size cap — implemented the finding's requested optional, config-driven cap. Added `AlConfig::max_document_size_bytes: Option<usize>` (default `None` = unbounded, preserving prior behaviour) with a `maxDocumentSizeBytes` merge arm (null reset, non-integer surfaced as unknown). `DocumentStore` gained an atomic cap + `set_max_doc_bytes()`; `open()` refuses oversized content and the full-replacement branch of `apply_changes_and_get()` skips oversized payloads (incremental edits stay unguarded). Wired from config in `initialize` and `did_change_configuration`. +8 tests. |
+| F-OPEN-046 | — | **Already-resolved.** "TUI daemon-socket reads have no timeout" is false against the code: `DaemonClient::from_stream()` sets a 30s `SO_RCVTIMEO` on the `UnixStream` before wrapping it, and both CLI and TUI share the identical timed read path; a per-op `set_read_timeout()` override already exists. No untimed read path. No code change. |
+| F-OPEN-081 | — | **Wontfix.** "InsightGraph leaks `petgraph::NodeIndex`; wrap in a newtype." No external consumer (no workspace crate depends on al-core as a library); the accessors are internal-only behind a documented `pub(crate)` boundary. A newtype would not decouple petgraph — `search.rs`/`discovery.rs`/`analysis.rs` traverse the raw `DiGraph` directly and `queries/suggest_event.rs` round-trips ids back into `NodeIndex::new`. A real backend swap is a subsystem redesign, not a wrapper. No code change. |
+
+Workspace test count: 2076 → 2084 (+16 regression tests: F-OPEN-137 +8, F-OPEN-042 +8). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
+
 
 
 | Phase | Status | Output |
