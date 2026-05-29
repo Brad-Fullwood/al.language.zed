@@ -326,6 +326,51 @@ mod tests {
         assert!(matches!(err, AppReaderError::TooSmall(2)));
     }
 
+    /// Build a NAVX-prefixed .app whose ZIP archive contains only the given
+    /// `(name, contents)` entries — used to exercise missing-file error paths.
+    fn make_app_with_entries(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"NAVX");
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 32]); // 40-byte header
+
+        let mut zip_buf = Vec::new();
+        {
+            let cursor = Cursor::new(&mut zip_buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            for (name, contents) in entries {
+                zip.start_file(*name, options).unwrap();
+                zip.write_all(contents.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        data.extend_from_slice(&zip_buf);
+        data
+    }
+
+    #[test]
+    fn missing_navx_manifest() {
+        // A ZIP with SymbolReference.json but no NavxManifest.xml must surface
+        // AppReaderError::NoManifest, not a generic ZIP error.
+        let data = make_app_with_entries(&[("SymbolReference.json", &test_symbols())]);
+        let err = read_app_bytes(&data).unwrap_err();
+        assert!(matches!(err, AppReaderError::NoManifest), "got {err:?}");
+    }
+
+    #[test]
+    fn missing_symbol_reference() {
+        // A ZIP with NavxManifest.xml but no SymbolReference.json must surface
+        // AppReaderError::NoSymbolReference.
+        let data = make_app_with_entries(&[("NavxManifest.xml", &test_manifest())]);
+        let err = read_app_bytes(&data).unwrap_err();
+        assert!(
+            matches!(err, AppReaderError::NoSymbolReference),
+            "got {err:?}"
+        );
+    }
+
     #[test]
     fn reject_navx_without_zip() {
         let mut data = Vec::new();
