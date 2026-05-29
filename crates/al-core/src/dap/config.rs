@@ -300,8 +300,67 @@ fn parse_auth_method(s: Option<&str>, env_type: &EnvironmentType) -> AuthMethod 
         None if *env_type == EnvironmentType::OnPrem => AuthMethod::Windows,
         None => AuthMethod::AAD,
         Some(other) => {
-            warn!(auth = %other, "Unknown auth method, defaulting to AAD");
-            AuthMethod::AAD
+            // T032 / launch-auth-fallback: env-type-aware fallback rather than
+            // silently jumping to AAD on every typo. A misconfigured launch.json
+            // for an OnPrem server must not silently switch to cloud OAuth —
+            // match the None-arm policy so the fallback is "what would the env
+            // type pick by default" not "always AAD". (Mirrors launch.rs.)
+            let fallback = match env_type {
+                EnvironmentType::OnPrem => AuthMethod::Windows,
+                _ => AuthMethod::AAD,
+            };
+            warn!(
+                auth = %other, env = ?env_type, fallback = ?fallback,
+                "Unknown auth method in launch.json — falling back to env-type default"
+            );
+            fallback
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_unknown_value_falls_back_by_env_type() {
+        // OnPrem with an unknown/typo auth value must NOT silently use cloud AAD;
+        // it falls back to Windows (env-type default). Regression for the T032 fix.
+        assert_eq!(
+            parse_auth_method(Some("NavUserPassword"), &EnvironmentType::OnPrem),
+            AuthMethod::Windows
+        );
+        assert_eq!(
+            parse_auth_method(Some("bogus"), &EnvironmentType::Sandbox),
+            AuthMethod::AAD
+        );
+        assert_eq!(
+            parse_auth_method(Some("bogus"), &EnvironmentType::Production),
+            AuthMethod::AAD
+        );
+    }
+
+    #[test]
+    fn auth_known_values_and_none_unchanged() {
+        assert_eq!(
+            parse_auth_method(Some("Windows"), &EnvironmentType::Sandbox),
+            AuthMethod::Windows
+        );
+        assert_eq!(
+            parse_auth_method(Some("UserPassword"), &EnvironmentType::OnPrem),
+            AuthMethod::UserPassword
+        );
+        assert_eq!(
+            parse_auth_method(Some("MicrosoftEntraID"), &EnvironmentType::OnPrem),
+            AuthMethod::AAD
+        );
+        assert_eq!(
+            parse_auth_method(None, &EnvironmentType::OnPrem),
+            AuthMethod::Windows
+        );
+        assert_eq!(
+            parse_auth_method(None, &EnvironmentType::Production),
+            AuthMethod::AAD
+        );
     }
 }
