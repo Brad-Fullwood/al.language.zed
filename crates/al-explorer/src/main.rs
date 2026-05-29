@@ -2660,7 +2660,10 @@ fn find_member_line_in_file(path: &std::path::Path, member_name: &str) -> Option
             let end = abs + lower.len();
             let after_ok = end == bytes.len() || !is_ident_byte(bytes[end]);
             if before_ok && after_ok {
-                return Some(i as u32);
+                // Saturate rather than silently wrap: `i as u32` would truncate
+                // modulo 2^32 for a (pathological) >4-billion-line file, handing
+                // the editor a bogus line number. Clamp to u32::MAX instead.
+                return Some(u32::try_from(i).unwrap_or(u32::MAX));
             }
             start = abs + 1;
         }
