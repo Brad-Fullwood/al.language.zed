@@ -1,5 +1,12 @@
 use serde_json::json;
 
+/// Maximum number of dotted segments in a settings key. Beyond this, the
+/// remaining path is collapsed into a single literal key rather than
+/// recursing further. Defends against stack-overflow from pathologically
+/// deep user-controlled keys (parity with `merge_json`'s
+/// `MERGE_JSON_MAX_DEPTH` in `lib.rs`).
+const MAX_SETTINGS_KEY_DEPTH: usize = 64;
+
 /// Apply user settings (from Zed's lsp settings) to an AL config object.
 ///
 /// User settings use dotted keys like "al.enableCodeAnalysis" or flat keys
@@ -53,9 +60,11 @@ fn set_nested_value(target: &mut serde_json::Value, path: &[&str], value: &serde
         return;
     }
 
-    if path.len() == 1 {
+    // Cap recursion depth: collapse an over-deep path into a single literal
+    // key so a key like "a.b.c.<...1000 segments...>" cannot blow the stack.
+    if path.len() == 1 || path.len() > MAX_SETTINGS_KEY_DEPTH {
         if let Some(obj) = target.as_object_mut() {
-            obj.insert(path[0].to_string(), value.clone());
+            obj.insert(path.join("."), value.clone());
         }
         return;
     }

@@ -68,3 +68,48 @@ fn f027_non_object_al_key_is_treated_as_literal_value() {
     let merged = apply_al_settings_to_config(&config, &user_settings);
     assert_eq!(merged, json!({ "al": "bogus" }));
 }
+
+/// Defensive: a pathologically deep dotted key (hundreds of segments) must
+/// not overflow the stack. Beyond MAX_SETTINGS_KEY_DEPTH (64) the remaining
+/// path is collapsed into a single literal key. Parity with merge_json's
+/// depth guard. Regression for the unbounded-recursion finding.
+#[test]
+fn deeply_nested_key_does_not_overflow_and_collapses() {
+    // 500 segments after the `al.` prefix.
+    let deep_key = format!("al.{}", vec!["x"; 500].join("."));
+    let config = json!({});
+    let user_settings = json!({ deep_key.clone(): true });
+    let merged = apply_al_settings_to_config(&config, &user_settings);
+
+    // An over-cap path collapses into a single literal key rather than
+    // recursing — the property under test is that it returns at all (no
+    // stack overflow) and the value is preserved.
+    let serialized = serde_json::to_string(&merged).expect("serializable");
+    assert!(serialized.contains("true"));
+
+    // Walk down the nested `x` objects; the deepest level must contain the
+    // boolean value, not infinite nesting.
+    let mut cursor = &merged;
+    let mut depth = 0;
+    while let Some(next) = cursor.get("x") {
+        if next.is_object() {
+            cursor = next;
+            depth += 1;
+        } else {
+            assert_eq!(next, &json!(true));
+            break;
+        }
+    }
+    // We descended at most the configured cap, never the full 500.
+    assert!(depth <= 64, "descended {depth} levels, expected <= 64");
+}
+
+/// A key with exactly a few segments under the cap nests normally — the
+/// depth guard must not change ordinary behaviour.
+#[test]
+fn moderate_depth_key_nests_normally() {
+    let config = json!({});
+    let user_settings = json!({ "al.a.b.c": 1 });
+    let merged = apply_al_settings_to_config(&config, &user_settings);
+    assert_eq!(merged, json!({ "a": { "b": { "c": 1 } } }));
+}
