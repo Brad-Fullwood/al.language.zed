@@ -1563,6 +1563,22 @@ Focused backlog drain: two genuine bug fixes and one architectural-limitation tr
 
 Workspace test count: 2094 → 2103 (+9 regression tests: F-OPEN-043 +4, F-OPEN-016 +5). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
 
+### Iteration 97 (2026-05-29)
+
+Batch of LSP-boundary robustness fixes against malformed client/bridge input — all OOB-index / integer-overflow / backwards-range hardening, committed as one logical change with regression tests for each case.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-200 | P1 | **Fixed.** `download_symbols_from_server` (`server/workspace.rs`) indexed `deps[i]` with an index parallel to `results`/`url_deps`, but `url_deps` is a `filter_map`-filtered subset of `deps` (only those with a `dev_packages_url`). When any dependency lacked a URL, `deps.len() > url_deps.len()` and the enumerate loop panicked out of bounds (and mis-attributed log lines even when it didn't). Fixed by zipping each result with its originating `(_, dep)` from `url_deps` instead of indexing `deps`. |
+| F-OPEN-201 | P1 | **Fixed.** `source_action_add_region` (`queries/code_actions.rs`) computed `range.end.line + 1` with unchecked `u32` arithmetic; a malformed client sending `range.end.line == u32::MAX` panicked in debug / wrapped to 0 in release. Now `saturating_add(1)`. |
+| F-OPEN-202 | P1 | **Fixed.** `handle_formatting` (`server/formatting.rs`) cast `text.lines().count()` (usize) to `u32` with `as`, silently wrapping past ~4.3B lines. Now `u32::try_from(...).unwrap_or(u32::MAX)` for both the line count and the last-line UTF-16 length. |
+| F-OPEN-203 | P2 | **Fixed.** `semantic_to_diagnostic` (`server/diagnostics.rs`) built an LSP `Range` directly from bridge fields with no `start <= end` check; a malformed `.NET` entry (e.g. `end_line < line`) produced a backwards range that editors may discard/mis-render. Now normalized by swapping when end < start. |
+| F-OPEN-204 | P2 | **Fixed.** `source_action_move_tooltip` (`queries/code_actions.rs`) cast `(cursor_line + 1) as u32`; the verifier noted `saturating_add` on the usize alone does not prevent the wrapping `as u32`. Now `u32::try_from(cursor_line.saturating_add(1)).unwrap_or(u32::MAX)`. |
+| F-OPEN-205 | P1 | **Fixed (discovered this iteration).** While testing the malformed-range gap, `source_action_convert_event_subscriber` (`queries/code_actions.rs`) underflowed `search_end - search_start`: for an extreme cursor line, `search_start = cursor_line.saturating_sub(2)` stayed huge while `search_end` clamped to the small line count, so the subtraction in `.take(...)` panicked. Fixed by clamping both bounds against the document line count and using `saturating_add`. |
+| (test-gap) | P2 | **Closed.** Added `source_actions_handles_malformed_ranges_without_panic` covering `range.end.line == u32::MAX`, start past document end, and backwards range — this test is what surfaced F-OPEN-205. Folded into the F-OPEN-201/205 work rather than tracked separately. |
+
+Workspace test count: 2103 → 2106 (+3 regression tests: backwards-range diagnostic, add_region overflow, source_actions malformed-range sweep). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
+
 
 
 | Phase | Status | Output |
