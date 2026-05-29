@@ -552,14 +552,29 @@ fn apply_keyword_casing(line: &str, casing: &KeywordCasing) -> String {
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
-        // String literal — copy verbatim until the matching quote.
+        // String literal — copy verbatim until the matching quote. AL escapes
+        // a single quote inside a single-quoted literal by doubling it (''), so
+        // a `''` pair is content, not a terminator. Mirror the escape handling
+        // in count_net_delimiters (mod.rs) so an escaped quote can't desync the
+        // scanner and let a later keyword be mis-cased.
         if b == b'\'' || b == b'"' {
             let quote = b;
             out.push(b as char);
             i += 1;
-            while i < bytes.len() && bytes[i] != quote {
-                out.push(bytes[i] as char);
-                i += 1;
+            while i < bytes.len() {
+                if bytes[i] == quote {
+                    // AL `''` escape (single quotes only): both bytes are content.
+                    if quote == b'\'' && i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        out.push('\'');
+                        out.push('\'');
+                        i += 2;
+                    } else {
+                        break;
+                    }
+                } else {
+                    out.push(bytes[i] as char);
+                    i += 1;
+                }
             }
             if i < bytes.len() {
                 out.push(bytes[i] as char);
@@ -1146,6 +1161,26 @@ codeunit 50100 Test
         let input = "if x then // IF this comment, IF that";
         let lowered = apply_keyword_casing(input, &KeywordCasing::Lower);
         assert_eq!(lowered, "if x then // IF this comment, IF that");
+    }
+
+    #[test]
+    fn keyword_casing_handles_escaped_single_quotes() {
+        // AL escapes a single quote inside a literal by doubling it: 'can''t'
+        // is one string. The escaped '' must not desync the scanner — the
+        // string content stays verbatim and only the trailing IF/THEN keywords
+        // are folded.
+        let input = "Message('can''t'); IF x THEN";
+        let lowered = apply_keyword_casing(input, &KeywordCasing::Lower);
+        assert_eq!(lowered, "Message('can''t'); if x then", "got: {lowered}");
+    }
+
+    #[test]
+    fn keyword_casing_escaped_quote_does_not_swallow_keyword() {
+        // A literal that ends right after an escaped pair must close at the
+        // real terminator; the following END keyword is still cased.
+        let input = "Error('a''b') END";
+        let lowered = apply_keyword_casing(input, &KeywordCasing::Lower);
+        assert_eq!(lowered, "Error('a''b') end", "got: {lowered}");
     }
 
     // F-OPEN-113: multi-line paren continuation idempotency
