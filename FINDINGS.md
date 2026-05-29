@@ -1250,6 +1250,23 @@ Two commits.
 
 Workspace test count: 1939 → 1946 (+7 boundary-clamp regressions). All gates green.
 
+### Iteration 77 (2026-05-29)
+
+Three commits. Focused on the verified bugs + test gaps in `queries::arch_lint`, `queries::test_diagnostics`, and `server::daemon::insight_dispatch`.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (arch_lint P1) | P1 | **Fixed.** `applies_to_kind` matched the object-kind keyword as a substring (`obj_kind_lower.contains(pattern)`), so a rule scoped to `"code"` would incorrectly fire on a `codeunit`. AL object types are atomic keywords — changed to an exact case-insensitive match. Regression test `applies_to_kind_is_exact_match_not_substring`. |
+| (arch_lint range P2) | P2 | **Fixed.** `RequiredProperty` parsed a multi-dash range like `"100-200-300"` as `100..=u32::MAX` (split on the first `-`, upper bound `unwrap_or(u32::MAX)`), silently letting out-of-range IDs pass. Now rejects any range without exactly one dash. Regression `required_property_malformed_range_is_rejected`. |
+| (arch_lint test-gap P2) | P2 | **Fixed.** Added previously-absent coverage for `RequiredProperty` (in-range, out-of-range, no-ID) and `MaxComplexity` (below threshold, above threshold w/ violation, non-numeric→default 10). |
+| (test_diagnostics P2) | P2 | **Fixed.** A failing test method present in run results but absent from static discovery fell back to line 1 (the codeunit header) instead of the documented unknown-location value 0. Changed `unwrap_or(1)` → `unwrap_or(0)` to match the codeunit-not-found fallback and the doc contract. Regression `discovered_codeunit_undiscovered_method_falls_back_to_line_zero`. |
+| (insight_dispatch P2) | P2 | **Fixed.** `dispatch_dead_code` / `dispatch_suggest_event` used `unwrap_or_default()` (silently `Value::Null` on a serialization failure) without the `SILENT:` annotation the sibling dispatchers carry. Aligned both to the explicit `unwrap_or(Value::Null)` + comment pattern. |
+| (insight_dispatch test-gap P3) | P3 | **Fixed.** Added dispatch-layer (RPC boundary) tests for the error paths that only the underlying queries previously exercised: `dispatch_trace` missing event, `dispatch_impact` missing/empty symbol, `dispatch_suggest_event` malformed query, plus a happy-path trace. |
+
+Workspace test count: 1946 → 1960 (+14: 8 arch_lint, 1 test_diagnostics, 5 insight_dispatch). All gates green.
+
+Open findings F-OPEN-001..009 carried forward (P2/P3 design/release-time items) — not addressed this iteration. No new follow-ups discovered.
+
 
 
 | Phase | Status | Output |
