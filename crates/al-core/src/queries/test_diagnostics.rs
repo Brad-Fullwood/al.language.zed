@@ -100,13 +100,19 @@ fn results_to_diagnostics_inner(
             }
 
             let (file, line) = if let Some(cu) = cu_info {
-                // Find the exact line for this test procedure
+                // Find the exact line for this test procedure. If the method
+                // is in the run results but was not seen during static
+                // discovery (added after the last scan, stale cache, or a
+                // discovery parse failure), fall back to line 0 — matching the
+                // documented "unknown location" contract and the
+                // codeunit-not-found case below. Line 1 would point at the
+                // codeunit header, misleading jump-to-diagnostic.
                 let proc_line = cu
                     .tests
                     .iter()
                     .find(|p| p.name.eq_ignore_ascii_case(&method.name))
                     .map(|p| p.line)
-                    .unwrap_or(1);
+                    .unwrap_or(0);
                 (cu.file.clone(), proc_line)
             } else {
                 // Unknown file: attach to line 0
@@ -392,6 +398,36 @@ mod tests {
 "#;
         let line = find_proc_line(source, "NoSuchProc");
         assert!(line.is_none());
+    }
+
+    /// Regression: a failing test method that is present in the run results
+    /// but was NOT seen during static discovery (its codeunit was discovered,
+    /// but the method is absent from `cu.tests`) must fall back to line 0 — the
+    /// documented "unknown location" value — not line 1 (the codeunit header).
+    #[test]
+    fn discovered_codeunit_undiscovered_method_falls_back_to_line_zero() {
+        let results = vec![make_result(
+            50100,
+            "MyTests",
+            vec![("TestGhost", TestStatus::Fail, Some("boom"))],
+        )];
+        // Codeunit is discovered (id matches) but has no procedures recorded,
+        // simulating a discovery gap (stale cache / parse failure / added late).
+        let codeunits = vec![TestCodeunit {
+            name: "MyTests".to_string(),
+            id: 50100,
+            file: "/src/MyTests.al".to_string(),
+            tests: vec![],
+        }];
+        let diags = results_to_diagnostics_with_codeunits(&results, &codeunits);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].test_name, "TestGhost");
+        assert_eq!(
+            diags[0].line, 0,
+            "Undiscovered method must fall back to line 0, not the codeunit header"
+        );
+        assert_eq!(diags[0].file, "/src/MyTests.al");
+        assert_eq!(diags[0].severity, DiagnosticSeverity::Error);
     }
 
     #[test]
