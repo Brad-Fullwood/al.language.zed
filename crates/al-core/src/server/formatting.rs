@@ -48,6 +48,18 @@ pub(crate) fn handle_formatting(
 ///
 /// Delegates to `crate::syntax::format_range` which formats the full document
 /// for correct indent context, then returns edits covering only the selected lines.
+///
+/// **By design (F-OPEN-112):** because the indent of a line in AL depends on the
+/// enclosing block structure, the indent emitted for the *selected* lines is
+/// derived from a whole-document formatter pass. The selection's own indent is
+/// therefore corrected relative to its true block depth, which can differ from
+/// the (possibly mis-indented) surrounding lines that are left untouched. The
+/// returned edits never span outside the requested range, so unselected lines
+/// are never rewritten — they may simply end up at a different indent level than
+/// the freshly-formatted selection. This matches the AL formatter convention of
+/// always indenting to the structurally-correct depth. The trailing-newline
+/// edge case for a last-line selection in a document without a final newline is
+/// handled inside `format_range`.
 pub(crate) fn handle_range_formatting(
     server: &AlServer,
     uri: &Url,

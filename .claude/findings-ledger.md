@@ -20,7 +20,6 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-072 | P1 | Wedged CLR call blocks every semantic feature forever; 30 s timeout doesn't release the serializing mutex |
 | F-OPEN-081 | P3 | `InsightGraph` public API leaks `petgraph::NodeIndex`; wrap in a newtype to allow backend swap |
 | F-OPEN-110 | P1 | Wire up remaining dormant FormatOptions (blank-lines, max-line-length, brace-style, sort-properties) — part 2 |
-| F-OPEN-112 | P1 | `format_range` can change indent of unselected lines; document/handle at the LSP boundary + last-line edge case |
 | F-OPEN-135 | P2 | No test for the timeout-cooldown `try_lock` race (T047); needs a wedge-able bridge seam to test deterministically |
 | F-OPEN-136 | P2 | No regression tests for `signalr_to_bc_event` conversion (private fn, Value-shape dependent) |
 | F-OPEN-137 | P1 | Hardcoded SignalR protocol version (`negotiateVersion=1`, `version:1`) lacks negotiate-response validation — bundle with F-OPEN-016 |
@@ -128,6 +127,7 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-108 | P2 | fixed | semantic_tokens DFS O(n) via cursor children (iteration 60) |
 | F-OPEN-109 | P3 | fixed | Duplicate trace! blocks collapsed (iteration 65) |
 | F-OPEN-111 | P1 | documented | Block-keyword text matches are AL Pascal-grammar terminals (iteration 66-69) |
+| F-OPEN-112 | P1 | fixed | `format_range` last-line trailing-newline edge case fixed; unselected-line indent documented as by-design at the LSP boundary (iteration 89) |
 | F-OPEN-113 | P2 | fixed | Multi-line paren-continuation idempotency tests added (iteration 66-69) |
 | F-OPEN-114 | P1 | fixed | dead_code parsed_files sorted for determinism (iteration 72) |
 | F-OPEN-115 | P1 | wontfix | Cross-object receiver-scoping needs var-type resolution (F-OPEN-084 territory), out of scope; dead partial infra removed (iteration 86) |

@@ -446,7 +446,15 @@ pub fn format_range(
     }
 
     let mut new_text = formatted_region.join("\n");
-    new_text.push('\n');
+    // Append a trailing newline so the replacement bridges into the line that
+    // follows the selection. The one exception is the document's final line
+    // when the original text has no trailing newline: appending `\n` there
+    // would inject a newline the document never had. `.lines()` discards the
+    // trailing-newline distinction, so consult `text` directly.
+    let end_is_last_line = end == orig_lines.len().saturating_sub(1);
+    if !end_is_last_line || text.ends_with('\n') {
+        new_text.push('\n');
+    }
 
     let end_char = orig_lines
         .get(end)
@@ -951,6 +959,54 @@ end;
         let input = "codeunit 50100 Test\n{\n}";
         let opts = FormatOptions::default();
         assert!(format_range(input, 10, 15, &opts).is_none());
+    }
+
+    #[test]
+    fn test_format_range_last_line_no_trailing_newline() {
+        // F-OPEN-112: when the selection ends on the document's final line and
+        // the document has no trailing newline, the emitted edit must NOT append
+        // a spurious trailing newline.
+        let input = "codeunit 50100 Test\n{\n    procedure X()\n    begin\n    end;\n        }";
+        assert!(!input.ends_with('\n'));
+        let opts = FormatOptions::default();
+        let edits = format_range(input, 5, 5, &opts).unwrap();
+        assert_eq!(edits.len(), 1);
+        let edit = &edits[0];
+        assert_eq!(edit.start_line, 5);
+        assert_eq!(edit.end_line, 5);
+        // The over-indented `}` is corrected to column 0, with no extra newline.
+        assert_eq!(edit.new_text, "}");
+        assert!(!edit.new_text.ends_with('\n'));
+
+        // Applying the edit must reproduce a document that still has no trailing
+        // newline.
+        let mut applied =
+            String::from("codeunit 50100 Test\n{\n    procedure X()\n    begin\n    end;\n");
+        applied.push_str(&edit.new_text);
+        assert!(!applied.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_format_range_last_line_with_trailing_newline() {
+        // Counterpart to the above: when the document DOES end with a newline,
+        // the trailing newline must be preserved in the edit.
+        let input = "codeunit 50100 Test\n{\n    procedure X()\n    begin\n    end;\n        }\n";
+        assert!(input.ends_with('\n'));
+        let opts = FormatOptions::default();
+        let edits = format_range(input, 5, 5, &opts).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "}\n");
+    }
+
+    #[test]
+    fn test_format_range_non_last_line_keeps_trailing_newline() {
+        // A selection that does not reach the final line always keeps the
+        // bridging trailing newline, regardless of the document's final newline.
+        let input = "codeunit 50100 Test\n{\nprocedure X()\nbegin\nend;\n}";
+        let opts = FormatOptions::default();
+        let edits = format_range(input, 2, 4, &opts).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert!(edits[0].new_text.ends_with('\n'));
     }
 
     #[test]
