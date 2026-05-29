@@ -1404,6 +1404,26 @@ New follow-up recorded: **F-OPEN-129** (above) was assigned a canonical ID and i
 
 Workspace test count: 2008 → 2012 (+4: 1 xliff roundtrip, 1 bc_server stale-env-token, 2 app_reader error-path). All gates green.
 
+### Iteration 86 (2026-05-29)
+
+Two code commits. Hardened the semantic-bridge FFI boundary against unbounded inputs/outputs, removed dead receiver-scoping infrastructure (closing F-OPEN-115 as won't-do-by-policy), and added the missing direct unit tests for the quote-aware dead-code parsing helpers.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-130 (new) | **P1** | **Fixed.** `type_at`/`completions_at` now reject caller-supplied unsaved-text buffers larger than `MAX_TEXT_BYTES` (16 MiB) before JSON serialization, via a shared, unit-tested `check_text_size()` helper. Prevents a pathologically large open document from ballooning bridge memory. +5 tests. |
+| F-OPEN-131 (new) | **P1** | **Fixed.** `host::DotNetHost::call` adds a defensive `MAX_RESPONSE_BYTES` (256 MiB) cap on the `response_len` reported by the C# bridge before `std::slice::from_raw_parts`; a buggy bridge reporting a length larger than its allocated buffer would otherwise build an out-of-bounds slice. Mirrors the existing request-side `c_int::try_from` bound; frees the buffer and errors out on violation. |
+| F-OPEN-132 (new) | P2 | **Fixed.** Removed the `all_qualified_calls` set + `extract_qualified_call_pairs()` (and its 4 tests): populated on every non-comment line of every file but never consumed (silenced with `let _ = &all_qualified_calls`). Eliminates the wasted per-line scan/allocation. |
+| F-OPEN-115 | **P1** | **Closed — won't-do-by-policy.** Receiver-scoping for cross-object call-name collision needs variable-type resolution (F-OPEN-084 territory), which is out of scope for this loop. The partial infrastructure it left behind was dead code and has been removed (F-OPEN-132 above). |
+| F-OPEN-133 (new) | **P1** | **Fixed.** Added direct unit tests for `extract_text_call_names`, `extract_member_access_names`, `split_args`, and `parse_subscriber_args` (declaration/quote-state/comment/quoted-comma/type-prefix edge cases) — previously only indirect integration coverage. Guards the F-OPEN-116/117 quote-state fixes against regression. |
+| F-OPEN-134 (new) | P3 | **Fixed.** Added `t045_collect_fields_handles_unclosed_quoted_name` (malformed `"Unclosed; Integer)` is dropped gracefully) + `t045_collect_fields_extracts_quoted_name`. |
+| (new) timeout cooldown race condition test gap (T047) | P2 | Deferred — recorded as F-OPEN-135. Validating the concurrent `try_lock()` cooldown probe deterministically needs a wedge-able bridge seam that does not exist yet; flaky-by-construction without it. |
+| (new) signalr_to_bc_event conversion regression tests | P2 | Deferred — recorded as F-OPEN-136. The fn is private and depends on `serde_json::Value` shapes; worth a focused test pass alongside the bc_debug protocol-version work (F-OPEN-016). |
+| (new) Hardcoded SignalR protocol version lacks negotiation | P1 | Deferred — recorded as F-OPEN-137. Adding negotiate-response version validation is best done together with F-OPEN-016 (BC protocol version detection) to avoid a half-measure. |
+| (new) Uninformative OnFatalDebuggerException fallback | P3 | Deferred — recorded as F-OPEN-138. Bundled with F-OPEN-137/F-OPEN-016 bc_debug protocol work. |
+| F-OPEN-010, 016, 042, 043, 046, 054, 060, 063, 065, 072, 081, 107, 110, 112 | P1/P2/P3 | Carried forward — this iteration's budget went to the bridge-safety P1s, F-OPEN-115 closure, and the dead_code test-gaps. |
+
+Workspace test count: 2012 → 2029 (+17: +21 new tests − 4 removed `extract_qualified_call_pairs` tests). All gates green.
+
 
 
 | Phase | Status | Output |

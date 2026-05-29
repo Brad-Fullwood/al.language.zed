@@ -21,7 +21,10 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-081 | P3 | `InsightGraph` public API leaks `petgraph::NodeIndex`; wrap in a newtype to allow backend swap |
 | F-OPEN-110 | P1 | Wire up remaining dormant FormatOptions (blank-lines, max-line-length, brace-style, sort-properties) — part 2 |
 | F-OPEN-112 | P1 | `format_range` can change indent of unselected lines; document/handle at the LSP boundary + last-line edge case |
-| F-OPEN-115 | P1 | Dead-code: workspace-global `all_call_names` has no object-scoping — cross-object name collisions hide unused procs |
+| F-OPEN-135 | P2 | No test for the timeout-cooldown `try_lock` race (T047); needs a wedge-able bridge seam to test deterministically |
+| F-OPEN-136 | P2 | No regression tests for `signalr_to_bc_event` conversion (private fn, Value-shape dependent) |
+| F-OPEN-137 | P1 | Hardcoded SignalR protocol version (`negotiateVersion=1`, `version:1`) lacks negotiate-response validation — bundle with F-OPEN-016 |
+| F-OPEN-138 | P3 | `OnFatalDebuggerException` falls back to "unknown" without logging the raw args shape — bundle with F-OPEN-137/016 |
 
 ## Resolved / parked (not actionable — do not re-open)
 
@@ -128,6 +131,7 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-111 | P1 | documented | Block-keyword text matches are AL Pascal-grammar terminals (iteration 66-69) |
 | F-OPEN-113 | P2 | fixed | Multi-line paren-continuation idempotency tests added (iteration 66-69) |
 | F-OPEN-114 | P1 | fixed | dead_code parsed_files sorted for determinism (iteration 72) |
+| F-OPEN-115 | P1 | wontfix | Cross-object receiver-scoping needs var-type resolution (F-OPEN-084 territory), out of scope; dead partial infra removed (iteration 86) |
 | F-OPEN-116 | P1 | fixed | `extract_text_call_names` tracks quote state for string literals (iteration 75) |
 | F-OPEN-117 | P2 | fixed | `find_unused_fields` O(1) via workspace member-access set (iteration 73) |
 | F-OPEN-118 | P2 | fixed | dead_code per-file scans parallelised via rayon (iteration 74) |
@@ -142,3 +146,8 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-127 | P2 | fixed | zed-al `set_nested_value` depth cap 64 (iteration 79) |
 | F-OPEN-128 | P2 | deferred | `bc_client::apply_auth` lacks direct unit tests; blocked on serial-test dep (iteration 80) |
 | F-OPEN-129 | P2 | fixed | BC server stale env-token override disabled on 401/403 (iteration 85) |
+| F-OPEN-130 | P1 | fixed | `type_at`/`completions_at` reject unsaved-text buffers > 16 MiB before JSON serialization (`check_text_size`) (iteration 86) |
+| F-OPEN-131 | P1 | fixed | `host::call` caps bridge `response_len` at 256 MiB before `from_raw_parts` (OOB-read guard) (iteration 86) |
+| F-OPEN-132 | P2 | fixed | Removed dead `all_qualified_calls` set + `extract_qualified_call_pairs` (unused F-OPEN-115 partial infra) (iteration 86) |
+| F-OPEN-133 | P1 | fixed | Direct unit tests for dead_code parsing helpers (extract_text_call_names/extract_member_access_names/split_args/parse_subscriber_args) (iteration 86) |
+| F-OPEN-134 | P3 | fixed | Tests for `extract_field_name_from_args` unclosed-quote + quoted-name cases (iteration 86) |
