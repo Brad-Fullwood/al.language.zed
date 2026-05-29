@@ -1338,6 +1338,20 @@ Workspace test count: 1968 → 1972 (+4: var-modifier, case-insensitive return t
 
 Workspace test count: 1972 → 1983 (+11: 9 inlay_hints parameter-pipeline tests, 2 native_dap breakpoint-id tests). All gates green.
 
+### Iteration 82 (2026-05-29)
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (new) resolve_member ignores composition | **P1** | **Fixed.** `resolve_member` iterated only `SymbolIndex::get_by_name(subtype)` raw entries, which are keyed by object name and exclude the `TableExtension`/`PageExtension`/`EnumExtension` objects that add fields, methods, and enum values to a base object. Extension-added members never resolved (go-to-definition / hover missed them). Added a `composed_members_for` helper that routes each non-extension entry through `SymbolIndex::get_composed_cached`, merging the base with all applicable extensions. |
+| (new) completion_items_for_receiver ignores composition | **P1** | **Fixed.** Same root cause as above in the completion path; it collected raw `entry.fields`/`entry.methods`. Now uses the same `composed_members_for` helper so extension-added members appear in member completions. |
+| (new) enum_completion_items ignores composition | **P1** | **Fixed.** Enum-value completions iterated raw entries and missed values added by `EnumExtension` objects (indexed under their own names). Now uses `get_composed_cached(ObjectKind::Enum, name)` for the merged value set, with a raw-entry fallback for the rare extension-only query. |
+| (new) resolution.rs missing direct tests | P2 | **Fixed (test-gap closed).** `resolve_member`, `completion_items_for_receiver`, and `enum_completion_items` had zero direct unit tests. Added 3 tests building a `Workspace` with a base object + extension and asserting extension-added fields/methods/enum-values are found. These fail against the pre-fix code. |
+| (new) DAP multiple Content-Length headers | P2 | **Fixed.** `read_dap_body` overwrote `content_length` on each `Content-Length:` line (silent last-one-wins), allowing a buggy/malicious peer to desync the frame boundary with conflicting headers (RFC 7230 §3.3.2). Now rejects duplicate headers as `InvalidData`. +1 regression test. |
+| (new) DAP malformed Content-Length test-gap | P3 | **Fixed (test-gap closed).** Added a regression test asserting a non-numeric `Content-Length` value surfaces as `InvalidData`, pinning the existing `.parse::<usize>()` behavior against future refactors. |
+| F-OPEN-001, 005, 006, 007, 009, 128 | P2/P3 | Carried forward — design / breadth items, not addressed this iteration (four confirmed new findings consumed the budget). |
+
+Workspace test count: 1983 → 1988 (+5: 3 resolution composition tests, 2 DAP framing tests). All gates green.
+
 
 
 | Phase | Status | Output |
