@@ -342,7 +342,7 @@ fn inside_quoted_identifier(line: &str, idx: usize) -> bool {
 }
 
 /// Re-export from crate::syntax to avoid duplication.
-pub(crate) use crate::syntax::utf16_col_to_byte_offset;
+pub(crate) use crate::syntax::{byte_col_to_utf16_col, utf16_col_to_byte_offset};
 
 fn is_access_char(ch: u8) -> bool {
     is_identifier_char(ch) || ch == b'"'
@@ -1324,8 +1324,13 @@ fn find_workspace_field(text: &str, field_name: &str) -> Option<(ResolvedType, R
         if !candidate_name.eq_ignore_ascii_case(field_name) {
             continue;
         }
-        let col_start = line.find(name_part).unwrap_or(0) as u32;
-        let col_end = col_start + name_part.len() as u32;
+        // `line.find` / `name_part.len()` are BYTE offsets, but LSP Position
+        // columns are UTF-16 code units. Convert both endpoints so field names
+        // containing non-ASCII characters (e.g. "Ørnamental") report correctly.
+        let byte_start = line.find(name_part).unwrap_or(0);
+        let byte_end = byte_start + name_part.len();
+        let col_start = byte_col_to_utf16_col(line, byte_start);
+        let col_end = byte_col_to_utf16_col(line, byte_end);
         let range = Range {
             start: Position {
                 line: line_idx as u32,
@@ -1450,6 +1455,71 @@ pub(crate) fn extract_doc_comment(text: &str, line_idx: usize) -> Option<String>
 mod tests {
     use super::*;
     use crate::syntax::AlParser;
+
+    #[test]
+    fn workspace_field_position_is_ascii_byte_equals_utf16() {
+        let text =
+            "table 50100 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n    }\n}";
+        let (_ty, range) = find_workspace_field(text, "Name").expect("field found");
+        // "        field(1; Name; ..." — count the leading spaces (8) + "field(1; " (9).
+        let line = text.lines().nth(4).unwrap();
+        let expected = line.find("Name").unwrap() as u32;
+        assert_eq!(range.start.character, expected);
+        assert_eq!(range.end.character, expected + "Name".len() as u32);
+        assert_eq!(range.start.line, 4);
+    }
+
+    #[test]
+    fn workspace_field_position_non_ascii_uses_utf16_columns() {
+        // Field name starting with a 2-byte UTF-8 char ('Ø' = U+00D8, 1 UTF-16
+        // unit, 2 UTF-8 bytes). The reported columns must be UTF-16 code units,
+        // not byte offsets.
+        let text = "table 50100 T\n{\n    fields\n    {\n        field(1; \"Ørnamental\"; Text[50]) { }\n    }\n}";
+        let (_ty, range) = find_workspace_field(text, "Ørnamental").expect("field found");
+        let line = text.lines().nth(4).unwrap();
+        // name_part includes the surrounding quotes: "Ørnamental"
+        let name_part = "\"Ørnamental\"";
+        let byte_start = line.find(name_part).unwrap();
+        let expected_start = byte_col_to_utf16_col(line, byte_start);
+        let expected_end = byte_col_to_utf16_col(line, byte_start + name_part.len());
+        assert_eq!(range.start.character, expected_start);
+        assert_eq!(range.end.character, expected_end);
+        // The byte length (13) exceeds the UTF-16 length (12) by exactly one
+        // (the extra UTF-8 byte of 'Ø'), proving the conversion happened.
+        assert_eq!(name_part.len(), 13);
+        assert_eq!(expected_end - expected_start, 12);
+    }
+
+    #[test]
+    fn workspace_field_position_multibyte_in_middle() {
+        // 'ü' (U+00FC) mid-name: 2 UTF-8 bytes, 1 UTF-16 unit.
+        let text =
+            "table 1 T\n{\n    fields\n    {\n        field(1; \"München\"; Code[20]) { }\n    }\n}";
+        let (_ty, range) = find_workspace_field(text, "München").expect("field found");
+        let line = text.lines().nth(4).unwrap();
+        let name_part = "\"München\"";
+        let byte_start = line.find(name_part).unwrap();
+        assert_eq!(
+            range.start.character,
+            byte_col_to_utf16_col(line, byte_start)
+        );
+        assert_eq!(
+            range.end.character,
+            byte_col_to_utf16_col(line, byte_start + name_part.len())
+        );
+        // "München" with quotes = 10 bytes (ü is 2), 9 UTF-16 units.
+        assert_eq!(name_part.len(), 10);
+        assert_eq!(range.end.character - range.start.character, 9);
+    }
+
+    #[test]
+    fn workspace_field_items_lists_fields() {
+        let text = "table 1 T\n{\n    fields\n    {\n        field(1; Name; Text[50]) { }\n        field(2; \"Ørn\"; Integer) { }\n    }\n}";
+        let items = workspace_field_items(text);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"Name"));
+        assert!(labels.contains(&"Ørn"));
+    }
 
     #[test]
     fn access_path_detects_flat_member_chain() {
