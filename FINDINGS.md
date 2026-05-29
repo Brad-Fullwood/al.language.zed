@@ -1579,6 +1579,22 @@ Batch of LSP-boundary robustness fixes against malformed client/bridge input —
 
 Workspace test count: 2103 → 2106 (+3 regression tests: backwards-range diagnostic, add_region overflow, source_actions malformed-range sweep). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
 
+### Iteration 98 (2026-05-29)
+
+Resolved all eight new confirmed findings: the daemon debug-dispatch serialization-error cluster, the build/DAP subprocess-safety cluster, and the semantic-bridge restart cooldown gap. Three logical commits, each with regression tests.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-172 | P1 | **Fixed.** Breakpoint responses (`server/daemon/debug_dispatch.rs`) used `serde_json::to_value(bp).unwrap_or_default()`, turning a failed serialize into an empty `{}` that looks valid to the client. New `serialize_each()` helper returns an `INTERNAL_ERROR` response if any element fails. |
+| F-OPEN-173 | P1 | **Fixed.** `state`/`continue`/`step` (`debug_dispatch.rs`) used `serde_json::to_value(state).ok()`, yielding `result: None` AND `error: None`. Both `Response` fields are `skip_serializing_if = Option::is_none`, so the wire form had neither — violating JSON-RPC 2.0 §5.1. New `state_response()` helper (mirrors `lsp_dispatch::ok_response`) returns `INTERNAL_ERROR` instead. |
+| F-OPEN-174 | P1 | **Fixed.** `compile_project()` (`build.rs`) keyed the build tmp dir only by `std::process::id()`, so concurrent daemon compiles in one process computed identical paths and could race (cleanup wiping another's in-flight output). Added a monotonic per-invocation `AtomicU64` counter suffix for an isolated dir per call. |
+| F-OPEN-175 | P1 | **Fixed.** The DAP-local `compile_project()` (`dap/native_dap.rs`) spawned `dotnet alc` without `kill_on_drop(true)` or a timeout, leaving a zombie alc on a cancelled/hung DAP session. Added both, honouring `AL_COMPILE_TIMEOUT_SECS` (default 600s), matching the F-FIX-038 guards already in `build.rs`. |
+| F-OPEN-176 | P2 | **Fixed.** History responses (`debug_dispatch.rs`) used `filter_map(...ok())`, silently dropping any history item that failed to serialize. Now routed through `serialize_each()`, surfacing an `INTERNAL_ERROR` instead of incomplete user-visible data. |
+| F-OPEN-177 | P2 | **Fixed.** On `fs::rename` failure moving the `.app` out of the tmp dir (`build.rs`), the code returned the tmp path, which the `TmpDirGuard` then deleted — handing callers a dangling path. Now falls back to `fs::copy`; if that also fails, returns an `Io` error describing both failures. |
+| F-OPEN-178 | P2 | **Closed (test-gap).** Added `concurrent_compiles_do_not_leak_tmp_dirs` (5 concurrent compiles on one project root, asserts no `.al-build-tmp.*` dirs leak) plus a counter-uniqueness unit test — closes the gap left by the PID-only tmp-dir keying (F-OPEN-174). |
+| F-OPEN-179 | P2 | **Fixed.** A restarted `SemanticBridge` (`semantic/lifecycle.rs` + `bridge.rs`) started with `last_timeout_secs = 0`, so the cooldown gate let its first call `Proceed` even though a hung CLR call from the OLD bridge could still be in flight (its `spawn_blocking` thread keeps the old host's `Arc<Mutex>` alive). `restart_bridge` now captures the old stamp before dropping the bridge and seeds the new one via the extracted advance-only `seed_timeout_stamp()` free fn (unit-tested without the CLR). |
+
+Workspace test count: 2106 → 2115 (+9 regression tests: 4 serialization-helper, 2 concurrent-compile, 3 cooldown-stamp seed). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
 
 
 | Phase | Status | Output |
