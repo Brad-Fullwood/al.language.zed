@@ -33,9 +33,9 @@ pub struct DocumentStore {
     /// Per-URI parse-coordination locks. Acquired by `parse_lock` so that
     /// concurrent `get_or_parse` calls for the same URI serialize on the
     /// expensive `AlParser::parse_quick` step instead of all racing into it.
-    /// Distinct URIs still parse in parallel. Entries are never removed —
-    /// the map grows with the number of files ever opened in a session,
-    /// which is bounded by the editor's tab count.
+    /// Distinct URIs still parse in parallel. Entries are evicted in `close()`
+    /// alongside `docs`/`trees`, so a long-running daemon that opens and closes
+    /// many distinct files over its lifetime does not accumulate stale locks.
     parse_locks: DashMap<Url, std::sync::Arc<std::sync::Mutex<()>>>,
 }
 
@@ -91,6 +91,11 @@ impl DocumentStore {
     pub fn close(&self, uri: &Url) {
         self.docs.remove(uri);
         self.trees.remove(uri);
+        // Evict the parse-coordination lock too. A long-running daemon can open
+        // and close thousands of distinct files over its lifetime; keeping their
+        // locks around forever is a slow memory leak with no benefit, since the
+        // lock only matters while the document is open and being parsed.
+        self.parse_locks.remove(uri);
     }
 
     /// Return the document text as a cloned `String`.
@@ -195,6 +200,14 @@ impl DocumentStore {
     pub fn cache_tree(&self, uri: &Url, version: i32, tree: tree_sitter::Tree) {
         self.trees.insert(uri.clone(), (version, tree));
     }
+
+    /// Number of live parse-coordination locks. Test-only accessor used to
+    /// assert that `close()` evicts the per-URI lock and the map does not grow
+    /// unbounded over a daemon's lifetime.
+    #[cfg(test)]
+    pub(crate) fn parse_locks_len(&self) -> usize {
+        self.parse_locks.len()
+    }
 }
 
 fn position_to_offset(rope: &Rope, line: u32, character: u32) -> Option<usize> {
@@ -239,6 +252,29 @@ mod tests {
         store.close(&uri);
         assert!(!store.contains(&uri));
         assert_eq!(store.get_text(&uri), None);
+    }
+
+    #[test]
+    fn test_close_evicts_parse_lock() {
+        // Regression: parse_locks must not grow unbounded over a long-running
+        // daemon's lifetime. Opening and closing distinct files should leave the
+        // lock map empty, not accumulate one stale entry per file ever opened.
+        let store = DocumentStore::new();
+        assert_eq!(store.parse_locks_len(), 0);
+
+        for i in 0..50 {
+            let uri = test_uri(&format!("ephemeral{i}"));
+            store.open(uri.clone(), "content".to_string());
+            // Materialize the lock as get_or_parse would.
+            let _lock = store.parse_lock(&uri);
+            assert_eq!(store.parse_locks_len(), 1);
+            store.close(&uri);
+            assert_eq!(
+                store.parse_locks_len(),
+                0,
+                "close() must evict the parse lock for {uri}"
+            );
+        }
     }
 
     #[test]
