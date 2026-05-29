@@ -1456,6 +1456,19 @@ Four code commits resolving the two new P1 bugs plus two new P2 issues surfaced 
 
 Workspace test count: 2035 → 2044 (+9). All gates green.
 
+### Iteration 89 (2026-05-29)
+
+Focused backlog drain: one code fix plus two triage dispositions, each committed individually.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-112 | P2 | **Fixed.** `format_range` unconditionally appended `\n`, injecting a trailing newline into a last-line selection of a file with no trailing newline (confirmed empirically: input ending in `}` produced `"}\n"`). Now only appends when the selection is not the last line or the document actually ends with `\n` (consulting `text` directly, since `.lines()` discards the trailing-newline distinction). Also documented the by-design range-format indent behaviour at the server boundary. +3 regression tests (last-line no-newline, last-line with-newline, non-last-line bridging newline). |
+| F-OPEN-110 | P3 | **Deferred.** Wiring the four dormant `FormatOptions` fields (`blank_lines_between_procedures`, `max_line_length`, `brace_style`, `sort_properties`) requires structural transforms (wrap/merge/split/reorder) the line-by-line text state machine in `format_al` cannot perform safely. Each is its own design + tests; bundling them would be a four-feature mega-commit violating scope discipline. No honesty gap: `to_format_options` parses every value and emits a per-field `warn!` that the setting is inert (F-OPEN-024). |
+| F-OPEN-072 | P1 | **Documented.** Force-aborting a wedged in-process CLR call across the FFI boundary is an accepted architectural limitation (no safe portable interrupt; design-first per the finding). Recovery is already mitigated: the cooldown + `try_lock` probe in `SemanticBridge::call` auto-clears once a hung call returns, and `restart_bridge` builds a fresh `DotNetHost`/Mutex. The remaining gap (no production caller auto-invokes `restart_bridge`) is itself the design-first work the finding calls out and warrants its own finding. |
+| F-OPEN-010, 016, 042, 043, 046, 054, 060, 063, 065, 081, 135, 136, 137 | P1/P2/P3 | Carried forward — budget this iteration went to the F-OPEN-112 fix and the F-OPEN-110/072 triage dispositions. |
+
+Workspace test count: 2044 → 2047 (+3, all from F-OPEN-112 range-format regression tests). All gates green (fmt, check, clippy `-D warnings`, test, WASM build).
+
 
 
 | Phase | Status | Output |
