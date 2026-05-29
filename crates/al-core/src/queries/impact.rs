@@ -98,6 +98,14 @@ pub fn impact(workspace: &Workspace, symbol: &str) -> Vec<ImpactEntry> {
         for entry in workspace.symbols.all_entries() {
             check_member_consumers(&entry, &object_part, member, &mut results);
         }
+    } else {
+        // Object-scoped scan: parameter-type and TableRelation references to the
+        // base object. These do not depend on a member, so they belong in the
+        // object-only query (a member query like `Customer.OnBeforePost` must not
+        // report every method that merely takes a `Record Customer` parameter).
+        for entry in workspace.symbols.all_entries() {
+            check_object_consumers(&entry, &object_part, &mut results);
+        }
     }
 
     // Search workspace files
@@ -188,7 +196,13 @@ fn check_source_table(
     }
 }
 
-/// Member-scoped checks: event subscribers, parameter types, table relations.
+/// Member-scoped check: event subscribers targeting `object::member`.
+///
+/// Only EventSubscriber attributes are member-specific. Parameter-type and
+/// TableRelation references depend on the object alone and are handled by
+/// [`check_object_consumers`] in the object-only query; reporting them here
+/// would falsely flag every method taking a `Record <object>` parameter for a
+/// member query such as `Customer.OnBeforePost`.
 fn check_member_consumers(
     entry: &Arc<SymbolEntry>,
     target_object: &str,
@@ -198,44 +212,64 @@ fn check_member_consumers(
     let target_lower = target_object.to_lowercase();
     let member_lower = member.to_lowercase();
     for method in &entry.methods {
-        // Check EventSubscriber attributes targeting the object+member
+        // Check EventSubscriber attributes targeting the object+member.
+        // The attribute carries (event-element-name, target-object, target-event)
+        // so it must have at least 3 arguments; otherwise it cannot identify a
+        // concrete event and is skipped.
         for attr in &method.attributes {
-            if attr.name == "EventSubscriber" {
-                let target_obj_arg = attr.arguments.get(1).map(|s| {
-                    let s = s.trim();
-                    if let Some(pos) = s.find("::") {
-                        s[pos + 2..]
-                            .trim_matches('"')
-                            .trim_matches('\'')
-                            .to_lowercase()
-                    } else {
-                        s.trim_matches('"').trim_matches('\'').to_lowercase()
-                    }
-                });
-                let target_event_arg = attr
-                    .arguments
-                    .get(2)
-                    .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_lowercase());
-
-                if target_obj_arg.as_deref() == Some(&target_lower)
-                    && target_event_arg.as_deref() == Some(&member_lower)
-                {
-                    results.push(ImpactEntry {
-                        kind: entry.kind,
-                        id: entry.id,
-                        name: entry.name.clone(),
-                        proc: Some(method.name.clone()),
-                        field: None,
-                        impact_type: ImpactType::Subscribe,
-                        package: Some(entry.package.clone()),
-                    });
+            if attr.name != "EventSubscriber" || attr.arguments.len() < 3 {
+                continue;
+            }
+            let target_obj_arg = attr.arguments.get(1).map(|s| {
+                let s = s.trim();
+                if let Some(pos) = s.find("::") {
+                    s[pos + 2..]
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .to_lowercase()
+                } else {
+                    s.trim_matches('"').trim_matches('\'').to_lowercase()
                 }
+            });
+            let target_event_arg = attr
+                .arguments
+                .get(2)
+                .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_lowercase());
+
+            if target_obj_arg.as_deref() == Some(&target_lower)
+                && target_event_arg.as_deref() == Some(&member_lower)
+            {
+                results.push(ImpactEntry {
+                    kind: entry.kind,
+                    id: entry.id,
+                    name: entry.name.clone(),
+                    proc: Some(method.name.clone()),
+                    field: None,
+                    impact_type: ImpactType::Subscribe,
+                    package: Some(entry.package.clone()),
+                });
             }
         }
+    }
+}
 
-        // Check parameter types referencing the target object
+/// Object-scoped checks: parameter types and field TableRelations referencing
+/// `target_object`.
+///
+/// Uses the precise `Record`/TableRelation parsers from `insight::analysis`
+/// rather than substring matching, so querying `Customer` does not falsely
+/// match `Record "CustomerBank"` or `TableRelation = "CustomerVendor"`.
+fn check_object_consumers(
+    entry: &Arc<SymbolEntry>,
+    target_object: &str,
+    results: &mut Vec<ImpactEntry>,
+) {
+    use crate::insight::analysis::{extract_table_relation_table, is_record_of};
+
+    for method in &entry.methods {
+        // Check parameter types referencing the target object.
         for param in &method.parameters {
-            if param.type_name.to_lowercase().contains(&target_lower) {
+            if is_record_of(&param.type_name, target_object) {
                 results.push(ImpactEntry {
                     kind: entry.kind,
                     id: entry.id,
@@ -250,11 +284,12 @@ fn check_member_consumers(
         }
     }
 
-    // Check fields for TableRelation to target
+    // Check fields for TableRelation to target.
     for field in &entry.fields {
         for prop in &field.properties {
             if prop.name.eq_ignore_ascii_case("TableRelation")
-                && prop.value.to_lowercase().contains(&target_lower)
+                && extract_table_relation_table(&prop.value)
+                    .is_some_and(|t| t.eq_ignore_ascii_case(target_object))
             {
                 results.push(ImpactEntry {
                     kind: entry.kind,
@@ -519,13 +554,174 @@ mod tests {
         ws.symbols
             .add_entries(&[make_table(18, "Customer"), sales_header]);
 
-        let results = impact(&ws, "Customer.\"No.\"");
+        let results = impact(&ws, "Customer");
 
         assert!(
             results.iter().any(|r| r.name == "Sales Header"
                 && r.field.as_deref() == Some("Sell-to Customer No.")
                 && r.impact_type == ImpactType::Filter),
             "Expected TableRelation to Customer to be found. Got: {:?}",
+            results
+        );
+    }
+
+    /// Regression: TableRelation matching must not be a substring match — a
+    /// relation to `CustomerBank` must NOT be reported as an impact on `Customer`.
+    #[test]
+    fn impact_table_relation_no_substring_false_positive() {
+        let ws = Workspace::new();
+        let mut sales_header = make_table(36, "Sales Header");
+        sales_header.fields = vec![FieldSymbol {
+            id: 2,
+            name: "Bank No.".to_string(),
+            type_name: "Code".to_string(),
+            properties: vec![PropertyValue {
+                name: "TableRelation".to_string(),
+                value: "CustomerBank".to_string(),
+            }],
+        }];
+        ws.symbols
+            .add_entries(&[make_table(18, "Customer"), sales_header]);
+
+        let results = impact(&ws, "Customer");
+
+        assert!(
+            !results.iter().any(|r| r.impact_type == ImpactType::Filter),
+            "TableRelation to CustomerBank must not match Customer. Got: {:?}",
+            results
+        );
+    }
+
+    /// Regression: parameter-type matching must not be a substring match — a
+    /// `Record "CustomerBank"` parameter must NOT be reported as using `Customer`.
+    #[test]
+    fn impact_param_type_no_substring_false_positive() {
+        let ws = Workspace::new();
+        let mut codeunit = make_table(50100, "My Codeunit");
+        codeunit.kind = ObjectKind::Codeunit;
+        codeunit.fields = Vec::new();
+        codeunit.methods = vec![MethodSymbol {
+            name: "DoWork".to_string(),
+            parameters: vec![ParameterSymbol {
+                name: "rec".to_string(),
+                type_name: "Record \"CustomerBank\"".to_string(),
+                is_var: false,
+            }],
+            return_type: None,
+            attributes: Vec::new(),
+            is_local: false,
+        }];
+        ws.symbols
+            .add_entries(&[make_table(18, "Customer"), codeunit]);
+
+        let results = impact(&ws, "Customer");
+
+        assert!(
+            !results
+                .iter()
+                .any(|r| r.name == "My Codeunit" && r.impact_type == ImpactType::Read),
+            "Record CustomerBank parameter must not match Customer. Got: {:?}",
+            results
+        );
+    }
+
+    /// A `Record Customer` parameter IS a real (object-scoped) impact.
+    #[test]
+    fn impact_param_type_exact_match_found() {
+        let ws = Workspace::new();
+        let mut codeunit = make_table(50100, "My Codeunit");
+        codeunit.kind = ObjectKind::Codeunit;
+        codeunit.fields = Vec::new();
+        codeunit.methods = vec![MethodSymbol {
+            name: "DoWork".to_string(),
+            parameters: vec![ParameterSymbol {
+                name: "rec".to_string(),
+                type_name: "Record Customer".to_string(),
+                is_var: false,
+            }],
+            return_type: None,
+            attributes: Vec::new(),
+            is_local: false,
+        }];
+        ws.symbols
+            .add_entries(&[make_table(18, "Customer"), codeunit]);
+
+        let results = impact(&ws, "Customer");
+
+        assert!(
+            results
+                .iter()
+                .any(|r| r.name == "My Codeunit" && r.impact_type == ImpactType::Read),
+            "Record Customer parameter should be a Read impact. Got: {:?}",
+            results
+        );
+    }
+
+    /// Positive coverage: a member-scoped query finds matching EventSubscribers.
+    #[test]
+    fn impact_finds_event_subscriber() {
+        let ws = Workspace::new();
+        let mut subscriber = make_table(50100, "Cust Subscriber");
+        subscriber.kind = ObjectKind::Codeunit;
+        subscriber.fields = Vec::new();
+        subscriber.methods = vec![MethodSymbol {
+            name: "OnBeforePostHandler".to_string(),
+            parameters: Vec::new(),
+            return_type: None,
+            attributes: vec![AttributeSymbol {
+                name: "EventSubscriber".to_string(),
+                arguments: vec![
+                    "ObjectType::Table".to_string(),
+                    "Database::Customer".to_string(),
+                    "OnBeforePost".to_string(),
+                ],
+            }],
+            is_local: false,
+        }];
+        ws.symbols
+            .add_entries(&[make_table(18, "Customer"), subscriber]);
+
+        let results = impact(&ws, "Customer.OnBeforePost");
+
+        assert!(
+            results
+                .iter()
+                .any(|r| r.name == "Cust Subscriber" && r.impact_type == ImpactType::Subscribe),
+            "EventSubscriber to Customer::OnBeforePost should be found. Got: {:?}",
+            results
+        );
+    }
+
+    /// Regression: a member query (`Customer.OnBeforePost`) must NOT report a
+    /// method merely because it takes a `Record Customer` parameter — only
+    /// actual subscribers to that event count.
+    #[test]
+    fn impact_member_query_ignores_unrelated_param_methods() {
+        let ws = Workspace::new();
+        let mut codeunit = make_table(50100, "My Codeunit");
+        codeunit.kind = ObjectKind::Codeunit;
+        codeunit.fields = Vec::new();
+        codeunit.methods = vec![MethodSymbol {
+            name: "Unrelated".to_string(),
+            parameters: vec![ParameterSymbol {
+                name: "rec".to_string(),
+                type_name: "Record Customer".to_string(),
+                is_var: false,
+            }],
+            return_type: None,
+            attributes: Vec::new(),
+            is_local: false,
+        }];
+        ws.symbols
+            .add_entries(&[make_table(18, "Customer"), codeunit]);
+
+        let results = impact(&ws, "Customer.OnBeforePost");
+
+        assert!(
+            !results
+                .iter()
+                .any(|r| r.name == "My Codeunit" && r.impact_type == ImpactType::Read),
+            "Member query must not report unrelated Record Customer params. Got: {:?}",
             results
         );
     }

@@ -215,7 +215,7 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
 /// Returns `None` if the value is empty after stripping. Pre-allocates no
 /// `String` on the happy path; returns a borrowed `&str` of the table-name
 /// slice. Used by `table_impact` to detect cross-table relations.
-fn extract_table_relation_table(value: &str) -> Option<&str> {
+pub(crate) fn extract_table_relation_table(value: &str) -> Option<&str> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
@@ -251,7 +251,7 @@ fn extract_table_relation_table(value: &str) -> Option<&str> {
 /// - `Record "Customer"`
 /// - `Record Customer`
 /// - `Record "Sales Header"`
-fn is_record_of(type_name: &str, table_name: &str) -> bool {
+pub(crate) fn is_record_of(type_name: &str, table_name: &str) -> bool {
     // Guard: an empty table name cannot be a valid match.
     if table_name.is_empty() {
         return false;
