@@ -219,6 +219,92 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// timeout (slow GC, paging) gets a chance to recover.
 const TIMEOUT_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// Outcome of the timeout-cooldown gate (see [`cooldown_gate`]).
+///
+/// Extracted as a free function over a generic `&Mutex<T>` so the
+/// `try_lock()` race (T047) can be exercised deterministically in tests:
+/// a test can pre-lock the mutex to model a still-hung CLR call, poison it
+/// to model a panicked call, or leave it free — without loading the CLR.
+#[derive(Debug)]
+enum CooldownDecision {
+    /// Gate is open — let the call proceed to the bridge.
+    Proceed,
+    /// Gate is closed — short-circuit with this error.
+    ShortCircuit(SemanticError),
+}
+
+/// Pure cooldown-gate decision over the serializing mutex.
+///
+/// `last_timeout_secs` is the atomic stamp (0 = no recent timeout). `now` is
+/// the current Unix time in seconds, `cooldown` the cooldown window. The lock
+/// is probed via `try_lock()` only once the cooldown has elapsed. As a side
+/// effect this updates `last_timeout_secs` exactly as the inline logic did:
+/// cleared to 0 when the lock is free (recovered), re-stamped to `now` when
+/// the lock is still held or poisoned (extend cooldown).
+fn cooldown_gate<T>(
+    last_timeout_secs: &std::sync::atomic::AtomicU64,
+    host: &std::sync::Mutex<T>,
+    now: u64,
+    cooldown: Duration,
+    method: &str,
+) -> CooldownDecision {
+    let last = last_timeout_secs.load(std::sync::atomic::Ordering::Relaxed);
+    if last == 0 {
+        return CooldownDecision::Proceed;
+    }
+    let elapsed = now.saturating_sub(last);
+    if elapsed < cooldown.as_secs() {
+        tracing::trace!(
+            method,
+            elapsed,
+            cooldown_secs = cooldown.as_secs(),
+            "semantic bridge: short-circuiting (cooldown window)"
+        );
+        return CooldownDecision::ShortCircuit(SemanticError::Cooldown(
+            "cooldown window after timeout",
+        ));
+    }
+    // Cooldown elapsed — probe the Mutex before releasing the gate.
+    // If it's still held, the previous call is stuck; re-stamp the
+    // cooldown and keep the gate closed for another cooldown window.
+    match host.try_lock() {
+        Ok(_guard) => {
+            // Lock is free — the previous timeout has completed; clear
+            // the stamp so subsequent calls go through normally.
+            last_timeout_secs.store(0, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!(
+                method,
+                elapsed,
+                "semantic bridge: cooldown elapsed, lock free — resuming"
+            );
+            CooldownDecision::Proceed
+        }
+        Err(std::sync::TryLockError::WouldBlock) => {
+            // Lock is still held by the hung call — extend cooldown.
+            last_timeout_secs.store(now, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(
+                method,
+                elapsed,
+                "semantic bridge: cooldown elapsed but lock STILL held — extending cooldown"
+            );
+            CooldownDecision::ShortCircuit(SemanticError::Cooldown(
+                "hung call still holding the lock",
+            ))
+        }
+        Err(std::sync::TryLockError::Poisoned(_)) => {
+            // Mutex was poisoned by a panicking call — we know the
+            // CLR state is suspect. Extend cooldown to avoid piling
+            // on; a restart_bridge() is the proper recovery path.
+            last_timeout_secs.store(now, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(
+                method,
+                "semantic bridge: Mutex poisoned — extending cooldown"
+            );
+            CooldownDecision::ShortCircuit(SemanticError::Poisoned)
+        }
+    }
+}
+
 impl SemanticBridge {
     /// Initialize the .NET bridge with explicit paths.
     ///
@@ -277,64 +363,22 @@ impl SemanticBridge {
         // If a previous call timed out, short-circuit during the cooldown
         // window to avoid piling up new calls on a potentially-hung Mutex.
         // After the cooldown elapses, we probe the lock — only if it's
-        // actually free do we let the call through.
-        let last = self
-            .last_timeout_secs
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if last != 0 {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let elapsed = now.saturating_sub(last);
-            if elapsed < TIMEOUT_COOLDOWN.as_secs() {
-                tracing::trace!(
-                    method,
-                    elapsed,
-                    cooldown_secs = TIMEOUT_COOLDOWN.as_secs(),
-                    "semantic bridge: short-circuiting (cooldown window)"
-                );
-                return Err(SemanticError::Cooldown("cooldown window after timeout"));
-            }
-            // Cooldown elapsed — probe the Mutex before releasing the gate.
-            // If it's still held, the previous call is stuck; re-stamp the
-            // cooldown and keep the gate closed for another TIMEOUT_COOLDOWN.
-            match self.host.try_lock() {
-                Ok(_guard) => {
-                    // Lock is free — the previous timeout has completed; clear
-                    // the stamp so subsequent calls go through normally.
-                    self.last_timeout_secs
-                        .store(0, std::sync::atomic::Ordering::Relaxed);
-                    tracing::info!(
-                        method,
-                        elapsed,
-                        "semantic bridge: cooldown elapsed, lock free — resuming"
-                    );
-                }
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    // Lock is still held by the hung call — extend cooldown.
-                    self.last_timeout_secs
-                        .store(now, std::sync::atomic::Ordering::Relaxed);
-                    tracing::warn!(
-                        method,
-                        elapsed,
-                        "semantic bridge: cooldown elapsed but lock STILL held — extending cooldown"
-                    );
-                    return Err(SemanticError::Cooldown("hung call still holding the lock"));
-                }
-                Err(std::sync::TryLockError::Poisoned(_)) => {
-                    // Mutex was poisoned by a panicking call — we know the
-                    // CLR state is suspect. Extend cooldown to avoid piling
-                    // on; a restart_bridge() is the proper recovery path.
-                    self.last_timeout_secs
-                        .store(now, std::sync::atomic::Ordering::Relaxed);
-                    tracing::warn!(
-                        method,
-                        "semantic bridge: Mutex poisoned — extending cooldown"
-                    );
-                    return Err(SemanticError::Poisoned);
-                }
-            }
+        // actually free do we let the call through. The decision (and the
+        // `last_timeout_secs` re-stamping) lives in the pure `cooldown_gate`
+        // helper so the `try_lock()` race is unit-testable (T047).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        match cooldown_gate(
+            &self.last_timeout_secs,
+            &self.host,
+            now,
+            TIMEOUT_COOLDOWN,
+            method,
+        ) {
+            CooldownDecision::Proceed => {}
+            CooldownDecision::ShortCircuit(err) => return Err(err),
         }
 
         let host = self.host.clone();
@@ -788,5 +832,123 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("99"), "message should contain size: {msg}");
         assert!(msg.contains("16"), "message should contain max: {msg}");
+    }
+
+    // -- Cooldown gate (T047 / F-OPEN-135) --
+    //
+    // `cooldown_gate` is generic over the locked type, so these tests model
+    // the CLR-call mutex with a plain `Mutex<()>` and never touch the CLR.
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    const COOLDOWN: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn test_cooldown_gate_no_prior_timeout_proceeds() {
+        // Stamp of 0 means no recent timeout — gate is always open and the
+        // lock is never even probed.
+        let stamp = AtomicU64::new(0);
+        let host = Mutex::new(());
+        let decision = cooldown_gate(&stamp, &host, 1_000, COOLDOWN, "typeAt");
+        assert!(matches!(decision, CooldownDecision::Proceed));
+        assert_eq!(stamp.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_cooldown_gate_inside_window_short_circuits_without_probe() {
+        // A timeout fired 10s ago; cooldown is 60s. Still inside the window:
+        // short-circuit WITHOUT probing the lock. We prove the lock is never
+        // probed by holding it for the duration of the call — a probe would
+        // observe WouldBlock and produce the "hung call" message instead.
+        let stamp = AtomicU64::new(1_000);
+        let host = Mutex::new(());
+        let _held = host.lock().unwrap();
+        let decision = cooldown_gate(&stamp, &host, 1_010, COOLDOWN, "typeAt");
+        match decision {
+            CooldownDecision::ShortCircuit(SemanticError::Cooldown(msg)) => {
+                assert_eq!(msg, "cooldown window after timeout");
+            }
+            other => panic!("expected in-window Cooldown, got {other:?}"),
+        }
+        // Stamp is left untouched while inside the window.
+        assert_eq!(stamp.load(Ordering::Relaxed), 1_000);
+    }
+
+    #[test]
+    fn test_cooldown_gate_elapsed_lock_free_resumes_and_clears() {
+        // Cooldown elapsed (70s > 60s) and the lock is free — the previous
+        // call recovered. Gate opens and the stamp is cleared to 0.
+        let stamp = AtomicU64::new(1_000);
+        let host = Mutex::new(());
+        let decision = cooldown_gate(&stamp, &host, 1_070, COOLDOWN, "typeAt");
+        assert!(matches!(decision, CooldownDecision::Proceed));
+        assert_eq!(stamp.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_cooldown_gate_elapsed_lock_held_extends_cooldown() {
+        // This is the race the finding flags: cooldown elapsed but the prior
+        // CLR call is STILL hung (lock held). The gate must stay closed and
+        // re-stamp to `now` so the cooldown extends another full window.
+        let stamp = AtomicU64::new(1_000);
+        let host = Mutex::new(());
+        let _held = host.lock().unwrap();
+        let now = 1_070;
+        let decision = cooldown_gate(&stamp, &host, now, COOLDOWN, "typeAt");
+        match decision {
+            CooldownDecision::ShortCircuit(SemanticError::Cooldown(msg)) => {
+                assert_eq!(msg, "hung call still holding the lock");
+            }
+            other => panic!("expected hung-lock Cooldown, got {other:?}"),
+        }
+        // Re-stamped to `now`, not cleared — the next window starts fresh.
+        assert_eq!(stamp.load(Ordering::Relaxed), now);
+    }
+
+    #[test]
+    fn test_cooldown_gate_elapsed_lock_poisoned_extends_cooldown() {
+        // A panic inside the critical section poisons the mutex; the gate
+        // reports Poisoned and re-stamps to keep the gate closed.
+        let stamp = AtomicU64::new(1_000);
+        let host = Mutex::new(());
+        let _ = std::panic::catch_unwind(|| {
+            let _g = host.lock().unwrap();
+            panic!("poison the mutex");
+        });
+        assert!(host.is_poisoned(), "mutex should be poisoned by the panic");
+        let now = 1_070;
+        let decision = cooldown_gate(&stamp, &host, now, COOLDOWN, "typeAt");
+        assert!(matches!(
+            decision,
+            CooldownDecision::ShortCircuit(SemanticError::Poisoned)
+        ));
+        assert_eq!(stamp.load(Ordering::Relaxed), now);
+    }
+
+    #[test]
+    fn test_cooldown_gate_held_lock_recovers_after_release() {
+        // Full race-recovery sequence on one stamp+mutex pair:
+        //  1. cooldown elapsed but lock held -> extend (re-stamp to now)
+        //  2. still within the extended window -> short-circuit
+        //  3. lock released + window elapsed -> proceed and clear
+        let stamp = AtomicU64::new(1_000);
+        let host = Mutex::new(());
+
+        {
+            let _held = host.lock().unwrap();
+            let d1 = cooldown_gate(&stamp, &host, 1_070, COOLDOWN, "typeAt");
+            assert!(matches!(d1, CooldownDecision::ShortCircuit(_)));
+            assert_eq!(stamp.load(Ordering::Relaxed), 1_070);
+
+            // Still inside the freshly-extended window — short-circuit again.
+            let d2 = cooldown_gate(&stamp, &host, 1_100, COOLDOWN, "typeAt");
+            assert!(matches!(d2, CooldownDecision::ShortCircuit(_)));
+        } // lock released here
+
+        // Window elapsed (1_140 > 1_070 + 60) and lock now free -> resume.
+        let d3 = cooldown_gate(&stamp, &host, 1_140, COOLDOWN, "typeAt");
+        assert!(matches!(d3, CooldownDecision::Proceed));
+        assert_eq!(stamp.load(Ordering::Relaxed), 0);
     }
 }

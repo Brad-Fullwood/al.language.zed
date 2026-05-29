@@ -16,7 +16,6 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-063 | P3 | Inconsistent `config.rs` `null` semantics — most fields can't be reset to default via `null` |
 | F-OPEN-065 | P2 | No daemon `$/cancelRequest` support; abandoned long-running endpoints still pay full cost / pin slots |
 | F-OPEN-081 | P3 | `InsightGraph` public API leaks `petgraph::NodeIndex`; wrap in a newtype to allow backend swap |
-| F-OPEN-135 | P2 | No test for the timeout-cooldown `try_lock` race (T047); needs a wedge-able bridge seam to test deterministically |
 | F-OPEN-136 | P2 | No regression tests for `signalr_to_bc_event` conversion (private fn, Value-shape dependent) |
 | F-OPEN-137 | P1 | Hardcoded SignalR protocol version (`negotiateVersion=1`, `version:1`) lacks negotiate-response validation — bundle with F-OPEN-016 |
 
@@ -167,3 +166,4 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-152 | P2 | fixed | Added Unicode-identifier regression tests for `extract_last_identifier` and `find_call_context` (Café/Mañana/Città/München); covered the test-gap left by the byte-cast bug (iteration 91) |
 | F-OPEN-153 | P2 | fixed | Inlay-hints range filter used `node_end < range.start.line` but tree-sitter's `end_position().row` is exclusive; switched both walker sites to `<=` so subtrees ending on the row before the range are skipped up front; +1 test (iteration 91) |
 | F-OPEN-154 | P3 | fixed | `lint::lint_config_has_default` test now calls `LintConfig::default()` to match its documented intent instead of bare unit-struct instantiation (iteration 91) |
+| F-OPEN-135 | P2 | fixed | No test for the timeout-cooldown `try_lock` race (T047); needs a wedge-able bridge seam to test deterministically — extracted the cooldown-gate decision out of `SemanticBridge::call` into a pure free fn `cooldown_gate<T>(&AtomicU64, &Mutex<T>, now, cooldown, method)` generic over the locked type, so the `try_lock()` race is exercised with a plain `Mutex<()>` (free / held / poisoned) without loading the CLR; +6 tests covering no-prior-timeout, in-window short-circuit (no probe), elapsed+free resume/clear, elapsed+held extend, poisoned extend, and full held-then-recover sequence (iteration 92) |
