@@ -368,6 +368,12 @@ async fn handle_connection(
         let req = match serde_json::from_str::<Request>(&line) {
             Ok(r) => r,
             Err(e) => {
+                // Record the parse-error context here. If the write below fails
+                // (broken pipe / client gone), `?` would propagate a bare I/O
+                // error to `handle_connection` and the original malformed-JSON
+                // reason would be lost — only a generic "connection error" would
+                // surface. Logging first preserves the diagnostic either way.
+                tracing::warn!(error = %e, "daemon: malformed JSON-RPC request");
                 let error_obj = serde_json::json!({
                     "id": null,
                     "error": {
@@ -384,8 +390,17 @@ async fn handle_connection(
                     )
                 });
                 raw.push('\n');
-                writer.write_all(raw.as_bytes()).await?;
-                writer.flush().await?;
+                // Handle write failure explicitly rather than via `?` so a dead
+                // client connection ends this loop cleanly without masking the
+                // parse-error context already logged above.
+                if let Err(io_err) = writer.write_all(raw.as_bytes()).await {
+                    tracing::warn!(error = %io_err, "daemon: failed to send parse-error response");
+                    break;
+                }
+                if let Err(io_err) = writer.flush().await {
+                    tracing::warn!(error = %io_err, "daemon: failed to flush parse-error response");
+                    break;
+                }
                 continue;
             }
         };
