@@ -287,32 +287,34 @@ fn extract_call_info(
     match node.kind() {
         "member_call_suffix" | "scope_call_suffix" => {
             let member = node.child_by_field_name("member")?;
-            let method_name = member
-                .utf8_text(source)
-                .unwrap_or("")
-                .trim_matches('"')
-                .to_string();
+            // Invalid UTF-8 (or an empty name after trimming quotes) is not a
+            // usable function name — bail out instead of running the whole
+            // lookup pipeline with "".
+            let method_name = member.utf8_text(source).ok()?.trim_matches('"');
+            if method_name.is_empty() {
+                return None;
+            }
             let receiver = extract_receiver_before(node, source);
-            Some((method_name, receiver))
+            Some((method_name.to_string(), receiver))
         }
         "call_suffix" => {
-            if let Some(prev) = node.prev_sibling() {
-                let name = prev
-                    .utf8_text(source)
-                    .unwrap_or("")
-                    .trim_matches('"')
-                    .to_string();
-                return Some((name, None));
+            let prev = node.prev_sibling()?;
+            let name = prev.utf8_text(source).ok()?.trim_matches('"');
+            if name.is_empty() {
+                return None;
             }
-            None
+            Some((name.to_string(), None))
         }
         _ => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 let kind = child.kind();
                 if kind == "identifier" || kind == "quoted_identifier" || kind == "name" {
-                    let t = child.utf8_text(source).unwrap_or("");
-                    return Some((t.trim_matches('"').to_string(), None));
+                    let t = child.utf8_text(source).ok()?.trim_matches('"');
+                    if t.is_empty() {
+                        return None;
+                    }
+                    return Some((t.to_string(), None));
                 }
             }
             None
@@ -797,6 +799,258 @@ mod tests {
             hints.len(),
             1,
             "Expected only First() hint in narrow range, got: {hints:?}"
+        );
+    }
+
+    // ---- Parameter hint pipeline ----------------------------------------
+
+    /// Walk `tree` and return the first node whose kind is `argument_list` or
+    /// `call_arguments`, so tests can drive `extract_call_info` /
+    /// `add_parameter_hints` against a real call site.
+    fn first_arg_list<'t>(root: tree_sitter::Node<'t>) -> Option<tree_sitter::Node<'t>> {
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "argument_list" || node.kind() == "call_arguments" {
+                return Some(node);
+            }
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+        None
+    }
+
+    fn doc_symbols(src: &str, tree: &tree_sitter::Tree) -> Vec<crate::queries::AlDocumentSymbol> {
+        crate::syntax::extract_document_symbols(tree, src)
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
+    #[test]
+    fn parameter_hint_local_procedure() {
+        // A procedure calling another local procedure should get parameter
+        // name hints for each positional argument.
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    begin
+        Add(1, 2);
+    end;
+
+    procedure Add(First: Integer; Second: Integer): Integer
+    begin
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let ws = Workspace::new();
+        let symbols = doc_symbols(src, &tree);
+        let mut hints = Vec::new();
+        collect_inlay_hints(
+            tree.root_node(),
+            source,
+            &text,
+            &tree,
+            &ws,
+            &symbols,
+            &full_range(),
+            &mut hints,
+        );
+
+        let labels: Vec<String> = hints
+            .iter()
+            .filter(|h| h.kind == Some(AlInlayHintKind::Parameter))
+            .map(|h| {
+                let AlInlayHintLabel::String(s) = &h.label;
+                s.clone()
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["First:".to_string(), "Second:".to_string()],
+            "Expected First:/Second: parameter hints, got: {hints:?}"
+        );
+    }
+
+    #[test]
+    fn parameter_hint_overload_selection_prefers_matching_arity() {
+        // Two overloads: one with a single param, one with two. A two-arg call
+        // must select the two-param overload via arity scoring.
+        let one = OverloadCandidate {
+            names: vec!["Only".into()],
+            types: vec!["Integer".into()],
+        };
+        let two = OverloadCandidate {
+            names: vec!["First".into(), "Second".into()],
+            types: vec!["Integer".into(), "Integer".into()],
+        };
+        let candidates = vec![one, two];
+        let arg_types = vec![
+            Some(InferredType {
+                base: "Integer".into(),
+                subtype: None,
+            }),
+            Some(InferredType {
+                base: "Integer".into(),
+                subtype: None,
+            }),
+        ];
+        let best = select_best_overload(&candidates, &arg_types).expect("an overload");
+        assert_eq!(best, vec!["First".to_string(), "Second".to_string()]);
+    }
+
+    #[test]
+    fn parameter_hint_overload_selection_prefers_type_match() {
+        // Same arity, differing types — the candidate whose parameter type
+        // matches the inferred argument type wins on score.
+        let text_sig = OverloadCandidate {
+            names: vec!["Msg".into()],
+            types: vec!["Text".into()],
+        };
+        let int_sig = OverloadCandidate {
+            names: vec!["Count".into()],
+            types: vec!["Integer".into()],
+        };
+        let candidates = vec![text_sig, int_sig];
+        let arg_types = vec![Some(InferredType {
+            base: "Integer".into(),
+            subtype: None,
+        })];
+        let best = select_best_overload(&candidates, &arg_types).expect("an overload");
+        assert_eq!(best, vec!["Count".to_string()]);
+    }
+
+    #[test]
+    fn argument_type_inference_literals() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    begin
+        Foo(42, 3.14, true, 'hello');
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let resolver = crate::syntax::TypeResolver::new(&tree, &text);
+        let arg_list = first_arg_list(tree.root_node()).expect("an argument list");
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
+        let types = infer_argument_types(arg_list, source, &resolver, pos);
+        let bases: Vec<Option<String>> = types
+            .iter()
+            .map(|t| t.as_ref().map(|i| i.base.clone()))
+            .collect();
+        assert_eq!(
+            bases,
+            vec![
+                Some("Integer".to_string()),
+                Some("Decimal".to_string()),
+                Some("Boolean".to_string()),
+                Some("Text".to_string()),
+            ],
+            "Literal inference mismatch: {types:?}"
+        );
+    }
+
+    #[test]
+    fn extract_call_info_plain_call() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    begin
+        DoThing(1);
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let arg_list = first_arg_list(tree.root_node()).expect("an argument list");
+        let parent = arg_list.parent().expect("a parent");
+        let info = extract_call_info(parent, source).expect("call info");
+        assert_eq!(info.0, "DoThing");
+        assert_eq!(info.1, None);
+    }
+
+    #[test]
+    fn extract_call_info_member_call_has_receiver() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller(Rec: Record Customer)
+    begin
+        Rec.SetRange(1);
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let arg_list = first_arg_list(tree.root_node()).expect("an argument list");
+        let parent = arg_list.parent().expect("a parent");
+        let info = extract_call_info(parent, source).expect("call info");
+        assert_eq!(info.0, "SetRange");
+        assert_eq!(info.1.as_deref(), Some("Rec"));
+    }
+
+    #[test]
+    fn extract_call_info_empty_quoted_name_returns_none() {
+        // A call through an empty quoted identifier ("") trims to the empty
+        // string. extract_call_info must return None rather than Some(("",..))
+        // so the lookup pipeline is never run with a blank function name.
+        let src = "codeunit 50100 Test\n{\n    procedure Caller()\n    begin\n        \"\"(1);\n    end;\n}";
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        if let Some(arg_list) = first_arg_list(tree.root_node()) {
+            if let Some(parent) = arg_list.parent() {
+                let info = extract_call_info(parent, source);
+                assert!(
+                    info.as_ref().map(|(n, _)| n.is_empty()) != Some(true),
+                    "extract_call_info must not return an empty function name: {info:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parameter_hint_utf16_conversion() {
+        // A non-ASCII identifier before the call site shifts the byte column
+        // away from the UTF-16 column; the emitted hint position must use
+        // UTF-16 code units, not raw bytes.
+        let src = "codeunit 50100 Test\n{\n    procedure Caller()\n    var\n        Ünïcödé: Integer;\n    begin\n        Foo(Ünïcödé);\n    end;\n}";
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let arg_list = first_arg_list(tree.root_node()).expect("an argument list");
+        let mut hints = Vec::new();
+        add_parameter_hints(arg_list, source, &["Value".to_string()], &mut hints);
+        assert_eq!(hints.len(), 1, "Expected one parameter hint: {hints:?}");
+        let h = &hints[0];
+        // The argument "Ünïcödé" starts at byte column 12 ("        Foo(" = 8
+        // spaces + "Foo("). All ASCII before it, so UTF-16 == byte here, but
+        // the conversion must not crash on the multibyte arg itself.
+        assert_eq!(h.position.line, 6);
+        assert_eq!(h.position.character, 12);
+        let AlInlayHintLabel::String(s) = &h.label;
+        assert_eq!(s, "Value:");
+    }
+
+    #[test]
+    fn add_parameter_hints_stops_at_param_count() {
+        // More arguments than known parameter names: only emit hints for the
+        // params we know, never index out of bounds.
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    begin
+        Foo(1, 2, 3);
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let arg_list = first_arg_list(tree.root_node()).expect("an argument list");
+        let mut hints = Vec::new();
+        add_parameter_hints(arg_list, source, &["Only".to_string()], &mut hints);
+        assert_eq!(
+            hints.len(),
+            1,
+            "Should emit only one hint for one known param: {hints:?}"
         );
     }
 }
