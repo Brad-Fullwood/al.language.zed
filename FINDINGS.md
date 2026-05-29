@@ -1387,6 +1387,23 @@ Workspace test count: 1988 → 2000 (+12: 5 impact-matching tests, 7 dev_package
 
 Workspace test count: 2000 → 2008 (+8: 3 generators escape tests, 3 `read_binary_body_capped` tests, 2 `read_error_body_capped` tests). All gates green.
 
+### Iteration 85 (2026-05-29)
+
+Three commits. Cleared the verified P1 XLIFF data-loss bug, the P2 BC server stale-env-token recovery bug, and three P2 test-gap findings (two of which guard the bug above).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (new) xml_unescape processes &amp; before named entities | **P1** | **Fixed.** `xliff::xml_unescape` replaced `&amp;` first, so user text containing a literal entity string round-tripped lossily: `&lt;` escaped to `&amp;lt;`, then `&amp;`-first unescape produced `&lt;` → `<`, losing the original literal. Reordered so `&amp;` is unescaped last — named entities resolve first, then the surviving `&` is restored, so no intermediate result can be re-read as the start of another entity. +1 regression test covering source/target/note with every XML-special char. |
+| (new) Missing roundtrip coverage for XML-special chars | P2 | **Fixed.** Same commit as the P1 above: `test_generate_xliff_roundtrip_escaped_chars` exercises `&lt;`, `&`, `>`, quotes, and nested `&amp;lt;` through generate → parse. Fails before the reorder, passes after. |
+| F-OPEN-129 (new) | P2 | **Fixed.** `bc_server::add_auth` returned the `BC_ACCESS_TOKEN` env override immediately, bypassing cache/OAuth. On a 401/403 `reset_cached_token()` cleared the in-memory cache to force re-auth, but the env-var check still ran first on the next call, re-presenting the same dead token — concurrent downloads and retries kept failing with no in-process recovery. Added a `stale_env_token: AtomicBool`, set on a 401/403 when AAD auth used the env var; `add_auth` now skips the override once flagged and falls through to the OAuth flow. +1 regression test (`test_stale_env_token_disables_env_override`, via the `env_token_active`/`mark_env_token_stale` seam — env-var-free to stay deterministic, sidestepping the F-OPEN-128 isolation blocker). |
+| (new) Missing test for AppReaderError::NoManifest | P2 | **Fixed.** `app_reader` had no coverage for the missing-NavxManifest.xml path. Added `make_app_with_entries` helper + `missing_navx_manifest` test asserting `AppReaderError::NoManifest`. |
+| (new) Missing test for AppReaderError::NoSymbolReference | P2 | **Fixed.** Same commit: `missing_symbol_reference` test (manifest present, SymbolReference.json absent) asserting `AppReaderError::NoSymbolReference`. |
+| F-OPEN-001, 002, 004, 005, 006, 008, 009, 010, 115, 116, 128 | P1/P2/P3 | Carried forward — the five confirmed new findings consumed this iteration's budget. F-OPEN-002 (file >1500 LOC splits) remains **won't-fix-by-policy** (restructuring is out of scope per CLAUDE.md); F-OPEN-004 remains deferred-to-release (SHA pin at release time). |
+
+New follow-up recorded: **F-OPEN-129** (above) was assigned a canonical ID and is fixed in the same iteration.
+
+Workspace test count: 2008 → 2012 (+4: 1 xliff roundtrip, 1 bc_server stale-env-token, 2 app_reader error-path). All gates green.
+
 
 
 | Phase | Status | Output |
