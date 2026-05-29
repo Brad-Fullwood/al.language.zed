@@ -1300,6 +1300,29 @@ Workspace test count: 1966 → 1968 (+2 dap auth-fallback regressions; the 2 new
 
 Open findings F-OPEN-001..009 carried forward (design / release-time / larger-refactor items) — not actionable as small in-scope fixes this iteration. No new follow-ups discovered.
 
+### Iteration 80 (2026-05-29)
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (new) bc_client lost status | **P1** | **Fixed.** `read_json_body_capped` hardcoded `status: 0` on the oversize-actual-body and JSON-parse-failure error paths, after `response.bytes().await` had already consumed the response. Captured `response.status().as_u16()` before consuming the body so both error returns carry the real HTTP status (matching `handle_response`). Callers can now distinguish a 4xx/5xx error body from malformed JSON in a 200 OK. +1 regression test (503 + non-JSON body → `ServerError { status: 503 }`). |
+| (new) var-modifier breaking change | **P1** | **Fixed.** `check_signature_change` never compared `ParameterSymbol::is_var`, so flipping a parameter between value- and reference-passing (`var`) was silently non-breaking. Added an `is_var` comparison that emits a `SignatureChanged` report. +1 regression test. |
+| (new) settings depth-cap semantics | **P1** | **Fixed.** `set_nested_value` collapsed an over-deep path into a single joined literal key on the *first* call (`path.len() > 64`) instead of nesting up to the cap, so `x.x.x…` (500 segs) produced `{"x.x.x…": v}` rather than nested objects. Refactored to track recursion depth explicitly (parity with `merge_json_inner`): up to `MAX_SETTINGS_KEY_DEPTH` levels nest as objects, only the remainder collapses. Strengthened the regression test to assert exactly 64 nested levels with the remainder under a joined key (closes the false-confidence test-gap finding too). |
+| (new) return-type case sensitivity | P2 | **Fixed.** Return types were compared with case-sensitive `!=` while parameter types used `.to_lowercase()`. Normalized both (AL type names are case-insensitive) so a pure case difference is no longer a false breaking change. +1 regression test (`Decimal` vs `decimal` → no change). |
+| (new) breaking-change non-determinism | P2 | **Fixed.** `diff_object`/`analyze_breaking_changes` iterated `HashMap`s (and `build_map`) with non-deterministic order; switched method/field/object lookup maps to `BTreeMap` so reported change ordering is stable across runs. |
+| (new) enum-removal HashSet | P2 | **Fixed.** Replaced the upfront `HashSet` allocation in enum-value removal detection with an `iter().any()` scan — idiomatic, no allocation, deterministic. Covered by the existing `detects_enum_value_removed` test. |
+| (new) return-type Debug format | P3 | **Fixed.** Return-type-change description used `{:?}` on `Option<String>`, emitting user-facing `'Some(Decimal)'`/`'None'`. Now uses `as_deref().unwrap_or("(none)")`. +1 regression test asserting no `Some(` in the description. |
+| (new) parameter-name change test-gap | — | **Not actionable / closed.** The "no test for parameter name changes" finding presumes name changes are breaking. In AL, procedure calls are positional (no named-argument binding to a parameter's identifier), so a parameter *rename* is not an API break. Implementing detection would emit false positives; correctly left unhandled. No test added. |
+| (new) apply_auth unit tests | P2 | **Deferred.** `apply_auth` reads process-global env vars (`BC_USERNAME`/`BC_PASSWORD`/`BC_TOKEN`) and returns an opaque `reqwest::RequestBuilder`. Reliable direct tests would require either env-var mutation (races under the parallel test runner) or a new serial-test dependency (out of scope: no new deps). Recorded as **F-OPEN-128**. |
+| F-OPEN-005..008 | P2 | Carried forward — design / release-time items, not small in-scope fixes this iteration. |
+
+New follow-up recorded:
+
+| ID | Severity | Title |
+|---|---|---|
+| F-OPEN-128 | P2 | `bc_client::apply_auth` lacks direct unit tests for its three auth flows / credential-error paths; blocked on env-var test isolation (would need a serial-test dep). |
+
+Workspace test count: 1968 → 1972 (+4: var-modifier, case-insensitive return type, human-readable return-type description in `breaking_changes`; HTTP-status preservation in `bc_client`. The strengthened zed-al settings test runs under the separate WASM crate and is not counted in the `--exclude zed-al` total). All gates green.
+
 
 
 | Phase | Status | Output |
