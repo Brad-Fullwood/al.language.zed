@@ -66,6 +66,25 @@ fn compose(base: Arc<SymbolEntry>, extensions: Vec<Arc<SymbolEntry>>) -> Compose
 
     // Sort fields by ID for consistent output
     all_fields.sort_by_key(|f| f.id);
+
+    // Defensive de-duplication. BC validation guarantees field IDs are unique
+    // within a composed object, but a malformed symbol index or a package
+    // conflict (two extensions adding the same field ID) would otherwise surface
+    // the field twice in completions/hover. Drop later duplicates keyed by
+    // (id, lowercased name); the sort above keeps the survivor deterministic.
+    {
+        let before = all_fields.len();
+        let mut seen = std::collections::HashSet::new();
+        all_fields.retain(|f| seen.insert((f.id, f.name.to_ascii_lowercase())));
+        if all_fields.len() != before {
+            tracing::warn!(
+                base = %base.name,
+                removed = before - all_fields.len(),
+                "composition: dropped duplicate field(s) with identical (id, name)"
+            );
+        }
+    }
+
     // Sort enum values by ordinal
     all_enum_values.sort_by_key(|v| v.ordinal);
 
@@ -247,6 +266,82 @@ mod tests {
         assert_eq!(composed.all_fields[3].id, 50101);
         // 1 base method + 1 extension method
         assert_eq!(composed.all_methods.len(), 2);
+    }
+
+    #[test]
+    fn compose_deduplicates_fields_with_same_id_and_name() {
+        // Two extensions both add a field with id 50100 / name "Custom Field"
+        // (malformed package / validation bypass). The composed view must show
+        // it once, not twice, so completions/hover don't double-list it.
+        let index = SymbolIndex::new();
+        let dup = || FieldSymbol {
+            id: 50100,
+            name: "Custom Field".into(),
+            type_name: "Boolean".into(),
+            properties: vec![],
+        };
+        index.add_entries(&[
+            make_table(
+                18,
+                "Customer",
+                vec![FieldSymbol {
+                    id: 1,
+                    name: "No.".into(),
+                    type_name: "Code".into(),
+                    properties: vec![],
+                }],
+                Vec::new(),
+            ),
+            make_table_ext(50100, "Cust Ext A", "Customer", vec![dup()], Vec::new()),
+            make_table_ext(50101, "Cust Ext B", "Customer", vec![dup()], Vec::new()),
+        ]);
+
+        let composed = get_composed(&index, ObjectKind::Table, "Customer").unwrap();
+        // 1 base + 1 deduped extension field == 2, not 3.
+        assert_eq!(composed.all_fields.len(), 2);
+        let custom_count = composed.all_fields.iter().filter(|f| f.id == 50100).count();
+        assert_eq!(custom_count, 1, "duplicate field id must appear once");
+    }
+
+    #[test]
+    fn compose_keeps_distinct_ids() {
+        // Sanity: distinct field IDs are NOT collapsed by the dedup.
+        let index = SymbolIndex::new();
+        index.add_entries(&[
+            make_table(
+                18,
+                "Vendor",
+                vec![FieldSymbol {
+                    id: 1,
+                    name: "No.".into(),
+                    type_name: "Code".into(),
+                    properties: vec![],
+                }],
+                Vec::new(),
+            ),
+            make_table_ext(
+                50200,
+                "Vend Ext",
+                "Vendor",
+                vec![
+                    FieldSymbol {
+                        id: 50200,
+                        name: "A".into(),
+                        type_name: "Integer".into(),
+                        properties: vec![],
+                    },
+                    FieldSymbol {
+                        id: 50201,
+                        name: "B".into(),
+                        type_name: "Integer".into(),
+                        properties: vec![],
+                    },
+                ],
+                Vec::new(),
+            ),
+        ]);
+        let composed = get_composed(&index, ObjectKind::Table, "Vendor").unwrap();
+        assert_eq!(composed.all_fields.len(), 3);
     }
 
     #[test]
