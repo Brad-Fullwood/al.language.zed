@@ -16,6 +16,13 @@ pub const MAX_WORKSPACE_FILES: usize = 10_000;
 /// Maximum directory depth to recurse into.
 const MAX_DEPTH: usize = 10;
 
+/// Maximum size of an individual `.al` file we will read into the index.
+/// Real AL source files are KB-scale; a multi-megabyte `.al` is almost
+/// certainly a build artifact, generated blob, or adversarial input. Reading
+/// it would pin its full contents in the in-memory `files` map. `scan` and
+/// `incremental_scan` skip (and log) any file larger than this (F-OPEN-019).
+pub const MAX_AL_FILE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
+
 /// Snapshot of file metadata used for change detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMetadata {
@@ -188,6 +195,9 @@ impl FileIndex {
         let mut on_disk: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         self.walk_al_files(root, &mut count, 0, &mut |path| {
             on_disk.insert(path.clone());
+            if al_file_exceeds_cap(&path) {
+                return;
+            }
             match std::fs::read_to_string(&path) {
                 Ok(content) => self.add_file(path, content),
                 Err(e) => {
@@ -236,6 +246,18 @@ impl FileIndex {
                     continue;
                 }
             };
+            // Skip oversized .al files before reading them into memory
+            // (F-OPEN-019). We already have the size from the metadata read,
+            // so no extra syscall is needed here.
+            if current_meta.size > MAX_AL_FILE_BYTES {
+                tracing::warn!(
+                    path = %path.display(),
+                    size = current_meta.size,
+                    cap = MAX_AL_FILE_BYTES,
+                    "skipping .al file: exceeds per-file size cap"
+                );
+                continue;
+            }
             let needs_index = match self.file_metadata.get(path) {
                 Some(prev) => *prev != current_meta,
                 None => true, // new file
@@ -485,10 +507,27 @@ impl FileIndex {
             Err(_) => return,
         };
 
-        for entry in entries.flatten() {
+        for entry_result in entries {
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(e) => {
+                    // Per-entry errors (e.g. permission denied on a specific
+                    // child) are surfaced rather than silently dropped by the
+                    // old `flatten()`, so unreadable parts of the workspace are
+                    // observable in the logs (F-OPEN-018).
+                    tracing::debug!(error = %e, dir = %dir.display(), "skipping directory entry due to error");
+                    continue;
+                }
+            };
             let path = entry.path();
 
-            if path.is_dir() {
+            // Use the cached file type from the directory read instead of
+            // `path.is_dir()`, which would issue a fresh `stat()` syscall per
+            // entry (F-OPEN-017). Fall back to `false` (treat as a file) on
+            // error; a genuinely unreadable entry will fail later on read.
+            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+
+            if is_dir {
                 let dir_name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -520,6 +559,25 @@ impl FileIndex {
 impl Default for FileIndex {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Returns `true` if the `.al` file at `path` is larger than
+/// [`MAX_AL_FILE_BYTES`] and should be skipped. Logs a warning when it is.
+/// On metadata-read failure returns `false` so the caller proceeds to its
+/// own read (which will then surface the I/O error). (F-OPEN-019)
+fn al_file_exceeds_cap(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > MAX_AL_FILE_BYTES => {
+            tracing::warn!(
+                path = %path.display(),
+                size = meta.len(),
+                cap = MAX_AL_FILE_BYTES,
+                "skipping .al file: exceeds per-file size cap"
+            );
+            true
+        }
+        _ => false,
     }
 }
 
@@ -590,6 +648,45 @@ mod tests {
             "Should find 3 .al files (2 root + 1 subdirectory)"
         );
         assert_eq!(index.len(), 3);
+    }
+
+    #[test]
+    fn al_file_exceeds_cap_helper() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // A normal small file is under the cap.
+        let small = dir.path().join("small.al");
+        fs::write(&small, "codeunit 1 X {}").unwrap();
+        assert!(!al_file_exceeds_cap(&small));
+
+        // A missing file does not count as "over cap" (caller surfaces I/O err).
+        assert!(!al_file_exceeds_cap(&dir.path().join("missing.al")));
+
+        // A file just over the cap is rejected. Use a sparse file via set_len
+        // so the test stays cheap.
+        let big = dir.path().join("big.al");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_AL_FILE_BYTES + 1).unwrap();
+        drop(f);
+        assert!(al_file_exceeds_cap(&big));
+    }
+
+    #[test]
+    fn scan_skips_oversized_al_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // One normal file and one oversized (sparse) file.
+        fs::write(dir.path().join("ok.al"), "codeunit 1 Ok {}").unwrap();
+        let big = dir.path().join("big.al");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_AL_FILE_BYTES + 1).unwrap();
+        drop(f);
+
+        let index = FileIndex::new();
+        // walk still counts both .al files, but only the small one is indexed.
+        index.scan(dir.path());
+        assert_eq!(index.len(), 1, "oversized .al file should not be indexed");
+        assert!(index.get_content(&dir.path().join("ok.al")).is_some());
+        assert!(index.get_content(&big).is_none());
     }
 
     #[test]
