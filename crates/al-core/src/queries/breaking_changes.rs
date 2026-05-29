@@ -4,7 +4,7 @@
 //! Breaking changes are API surface removals or signature changes.
 
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::symbols::{MethodSymbol, SymbolEntry};
 
@@ -80,7 +80,7 @@ pub fn analyze_breaking_changes(
     changes
 }
 
-fn build_map(entries: &[SymbolEntry]) -> HashMap<(String, String), &SymbolEntry> {
+fn build_map(entries: &[SymbolEntry]) -> BTreeMap<(String, String), &SymbolEntry> {
     entries
         .iter()
         .map(|e| ((e.kind.to_string(), e.name.to_lowercase()), e))
@@ -88,14 +88,14 @@ fn build_map(entries: &[SymbolEntry]) -> HashMap<(String, String), &SymbolEntry>
 }
 
 fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingChange>) {
-    let old_methods: HashMap<String, &MethodSymbol> = old
+    let old_methods: BTreeMap<String, &MethodSymbol> = old
         .methods
         .iter()
         .filter(|m| !m.is_local)
         .map(|m| (m.name.to_lowercase(), m))
         .collect();
 
-    let new_methods: HashMap<String, &MethodSymbol> = new
+    let new_methods: BTreeMap<String, &MethodSymbol> = new
         .methods
         .iter()
         .filter(|m| !m.is_local)
@@ -125,12 +125,12 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
     }
 
     // Check removed fields
-    let old_fields: HashMap<String, _> = old
+    let old_fields: BTreeMap<String, _> = old
         .fields
         .iter()
         .map(|f| (f.name.to_lowercase(), f))
         .collect();
-    let new_fields: HashMap<String, _> = new
+    let new_fields: BTreeMap<String, _> = new
         .fields
         .iter()
         .map(|f| (f.name.to_lowercase(), f))
@@ -149,14 +149,13 @@ fn diff_object(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingC
     }
 
     // Check removed enum values
-    let new_enums: std::collections::HashSet<String> = new
-        .enum_values
-        .iter()
-        .map(|v| v.name.to_lowercase())
-        .collect();
-
     for old_val in &old.enum_values {
-        if !new_enums.contains(&old_val.name.to_lowercase()) {
+        let old_lower = old_val.name.to_lowercase();
+        if !new
+            .enum_values
+            .iter()
+            .any(|n| n.name.to_lowercase() == old_lower)
+        {
             changes.push(BreakingChange {
                 kind: BreakingChangeKind::EnumValueRemoved,
                 object: old.name.clone(),
@@ -177,15 +176,20 @@ fn check_signature_change(
     new: &MethodSymbol,
     changes: &mut Vec<BreakingChange>,
 ) {
-    // Return type change
-    if old.return_type != new.return_type {
+    // Return type change. AL type names are case-insensitive, so compare
+    // normalized — matching the parameter-type comparison below.
+    let old_ret = old.return_type.as_deref();
+    let new_ret = new.return_type.as_deref();
+    if old_ret.map(str::to_lowercase) != new_ret.map(str::to_lowercase) {
         changes.push(BreakingChange {
             kind: BreakingChangeKind::ReturnTypeChanged,
             object: object_name.to_string(),
             member: Some(old.name.clone()),
             description: format!(
-                "Return type of '{}' changed from '{:?}' to '{:?}'",
-                old.name, old.return_type, new.return_type
+                "Return type of '{}' changed from '{}' to '{}'",
+                old.name,
+                old_ret.unwrap_or("(none)"),
+                new_ret.unwrap_or("(none)")
             ),
             is_breaking: true,
         });
@@ -211,7 +215,7 @@ fn check_signature_change(
             is_breaking,
         });
     } else {
-        // Check for type changes in existing parameters
+        // Check for type / modifier changes in existing parameters
         for (i, (op, np)) in old.parameters.iter().zip(new.parameters.iter()).enumerate() {
             if op.type_name.to_lowercase() != np.type_name.to_lowercase() {
                 changes.push(BreakingChange {
@@ -223,6 +227,26 @@ fn check_signature_change(
                         i + 1,
                         op.type_name,
                         np.type_name,
+                        old.name
+                    ),
+                    is_breaking: true,
+                });
+            }
+
+            // A `var` (pass-by-reference) modifier change is breaking: callers
+            // passing a constant break if a parameter becomes `var`, and callers
+            // relying on reference semantics break if `var` is removed.
+            if op.is_var != np.is_var {
+                changes.push(BreakingChange {
+                    kind: BreakingChangeKind::SignatureChanged,
+                    object: object_name.to_string(),
+                    member: Some(old.name.clone()),
+                    description: format!(
+                        "Parameter {} '{}' modifier changed from {} to {} in '{}'",
+                        i + 1,
+                        op.name,
+                        if op.is_var { "var" } else { "non-var" },
+                        if np.is_var { "var" } else { "non-var" },
                         old.name
                     ),
                     is_breaking: true,
@@ -271,6 +295,14 @@ mod tests {
             name: name.to_string(),
             type_name: ty.to_string(),
             is_var: false,
+        }
+    }
+
+    fn make_var_param(name: &str, ty: &str, is_var: bool) -> ParameterSymbol {
+        ParameterSymbol {
+            name: name.to_string(),
+            type_name: ty.to_string(),
+            is_var,
         }
     }
 
@@ -510,6 +542,82 @@ mod tests {
                 .any(|c| c.kind == BreakingChangeKind::SignatureChanged
                     && c.member.as_deref() == Some("Send")),
             "SignatureChanged must be reported on parameter-count delta: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn detects_parameter_var_modifier_change() {
+        // A parameter flipping between value and reference passing is breaking.
+        let old_cu = make_codeunit(
+            "API",
+            vec![make_method(
+                "Process",
+                vec![make_var_param("Rec", "Record Customer", false)],
+                None,
+            )],
+        );
+        let new_cu = make_codeunit(
+            "API",
+            vec![make_method(
+                "Process",
+                vec![make_var_param("Rec", "Record Customer", true)],
+                None,
+            )],
+        );
+        let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.kind == BreakingChangeKind::SignatureChanged
+                    && c.member.as_deref() == Some("Process")
+                    && c.description.contains("modifier changed")),
+            "var modifier change must be reported as SignatureChanged: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn return_type_change_is_case_insensitive() {
+        // AL type names are case-insensitive; a pure case difference in the
+        // return type must NOT be reported as a breaking change.
+        let old_cu = make_codeunit(
+            "Calc",
+            vec![make_method("Total", vec![], Some("Decimal".to_string()))],
+        );
+        let new_cu = make_codeunit(
+            "Calc",
+            vec![make_method("Total", vec![], Some("decimal".to_string()))],
+        );
+        let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
+        assert!(
+            !changes
+                .iter()
+                .any(|c| c.kind == BreakingChangeKind::ReturnTypeChanged),
+            "case-only return type difference must not be breaking: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn return_type_change_description_is_human_readable() {
+        // Description must read 'Decimal'/'(none)', never Debug 'Some(...)'.
+        let old_cu = make_codeunit(
+            "Calc",
+            vec![make_method("Total", vec![], Some("Decimal".to_string()))],
+        );
+        let new_cu = make_codeunit("Calc", vec![make_method("Total", vec![], None)]);
+        let changes = analyze_breaking_changes(&[old_cu], &[new_cu]);
+        let change = changes
+            .iter()
+            .find(|c| c.kind == BreakingChangeKind::ReturnTypeChanged)
+            .expect("return type change reported");
+        assert!(
+            !change.description.contains("Some("),
+            "description must not contain Debug formatting: {}",
+            change.description
+        );
+        assert!(
+            change.description.contains("'Decimal'") && change.description.contains("'(none)'"),
+            "description should use clean values: {}",
+            change.description
         );
     }
 
