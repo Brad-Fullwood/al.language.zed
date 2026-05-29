@@ -161,10 +161,13 @@ pub(crate) async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
             ),
         });
     }
+    // Capture the status before `bytes()` consumes the response, so the
+    // error paths below can report the real HTTP status rather than 0.
+    let status = response.status().as_u16();
     let bytes = response.bytes().await?;
     if bytes.len() as u64 > MAX_BC_JSON_RESPONSE_BYTES {
         return Err(BcClientError::ServerError {
-            status: 0,
+            status,
             message: format!(
                 "JSON response actual body {actual} bytes exceeds {MAX_BC_JSON_RESPONSE_BYTES} byte limit — server lied about Content-Length",
                 actual = bytes.len(),
@@ -172,7 +175,7 @@ pub(crate) async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
         });
     }
     serde_json::from_slice(&bytes).map_err(|e| BcClientError::ServerError {
-        status: 0,
+        status,
         message: format!("Failed to parse JSON response: {e}"),
     })
 }
@@ -696,6 +699,37 @@ mod tests {
                 // reqwest aborted the response — also acceptable: the
                 // mismatch was caught one layer below.
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn read_json_body_capped_preserves_status_on_parse_failure() {
+        // When the body is well-sized but not valid JSON, the resulting
+        // error must carry the real HTTP status, not a hardcoded 0, so
+        // callers can distinguish a 4xx/5xx error body from malformed
+        // JSON in a 200 OK.
+        let body = "not json";
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(503)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .get(server.uri())
+            .send()
+            .await
+            .unwrap();
+        let res: Result<DummyResp, _> = read_json_body_capped(resp).await;
+        match res {
+            Err(BcClientError::ServerError { status, .. }) => {
+                assert_eq!(status, 503, "parse-failure error must keep the HTTP status");
+            }
+            other => panic!("expected ServerError with status 503, got {other:?}"),
         }
     }
 }
