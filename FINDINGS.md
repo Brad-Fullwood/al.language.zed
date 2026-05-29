@@ -1267,6 +1267,28 @@ Workspace test count: 1946 → 1960 (+14: 8 arch_lint, 1 test_diagnostics, 5 ins
 
 Open findings F-OPEN-001..009 carried forward (P2/P3 design/release-time items) — not addressed this iteration. No new follow-ups discovered.
 
+### Iteration 78 (2026-05-29)
+
+Three commits. Cleared the triaged new-confirmed worklist: one P1 (BC server stale token), four P2 (error-body cap, path traversal, duplicate folding, redundant stat), and three P3 (file-size cap, flatten error logging, the concurrent-401 test gap which is the same root cause as the P1).
+
+> Note: these confirmed findings were given canonical IDs F-OPEN-119..125 because the short IDs F-OPEN-013..019 quoted in the worklist/commit messages collide with unrelated findings recorded in earlier iterations.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-119 | **P1** | **Fixed.** `BcServerClient::cached_token` was a `tokio::sync::OnceCell<String>` that permanently memoised the first token. On a 401/403 only the on-disk cache was cleared; the in-memory token survived, so concurrent downloads in the same `download_all` batch kept re-using the dead token. Replaced with `RwLock<Option<String>>` + a `reset_cached_token()` called on 401/403. `add_auth` uses a read-fast-path / write-slow-path with re-check. Regression `test_reset_cached_token_clears_in_memory_token`. |
+| F-OPEN-120 | P2 | **Fixed.** 401/403 and other error paths called `response.text().await` with no size cap — a malicious BC server could stream a multi-GB error body before `sanitize_error_body` truncated to 512 B. Added `read_error_body_capped` (64 KiB cap, refuses bodies whose `Content-Length` is over the cap or absent), mirroring `bc_client::read_json_body_capped`. |
+| F-OPEN-121 | P2 | **Fixed.** The `.app` filename was built from `dep.publisher`/`dep.name` (from `app.json`) by only replacing spaces — `../../evil` or `..\pwned` could escape the destination via `Path::join`. Added `package_filename` / `sanitize_path_component` (keep `[A-Za-z0-9._-]`, map the rest to `_`, collapse `..`). Regressions `test_filename_rejects_path_traversal`, `test_sanitize_path_component_keeps_safe_chars`. |
+| F-OPEN-122 | P2 | **Fixed.** `folding::extract_structural_ranges` added a fold for an `object_declaration`'s body field AND re-folded the same region when the walk visited the `object_body` child, producing a duplicate range per object body. Removed the explicit `object_declaration` arm. Regression `test_folding_no_duplicate_object_body` + a no-duplicate assertion on the existing codeunit test. |
+| F-OPEN-123 | P2 | **Fixed (perf).** `walk_al_files` called `path.is_dir()` (a fresh `stat()` per entry) when `DirEntry::file_type()` already had the cached type from `read_dir`. Switched to the cached file type. |
+| F-OPEN-124 | P3 | **Fixed.** `scan`/`incremental_scan` read `.al` files with no per-file size limit, letting a build artifact or adversarial blob pin gigabytes in the in-memory index. Added `MAX_AL_FILE_BYTES = 50 MiB`; oversized files are skipped + warned. `incremental_scan` reuses the size it already read. Regressions `al_file_exceeds_cap_helper`, `scan_skips_oversized_al_file`. |
+| F-OPEN-125 | P3 | **Fixed.** `walk_al_files` used `entries.flatten()`, silently dropping per-entry I/O errors (e.g. permission denied). Replaced with explicit per-entry matching that logs skipped entries at debug level, matching the directory-level error handling. |
+
+The "concurrent-401 recovery test gap" (P3 in the worklist) shares its root cause with F-OPEN-119; covered by `test_reset_cached_token_clears_in_memory_token`. A full mock-HTTP concurrent-batch test would need a new dev-dependency (mockito/wiremock) and is out of scope for this iteration.
+
+Workspace test count: 1960 → 1966 (+6: 2 bc_server path/sanitize, 1 bc_server token reset, 1 folding, 2 file_index). All gates green.
+
+Open findings F-OPEN-001..009 carried forward (design / release-time / larger-refactor items) — not actionable as small in-scope fixes this iteration.
+
 
 
 | Phase | Status | Output |
