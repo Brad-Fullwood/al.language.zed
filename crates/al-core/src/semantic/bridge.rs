@@ -419,6 +419,9 @@ impl SemanticBridge {
         &self,
         req: AnalyzeRequest,
     ) -> Result<Vec<DiagnosticEntry>, SemanticError> {
+        // Bound the caller-supplied editor buffer before serialising a multi-MB
+        // string into the CLR call (matches type_at / completions_at).
+        check_text_size(Some(&req.source))?;
         let params = serde_json::to_value(&req)
             .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
         let result = self.call("analyze", params).await?;
@@ -824,6 +827,35 @@ mod tests {
             }
             other => panic!("expected InputTooLarge, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_analyze_source_over_limit_rejected() {
+        // analyze() guards req.source with check_text_size before serialising
+        // the buffer into the CLR call — exactly as type_at/completions_at guard
+        // their `text`. Constructing a live SemanticBridge needs the CLR, so we
+        // assert the same guard the method applies to its `source` field. An
+        // oversized editor buffer (diagnostics.rs feeds unsanitised text here)
+        // must be rejected with InputTooLarge, not forwarded to the bridge.
+        let req = AnalyzeRequest {
+            file: std::path::PathBuf::from("/tmp/Over.al"),
+            source: "a".repeat(MAX_TEXT_BYTES + 1),
+            analyzers: Vec::new(),
+            package_cache: std::path::PathBuf::from("/tmp/.alpackages"),
+        };
+        match check_text_size(Some(&req.source)) {
+            Err(SemanticError::InputTooLarge { size, max }) => {
+                assert_eq!(size, MAX_TEXT_BYTES + 1);
+                assert_eq!(max, MAX_TEXT_BYTES);
+            }
+            other => panic!("expected InputTooLarge for analyze source, got {other:?}"),
+        }
+        // A normal-sized source still passes the guard.
+        let ok_req = AnalyzeRequest {
+            source: "codeunit 50000 Foo { }".to_string(),
+            ..req
+        };
+        assert!(check_text_size(Some(&ok_req.source)).is_ok());
     }
 
     #[test]
