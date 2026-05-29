@@ -57,7 +57,14 @@ pub struct BcServerClient {
     tenant: Option<String>,
     message_sink: MessageSink,
     /// Cached access token for the session (avoids re-auth per package).
-    cached_token: tokio::sync::OnceCell<String>,
+    ///
+    /// Stored behind an `RwLock<Option<String>>` rather than a `OnceCell`
+    /// so it can be cleared in-place when a 401/403 reveals the token is
+    /// stale. A plain `OnceCell` permanently memoises the first value and
+    /// has no way to forget it, which left concurrent downloads re-using a
+    /// dead token after the disk cache had already been invalidated
+    /// (F-OPEN-013).
+    cached_token: tokio::sync::RwLock<Option<String>>,
 }
 
 impl BcServerClient {
@@ -93,8 +100,19 @@ impl BcServerClient {
             auth,
             tenant,
             message_sink,
-            cached_token: tokio::sync::OnceCell::new(),
+            cached_token: tokio::sync::RwLock::new(None),
         })
+    }
+
+    /// Forget the in-memory cached access token so the next `add_auth` call
+    /// re-runs the OAuth acquisition flow (refresh → interactive sign-in).
+    ///
+    /// Called when a 401/403 reveals the cached token is stale. Without this
+    /// the session-level cache would keep handing out the dead token to
+    /// concurrent downloads even after the on-disk cache was cleared
+    /// (F-OPEN-013).
+    async fn reset_cached_token(&self) {
+        *self.cached_token.write().await = None;
     }
 
     /// Download a single dependency from the BC Dev API.
@@ -152,11 +170,7 @@ impl BcServerClient {
 
                 // Save to .alpackages/
                 std::fs::create_dir_all(dest)?;
-                let filename = format!(
-                    "{}_{}.app",
-                    dep.publisher.replace(' ', "_"),
-                    dep.name.replace(' ', "_")
-                );
+                let filename = package_filename(&dep.publisher, &dep.name);
                 let out_path = dest.join(&filename);
 
                 std::fs::write(&out_path, &bytes)?;
@@ -177,13 +191,16 @@ impl BcServerClient {
                 if let Some(t) = self.tenant.as_deref() {
                     let _ = crate::symbols::oauth::invalidate_cached_token(t);
                 }
+                // Also clear the session-level in-memory token so concurrent
+                // downloads in the same batch don't keep re-using the dead
+                // token; the disk-cache invalidation above does not touch it
+                // (F-OPEN-013).
+                self.reset_cached_token().await;
                 Err(BcServerError::AuthenticationFailed {
                     status,
                     // Truncate + scrub: never propagate the full BC error body
                     // (T008 / sec-002). Same helper as bc_client::map_error_response.
-                    message: crate::bc_client::sanitize_error_body(
-                        &response.text().await.unwrap_or_default(),
-                    ),
+                    message: read_error_body_capped(response).await,
                 })
             }
             404 => Err(BcServerError::PackageNotFound {
@@ -192,9 +209,7 @@ impl BcServerClient {
             }),
             _ => Err(BcServerError::ServerError {
                 status,
-                message: crate::bc_client::sanitize_error_body(
-                    &response.text().await.unwrap_or_default(),
-                ),
+                message: read_error_body_capped(response).await,
             }),
         }
     }
@@ -244,21 +259,106 @@ impl BcServerClient {
 
                 let tenant = self.tenant.as_deref().unwrap_or("common");
 
-                let sink = self.message_sink.clone();
-                let client = self.client.clone();
-                let token = self
-                    .cached_token
-                    .get_or_try_init(|| async {
-                        oauth::acquire_token(&client, tenant, &*sink)
-                            .await
-                            .map_err(BcServerError::OAuth)
-                    })
-                    .await?;
+                // Fast path: return the cached token under a read lock.
+                if let Some(token) = self.cached_token.read().await.as_ref() {
+                    return Ok(request.bearer_auth(token));
+                }
 
+                // Slow path: acquire a fresh token under the write lock so
+                // concurrent callers serialise on a single sign-in. Re-check
+                // after taking the write lock in case another task filled it
+                // while we waited.
+                let mut guard = self.cached_token.write().await;
+                if guard.is_none() {
+                    let sink = self.message_sink.clone();
+                    let token = oauth::acquire_token(&self.client, tenant, &*sink)
+                        .await
+                        .map_err(BcServerError::OAuth)?;
+                    *guard = Some(token);
+                }
+                let token = guard.as_ref().expect("token populated above");
                 Ok(request.bearer_auth(token))
             }
         }
     }
+}
+
+/// Maximum number of bytes to buffer from a non-200 (error) response body
+/// before truncating. `sanitize_error_body` ultimately trims to 512 bytes for
+/// display, but without an up-front cap a malicious or misbehaving BC server
+/// could stream a multi-gigabyte error body that `response.text()` would
+/// buffer entirely into memory first (F-OPEN-014).
+const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024; // 64 KiB — far more than any real error page
+
+/// Read an error response body, refusing to buffer more than
+/// `MAX_ERROR_BODY_BYTES`, then scrub/truncate it via `sanitize_error_body`.
+///
+/// Mirrors the `read_json_body_capped` hardening pattern in `bc_client`:
+/// a body whose advertised `Content-Length` exceeds the cap (or that omits
+/// the header entirely) is not buffered at all, since `reqwest`'s default
+/// `text()`/`bytes()` would otherwise pull the whole body into memory. A
+/// server that lies about a small `Content-Length` and then streams a huge
+/// body is still bounded by the post-read size re-check (F-OPEN-014).
+async fn read_error_body_capped(response: reqwest::Response) -> String {
+    match response.content_length() {
+        Some(len) if len <= MAX_ERROR_BODY_BYTES => {
+            let bytes = match response.bytes().await {
+                Ok(b) => b,
+                Err(_) => return String::new(),
+            };
+            // Defend against a lied Content-Length: only retain the cap.
+            let end = (MAX_ERROR_BODY_BYTES as usize).min(bytes.len());
+            crate::bc_client::sanitize_error_body(&String::from_utf8_lossy(&bytes[..end]))
+        }
+        Some(len) => crate::bc_client::sanitize_error_body(&format!(
+            "<error body {len} bytes exceeds {MAX_ERROR_BODY_BYTES} byte cap — not read>"
+        )),
+        None => {
+            crate::bc_client::sanitize_error_body("<error body has no Content-Length — not read>")
+        }
+    }
+}
+
+/// Build a safe `.app` filename from a dependency's publisher and name.
+///
+/// Publisher/name come from `app.json`, which can be authored or corrupted by
+/// third parties. Path separators and parent-directory components in those
+/// fields would otherwise let `dest.join(filename)` escape the destination
+/// directory (`../../evil`, `..\\pwned`, absolute paths, drive letters). We
+/// replace every character that isn't ASCII-alphanumeric, `.`, `-` or `_`
+/// with `_`, and additionally collapse any `..` sequence so no parent-dir
+/// component can survive (F-OPEN-015).
+fn package_filename(publisher: &str, name: &str) -> String {
+    format!(
+        "{}_{}.app",
+        sanitize_path_component(publisher),
+        sanitize_path_component(name)
+    )
+}
+
+/// Sanitize a single filename component: keep only ASCII alphanumerics and
+/// `.`, `-`, `_`; map everything else (including `/`, `\\`, `:`) to `_`; then
+/// neutralise any remaining `..` so the result can never be a parent-dir ref.
+fn sanitize_path_component(input: &str) -> String {
+    let mut out: String = input
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // `..` can only appear via retained dots; collapse it so no component is a
+    // parent-directory reference even after the char-class filter above.
+    while out.contains("..") {
+        out = out.replace("..", "_");
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -267,18 +367,46 @@ mod tests {
 
     #[test]
     fn test_app_filename() {
-        let dep = AppDependency {
-            id: "63ca2034-0ab3-4d4b-be0b-52cd8f9e8e85".into(),
-            name: "System Application".into(),
-            publisher: "Microsoft".into(),
-            version: "26.5.0.0".into(),
-        };
-        let filename = format!(
-            "{}_{}.app",
-            dep.publisher.replace(' ', "_"),
-            dep.name.replace(' ', "_")
-        );
+        let filename = package_filename("Microsoft", "System Application");
         assert_eq!(filename, "Microsoft_System_Application.app");
+    }
+
+    #[test]
+    fn test_filename_rejects_path_traversal() {
+        // Parent-directory components and path separators in publisher/name
+        // must not survive into the filename (F-OPEN-015).
+        let filename = package_filename("../../evil", "..\\pwned");
+        assert!(!filename.contains(".."), "got {filename}");
+        assert!(!filename.contains('/'), "got {filename}");
+        assert!(!filename.contains('\\'), "got {filename}");
+        assert!(filename.ends_with(".app"));
+
+        // The joined path stays inside the destination directory.
+        let dest = Path::new("/tmp/alpackages");
+        let joined = dest.join(&filename);
+        assert!(
+            joined.starts_with(dest),
+            "filename escaped dest: {}",
+            joined.display()
+        );
+        // No `..` component should appear in the joined path.
+        assert!(
+            !joined
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir)),
+            "joined path has a ParentDir component: {}",
+            joined.display()
+        );
+    }
+
+    #[test]
+    fn test_sanitize_path_component_keeps_safe_chars() {
+        assert_eq!(sanitize_path_component("Foo.Bar-Baz_1"), "Foo.Bar-Baz_1");
+        assert_eq!(sanitize_path_component("a/b\\c:d"), "a_b_c_d");
+        assert_eq!(sanitize_path_component(".."), "_");
+        assert_eq!(sanitize_path_component(""), "_");
+        // A drive-letter style prefix is neutralised.
+        assert_eq!(sanitize_path_component("C:\\x"), "C__x");
     }
 
     #[test]
@@ -287,5 +415,29 @@ mod tests {
         let _u = AuthMethod::UserPassword;
         let _w = AuthMethod::Windows;
         let _a = AuthMethod::AAD;
+    }
+
+    #[tokio::test]
+    async fn test_reset_cached_token_clears_in_memory_token() {
+        // F-OPEN-013: a 401/403 must be able to forget the session-level
+        // in-memory token so concurrent downloads re-authenticate instead of
+        // re-using the dead token. With the old `OnceCell` this was
+        // impossible. Here we seed the cache and verify the reset clears it.
+        let client = BcServerClient::new(
+            AuthMethod::AAD,
+            Some("contoso".into()),
+            Arc::new(|_| {}),
+            false,
+        )
+        .expect("client builds");
+
+        *client.cached_token.write().await = Some("stale-token".into());
+        assert!(client.cached_token.read().await.is_some());
+
+        client.reset_cached_token().await;
+        assert!(
+            client.cached_token.read().await.is_none(),
+            "reset_cached_token must clear the in-memory token"
+        );
     }
 }
