@@ -224,14 +224,24 @@ pub(super) fn dispatch_inlay_hints(
     let Some(uri) = extract_uri(params) else {
         return invalid_params(id);
     };
-    let start_line = params
-        .get("startLine")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-    let end_line = params
-        .get("endLine")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(u32::MAX as u64) as u32;
+    // Cap to u32::MAX to prevent silent truncation of attacker-controlled
+    // line values (matches extract_position in mod.rs). An out-of-range
+    // startLine/endLine is rejected with INVALID_PARAMS rather than wrapping
+    // to a nonsensical line number.
+    let start_line = match params.get("startLine") {
+        None => 0,
+        Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+            Some(n) => n,
+            None => return invalid_params(id),
+        },
+    };
+    let end_line = match params.get("endLine") {
+        None => u32::MAX,
+        Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+            Some(n) => n,
+            None => return invalid_params(id),
+        },
+    };
     let range = crate::queries::Range {
         start: crate::queries::Position {
             line: start_line,
@@ -743,5 +753,61 @@ mod tests {
             let _: crate::symbols::SymbolEntry = serde_json::from_value(json)
                 .unwrap_or_else(|e| panic!("kind {k:?} must deserialize: {e}"));
         }
+    }
+
+    /// An out-of-range `startLine` (> u32::MAX) must be rejected with
+    /// INVALID_PARAMS rather than silently truncated via `as u32`. Mirrors the
+    /// hardening verified by `extract_position_rejects_overflow` in mod.rs.
+    #[test]
+    fn dispatch_inlay_hints_rejects_overflow_start_line() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_inlay_hints(
+            &ws,
+            7,
+            &serde_json::json!({
+                "uri": "file:///tmp/x.al",
+                "startLine": (u32::MAX as u64) + 1,
+                "endLine": 10
+            }),
+        );
+        let err = resp
+            .error
+            .expect("expected INVALID_PARAMS for overflow start");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(resp.result.is_none());
+    }
+
+    /// An out-of-range `endLine` must likewise be rejected, not wrapped.
+    #[test]
+    fn dispatch_inlay_hints_rejects_overflow_end_line() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_inlay_hints(
+            &ws,
+            8,
+            &serde_json::json!({
+                "uri": "file:///tmp/x.al",
+                "startLine": 0,
+                "endLine": (u32::MAX as u64) + 5
+            }),
+        );
+        let err = resp
+            .error
+            .expect("expected INVALID_PARAMS for overflow end");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(resp.result.is_none());
+    }
+
+    /// Absent line params default to the full-document range (0..u32::MAX) and
+    /// succeed — no document is open so the hints list is simply empty.
+    #[test]
+    fn dispatch_inlay_hints_defaults_lines_when_absent() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_inlay_hints(&ws, 9, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
+        assert!(
+            resp.error.is_none(),
+            "absent lines must default, not error: {:?}",
+            resp.error
+        );
+        assert_eq!(resp.result, Some(serde_json::json!([])));
     }
 }

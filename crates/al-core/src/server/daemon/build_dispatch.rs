@@ -7,8 +7,8 @@ use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
 use super::{
-    ensure_document, file_not_found, file_uri_from_params, invalid_params, lint_diag_to_json,
-    require_document_text, rpc_error,
+    ensure_document, extract_i32, file_not_found, file_uri_from_params, invalid_params,
+    lint_diag_to_json, require_document_text, rpc_error,
 };
 
 const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
@@ -2913,7 +2913,17 @@ pub(super) fn dispatch_generate(
         .get("kind")
         .and_then(|v| v.as_str())
         .unwrap_or("page");
-    let object_id = params.get("id").and_then(|v| v.as_i64()).unwrap_or(50100) as i32;
+    // Validate the object ID without silent truncation. `as i32` would wrap an
+    // out-of-range wire value (e.g. i32::MAX + 1 → i32::MIN), which would then
+    // bypass the object-ID conflict check below against a different ID than the
+    // caller intended. Reject out-of-range IDs with INVALID_PARAMS instead.
+    let object_id = match params.get("id") {
+        None => 50100,
+        Some(_) => match extract_i32(params, "id") {
+            Some(n) => n,
+            None => return invalid_params(id),
+        },
+    };
     let table_name = params.get("table").and_then(|v| v.as_str()).unwrap_or("");
 
     // Object-ID conflict check (F-OPEN-033). The default of 50100 makes it
@@ -3797,6 +3807,75 @@ mod p1_5_tests {
                 e.message
             );
         }
+    }
+
+    #[test]
+    fn dispatch_generate_rejects_out_of_range_object_id() {
+        // Negative regression: an `id` beyond the i32 range must be rejected
+        // with INVALID_PARAMS rather than silently wrapping via `as i32`.
+        // i32::MAX + 1 would wrap to i32::MIN under the old cast, which would
+        // then perform the conflict check against the wrong ID. Seed a Page at
+        // the wrapped value to prove the truncated lookup is never reached.
+        let ws = empty_ws();
+        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Page,
+            id: i32::MIN,
+            name: "Wrapped Page".to_string(),
+            ..Default::default()
+        }]);
+
+        let resp = dispatch_generate(
+            &ws,
+            44,
+            &serde_json::json!({
+                "kind": "page",
+                "id": (i32::MAX as i64) + 1,
+                "name": "Demo",
+                "table": "Customer"
+            }),
+        );
+
+        let err = resp
+            .error
+            .expect("expected error response for out-of-range id");
+        assert_eq!(err.code, al_protocol::jsonrpc::error_codes::INVALID_PARAMS);
+        // Must be the generic invalid-params message, NOT the collision message
+        // for the wrapped i32::MIN value — proving no silent truncation.
+        assert!(
+            !err.message.contains("Wrapped Page"),
+            "out-of-range id must be rejected before the conflict check, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn dispatch_generate_defaults_object_id_when_absent() {
+        // Positive: omitting `id` falls back to the 50100 default and runs the
+        // conflict check against that value.
+        let ws = empty_ws();
+        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Page,
+            id: 50100,
+            name: "Default Page".to_string(),
+            ..Default::default()
+        }]);
+
+        let resp = dispatch_generate(
+            &ws,
+            45,
+            &serde_json::json!({
+                "kind": "page",
+                "name": "Demo",
+                "table": "Customer"
+            }),
+        );
+
+        let err = resp.error.expect("expected collision at default id 50100");
+        assert!(
+            err.message.contains("50100") && err.message.contains("Default Page"),
+            "default id 50100 must be used for the conflict check: {}",
+            err.message
+        );
     }
 
     // --- dispatch_tests_run_batch --------------------------------------------
