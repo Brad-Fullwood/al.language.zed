@@ -413,11 +413,18 @@ impl InsightGraph {
             for field in &entry.fields {
                 for prop in &field.properties {
                     if prop.name.eq_ignore_ascii_case("TableRelation") && !prop.value.is_empty() {
-                        // Extract table name from value (format: "Table Name" or "\"Table Name\"")
-                        let related_table = prop.value.trim_matches('"').to_string();
-                        if related_table.is_empty() {
-                            continue;
-                        }
+                        // Extract the table name from the TableRelation value.
+                        // AL syntax supports trailing WHERE/FIELD/IF clauses and
+                        // dotted field references (e.g. `"Item" WHERE(...)`), so a
+                        // naive quote-strip would yield a bogus table name. Reuse
+                        // the canonical parser from `analysis`.
+                        let related_table =
+                            match crate::insight::analysis::extract_table_relation_table(
+                                &prop.value,
+                            ) {
+                                Some(t) => t.to_string(),
+                                None => continue,
+                            };
 
                         let src_key = NodeKey::Object(entry.kind, entry.name.to_lowercase());
                         let target_key =
@@ -1037,6 +1044,97 @@ mod tests {
 
         let edge = g.graph.find_edge(sh_idx, cust_idx).unwrap();
         assert_eq!(*g.graph.edge_weight(edge).unwrap(), InsightEdge::RelatesTo);
+    }
+
+    #[test]
+    fn table_relation_edges_with_clauses() {
+        // Regression: real AL TableRelation values carry trailing WHERE/FIELD/IF
+        // clauses and may be quoted. The edge target must be the bare table name
+        // ("Item"), not the whole filter expression.
+        use crate::symbols::{FieldSymbol, PropertyValue};
+
+        let index = SymbolIndex::new();
+
+        let item = SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 27,
+            name: "Item".to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "TestPkg".to_string(),
+            methods: Vec::new(),
+            fields: vec![FieldSymbol {
+                id: 1,
+                name: "No.".to_string(),
+                type_name: "Code".to_string(),
+                properties: vec![],
+            }],
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        };
+
+        // Sales Line with a quoted TableRelation that includes a WHERE clause.
+        let sales_line = SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 37,
+            name: "Sales Line".to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "TestPkg".to_string(),
+            methods: Vec::new(),
+            fields: vec![FieldSymbol {
+                id: 2,
+                name: "No.".to_string(),
+                type_name: "Code".to_string(),
+                properties: vec![PropertyValue {
+                    name: "TableRelation".to_string(),
+                    value: "\"Item\" WHERE(\"Type\" = CONST(Inventory))".to_string(),
+                }],
+            }],
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        };
+
+        index.add_entries(&[item, sales_line]);
+
+        let mut g = InsightGraph::new();
+        g.build_from_index(&index);
+
+        // The edge must point at the "item" table node, which only exists if the
+        // WHERE clause was correctly stripped from the relation value.
+        let sl_idx = g
+            .get_node(&NodeKey::Object(
+                ObjectKind::Table,
+                "sales line".to_string(),
+            ))
+            .unwrap();
+        let item_idx = g
+            .get_node(&NodeKey::Object(ObjectKind::Table, "item".to_string()))
+            .unwrap();
+
+        let edge = g
+            .graph
+            .find_edge(sl_idx, item_idx)
+            .expect("RelatesTo edge to Item table should exist");
+        assert_eq!(*g.graph.edge_weight(edge).unwrap(), InsightEdge::RelatesTo);
+
+        // And there must be no spurious node named after the full filter text.
+        assert!(
+            g.get_node(&NodeKey::Object(
+                ObjectKind::Table,
+                "item\" where(\"type\" = const(inventory))".to_string(),
+            ))
+            .is_none(),
+            "filter expression must not leak into a table node key"
+        );
     }
 
     #[test]
