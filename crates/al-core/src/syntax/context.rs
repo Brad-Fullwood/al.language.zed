@@ -134,18 +134,21 @@ pub fn extract_last_identifier(s: &str) -> &str {
             return &stripped[start + 1..];
         }
     }
-    // Find last word boundary
-    let bytes = s.as_bytes();
-    let end = bytes.len();
-    // Walk backwards to find identifier start
-    for i in (0..bytes.len()).rev() {
-        let ch = bytes[i] as char;
-        if ch.is_alphanumeric() || ch == '_' {
-            continue;
+    // Find last word boundary. Iterate by character (not raw byte) so that
+    // multi-byte UTF-8 identifiers (e.g. "Mañana", "Città", "München") are
+    // handled correctly — casting a continuation byte to `char` would otherwise
+    // misclassify it and truncate the identifier.
+    let mut last_boundary_end = None;
+    for (byte_pos, ch) in s.char_indices() {
+        if !(ch.is_alphanumeric() || ch == '_') {
+            // Position just past this non-identifier char.
+            last_boundary_end = Some(byte_pos + ch.len_utf8());
         }
-        return &s[i + 1..end];
     }
-    &s[..end]
+    match last_boundary_end {
+        Some(pos) => &s[pos..],
+        None => s,
+    }
 }
 
 /// Find the function name and active parameter index from text before cursor.
@@ -292,6 +295,23 @@ mod tests {
         assert_eq!(extract_last_identifier("Rec"), "Rec");
         assert_eq!(extract_last_identifier("x.Rec"), "Rec");
         assert_eq!(extract_last_identifier("  MyVar  "), "MyVar");
+    }
+
+    #[test]
+    fn test_extract_last_identifier_unicode() {
+        // Multi-byte UTF-8 identifiers must be returned intact. A byte-by-byte
+        // scan would misclassify UTF-8 continuation bytes and truncate these.
+        assert_eq!(extract_last_identifier("Café"), "Café");
+        assert_eq!(extract_last_identifier("Mañana"), "Mañana");
+        assert_eq!(extract_last_identifier("Rec.Città"), "Città");
+        assert_eq!(extract_last_identifier("x.München"), "München");
+    }
+
+    #[test]
+    fn test_find_call_context_unicode_identifier() {
+        // Accented function/method names must be extracted correctly.
+        let result = find_call_context("Table.Mañana(");
+        assert_eq!(result, Some(("Mañana", 0)));
     }
 
     #[test]
