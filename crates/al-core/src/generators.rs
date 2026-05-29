@@ -153,6 +153,12 @@ pub fn generate_test(config: &GenerateTestConfig) -> String {
         default_test_stub()
     };
 
+    // Escape the user-supplied test name before interpolating it into an AL
+    // quoted identifier. Without this, a name containing `"` would terminate
+    // the identifier early and produce unparseable AL (same class of bug fixed
+    // for generate_page / generate_report).
+    let test_name = crate::permissions::al_escape_name(&config.test_name);
+
     format!(
         r#"codeunit {id} "{name}"
 {{
@@ -164,7 +170,7 @@ pub fn generate_test(config: &GenerateTestConfig) -> String {
 }}
 "#,
         id = config.object_id,
-        name = config.test_name,
+        name = test_name,
         stubs = test_stubs,
     )
 }
@@ -199,10 +205,14 @@ fn generate_field_controls(fields: &[&FieldSymbol]) -> String {
         .iter()
         .map(|f| {
             let var_name = al_identifier(&f.name);
+            // Escape the field name before interpolating into the quoted
+            // `Rec."..."` reference — an embedded `"` would otherwise break
+            // the generated control.
+            let field_name = crate::permissions::al_escape_name(&f.name);
             format!(
                 "                field({var}; Rec.\"{name}\")\n                {{\n                    ApplicationArea = All;\n                }}",
                 var = var_name,
-                name = f.name,
+                name = field_name,
             )
         })
         .collect::<Vec<_>>()
@@ -217,10 +227,14 @@ fn generate_report_columns(fields: &[&FieldSymbol]) -> String {
         .iter()
         .map(|f| {
             let var_name = al_identifier(&f.name);
+            // Escape the field name before interpolating into the quoted
+            // column identifier — an embedded `"` would otherwise break the
+            // generated column.
+            let field_name = crate::permissions::al_escape_name(&f.name);
             format!(
                 "            column({var}; \"{name}\")\n            {{\n            }}",
                 var = var_name,
-                name = f.name,
+                name = field_name,
             )
         })
         .collect::<Vec<_>>()
@@ -505,6 +519,59 @@ mod tests {
         assert!(
             !in_identifier.contains('"') || in_identifier.is_empty(),
             "page-name identifier body should contain no bare `\"`"
+        );
+    }
+
+    #[test]
+    fn generate_test_escapes_double_quote_in_test_name() {
+        // A test codeunit name containing a `"` must be emitted as `""` so the
+        // generated object declaration parses. Pre-fix the bare quote
+        // terminated the identifier early.
+        let config = GenerateTestConfig {
+            object_id: 50100,
+            test_name: r#"My "Test" Suite"#.to_string(),
+            subject: None,
+        };
+        let out = generate_test(&config);
+        assert!(
+            out.contains(r#"codeunit 50100 "My ""Test"" Suite""#),
+            "test name must escape `\"` → `\"\"`, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn generate_page_escapes_double_quote_in_field_name() {
+        // A field name containing a `"` must be doubled inside the
+        // `Rec."..."` control reference, otherwise the page control is
+        // unparseable.
+        let table = make_table("Customer", vec![make_field(1, r#"Bad"Field"#, "Text[100]")]);
+        let config = GeneratePageConfig {
+            object_id: 50100,
+            page_name: "Customer List".to_string(),
+            page_type: PageType::List,
+            source_table: table,
+        };
+        let out = generate_page(&config);
+        assert!(
+            out.contains(r#"Rec."Bad""Field""#),
+            "field name must escape `\"` → `\"\"`, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn generate_report_escapes_double_quote_in_field_name() {
+        // A field name containing a `"` must be doubled inside the report
+        // column identifier.
+        let table = make_table("Customer", vec![make_field(1, r#"Bad"Field"#, "Text[100]")]);
+        let config = GenerateReportConfig {
+            object_id: 50100,
+            report_name: "Customer Report".to_string(),
+            source_table: table,
+        };
+        let out = generate_report(&config);
+        assert!(
+            out.contains(r#"; "Bad""Field")"#),
+            "report column field name must escape `\"` → `\"\"`, got:\n{out}"
         );
     }
 
