@@ -13,7 +13,6 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-042 | P3 | No per-document size cap — a 10 GB open file consumes memory unbounded |
 | F-OPEN-043 | P3 | Tree-sitter parse-tree cache has no eviction (LRU / idle sweep) |
 | F-OPEN-046 | P3 | TUI daemon-socket reads have no timeout (only Ctrl+C escapes a stuck query) |
-| F-OPEN-060 | P2 | `config.rs::merge` path fields not canonicalised at boundary (per-consumer canonicalisation still pending) |
 | F-OPEN-063 | P3 | Inconsistent `config.rs` `null` semantics — most fields can't be reset to default via `null` |
 | F-OPEN-065 | P2 | No daemon `$/cancelRequest` support; abandoned long-running endpoints still pay full cost / pin slots |
 | F-OPEN-081 | P3 | `InsightGraph` public API leaks `petgraph::NodeIndex`; wrap in a newtype to allow backend swap |
@@ -79,6 +78,7 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-057 | P2 | fixed | `compile_project` canonicalises project_root (iteration 44) |
 | F-OPEN-058 | P2 | fixed | alc `/out:` via per-build tmp dir + rename on success (iteration 55) |
 | F-OPEN-059 | P2 | documented | `AL_TOOL_PATH` honoured without provenance — accepted risk (iteration 53) |
+| F-OPEN-060 | P2 | wontfix | `config.rs::merge` path fields not canonicalised at boundary (per-consumer canonicalisation still pending) (iteration 92) — config path fields have zero consumers workspace-wide (parsed-but-unwired, config.rs:28-30); canonicalise-in-merge() is wrong (no project-root context, canonicalize() fails on not-yet-existing paths like packageCachePath). The build site already canonicalises at its boundary (F-FIX-079, build.rs:111). Each future consumer canonicalises where existence is meaningful. |
 | F-OPEN-061 | P3 | fixed | `AlConfig::load` routes through merge() to report unknown keys (iteration 40) |
 | F-OPEN-062 | P3 | fixed | Four config-merge sites push bad input into unknown_keys (iteration 41) |
 | F-OPEN-064 | P3 | fixed | BC fallback `26.0.0.0` lifted to `CURRENT_BC_MAJOR_FALLBACK` const (iteration 34) |
