@@ -1495,6 +1495,19 @@ Cleared the entire new-confirmed-findings batch (one P1 correctness bug, two P2,
 
 Workspace test count: 2050 → 2053 (+3 regression tests). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
 
+### Iteration 92 (2026-05-29)
+
+Focused backlog drain: one TOCTOU correctness fix, one triage disposition, and two test-coverage closures, each committed individually.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-054 | P2 | **Fixed.** `did_change` applied the edit via `apply_changes` then re-read with a separate `get_text`, so an interleaved concurrent `did_change` could mutate between the two calls and hand `schedule_diagnostics` a version-skewed snapshot (text one keystroke ahead of its version). Added `DocumentStore::apply_changes_and_get`, which mutates and returns the resulting `(Arc<String>, i32)` from inside the same `get_mut` write borrow; `apply_changes` is retained as a thin wrapper. `did_change` now feeds the atomically-captured text into `schedule_diagnostics`. +2 tests. |
+| F-OPEN-060 | P2 | **Wontfix.** Canonicalising the `config.rs` path fields at the `merge()` boundary is the wrong boundary and would be incorrect: `merge()` has no project-root context for relative paths, `std::fs::canonicalize()` errors on not-yet-existing paths (silently dropping valid settings), and it would break verbatim-string tests. The fields have zero consumers today (parsed-but-unwired), so no exposure exists; the architecturally-correct per-consumer canonicalisation (as at `build.rs:111`, F-FIX-079) belongs at each future consumer's boundary. No code change. |
+| F-OPEN-135 | P2 | **Fixed (test seam).** The timeout-cooldown `try_lock` race in `SemanticBridge::call` was untestable because a `SemanticBridge` cannot be constructed without loading the CLR. Extracted the pure gate decision into a free `cooldown_gate<T>(…) -> CooldownDecision` generic over the locked type (byte-for-byte behaviour-neutral). +6 deterministic tests driving free/held/poisoned `try_lock` states with a plain `Mutex<()>`, no CLR. |
+| F-OPEN-136 | P2 | **Fixed (test).** Closed the test-coverage gap on the private `signalr_to_bc_event` conversion in `dap/bc_debug.rs` (previously only the FatalError path was covered). +7 tests exercising every match arm (Break, OnDetachedFromConnection terminate-arg parsing/defaulting, internal-target drop, unknown-target passthrough, missing-target drop), production code untouched. |
+
+Workspace test count: 2053 → 2068 (+15: F-OPEN-054 +2, F-OPEN-135 +6, F-OPEN-136 +7). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
+
 
 
 | Phase | Status | Output |
