@@ -426,6 +426,55 @@ pub(crate) fn resolve_expression_type(
     result
 }
 
+/// Merged members of one object (base plus its extensions), tagged with the
+/// owning package for diagnostic logging.
+struct ComposedMembers {
+    package: String,
+    methods: Vec<crate::symbols::MethodSymbol>,
+    fields: Vec<crate::symbols::FieldSymbol>,
+    enum_values: Vec<crate::symbols::EnumValueSymbol>,
+}
+
+/// Composed (base + extension) members of every object sharing `name`.
+///
+/// `get_by_name` returns only the entries indexed under `name` itself, which
+/// excludes the extension objects that add fields/methods/enum-values (they
+/// are indexed under their own names and tracked via the `extends` relation).
+/// For each non-extension entry we therefore pull the composed view from
+/// `get_composed_cached`, which merges the base with all applicable
+/// extensions, so callers see extension-added members. Extension entries that
+/// happen to share the name are returned with their raw members (composition
+/// would return `None` for them).
+fn composed_members_for(workspace: &Workspace, name: &str) -> Vec<ComposedMembers> {
+    let mut out = Vec::new();
+    for entry in workspace.symbols.get_by_name(name) {
+        if entry.kind.is_extension() {
+            out.push(ComposedMembers {
+                package: entry.package.clone(),
+                methods: entry.methods.clone(),
+                fields: entry.fields.clone(),
+                enum_values: entry.enum_values.clone(),
+            });
+            continue;
+        }
+        match workspace.symbols.get_composed_cached(entry.kind, name) {
+            Some(composed) => out.push(ComposedMembers {
+                package: entry.package.clone(),
+                methods: composed.all_methods.clone(),
+                fields: composed.all_fields.clone(),
+                enum_values: composed.all_enum_values.clone(),
+            }),
+            None => out.push(ComposedMembers {
+                package: entry.package.clone(),
+                methods: entry.methods.clone(),
+                fields: entry.fields.clone(),
+                enum_values: entry.enum_values.clone(),
+            }),
+        }
+    }
+    out
+}
+
 pub(crate) fn resolve_member(
     workspace: &Workspace,
     uri: &Url,
@@ -453,14 +502,20 @@ pub(crate) fn resolve_member(
             }
         }
 
-        for entry in workspace.symbols.get_by_name(subtype) {
-            for method in &entry.methods {
+        for members in composed_members_for(workspace, subtype) {
+            let ComposedMembers {
+                package,
+                methods,
+                fields,
+                enum_values,
+            } = &members;
+            for method in methods {
                 if method.name.eq_ignore_ascii_case(target_name) {
                     tracing::debug!(
                         member = %target_name,
                         result = "Procedure",
                         source = "symbol_index",
-                        package = %entry.package,
+                        package = %package,
                         "resolve_member: found method in symbol index"
                     );
                     return Some(ResolvedMember {
@@ -481,13 +536,13 @@ pub(crate) fn resolve_member(
                 }
             }
 
-            for field in &entry.fields {
+            for field in fields {
                 if field.name.eq_ignore_ascii_case(target_name) {
                     tracing::debug!(
                         member = %target_name,
                         result = "Field",
                         source = "symbol_index",
-                        package = %entry.package,
+                        package = %package,
                         "resolve_member: found field in symbol index"
                     );
                     return Some(ResolvedMember {
@@ -500,20 +555,20 @@ pub(crate) fn resolve_member(
                 }
             }
 
-            for value in &entry.enum_values {
+            for value in enum_values {
                 if value.name.eq_ignore_ascii_case(target_name) {
                     tracing::debug!(
                         member = %target_name,
                         result = "EnumValue",
                         source = "symbol_index",
-                        package = %entry.package,
+                        package = %package,
                         "resolve_member: found enum value in symbol index"
                     );
                     return Some(ResolvedMember {
                         name: value.name.clone(),
                         type_info: Some(ResolvedType {
                             type_name: "Enum".to_string(),
-                            type_subtype: Some(entry.name.clone()),
+                            type_subtype: Some(subtype.to_string()),
                         }),
 
                         uri: None,
@@ -872,8 +927,8 @@ pub(crate) fn completion_items_for_receiver(
             }
         }
 
-        for entry in workspace.symbols.get_by_name(subtype) {
-            for method in &entry.methods {
+        for members in composed_members_for(workspace, subtype) {
+            for method in &members.methods {
                 if method.is_local {
                     continue;
                 }
@@ -891,7 +946,7 @@ pub(crate) fn completion_items_for_receiver(
                     sort_text: None,
                 });
             }
-            for field in &entry.fields {
+            for field in &members.fields {
                 index_fields += 1;
                 items.push(CompletionCandidate {
                     label: field.name.clone(),
@@ -991,25 +1046,38 @@ pub(crate) fn enum_completion_items(
         }
     }
 
-    // Check package symbol index
-    for entry in workspace.symbols.get_by_name(enum_name) {
-        if !matches!(
-            entry.kind,
-            crate::symbols::ObjectKind::Enum | crate::symbols::ObjectKind::EnumExtension
-        ) {
-            continue;
+    // Check package symbol index. Use the composed view so values added by
+    // EnumExtension objects (indexed under their own names) are included.
+    let mut composed_enum_values: Vec<crate::symbols::EnumValueSymbol> = Vec::new();
+    if let Some(composed) = workspace
+        .symbols
+        .get_composed_cached(crate::symbols::ObjectKind::Enum, enum_name)
+    {
+        composed_enum_values = composed.all_enum_values.clone();
+    }
+    // Fall back to (or add) raw entries for any matching EnumExtension that
+    // shares the queried name and isn't covered by a base enum composition.
+    if composed_enum_values.is_empty() {
+        for entry in workspace.symbols.get_by_name(enum_name) {
+            if !matches!(
+                entry.kind,
+                crate::symbols::ObjectKind::Enum | crate::symbols::ObjectKind::EnumExtension
+            ) {
+                continue;
+            }
+            composed_enum_values.extend(entry.enum_values.iter().cloned());
         }
-        for value in &entry.enum_values {
-            index_values += 1;
-            items.push(CompletionCandidate {
-                label: value.name.clone(),
-                kind: CompletionCandidateKind::EnumMember,
-                detail: Some(format!("value({})", value.ordinal)),
-                documentation: None,
-                insert_text: None,
-                sort_text: None,
-            });
-        }
+    }
+    for value in &composed_enum_values {
+        index_values += 1;
+        items.push(CompletionCandidate {
+            label: value.name.clone(),
+            kind: CompletionCandidateKind::EnumMember,
+            detail: Some(format!("value({})", value.ordinal)),
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
+        });
     }
 
     // Check builtin types for system enums (e.g., TextEncoding, WebServiceActionResultCode)
@@ -1565,5 +1633,212 @@ mod tests {
         let result = format_xml_doc(xml);
         assert!(result.contains("Compute total."));
         assert!(result.contains("Values are rounded."));
+    }
+
+    // ------------------------------------------------------------------
+    // Composition-aware resolution (extension-added members).
+    // ------------------------------------------------------------------
+
+    use crate::symbols::{EnumValueSymbol, FieldSymbol, MethodSymbol, ObjectKind, SymbolEntry};
+    use crate::workspace::Workspace;
+
+    fn table_entry(id: i32, name: &str, fields: Vec<FieldSymbol>) -> SymbolEntry {
+        SymbolEntry {
+            kind: ObjectKind::Table,
+            id,
+            name: name.to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "Base".to_string(),
+            methods: Vec::new(),
+            fields,
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        }
+    }
+
+    fn table_ext_entry(
+        id: i32,
+        name: &str,
+        extends: &str,
+        fields: Vec<FieldSymbol>,
+        methods: Vec<MethodSymbol>,
+    ) -> SymbolEntry {
+        SymbolEntry {
+            kind: ObjectKind::TableExtension,
+            id,
+            name: name.to_string(),
+            extends: Some(extends.to_string()),
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "Ext".to_string(),
+            methods,
+            fields,
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        }
+    }
+
+    fn field(id: i32, name: &str, type_name: &str) -> FieldSymbol {
+        FieldSymbol {
+            id,
+            name: name.to_string(),
+            type_name: type_name.to_string(),
+            properties: vec![],
+        }
+    }
+
+    fn enum_entry(id: i32, name: &str, values: Vec<EnumValueSymbol>) -> SymbolEntry {
+        SymbolEntry {
+            kind: ObjectKind::Enum,
+            id,
+            name: name.to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "Base".to_string(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: values,
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        }
+    }
+
+    fn enum_ext_entry(
+        id: i32,
+        name: &str,
+        extends: &str,
+        values: Vec<EnumValueSymbol>,
+    ) -> SymbolEntry {
+        SymbolEntry {
+            kind: ObjectKind::EnumExtension,
+            id,
+            name: name.to_string(),
+            extends: Some(extends.to_string()),
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "Ext".to_string(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: values,
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        }
+    }
+
+    fn enum_value(name: &str, ordinal: i32) -> EnumValueSymbol {
+        EnumValueSymbol {
+            name: name.to_string(),
+            ordinal,
+        }
+    }
+
+    fn workspace_with(entries: Vec<SymbolEntry>) -> Workspace {
+        let ws = Workspace::new();
+        ws.symbols.add_entries(&entries);
+        ws
+    }
+
+    #[test]
+    fn resolve_member_finds_extension_added_field() {
+        let ws = workspace_with(vec![
+            table_entry(18, "Customer", vec![field(1, "No.", "Code")]),
+            table_ext_entry(
+                50100,
+                "Cust Ext",
+                "Customer",
+                vec![field(50100, "Loyalty Points", "Integer")],
+                vec![MethodSymbol {
+                    name: "AddPoints".into(),
+                    parameters: Vec::new(),
+                    return_type: None,
+                    attributes: Vec::new(),
+                    is_local: false,
+                }],
+            ),
+        ]);
+        let uri = Url::parse("file:///x.al").unwrap();
+        let receiver = ResolvedType {
+            type_name: "Record".to_string(),
+            type_subtype: Some("Customer".to_string()),
+        };
+
+        let field = resolve_member(&ws, &uri, &receiver, "Loyalty Points")
+            .expect("extension-added field should resolve");
+        assert!(matches!(field.kind, ResolvedMemberKind::Field { .. }));
+
+        let method = resolve_member(&ws, &uri, &receiver, "AddPoints")
+            .expect("extension-added method should resolve");
+        assert!(matches!(method.kind, ResolvedMemberKind::Procedure { .. }));
+
+        // Base field still resolves.
+        assert!(resolve_member(&ws, &uri, &receiver, "No.").is_some());
+    }
+
+    #[test]
+    fn completion_items_include_extension_added_members() {
+        let ws = workspace_with(vec![
+            table_entry(18, "Customer", vec![field(1, "No.", "Code")]),
+            table_ext_entry(
+                50100,
+                "Cust Ext",
+                "Customer",
+                vec![field(50100, "Loyalty Points", "Integer")],
+                vec![MethodSymbol {
+                    name: "AddPoints".into(),
+                    parameters: Vec::new(),
+                    return_type: None,
+                    attributes: Vec::new(),
+                    is_local: false,
+                }],
+            ),
+        ]);
+        let receiver = ResolvedType {
+            type_name: "Record".to_string(),
+            type_subtype: Some("Customer".to_string()),
+        };
+
+        let items = completion_items_for_receiver(&ws, &receiver);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"No."), "base field present");
+        assert!(
+            labels.contains(&"Loyalty Points"),
+            "extension field present"
+        );
+        assert!(labels.contains(&"AddPoints"), "extension method present");
+    }
+
+    #[test]
+    fn enum_completion_items_include_extension_values() {
+        let ws = workspace_with(vec![
+            enum_entry(
+                50000,
+                "Color",
+                vec![enum_value("Red", 0), enum_value("Green", 1)],
+            ),
+            enum_ext_entry(50001, "Color Ext", "Color", vec![enum_value("Blue", 2)]),
+        ]);
+        let enum_type = ResolvedType {
+            type_name: "Enum".to_string(),
+            type_subtype: Some("Color".to_string()),
+        };
+
+        let items = enum_completion_items(&ws, &enum_type);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"Red"), "base value present");
+        assert!(labels.contains(&"Green"), "base value present");
+        assert!(labels.contains(&"Blue"), "extension value present");
     }
 }
