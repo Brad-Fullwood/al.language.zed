@@ -1508,6 +1508,22 @@ Focused backlog drain: one TOCTOU correctness fix, one triage disposition, and t
 
 Workspace test count: 2053 → 2068 (+15: F-OPEN-054 +2, F-OPEN-135 +6, F-OPEN-136 +7). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
 
+### Iteration 93 (2026-05-29)
+
+Cleared the full new-confirmed-findings batch: two P1 silent-integer-truncation bugs in the daemon RPC layer, three P2 correctness bugs, and the four paired test-gaps. Four logical code commits.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-155 | **P1** | **Fixed.** `dispatch_inlay_hints` cast `startLine`/`endLine` via `as u32` with no bounds check, so a client value > `u32::MAX` silently wrapped to a nonsensical line. Now mirrors `extract_position`: an out-of-range line returns `INVALID_PARAMS`, an absent one keeps its documented default (0 / `u32::MAX`). |
+| F-OPEN-156 | **P1** | **Fixed.** `dispatch_generate` cast the object `id` via `as i32`; an out-of-range value wrapped to a *different in-range* id and bypassed the object-ID conflict check (e.g. `i32::MAX+1` → `i32::MIN`). Now uses the `extract_i32` helper and returns `INVALID_PARAMS` on overflow; absent `id` keeps the 50100 default. |
+| F-OPEN-157 | P2 | **Fixed (test).** Added overflow-rejection + absent-default regression tests for `dispatch_inlay_hints` (`startLine`/`endLine` > `u32::MAX`), matching the rigour of `extract_position_rejects_overflow`. |
+| F-OPEN-158 | P2 | **Fixed (test).** Added overflow-rejection + absent-default regression tests for `dispatch_generate`'s object id, proving the truncated-id conflict-check bypass can no longer occur. |
+| F-OPEN-159 | P2 | **Fixed.** `apply_keyword_casing` treated the first quote of an AL `''` escape as a string terminator, desyncing the scanner so a following keyword could be mis-cased/skipped. Now mirrors `count_net_delimiters`'s `''`-as-content handling; +2 tests (closes the paired test-gap). |
+| F-OPEN-160 | P2 | **Fixed.** `compile_project` returned `AlError::BuildTimeout(0)` when a produced `.app` path had no file name — surfacing to clients as "alc compile timed out after 0 seconds". Now returns an `Io`(`InvalidInput`) error describing the real path failure. |
+| F-OPEN-161 | P2 | **Fixed.** `SemanticBridge::analyze()` serialised the caller-supplied `source` into the CLR call without the `check_text_size` guard that `type_at`/`completions_at` apply (diagnostics.rs feeds unsanitised editor text here). Added the guard; +1 test (closes the paired test-gap). |
+
+Workspace test count: 2068 → 2076 (+8 regression tests). All gates green (fmt, check, clippy `-D warnings`, full test suite, WASM build).
+
 
 
 | Phase | Status | Output |
