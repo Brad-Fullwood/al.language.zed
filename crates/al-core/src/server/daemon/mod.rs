@@ -5,6 +5,32 @@
 //! - Initializes a Workspace for the given project
 //! - Accepts JSON-RPC requests, routes to al-core queries
 //! - Auto-shuts down after 30 minutes of idle
+//!
+//! # Platform support
+//!
+//! The daemon transport is **Unix-only**: it binds an `AF_UNIX` socket
+//! (`tokio::net::UnixListener`) and its client (`al_protocol::client`,
+//! also `#[cfg(unix)]`) connects over `std::os::unix::net::UnixStream`.
+//! Windows has no equivalent here, so the socket-bound transport
+//! (`run_daemon`, `handle_connection`, the `SocketCleanup` guard) is
+//! gated behind `#[cfg(unix)]`. On Windows, [`run_daemon`] is a stub that
+//! returns an explanatory error.
+//!
+//! Crucially, the request-dispatch logic (`dispatch_request` and the
+//! `*_dispatch` submodules) and the framing helper (`read_bounded_line`)
+//! are **platform-independent** and compile everywhere — this is what lets
+//! the `al-lsp` binary build for `x86_64-pc-windows-msvc` so the Zed
+//! extension can ship a Windows asset while only LSP (`--stdio`) and DAP
+//! (`--dap`) modes are wired up there.
+
+// The request-dispatch machinery below (these submodules, `dispatch_request`,
+// and the `extract_*`/`require_*` helpers) is pure logic over `Workspace` and
+// compiles on every platform. It is, however, only *reachable* through the
+// Unix-only socket transport (`run_daemon` → `handle_connection`). On non-Unix
+// targets that transport is a stub, leaving this surface unreferenced, so we
+// allow dead code there rather than fragmenting every helper with `#[cfg]`.
+// `al-lsp` still ships on Windows for its portable LSP/DAP modes.
+#![cfg_attr(not(unix), allow(dead_code))]
 
 mod build_dispatch;
 mod debug_dispatch;
@@ -12,17 +38,25 @@ mod insight_dispatch;
 mod lsp_dispatch;
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Request, Response, RpcError};
+#[cfg(unix)]
 use al_protocol::socket_path;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncBufReadExt;
+#[cfg(unix)]
+use tokio::io::{AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixListener;
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::Notify;
+#[cfg(unix)]
+use tokio::sync::Semaphore;
 
 /// Process-start `Instant` used as the epoch for `last_activity` millis.
 ///
@@ -30,18 +64,22 @@ use tokio::sync::{Notify, Semaphore};
 /// base and store millis-since-base in `AtomicU64`. The base is initialised
 /// the first time `now_activity_ms` is called and lives for the process
 /// lifetime (lazy `OnceLock`).
+#[cfg(unix)]
 static DAEMON_EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 /// Millis since the daemon epoch — monotonic, atomic-storable.
+#[cfg(unix)]
 fn now_activity_ms() -> u64 {
     let epoch = DAEMON_EPOCH.get_or_init(Instant::now);
     Instant::now().duration_since(*epoch).as_millis() as u64
 }
 
 /// Global socket path for cleanup on exit.
+#[cfg(unix)]
 static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Clean up the socket file (called from signal handlers or shutdown).
+#[cfg(unix)]
 pub(crate) fn cleanup_socket() {
     if let Some(path) = SOCKET_PATH.get() {
         let _ = std::fs::remove_file(path);
@@ -50,21 +88,46 @@ pub(crate) fn cleanup_socket() {
 }
 
 /// RAII guard that cleans up the socket on drop.
+#[cfg(unix)]
 struct SocketCleanup;
 
+#[cfg(unix)]
 impl Drop for SocketCleanup {
     fn drop(&mut self) {
         cleanup_socket();
     }
 }
 
+#[cfg(unix)]
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+#[cfg(unix)]
 const MAX_CONNECTIONS: usize = 64;
+#[cfg(unix)]
 const ACCEPT_BACKOFF_START: Duration = Duration::from_millis(10);
+#[cfg(unix)]
 const ACCEPT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 
+/// Run the daemon server for a project (Windows stub).
+///
+/// The daemon's IPC transport is an `AF_UNIX` socket, which has no Windows
+/// equivalent here, and its only client (`al-explorer` via
+/// `al_protocol::client`) is itself `#[cfg(unix)]`. Rather than fail to
+/// compile, `al-lsp` builds on Windows with this stub so its portable LSP
+/// (`--stdio`) and DAP (`--dap`) modes work; daemon mode returns a clear
+/// error if invoked. See the module docs and `ecosystem-roadmap.md` item 8.
+#[cfg(not(unix))]
+pub async fn run_daemon(_project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    Err(
+        "Daemon mode is not supported on this platform: it requires a Unix \
+         domain socket (AF_UNIX), which al-lsp only wires up on Unix targets. \
+         Use LSP mode (--stdio) or DAP mode (--dap) instead."
+            .into(),
+    )
+}
+
 /// Run the daemon server for a project.
+#[cfg(unix)]
 pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let sock_path = socket_path(&project_root).ok_or(
         "Cannot determine Unix socket path: XDG_RUNTIME_DIR is not set and no secure runtime directory is available"
@@ -333,6 +396,7 @@ async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
+#[cfg(unix)]
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     workspace: Arc<Workspace>,

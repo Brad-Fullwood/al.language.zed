@@ -4,9 +4,13 @@
 // expanded form is intentional in this file's TUI event dispatcher.
 #![allow(clippy::collapsible_match)]
 
+#[cfg(unix)]
 mod cli;
+#[cfg(unix)]
 mod types;
+#[cfg(unix)]
 use clap::Parser;
+#[cfg(unix)]
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
@@ -15,6 +19,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+#[cfg(unix)]
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -23,16 +28,21 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
+#[cfg(unix)]
 use std::process::ExitCode;
+#[cfg(unix)]
 use std::{error::Error, io, sync::Arc};
+#[cfg(unix)]
 use types::{ObjectKind, SymbolEntry, SymbolIndex};
 
+#[cfg(unix)]
 use al_protocol::DaemonClient;
 
 // ---------------------------------------------------------------------------
 // Navigation helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 /// Advance a wrap-around list index forward by one.
 ///
 /// Returns the next index (wrapping from the last item back to 0).
@@ -46,6 +56,7 @@ fn wrap_next(current: Option<usize>, len: usize) -> usize {
     }
 }
 
+#[cfg(unix)]
 /// Retreat a wrap-around list index backward by one.
 ///
 /// Returns the previous index (wrapping from 0 to the last item).
@@ -62,6 +73,7 @@ fn wrap_prev(current: Option<usize>, len: usize) -> usize {
 // View mode
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 #[derive(PartialEq, Clone, Copy)]
 enum ViewMode {
     ObjectBrowser,
@@ -75,6 +87,7 @@ enum ViewMode {
 // Object browser types
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 #[derive(PartialEq, Clone, Copy)]
 enum ActivePane {
     Search,
@@ -83,12 +96,14 @@ enum ActivePane {
     Details,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClickTarget {
     Objects,
     Details,
 }
 
+#[cfg(unix)]
 /// What kind of member a `DetailTarget` refers to.
 /// Stored for future use (deep-link precision when virtual file support
 /// is added in ISSUE-017 follow-up work).
@@ -102,6 +117,7 @@ enum DetailTargetKind {
     Procedure,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Clone)]
 struct DetailTarget {
     name: String,
@@ -113,6 +129,7 @@ struct DetailTarget {
 // Event chain view
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 /// A single row shown in the event chain results list.
 #[derive(Debug, Clone)]
 struct TraceRow {
@@ -123,6 +140,7 @@ struct TraceRow {
     object: String,
 }
 
+#[cfg(unix)]
 struct EventChainView {
     /// Current text in the search input.
     query: String,
@@ -138,6 +156,7 @@ struct EventChainView {
     project_root: std::path::PathBuf,
 }
 
+#[cfg(unix)]
 impl EventChainView {
     fn new(project_root: std::path::PathBuf) -> Self {
         Self {
@@ -242,6 +261,7 @@ impl EventChainView {
 // Call graph view
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 /// A single row shown in the call graph results list.
 #[derive(Debug, Clone)]
 struct CallRow {
@@ -249,12 +269,14 @@ struct CallRow {
     kind: CallRowKind,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Clone, PartialEq)]
 enum CallRowKind {
     Header,
     Entry,
 }
 
+#[cfg(unix)]
 struct CallGraphView {
     /// Current text in the search input.
     query: String,
@@ -267,6 +289,7 @@ struct CallGraphView {
     project_root: std::path::PathBuf,
 }
 
+#[cfg(unix)]
 impl CallGraphView {
     fn new(project_root: std::path::PathBuf) -> Self {
         Self {
@@ -366,6 +389,7 @@ impl CallGraphView {
 // Profiler view
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 /// A single hotspot row parsed from a `.alcpuprofile` file.
 #[derive(Debug, Clone)]
 struct HotspotRow {
@@ -376,6 +400,7 @@ struct HotspotRow {
     hit_count: u64,
 }
 
+#[cfg(unix)]
 struct ProfilerView {
     /// File path input typed by the user.
     file_path: String,
@@ -390,6 +415,7 @@ struct ProfilerView {
     duration_ms: f64,
 }
 
+#[cfg(unix)]
 impl ProfilerView {
     fn new() -> Self {
         Self {
@@ -540,6 +566,7 @@ impl ProfilerView {
 // Test runner view
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 /// Status of a single test method as reported by the daemon.
 #[derive(Debug, Clone, PartialEq)]
 enum MethodStatus {
@@ -549,6 +576,7 @@ enum MethodStatus {
     Skip,
 }
 
+#[cfg(unix)]
 /// A single row in the test runner tree — either a codeunit header or a method.
 #[derive(Debug, Clone)]
 enum TestRow {
@@ -563,6 +591,7 @@ enum TestRow {
     },
 }
 
+#[cfg(unix)]
 struct TestRunnerView {
     rows: Vec<TestRow>,
     list_state: ListState,
@@ -571,6 +600,7 @@ struct TestRunnerView {
     project_root: std::path::PathBuf,
 }
 
+#[cfg(unix)]
 impl TestRunnerView {
     fn new(project_root: std::path::PathBuf) -> Self {
         Self {
@@ -732,6 +762,7 @@ impl TestRunnerView {
     }
 }
 
+#[cfg(unix)]
 /// Look up the run status for `(codeunit_id, method_name)` in a JSON
 /// last-results response.  Returns `NotRun` if not found.
 fn find_method_status(
@@ -775,6 +806,7 @@ fn find_method_status(
 // Main application
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 struct App {
     pub view_mode: ViewMode,
 
@@ -818,6 +850,7 @@ struct App {
     pub project_root: std::path::PathBuf,
 }
 
+#[cfg(unix)]
 impl App {
     fn new() -> App {
         // Resolve project_root ONCE here. al-explorer is long-running and the
@@ -1396,6 +1429,28 @@ impl App {
 // Entry point
 // ---------------------------------------------------------------------------
 
+// al-explorer talks to the al-lsp daemon over a Unix-domain socket
+// (`al_protocol::DaemonClient` is `#[cfg(unix)]`), so the whole binary is
+// Unix-only. The Zed extension does NOT need al-explorer — it spawns the
+// portable `al-lsp` server directly — so on non-Unix targets we compile a small
+// stub that exits with an actionable message instead of failing to build. This
+// is what keeps `cargo build --workspace` (and the Windows release job) green.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!(
+        "al-explorer is not supported on this platform.\n\
+         \n\
+         It is a developer TUI/CLI that talks to the al-lsp daemon over a \
+         Unix-domain socket, which only exists on Unix-like systems (Linux, \
+         macOS).\n\
+         \n\
+         The AL language server (al-lsp) itself runs on this platform and is all \
+         the Zed extension needs to edit AL — you do not need al-explorer."
+    );
+    std::process::exit(1);
+}
+
+#[cfg(unix)]
 fn main() -> ExitCode {
     // Default behaviour with no arguments is the TUI. Any subcommand
     // (`al-explorer search ...`, `al-explorer hover ...`) goes to the CLI.
@@ -1412,6 +1467,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(unix)]
 fn run_tui() -> Result<(), Box<dyn Error>> {
     // Pre-flight: refuse with a human-readable message instead of letting
     // crossterm propagate ENXIO (code 6) when stdin/stdout aren't a TTY
@@ -1472,6 +1528,7 @@ fn run_tui() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn run_app<B: Backend<Error = io::Error>>(
     terminal: &mut Terminal<B>,
     mut app: App,
@@ -1538,6 +1595,7 @@ fn run_app<B: Backend<Error = io::Error>>(
     }
 }
 
+#[cfg(unix)]
 fn handle_object_browser_key(app: &mut App, key: crossterm::event::KeyEvent) {
     // Tab bindings for type filters
     if key.code == KeyCode::Tab {
@@ -1615,6 +1673,7 @@ fn handle_object_browser_key(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+#[cfg(unix)]
 fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEvent) {
     let view = &mut app.event_chain;
     if view.input_focused {
@@ -1658,6 +1717,7 @@ fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+#[cfg(unix)]
 fn handle_call_graph_key(app: &mut App, key: crossterm::event::KeyEvent) {
     let view = &mut app.call_graph;
     if view.input_focused {
@@ -1700,6 +1760,7 @@ fn handle_call_graph_key(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+#[cfg(unix)]
 fn handle_profiler_key(app: &mut App, key: crossterm::event::KeyEvent) {
     let view = &mut app.profiler;
     if view.input_focused {
@@ -1736,6 +1797,7 @@ fn handle_profiler_key(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+#[cfg(unix)]
 fn handle_test_runner_key(app: &mut App, key: crossterm::event::KeyEvent) {
     let view = &mut app.test_runner;
     match key.code {
@@ -1750,6 +1812,7 @@ fn handle_test_runner_key(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
+#[cfg(unix)]
 fn handle_object_browser_mouse(app: &mut App, mouse_event: crossterm::event::MouseEvent) {
     if let Ok((width, height)) = crossterm::terminal::size() {
         // Account for the mode bar at the top (1 line)
@@ -1866,12 +1929,14 @@ fn handle_object_browser_mouse(app: &mut App, mouse_event: crossterm::event::Mou
 // Layout helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 struct UiLayout {
     main_columns: [Rect; 3],
     left_column: [Rect; 2],
     middle_column: [Rect; 2],
 }
 
+#[cfg(unix)]
 fn compute_layout(area: Rect) -> UiLayout {
     let main_columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -1899,6 +1964,7 @@ fn compute_layout(area: Rect) -> UiLayout {
     }
 }
 
+#[cfg(unix)]
 fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x
         && col < rect.x.saturating_add(rect.width)
@@ -1906,6 +1972,7 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
         && row < rect.y.saturating_add(rect.height)
 }
 
+#[cfg(unix)]
 fn inner_area(rect: Rect) -> Rect {
     Block::default().borders(Borders::ALL).inner(rect)
 }
@@ -1914,6 +1981,7 @@ fn inner_area(rect: Rect) -> Rect {
 // UI rendering
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 fn ui(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
@@ -1934,6 +2002,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 }
 
+#[cfg(unix)]
 fn render_mode_bar(f: &mut Frame, area: Rect, mode: ViewMode) {
     let tabs = [
         (" F1: Objects ", ViewMode::ObjectBrowser),
@@ -1967,6 +2036,7 @@ fn render_mode_bar(f: &mut Frame, area: Rect, mode: ViewMode) {
     f.render_widget(Paragraph::new(Line::from(all_spans)), area);
 }
 
+#[cfg(unix)]
 fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     let layout = compute_layout(area);
 
@@ -2229,6 +2299,7 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
+#[cfg(unix)]
 fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
     // Split: search input (3 lines) + results list + status bar (1 line)
     let chunks = Layout::default()
@@ -2337,6 +2408,7 @@ fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
     );
 }
 
+#[cfg(unix)]
 fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphView) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -2420,6 +2492,7 @@ fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphView) {
     );
 }
 
+#[cfg(unix)]
 fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -2537,6 +2610,7 @@ fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView) {
     );
 }
 
+#[cfg(unix)]
 fn render_test_runner(f: &mut Frame, area: Rect, view: &mut TestRunnerView) {
     // Split vertically: list (left 60%) | error detail (right 40%).
     let columns = Layout::default()
@@ -2618,6 +2692,7 @@ fn render_test_runner(f: &mut Frame, area: Rect, view: &mut TestRunnerView) {
 // String helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 fn truncate_with_ellipsis(s: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -2634,6 +2709,7 @@ fn truncate_with_ellipsis(s: &str, width: usize) -> String {
     out
 }
 
+#[cfg(unix)]
 fn pad_center(s: String, width: usize) -> String {
     if width == 0 {
         return String::new();
@@ -2641,6 +2717,7 @@ fn pad_center(s: String, width: usize) -> String {
     format!("{:^width$}", s, width = width)
 }
 
+#[cfg(unix)]
 /// Scan a text file for the first line containing `member_name` as a whole word.
 ///
 /// Match must be surrounded by non-identifier characters (or start/end of line)
