@@ -42,6 +42,54 @@ fn is_safe_version(v: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
 }
 
+/// Shared, per-OS "how to recover" guidance appended to every spawn-failure
+/// message: where to download a build manually, a copy-paste Zed settings
+/// snippet pointing `binary.path` at it, and the PATH fallback. Centralised so
+/// that *every* failure mode on the download path (no release yet, GitHub API /
+/// network failure, no matching asset) tells a new user exactly what to do.
+fn manual_install_hint(os: zed::Os) -> String {
+    // Per-OS path separator hint for the manual `binary.path` value, so the
+    // snippet is correct to paste on the user's actual platform.
+    let example_path = match os {
+        zed::Os::Windows => r"C:\\path\\to\\al-lsp.exe",
+        _ => "/path/to/al-lsp",
+    };
+    format!(
+        "Download a build manually from https://github.com/{GITHUB_REPO}/releases and \
+         point Zed at it via settings: \
+         {{\"lsp\": {{\"al-lsp\": {{\"binary\": {{\"path\": \"{example_path}\"}}}}}}}}. \
+         Alternatively install al-lsp onto your PATH (e.g. `cargo install`)."
+    )
+}
+
+/// Build an actionable error for when no matching release asset can be found
+/// for the current platform. Includes the expected asset name, the releases
+/// page to download from manually, and a copy-paste Zed settings snippet so a
+/// new user whose language server fails to spawn knows exactly what to do
+/// (addresses the #1 new-user failure mode — see ecosystem-roadmap.md QW3).
+fn spawn_failure_message(os: zed::Os, asset_name: &str) -> String {
+    format!(
+        "Could not find an al-lsp release asset named '{asset_name}' for this platform. {}",
+        manual_install_hint(os)
+    )
+}
+
+/// Build an actionable error for when the GitHub release lookup itself fails —
+/// most commonly because **no release has been published yet** (the reported
+/// new-user blocker), but also network failures, rate limits, or a renamed
+/// repository. Without this, `latest_github_release(...)?` surfaces a raw,
+/// opaque error (e.g. "no releases found") with no path forward. This is the
+/// single most likely first-run failure, so it must be just as actionable as
+/// the asset-not-found case.
+fn release_lookup_failure_message(os: zed::Os, underlying: &str) -> String {
+    format!(
+        "Could not fetch an al-lsp release from https://github.com/{GITHUB_REPO}/releases \
+         ({underlying}). If no release has been published yet, or your network blocks \
+         GitHub, the language server cannot be downloaded automatically. {}",
+        manual_install_hint(os)
+    )
+}
+
 /// Deep-merge `overrides` into `base`, returning the merged result.
 /// - Objects are merged recursively (override keys replace base keys)
 /// - All other types: override replaces base entirely
@@ -110,52 +158,51 @@ impl AlExtension {
             &zed::LanguageServerInstallationStatus::CheckingForUpdate,
         );
 
+        let (os, arch) = zed::current_platform();
+
         let release = zed::latest_github_release(
             GITHUB_REPO,
             zed::GithubReleaseOptions {
                 require_assets: true,
                 pre_release: false,
             },
-        )?;
+        )
+        .map_err(|e| release_lookup_failure_message(os, &e))?;
 
-        let (os, arch) = zed::current_platform();
-        // F-020/F-021: al-protocol's daemon socket is Unix-only, so we do
-        // not ship a Windows release asset. On Windows, fail fast with a
-        // clear message rather than asking GitHub for a non-existent
-        // archive whose extraction would also be wrong shape.
-        if matches!(os, zed::Os::Windows) {
-            return Err(
-                "AL extension binaries are not currently published for Windows. \
-                 Set the binary path manually in Zed settings: \
-                 {\"lsp\": {\"al-lsp\": {\"binary\": {\"path\": \"/path/to/al-lsp\"}}}}"
-                    .to_string(),
-            );
-        }
-        let asset_name = format!(
-            "al-{os}-{arch}.tar.gz",
-            os = match os {
-                zed::Os::Mac => "macos",
-                zed::Os::Linux => "linux",
-                zed::Os::Windows => unreachable!("Windows handled above"),
-            },
-            arch = match arch {
-                zed::Architecture::Aarch64 => "aarch64",
-                zed::Architecture::X86 => "x86",
-                zed::Architecture::X8664 => "x86_64",
-            },
-        );
+        // Release asset naming. Unix targets ship a gzip tarball
+        // (`al-<os>-<arch>.tar.gz`); Windows ships a zip
+        // (`al-windows-<arch>.zip`) because the Windows release packages only
+        // the portable `al-lsp` binary (the Unix-only `al-explorer` daemon
+        // client is not built for Windows — see the daemon module's
+        // `#[cfg(not(unix))]` stub and ecosystem-roadmap.md item 8). These
+        // strings MUST stay in lockstep with the asset names produced by
+        // `.github/workflows/release.yml`; the `release_asset_names_match`
+        // repo-consistency test guards against drift.
+        let arch_name = match arch {
+            zed::Architecture::Aarch64 => "aarch64",
+            zed::Architecture::X86 => "x86",
+            zed::Architecture::X8664 => "x86_64",
+        };
+        let (asset_name, archive_type) = match os {
+            zed::Os::Mac => (
+                format!("al-macos-{arch_name}.tar.gz"),
+                zed::DownloadedFileType::GzipTar,
+            ),
+            zed::Os::Linux => (
+                format!("al-linux-{arch_name}.tar.gz"),
+                zed::DownloadedFileType::GzipTar,
+            ),
+            zed::Os::Windows => (
+                format!("al-windows-{arch_name}.zip"),
+                zed::DownloadedFileType::Zip,
+            ),
+        };
 
         let asset = release
             .assets
             .iter()
             .find(|a| a.name == asset_name)
-            .ok_or_else(|| {
-                format!(
-                    "No al-lsp release asset found for this platform ({asset_name}). \
-                     Set the binary path manually in Zed settings: \
-                     {{\"lsp\": {{\"al-lsp\": {{\"binary\": {{\"path\": \"/path/to/al-lsp\"}}}}}}}}"
-                )
-            })?;
+            .ok_or_else(|| spawn_failure_message(os, &asset_name))?;
 
         // Defense-in-depth: validate the version string is plain alphanumeric/
         // dot/hyphen so a malicious or compromised release tag can't produce a
@@ -186,12 +233,8 @@ impl AlExtension {
             // GitHub API, but the WASM extension has no easy hashing
             // primitive and trusting platform TLS is already strong. See
             // F-OPEN-008.
-            zed::download_file(
-                &asset.download_url,
-                &version_dir,
-                zed::DownloadedFileType::GzipTar,
-            )
-            .map_err(|e| format!("Failed to download al-lsp: {e}"))?;
+            zed::download_file(&asset.download_url, &version_dir, archive_type)
+                .map_err(|e| format!("Failed to download al-lsp: {e}"))?;
 
             zed::make_file_executable(&binary_path)
                 .map_err(|e| format!("Failed to make al-lsp executable: {e}"))?;

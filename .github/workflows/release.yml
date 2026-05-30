@@ -43,10 +43,17 @@ jobs:
             runner: macos-latest
             artifact_name: macos-aarch64
 
-          # Windows is intentionally excluded — al-protocol's daemon socket
-          # is Unix-only (see F-020/F-021), so al-explorer cannot link on
-          # Windows. The Zed extension itself ships as platform-neutral
-          # WASM and works on every Zed-supported OS.
+          # Windows x86_64 — builds ONLY the al-lsp binary. al-explorer's
+          # daemon IPC is an AF_UNIX socket (see F-020/F-021) and does not
+          # compile on Windows, but al-lsp itself is portable: its LSP
+          # (--stdio) and DAP (--dap) modes use platform-neutral stdio, and the
+          # Unix-only daemon transport is behind `#[cfg(unix)]` with a stub on
+          # Windows. This is what Zed actually spawns, so shipping it unblocks
+          # Windows users (ecosystem-roadmap.md item 8 / strategic bet 3b).
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact_name: windows-x86_64
+            windows: true
 
     steps:
       - name: Checkout
@@ -76,12 +83,16 @@ jobs:
       # Post-consolidation crate names: al-lsp is now [[bin]] inside al-core,
       # and al-cli was folded into al-explorer (see CLAUDE.md architecture
       # note). Build via -p al-core / -p al-explorer with explicit --bin.
+      #
+      # al-lsp is built on EVERY target (it is what Zed spawns). al-explorer is
+      # built only on Unix targets — its daemon IPC client is AF_UNIX-only and
+      # does not compile on Windows.
       - name: Build al-lsp binary (native)
         if: "!matrix.cross"
         run: cargo build -p al-core --bin al-lsp --release --target ${{ matrix.target }}
 
-      - name: Build al-explorer binary (native)
-        if: "!matrix.cross"
+      - name: Build al-explorer binary (native, Unix only)
+        if: "!matrix.cross && !matrix.windows"
         run: cargo build -p al-explorer --release --target ${{ matrix.target }}
 
       - name: Build al-lsp binary (cross)
@@ -93,21 +104,40 @@ jobs:
         run: cross build -p al-explorer --release --target ${{ matrix.target }}
 
       # ── Package (Linux / macOS) ──────────────────────────────────────────────
+      # Binaries are placed at the ARCHIVE ROOT (no wrapping directory) so the
+      # extension finds `al-lsp` at `<extract-dir>/al-lsp` — this matches the
+      # `binary_path` the WASM extension constructs in src/lib.rs.
       - name: Package artifacts (Unix)
-        if: runner.os != 'Windows'
+        if: "!matrix.windows"
         run: |
           BIN_DIR="target/${{ matrix.target }}/release"
           OUT="al-${{ matrix.artifact_name }}"
-          mkdir -p "$OUT"
-          cp "$BIN_DIR/al-lsp"      "$OUT/"
-          cp "$BIN_DIR/al-explorer" "$OUT/"
-          tar -czf "$OUT.tar.gz" "$OUT"
+          tar -czf "$OUT.tar.gz" -C "$BIN_DIR" al-lsp al-explorer
 
       - name: Upload binary artifact (Unix)
+        if: "!matrix.windows"
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: al-${{ matrix.artifact_name }}
           path: al-${{ matrix.artifact_name }}.tar.gz
+
+      # ── Package (Windows) ─────────────────────────────────────────────────────
+      # Ships ONLY al-lsp.exe (no al-explorer). Zipped with the binary at the
+      # archive root so it extracts to `<extract-dir>/al-lsp.exe`, matching the
+      # `binary_path` in src/lib.rs. Asset name: al-windows-x86_64.zip.
+      - name: Package artifact (Windows)
+        if: matrix.windows
+        shell: pwsh
+        run: |
+          $bin = "target/${{ matrix.target }}/release/al-lsp.exe"
+          Compress-Archive -Path $bin -DestinationPath "al-${{ matrix.artifact_name }}.zip"
+
+      - name: Upload binary artifact (Windows)
+        if: matrix.windows
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: al-${{ matrix.artifact_name }}
+          path: al-${{ matrix.artifact_name }}.zip
 
   build-wasm:
     name: Build WASM extension
@@ -169,6 +199,19 @@ jobs:
       - name: List collected artifacts
         run: find artifacts/ -type f | sort
 
+      # Emit a single checksums.txt covering every release binary archive so
+      # that manual installers (and any future automated SHA verification on
+      # the extension's download path) can verify integrity. Names are made
+      # relative to the artifacts dir so the file lists `al-<os>-<arch>.<ext>`.
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          find . \( -name '*.tar.gz' -o -name '*.zip' \) -type f \
+            | sed 's|^\./||' \
+            | sort \
+            | xargs sha256sum > checksums.txt
+          cat checksums.txt
+
       - name: Create GitHub Release and upload assets
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2
         with:
@@ -179,5 +222,6 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            artifacts/checksums.txt
             artifacts/extension-wasm/extension.wasm
             artifacts/extension-wasm/extension.toml

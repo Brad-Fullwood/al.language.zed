@@ -10,7 +10,8 @@
 //! the real repository is `Brad-Fullwood/al.language.zed`. These tests pin the
 //! constant to the manifest so code and packaging can never silently drift.
 
-use crate::GITHUB_REPO;
+use crate::{release_lookup_failure_message, spawn_failure_message, GITHUB_REPO};
+use zed_extension_api as zed;
 
 /// Extract the `owner/repo` slug from a `https://github.com/owner/repo[.git]`
 /// URL, trimming a trailing `.git` and any trailing slash.
@@ -55,6 +56,92 @@ fn github_repo_matches_extension_toml() {
     );
 }
 
+/// The release pipeline now ships a Windows `al-lsp` build, so the extension
+/// must NOT fail fast on Windows any more. Guard against the old fail-fast
+/// branch being reintroduced — its return string is distinctive.
+///
+/// Why this matters: the daemon transport is Unix-only, but `al-lsp` itself is
+/// portable (LSP `--stdio` + DAP `--dap` over platform-neutral stdio, daemon
+/// behind `#[cfg(unix)]`). Re-adding the fail-fast would block every Windows
+/// new user from ever spawning the language server.
+#[test]
+fn no_windows_fail_fast_in_binary_resolution() {
+    let src = include_str!("lib.rs");
+    assert!(
+        !src.contains("binaries are not currently published for Windows"),
+        "src/lib.rs reintroduced the Windows fail-fast branch; al-lsp ships on \
+         Windows now (al-windows-x86_64.zip) — Windows must use the normal \
+         download path, not an early Err()"
+    );
+}
+
+/// The per-OS release asset names hard-coded in `src/lib.rs` must match the
+/// asset names the release workflow actually produces. `release.yml` derives
+/// each asset from its matrix `artifact_name` (e.g. `linux-x86_64`) plus an
+/// extension (`.tar.gz` on Unix, `.zip` on Windows), prefixed with `al-`.
+///
+/// If these drift, `find_or_download_binary` looks for an asset that the
+/// release never uploaded and a new user's server never downloads. This pins
+/// code ↔ pipeline together (the task's explicit requirement).
+#[test]
+fn release_asset_names_match_workflow() {
+    let lib = include_str!("lib.rs");
+    let workflow = include_str!("../.github/workflows/release.yml");
+
+    // Asset names the code expects, by platform. These are the exact format!
+    // outputs from src/lib.rs for the supported (os, arch) pairs.
+    let expected = [
+        ("al-linux-x86_64.tar.gz", "linux-x86_64"),
+        ("al-linux-aarch64.tar.gz", "linux-aarch64"),
+        ("al-macos-x86_64.tar.gz", "macos-x86_64"),
+        ("al-macos-aarch64.tar.gz", "macos-aarch64"),
+        ("al-windows-x86_64.zip", "windows-x86_64"),
+    ];
+
+    for (asset, artifact) in expected {
+        // Code side: the os/arch tokens that compose this asset name must be
+        // present in lib.rs (they live in the match arms + the suffix string).
+        let (os_tok, rest) = artifact.split_once('-').unwrap();
+        let arch_tok = rest;
+        assert!(
+            lib.contains(&format!("\"{os_tok}\"")) || lib.contains(os_tok),
+            "src/lib.rs does not reference OS token `{os_tok}` for asset {asset}"
+        );
+        assert!(
+            lib.contains(&format!("\"{arch_tok}\"")),
+            "src/lib.rs does not reference arch token `{arch_tok}` for asset {asset}"
+        );
+        let ext = if asset.ends_with(".zip") {
+            ".zip"
+        } else {
+            ".tar.gz"
+        };
+        assert!(
+            lib.contains(&format!("al-{os_tok}-{{arch_name}}{ext}")) || lib.contains(asset),
+            "src/lib.rs does not build asset name `{asset}`"
+        );
+
+        // Pipeline side: release.yml must declare a matrix entry with this
+        // artifact_name (which is how it names the uploaded archive).
+        assert!(
+            workflow.contains(&format!("artifact_name: {artifact}")),
+            "release.yml has no matrix `artifact_name: {artifact}` to produce {asset}"
+        );
+    }
+
+    // The Windows entry specifically must build only al-lsp (its daemon client
+    // does not compile on Windows) — i.e. it is flagged `windows: true` and the
+    // al-explorer build step is skipped on it.
+    assert!(
+        workflow.contains("x86_64-pc-windows-msvc"),
+        "release.yml must include the Windows target so al-windows-x86_64.zip is built"
+    );
+    assert!(
+        workflow.contains("!matrix.windows"),
+        "release.yml must skip al-explorer on the Windows matrix entry (Unix-only client)"
+    );
+}
+
 /// Guard the shape of the constant itself: a non-empty `owner/repo` with exactly
 /// one slash and no scheme/host. Catches accidental full-URL or empty values.
 #[test]
@@ -72,5 +159,70 @@ fn github_repo_is_owner_slash_repo() {
     assert!(
         !parts[0].is_empty() && !parts[1].is_empty(),
         "GITHUB_REPO owner and repo segments must be non-empty: {GITHUB_REPO}"
+    );
+}
+
+/// The reported new-user blocker is that when NO GitHub release exists yet,
+/// `latest_github_release(...)?` propagated a raw, opaque error (e.g. "no
+/// releases found") with zero guidance. That path must now be just as
+/// actionable as the asset-not-found path: it must name the releases URL, give
+/// a copy-paste `binary.path` settings snippet, and mention the PATH fallback,
+/// so a fresh user whose server fails to spawn knows exactly how to recover.
+#[test]
+fn release_lookup_failure_is_actionable() {
+    for os in [zed::Os::Linux, zed::Os::Mac, zed::Os::Windows] {
+        let msg = release_lookup_failure_message(os, "no releases found");
+
+        // Surfaces the underlying cause so users/maintainers can diagnose.
+        assert!(
+            msg.contains("no releases found"),
+            "release-lookup error must include the underlying cause: {msg}"
+        );
+        // Points at the exact releases page for a manual download.
+        assert!(
+            msg.contains(&format!("https://github.com/{GITHUB_REPO}/releases")),
+            "release-lookup error must link the releases page: {msg}"
+        );
+        // Gives the copy-paste recovery setting.
+        assert!(
+            msg.contains("\"al-lsp\"") && msg.contains("\"path\""),
+            "release-lookup error must include a binary.path settings snippet: {msg}"
+        );
+        // Mentions the PATH / cargo-install fallback.
+        assert!(
+            msg.contains("PATH"),
+            "release-lookup error must mention the PATH fallback: {msg}"
+        );
+    }
+
+    // The Windows hint must use a Windows-style example path (not a POSIX one),
+    // and the Unix hint must not leak a Windows path.
+    let win = release_lookup_failure_message(zed::Os::Windows, "x");
+    assert!(
+        win.contains("al-lsp.exe"),
+        "Windows release-lookup error must reference al-lsp.exe: {win}"
+    );
+    let nix = release_lookup_failure_message(zed::Os::Linux, "x");
+    assert!(
+        nix.contains("/path/to/al-lsp") && !nix.contains(".exe"),
+        "Unix release-lookup error must use a POSIX example path: {nix}"
+    );
+}
+
+/// The asset-not-found message must keep its actionable recovery guidance
+/// (releases URL + settings snippet + PATH fallback). This pins the shared
+/// `manual_install_hint` contract so a refactor cannot silently strip it.
+#[test]
+fn asset_not_found_is_actionable() {
+    let msg = spawn_failure_message(zed::Os::Linux, "al-linux-x86_64.tar.gz");
+    assert!(
+        msg.contains("al-linux-x86_64.tar.gz"),
+        "asset-not-found error must name the missing asset: {msg}"
+    );
+    assert!(
+        msg.contains(&format!("https://github.com/{GITHUB_REPO}/releases"))
+            && msg.contains("\"path\"")
+            && msg.contains("PATH"),
+        "asset-not-found error must retain releases URL + settings snippet + PATH fallback: {msg}"
     );
 }
