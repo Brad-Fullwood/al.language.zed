@@ -21,7 +21,7 @@ ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-core/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip1/release/zed_al.wasm
 
-.PHONY: build install rust wasm bridges grammar clean
+.PHONY: build install dev-setup watch rust wasm bridges grammar clean
 
 # ── Default: rebuild everything ──────────────────────────────────
 build: rust wasm bridges
@@ -60,6 +60,26 @@ install: build
 	fi
 	@echo ""
 	@echo "Install complete."
+
+# ── One-shot dev environment setup ───────────────────────────────
+# Installs prerequisites then builds + symlinks everything. Run once
+# on a fresh machine, then use `make watch` while developing.
+dev-setup:
+	@echo "=== Ensuring prerequisites ==="
+	@rustup target add wasm32-wasip1 2>/dev/null || true
+	@command -v cargo-watch >/dev/null 2>&1 || { echo "Installing cargo-watch..."; cargo install cargo-watch; }
+	@case ":$$PATH:" in *":$(INSTALL_DIR):"*) ;; *) echo "NOTE: $(INSTALL_DIR) is not on your PATH — add it so al-lsp/al-explorer are found.";; esac
+	@$(MAKE) install
+	@echo ""
+	@echo "Dev setup complete. Run 'make watch' to auto-rebuild binaries on every change."
+
+# ── Auto-rebuild on change (always-latest binaries for testing) ──
+# Keeps al-lsp, al-explorer and the WASM extension rebuilt as you edit.
+# Binaries are symlinked, so rebuilds are picked up with no reinstall.
+#   make watch              debug native build (fast rebuilds)
+#   make watch ARGS=--release   release native build
+watch:
+	@bash scripts/dev-watch.sh $(ARGS)
 
 # ── Build ALL Rust workspace crates ──────────────────────────────
 rust:
