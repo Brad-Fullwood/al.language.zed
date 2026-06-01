@@ -247,16 +247,19 @@ fn unreleased_api_channel_requirement_is_documented() {
         .expect("Cargo.toml must declare zed_extension_api");
 
     // Treat a git/branch dependency, or a 0.8+ version, as "unreleased API".
-    let targets_unreleased = api_line.contains("git")
-        || api_line.contains("branch")
-        || api_line.contains("0.8");
+    let targets_unreleased =
+        api_line.contains("git") || api_line.contains("branch") || api_line.contains("0.8");
 
     if targets_unreleased {
         // The [lib] version in extension.toml should advertise the unreleased line.
         let lib_version = manifest
             .lines()
             .skip_while(|l| l.trim() != "[lib]")
-            .find_map(|l| l.trim().strip_prefix("version").map(|v| v.trim_start_matches([' ', '=', '"']).to_string()));
+            .find_map(|l| {
+                l.trim()
+                    .strip_prefix("version")
+                    .map(|v| v.trim_start_matches([' ', '=', '"']).to_string())
+            });
         if let Some(v) = lib_version {
             assert!(
                 v.starts_with("0.8") || v.starts_with("0.9"),

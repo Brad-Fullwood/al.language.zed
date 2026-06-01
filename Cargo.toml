@@ -8,6 +8,8 @@ resolver = "2"
 name = "zed-al"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]

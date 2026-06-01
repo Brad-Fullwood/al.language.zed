@@ -2,6 +2,8 @@
 name = "al-zed-test"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+publish = false
 description = "Linux/Wayland/Hyprland automation for end-to-end testing of the Zed AL extension"
 
 [dependencies]
