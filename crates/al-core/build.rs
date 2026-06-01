@@ -44,6 +44,40 @@ fn build_semantic_bridge() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let output_dir = out_dir.join("bridge");
 
+    println!("cargo:rerun-if-env-changed=AL_BRIDGE_PREBUILT");
+
+    // If a prebuilt bridge directory is provided (e.g. cross-compilation, where
+    // `dotnet` is unavailable inside the build container), copy it into OUT_DIR
+    // instead of invoking `dotnet build`. The bridge is platform-agnostic IL,
+    // so a host-built copy works for any target.
+    if let Ok(prebuilt) = std::env::var("AL_BRIDGE_PREBUILT") {
+        let prebuilt_dir = PathBuf::from(&prebuilt);
+        let dll = prebuilt_dir.join("AlBridge.dll");
+        if dll.is_file() {
+            let _ = std::fs::create_dir_all(&output_dir);
+            if let Ok(entries) = std::fs::read_dir(&prebuilt_dir) {
+                for entry in entries.flatten() {
+                    let from = entry.path();
+                    if from.is_file() {
+                        if let Some(name) = from.file_name() {
+                            let _ = std::fs::copy(&from, output_dir.join(name));
+                        }
+                    }
+                }
+            }
+            println!(
+                "cargo:warning=Bridge DLL copied from AL_BRIDGE_PREBUILT={}",
+                prebuilt
+            );
+            println!("cargo:rerun-if-changed=bridge/Bridge.cs");
+            println!("cargo:rerun-if-changed=bridge/AlBridge.csproj");
+            return;
+        }
+        println!(
+            "cargo:warning=AL_BRIDGE_PREBUILT set to {prebuilt} but AlBridge.dll not found there; falling back to dotnet build"
+        );
+    }
+
     let status = Command::new("dotnet")
         .args(["build", "-c", "Release", "--nologo", "-v", "q", "-o"])
         .arg(&output_dir)

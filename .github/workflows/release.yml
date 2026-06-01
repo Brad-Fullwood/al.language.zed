@@ -66,6 +66,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # The semantic bridge (built with --features semantic) needs the .NET SDK:
+      # build.rs runs `dotnet build` to produce AlBridge.dll, and the toolchain
+      # is required to compile the C# bridge. The CLR runtime is NOT needed at
+      # build time (netcorehost downloads libnethost via `nethost-download`).
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: "8.0.x"
+
       - name: Install cross (Linux aarch64 only)
         if: matrix.cross
         run: cargo install cross --version 0.2.5
@@ -87,17 +96,33 @@ jobs:
       # al-lsp is built on EVERY target (it is what Zed spawns). al-explorer is
       # built only on Unix targets — its daemon IPC client is AF_UNIX-only and
       # does not compile on Windows.
+      # al-lsp is built with --features semantic so the shipped binary contains
+      # the real in-process .NET CLR host (not the no-op stub). build.rs runs
+      # `dotnet build` to produce AlBridge.dll alongside it; that DLL is
+      # platform-agnostic .NET IL and is bundled into every archive below so the
+      # runtime finds it at <exe-dir>/bridge/ on the user's machine.
       - name: Build al-lsp binary (native)
         if: "!matrix.cross"
-        run: cargo build -p al-core --bin al-lsp --release --target ${{ matrix.target }}
+        run: cargo build -p al-core --bin al-lsp --release --features semantic --target ${{ matrix.target }}
 
       - name: Build al-explorer binary (native, Unix only)
         if: "!matrix.cross && !matrix.windows"
         run: cargo build -p al-explorer --release --target ${{ matrix.target }}
 
+      # For the cross (aarch64) build the bridge DLL cannot be produced inside
+      # the cross Docker image (no dotnet there), but it is platform-agnostic IL,
+      # so build it on the host first, then point build.rs at it via
+      # AL_BRIDGE_PREBUILT so it skips the in-container `dotnet build`.
+      - name: Pre-build semantic bridge on host (cross)
+        if: matrix.cross
+        run: dotnet build crates/al-core/bridge/AlBridge.csproj -c Release --nologo -o "$GITHUB_WORKSPACE/prebuilt-bridge"
+
       - name: Build al-lsp binary (cross)
         if: matrix.cross
-        run: cross build -p al-core --bin al-lsp --release --target ${{ matrix.target }}
+        env:
+          AL_BRIDGE_PREBUILT: ${{ github.workspace }}/prebuilt-bridge
+          CROSS_CONTAINER_OPTS: "-e AL_BRIDGE_PREBUILT=/project/prebuilt-bridge"
+        run: cross build -p al-core --bin al-lsp --release --features semantic --target ${{ matrix.target }}
 
       - name: Build al-explorer binary (cross)
         if: matrix.cross
@@ -112,7 +137,21 @@ jobs:
         run: |
           BIN_DIR="target/${{ matrix.target }}/release"
           OUT="al-${{ matrix.artifact_name }}"
-          tar -czf "$OUT.tar.gz" -C "$BIN_DIR" al-lsp al-explorer
+          # Stage the binaries plus the semantic bridge so the archive root holds
+          # `al-lsp`, `al-explorer`, and `bridge/AlBridge.dll` (+ runtimeconfig).
+          # The runtime finds the bridge at <exe-dir>/bridge/ (host.rs Strategy 2).
+          STAGE="$(mktemp -d)"
+          cp "$BIN_DIR/al-lsp" "$BIN_DIR/al-explorer" "$STAGE/"
+          BRIDGE_SRC="$(find "$BIN_DIR/build" -type d -path '*/out/bridge' | head -n1)"
+          if [ -z "$BRIDGE_SRC" ] || [ ! -f "$BRIDGE_SRC/AlBridge.dll" ]; then
+            echo "::error::semantic bridge (AlBridge.dll) not found under $BIN_DIR/build — al-lsp would ship without semantic analysis"
+            exit 1
+          fi
+          mkdir -p "$STAGE/bridge"
+          cp "$BRIDGE_SRC"/AlBridge.dll "$BRIDGE_SRC"/AlBridge.runtimeconfig.json "$STAGE/bridge/"
+          # Include any bridge dependency DLLs the build emitted.
+          cp "$BRIDGE_SRC"/*.dll "$STAGE/bridge/" 2>/dev/null || true
+          tar -czf "$OUT.tar.gz" -C "$STAGE" .
 
       - name: Upload binary artifact (Unix)
         if: "!matrix.windows"
@@ -129,8 +168,21 @@ jobs:
         if: matrix.windows
         shell: pwsh
         run: |
-          $bin = "target/${{ matrix.target }}/release/al-lsp.exe"
-          Compress-Archive -Path $bin -DestinationPath "al-${{ matrix.artifact_name }}.zip"
+          $binDir = "target/${{ matrix.target }}/release"
+          $stage = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP "stage") -Force
+          Copy-Item "$binDir/al-lsp.exe" $stage
+          # Bundle the platform-agnostic semantic bridge so al-lsp.exe finds it
+          # at <exe-dir>\bridge\ on the user's machine (host.rs Strategy 2).
+          $bridgeSrc = Get-ChildItem -Path "$binDir/build" -Recurse -Directory -Filter bridge |
+            Where-Object { Test-Path (Join-Path $_.FullName 'AlBridge.dll') } | Select-Object -First 1
+          if (-not $bridgeSrc) {
+            Write-Error "semantic bridge (AlBridge.dll) not found under $binDir/build"
+            exit 1
+          }
+          $bridgeDst = New-Item -ItemType Directory -Path (Join-Path $stage 'bridge') -Force
+          Copy-Item (Join-Path $bridgeSrc.FullName '*.dll') $bridgeDst
+          Copy-Item (Join-Path $bridgeSrc.FullName 'AlBridge.runtimeconfig.json') $bridgeDst
+          Compress-Archive -Path "$stage/*" -DestinationPath "al-${{ matrix.artifact_name }}.zip"
 
       - name: Upload binary artifact (Windows)
         if: matrix.windows
