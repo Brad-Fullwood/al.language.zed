@@ -12,6 +12,36 @@ use crate::errors::DiscoveryError;
 use crate::project::home_dir;
 use crate::workspace::Workspace;
 
+/// Build a `dotnet <alc.dll> …` command for invoking the AL toolchain
+/// (compiler `alc.dll`, the native debugger, DAP editor services).
+///
+/// Microsoft ships `alc.dll` (and friends) as **net8.0** apps. A user may only
+/// have a NEWER major .NET runtime installed (e.g. .NET 10), in which case the
+/// host refuses to start with "You must install or update .NET to run this
+/// application … Framework 'Microsoft.NETCore.App', version '8.0.0' not found"
+/// and AL compilation / debugging fails. Setting `DOTNET_ROLL_FORWARD=Major`
+/// tells the .NET host to roll forward onto the next available major, so the
+/// net8.0 tool runs on .NET 10+. (Same fix as the bridge's csproj RollForward,
+/// but applied to Microsoft's binaries we cannot edit — via the environment.)
+///
+/// `dotnet_command()` returns a `std::process::Command`; `dotnet_command_async`
+/// the tokio equivalent. Both seed the first arg with the `alc` dll path.
+pub fn dotnet_command(alc: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("dotnet");
+    cmd.arg(alc.display().to_string());
+    cmd.env("DOTNET_ROLL_FORWARD", "Major");
+    cmd
+}
+
+/// Async (tokio) counterpart of [`dotnet_command`]. See its docs for the
+/// roll-forward rationale.
+pub fn dotnet_command_async(alc: &Path) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("dotnet");
+    cmd.arg(alc.display().to_string());
+    cmd.env("DOTNET_ROLL_FORWARD", "Major");
+    cmd
+}
+
 // ---------------------------------------------------------------------------
 // Toolchain types
 // ---------------------------------------------------------------------------
@@ -456,6 +486,36 @@ pub fn doctor(workspace: &Workspace) -> DoctorReport {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn dotnet_command_sets_roll_forward_and_alc_arg() {
+        let alc = std::path::Path::new("/some/tools/net8.0/any/alc.dll");
+        let cmd = dotnet_command(alc);
+        assert_eq!(cmd.get_program(), "dotnet");
+        // First arg is the alc dll path.
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args.first().map(String::as_str), Some("/some/tools/net8.0/any/alc.dll"));
+        // DOTNET_ROLL_FORWARD=Major lets the net8.0 tool run on a newer major.
+        let rf = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("DOTNET_ROLL_FORWARD"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned());
+        assert_eq!(rf.as_deref(), Some("Major"));
+    }
+
+    #[test]
+    fn dotnet_command_async_sets_roll_forward() {
+        let alc = std::path::Path::new("/x/alc.dll");
+        let cmd = dotnet_command_async(alc);
+        let std_cmd = cmd.as_std();
+        let rf = std_cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("DOTNET_ROLL_FORWARD"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned());
+        assert_eq!(rf.as_deref(), Some("Major"));
+    }
 
     fn fake_toolchain(dir: &std::path::Path) -> AlToolchain {
         AlToolchain {

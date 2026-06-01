@@ -1224,8 +1224,8 @@ async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<
         )));
     }
 
-    let mut cmd = tokio::process::Command::new("dotnet");
-    cmd.arg(alc.display().to_string());
+    // Roll net8.0 `alc.dll` forward onto a newer .NET major (DOTNET_ROLL_FORWARD).
+    let mut cmd = crate::toolchain::dotnet_command_async(alc);
     cmd.arg(format!("/project:{project_root}"));
 
     let packages_dir = project_path.join(".alpackages");

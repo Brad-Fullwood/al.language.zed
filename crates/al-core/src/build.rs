@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 
 use crate::toolchain::AlToolchain;
 use serde::Serialize;
-use tokio::process::Command;
 
 use crate::errors::AlError;
 
@@ -158,8 +157,9 @@ pub async fn compile_project_with_analyzers(
         project_root
     };
 
-    let mut cmd = Command::new("dotnet");
-    cmd.arg(toolchain.alc.display().to_string());
+    // `dotnet_command_async` sets DOTNET_ROLL_FORWARD=Major so Microsoft's
+    // net8.0 `alc.dll` runs on a newer .NET major (e.g. 10) when 8 is absent.
+    let mut cmd = crate::toolchain::dotnet_command_async(&toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
     cmd.arg(format!("/out:{}", out_dir.display()));
 

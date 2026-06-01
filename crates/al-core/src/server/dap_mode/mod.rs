@@ -144,6 +144,9 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
 
     let mut child = tokio::process::Command::new(&host_path)
         .args(&args)
+        // EditorServices.Host is a net8.0 app; roll forward onto a newer .NET
+        // major when 8 is not installed (no-op if it is self-contained).
+        .env("DOTNET_ROLL_FORWARD", "Major")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(if std::env::var("AL_DAP_CAPTURE").is_ok() {
@@ -426,8 +429,8 @@ async fn compile_project(toolchain: &AlToolchain, project_root: &str) -> Result<
     let alc = &toolchain.alc;
     info!("Compiling AL project: {project_root}");
 
-    let mut cmd = tokio::process::Command::new("dotnet");
-    cmd.arg(alc.display().to_string());
+    // Roll net8.0 `alc.dll` forward onto a newer .NET major (DOTNET_ROLL_FORWARD).
+    let mut cmd = crate::toolchain::dotnet_command_async(alc);
     cmd.arg(format!("/project:{project_root}"));
     // Don't pass /out: — alc defaults to the project directory with auto-generated .app name
 
