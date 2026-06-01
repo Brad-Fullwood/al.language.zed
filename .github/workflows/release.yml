@@ -62,7 +62,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@56b2e01659f10f03a3269e9a59e022a20813df23 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
@@ -150,7 +150,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust stable + wasm32-wasip1
-        uses: dtolnay/rust-toolchain@56b2e01659f10f03a3269e9a59e022a20813df23 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip1
 

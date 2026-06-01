@@ -33,7 +33,11 @@ jobs:
           submodules: recursive
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@56b2e01659f10f03a3269e9a59e022a20813df23 # stable
+        # Tracks dtolnay/rust-toolchain's `stable` branch. A pinned commit SHA was
+        # used previously but the action force-pushes that branch, orphaning the
+        # SHA and breaking every run with "unable to resolve action". The branch
+        # ref is the action author's documented, stable entry point.
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
@@ -76,7 +80,11 @@ jobs:
         with:
           submodules: recursive
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@e2f4ede4a4e60ea15ff31bc0647485d80c66cfba # v2
+        # v2.0.20: the older pin shipped a cargo-deny that cannot parse
+        # `edition = "2024"` (used by crates/al-explorer) and failed with
+        # "feature `edition2024` is required". Bumped to a release whose
+        # bundled cargo-deny understands the 2024 edition.
+        uses: EmbarkStudios/cargo-deny-action@8a45e1c7c9a95dfae3276e89a553705e40ae45a2 # v2.0.20
         with:
           # Default args (`check`) runs all four checks: advisories, bans,
           # licenses, sources — same as the local invocation contract.
@@ -93,7 +101,7 @@ jobs:
           submodules: recursive
 
       - name: Install Rust stable + wasm32-wasip1
-        uses: dtolnay/rust-toolchain@56b2e01659f10f03a3269e9a59e022a20813df23 # stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip1
 
