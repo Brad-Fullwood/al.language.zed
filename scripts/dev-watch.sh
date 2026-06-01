@@ -27,7 +27,12 @@ if ! command -v cargo-watch >/dev/null 2>&1; then
   exit 1
 fi
 
+# Build al-lsp with `--features semantic` so the rebuilt binary includes the
+# real .NET CLR host. The whole workspace builds first (fast incremental), then
+# al-lsp is rebuilt with the feature — otherwise the symlinked al-lsp ships the
+# stub host and semantic analysis fails with "Bridge not initialized".
 NATIVE_BUILD="build --workspace --exclude zed-al $PROFILE_FLAG"
+SEMANTIC_BUILD="cargo build -p al-core --bin al-lsp --features semantic $PROFILE_FLAG"
 WASM_BUILD="cargo build -p zed-al --target wasm32-wasip1 --release"
 BRIDGE_BUILD=""
 if [ "$WATCH_BRIDGES" = "1" ]; then
@@ -50,5 +55,6 @@ exec cargo watch --why \
   -w crates -w src \
   -i 'target/**' -i '**/*.md' -i '.claude/**' -i 'FINDINGS.md' \
   -x "$NATIVE_BUILD" \
+  -s "$SEMANTIC_BUILD" \
   -s "$WASM_BUILD" \
   $BRIDGE_BUILD

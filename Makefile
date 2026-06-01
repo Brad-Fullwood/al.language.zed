@@ -82,9 +82,15 @@ watch:
 	@bash scripts/dev-watch.sh $(ARGS)
 
 # ── Build ALL Rust workspace crates ──────────────────────────────
+# al-lsp is built with `--features semantic` so it includes the real in-process
+# .NET CLR host (Microsoft.Dynamics CodeAnalysis bridge). Without it, the binary
+# links the no-op stub host and every semantic request fails with "Bridge not
+# initialized". The rest of the workspace builds without the feature.
 rust:
 	@echo "=== Building all Rust crates ==="
 	cargo build --workspace --exclude zed-al
+	@echo "=== Building al-lsp with semantic (.NET CLR) support ==="
+	cargo build -p al-core --bin al-lsp --features semantic
 
 # ── Build WASM extension ─────────────────────────────────────────
 wasm:
