@@ -6,5 +6,15 @@
     <Nullable>enable</Nullable>
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <!--
+      Roll-forward across major .NET versions. The bridge targets net8.0, but a
+      user may only have a NEWER major runtime installed (e.g. .NET 10). Without
+      this, hostfxr refuses to run an 8.0 app on a 10.x runtime ("framework
+      'Microsoft.NETCore.App' version '8.0.0' not found") and the semantic bridge
+      fails to initialize ("Bridge not initialized"). `Major` rolls forward to the
+      lowest available higher major; the pre-release flag covers preview/RC SDKs.
+    -->
+    <RollForward>Major</RollForward>
+    <RollForwardToPreReleaseVersions>true</RollForwardToPreReleaseVersions>
   </PropertyGroup>
 </Project>

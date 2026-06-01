@@ -937,7 +937,67 @@ fn strip_jsonc_comments_and_parse(
         }
     }
 
+    // Zed's settings.json is JSONC: it permits trailing commas (e.g. the comma
+    // after the last property in an object). serde_json is strict and rejects
+    // them ("trailing comma at line N"), so strip them before parsing — exactly
+    // as Zed itself tolerates them.
+    let result = strip_trailing_commas(&result);
+
     Ok(serde_json::from_str(&result)?)
+}
+
+/// Remove JSON trailing commas: a `,` followed only by whitespace before a
+/// closing `}` or `]`. String contents are preserved (a comma inside a string
+/// is never treated as structural). Operates on comment-free input.
+fn strip_trailing_commas(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+
+        if escape_next {
+            out.push(c);
+            escape_next = false;
+            i += 1;
+            continue;
+        }
+        if in_string {
+            out.push(c);
+            match c {
+                '\\' => escape_next = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ',' {
+            // Look ahead past whitespace; if the next non-space byte closes a
+            // container, this comma is trailing — drop it.
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && (bytes[j] == b'}' || bytes[j] == b']') {
+                i += 1; // skip the comma, keep the whitespace/closer
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+
+    out
 }
 
 /// Deep-merge `overrides` into `base`.
@@ -1039,6 +1099,48 @@ mod tests {
         let input = "{\r\n  // comment\r\n  \"key\": \"value\"\r\n}";
         let parsed = strip_jsonc_comments_and_parse(input).unwrap();
         assert_eq!(parsed["key"], "value");
+    }
+
+    #[test]
+    fn trailing_comma_in_object_is_tolerated() {
+        // Zed permits this; serde_json alone rejects it ("trailing comma").
+        let input = r#"{ "a": 1, "b": 2, }"#;
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], 2);
+    }
+
+    #[test]
+    fn trailing_comma_in_array_is_tolerated() {
+        let input = r#"{ "xs": [1, 2, 3,] }"#;
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["xs"], json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn trailing_comma_before_nested_close_like_real_zed_settings() {
+        // Reproduces the reported failure: a trailing comma after the last key
+        // of a nested object (the `theme` block in a real Zed settings.json).
+        let input = "{\n  \"ui_font_size\": 16,\n  \"theme\": {\n    \"mode\": \"dark\",\n    \"dark\": \"Business Central Dark\",\n  },\n}";
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["ui_font_size"], 16);
+        assert_eq!(parsed["theme"]["dark"], "Business Central Dark");
+    }
+
+    #[test]
+    fn comma_inside_string_is_not_stripped() {
+        let input = r#"{ "list": "a, b, c", "n": 1 }"#;
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["list"], "a, b, c");
+        assert_eq!(parsed["n"], 1);
+    }
+
+    #[test]
+    fn comments_and_trailing_commas_together() {
+        let input = "{\n  // leading\n  \"a\": 1, // inline\n  \"b\": [1, 2,], /* block */\n}";
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], json!([1, 2]));
     }
 
     #[test]
