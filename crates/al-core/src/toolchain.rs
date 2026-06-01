@@ -493,8 +493,14 @@ mod tests {
         let cmd = dotnet_command(alc);
         assert_eq!(cmd.get_program(), "dotnet");
         // First arg is the alc dll path.
-        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-        assert_eq!(args.first().map(String::as_str), Some("/some/tools/net8.0/any/alc.dll"));
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args.first().map(String::as_str),
+            Some("/some/tools/net8.0/any/alc.dll")
+        );
         // DOTNET_ROLL_FORWARD=Major lets the net8.0 tool run on a newer major.
         let rf = cmd
             .get_envs()
