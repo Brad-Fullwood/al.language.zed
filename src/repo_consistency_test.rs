@@ -226,3 +226,55 @@ fn asset_not_found_is_actionable() {
         "asset-not-found error must retain releases URL + settings snippet + PATH fallback: {msg}"
     );
 }
+
+/// Channel-coupling guard. The extension's `[lib] version` in extension.toml and
+/// the `zed_extension_api` target in the root Cargo.toml together decide which
+/// Zed release channels can load the extension at all:
+///   * unreleased API (git `main`, 0.8.x) → loads only on Dev / Nightly Zed
+///   * released API (0.7.x and below)      → loads on Stable / Preview too
+/// A new user on Stable Zed whose build targets an unreleased API sees the
+/// extension silently fail to load and `al-lsp` never spawns. That trap is
+/// documented in TROUBLESHOOTING.md and at the dep in Cargo.toml; this test
+/// keeps that documentation honest so the coupling can never drift unnoticed.
+#[test]
+fn unreleased_api_channel_requirement_is_documented() {
+    let cargo = include_str!("../Cargo.toml");
+    let manifest = include_str!("../extension.toml");
+
+    let api_line = cargo
+        .lines()
+        .find(|l| l.trim_start().starts_with("zed_extension_api"))
+        .expect("Cargo.toml must declare zed_extension_api");
+
+    // Treat a git/branch dependency, or a 0.8+ version, as "unreleased API".
+    let targets_unreleased = api_line.contains("git")
+        || api_line.contains("branch")
+        || api_line.contains("0.8");
+
+    if targets_unreleased {
+        // The [lib] version in extension.toml should advertise the unreleased line.
+        let lib_version = manifest
+            .lines()
+            .skip_while(|l| l.trim() != "[lib]")
+            .find_map(|l| l.trim().strip_prefix("version").map(|v| v.trim_start_matches([' ', '=', '"']).to_string()));
+        if let Some(v) = lib_version {
+            assert!(
+                v.starts_with("0.8") || v.starts_with("0.9"),
+                "Cargo.toml targets the unreleased API but extension.toml [lib] version is {v:?}; keep them aligned"
+            );
+        }
+
+        // The trap MUST be documented so a Stable-Zed user can self-diagnose.
+        let troubleshooting = include_str!("../TROUBLESHOOTING.md");
+        assert!(
+            troubleshooting.contains("development builds of Zed")
+                && (troubleshooting.contains("Nightly") || troubleshooting.contains("nightly")),
+            "TROUBLESHOOTING.md must explain the unreleased-API channel requirement (Nightly/Dev) \
+             and quote Zed's error, since the extension silently fails to load on Stable Zed"
+        );
+        assert!(
+            cargo.contains("CHANNEL COUPLING"),
+            "Cargo.toml must keep the CHANNEL COUPLING warning next to the zed_extension_api dep"
+        );
+    }
+}
