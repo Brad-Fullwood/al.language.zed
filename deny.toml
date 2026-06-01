@@ -19,4 +19,9 @@ allow = [
   "ISC",
   "Unicode-3.0",
   "Zlib",
+  # MPL-2.0 is file-level (weak) copyleft: using such a crate as an unmodified
+  # dependency imposes no licensing obligations on our own source. Required by
+  # `option-ext` (transitive via `directories`/`dirs`). cargo-deny flags it as
+  # not-allowed otherwise.
+  "MPL-2.0",
 ]
