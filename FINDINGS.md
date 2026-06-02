@@ -1810,3 +1810,13 @@ Five parallel one-shot audits (Concurrency, WASM Security, Daemon Protocol Robus
 | F-OPEN-009 | P3 | Bulk graph-export responses (`graph`, `deadcode`) serialize into a single `serde_json::Value` before writing — a 100K-symbol workspace could allocate 100MB+ here. Stream or cap. |
 
 
+
+### Iteration 99 (2026-05-29)
+
+Focused backlog drain — one stuck open finding resolved by a dedicated agent working that finding only, committed individually before this record.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-010 | P2 | **Fixed.** OAuth `access_token`/`refresh_token` were plain `String`s in the long-lived al-lsp daemon (30-min idle window), so secrets lingered in freed heap allocations for the process lifetime (recoverable via core dump / `/proc/<pid>/mem`). `crates/al-core/src/symbols/oauth.rs`: added the pre-approved `zeroize` crate (1.x, derive feature) as a direct workspace dependency and derived `Zeroize, ZeroizeOnDrop` on `TokenResponse` and `CachedToken`, with `#[zeroize(skip)]` on the non-secret `expires_in`/`expires_at`/`tenant` fields. Because `ZeroizeOnDrop` implements `Drop`, the three partial-move return sites in `acquire_token` would have forfeited the scrub, so each now `.clone()`s the returned token and lets the owning struct drop intact and zeroized. Added 3 regression tests (`zeroize_tests`) verifying secrets are wiped while skipped metadata is preserved, plus the `refresh_token: None` device-code path. The disk-at-rest plaintext threat (OS-keyring migration) remains documented future-work in the `save_cached_token` doc-comment and is out of scope for this in-memory finding. Commit e4a86b3. |
+
+Workspace test count: 2115 → 2118 (+3 oauth zeroize regression tests). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
