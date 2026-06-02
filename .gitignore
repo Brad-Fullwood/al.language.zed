@@ -24,3 +24,7 @@ crates/*/bridge/bin/
 .env
 .env.*
 *.env
+
+# cargo-mutants output
+/mutants.out/
+/mutants.out.old/
