@@ -22,6 +22,21 @@ const DEFAULT_CLIENT_ID: &str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
 
 const BC_SCOPE: &str = "https://api.businesscentral.dynamics.com/.default offline_access";
 
+/// Upper bound on the device-code polling interval. Each `slow_down` response
+/// from the token endpoint bumps the interval by 5s; without a cap a buggy or
+/// hostile server could push the interval arbitrarily high (stalling sign-in
+/// until the deadline). Capping at 60s respects the server's congestion signal
+/// while keeping the worst-case poll cadence bounded.
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Compute the next polling interval after a `slow_down` response: bump by 5s,
+/// saturating, and clamp to [`MAX_POLL_INTERVAL`].
+fn next_slow_down_interval(current: Duration) -> Duration {
+    current
+        .saturating_add(Duration::from_secs(5))
+        .min(MAX_POLL_INTERVAL)
+}
+
 #[derive(Debug, Error)]
 pub enum OAuthError {
     #[error("HTTP error: {0}")]
@@ -516,7 +531,7 @@ async fn device_code_flow(
         match err.error.as_str() {
             "authorization_pending" => continue,
             "slow_down" => {
-                interval += Duration::from_secs(5);
+                interval = next_slow_down_interval(interval);
                 continue;
             }
             "authorization_declined" => return Err(OAuthError::Denied),
@@ -1367,6 +1382,39 @@ mod tests {
 
         assert!(result.contains("GET /?code=AUTH_CODE"));
         assert!(result.contains("\r\n\r\n"));
+    }
+
+    #[test]
+    fn slow_down_interval_bumps_by_five_seconds() {
+        let next = next_slow_down_interval(Duration::from_secs(5));
+        assert_eq!(next, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn slow_down_interval_is_capped_at_max() {
+        // Once at the cap, further slow_down responses must not exceed it.
+        let at_cap = next_slow_down_interval(MAX_POLL_INTERVAL);
+        assert_eq!(at_cap, MAX_POLL_INTERVAL);
+
+        // Approaching the cap from just below clamps to exactly MAX_POLL_INTERVAL.
+        let near_cap = next_slow_down_interval(MAX_POLL_INTERVAL - Duration::from_secs(1));
+        assert_eq!(near_cap, MAX_POLL_INTERVAL);
+
+        // A pathologically large current value saturates and clamps, never panicking.
+        let huge = next_slow_down_interval(Duration::from_secs(u64::MAX));
+        assert_eq!(huge, MAX_POLL_INTERVAL);
+    }
+
+    #[test]
+    fn repeated_slow_down_converges_to_cap() {
+        // Simulate many consecutive slow_down responses; the interval must
+        // monotonically grow but never exceed the cap.
+        let mut interval = Duration::from_secs(5);
+        for _ in 0..200 {
+            interval = next_slow_down_interval(interval);
+            assert!(interval <= MAX_POLL_INTERVAL);
+        }
+        assert_eq!(interval, MAX_POLL_INTERVAL);
     }
 
     #[cfg(unix)]
