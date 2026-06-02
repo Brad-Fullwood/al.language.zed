@@ -2013,3 +2013,13 @@ One commit. Adversarial review of the daemon IPC client (`crates/al-protocol/src
 
 Workspace test count: 2192 → 2193 (+1 write-timeout regression test). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
 
+### Iteration 116 (2026-06-03)
+
+One commit. Adversarial verification of the new-finding worklist against the native DAP browser-launch path (`crates/al-core/src/dap/native_dap.rs`).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-252 | P1 | **Fixed (+ tests).** When launching the browser to open the cloud BC debug context, the tenant and environment name were interpolated into the URL (`https://businesscentral.dynamics.com/{tenant}/{env}?...`) without percent-encoding, while the same fields are already encoded in `bc_debug::base_url()` / `debug_hub_url()`. A tenant or environment containing special characters (spaces, ampersands, slashes — all legal in BC environment/tenant identifiers) produced a malformed URL, sending the user to the wrong page or breaking query-parameter parsing. Made `percent_encode_url()` crate-visible, extracted the inline URL construction into a pure `build_debug_browser_url()` helper, and applied encoding to both path segments. +3 unit tests: cloud special-char encoding, missing-env→`sandbox` default, and the on-prem branch (port + instance preserved). `crates/al-core/src/dap/{native_dap.rs,bc_debug.rs}`. |
+
+Workspace test count: 2193 → 2196 (+3 browser-URL regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
