@@ -1936,3 +1936,13 @@ Open backlog was empty. The worklist carried four new confirmed findings — thr
 | F-OPEN-240 | P1 | **Fixed (+ test-gap).** `strip_trailing_commas` in `crates/al-core/src/server/workspace.rs` cast each byte to `char` (`bytes[i] as char`), corrupting multi-byte UTF-8 (e.g. emoji in a theme name or comment) when settings.json had a trailing comma. A correct byte-based implementation already lived in `dap::json_util::strip_trailing_commas`; delegated to it and removed the duplicate. The companion P2 test-gap (ASCII-only JSONC tests) is closed by the same change: +1 test with emoji and accented characters alongside a trailing comma. |
 
 Workspace test count: 2174 → 2179 (+5 new regression tests: 2 BC Break location extraction, 2 file-index parse-cache coherence, 1 settings.json UTF-8 trailing-comma). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 109 (2026-06-02)
+
+Open backlog was empty and the worklist carried no new confirmed findings, so this round was a fresh-subsystem audit. Reviewed the hand-rolled line-based XLIFF parser (`crates/al-core/src/xliff.rs`) and found a real data-loss bug in `parse_xliff`.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-241 | P1 | **Fixed (+ test).** `parse_xliff` (`crates/al-core/src/xliff.rs`) detected `<note>` elements with an exact `starts_with("<note>")` check. Business Central and the MS AL extension emit the attributed form (`<note from="Developer" annotates="general" priority="2">…</note>`), which never matched — so every note in a real-world language `.xlf` was silently dropped, and `refresh_xliff` (which preserves the parsed unit via `lang_unit.clone()`) lost the developer context on every refresh/merge. Now matches both `<note>` and `<note …>`, mirroring the existing `<source>`/`<target>` handling that anchors on the first `>` of the open tag. +1 regression test covering bare and attributed notes. |
+
+Workspace test count: 2179 → 2180 (+1 regression test for attributed-note parsing). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
