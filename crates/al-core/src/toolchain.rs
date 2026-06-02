@@ -256,6 +256,14 @@ fn search_dir_recursive(root: &Path) -> Option<AlToolchain> {
         }
     }
 
+    // Canonicalize the root once so we can confine the traversal to it. The
+    // .store directories searched here live in user-writable locations, so a
+    // symlink planted inside (e.g. `.store/evil -> /etc`) must not let the
+    // search escape into arbitrary filesystem locations and pick up a
+    // malicious alc.dll. If the root itself can't be canonicalized we fall
+    // back to no bounds check rather than aborting discovery.
+    let canonical_root = std::fs::canonicalize(root).ok();
+
     let mut queue: Vec<(PathBuf, u8)> = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = queue.pop() {
         if depth > 8 {
@@ -268,6 +276,15 @@ fn search_dir_recursive(root: &Path) -> Option<AlToolchain> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
+                // Reject directories whose canonical path escapes the root
+                // (e.g. via a symlink). `is_dir()` transparently follows
+                // symlinks, so this check is what actually confines us.
+                if let Some(root) = canonical_root.as_ref() {
+                    match std::fs::canonicalize(&path) {
+                        Ok(canon) if canon.starts_with(root) => {}
+                        _ => continue,
+                    }
+                }
                 if path.join(ALC_DLL).is_file() {
                     if let Ok(tc) = build_toolchain(&path) {
                         return Some(tc);
@@ -707,5 +724,160 @@ mod tests {
         std::fs::write(leaf.join("Other.dll"), b"").unwrap();
 
         assert!(search_dir_recursive(tmp.path()).is_none());
+    }
+
+    /// Serializes tests that mutate process-global env (`PATH`, `AL_TOOL_PATH`).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Create a minimal valid toolchain (alc.dll + CodeAnalysis.dll) in `dir`.
+    fn write_minimal_toolchain(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(ALC_DLL), b"").unwrap();
+        std::fs::write(dir.join(CODE_ANALYSIS_DLL), b"").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_dir_recursive_rejects_symlink_escaping_root() {
+        // A symlink planted inside the search root pointing outside it must NOT
+        // let discovery pick up an alc.dll that lives outside the root.
+        let outside = tempfile::tempdir().unwrap();
+        // Place a (would-be malicious) alc.dll outside the search root.
+        write_minimal_toolchain(&outside.path().join("evil"));
+
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("evil"), root.path().join("link")).unwrap();
+
+        // Without the bounds check, the traversal would follow `link` into
+        // `outside/evil` and return its alc.dll. With the fix it must not.
+        assert!(
+            search_dir_recursive(root.path()).is_none(),
+            "search escaped the root via a symlink"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_dir_recursive_still_finds_real_subdir_alongside_symlink() {
+        // The bounds check must not break legitimate in-root discovery.
+        let outside = tempfile::tempdir().unwrap();
+        write_minimal_toolchain(&outside.path().join("evil"));
+
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("evil"), root.path().join("link")).unwrap();
+        // A genuine, in-root toolchain that SHOULD be found.
+        let real = root.path().join("real/tools/net8.0/any");
+        write_minimal_toolchain(&real);
+
+        let tc = search_dir_recursive(root.path()).expect("in-root toolchain should be found");
+        // Resolve symlinks on the temp dir prefix (macOS /var -> /private/var).
+        let expected = std::fs::canonicalize(real.join(ALC_DLL)).unwrap();
+        let got = std::fs::canonicalize(&tc.alc).unwrap();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn search_path_for_missing_command_returns_none() {
+        // A command that cannot exist on PATH must be handled gracefully.
+        assert!(search_path_for("al-lsp-definitely-not-a-real-command-xyz").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_path_for_discovers_toolchain_via_which() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Lay out a fake `alc` executable next to a real alc.dll payload.
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path();
+        write_minimal_toolchain(bin);
+        // The discovery shells out to `which alc`, which needs an executable
+        // named `alc` on PATH; create one and mark it executable.
+        let alc_exe = bin.join("alc");
+        std::fs::write(&alc_exe, b"#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&alc_exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let orig_path = std::env::var_os("PATH");
+        // Prepend our dir so `which alc` resolves to our fake binary.
+        let new_path = match &orig_path {
+            Some(p) => {
+                let mut joined = std::ffi::OsString::from(bin);
+                joined.push(":");
+                joined.push(p);
+                joined
+            }
+            None => std::ffi::OsString::from(bin),
+        };
+        // SAFETY: synchronised via ENV_LOCK above.
+        unsafe { std::env::set_var("PATH", &new_path) };
+
+        let result = search_path_for("alc");
+
+        // Restore PATH before asserting so a failure can't leak state.
+        // SAFETY: synchronised via ENV_LOCK above.
+        unsafe {
+            match orig_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+
+        let tc = result.expect("toolchain not discovered via `which alc`");
+        assert_eq!(tc.alc, bin.join(ALC_DLL));
+        assert!(tc.code_analysis.is_file());
+    }
+
+    #[test]
+    fn find_toolchain_uses_al_tool_path_direct_layout() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("toolchain");
+        write_minimal_toolchain(&dir);
+
+        let orig = std::env::var_os("AL_TOOL_PATH");
+        // SAFETY: synchronised via ENV_LOCK above.
+        unsafe { std::env::set_var("AL_TOOL_PATH", &dir) };
+
+        let result = find_toolchain();
+
+        // SAFETY: synchronised via ENV_LOCK above.
+        unsafe {
+            match orig {
+                Some(v) => std::env::set_var("AL_TOOL_PATH", v),
+                None => std::env::remove_var("AL_TOOL_PATH"),
+            }
+        }
+
+        let tc = result.expect("AL_TOOL_PATH toolchain should be discovered");
+        assert_eq!(tc.alc, dir.join(ALC_DLL));
+    }
+
+    #[test]
+    fn find_toolchain_uses_al_tool_path_nested_layout() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let tmp = tempfile::tempdir().unwrap();
+        // alc.dll buried below AL_TOOL_PATH — exercises the recursive fallback.
+        let leaf = tmp.path().join("root/tools/net8.0/any");
+        write_minimal_toolchain(&leaf);
+
+        let orig = std::env::var_os("AL_TOOL_PATH");
+        // SAFETY: synchronised via ENV_LOCK above.
+        unsafe { std::env::set_var("AL_TOOL_PATH", tmp.path().join("root")) };
+
+        let result = find_toolchain();
+
+        // SAFETY: synchronised via ENV_LOCK above.
+        unsafe {
+            match orig {
+                Some(v) => std::env::set_var("AL_TOOL_PATH", v),
+                None => std::env::remove_var("AL_TOOL_PATH"),
+            }
+        }
+
+        let tc = result.expect("nested AL_TOOL_PATH toolchain should be discovered");
+        assert_eq!(tc.alc, leaf.join(ALC_DLL));
     }
 }
