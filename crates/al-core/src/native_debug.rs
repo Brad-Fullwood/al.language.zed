@@ -10,6 +10,13 @@ use crate::dap::types::*;
 use crate::dap::Result;
 use tracing::{info, warn};
 
+/// Upper bound on the in-memory Break-event history. Long-running debug
+/// sessions over hot loops can accumulate thousands of hits per minute;
+/// without a cap, `history` grows unboundedly and the daemon's memory
+/// climbs with it. Oldest entries are evicted first (FIFO), preserving
+/// recent hits which are by far the most useful for the user.
+const HISTORY_CAP: usize = 10_000;
+
 /// Wraps `BcDebugSession` with daemon-side state: breakpoint tracking, history.
 pub struct NativeDebugSession {
     pub session: BcDebugSession,
@@ -17,6 +24,15 @@ pub struct NativeDebugSession {
     /// file path → list of BC breakpoint IDs
     breakpoints: HashMap<String, Vec<i64>>,
     history: VecDeque<BreakpointHit>,
+}
+
+/// Append a Break event to history with the configured cap. Pure (no `self`
+/// dependency) so it unit-tests without standing up a `BcDebugSession`.
+fn push_with_cap(history: &mut VecDeque<BreakpointHit>, hit: BreakpointHit, cap: usize) {
+    history.push_back(hit);
+    while history.len() > cap {
+        history.pop_front();
+    }
 }
 
 impl NativeDebugSession {
@@ -140,13 +156,17 @@ impl NativeDebugSession {
                         procedure: None,
                     },
                 };
-                self.history.push_back(BreakpointHit {
-                    seq: next_seq,
-                    breakpoint_id: 0,
-                    timestamp: format_event_timestamp(std::time::SystemTime::now()),
-                    location,
-                    variables: Vec::new(),
-                });
+                push_with_cap(
+                    &mut self.history,
+                    BreakpointHit {
+                        seq: next_seq,
+                        breakpoint_id: 0,
+                        timestamp: format_event_timestamp(std::time::SystemTime::now()),
+                        location,
+                        variables: Vec::new(),
+                    },
+                    HISTORY_CAP,
+                );
                 next_seq += 1;
                 tracing::debug!(reason = %reason, "native_debug: recorded Break event in history");
             }
@@ -230,6 +250,12 @@ impl NativeDebugSession {
     /// BC's `SetBreakpointResponse` controls step type via BreakpointExitReason:
     /// 0=Continue, 1=StepOver, 2=StepIn, 3=StepOut.
     pub async fn step(&mut self, step_type: &str) -> Result<DebugState> {
+        // F-014 symmetry with `continue_exec`: drain pending events so any
+        // Break that fired between the user's last command and this `step`
+        // is recorded in history before we tell BC to advance. Without this,
+        // a Break event that landed on the SignalR channel since the last
+        // command would be silently dropped from history.
+        self.drain_events().await;
         match step_type {
             "in" => self.session.step_in().await?,
             "out" => self.session.step_out().await?,
@@ -404,5 +430,80 @@ mod timestamp_tests {
             .unwrap_or(UNIX_EPOCH);
         let s = format_event_timestamp(t);
         assert!(s.starts_with("19") || s.starts_with("20"));
+    }
+}
+
+#[cfg(test)]
+mod history_cap_tests {
+    use super::{push_with_cap, HISTORY_CAP};
+    use crate::dap::types::{BreakpointHit, Location};
+    use std::collections::VecDeque;
+
+    fn hit(seq: u32) -> BreakpointHit {
+        BreakpointHit {
+            seq,
+            breakpoint_id: 0,
+            timestamp: String::new(),
+            location: Location {
+                file: String::new(),
+                line: 0,
+                column: 0,
+                procedure: None,
+            },
+            variables: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn under_cap_keeps_everything() {
+        // Positive: below the cap, push behaves like a plain push_back.
+        let mut h = VecDeque::new();
+        for i in 0..5 {
+            push_with_cap(&mut h, hit(i), 10);
+        }
+        assert_eq!(h.len(), 5);
+        assert_eq!(h.front().unwrap().seq, 0);
+        assert_eq!(h.back().unwrap().seq, 4);
+    }
+
+    #[test]
+    fn at_cap_evicts_oldest_first() {
+        // Positive: at exactly the cap, push evicts the FIFO head and
+        // keeps the most recent entries — what a debugging user wants.
+        let mut h = VecDeque::new();
+        let cap = 3;
+        for i in 0..5 {
+            push_with_cap(&mut h, hit(i), cap);
+        }
+        assert_eq!(h.len(), cap);
+        let seqs: Vec<_> = h.iter().map(|h| h.seq).collect();
+        assert_eq!(seqs, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn cap_zero_drops_input() {
+        // Edge: a zero cap means "never retain". The push lands and is
+        // immediately evicted. Documents the saturating semantics so a
+        // future ill-considered config knob can't accidentally smuggle
+        // unbounded growth back in via `cap=0`.
+        let mut h = VecDeque::new();
+        push_with_cap(&mut h, hit(7), 0);
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn default_cap_drops_at_documented_bound() {
+        // Tripwire: at the live HISTORY_CAP, the oldest hit is evicted on
+        // the (cap+1)-th push. Detects "raised the cap to u64::MAX-style"
+        // edits as test failures rather than as production memory bugs.
+        let mut h = VecDeque::new();
+        for i in 0..HISTORY_CAP as u32 {
+            push_with_cap(&mut h, hit(i), HISTORY_CAP);
+        }
+        assert_eq!(h.len(), HISTORY_CAP);
+        push_with_cap(&mut h, hit(HISTORY_CAP as u32), HISTORY_CAP);
+        assert_eq!(h.len(), HISTORY_CAP);
+        assert_eq!(h.front().unwrap().seq, 1);
+        assert_eq!(h.back().unwrap().seq, HISTORY_CAP as u32);
     }
 }
