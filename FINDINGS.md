@@ -1851,3 +1851,16 @@ Drained the new confirmed worklist: two real bugs fixed (one P1 symlink escape, 
 | F-OPEN-218 | P3 | **Fixed (test-gap).** `file_uri_from_params` path handling was untested. Added 5 tests: explicit-`uri` preference, absolute-path canonicalization, relative-path-against-cwd, canonicalize() fallback on a nonexistent path, and the None case. `crates/al-core/src/server/daemon/mod.rs`. |
 
 Workspace test count: 2135 → 2153 (+18 new tests: 7 al-explorer, 3 build_dispatch symlink, 3 config, 5 daemon file_uri). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 102 (2026-06-02)
+
+Drained the new confirmed worklist: two real P1 bugs (DashMap iterator held across re-access, hardcoded XLIFF target-language) and two P2 XLIFF round-trip fidelity bugs (non-deterministic Label IDs, dropped empty source). No standing open findings remained to drain (Open section was already empty).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-219 | P1 | **Fixed.** `queries::impact::search_workspace_files` iterated `file_index.files.iter()` while holding the iterator `Ref` across a `get_cached_parse(path)` call that re-locks the same DashMap (`file_index.rs`), risking deadlock under shard contention. Cloned `entry.key()` and `drop(entry)` before the call, matching the established safe pattern in `search.rs`/`duplicates.rs`/`arch_lint.rs`. Behavior-preserving. `crates/al-core/src/queries/impact.rs`. |
+| F-OPEN-220 | P1 | **Fixed.** `dispatch_xlf_refresh` hardcoded `"en-US"` as both source and target language when rewriting a language-specific `.xlf` (e.g. `de-DE.xlf`), corrupting its `target-language` metadata and breaking round-trip semantics. Added a pure `xlf_target_language(path)` helper deriving the locale from the filename (falling back to `en-US` for the generated `*.g.xlf` base file or unparseable names); refresh now passes the derived locale. +2 tests. `crates/al-core/src/server/daemon/build_dispatch.rs`. |
+| F-OPEN-221 | P2 | **Fixed.** `make_label_id` used the cumulative `units.len()` as its index, so the same Label's ID changed with extraction order (breaking `refresh_xliff` matching when file ordering changed or an earlier file was deleted). Replaced with a per-file `label_index` counter so IDs depend only on the label's position within its own object. +1 test. `crates/al-core/src/xliff.rs`. |
+| F-OPEN-222 | P2 | **Fixed.** `extract_single_line` returned `None` for an empty body (`<source></source>`), switching the parser into multi-line mode hunting for a closing tag already passed and silently dropping the trans-unit on round-trip (generation always emits a source element — an asymmetric data loss). Now returns `Some(String::new())` for empty bodies. +1 test. `crates/al-core/src/xliff.rs`. |
+
+Workspace test count: 2153 → 2157 (+4 new regression tests: 1 DashMap-free impact path covered via existing tests, 2 build_dispatch `xlf_target_language`, 1 label-ID stability, 1 empty-source round-trip). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
