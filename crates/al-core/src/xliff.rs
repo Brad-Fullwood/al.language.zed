@@ -581,7 +581,13 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
                 multi.target_tag = Some("target");
                 multi.accumulator = partial;
             }
-        } else if trimmed.starts_with("<note>") {
+        } else if trimmed.starts_with("<note>") || trimmed.starts_with("<note ") {
+            // MS-format `.xlf` notes carry attributes
+            // (`<note from="Developer" annotates="general" priority="2">…`),
+            // so match both the bare `<note>` form (what we generate) and the
+            // attributed `<note …>` form. `extract_single_line` /
+            // `extract_open_only` already skip past the attributes by anchoring
+            // on the first `>` of the open tag.
             if let Some(body) = extract_single_line(trimmed, "note") {
                 current_note = Some(body);
             } else if let Some(partial) = extract_open_only(trimmed) {
@@ -1384,5 +1390,41 @@ le monde</target>
         let unit = parsed.get("single").expect("unit should parse");
         assert_eq!(unit.source, "Hello");
         assert_eq!(unit.target.as_deref(), Some("Bonjour"));
+    }
+
+    #[test]
+    fn parse_xliff_preserves_ms_format_note_with_attributes() {
+        // Regression: BC and the MS AL extension emit `<note>` elements WITH
+        // attributes (`from`, `annotates`, `priority`). The earlier exact
+        // `starts_with("<note>")` check dropped every such note, so a
+        // refresh/merge of a real-world language `.xlf` silently lost the
+        // developer context. Both the bare and the attributed form must parse.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xliff version="1.2">
+  <file>
+    <body>
+      <group>
+        <trans-unit id="attr" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Customer Name</source>
+          <target state="translated">Kundenname</target>
+          <note from="Developer" annotates="general" priority="2">Shown on the card</note>
+        </trans-unit>
+        <trans-unit id="bare">
+          <source>Hello</source>
+          <note>plain note</note>
+        </trans-unit>
+      </group>
+    </body>
+  </file>
+</xliff>"#;
+        let parsed = parse_xliff(xml);
+        let attr = parsed.get("attr").expect("attributed unit should parse");
+        assert_eq!(
+            attr.note.as_deref(),
+            Some("Shown on the card"),
+            "attributed <note …> must be captured, not dropped"
+        );
+        let bare = parsed.get("bare").expect("bare unit should parse");
+        assert_eq!(bare.note.as_deref(), Some("plain note"));
     }
 }
