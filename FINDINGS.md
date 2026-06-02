@@ -1120,9 +1120,9 @@ Carry-forwards:
 | ID | Severity | Title |
 |---|---|---|
 | F-OPEN-110 | P1 | Wire up the 5 dormant FormatOptions fields. Real feature work; design + tests required. |
-| F-OPEN-111 | P1 | Hardcoded AL block-keyword text matches (`begin`/`end`/`var`/`repeat`/`until`/`else`/`case`/`of`) in the text-based formatter. Pattern matches existing `is_single_statement_opener` which uses `language_data::single_stmt_openers()`; corresponding `block_keywords.json` would centralise. Defer until other AL data files land. |
-| F-OPEN-112 | P1 | `format_range` can change indent of unselected lines because the whole-doc formatter pass is then sliced. By-design per AL formatter convention; document at the LSP boundary. Trailing-newline edge case on last-line range also worth covering. |
-| F-OPEN-113 | P2 | Multi-line paren-continuation idempotency not covered by tests. Add a regression test once the multi-line indent semantics are stable. |
+| F-OPEN-180 | P1 | Hardcoded AL block-keyword text matches (`begin`/`end`/`var`/`repeat`/`until`/`else`/`case`/`of`) in the text-based formatter. Pattern matches existing `is_single_statement_opener` which uses `language_data::single_stmt_openers()`; corresponding `block_keywords.json` would centralise. Defer until other AL data files land. |
+| F-OPEN-181 | P1 | `format_range` can change indent of unselected lines because the whole-doc formatter pass is then sliced. By-design per AL formatter convention; document at the LSP boundary. Trailing-newline edge case on last-line range also worth covering. |
+| F-OPEN-182 | P2 | Multi-line paren-continuation idempotency not covered by tests. Add a regression test once the multi-line indent semantics are stable. |
 
 Workspace test count: 1928 unchanged. All gates green.
 
@@ -1174,8 +1174,8 @@ Four commits closing four follow-ups.
 |---|---|---|
 | F-FIX-107 | P1 | F-OPEN-110 (part 1) closed. KeywordCasing actually does something now. `apply_keyword_casing` walks each line's tokens, case-folding only those matching `language_data::is_keyword`. Skips string literals, quoted identifiers, line comments, and the existing `in_block_comment` path. 4 regression tests pin the contract. |
 | F-FIX-108 | P3 | F-OPEN-103 closed. `is_variable_name_node` now accepts any `kw_*` node as identifier fallback, not just `kw_function`. Outline-completeness restored for any future grammar additions. |
-| F-FIX-109 | P3 | F-OPEN-111 closed via documentation. Block-syntax keywords (begin/end/var/repeat/until/else/case/of) are AL Pascal-grammar terminals, not BC-release surface. Module doc names the exemption + `block_keywords.json` migration path. |
-| F-FIX-110 | P2 | F-OPEN-113 closed. Two new idempotency regression tests covering multi-line argument call and multi-line function call inside an if-condition. Both pass against current formatter; now prevent regression. |
+| F-FIX-109 | P3 | F-OPEN-180 closed via documentation. Block-syntax keywords (begin/end/var/repeat/until/else/case/of) are AL Pascal-grammar terminals, not BC-release surface. Module doc names the exemption + `block_keywords.json` migration path. |
+| F-FIX-110 | P2 | F-OPEN-182 closed. Two new idempotency regression tests covering multi-line argument call and multi-line function call inside an if-condition. Both pass against current formatter; now prevent regression. |
 
 Workspace test count: 1928 → 1934 (+6 tests: 4 KeywordCasing + 2 multi-line paren idempotency). All gates green.
 
@@ -1196,7 +1196,7 @@ Fresh audit of `queries/dead_code.rs` (1049 LOC — unaudited). 1 fix.
 
 | ID | Severity | Resolution |
 |---|---|---|
-| F-FIX-113 | P1 | F-OPEN-114 closed. `parsed_files` from DashMap iteration was non-deterministic across runs; `results` inherited it. Added a single `sort_by` on path before the main loop. CI snapshots and human review of deadcode output now stable across process restarts. Plus doc-comment in `has_event_attribute` ties the substring literals to `insight::attr_names::*` so future renames are grep-able. |
+| F-FIX-113 | P1 | F-OPEN-183 closed. `parsed_files` from DashMap iteration was non-deterministic across runs; `results` inherited it. Added a single `sort_by` on path before the main loop. CI snapshots and human review of deadcode output now stable across process restarts. Plus doc-comment in `has_event_attribute` ties the substring literals to `insight::attr_names::*` so future renames are grep-able. |
 
 Carry-forwards from audit:
 
@@ -1462,12 +1462,12 @@ Focused backlog drain: one code fix plus two triage dispositions, each committed
 
 | ID | Severity | Resolution |
 |---|---|---|
-| F-OPEN-112 | P2 | **Fixed.** `format_range` unconditionally appended `\n`, injecting a trailing newline into a last-line selection of a file with no trailing newline (confirmed empirically: input ending in `}` produced `"}\n"`). Now only appends when the selection is not the last line or the document actually ends with `\n` (consulting `text` directly, since `.lines()` discards the trailing-newline distinction). Also documented the by-design range-format indent behaviour at the server boundary. +3 regression tests (last-line no-newline, last-line with-newline, non-last-line bridging newline). |
+| F-OPEN-181 | P2 | **Fixed.** `format_range` unconditionally appended `\n`, injecting a trailing newline into a last-line selection of a file with no trailing newline (confirmed empirically: input ending in `}` produced `"}\n"`). Now only appends when the selection is not the last line or the document actually ends with `\n` (consulting `text` directly, since `.lines()` discards the trailing-newline distinction). Also documented the by-design range-format indent behaviour at the server boundary. +3 regression tests (last-line no-newline, last-line with-newline, non-last-line bridging newline). |
 | F-OPEN-110 | P3 | **Deferred.** Wiring the four dormant `FormatOptions` fields (`blank_lines_between_procedures`, `max_line_length`, `brace_style`, `sort_properties`) requires structural transforms (wrap/merge/split/reorder) the line-by-line text state machine in `format_al` cannot perform safely. Each is its own design + tests; bundling them would be a four-feature mega-commit violating scope discipline. No honesty gap: `to_format_options` parses every value and emits a per-field `warn!` that the setting is inert (F-OPEN-024). |
 | F-OPEN-072 | P1 | **Documented.** Force-aborting a wedged in-process CLR call across the FFI boundary is an accepted architectural limitation (no safe portable interrupt; design-first per the finding). Recovery is already mitigated: the cooldown + `try_lock` probe in `SemanticBridge::call` auto-clears once a hung call returns, and `restart_bridge` builds a fresh `DotNetHost`/Mutex. The remaining gap (no production caller auto-invokes `restart_bridge`) is itself the design-first work the finding calls out and warrants its own finding. |
-| F-OPEN-010, 016, 042, 043, 046, 054, 060, 063, 065, 081, 135, 136, 137 | P1/P2/P3 | Carried forward — budget this iteration went to the F-OPEN-112 fix and the F-OPEN-110/072 triage dispositions. |
+| F-OPEN-010, 016, 042, 043, 046, 054, 060, 063, 065, 081, 135, 136, 137 | P1/P2/P3 | Carried forward — budget this iteration went to the F-OPEN-181 fix and the F-OPEN-110/072 triage dispositions. |
 
-Workspace test count: 2044 → 2047 (+3, all from F-OPEN-112 range-format regression tests). All gates green (fmt, check, clippy `-D warnings`, test, WASM build).
+Workspace test count: 2044 → 2047 (+3, all from F-OPEN-181 range-format regression tests). All gates green (fmt, check, clippy `-D warnings`, test, WASM build).
 
 ### Iteration 90 (2026-05-29)
 
@@ -1820,3 +1820,16 @@ Focused backlog drain — one stuck open finding resolved by a dedicated agent w
 | F-OPEN-010 | P2 | **Fixed.** OAuth `access_token`/`refresh_token` were plain `String`s in the long-lived al-lsp daemon (30-min idle window), so secrets lingered in freed heap allocations for the process lifetime (recoverable via core dump / `/proc/<pid>/mem`). `crates/al-core/src/symbols/oauth.rs`: added the pre-approved `zeroize` crate (1.x, derive feature) as a direct workspace dependency and derived `Zeroize, ZeroizeOnDrop` on `TokenResponse` and `CachedToken`, with `#[zeroize(skip)]` on the non-secret `expires_in`/`expires_at`/`tenant` fields. Because `ZeroizeOnDrop` implements `Drop`, the three partial-move return sites in `acquire_token` would have forfeited the scrub, so each now `.clone()`s the returned token and lets the owning struct drop intact and zeroized. Added 3 regression tests (`zeroize_tests`) verifying secrets are wiped while skipped metadata is preserved, plus the `refresh_token: None` device-code path. The disk-at-rest plaintext threat (OS-keyring migration) remains documented future-work in the `save_cached_token` doc-comment and is out of scope for this in-memory finding. Commit e4a86b3. |
 
 Workspace test count: 2115 → 2118 (+3 oauth zeroize regression tests). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 100 (2026-05-29)
+
+Drained the new confirmed worklist: one real symlink-traversal bug fixed, four test-gaps closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-206 | P2 | **Fixed.** `toolchain::search_dir_recursive` followed symlinks transparently via `is_dir()`, so a symlink planted in a user-writable `.store` directory (or the `AL_TOOL_PATH` target) could escape the search root and let a malicious `alc.dll` outside the tree be discovered/executed by `dotnet_command_async`. Now canonicalizes the root once and rejects any discovered directory whose canonical path falls outside it (falls back to no bounds check only if the root itself can't be canonicalized). `crates/al-core/src/toolchain.rs`. |
+| F-OPEN-207 | P1 | **Fixed (test-gap).** `search_path_for()` (which/where output parsing) and `find_toolchain()` end-to-end discovery had zero coverage. Added: symlink-escape rejection + in-root discovery for `search_dir_recursive`; `search_path_for` missing-command + successful `which alc` discovery (Unix); `find_toolchain` via `AL_TOOL_PATH` (direct + nested layouts). Env-mutating tests serialized via a module-local `Mutex` (existing `build.rs` pattern), no new deps. |
+| F-OPEN-208 | P2 | **Fixed (test-gap).** XLIFF roundtrip did not cover quoted identifiers in the `id` attribute. Added `test_generate_xliff_roundtrip_quoted_id_attribute` verifying a quoted id is escaped to `&quot;` and parsed back exactly, guarding `extract_xml_attr`. Code was already correct (verified). `crates/al-core/src/xliff.rs`. |
+| F-OPEN-209 | P2 | **Fixed (test-gap).** `suggest_event::trace_from_node` depth bound + `visited` set were untested. Added three white-box tests over hand-built insight/call graphs: 15-deep chain stops at `max_depth`, circular subscriptions terminate without re-visits, and 3×3 fan-out yields each leaf event exactly once. `crates/al-core/src/queries/suggest_event.rs`. |
+
+Workspace test count: 2118 → 2135 (+10 new tests this iteration; the rest reflect re-tallying across the full suite). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
