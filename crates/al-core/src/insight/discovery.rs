@@ -43,8 +43,10 @@ pub struct SubscriberInfo {
 pub struct DiscoveredEvent {
     /// The event name.
     pub event_name: String,
-    /// Publisher information. `None` only for orphan subscribers that reference
-    /// a non-existent event — this field will always be populated for real events.
+    /// Publisher information for the event. Always populated, since
+    /// `DiscoveredEvent` is only created for real events that exist in the
+    /// workspace. Orphan subscribers (those targeting non-existent events) are
+    /// stored separately in `EventDiscoveryResult::orphan_subscribers`.
     pub publisher: PublisherInfo,
     /// All subscribers of this event within the workspace.
     pub subscribers: Vec<SubscriberInfo>,
@@ -89,7 +91,8 @@ pub struct EventDiscoveryResult {
 ///
 /// Algorithm:
 /// 1. Collect all `Event` nodes as publishers.
-/// 2. For each event node, follow incoming `SubscribesTo` edges to collect subscribers.
+/// 2. For each subscriber node, follow outgoing `SubscribesTo` edges to find
+///    target events and register the subscriber against each matched event.
 /// 3. Collect all `Subscriber` nodes that have NO outgoing `SubscribesTo` edge
 ///    (meaning they point to an event not in the graph) — these are orphans.
 ///
@@ -207,22 +210,17 @@ pub fn discover_events(graph: &InsightGraph) -> EventDiscoveryResult {
         let has_subs = !subs.is_empty();
 
         events.push(DiscoveredEvent {
-            event_name: evt_name,
+            event_name: evt_name.clone(),
             publisher: PublisherInfo {
                 object_kind: obj_kind,
                 object_name: obj_name,
-                event_name: String::new(), // filled below
+                event_name: evt_name,
                 event_type: evt_type,
             },
             subscribers: subs,
             subscriber_count: sub_count,
             has_subscribers: has_subs,
         });
-    }
-
-    // Fix up publisher.event_name (same as event_name on the parent).
-    for ev in &mut events {
-        ev.publisher.event_name = ev.event_name.clone();
     }
 
     // Sort events by (publisher object_name, event_name).
