@@ -1992,3 +1992,14 @@ Two commits. Fresh adversarial review of `crates/al-core/src/semantic/host.rs` (
 
 Workspace test count: 2187 → 2190 (+3 timeout-table regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings`, full test suite at 2190 passing).
 
+### Iteration 114 (2026-06-03)
+
+One commit. Adversarial review of `CopyStr` in the test-runtime interpreter (`crates/al-core/src/test_runtime/interpreter/dispatch.rs`).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-249 | P1 | **Fixed (+ test).** `builtin_copystr` cast the `len` argument to `usize` via `*n as usize` before any validation. A negative `len` (e.g. `CopyStr('hello', 1, -3)`) wrapped to ~`2^64-3`, which then clamped via `(start + len).min(chars.len())` to the string end — silently returning `'hello'` instead of raising an error as AL/BC semantics require. Now keeps `len` signed, rejects `len < 0` explicitly with an error, then casts. +1 regression test (`copystr_negative_len_errors_not_silent_truncate`). |
+| F-OPEN-250 | P2 | **Fixed (+ test).** Companion to F-OPEN-249: `pos` was cast via `*pos as usize` and the primary guard only checked `pos == 0`, so a negative `pos` wrapped to a huge unsigned value and relied on the secondary `pos > chars.len()` bounds check to error. Changed the guard to `pos <= 0` (matching the documented "position must be >= 1" intent) and moved the `as usize` cast after validation. +1 regression test (`copystr_negative_pos_errors`). |
+
+Workspace test count: 2190 → 2192 (+2 CopyStr regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite at 2192 passing, and `zed-al` `wasm32-wasip1` release build).
+
