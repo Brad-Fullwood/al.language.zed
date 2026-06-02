@@ -568,15 +568,24 @@ fn builtin_strlen(args: &[Value]) -> Eval {
 
 /// `CopyStr(s, pos[, len])` — extract a substring. 1-based position.
 fn builtin_copystr(args: &[Value]) -> Eval {
+    // Keep `pos` signed so a negative value is rejected explicitly rather than
+    // wrapping to a huge usize via an `as usize` cast.
     let (s, pos) = match args {
         [Value::Text(s), Value::Integer(pos)]
         | [Value::Code(s), Value::Integer(pos)]
         | [Value::Text(s), Value::Integer(pos), _]
-        | [Value::Code(s), Value::Integer(pos), _] => (s.clone(), *pos as usize),
+        | [Value::Code(s), Value::Integer(pos), _] => (s.clone(), *pos),
         _ => return simple_error("CopyStr expects (Text, Integer[, Integer])"),
     };
+    // Keep `len` signed so a negative value is rejected explicitly rather than
+    // wrapping to a huge usize via an `as usize` cast.
     let len = match args.get(2) {
-        Some(Value::Integer(n)) => *n as usize,
+        Some(Value::Integer(n)) => {
+            if *n < 0 {
+                return simple_error(format!("CopyStr: len must be >= 0, got {n}"));
+            }
+            *n as usize
+        }
         None => s.chars().count(),
         Some(v) => {
             return simple_error(format!(
@@ -585,9 +594,10 @@ fn builtin_copystr(args: &[Value]) -> Eval {
             ))
         }
     };
-    if pos == 0 {
+    if pos <= 0 {
         return simple_error("CopyStr: position must be >= 1");
     }
+    let pos = pos as usize;
     let chars: Vec<char> = s.chars().collect();
     // AL runtime raises an error when position exceeds the string length.
     if pos > chars.len() {
@@ -986,6 +996,52 @@ mod tests {
         assert!(
             result.is_error(),
             "CopyStr pos > string length must error, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn copystr_negative_len_errors_not_silent_truncate() {
+        // Regression: CopyStr("hello", 1, -3) must raise an error. A naive
+        // `*n as usize` cast wraps -3 to 2^64-3, which then clamps to the
+        // string end and silently returns "hello" instead of erroring.
+        let mut ctx = ctx();
+        let result = dispatch_call(
+            None,
+            "CopyStr",
+            vec![
+                Value::Text("hello".into()),
+                Value::Integer(1),
+                Value::Integer(-3),
+            ],
+            &mut ctx,
+        );
+        assert!(
+            result.is_error(),
+            "CopyStr with negative len must error, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn copystr_negative_pos_errors() {
+        // Regression: CopyStr("hello", -1, 2) must raise an error. A naive
+        // `*pos as usize` cast wraps -1 to 2^64-1; the primary `pos <= 0`
+        // guard must reject it directly.
+        let mut ctx = ctx();
+        let result = dispatch_call(
+            None,
+            "CopyStr",
+            vec![
+                Value::Text("hello".into()),
+                Value::Integer(-1),
+                Value::Integer(2),
+            ],
+            &mut ctx,
+        );
+        assert!(
+            result.is_error(),
+            "CopyStr with negative pos must error, got: {:?}",
             result
         );
     }
