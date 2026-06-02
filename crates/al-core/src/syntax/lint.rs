@@ -97,7 +97,11 @@ mod tests {
 
     #[test]
     fn lint_config_has_default() {
-        // LintConfig::default() must compile and produce a value.
-        let _cfg = LintConfig::default();
+        // LintConfig is a unit struct; both the explicit constructor and
+        // `Default::default()` round-trip. Use the trait form via a typed
+        // binding so a future field addition (turning this into a real
+        // struct) still exercises the Default impl rather than silently
+        // becoming a no-op once clippy can no longer warn.
+        let _cfg: LintConfig = Default::default();
     }
 }
