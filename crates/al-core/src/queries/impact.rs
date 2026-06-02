@@ -312,8 +312,9 @@ fn search_workspace_files(
     results: &mut Vec<ImpactEntry>,
 ) {
     for entry in workspace.file_index.files.iter() {
-        let path = entry.key();
-        let Some((file_text, tree)) = workspace.file_index.get_cached_parse(path) else {
+        let path = entry.key().clone();
+        drop(entry); // release dashmap lock before re-accessing the map
+        let Some((file_text, tree)) = workspace.file_index.get_cached_parse(&path) else {
             continue;
         };
         let refs = crate::syntax::find_variable_references(&tree, &file_text, search_name);
