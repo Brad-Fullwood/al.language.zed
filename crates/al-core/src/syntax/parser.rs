@@ -44,7 +44,7 @@ impl AlParser {
             .parser
             .parse(text, None)
             .expect("tree-sitter parse must succeed without timeout or cancellation");
-        let errors = collect_errors(&tree, text);
+        let errors = collect_errors(&tree);
         ParseResult { tree, errors }
     }
 
@@ -53,16 +53,15 @@ impl AlParser {
             .parser
             .parse(text, Some(old_tree))
             .expect("tree-sitter incremental parse must succeed without timeout or cancellation");
-        let errors = collect_errors(&tree, text);
+        let errors = collect_errors(&tree);
         ParseResult { tree, errors }
     }
 
     /// Extract syntax errors from an already-parsed tree.
     ///
     /// Used to obtain errors from a cached tree without re-parsing the source.
-    /// The `text` parameter is accepted for API consistency but is currently unused.
     pub fn errors_from_tree(tree: &Tree) -> Vec<SyntaxError> {
-        collect_errors(tree, "")
+        collect_errors(tree)
     }
 
     /// Parse using a thread-local parser, avoiding repeated `Parser::new()` + `set_language()`.
@@ -83,7 +82,7 @@ impl Default for AlParser {
     }
 }
 
-fn collect_errors(tree: &Tree, _text: &str) -> Vec<SyntaxError> {
+fn collect_errors(tree: &Tree) -> Vec<SyntaxError> {
     let mut errors = Vec::new();
     walk_tree(tree.root_node(), &mut |node| {
         if node.is_error() || node.is_missing() {
@@ -184,6 +183,39 @@ mod tests {
         // Invalid code with missing procedure name may produce errors
         // At minimum it should not panic
         let _ = result;
+    }
+
+    #[test]
+    fn test_errors_from_tree_extracts_without_reparse() {
+        // `errors_from_tree` should yield the same errors as the original parse,
+        // operating on a cached tree without re-parsing the source.
+        let mut parser = AlParser::new();
+        let source = "codeunit 50100 Test { procedure () begin end; }";
+        let result = parser.parse(source);
+
+        let from_tree = AlParser::errors_from_tree(&result.tree);
+
+        assert_eq!(
+            from_tree.len(),
+            result.errors.len(),
+            "errors_from_tree should match the parse result's error count"
+        );
+        for (a, b) in from_tree.iter().zip(result.errors.iter()) {
+            assert_eq!(a.message, b.message);
+            assert_eq!(a.range.start_byte, b.range.start_byte);
+            assert_eq!(a.range.end_byte, b.range.end_byte);
+        }
+    }
+
+    #[test]
+    fn test_errors_from_tree_empty_for_valid_code() {
+        let mut parser = AlParser::new();
+        let result = parser.parse("codeunit 50100 Test { }");
+        let from_tree = AlParser::errors_from_tree(&result.tree);
+        assert!(
+            from_tree.is_empty(),
+            "valid code should yield no errors from the cached tree"
+        );
     }
 
     // -----------------------------------------------------------------------
