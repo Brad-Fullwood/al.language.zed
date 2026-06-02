@@ -456,14 +456,23 @@ fn default_invoke_timeout(target: &str) -> tokio::time::Duration {
         "IsAlive" => Duration::from_secs(5),
         // Variable inspection / stack frames — can be slow on deep records
         // (BC's GetVariables walks the record graph server-side).
-        "GetVariables" | "GetStackTrace" | "ExpandGlobals" | "ExpandVariableTree"
-        | "ExpandLocalsTree" | "GetSource" => Duration::from_secs(30),
+        // `ExpandNode` is the per-row drill-in used by `expand_node`,
+        // `GetWatchNode` by `get_watch_node` — both call `invoke()` with
+        // those exact target strings, so they belong in this 30s bucket
+        // alongside the other variable-walk paths. Previously the table
+        // listed `ExpandVariableTree` / `ExpandLocalsTree` (no caller),
+        // and the real strings fell through to the 60s catch-all below.
+        "GetVariables" | "GetStackTrace" | "ExpandGlobals" | "ExpandNode" | "GetWatchNode"
+        | "GetSource" => Duration::from_secs(30),
         // Attach / DebugAdapterConfigurationDone — network setup. Allow a
         // longer budget for high-latency BC SaaS connections.
         "Attach" | "DebugAdapterConfigurationDone" => Duration::from_secs(120),
         // Breakpoint operations — usually fast but can serialize behind a
-        // BC compilation step.
-        "AddBreakpoint" | "RemoveBreakpoint" | "SetBreakpointResponse" => Duration::from_secs(30),
+        // BC compilation step. `UpdateBreakpoint` belongs here too;
+        // previously it fell through to the 60s catch-all.
+        "AddBreakpoint" | "RemoveBreakpoint" | "UpdateBreakpoint" | "SetBreakpointResponse" => {
+            Duration::from_secs(30)
+        }
         // Teardown — should be quick; if it isn't, we abandon and tear down
         // the WS connection anyway.
         "StopDebugging" | "TerminateSession" => Duration::from_secs(10),
@@ -775,6 +784,13 @@ impl BcDebugSession {
             args = %serde_json::to_string(&arguments).unwrap_or_default(),
             "SignalR invoke arguments"
         );
+        // Compute the deadline BEFORE the send + event_rx.lock so the budget
+        // declared by `default_invoke_timeout` is faithful even when another
+        // invoke is holding `event_rx` for its own (potentially 120s `Attach`)
+        // window. Previously the deadline was anchored after the lock was
+        // granted, so a queued caller's effective timeout silently extended
+        // by however long it waited for the mutex.
+        let deadline = tokio::time::Instant::now() + timeout;
         self.ws_tx
             .send(msg.to_string())
             .await
@@ -782,7 +798,6 @@ impl BcDebugSession {
 
         // Wait for completion with matching invocation ID
         let mut rx = self.event_rx.lock().await;
-        let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
@@ -1512,6 +1527,53 @@ mod tests {
         // default rather than panic or return zero.
         let t = default_invoke_timeout("SomeFutureUnknownTarget");
         assert_eq!(t, tokio::time::Duration::from_secs(60));
+    }
+
+    #[test]
+    fn invoke_timeout_expand_node_uses_variable_bucket() {
+        // F-OPEN-246 regression: `expand_node` calls invoke("ExpandNode"),
+        // `get_watch_node` calls invoke("GetWatchNode"). Previously the
+        // table listed `ExpandVariableTree` / `ExpandLocalsTree` (no real
+        // caller); the actual strings fell through to the 60s catch-all.
+        // Both must now hit the 30s variable-inspection bucket.
+        assert_eq!(
+            default_invoke_timeout("ExpandNode"),
+            tokio::time::Duration::from_secs(30)
+        );
+        assert_eq!(
+            default_invoke_timeout("GetWatchNode"),
+            tokio::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn invoke_timeout_update_breakpoint_uses_breakpoint_bucket() {
+        // F-OPEN-246 regression: `UpdateBreakpoint` is a real invoke target
+        // (alongside AddBreakpoint / RemoveBreakpoint / SetBreakpointResponse)
+        // and must use the 30s breakpoint-operations budget rather than the
+        // 60s unknown-target fallback.
+        assert_eq!(
+            default_invoke_timeout("UpdateBreakpoint"),
+            tokio::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn invoke_timeout_dead_entries_are_gone() {
+        // F-OPEN-246 regression: the old table had entries for
+        // `ExpandVariableTree` and `ExpandLocalsTree` that no caller ever
+        // produced. Those strings should now fall through to the 60s
+        // catch-all (since they are unreachable by the codebase). This
+        // test pins the cleanup so a future revert doesn't silently
+        // reintroduce dead table entries.
+        assert_eq!(
+            default_invoke_timeout("ExpandVariableTree"),
+            tokio::time::Duration::from_secs(60)
+        );
+        assert_eq!(
+            default_invoke_timeout("ExpandLocalsTree"),
+            tokio::time::Duration::from_secs(60)
+        );
     }
 
     #[test]
