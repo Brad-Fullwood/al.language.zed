@@ -1904,3 +1904,13 @@ Drained the new confirmed worklist: six related P1 unchecked `i64`→`i32` cast 
 | F-OPEN-235 | P1 | **Fixed.** `resolve_object_metadata` (debug_dispatch) cast the cached `Option<i64>` object id with `id as i32`, truncating before returning; callers validate caller-supplied params but trusted the resolved fallback to already be valid, so a wrapped id could route a breakpoint to the wrong BC object. Now returns `None` for out-of-range cached ids (forcing the caller to reject the breakpoint), matching the documented contract. +1 test. `crates/al-core/src/server/daemon/debug_dispatch.rs`. |
 
 Workspace test count: 2162 → 2168 (+6 new regression tests: 2 permissions overflow/in-range, 1 run_batch overflow, 2 last_results single/bulk overflow, 1 resolve_object_metadata cached-id overflow). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 106 (2026-05-29)
+
+Single new confirmed P2 from the worklist (OAuth device-code polling backoff). Open backlog was already empty (nothing to drain).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-236 | P2 | **Fixed (+ regression tests).** `device_code_flow()` in `crates/al-core/src/symbols/oauth.rs` bumped the polling `interval` by 5s on every `slow_down` token-endpoint response with no upper bound, so a buggy or hostile server could push the interval arbitrarily high (toward the ~900s deadline) and stall sign-in. Added `MAX_POLL_INTERVAL = 60s` plus a pure `next_slow_down_interval()` helper that saturates the bump and clamps to the cap. +3 tests: the 5s bump, cap behaviour (incl. saturating from `u64::MAX`), and convergence under 200 consecutive `slow_down` responses. |
+
+Workspace test count: 2168 → 2171 (+3 new oauth slow_down regression tests). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
