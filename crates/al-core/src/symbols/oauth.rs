@@ -258,12 +258,7 @@ async fn browser_auth_flow(
         .send()
         .await?;
 
-    if resp.status().is_success() {
-        Ok(resp.json().await?)
-    } else {
-        let body = resp.text().await.unwrap_or_default();
-        parse_token_error(&body)
-    }
+    handle_token_response(resp).await
 }
 
 /// Read an HTTP request from an async stream, looping until the header
@@ -559,12 +554,7 @@ async fn refresh_token_flow(
         .send()
         .await?;
 
-    if resp.status().is_success() {
-        Ok(resp.json().await?)
-    } else {
-        let body = resp.text().await.unwrap_or_default();
-        parse_token_error(&body)
-    }
+    handle_token_response(resp).await
 }
 
 // ---------------------------------------------------------------------------
@@ -735,37 +725,32 @@ fn parse_query_string(query: &str) -> std::collections::HashMap<String, String> 
 // Browser opening
 // ---------------------------------------------------------------------------
 
-fn open_browser(url: &str) -> bool {
+/// Spawn `cmd` with `args`, discarding all three standard streams. Returns
+/// whether the spawn succeeded (the child is detached; we never wait on it).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn suppress_stdio_and_spawn(cmd: &str, args: &[&str]) -> bool {
     use std::process::Stdio;
+    std::process::Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+fn open_browser(url: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .is_ok()
+        suppress_stdio_and_spawn("xdg-open", &[url])
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg(url)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .is_ok()
+        suppress_stdio_and_spawn("open", &[url])
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", url])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .is_ok()
+        suppress_stdio_and_spawn("cmd", &["/c", "start", "", url])
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
@@ -1280,6 +1265,17 @@ fn now_unix() -> u64 {
 // ---------------------------------------------------------------------------
 // Error helpers
 // ---------------------------------------------------------------------------
+
+/// Parse a token endpoint response: deserialize the body as a `TokenResponse`
+/// on success, otherwise surface the OAuth error from the body.
+async fn handle_token_response(resp: reqwest::Response) -> Result<TokenResponse, OAuthError> {
+    if resp.status().is_success() {
+        Ok(resp.json().await?)
+    } else {
+        let body = resp.text().await.unwrap_or_default();
+        parse_token_error(&body)
+    }
+}
 
 fn parse_token_error<T>(body: &str) -> Result<T, OAuthError> {
     let err: TokenErrorResponse = serde_json::from_str(body).unwrap_or(TokenErrorResponse {
