@@ -954,64 +954,12 @@ fn strip_jsonc_comments_and_parse(
     // Zed's settings.json is JSONC: it permits trailing commas (e.g. the comma
     // after the last property in an object). serde_json is strict and rejects
     // them ("trailing comma at line N"), so strip them before parsing — exactly
-    // as Zed itself tolerates them.
-    let result = strip_trailing_commas(&result);
+    // as Zed itself tolerates them. Delegate to the canonical byte-safe
+    // implementation in `dap::json_util` so multi-byte UTF-8 (e.g. emoji in a
+    // theme name or comment) is never corrupted by `byte as char` casting.
+    let result = crate::dap::json_util::strip_trailing_commas(&result);
 
     Ok(serde_json::from_str(&result)?)
-}
-
-/// Remove JSON trailing commas: a `,` followed only by whitespace before a
-/// closing `}` or `]`. String contents are preserved (a comma inside a string
-/// is never treated as structural). Operates on comment-free input.
-fn strip_trailing_commas(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
-    let mut in_string = false;
-    let mut escape_next = false;
-    let mut i = 0;
-
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-
-        if escape_next {
-            out.push(c);
-            escape_next = false;
-            i += 1;
-            continue;
-        }
-        if in_string {
-            out.push(c);
-            match c {
-                '\\' => escape_next = true,
-                '"' => in_string = false,
-                _ => {}
-            }
-            i += 1;
-            continue;
-        }
-        if c == '"' {
-            in_string = true;
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        if c == ',' {
-            // Look ahead past whitespace; if the next non-space byte closes a
-            // container, this comma is trailing — drop it.
-            let mut j = i + 1;
-            while j < bytes.len() && (bytes[j] as char).is_whitespace() {
-                j += 1;
-            }
-            if j < bytes.len() && (bytes[j] == b'}' || bytes[j] == b']') {
-                i += 1; // skip the comma, keep the whitespace/closer
-                continue;
-            }
-        }
-        out.push(c);
-        i += 1;
-    }
-
-    out
 }
 
 /// Deep-merge `overrides` into `base`.
@@ -1139,6 +1087,18 @@ mod tests {
         let parsed = strip_jsonc_comments_and_parse(input).unwrap();
         assert_eq!(parsed["ui_font_size"], 16);
         assert_eq!(parsed["theme"]["dark"], "Business Central Dark");
+    }
+
+    #[test]
+    fn multibyte_utf8_survives_trailing_comma_strip() {
+        // Regression: the previous in-module `strip_trailing_commas` cast each
+        // byte to `char`, corrupting multi-byte UTF-8 (e.g. emoji in a theme
+        // name or comment) whenever the settings had a trailing comma.
+        let input = r#"{ "name": "Test 😀", "accent": "café", "value": 1, }"#;
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["name"], "Test 😀");
+        assert_eq!(parsed["accent"], "café");
+        assert_eq!(parsed["value"], 1);
     }
 
     #[test]
