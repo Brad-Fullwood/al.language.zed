@@ -110,11 +110,14 @@ fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
         (Value::Object(base_obj), Value::Object(override_obj)) => {
             let mut merged = base_obj.clone();
             for (key, override_value) in override_obj {
-                let value = merged
-                    .get(key)
-                    .map(|base_value| merge_json_inner(base_value, override_value, depth + 1))
-                    .unwrap_or_else(|| override_value.clone());
-                merged.insert(key.clone(), value);
+                if let Some(slot) = merged.get_mut(key) {
+                    // Key present in base: recurse and overwrite in place,
+                    // reusing the existing key (no key clone).
+                    *slot = merge_json_inner(slot, override_value, depth + 1);
+                } else {
+                    // New key: clone it once on insertion.
+                    merged.insert(key.clone(), override_value.clone());
+                }
             }
             Value::Object(merged)
         }
