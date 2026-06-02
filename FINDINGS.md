@@ -1864,3 +1864,17 @@ Drained the new confirmed worklist: two real P1 bugs (DashMap iterator held acro
 | F-OPEN-222 | P2 | **Fixed.** `extract_single_line` returned `None` for an empty body (`<source></source>`), switching the parser into multi-line mode hunting for a closing tag already passed and silently dropping the trans-unit on round-trip (generation always emits a source element — an asymmetric data loss). Now returns `Some(String::new())` for empty bodies. +1 test. `crates/al-core/src/xliff.rs`. |
 
 Workspace test count: 2153 → 2157 (+4 new regression tests: 1 DashMap-free impact path covered via existing tests, 2 build_dispatch `xlf_target_language`, 1 label-ID stability, 1 empty-source round-trip). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 103 (2026-06-02)
+
+Drained the new confirmed worklist: one test-gap closed for the public `errors_from_tree` method, one private-parameter cleanup, and three insight/discovery improvements (two doc corrections + one redundant-allocation cleanup). No standing open findings remained to drain (Open section was already empty).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-223 | P2 | **Fixed (test-gap).** `AlParser::errors_from_tree` (used in production by `queries/diagnostics.rs` + `server/workspace.rs` to read syntax errors from a cached tree without re-parsing) had only indirect coverage. Added `test_errors_from_tree_extracts_without_reparse` (reproduces the parse result's error count/messages/byte-ranges) and `test_errors_from_tree_empty_for_valid_code`. `crates/al-core/src/syntax/parser.rs`. |
+| F-OPEN-224 | P2 | **Fixed (docs).** `DiscoveredEvent::publisher` doc wrongly suggested it could be `None`; the field is a plain `PublisherInfo` and the struct is only built for real events (orphans live in `orphan_subscribers`). Comment corrected to the actual contract. `crates/al-core/src/insight/discovery.rs`. |
+| F-OPEN-225 | P3 | **Fixed (cleanup).** Removed the unused `_text` parameter from the private `collect_errors` helper (accepted "for API consistency", never used) and the empty-string call from `errors_from_tree`. No public API change. `crates/al-core/src/syntax/parser.rs`. |
+| F-OPEN-226 | P3 | **Fixed (docs).** Corrected the inverted `discover_events` algorithm comment: the code iterates Subscriber nodes and follows their OUTGOING `SubscribesTo` edges, not events' incoming edges. Code was already correct. `crates/al-core/src/insight/discovery.rs`. |
+| F-OPEN-227 | P3 | **Fixed (cleanup).** `discover_events` set `publisher.event_name = String::new()` at construction and patched it in a second pass; `evt_name` is already in scope, so it is now initialized directly and the redundant fixup loop removed (one fewer allocation per event, behavior-preserving). `crates/al-core/src/insight/discovery.rs`. |
+
+Workspace test count: 2157 → 2159 (+2 new `errors_from_tree` regression tests). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
