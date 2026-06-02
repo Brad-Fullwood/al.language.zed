@@ -24,6 +24,16 @@ pub(crate) enum DownloadSource {
     NuGet,
 }
 
+impl DownloadSource {
+    /// User-facing name for status messages.
+    fn display_name(self) -> &'static str {
+        match self {
+            DownloadSource::Server => "BC server",
+            DownloadSource::NuGet => "NuGet",
+        }
+    }
+}
+
 /// Initialize the workspace: discover toolchain, load packages, scan files.
 ///
 /// Called from the background task spawned by the `initialized` notification handler
@@ -602,10 +612,7 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         return;
     }
 
-    let source_name = match source {
-        DownloadSource::Server => "BC server",
-        DownloadSource::NuGet => "NuGet",
-    };
+    let source_name = source.display_name();
 
     server
         .client
@@ -750,18 +757,27 @@ fn settings_prompt_shown() -> bool {
     sentinel_path().map(|p| p.exists()).unwrap_or(false)
 }
 
+/// Create the parent directory of `path` (if any), so a subsequent file write
+/// can succeed. Returns the underlying `create_dir_all` result so each caller
+/// keeps its own error-handling policy (warn-and-skip vs. `?`-propagation).
+fn ensure_parent_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+    } else {
+        Ok(())
+    }
+}
+
 /// Mark that the settings prompt has been shown.
 fn mark_settings_prompt_shown() {
     if let Some(path) = sentinel_path() {
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::warn!(
-                    path = %parent.display(),
-                    error = %e,
-                    "failed to create settings-sentinel parent dir"
-                );
-                return;
-            }
+        if let Err(e) = ensure_parent_dir(&path) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to create settings-sentinel parent dir"
+            );
+            return;
         }
         if let Err(e) = std::fs::write(&path, b"") {
             tracing::warn!(
@@ -837,9 +853,7 @@ pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Err
     let merged = deep_merge(&current, &recommended);
 
     // Write back with pretty formatting.
-    if let Some(parent) = settings_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    ensure_parent_dir(&settings_path)?;
     let output = serde_json::to_string_pretty(&merged)?;
     std::fs::write(&settings_path, output)?;
 

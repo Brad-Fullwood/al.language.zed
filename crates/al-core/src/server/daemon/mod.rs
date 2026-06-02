@@ -678,15 +678,11 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
                 },
             }
         }
-        _ => Response {
+        _ => rpc_error(
             id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: format!("Unknown diag subcommand: {cmd}. Available: summary"),
-            }),
-            ..Default::default()
-        },
+            error_codes::INVALID_PARAMS,
+            &format!("Unknown diag subcommand: {cmd}. Available: summary"),
+        ),
     }
 }
 

@@ -133,7 +133,6 @@ where
     loop {
         // Drain any BC push events (e.g. stopped, output) before blocking on stdin.
         while let Ok(frame) = dap_event_rx.try_recv() {
-            use super::framing::write_dap_frame;
             if let Err(e) = write_dap_frame(&mut stdout, &frame).await {
                 warn!("Failed to write BC event to Zed: {e}");
             }
