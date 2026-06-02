@@ -528,7 +528,17 @@ pub(super) fn dispatch_permissions(
         .get("name")
         .and_then(|v| v.as_str())
         .unwrap_or("Generated Permissions");
-    let perm_id = params.get("id").and_then(|v| v.as_i64()).unwrap_or(50100);
+    // AL object IDs are i32 in BC metadata; reject out-of-range values rather
+    // than letting render_al emit an ID that BC would silently truncate/wrap.
+    let perm_id: i64 = match params.get("id") {
+        Some(v) => match v.as_i64().and_then(|n| i32::try_from(n).ok()) {
+            Some(n) => i64::from(n),
+            None => {
+                return rpc_error(id, error_codes::INVALID_PARAMS, "id out of range");
+            }
+        },
+        None => 50100,
+    };
     let role_id = params
         .get("roleId")
         .and_then(|v| v.as_str())
@@ -2225,7 +2235,12 @@ pub(super) async fn dispatch_tests_run(
 
     // -- Parse params ----------------------------------------------------------
     let codeunit_id = match params.get("codeunit").and_then(|v| v.as_i64()) {
-        Some(n) => n as i32,
+        Some(n) => match i32::try_from(n) {
+            Ok(v) => v,
+            Err(_) => {
+                return rpc_error(id, error_codes::INVALID_PARAMS, "codeunit ID out of range");
+            }
+        },
         None => {
             return rpc_error(
                 id,
@@ -2423,7 +2438,16 @@ pub(super) async fn dispatch_tests_run_batch(
     let mut tests: Vec<TestId> = Vec::with_capacity(codeunit_ids.len());
     for (i, v) in codeunit_ids.iter().enumerate() {
         let cu_id = match v.as_i64() {
-            Some(n) => n as i32,
+            Some(n) => match i32::try_from(n) {
+                Ok(v) => v,
+                Err(_) => {
+                    return rpc_error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        &format!("codeunitIds[{i}] out of range"),
+                    );
+                }
+            },
             None => {
                 return rpc_error(
                     id,
@@ -2649,7 +2673,13 @@ pub(super) async fn dispatch_tests_last_results(
         params.get("codeunitId").and_then(|v| v.as_i64()),
         params.get("methodName").and_then(|v| v.as_str()),
     ) {
-        return match store.last_for(cu as i32, method).await {
+        let cu_id = match i32::try_from(cu) {
+            Ok(v) => v,
+            Err(_) => {
+                return rpc_error(id, error_codes::INVALID_PARAMS, "codeunitId out of range");
+            }
+        };
+        return match store.last_for(cu_id, method).await {
             Ok(opt) => Response {
                 id,
                 result: Some(serde_json::json!({ "lastResult": opt })),
@@ -2676,10 +2706,15 @@ pub(super) async fn dispatch_tests_last_results(
         }
     };
     let filtered: Vec<_> = match params.get("codeunitId").and_then(|v| v.as_i64()) {
-        Some(cu) => all
-            .into_iter()
-            .filter(|r| r.codeunit_id == cu as i32)
-            .collect(),
+        Some(cu) => {
+            let cu_id = match i32::try_from(cu) {
+                Ok(v) => v,
+                Err(_) => {
+                    return rpc_error(id, error_codes::INVALID_PARAMS, "codeunitId out of range");
+                }
+            };
+            all.into_iter().filter(|r| r.codeunit_id == cu_id).collect()
+        }
         None => all,
     };
     Response {
@@ -2831,7 +2866,12 @@ pub(super) async fn dispatch_tests_snapshot_record(
 ) -> Response {
     let _ = workspace;
     let codeunit_id = match params.get("codeunitId").and_then(|v| v.as_i64()) {
-        Some(n) => n as i32,
+        Some(n) => match i32::try_from(n) {
+            Ok(v) => v,
+            Err(_) => {
+                return rpc_error(id, error_codes::INVALID_PARAMS, "codeunitId out of range");
+            }
+        },
         None => {
             return rpc_error(id, error_codes::INVALID_PARAMS, "Missing 'codeunitId'");
         }
@@ -4022,6 +4062,50 @@ mod p1_5_tests {
         );
     }
 
+    // --- dispatch_permissions ------------------------------------------------
+
+    #[test]
+    fn dispatch_permissions_rejects_out_of_range_id() {
+        // Negative regression: an `id` beyond the i32 range must be rejected
+        // with INVALID_PARAMS rather than silently wrapping into the generated
+        // AL permissionset declaration.
+        let ws = empty_ws();
+        let resp = dispatch_permissions(
+            &ws,
+            1,
+            &serde_json::json!({
+                "id": (i32::MAX as i64) + 1,
+            }),
+        );
+        let err = resp
+            .error
+            .expect("expected error response for out-of-range id");
+        assert_eq!(err.code, al_protocol::jsonrpc::error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("out of range"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn dispatch_permissions_accepts_in_range_id() {
+        // Positive: a valid id renders AL containing that id.
+        let ws = empty_ws();
+        let resp = dispatch_permissions(
+            &ws,
+            2,
+            &serde_json::json!({
+                "id": 50123,
+                "name": "Demo",
+            }),
+        );
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let content = resp
+            .result
+            .as_ref()
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str())
+            .expect("expected content");
+        assert!(content.contains("50123"), "rendered AL: {content}");
+    }
+
     // --- dispatch_tests_run_batch --------------------------------------------
 
     #[tokio::test]
@@ -4092,6 +4176,52 @@ mod p1_5_tests {
     }
 
     #[tokio::test]
+    async fn run_batch_rejects_out_of_range_codeunit_id() {
+        // Negative regression: a codeunitIds entry beyond the i32 range must be
+        // rejected with INVALID_PARAMS rather than silently wrapping via
+        // `as i32` and executing tests against the wrong codeunit.
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dot_zed = tmp.path().join(".zed");
+        std::fs::create_dir_all(&dot_zed).unwrap();
+        std::fs::write(
+            dot_zed.join("debug.json"),
+            r#"[{"name":"local","type":"al","request":"launch","environmentType":"OnPrem","server":"http://localhost","serverInstance":"BC","authentication":"UserPassword"}]"#,
+        )
+        .unwrap();
+        {
+            let mut guard = ws.project.write().await;
+            *guard = Some(crate::project::AlProject {
+                root: tmp.path().to_path_buf(),
+                app_json: crate::project::AppManifest {
+                    id: String::new(),
+                    name: "test".into(),
+                    publisher: "test".into(),
+                    version: "1.0.0.0".into(),
+                    dependencies: Vec::new(),
+                    application: None,
+                    platform: None,
+                    runtime: None,
+                },
+                packages_dir: tmp.path().join(".alpackages"),
+                packages: Vec::new(),
+                server_configs: Vec::new(),
+            });
+        }
+        let resp = dispatch_tests_run_batch(
+            &ws,
+            6,
+            &serde_json::json!({ "codeunitIds": [(i32::MAX as i64) + 1] }),
+        )
+        .await;
+        let err = resp
+            .error
+            .expect("expected error response for out-of-range codeunit id");
+        assert_eq!(err.code, al_protocol::jsonrpc::error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("out of range"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
     async fn last_results_returns_empty_when_no_history() {
         let ws = empty_ws();
         let tmp = tempfile::TempDir::new().unwrap();
@@ -4132,6 +4262,77 @@ mod p1_5_tests {
             .and_then(|v| v.as_array())
             .expect("expected results array");
         assert!(results.is_empty(), "fresh history must be empty");
+    }
+
+    /// Build a workspace with a fresh, sandboxed test-results store so the
+    /// last_results dispatcher reaches its codeunitId validation.
+    async fn ws_with_project(tmp: &tempfile::TempDir) -> Workspace {
+        let ws = empty_ws();
+        // SAFETY: cargo test runs on a single thread by default.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+        }
+        let mut guard = ws.project.write().await;
+        *guard = Some(crate::project::AlProject {
+            root: tmp.path().to_path_buf(),
+            app_json: crate::project::AppManifest {
+                id: String::new(),
+                name: "test".into(),
+                publisher: "test".into(),
+                version: "1.0.0.0".into(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: tmp.path().join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        });
+        drop(guard);
+        ws
+    }
+
+    #[tokio::test]
+    async fn last_results_single_lookup_rejects_out_of_range_codeunit_id() {
+        // Negative regression: out-of-range codeunitId in the single
+        // (codeunit, method) lookup path must return INVALID_PARAMS rather
+        // than silently wrapping via `as i32`.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_with_project(&tmp).await;
+        let resp = dispatch_tests_last_results(
+            &ws,
+            7,
+            &serde_json::json!({
+                "codeunitId": (i32::MAX as i64) + 1,
+                "methodName": "TestFoo",
+            }),
+        )
+        .await;
+        let err = resp
+            .error
+            .expect("expected error response for out-of-range codeunitId");
+        assert_eq!(err.code, al_protocol::jsonrpc::error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("out of range"), "got: {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn last_results_bulk_filter_rejects_out_of_range_codeunit_id() {
+        // Negative regression: out-of-range codeunitId in the bulk-filter path
+        // must return INVALID_PARAMS rather than silently wrapping via `as i32`.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = ws_with_project(&tmp).await;
+        let resp = dispatch_tests_last_results(
+            &ws,
+            8,
+            &serde_json::json!({ "codeunitId": (i32::MIN as i64) - 1 }),
+        )
+        .await;
+        let err = resp
+            .error
+            .expect("expected error response for out-of-range codeunitId");
+        assert_eq!(err.code, al_protocol::jsonrpc::error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("out of range"), "got: {}", err.message);
     }
 
     // -----------------------------------------------------------------------

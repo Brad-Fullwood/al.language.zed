@@ -86,8 +86,10 @@ fn resolve_object_metadata(workspace: &Workspace, file: &str) -> Option<(i32, i3
     let path = std::path::PathBuf::from(file);
     let entry = workspace.file_index.object_info.get(&path)?;
     let info = entry.value();
-    let id = info.id?;
-    Some((kind_to_object_type(&info.kind), id as i32))
+    // BC object IDs are i32; reject (return None) rather than silently wrap an
+    // out-of-range cached i64 so breakpoints never land on the wrong object.
+    let id = i32::try_from(info.id?).ok()?;
+    Some((kind_to_object_type(&info.kind), id))
 }
 
 /// F-015: when a config name is supplied, it MUST match exactly. Falling
@@ -603,6 +605,35 @@ mod resolve_object_metadata_tests {
         // cleanly instead of silently using (0, 0).
         let ws = Workspace::new();
         assert!(resolve_object_metadata(&ws, "/nonexistent/Foo.al").is_none());
+    }
+
+    #[test]
+    fn returns_none_for_out_of_range_cached_id() {
+        // Negative regression: a cached object id beyond the i32 range must
+        // make the helper return None rather than silently wrapping via
+        // `as i32` and routing a breakpoint to the wrong BC object.
+        use crate::file_index::CachedObjectInfo;
+        let ws = Workspace::new();
+        let path = std::path::PathBuf::from("/tmp/Overflow.al");
+        let zero = tree_sitter::Point { row: 0, column: 0 };
+        ws.file_index.object_info.insert(
+            path.clone(),
+            CachedObjectInfo {
+                kind: "codeunit".to_string(),
+                id: Some(i64::from(i32::MAX) + 1),
+                name: "Overflow".to_string(),
+                range: tree_sitter::Range {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_point: zero,
+                    end_point: zero,
+                },
+            },
+        );
+        assert!(
+            resolve_object_metadata(&ws, "/tmp/Overflow.al").is_none(),
+            "out-of-range cached id must not be silently truncated"
+        );
     }
 }
 
