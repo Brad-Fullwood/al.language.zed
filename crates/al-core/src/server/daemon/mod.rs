@@ -854,7 +854,7 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_i32, extract_position, read_bounded_line};
+    use super::{extract_i32, extract_position, file_uri_from_params, read_bounded_line};
 
     #[test]
     fn extract_i32_accepts_in_range() {
@@ -961,5 +961,64 @@ mod tests {
         let mut reader = tokio::io::BufReader::new(input.as_ref());
         let result = read_bounded_line(&mut reader, 64).await.unwrap();
         assert_eq!(result, Some("no newline here".to_string()));
+    }
+
+    // --- file_uri_from_params -------------------------------------------------
+
+    #[test]
+    fn file_uri_prefers_explicit_uri_field() {
+        // When a "uri" is present it is used verbatim, ignoring any "file".
+        let params = serde_json::json!({
+            "uri": "file:///some/where.al",
+            "file": "/other/path.al",
+        });
+        let uri = file_uri_from_params(&params).expect("uri must parse");
+        assert_eq!(uri.as_str(), "file:///some/where.al");
+    }
+
+    #[test]
+    fn file_uri_canonicalizes_absolute_existing_path() {
+        // An absolute path to an existing file is canonicalized and converted
+        // to a file:// URL.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("doc.al");
+        std::fs::write(&file, b"x").unwrap();
+        let params = serde_json::json!({ "file": file.to_str().unwrap() });
+        let uri = file_uri_from_params(&params).expect("absolute file path must produce a uri");
+        let canon = file.canonicalize().unwrap();
+        assert_eq!(uri.to_file_path().unwrap(), canon);
+    }
+
+    #[test]
+    fn file_uri_resolves_relative_path_against_cwd() {
+        // A relative path is joined onto the current working directory.
+        let params = serde_json::json!({ "file": "relative/file.al" });
+        let uri = file_uri_from_params(&params).expect("relative path must produce a uri");
+        let path = uri.to_file_path().unwrap();
+        assert!(
+            path.is_absolute(),
+            "resolved path must be absolute: {path:?}"
+        );
+        assert!(path.ends_with("relative/file.al"));
+    }
+
+    #[test]
+    fn file_uri_falls_back_when_canonicalize_fails() {
+        // A nonexistent absolute path can't be canonicalized; the function
+        // falls back to the (already absolute) path rather than failing.
+        let params = serde_json::json!({
+            "file": "/definitely/not/existing/al-test-xyz.al"
+        });
+        let uri = file_uri_from_params(&params).expect("nonexistent path must still produce a uri");
+        assert_eq!(
+            uri.to_file_path().unwrap(),
+            std::path::Path::new("/definitely/not/existing/al-test-xyz.al")
+        );
+    }
+
+    #[test]
+    fn file_uri_returns_none_without_uri_or_file() {
+        let params = serde_json::json!({ "something": "else" });
+        assert!(file_uri_from_params(&params).is_none());
     }
 }
