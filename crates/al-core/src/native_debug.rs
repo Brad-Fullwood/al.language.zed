@@ -117,21 +117,34 @@ impl NativeDebugSession {
         let pushed = self.session.try_drain_push_events().await;
         let mut next_seq = self.history.back().map(|h| h.seq + 1).unwrap_or(1);
         for event in pending.into_iter().chain(pushed) {
-            if let crate::dap::bc_debug::BcEvent::Break { reason, .. } = event {
+            if let crate::dap::bc_debug::BcEvent::Break {
+                reason, location, ..
+            } = event
+            {
+                // Use the actual break site carried by the BC Break event's top
+                // StackFrame so history records the real stop position instead
+                // of a stale copy of the previous entry. The daemon doesn't
+                // resolve BC object ids to workspace file paths, so `file` stays
+                // empty; line/column/procedure now reflect the genuine location.
+                let location = match location {
+                    Some(loc) => Location {
+                        file: String::new(),
+                        line: loc.line,
+                        column: loc.column,
+                        procedure: loc.procedure,
+                    },
+                    None => Location {
+                        file: String::new(),
+                        line: 0,
+                        column: 0,
+                        procedure: None,
+                    },
+                };
                 self.history.push_back(BreakpointHit {
                     seq: next_seq,
                     breakpoint_id: 0,
                     timestamp: format_event_timestamp(std::time::SystemTime::now()),
-                    location: self
-                        .history
-                        .back()
-                        .map(|h| h.location.clone())
-                        .unwrap_or_else(|| Location {
-                            file: String::new(),
-                            line: 0,
-                            column: 0,
-                            procedure: None,
-                        }),
+                    location,
                     variables: Vec::new(),
                 });
                 next_seq += 1;

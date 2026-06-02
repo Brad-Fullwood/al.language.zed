@@ -212,13 +212,85 @@ pub enum BcEvent {
     ///
     /// `thread_id` is always 1 for AL (single-threaded).
     /// `reason` is typically "breakpoint", "step", or "exception".
-    Break { reason: String, thread_id: i64 },
+    /// `location` carries the top stack frame extracted from the BC Break
+    /// callback (`[ApplicationObjectIdWrapper, StackFrame[], message]`) so
+    /// daemon-side history records the *actual* break site rather than a copy
+    /// of the previous entry. `None` when BC sent no stack frame.
+    Break {
+        reason: String,
+        thread_id: i64,
+        location: Option<BreakLocation>,
+    },
     /// Debug session was detached.
     Detached { terminate: bool },
     /// Fatal debugger exception from the server.
     FatalError { message: String },
     /// Other unrecognised server callback — target name preserved for logging.
     Other { target: String },
+}
+
+/// Top-frame source location extracted from a BC `Break` callback's
+/// `StackFrame[]` argument. Path resolution (object id → workspace file) is the
+/// caller's responsibility; this carries only what BC reports directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakLocation {
+    pub line: u32,
+    pub column: u32,
+    /// `SourcePosition`-bearing frame's `DisplayName` (procedure/trigger name).
+    pub procedure: Option<String>,
+    /// BC `ApplicationObjectId.ObjectType` of the break frame, if present.
+    pub object_type: Option<i32>,
+    /// BC `ApplicationObjectId.ObjectNumber` of the break frame, if present.
+    pub object_number: Option<i32>,
+}
+
+/// Extract the top frame's source location from a BC `Break` callback's
+/// arguments: `[ApplicationObjectIdWrapper, StackFrame[], message]`. The first
+/// stack frame (index 0) is the current execution point. Field name casing
+/// varies across BC versions, so both PascalCase and camelCase are accepted —
+/// matching `native_dap::bc_stack_to_dap`.
+fn break_location_from_args(arguments: &Option<Vec<serde_json::Value>>) -> Option<BreakLocation> {
+    let frames = arguments.as_ref()?.get(1)?.as_array()?;
+    let frame = frames.first()?;
+
+    let source_position = frame
+        .get("SourcePosition")
+        .or_else(|| frame.get("sourcePosition"));
+    let line = source_position
+        .and_then(|sp| sp.get("Line").or_else(|| sp.get("line")))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as u32;
+    let column = source_position
+        .and_then(|sp| sp.get("Column").or_else(|| sp.get("column")))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as u32;
+
+    let procedure = frame
+        .get("DisplayName")
+        .or_else(|| frame.get("displayName"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    let object_id = frame
+        .get("ApplicationObjectId")
+        .or_else(|| frame.get("applicationObjectId"));
+    let object_type = object_id
+        .and_then(|oid| oid.get("ObjectType").or_else(|| oid.get("objectType")))
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32);
+    let object_number = object_id
+        .and_then(|oid| oid.get("ObjectNumber").or_else(|| oid.get("objectNumber")))
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32);
+
+    Some(BreakLocation {
+        line,
+        column,
+        procedure,
+        object_type,
+        object_number,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1157,6 +1229,7 @@ fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
             Some(BcEvent::Break {
                 reason: "breakpoint".to_string(),
                 thread_id: 1,
+                location: break_location_from_args(&msg.arguments),
             })
         }
         "OnDetachedFromConnection" => {
@@ -1805,9 +1878,69 @@ mod tests {
         // "breakpoint" on AL's single thread (id 1), regardless of arguments.
         let msg = invocation(Some("Break"), None);
         match signalr_to_bc_event(&msg) {
-            Some(BcEvent::Break { reason, thread_id }) => {
+            Some(BcEvent::Break {
+                reason,
+                thread_id,
+                location,
+            }) => {
                 assert_eq!(reason, "breakpoint");
                 assert_eq!(thread_id, 1);
+                // No StackFrame[] argument → no location.
+                assert_eq!(location, None);
+            }
+            other => panic!("expected Break, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn break_event_extracts_top_frame_location_from_stack() {
+        // BC Break callback args: [ApplicationObjectIdWrapper, StackFrame[], message].
+        // The top (index 0) frame's SourcePosition is the actual break site.
+        let args = vec![
+            serde_json::json!({ "ObjectType": 5, "ObjectNumber": 50100 }),
+            serde_json::json!([
+                {
+                    "DisplayName": "OnRun",
+                    "SourcePosition": { "Line": 42, "Column": 8 },
+                    "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
+                },
+                {
+                    "DisplayName": "Caller",
+                    "SourcePosition": { "Line": 1, "Column": 0 }
+                }
+            ]),
+            serde_json::json!("stopped"),
+        ];
+        let msg = invocation(Some("Break"), Some(args));
+        match signalr_to_bc_event(&msg) {
+            Some(BcEvent::Break { location, .. }) => {
+                let loc = location.expect("location extracted from top StackFrame");
+                assert_eq!(loc.line, 42);
+                assert_eq!(loc.column, 8);
+                assert_eq!(loc.procedure.as_deref(), Some("OnRun"));
+                assert_eq!(loc.object_type, Some(5));
+                assert_eq!(loc.object_number, Some(50100));
+            }
+            other => panic!("expected Break, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn break_event_accepts_camelcase_source_position() {
+        // Newer BC versions may emit camelCase field names.
+        let args = vec![
+            serde_json::Value::Null,
+            serde_json::json!([
+                { "sourcePosition": { "line": 7, "column": 3 } }
+            ]),
+            serde_json::json!(""),
+        ];
+        let msg = invocation(Some("Break"), Some(args));
+        match signalr_to_bc_event(&msg) {
+            Some(BcEvent::Break { location, .. }) => {
+                let loc = location.expect("location extracted");
+                assert_eq!(loc.line, 7);
+                assert_eq!(loc.column, 3);
             }
             other => panic!("expected Break, got {other:?}"),
         }

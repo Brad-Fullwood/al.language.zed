@@ -491,7 +491,9 @@ where
 
                                     for bc_event in bc_events {
                                         let dap_evt = match &bc_event {
-                                            BcEvent::Break { reason, thread_id } => make_event(
+                                            BcEvent::Break {
+                                                reason, thread_id, ..
+                                            } => make_event(
                                                 &seq_clone,
                                                 "stopped",
                                                 Some(serde_json::json!({
