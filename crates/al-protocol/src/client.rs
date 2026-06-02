@@ -206,7 +206,15 @@ impl DaemonClient {
     pub fn from_stream(stream: UnixStream) -> Result<Self, String> {
         stream
             .set_read_timeout(Some(Duration::from_secs(30)))
-            .map_err(|e| format!("Failed to set timeout: {}", e))?;
+            .map_err(|e| format!("Failed to set read timeout: {}", e))?;
+        // A read timeout alone does not bound write_all()/flush(): those use the
+        // independent SO_SNDTIMEO option. Without it, a hung/unresponsive daemon
+        // that stops reading lets the socket send buffer fill and the next write
+        // blocks forever, hanging the CLI/TUI client. Set both so every I/O call
+        // is bounded.
+        stream
+            .set_write_timeout(Some(Duration::from_secs(30)))
+            .map_err(|e| format!("Failed to set write timeout: {}", e))?;
         let writer = stream
             .try_clone()
             .map_err(|e| format!("Failed to clone stream: {}", e))?;
@@ -220,6 +228,11 @@ impl DaemonClient {
     /// Override the read timeout (useful for long-running operations).
     pub fn set_read_timeout(&mut self, timeout: Duration) {
         let _ = self.reader.get_ref().set_read_timeout(Some(timeout));
+    }
+
+    /// Override the write timeout (useful for long-running operations).
+    pub fn set_write_timeout(&mut self, timeout: Duration) {
+        let _ = self.writer.set_write_timeout(Some(timeout));
     }
 
     /// Send a JSON-RPC request and receive the response.
@@ -476,6 +489,56 @@ mod tests {
         assert!(
             err_msg.contains("mismatch"),
             "Error should mention mismatch: {err_msg}"
+        );
+    }
+
+    /// A daemon that connects but never reads must not hang the client
+    /// forever. `from_stream` sets a write timeout; once a short timeout is
+    /// applied and the socket send buffer fills, `request` must return a
+    /// bounded error instead of blocking indefinitely.
+    #[test]
+    fn write_to_nonreading_daemon_times_out() {
+        let sock = unique_sock();
+        let listener = UnixListener::bind(&sock).expect("test");
+        // Accept the connection but never read from it, so the kernel send
+        // buffer on the client side fills up.
+        let _handle = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("test");
+            // Hold the stream open without reading; sleep well past the
+            // client's write timeout.
+            std::thread::sleep(Duration::from_secs(5));
+        });
+
+        let stream = UnixStream::connect(&sock).expect("test");
+        let mut client = DaemonClient::from_stream(stream).expect("test");
+        // from_stream must install a default (non-None) write timeout so writes
+        // are bounded even without an explicit override.
+        assert_eq!(
+            client
+                .writer
+                .write_timeout()
+                .expect("write timeout query should succeed"),
+            Some(Duration::from_secs(30)),
+            "from_stream must set a default write timeout"
+        );
+        // Use a short write timeout to keep the test fast.
+        client.set_write_timeout(Duration::from_millis(200));
+
+        // Send large payloads until a write fails. With a bounded write
+        // timeout this terminates quickly; without it (the bug), the loop
+        // would block forever on a full send buffer.
+        let big = serde_json::json!({ "blob": "x".repeat(64 * 1024) });
+        let mut err = None;
+        for _ in 0..2000 {
+            if let Err(e) = client.send_request("test/flood", &Some(big.clone())) {
+                err = Some(e);
+                break;
+            }
+        }
+        let err = err.expect("a write to a non-reading daemon must eventually error");
+        assert!(
+            err.contains("send request") || err.contains("flush"),
+            "error should come from the write path: {err}"
         );
     }
 
