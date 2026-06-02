@@ -1680,6 +1680,21 @@ pub(super) async fn dispatch_xlf_generate(
     }
 }
 
+/// Derive the XLIFF target-language code from a language-specific `.xlf`
+/// filename (e.g. `de-DE.xlf` -> `de-DE`). Falls back to `en-US` when the
+/// filename is the generated base file (`*.g.xlf`) or otherwise unusable, so
+/// the refreshed file's `target-language` reflects its actual locale instead
+/// of being hardcoded.
+fn xlf_target_language(xlf_path: &std::path::Path) -> String {
+    xlf_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_suffix(".xlf"))
+        .filter(|s| !s.is_empty() && !s.ends_with(".g"))
+        .unwrap_or("en-US")
+        .to_string()
+}
+
 pub(super) async fn dispatch_xlf_refresh(
     workspace: &Workspace,
     id: u64,
@@ -1778,7 +1793,11 @@ pub(super) async fn dispatch_xlf_refresh(
         .unwrap_or("App")
         .trim_end_matches(".g")
         .to_string();
-    let new_xlf = crate::xliff::generate_xliff(&app_name, "en-US", "en-US", &updated_units);
+    // Derive the target language from the language-specific filename
+    // (e.g. `de-DE.xlf` -> `de-DE`). The generated `.g.xlf` is always en-US,
+    // so the language file's target-language must reflect its own locale.
+    let target_lang = xlf_target_language(&xlf_path);
+    let new_xlf = crate::xliff::generate_xliff(&app_name, "en-US", &target_lang, &updated_units);
     if let Err(e) = tokio::task::block_in_place(|| std::fs::write(&xlf_path, new_xlf)) {
         return rpc_error(
             id,
@@ -3640,6 +3659,36 @@ mod p1_5_tests {
     fn clamp_timeout_ms_propagates_none() {
         // None (param omitted entirely) stays None — caller decides the default.
         assert_eq!(clamp_timeout_ms(None), None);
+    }
+
+    // --- xlf_target_language -------------------------------------------------
+
+    #[test]
+    fn xlf_target_language_extracts_locale_from_filename() {
+        // A language-specific file carries its locale in the filename; the
+        // refreshed XLIFF's target-language must reflect it, not a hardcode.
+        assert_eq!(
+            xlf_target_language(std::path::Path::new("/p/Translations/de-DE.xlf")),
+            "de-DE"
+        );
+        assert_eq!(
+            xlf_target_language(std::path::Path::new("fr-FR.xlf")),
+            "fr-FR"
+        );
+    }
+
+    #[test]
+    fn xlf_target_language_falls_back_for_generated_or_unusable_names() {
+        // The generated base file (*.g.xlf) and anything we can't parse fall
+        // back to en-US rather than emitting a bogus target-language.
+        assert_eq!(
+            xlf_target_language(std::path::Path::new("MyApp.g.xlf")),
+            "en-US"
+        );
+        assert_eq!(
+            xlf_target_language(std::path::Path::new("notxlf.txt")),
+            "en-US"
+        );
     }
 
     // --- clamp_min_tokens / clamp_min_similarity (F-OPEN-007) ----------------
