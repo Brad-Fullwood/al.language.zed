@@ -1833,3 +1833,21 @@ Drained the new confirmed worklist: one real symlink-traversal bug fixed, four t
 | F-OPEN-209 | P2 | **Fixed (test-gap).** `suggest_event::trace_from_node` depth bound + `visited` set were untested. Added three white-box tests over hand-built insight/call graphs: 15-deep chain stops at `max_depth`, circular subscriptions terminate without re-visits, and 3×3 fan-out yields each leaf event exactly once. `crates/al-core/src/queries/suggest_event.rs`. |
 
 Workspace test count: 2118 → 2135 (+10 new tests this iteration; the rest reflect re-tallying across the full suite). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 101 (2026-06-02)
+
+Drained the new confirmed worklist: two real bugs fixed (one P1 symlink escape, one P2 config atomicity), several al-explorer TUI perf/safety hardening items, two config-consistency cleanups, and one test-gap closed.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-210 | P1 | **Fixed.** Unbounded string growth in the four al-explorer `KeyCode::Char`-driven input fields (`search_query`, event-chain/call-graph queries, profiler file path). Holding a key could allocate gigabytes (and `search_query` re-filters all symbols per keystroke). Added `MAX_INPUT_LEN = 4096` guard at all four push sites. +3 tests. `crates/al-explorer/src/main.rs`. |
+| F-OPEN-211 | P2 | **Fixed.** Redundant per-keystroke double-filtering in `update_objects_list` — the global-search branch is already query-filtered by `SymbolIndex::search`, so re-filtering up to 5000 results with identical logic was wasted. Restructured so re-filtering runs only for the per-package + non-empty-query path. +2 tests. `crates/al-explorer/src/main.rs`. |
+| F-OPEN-212 | P3 | **Fixed.** `format!("{:?}", k)` allocation in the kind-tab sort key (per keystroke). Added non-allocating `ObjectKind::as_str()` (reused by `Debug`) and sort by it. +1 test. `crates/al-explorer/src/types.rs`, `main.rs`. |
+| F-OPEN-213 | P3 | **Fixed.** Redundant filter loop after package selection when the query is empty — folded into the F-OPEN-211 restructure (empty-query path collects directly). Covered by the empty-query test. `crates/al-explorer/src/main.rs`. |
+| F-OPEN-214 | P2 | **Fixed.** No length limit on profile JSON node-array iteration in `load_profile`; a malformed `.alcpuprofile` could freeze the synchronous TUI. Added `MAX_PROFILE_NODES = 500_000` truncation + status message. +1 test. `crates/al-explorer/src/main.rs`. |
+| F-OPEN-215 | P1 | **Fixed.** Symlink escape in `resolve_output_path_within_project` — a symlink inside the project pointing outside let a write target escape the containment check (the daemon would follow it). Now canonicalizes the deepest existing ancestor of the normalised path and requires the canonical result to stay within the canonical root, returning that resolved path. +3 unix tests. `crates/al-core/src/server/daemon/build_dispatch.rs`. |
+| F-OPEN-216 | P2 | **Fixed.** `AlConfig::persist` fell back to a cwd-relative temp file when the path had no parent, breaking atomic temp+rename in a daemon with unstable cwd. Now returns an `InvalidInput` error. +1 test. `crates/al-core/src/config.rs`. |
+| F-OPEN-217 | P3 | **Fixed.** `merge_path_array`/`merge_string_array` accepted empty-string entries while the optional-path/string helpers treat `""` as unset. Both array helpers now skip empty strings. +2 tests. `crates/al-core/src/config.rs`. |
+| F-OPEN-218 | P3 | **Fixed (test-gap).** `file_uri_from_params` path handling was untested. Added 5 tests: explicit-`uri` preference, absolute-path canonicalization, relative-path-against-cwd, canonicalize() fallback on a nonexistent path, and the None case. `crates/al-core/src/server/daemon/mod.rs`. |
+
+Workspace test count: 2135 → 2153 (+18 new tests: 7 al-explorer, 3 build_dispatch symlink, 3 config, 5 daemon file_uri). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
