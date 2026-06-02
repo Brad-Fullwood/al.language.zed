@@ -38,6 +38,15 @@ use types::{ObjectKind, SymbolEntry, SymbolIndex};
 #[cfg(unix)]
 use al_protocol::DaemonClient;
 
+/// Upper bound on the length (in bytes) of any single-line text input field
+/// driven by `KeyCode::Char` events (search query, event-chain / call-graph
+/// query, profiler file path). Without a cap, holding down a key would grow
+/// these `String`s without limit — for `search_query` that also re-filters the
+/// whole symbol set on every keystroke — eventually exhausting memory. No real
+/// query or path approaches this length.
+#[cfg(unix)]
+const MAX_INPUT_LEN: usize = 4096;
+
 // ---------------------------------------------------------------------------
 // Navigation helpers
 // ---------------------------------------------------------------------------
@@ -504,6 +513,18 @@ impl ProfilerView {
             }
         };
 
+        // Cap the number of nodes we iterate. A malformed or adversarial
+        // profile could declare millions of nodes; iterating all of them in the
+        // synchronous TUI would freeze the UI. Real BC CPU profiles are far
+        // smaller than this bound.
+        const MAX_PROFILE_NODES: usize = 500_000;
+        let truncated = nodes.len() > MAX_PROFILE_NODES;
+        let nodes = if truncated {
+            &nodes[..MAX_PROFILE_NODES]
+        } else {
+            &nodes[..]
+        };
+
         // Build a map: node id -> (functionName, url, hitCount)
         let mut rows: Vec<HotspotRow> = Vec::new();
         for node in nodes {
@@ -563,6 +584,11 @@ impl ProfilerView {
         self.hotspots = rows;
         self.status = if count == 0 {
             "No hotspots found in profile (all hitCount=0?)".to_string()
+        } else if truncated {
+            format!(
+                "{count} hotspots loaded (profile truncated to first {MAX_PROFILE_NODES} nodes) — duration {:.1}ms",
+                self.duration_ms
+            )
         } else {
             format!(
                 "{count} hotspots loaded — duration {:.1}ms",
@@ -945,7 +971,11 @@ impl App {
         if let Some(selected) = self.package_list_state.selected()
             && let Some(pkg_name) = self.packages.get(selected)
         {
-            let results = if self.global_search && !self.search_query.is_empty() {
+            // `search()` already applies the name/id query filter, so its
+            // results are pre-filtered; `search_in_package()` returns the whole
+            // package and still needs filtering when a query is present.
+            let global = self.global_search && !self.search_query.is_empty();
+            let results = if global {
                 self.symbols.search(&self.search_query, 5000)
             } else {
                 self.symbols.search_in_package(pkg_name)
@@ -953,22 +983,34 @@ impl App {
 
             let query = self.search_query.to_lowercase();
 
+            // We only need to re-filter for the per-package branch with a
+            // non-empty query — the global branch is already query-filtered, and
+            // an empty query matches everything. Avoiding the redundant
+            // `to_lowercase()`/`contains()` pass matters because this runs on
+            // every keystroke over up to 5000 results.
+            let needs_filter = !global && !query.is_empty();
+
             let mut filtered = Vec::new();
             let mut kinds_set = std::collections::HashSet::new();
 
-            for r in results {
-                let matches_search = query.is_empty()
-                    || r.name.to_lowercase().contains(&query)
-                    || r.id.to_string().contains(&query);
-
-                if matches_search {
+            if needs_filter {
+                for r in results {
+                    let matches_search =
+                        r.name.to_lowercase().contains(&query) || r.id.to_string().contains(&query);
+                    if matches_search {
+                        kinds_set.insert(r.kind);
+                        filtered.push(r);
+                    }
+                }
+            } else {
+                for r in results {
                     kinds_set.insert(r.kind);
                     filtered.push(r);
                 }
             }
 
             let mut kinds: Vec<_> = kinds_set.into_iter().collect();
-            kinds.sort_by_key(|k| format!("{:?}", k));
+            kinds.sort_by_key(|k| k.as_str());
 
             let current_kind = self.kinds.get(self.active_kind_index).copied();
             self.kinds = kinds;
@@ -1627,8 +1669,10 @@ fn handle_object_browser_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.update_objects_list(true);
             }
             KeyCode::Char(c) => {
-                app.search_query.push(c);
-                app.update_objects_list(true);
+                if app.search_query.len() < MAX_INPUT_LEN {
+                    app.search_query.push(c);
+                    app.update_objects_list(true);
+                }
             }
             KeyCode::Down | KeyCode::Enter => {
                 app.active_pane = ActivePane::Packages;
@@ -1687,7 +1731,11 @@ fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEvent) {
     let view = &mut app.event_chain;
     if view.input_focused {
         match key.code {
-            KeyCode::Char(c) => view.query.push(c),
+            KeyCode::Char(c) => {
+                if view.query.len() < MAX_INPUT_LEN {
+                    view.query.push(c);
+                }
+            }
             KeyCode::Backspace => {
                 view.query.pop();
             }
@@ -1731,7 +1779,11 @@ fn handle_call_graph_key(app: &mut App, key: crossterm::event::KeyEvent) {
     let view = &mut app.call_graph;
     if view.input_focused {
         match key.code {
-            KeyCode::Char(c) => view.query.push(c),
+            KeyCode::Char(c) => {
+                if view.query.len() < MAX_INPUT_LEN {
+                    view.query.push(c);
+                }
+            }
             KeyCode::Backspace => {
                 view.query.pop();
             }
@@ -1774,7 +1826,11 @@ fn handle_profiler_key(app: &mut App, key: crossterm::event::KeyEvent) {
     let view = &mut app.profiler;
     if view.input_focused {
         match key.code {
-            KeyCode::Char(c) => view.file_path.push(c),
+            KeyCode::Char(c) => {
+                if view.file_path.len() < MAX_INPUT_LEN {
+                    view.file_path.push(c);
+                }
+            }
             KeyCode::Backspace => {
                 view.file_path.pop();
             }
@@ -2713,4 +2769,150 @@ fn find_member_line_in_file(path: &std::path::Path, member_name: &str) -> Option
         }
     }
     None
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent;
+    use types::{ObjectKind, SymbolEntry};
+
+    fn sym(kind: ObjectKind, id: i32, name: &str, package: &str) -> SymbolEntry {
+        SymbolEntry {
+            kind,
+            id,
+            name: name.to_string(),
+            extends: None,
+            package: package.to_string(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn search_query_is_length_capped() {
+        let mut app = App::new();
+        // Feed far more characters than the cap allows.
+        for _ in 0..(MAX_INPUT_LEN + 500) {
+            handle_object_browser_key(&mut app, KeyEvent::from(KeyCode::Char('a')));
+        }
+        assert_eq!(app.search_query.len(), MAX_INPUT_LEN);
+        // One more keystroke must not grow it further.
+        handle_object_browser_key(&mut app, KeyEvent::from(KeyCode::Char('b')));
+        assert_eq!(app.search_query.len(), MAX_INPUT_LEN);
+    }
+
+    #[test]
+    fn profiler_file_path_is_length_capped() {
+        let mut app = App::new();
+        app.profiler.input_focused = true;
+        for _ in 0..(MAX_INPUT_LEN + 500) {
+            handle_profiler_key(&mut app, KeyEvent::from(KeyCode::Char('x')));
+        }
+        assert_eq!(app.profiler.file_path.len(), MAX_INPUT_LEN);
+    }
+
+    #[test]
+    fn event_chain_and_call_graph_queries_are_length_capped() {
+        let mut app = App::new();
+        app.event_chain.input_focused = true;
+        app.call_graph.input_focused = true;
+        for _ in 0..(MAX_INPUT_LEN + 100) {
+            handle_event_chain_key(&mut app, KeyEvent::from(KeyCode::Char('e')));
+            handle_call_graph_key(&mut app, KeyEvent::from(KeyCode::Char('c')));
+        }
+        assert_eq!(app.event_chain.query.len(), MAX_INPUT_LEN);
+        assert_eq!(app.call_graph.query.len(), MAX_INPUT_LEN);
+    }
+
+    #[test]
+    fn object_kind_as_str_matches_debug() {
+        for k in [
+            ObjectKind::Table,
+            ObjectKind::Codeunit,
+            ObjectKind::Enum,
+            ObjectKind::Entitlement,
+        ] {
+            assert_eq!(k.as_str(), format!("{k:?}"));
+        }
+    }
+
+    #[test]
+    fn update_objects_list_empty_query_keeps_all_package_objects() {
+        let mut app = App::new();
+        app.symbols.load(vec![
+            sym(ObjectKind::Table, 1, "Customer", "Base"),
+            sym(ObjectKind::Codeunit, 2, "Mgt", "Base"),
+            sym(ObjectKind::Page, 3, "CustCard", "Other"),
+        ]);
+        app.packages = app.symbols.package_names();
+        let base_idx = app.packages.iter().position(|p| p == "Base").unwrap();
+        app.package_list_state.select(Some(base_idx));
+
+        app.update_objects_list(true);
+        // Empty query -> all kinds present for the Base package.
+        assert!(app.kinds.contains(&ObjectKind::Table));
+        assert!(app.kinds.contains(&ObjectKind::Codeunit));
+        // The "Other" package's Page must not appear.
+        assert!(!app.kinds.contains(&ObjectKind::Page));
+    }
+
+    #[test]
+    fn load_profile_handles_large_node_arrays() {
+        // One real hotspot followed by many empty nodes; exercises the bounded
+        // iteration path introduced by the node-count cap.
+        let mut nodes = vec![serde_json::json!({
+            "hitCount": 5u64,
+            "callFrame": { "functionName": "DoWork", "url": "Cod50000.al" }
+        })];
+        for _ in 0..1000 {
+            nodes.push(serde_json::json!({ "hitCount": 0u64 }));
+        }
+        let profile = serde_json::json!({
+            "startTime": 0.0,
+            "endTime": 1_000_000.0,
+            "nodes": nodes,
+        });
+
+        let path = std::env::temp_dir().join(format!(
+            "al-explorer-test-profile-{}-{}.alcpuprofile",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, serde_json::to_vec(&profile).unwrap()).unwrap();
+
+        let mut view = ProfilerView::new();
+        view.file_path = path.to_string_lossy().into_owned();
+        view.load_profile();
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(view.hotspots.len(), 1);
+        assert_eq!(view.hotspots[0].procedure, "DoWork");
+        assert!(!view.status.contains("truncated"));
+    }
+
+    #[test]
+    fn update_objects_list_filters_by_query_in_package() {
+        let mut app = App::new();
+        app.symbols.load(vec![
+            sym(ObjectKind::Table, 1, "Customer", "Base"),
+            sym(ObjectKind::Table, 2, "Vendor", "Base"),
+        ]);
+        app.packages = app.symbols.package_names();
+        let base_idx = app.packages.iter().position(|p| p == "Base").unwrap();
+        app.package_list_state.select(Some(base_idx));
+        app.search_query = "vend".to_string();
+
+        app.update_objects_list(true);
+        // Only "Vendor" matches; it is a Table, selected automatically.
+        assert_eq!(app.current_objects.len(), 1);
+        assert_eq!(app.current_objects[0].name, "Vendor");
+    }
 }

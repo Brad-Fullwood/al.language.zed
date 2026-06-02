@@ -37,9 +37,14 @@ pub enum ObjectKind {
     Entitlement,
 }
 
-impl fmt::Debug for ObjectKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
+impl ObjectKind {
+    /// Stable, non-allocating display name for this kind.
+    ///
+    /// Used both by the `Debug` impl and as a sort key for the kind tabs, so
+    /// the latter does not have to `format!("{:?}", ..)` (one heap allocation
+    /// per variant) on every keystroke in `update_objects_list`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
             ObjectKind::Table => "Table",
             ObjectKind::TableExtension => "TableExtension",
             ObjectKind::Page => "Page",
@@ -58,8 +63,13 @@ impl fmt::Debug for ObjectKind {
             ObjectKind::PageCustomization => "PageCustomization",
             ObjectKind::ControlAddIn => "ControlAddIn",
             ObjectKind::Entitlement => "Entitlement",
-        };
-        f.write_str(s)
+        }
+    }
+}
+
+impl fmt::Debug for ObjectKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
