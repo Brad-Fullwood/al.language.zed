@@ -69,6 +69,62 @@ fn wrap_prev(current: Option<usize>, len: usize) -> usize {
     }
 }
 
+/// Connect to the al-lsp daemon if not already connected, recording any
+/// connection failure in `status`.
+#[cfg(unix)]
+fn ensure_daemon_client(
+    client: &mut Option<DaemonClient>,
+    project_root: &std::path::Path,
+    status: &mut String,
+) {
+    if client.is_none() {
+        match DaemonClient::connect(project_root) {
+            Ok(c) => *client = Some(c),
+            Err(e) => *status = format!("Cannot connect to daemon: {e}"),
+        }
+    }
+}
+
+/// Move a list selection one step (forward or backward) with wrap-around,
+/// doing nothing when the list is empty.
+#[cfg(unix)]
+fn advance_list_selection(list_state: &mut ListState, len: usize, forward: bool) {
+    if len == 0 {
+        return;
+    }
+    let i = if forward {
+        wrap_next(list_state.selected(), len)
+    } else {
+        wrap_prev(list_state.selected(), len)
+    };
+    list_state.select(Some(i));
+}
+
+/// Highlight style for a focused text input (bold yellow) vs. unfocused
+/// (dark gray).
+#[cfg(unix)]
+fn input_focused_style(is_focused: bool) -> Style {
+    if is_focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+/// Highlight style for the active pane (bold yellow) vs. inactive (dark gray).
+#[cfg(unix)]
+fn pane_style(is_active: bool) -> Style {
+    if is_active {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // View mode
 // ---------------------------------------------------------------------------
@@ -171,12 +227,7 @@ impl EventChainView {
     }
 
     fn ensure_client(&mut self) {
-        if self.client.is_none() {
-            match DaemonClient::connect(&self.project_root) {
-                Ok(c) => self.client = Some(c),
-                Err(e) => self.status = format!("Cannot connect to daemon: {e}"),
-            }
-        }
+        ensure_daemon_client(&mut self.client, &self.project_root, &mut self.status);
     }
 
     fn run_trace(&mut self) {
@@ -241,19 +292,11 @@ impl EventChainView {
     }
 
     fn next_row(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let i = wrap_next(self.list_state.selected(), self.rows.len());
-        self.list_state.select(Some(i));
+        advance_list_selection(&mut self.list_state, self.rows.len(), true);
     }
 
     fn prev_row(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let i = wrap_prev(self.list_state.selected(), self.rows.len());
-        self.list_state.select(Some(i));
+        advance_list_selection(&mut self.list_state, self.rows.len(), false);
     }
 }
 
@@ -304,12 +347,7 @@ impl CallGraphView {
     }
 
     fn ensure_client(&mut self) {
-        if self.client.is_none() {
-            match DaemonClient::connect(&self.project_root) {
-                Ok(c) => self.client = Some(c),
-                Err(e) => self.status = format!("Cannot connect to daemon: {e}"),
-            }
-        }
+        ensure_daemon_client(&mut self.client, &self.project_root, &mut self.status);
     }
 
     fn run_query(&mut self) {
@@ -369,19 +407,11 @@ impl CallGraphView {
     }
 
     fn next_row(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let i = wrap_next(self.list_state.selected(), self.rows.len());
-        self.list_state.select(Some(i));
+        advance_list_selection(&mut self.list_state, self.rows.len(), true);
     }
 
     fn prev_row(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let i = wrap_prev(self.list_state.selected(), self.rows.len());
-        self.list_state.select(Some(i));
+        advance_list_selection(&mut self.list_state, self.rows.len(), false);
     }
 }
 
@@ -546,19 +576,11 @@ impl ProfilerView {
     }
 
     fn next_row(&mut self) {
-        if self.hotspots.is_empty() {
-            return;
-        }
-        let i = wrap_next(self.list_state.selected(), self.hotspots.len());
-        self.list_state.select(Some(i));
+        advance_list_selection(&mut self.list_state, self.hotspots.len(), true);
     }
 
     fn prev_row(&mut self) {
-        if self.hotspots.is_empty() {
-            return;
-        }
-        let i = wrap_prev(self.list_state.selected(), self.hotspots.len());
-        self.list_state.select(Some(i));
+        advance_list_selection(&mut self.list_state, self.hotspots.len(), false);
     }
 }
 
@@ -613,12 +635,7 @@ impl TestRunnerView {
     }
 
     fn ensure_client(&mut self) {
-        if self.client.is_none() {
-            match DaemonClient::connect(&self.project_root) {
-                Ok(c) => self.client = Some(c),
-                Err(e) => self.status = format!("Cannot connect to daemon: {e}"),
-            }
-        }
+        ensure_daemon_client(&mut self.client, &self.project_root, &mut self.status);
     }
 
     /// Discover tests and load last results, populating `rows`.
@@ -735,19 +752,11 @@ impl TestRunnerView {
     }
 
     fn next_row(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let i = wrap_next(self.list_state.selected(), self.rows.len());
-        self.list_state.select(Some(i));
+        advance_list_selection(&mut self.list_state, self.rows.len(), true);
     }
 
     fn prev_row(&mut self) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let i = wrap_prev(self.list_state.selected(), self.rows.len());
-        self.list_state.select(Some(i));
+        advance_list_selection(&mut self.list_state, self.rows.len(), false);
     }
 
     /// Return the error message of the currently-selected method (if any).
@@ -2043,13 +2052,7 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     // ==========================================
     // 1. Search Bar (Left Top)
     // ==========================================
-    let search_style = if app.active_pane == ActivePane::Search {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let search_style = pane_style(app.active_pane == ActivePane::Search);
 
     let search_block = Block::default()
         .borders(Borders::ALL)
@@ -2081,13 +2084,7 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     // ==========================================
     // 2. Packages List (Left Bottom)
     // ==========================================
-    let pkg_style = if app.active_pane == ActivePane::Packages {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let pkg_style = pane_style(app.active_pane == ActivePane::Packages);
 
     let packages: Vec<ListItem> = app
         .packages
@@ -2117,13 +2114,7 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     // ==========================================
     // 3. Types Tabs (Middle Top)
     // ==========================================
-    let obj_style = if app.active_pane == ActivePane::Objects {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let obj_style = pane_style(app.active_pane == ActivePane::Objects);
 
     let tabs_block = Block::default()
         .borders(Borders::ALL)
@@ -2265,13 +2256,7 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     // ==========================================
     // 5. Details Pane (Right Full Column)
     // ==========================================
-    let detail_style = if app.active_pane == ActivePane::Details {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let detail_style = pane_style(app.active_pane == ActivePane::Details);
 
     let list_items: Vec<ListItem> = app
         .details_items
@@ -2312,13 +2297,7 @@ fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
         .split(area);
 
     // Search input
-    let input_style = if view.input_focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let input_style = input_focused_style(view.input_focused);
     let cursor = if view.input_focused { "█" } else { "" };
     let input_block = Block::default()
         .borders(Borders::ALL)
@@ -2420,13 +2399,7 @@ fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphView) {
         .split(area);
 
     // Search input
-    let input_style = if view.input_focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let input_style = input_focused_style(view.input_focused);
     let cursor = if view.input_focused { "█" } else { "" };
     let input_block = Block::default()
         .borders(Borders::ALL)
@@ -2504,13 +2477,7 @@ fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView) {
         .split(area);
 
     // File path input
-    let input_style = if view.input_focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let input_style = input_focused_style(view.input_focused);
     let cursor = if view.input_focused { "█" } else { "" };
     let input_block = Block::default()
         .borders(Borders::ALL)
