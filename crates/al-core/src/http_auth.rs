@@ -40,3 +40,110 @@ pub(crate) fn apply_basic_auth(
         req
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a throwaway request and return its `Authorization` header value,
+    /// if any. This exercises the *real* effect of `apply_basic_auth` — that a
+    /// correctly-encoded Basic credential is (or is not) attached to the
+    /// outgoing request.
+    fn authorization_header(req: reqwest::RequestBuilder) -> Option<String> {
+        let request = req.build().expect("request should build");
+        request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .map(|v| v.to_str().expect("header is valid ASCII").to_string())
+    }
+
+    fn get_request() -> reqwest::RequestBuilder {
+        reqwest::Client::new().get("http://localhost:7049/BC")
+    }
+
+    #[test]
+    fn build_http_client_with_valid_certs_succeeds() {
+        // Happy path: standard TLS verification, normal timeout.
+        let client = build_http_client(false, 30);
+        assert!(client.is_ok(), "client builder should succeed: {client:?}");
+    }
+
+    #[test]
+    fn build_http_client_accepting_invalid_certs_succeeds() {
+        // The insecure path must still produce a usable client (it only
+        // disables verification + logs a warning).
+        let client = build_http_client(true, 30);
+        assert!(client.is_ok(), "client builder should succeed: {client:?}");
+    }
+
+    #[test]
+    fn build_http_client_with_zero_timeout_succeeds() {
+        // Boundary value: a zero-second timeout is a legal Duration and the
+        // builder must not reject it.
+        let client = build_http_client(false, 0);
+        assert!(
+            client.is_ok(),
+            "zero timeout should still build: {client:?}"
+        );
+    }
+
+    #[test]
+    fn build_http_client_with_large_timeout_succeeds() {
+        // Boundary value: a very large timeout must not overflow the Duration.
+        let client = build_http_client(false, u64::MAX);
+        assert!(client.is_ok(), "max timeout should still build: {client:?}");
+    }
+
+    #[test]
+    fn apply_basic_auth_with_both_credentials_sets_authorization() {
+        // RED-GREEN anchor: with both username and password present, the
+        // request must carry the correctly base64-encoded Basic credential.
+        // `admin:password` => base64 "YWRtaW46cGFzc3dvcmQ=".
+        let req = apply_basic_auth(
+            get_request(),
+            &Some("admin".to_string()),
+            &Some("password".to_string()),
+        );
+        let header = authorization_header(req).expect("Authorization header must be present");
+        assert_eq!(header, "Basic YWRtaW46cGFzc3dvcmQ=");
+    }
+
+    #[test]
+    fn apply_basic_auth_with_empty_credentials_still_sets_authorization() {
+        // Edge: empty (but present) username/password are still credentials —
+        // `Some("")` is not the same as `None`. base64("" + ":" + "") = "Og==".
+        let req = apply_basic_auth(get_request(), &Some(String::new()), &Some(String::new()));
+        let header = authorization_header(req).expect("Authorization header must be present");
+        assert_eq!(header, "Basic Og==");
+    }
+
+    #[test]
+    fn apply_basic_auth_without_credentials_leaves_request_unauthenticated() {
+        // No credentials -> no Authorization header (Windows auth path).
+        let req = apply_basic_auth(get_request(), &None, &None);
+        assert!(
+            authorization_header(req).is_none(),
+            "no Authorization header should be set when both credentials are absent"
+        );
+    }
+
+    #[test]
+    fn apply_basic_auth_with_only_username_leaves_request_unauthenticated() {
+        // Partial credentials -> the tuple match fails -> request untouched.
+        let req = apply_basic_auth(get_request(), &Some("admin".to_string()), &None);
+        assert!(
+            authorization_header(req).is_none(),
+            "username without password must not produce a Basic header"
+        );
+    }
+
+    #[test]
+    fn apply_basic_auth_with_only_password_leaves_request_unauthenticated() {
+        // Partial credentials -> the tuple match fails -> request untouched.
+        let req = apply_basic_auth(get_request(), &None, &Some("password".to_string()));
+        assert!(
+            authorization_header(req).is_none(),
+            "password without username must not produce a Basic header"
+        );
+    }
+}
