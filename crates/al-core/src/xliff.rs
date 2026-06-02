@@ -137,6 +137,11 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
     // Scan for Caption, ToolTip, Label assignments
     let mut field_id: u32 = 0;
     let mut current_field: Option<String> = None;
+    // Per-file label counter so Label IDs depend only on position within this
+    // object, not on how many units earlier files contributed. Using the
+    // cumulative `units.len()` would make the same label's ID shift whenever
+    // file ordering changes, breaking translation-memory matching.
+    let mut label_index: usize = 0;
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -180,7 +185,8 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
 
         // Label 'varname': 'text'  or   MyLabel: Label 'text';
         if let Some(label_text) = parse_label_declaration(trimmed) {
-            let id = make_label_id(&obj_type, obj_id, &obj_name, field_id, path, units.len());
+            let id = make_label_id(&obj_type, obj_id, &obj_name, field_id, path, label_index);
+            label_index += 1;
             units.push(make_translation_unit(
                 id,
                 &obj_type,
@@ -498,11 +504,12 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
         let close_marker = format!("</{tag}>");
         let close_start = line[open_end + 1..].find(&close_marker)?;
         let body = &line[open_end + 1..open_end + 1 + close_start];
-        if body.is_empty() {
-            None
-        } else {
-            Some(xml_unescape(body))
-        }
+        // An empty body (`<source></source>`) is a valid, present element.
+        // Return `Some(String::new())` rather than `None` so the caller treats
+        // it as a found single-line element instead of switching to multi-line
+        // mode and hunting for a closing tag that has already passed — which
+        // would silently drop the trans-unit on round-trip.
+        Some(xml_unescape(body))
     }
 
     /// Extract a partial body when the opening tag is on this line but the
@@ -1173,6 +1180,63 @@ mod tests {
             units.iter().any(|u| u.source == "Description"),
             "Should extract Caption 'Description'"
         );
+    }
+
+    #[test]
+    fn label_ids_are_stable_across_extraction_order() {
+        // Regression: make_label_id previously used the cumulative units.len()
+        // as the index, so the same label in the same file got a different ID
+        // depending on how many units earlier files contributed. The ID must
+        // depend only on the label's position within its own object.
+        let al = r#"codeunit 50100 "My Codeunit"
+{
+    var
+        FirstLabel: Label 'First';
+        SecondLabel: Label 'Second';
+}"#;
+
+        // Extract into a fresh vector.
+        let mut units_a = Vec::new();
+        extract_from_file(Path::new("a.al"), al, &mut units_a);
+        let ids_a: Vec<String> = units_a.iter().map(|u| u.id.clone()).collect();
+
+        // Extract into a vector that already holds units from an "earlier" file.
+        let mut units_b = vec![make_test_unit("preexisting one"), make_test_unit("two")];
+        let pre_len = units_b.len();
+        extract_from_file(Path::new("a.al"), al, &mut units_b);
+        let ids_b: Vec<String> = units_b[pre_len..].iter().map(|u| u.id.clone()).collect();
+
+        assert_eq!(
+            ids_a, ids_b,
+            "label IDs must not depend on prior extraction state"
+        );
+        assert_eq!(ids_a[0], "Codeunit 50100 My Codeunit - Label 0");
+        assert_eq!(ids_a[1], "Codeunit 50100 My Codeunit - Label 1");
+    }
+
+    #[test]
+    fn parse_xliff_preserves_empty_single_line_source() {
+        // Regression: a single-line `<source></source>` with an empty body
+        // used to make extract_single_line return None, which switched the
+        // parser into multi-line mode hunting for a closing tag that had
+        // already passed — silently dropping the whole trans-unit.
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<xliff version="1.2">
+  <file datatype="xml" source-language="en-US" target-language="de-DE" original="MyApp">
+    <body>
+      <group id="MyApp">
+        <trans-unit id="Table 1 T - Caption" size-unit="char" translate="yes" xml:space="preserve">
+          <source xml:space="preserve"></source>
+        </trans-unit>
+      </group>
+    </body>
+  </file>
+</xliff>"#;
+        let parsed = parse_xliff(xml);
+        let unit = parsed
+            .get("Table 1 T - Caption")
+            .expect("trans-unit with empty source must survive parsing");
+        assert_eq!(unit.source, "", "empty source body should be preserved");
     }
 
     fn make_test_unit(source: &str) -> TranslationUnit {
