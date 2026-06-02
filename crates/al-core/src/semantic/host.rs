@@ -361,16 +361,24 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
 }
 
 /// Compile the bridge DLL from its .csproj and return the output paths.
+///
+/// Uses `dotnet build --output <dir>` so the produced DLL lands in a
+/// deterministic directory regardless of the project's `<TargetFramework>`
+/// value. Previously the output path was assembled from a hardcoded
+/// `bin/Release/net8.0/` triple, so bumping the bridge's TFM to `net9.0`
+/// (or later) silently broke the dev fallback with a misleading
+/// "Bridge built but output not found" error.
 fn compile_bridge_from_source(csproj: &Path) -> Result<(PathBuf, PathBuf), SemanticError> {
     let output_dir = csproj
         .parent()
         .unwrap_or(Path::new("."))
         .join("bin")
         .join("Release")
-        .join("net8.0");
+        .join("rust-out");
 
     let status = std::process::Command::new("dotnet")
-        .args(["build", "-c", "Release", "--nologo", "-v", "q"])
+        .args(["build", "-c", "Release", "--nologo", "-v", "q", "--output"])
+        .arg(&output_dir)
         .arg(csproj)
         .status()
         .map_err(|e| SemanticError::HostInit(format!("Failed to run dotnet build: {e}")))?;
