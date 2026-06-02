@@ -311,10 +311,17 @@ impl AlConfig {
             std::process::id(),
             seq,
         );
-        let tmp_path = path
-            .parent()
-            .map(|p| p.join(&tmp_name))
-            .unwrap_or_else(|| std::path::PathBuf::from(&tmp_name));
+        // Require a parent directory so the temp file is a sibling of the
+        // target and the rename is atomic on the same filesystem. Falling back
+        // to a cwd-relative temp file would break atomicity (cwd is unstable in
+        // a daemon) and could rename across filesystems.
+        let parent = path.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "config path has no parent directory",
+            )
+        })?;
+        let tmp_path = parent.join(&tmp_name);
         std::fs::write(&tmp_path, &json)?;
         std::fs::rename(&tmp_path, path)?;
         Ok(())
@@ -554,9 +561,13 @@ fn merge_string_array(
     target: &mut Vec<String>,
 ) {
     if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
+        // Skip empty strings — consistent with `merge_optional_string`, which
+        // treats `""` as "unset". An empty analyzer/option entry is never valid.
         *target = arr
             .iter()
-            .filter_map(|s| s.as_str().map(String::from))
+            .filter_map(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from)
             .collect();
     }
 }
@@ -567,9 +578,14 @@ fn merge_path_array(
     target: &mut Vec<PathBuf>,
 ) {
     if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
+        // Skip empty strings — consistent with `merge_optional_path`, which
+        // treats `""` as `None`. An empty path entry would become `PathBuf("")`
+        // and is never a valid probing/local-folder location.
         *target = arr
             .iter()
-            .filter_map(|s| s.as_str().map(PathBuf::from))
+            .filter_map(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
             .collect();
     }
 }
@@ -943,6 +959,41 @@ mod tests {
         assert!(!loaded.enable_code_analysis);
         assert_eq!(loaded.root_namespace, Some("Test.Namespace".to_string()));
         assert!(loaded.incremental_build);
+    }
+
+    #[test]
+    fn persist_errors_when_path_has_no_parent() {
+        // A bare root path has no parent directory; persist must surface an
+        // error rather than silently writing a cwd-relative temp file.
+        let config = AlConfig::default();
+        let err = config.persist(Path::new("/")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn merge_path_array_filters_empty_strings() {
+        let mut config = AlConfig::default();
+        config.merge(&serde_json::json!({
+            "assemblyProbingPaths": ["/valid", "", "/other"]
+        }));
+        assert_eq!(
+            config.assembly_probing_paths,
+            vec![PathBuf::from("/valid"), PathBuf::from("/other")],
+            "empty path entries must be filtered out"
+        );
+    }
+
+    #[test]
+    fn merge_string_array_filters_empty_strings() {
+        let mut config = AlConfig::default();
+        config.merge(&serde_json::json!({
+            "codeAnalyzers": ["CodeCop", "", "UICop"]
+        }));
+        assert_eq!(
+            config.code_analyzers,
+            vec!["CodeCop".to_string(), "UICop".to_string()],
+            "empty analyzer entries must be filtered out"
+        );
     }
 
     #[test]
