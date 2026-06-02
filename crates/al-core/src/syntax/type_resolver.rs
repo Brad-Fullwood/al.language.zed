@@ -633,17 +633,12 @@ impl<'a> TypeResolver<'a> {
 
         // F-OPEN-105 short-circuit: most AL files don't contain `dataitem`
         // (only Report and Query objects use it). Skip the line-starts
-        // scan entirely when the keyword isn't present. Case-insensitive
-        // check via raw byte search would require to_lowercase or windows
-        // walk; the ASCII text has at most one case form per parse, so an
-        // ascii-case-insensitive contains over the trimmed lines is the
-        // simplest correct gate. The check itself is O(N) but `memchr`-
-        // backed via `contains`, much faster than per-call line-walking.
-        if !text.contains("dataitem(")
-            && !text.contains("dataitem (")
-            && !text.contains("DataItem(")
-            && !text.contains("DATAITEM(")
-        {
+        // scan entirely when the keyword isn't present. AL keywords are
+        // case-insensitive, so we lowercase the whole text once and check
+        // for `dataitem(` against that — this matches every case variation
+        // (e.g. `dataItem(`, `Dataitem(`) rather than a fixed set of forms.
+        // The line-level parse below uses the same case-insensitive rule.
+        if !text.to_ascii_lowercase().contains("dataitem(") {
             return;
         }
 
@@ -1219,6 +1214,45 @@ mod tests {
                 .iter()
                 .map(|v| &v.name)
                 .collect::<Vec<_>>()
+        );
+        let decl = result.unwrap();
+        assert_eq!(decl.name, "StagingRec");
+        assert_eq!(decl.type_name, "Record");
+        assert_eq!(decl.type_subtype, Some("Item Journal Staging".to_string()));
+    }
+
+    // Regression: AL keywords are case-insensitive. A `dataitem` written with
+    // non-standard casing (e.g. `dataItem`) must still resolve. Previously the
+    // short-circuit gate only matched a fixed set of case forms and returned
+    // early for variations like `dataItem(`, silently dropping the variable.
+    #[test]
+    fn test_resolve_dataitem_variable_nonstandard_casing() {
+        let src = r#"report 50201 "Test Report"
+{
+    dataset
+    {
+        dataItem(StagingRec; "Item Journal Staging")
+        {
+            trigger OnPreDataItem()
+            begin
+                StagingRec.ModifyAll(Status, StagingRec.Status::Posting, true);
+            end;
+        }
+    }
+}"#;
+        let (tree, text) = parse(src);
+        let resolver = TypeResolver::new(&tree, &text);
+
+        let result = resolver.resolve_type(
+            "StagingRec",
+            Position {
+                line: 8,
+                character: 16,
+            },
+        );
+        assert!(
+            result.is_some(),
+            "Should resolve dataItem (mixed-case) variable StagingRec"
         );
         let decl = result.unwrap();
         assert_eq!(decl.name, "StagingRec");
