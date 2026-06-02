@@ -2003,3 +2003,13 @@ One commit. Adversarial review of `CopyStr` in the test-runtime interpreter (`cr
 
 Workspace test count: 2190 → 2192 (+2 CopyStr regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite at 2192 passing, and `zed-al` `wasm32-wasip1` release build).
 
+### Iteration 115 (2026-06-03)
+
+One commit. Adversarial review of the daemon IPC client (`crates/al-protocol/src/client.rs`).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-251 | P1 | **Fixed (+ test).** `DaemonClient::from_stream` set only a 30s read timeout (`SO_RCVTIMEO`); the write path (`send_request`'s `write_all`/`flush`) relies on the independent `SO_SNDTIMEO` option, which was never set. Against a hung/unresponsive daemon that stops reading, the Unix-socket send buffer fills and the next write blocks forever, hanging CLI/TUI clients. Now sets a default 30s write timeout in `from_stream` and adds a public `set_write_timeout()` for parity with `set_read_timeout()` so callers can extend it for long-running operations. +1 regression test (`write_to_nonreading_daemon_times_out`) asserting the default write timeout is installed and that a non-reading daemon yields a bounded write-path error instead of an infinite hang. |
+
+Workspace test count: 2192 → 2193 (+1 write-timeout regression test). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
