@@ -24,4 +24,8 @@ allow = [
   # `option-ext` (transitive via `directories`/`dirs`). cargo-deny flags it as
   # not-allowed otherwise.
   "MPL-2.0",
+  # CDLA-Permissive-2.0 is a permissive (BSD-like) license covering the bundled
+  # Mozilla root-certificate data in `webpki-roots` (pulled in by the rustls TLS
+  # stack). No copyleft / source obligations on our code.
+  "CDLA-Permissive-2.0",
 ]

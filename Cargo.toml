@@ -37,7 +37,10 @@ dashmap = "6"
 ropey = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
-reqwest = { version = "0.12", features = ["json", "multipart"] }
+# rustls (not the default native-tls) so the dep tree has no system-OpenSSL
+# build requirement — native-tls -> openssl-sys fails to cross-compile to
+# aarch64-linux in the release pipeline. rustls is pure-Rust + vendored.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "charset", "http2"] }
 zip = "2"
 quick-xml = { version = "0.37", features = ["serialize"] }
 tracing = "0.1"
