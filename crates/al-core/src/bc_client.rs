@@ -458,7 +458,11 @@ impl BcClient {
     ) -> Result<T, BcClientError> {
         let status = response.status();
         if status.is_success() {
-            let body = response.json::<T>().await?;
+            // Use the capped reader so a hostile BC server cannot stream an
+            // arbitrarily large JSON body into the daemon's address space
+            // (F-OPEN-044 hardening — enforces MAX_BC_JSON_RESPONSE_BYTES via
+            // a Content-Length pre-check plus a post-read size re-check).
+            let body = read_json_body_capped::<T>(response).await?;
             return Ok(body);
         }
         self.map_error_response(status, response).await
@@ -469,14 +473,18 @@ impl BcClient {
         status: StatusCode,
         response: reqwest::Response,
     ) -> Result<T, BcClientError> {
-        let raw = response.text().await.unwrap_or_else(|_| status.to_string());
-        // Truncate + scrub: never propagate the full BC error body into
-        // logs/JSON-RPC responses (T006 / sec-003). BC servers can echo
-        // request URL parameters (incl. tenant) into error pages, and a
-        // verbose 401 page sometimes mirrors the Authorization header
-        // family; we keep enough text to be useful for debugging
-        // without leaving a tail of unbounded credential surface.
-        let message = sanitize_error_body(&raw);
+        // Read + scrub via the capped reader so a hostile BC server cannot
+        // stream a multi-gigabyte error body that `response.text()` would
+        // buffer entirely into memory before truncation (F-OPEN-014). The
+        // capped reader rejects oversize/absent Content-Length without
+        // buffering and re-checks the actual size post-read, then runs
+        // `sanitize_error_body` itself — never propagating the full BC error
+        // body into logs/JSON-RPC responses (T006 / sec-003). BC servers can
+        // echo request URL parameters (incl. tenant) into error pages, and a
+        // verbose 401 page sometimes mirrors the Authorization header family;
+        // we keep enough text to be useful for debugging without leaving a
+        // tail of unbounded credential surface.
+        let message = read_error_body_capped(response).await;
 
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             return Err(BcClientError::AuthenticationFailed {
@@ -940,5 +948,126 @@ mod tests {
                 "oversize error body must not be buffered: {msg}"
             );
         }
+    }
+
+    // --- handle_response / map_error_response wiring (F-OPEN-118 / 119) ------
+
+    /// Point a `BcClient` at a wiremock server. The on-prem `build_base_url`
+    /// yields `{server}/{instance}`; passing the full mock URI as `server`
+    /// (scheme included) and `BC` as the instance makes the BC Dev API paths
+    /// resolve under `{mock_uri}/BC/...`.
+    fn client_for(uri: &str) -> BcClient {
+        BcClient::new(&BcServerConfig {
+            name: "mock".to_string(),
+            environment_type: EnvironmentType::OnPrem,
+            server: Some(uri.to_string()),
+            server_instance: Some("BC".to_string()),
+            port: None,
+            environment_name: None,
+            tenant: None,
+            authentication: AuthMethod::Windows, // no creds required
+            accept_invalid_certs: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn handle_response_success_path_uses_capped_json_reader() {
+        // Regression for F-OPEN-118: the success branch of `handle_response`
+        // must route through `read_json_body_capped`, which REQUIRES a
+        // Content-Length so the 16 MB cap is enforceable. A chunked (no
+        // Content-Length) 200 JSON body is therefore refused. The previous
+        // code called `response.json()` directly and would have returned Ok,
+        // so this test fails before the fix and passes after.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Transfer-Encoding", "chunked")
+                    .set_body_string(r#"{"appId":"abc","status":"Completed"}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        let res = client.publish_extension(&app).await;
+        match res {
+            Err(BcClientError::ServerError { message, .. }) => {
+                assert!(
+                    message.contains("Content-Length"),
+                    "success path must enforce the capped JSON reader: {message}"
+                );
+            }
+            other => panic!("expected capped-reader ServerError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_response_error_path_uses_capped_error_reader() {
+        // Regression for F-OPEN-119: the non-2xx branch routes through
+        // `map_error_response`, which must use `read_error_body_capped`. An
+        // error body advertising a Content-Length above the 64 KiB cap must
+        // NOT be buffered — the returned message carries the sentinel instead
+        // of the body. The previous code called `response.text()` directly and
+        // would have buffered the whole body.
+        let oversize = (MAX_ERROR_BODY_BYTES + 1).to_string();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(500)
+                    .insert_header("Content-Length", oversize.as_str())
+                    .set_body_string("x"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        let res = client.publish_extension(&app).await;
+        match res {
+            Err(BcClientError::ServerError { message, .. }) => {
+                assert!(
+                    message.contains("exceeds") || message.contains("not read"),
+                    "error path must not buffer an oversize body: {message}"
+                );
+            }
+            // A transport-level abort is also acceptable: the oversize
+            // mismatch was caught below us and the body still wasn't buffered.
+            Err(_) => {}
+            Ok(_) => panic!("oversize 500 error body must not yield Ok"),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_response_success_path_accepts_capped_json_with_length() {
+        // Positive companion: a well-formed 200 JSON body WITH a small
+        // Content-Length deserialises successfully through the capped reader.
+        let body = r#"{"appId":"abc","status":"Completed"}"#;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        let resp = client.publish_extension(&app).await.expect("should parse");
+        assert_eq!(resp.app_id.as_deref(), Some("abc"));
     }
 }
