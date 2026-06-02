@@ -154,10 +154,37 @@ impl FileIndex {
     ///
     /// Returns `(text, tree)` from the cache. Background files are always cached
     /// at index time via `add_file_with_meta`, so a miss means the file was never indexed.
+    ///
+    /// `text` and `tree` live in two separate DashMaps, so two naive `.get()`
+    /// calls can race a concurrent `index_from_result` (which writes `file_trees`
+    /// then later `files`) and return a stale text paired with a fresh tree —
+    /// callers then convert tree byte offsets against the wrong source, yielding
+    /// wrong reference/definition locations. A tree's root node always spans its
+    /// entire source, so `tree.root_node().end_byte() == text.len()` is a cheap
+    /// coherence invariant. We re-read until that holds (bounded), guaranteeing
+    /// the returned pair came from the same indexing pass.
     pub fn get_cached_parse(&self, path: &Path) -> Option<(String, tree_sitter::Tree)> {
-        let text = self.files.get(path)?.value().clone();
-        let tree = self.file_trees.get(path)?.value().clone();
-        Some((text, tree))
+        // Spin briefly to pick up a coherent pair. A re-index completes in
+        // microseconds, so a torn read is resolved almost immediately; the cap
+        // exists only so a path being deleted mid-read can't spin forever.
+        for attempt in 0..1024 {
+            let text = self.files.get(path)?.value().clone();
+            let tree = self.file_trees.get(path)?.value().clone();
+            if tree.root_node().end_byte() == text.len() {
+                return Some((text, tree));
+            }
+            // Mismatch: a concurrent re-index updated one map but not the other.
+            // Back off so the writing thread can make progress, then retry.
+            if attempt < 32 {
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
+        }
+        // Persistently incoherent (path churning under sustained re-indexing):
+        // report a miss rather than a torn pair. Callers treat `None` as
+        // "not cached yet" and retry on the next request.
+        None
     }
 
     /// Get cached document symbols for a workspace file.
@@ -1243,5 +1270,75 @@ mod tests {
         // Earlier versions should have been cleaned up
         let old = index.procedures.get("version0");
         assert!(old.is_none(), "old procedure should have been removed");
+    }
+
+    #[test]
+    fn get_cached_parse_pair_is_always_coherent() {
+        // Sanity: a freshly indexed file returns a (text, tree) pair where the
+        // tree spans exactly the returned text. This is the invariant that
+        // get_cached_parse relies on to detect a torn text/tree race.
+        let index = FileIndex::new();
+        let path = PathBuf::from("/test/src/Coherent.al");
+        let content = r#"codeunit 50100 "Coherent" { procedure P() begin end; }"#.to_string();
+        index.add_file(path.clone(), content.clone());
+
+        let (text, tree) = index.get_cached_parse(&path).expect("indexed");
+        assert_eq!(text, content);
+        assert_eq!(tree.root_node().end_byte(), text.len());
+    }
+
+    #[test]
+    fn get_cached_parse_never_returns_torn_pair_under_concurrency() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let index = Arc::new(FileIndex::new());
+        let path = PathBuf::from("/test/src/Race.al");
+
+        // Seed so readers always find an entry.
+        index.add_file(
+            path.clone(),
+            r#"codeunit 50100 "Race" { procedure A() begin end; }"#.to_string(),
+        );
+
+        let mut handles = Vec::new();
+
+        // Writer: continually re-index the same path with content of varying
+        // length so a torn (old_text, new_tree) pair would fail the
+        // end_byte()==len() invariant.
+        for w in 0..4 {
+            let idx = Arc::clone(&index);
+            let p = path.clone();
+            handles.push(thread::spawn(move || {
+                for i in 0..200 {
+                    let pad = "X".repeat((w * 200 + i) % 97);
+                    let content = format!(
+                        r#"codeunit 50100 "Race" {{ procedure A{i}() begin Message('{pad}'); end; }}"#
+                    );
+                    idx.add_file(p.clone(), content);
+                }
+            }));
+        }
+
+        // Readers: assert the returned pair is always self-consistent.
+        for _ in 0..4 {
+            let idx = Arc::clone(&index);
+            let p = path.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..400 {
+                    if let Some((text, tree)) = idx.get_cached_parse(&p) {
+                        assert_eq!(
+                            tree.root_node().end_byte(),
+                            text.len(),
+                            "get_cached_parse returned a torn text/tree pair"
+                        );
+                    }
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }
