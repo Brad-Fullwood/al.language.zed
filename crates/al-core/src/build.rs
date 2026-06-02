@@ -23,13 +23,14 @@ use crate::errors::AlError;
 const DEFAULT_COMPILE_TIMEOUT_SECS: u64 = 600;
 
 fn compile_timeout() -> Option<std::time::Duration> {
+    let default_timeout = Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS));
     match std::env::var("AL_COMPILE_TIMEOUT_SECS") {
         Ok(s) => match s.trim().parse::<i64>() {
             Ok(n) if n <= 0 => None,
             Ok(n) => Some(std::time::Duration::from_secs(n as u64)),
-            Err(_) => Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS)),
+            Err(_) => default_timeout,
         },
-        Err(_) => Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS)),
+        Err(_) => default_timeout,
     }
 }
 
@@ -199,8 +200,8 @@ pub async fn compile_project_with_analyzers(
         if !custom_path.is_file() {
             continue;
         }
+        let path_str = custom_path.display().to_string();
         if let Some(filter) = analyzer_filter {
-            let path_str = custom_path.display().to_string();
             let stem_lower = custom_path
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_lowercase())
@@ -212,7 +213,7 @@ pub async fn compile_project_with_analyzers(
                 continue;
             }
         }
-        analyzer_paths.push(custom_path.display().to_string());
+        analyzer_paths.push(path_str);
     }
     // Absolute DLL paths in the filter not already covered by toolchain.custom.
     if let Some(filter) = analyzer_filter {

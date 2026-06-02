@@ -28,7 +28,7 @@ use crate::workspace::Workspace;
 /// the tokio equivalent. Both seed the first arg with the `alc` dll path.
 pub fn dotnet_command(alc: &Path) -> std::process::Command {
     let mut cmd = std::process::Command::new("dotnet");
-    cmd.arg(alc.display().to_string());
+    cmd.arg(alc);
     cmd.env("DOTNET_ROLL_FORWARD", "Major");
     cmd
 }
@@ -37,7 +37,7 @@ pub fn dotnet_command(alc: &Path) -> std::process::Command {
 /// roll-forward rationale.
 pub fn dotnet_command_async(alc: &Path) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("dotnet");
-    cmd.arg(alc.display().to_string());
+    cmd.arg(alc);
     cmd.env("DOTNET_ROLL_FORWARD", "Major");
     cmd
 }
