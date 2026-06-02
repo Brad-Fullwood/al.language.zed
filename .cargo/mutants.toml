@@ -1,0 +1,20 @@
+# cargo-mutants configuration for whole-workspace red-green verification.
+#
+# Efficiency comes from CLI flags at invocation time (--test-tool nextest, -j N,
+# --baseline skip) plus these exclusions, which drop un-testable / low-signal
+# surfaces so a full ~9-10k-mutant sweep stays tractable while still mutating
+# every meaningful function.
+
+# Skip generated / boilerplate / un-runnable-in-headless surfaces.
+exclude_globs = [
+    "**/build.rs",
+    "crates/al-zed-test/**",
+]
+
+# Pure formatting / logging functions: mutating them is not a meaningful
+# red-green signal (no behavioral contract a test should pin).
+exclude_re = [
+    "impl Debug",
+    "impl Display",
+    "fn fmt",
+]
