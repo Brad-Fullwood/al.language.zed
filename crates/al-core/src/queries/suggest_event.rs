@@ -1007,4 +1007,266 @@ mod tests {
         let deduped = dedup_points(points);
         assert_eq!(deduped.len(), 1);
     }
+
+    // -----------------------------------------------------------------------
+    // Traversal-safety tests (white-box, exercise trace_from_node directly).
+    //
+    // The depth limit and `visited` set are the two safeguards that keep
+    // call-graph traversal bounded on deep, cyclic, or fan-out graphs. The
+    // higher-level query tests above only build shallow, acyclic graphs, so
+    // these drive the recursion bounds explicitly via a hand-built graph.
+    // -----------------------------------------------------------------------
+
+    use crate::insight::graph::InsightEdge;
+
+    /// Add a Procedure node to the insight graph and return its NodeId.
+    fn add_proc(g: &mut InsightGraph, object: &str, name: &str) -> NodeId {
+        let idx = g.ensure_node(
+            NodeKey::Procedure(
+                ObjectKind::Codeunit,
+                object.to_lowercase(),
+                name.to_lowercase(),
+            ),
+            InsightNode::Procedure {
+                object_kind: ObjectKind::Codeunit,
+                object_name: object.to_string(),
+                name: name.to_string(),
+                is_local: false,
+            },
+        );
+        NodeId::from(idx)
+    }
+
+    /// Add an Event node to the insight graph and return its NodeId.
+    fn add_event(g: &mut InsightGraph, object: &str, name: &str) -> NodeId {
+        let idx = g.ensure_node(
+            NodeKey::Event(
+                ObjectKind::Codeunit,
+                object.to_lowercase(),
+                name.to_lowercase(),
+            ),
+            InsightNode::Event {
+                object_kind: ObjectKind::Codeunit,
+                object_name: object.to_string(),
+                name: name.to_string(),
+                event_type: EventNodeType::Integration,
+            },
+        );
+        NodeId::from(idx)
+    }
+
+    /// Add a Subscriber node to the insight graph and return its NodeId.
+    fn add_subscriber(
+        g: &mut InsightGraph,
+        object: &str,
+        name: &str,
+        target_object: &str,
+        target_event: &str,
+    ) -> NodeId {
+        let idx = g.ensure_node(
+            NodeKey::Subscriber(
+                ObjectKind::Codeunit,
+                object.to_lowercase(),
+                name.to_lowercase(),
+            ),
+            InsightNode::Subscriber {
+                object_kind: ObjectKind::Codeunit,
+                object_name: object.to_string(),
+                name: name.to_string(),
+                target_object: target_object.to_string(),
+                target_event: target_event.to_string(),
+            },
+        );
+        NodeId::from(idx)
+    }
+
+    fn start_hop(object: &str, procedure: &str) -> TraceHop {
+        TraceHop {
+            object: object.to_string(),
+            procedure: procedure.to_string(),
+            edge_kind: "start".to_string(),
+        }
+    }
+
+    #[test]
+    fn trace_deep_call_chain_respects_max_depth() {
+        // Build a 15-deep linear chain P0 -> P1 -> ... -> P14, where every
+        // procedure also publishes an event Ek. With max_depth = 10 the trace
+        // must stop before reaching the deeper events.
+        let mut g = InsightGraph::new();
+        let chain: Vec<NodeId> = (0..15)
+            .map(|i| add_proc(&mut g, "CU", &format!("P{i}")))
+            .collect();
+        let events: Vec<NodeId> = (0..15)
+            .map(|i| add_event(&mut g, "CU", &format!("E{i}")))
+            .collect();
+        let g = Arc::new(g);
+
+        let mut cg = CallGraph::build_from_insight(&g);
+        for i in 0..14 {
+            cg.add_direct_call(chain[i], chain[i + 1]);
+        }
+        // Each Pi calls its event Ei (a DirectCall edge into the Event node).
+        for i in 0..15 {
+            cg.add_direct_call(chain[i], events[i]);
+        }
+
+        let symbols = SymbolIndex::new();
+        let symbols = Arc::new(symbols);
+        let mut points = Vec::new();
+        let mut visited = HashSet::new();
+        let mut partial = false;
+        trace_from_node(
+            chain[0],
+            &g,
+            &cg,
+            &symbols,
+            &mut points,
+            &mut visited,
+            &mut partial,
+            vec![start_hop("CU", "P0")],
+            0,
+            10,
+        );
+
+        // Every reported event must lie within the depth bound. Each path's
+        // length (number of hops) cannot exceed max_depth.
+        assert!(!points.is_empty(), "should discover some events");
+        for p in &points {
+            assert!(
+                p.path.len() <= 10,
+                "path length {} exceeds max_depth for {}",
+                p.path.len(),
+                p.event
+            );
+        }
+        // Deep events past the bound must NOT appear.
+        let found: HashSet<&str> = points.iter().map(|p| p.event.as_str()).collect();
+        assert!(found.contains("E0"), "shallow event should be found");
+        assert!(
+            !found.contains("E14"),
+            "event beyond max_depth must not be reached"
+        );
+    }
+
+    #[test]
+    fn trace_circular_subscriptions_terminate() {
+        // Cycle: ProcA -> EventA -(subscription)-> SubB -> EventB
+        //        -(subscription)-> SubA -> EventA (back to start).
+        // The visited set must break the cycle and the trace must terminate.
+        let mut g = InsightGraph::new();
+        let proc_a = add_proc(&mut g, "CU", "ProcA");
+        let event_a = add_event(&mut g, "CU", "EventA");
+        let event_b = add_event(&mut g, "CU", "EventB");
+        // Subscriber nodes; SubscribesTo edges are what build_from_insight
+        // turns into EventSubscription edges (followed when tracing an Event).
+        let sub_b = add_subscriber(&mut g, "CU", "SubB", "CU", "EventA");
+        let sub_a = add_subscriber(&mut g, "CU", "SubA", "CU", "EventB");
+
+        // SubscribesTo edges (subscriber -> event) in the insight graph.
+        let sub_b_idx = petgraph::graph::NodeIndex::new(sub_b.0);
+        let sub_a_idx = petgraph::graph::NodeIndex::new(sub_a.0);
+        let event_a_idx = petgraph::graph::NodeIndex::new(event_a.0);
+        let event_b_idx = petgraph::graph::NodeIndex::new(event_b.0);
+        g.add_edge(sub_b_idx, event_a_idx, InsightEdge::SubscribesTo);
+        g.add_edge(sub_a_idx, event_b_idx, InsightEdge::SubscribesTo);
+        let g = Arc::new(g);
+
+        let mut cg = CallGraph::build_from_insight(&g);
+        // ProcA publishes EventA; SubB calls EventB; SubA calls EventA (cycle).
+        cg.add_direct_call(proc_a, event_a);
+        cg.add_direct_call(sub_b, event_b);
+        cg.add_direct_call(sub_a, event_a);
+
+        let symbols = Arc::new(SymbolIndex::new());
+        let mut points = Vec::new();
+        let mut visited = HashSet::new();
+        let mut partial = false;
+        // Must return (not hang / overflow) despite the cycle.
+        trace_from_node(
+            proc_a,
+            &g,
+            &cg,
+            &symbols,
+            &mut points,
+            &mut visited,
+            &mut partial,
+            vec![start_hop("CU", "ProcA")],
+            0,
+            10,
+        );
+
+        // Both events are reachable exactly once; the cycle does not blow up.
+        let events: HashSet<&str> = points.iter().map(|p| p.event.as_str()).collect();
+        assert!(events.contains("EventA"));
+        assert!(events.contains("EventB"));
+        // Each node is visited at most once, so each event appears once.
+        assert_eq!(
+            points.iter().filter(|p| p.event == "EventA").count(),
+            1,
+            "cycle should not produce duplicate EventA visits"
+        );
+    }
+
+    #[test]
+    fn trace_fanout_graph_bounded() {
+        // A 3-wide fan-out at each of 3 levels: root calls 3 children, each
+        // child calls 3 grandchildren, each grandchild publishes an event.
+        // The visited set keeps shared nodes from being re-explored, so the
+        // number of discovered events is bounded by the node count, not the
+        // number of distinct root->leaf paths.
+        let mut g = InsightGraph::new();
+        let root = add_proc(&mut g, "CU", "Root");
+        let children: Vec<NodeId> = (0..3)
+            .map(|i| add_proc(&mut g, "CU", &format!("C{i}")))
+            .collect();
+        let grandkids: Vec<NodeId> = (0..9)
+            .map(|i| add_proc(&mut g, "CU", &format!("G{i}")))
+            .collect();
+        let events: Vec<NodeId> = (0..9)
+            .map(|i| add_event(&mut g, "CU", &format!("Ev{i}")))
+            .collect();
+        let g = Arc::new(g);
+
+        let mut cg = CallGraph::build_from_insight(&g);
+        for &c in &children {
+            cg.add_direct_call(root, c);
+        }
+        for (ci, &c) in children.iter().enumerate() {
+            for gj in 0..3 {
+                let g_idx = ci * 3 + gj;
+                cg.add_direct_call(c, grandkids[g_idx]);
+            }
+        }
+        for (i, &gk) in grandkids.iter().enumerate() {
+            cg.add_direct_call(gk, events[i]);
+        }
+
+        let symbols = Arc::new(SymbolIndex::new());
+        let mut points = Vec::new();
+        let mut visited = HashSet::new();
+        let mut partial = false;
+        trace_from_node(
+            root,
+            &g,
+            &cg,
+            &symbols,
+            &mut points,
+            &mut visited,
+            &mut partial,
+            vec![start_hop("CU", "Root")],
+            0,
+            10,
+        );
+
+        // All 9 leaf events discovered, each exactly once (no exponential blowup).
+        assert_eq!(
+            points.len(),
+            9,
+            "expected 9 distinct events, got {}",
+            points.len()
+        );
+        let unique: HashSet<&str> = points.iter().map(|p| p.event.as_str()).collect();
+        assert_eq!(unique.len(), 9, "events should be distinct");
+    }
 }
