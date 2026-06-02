@@ -13,7 +13,32 @@ use serde::{Deserialize, Serialize};
 
 use crate::insight::graph::{EventNodeType, InsightGraph, InsightNode, NodeKey};
 use crate::insight::index::{CallGraph, EdgeResolutionState, NodeId};
+use crate::symbols::ParameterSymbol;
 use crate::workspace::Workspace;
+
+/// Resolve an object's `ObjectKind` from the symbol index, defaulting to
+/// `Codeunit` when the object is not found.
+fn resolve_object_kind(workspace: &Workspace, object_name: &str) -> ObjectKind {
+    workspace
+        .symbols
+        .get_by_name(object_name)
+        .into_iter()
+        .next()
+        .map(|e| e.kind)
+        .unwrap_or(ObjectKind::Codeunit)
+}
+
+/// Map symbol-index parameters into transport-agnostic `ParamInfo`.
+fn map_parameters_to_param_info(parameters: &[ParameterSymbol]) -> Vec<ParamInfo> {
+    parameters
+        .iter()
+        .map(|p| ParamInfo {
+            name: p.name.clone(),
+            type_name: p.type_name.clone(),
+            is_var: p.is_var,
+        })
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // Public query types
@@ -135,13 +160,7 @@ fn query_procedure(
     let cg_opt = cg_guard.as_ref();
 
     // Look up the object's kind from the symbol index.
-    let object_kind = workspace
-        .symbols
-        .get_by_name(object_name)
-        .into_iter()
-        .next()
-        .map(|e| e.kind)
-        .unwrap_or(ObjectKind::Codeunit);
+    let object_kind = resolve_object_kind(workspace, object_name);
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
     let mut visited: HashSet<NodeId> = HashSet::new();
@@ -280,16 +299,7 @@ fn query_table(
         }
         .to_string();
 
-        let params: Vec<ParamInfo> = pub_event
-            .method
-            .parameters
-            .iter()
-            .map(|p| ParamInfo {
-                name: p.name.clone(),
-                type_name: p.type_name.clone(),
-                is_var: p.is_var,
-            })
-            .collect();
+        let params = map_parameters_to_param_info(&pub_event.method.parameters);
 
         let example = format_example(obj.kind, &obj.name, &pub_event.method.name);
 
@@ -322,13 +332,7 @@ fn query_event(
     let cg_opt = cg_guard.as_ref();
 
     // Resolve the object kind.
-    let object_kind = workspace
-        .symbols
-        .get_by_name(object_name)
-        .into_iter()
-        .next()
-        .map(|e| e.kind)
-        .unwrap_or(ObjectKind::Codeunit);
+    let object_kind = resolve_object_kind(workspace, object_name);
 
     let mut points: Vec<IntegrationPoint> = Vec::new();
     let mut visited: HashSet<NodeId> = HashSet::new();
@@ -617,15 +621,7 @@ fn lookup_event_params(
         }
         for method in &entry.methods {
             if method.name.to_lowercase() == event_lower {
-                return method
-                    .parameters
-                    .iter()
-                    .map(|p| ParamInfo {
-                        name: p.name.clone(),
-                        type_name: p.type_name.clone(),
-                        is_var: p.is_var,
-                    })
-                    .collect();
+                return map_parameters_to_param_info(&method.parameters);
             }
         }
     }
