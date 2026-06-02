@@ -388,10 +388,16 @@ fn find_member_range_in_text(
         };
 
         if let Some((col_start, col_end)) = range {
+            // The inner parsers (`find_procedure_range` / `find_call_range`)
+            // operate on the line's bytes, so `col_start`/`col_end` are byte
+            // offsets. LSP `Position.character` is a UTF-16 code-unit offset,
+            // so convert before reporting — otherwise deep-linking into a
+            // virtual `.app` member whose line contains non-ASCII characters
+            // (e.g. an accented field name) lands at the wrong column.
             return Some(MemberRange {
                 line: line_idx as u32,
-                col_start: col_start as u32,
-                col_end: col_end as u32,
+                col_start: crate::syntax::byte_col_to_utf16_col(line, col_start),
+                col_end: crate::syntax::byte_col_to_utf16_col(line, col_end),
             });
         }
     }
@@ -560,5 +566,64 @@ fn parse_name_token(line: &str, bytes: &[u8], mut i: usize) -> Option<(String, u
     } else {
         let name = line[start_col..i].trim().to_string();
         Some((name, start_col, i))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_member_range_ascii_field_columns() {
+        // ASCII line: byte offsets and UTF-16 columns coincide.
+        let text = "        field(1; \"Test\"; Code) { }";
+        let r = find_member_range_in_text(text, "Test", MemberKind::Field).unwrap();
+        assert_eq!(r.line, 0);
+        // The opening quote is at byte 17, name "Test" starts at col 18.
+        let expected_start = text.find("Test").unwrap() as u32;
+        assert_eq!(r.col_start, expected_start);
+        assert_eq!(r.col_end, expected_start + 4);
+    }
+
+    #[test]
+    fn find_member_range_reports_utf16_columns_for_non_ascii_name() {
+        // The field name contains a 2-byte-UTF-8 / 1-UTF-16-unit character
+        // ("ë"). col_end must be the UTF-16 offset, not the byte offset, so
+        // an editor deep-link lands on the right column.
+        let text = "        field(1; \"Tëst\"; Code) { }";
+        let r = find_member_range_in_text(text, "Tëst", MemberKind::Field).unwrap();
+        assert_eq!(r.line, 0);
+
+        // Everything before the name is ASCII, so col_start is unaffected.
+        let name_byte_start = text.find("Tëst").unwrap();
+        let prefix = &text[..name_byte_start];
+        let expected_start = crate::syntax::byte_col_to_utf16_col(text, name_byte_start);
+        assert_eq!(r.col_start, expected_start);
+        assert_eq!(r.col_start, prefix.chars().count() as u32);
+
+        // "Tëst" is 4 chars / 4 UTF-16 units but 5 UTF-8 bytes, so a byte-
+        // based col_end would be one too large.
+        assert_eq!(r.col_end, r.col_start + 4);
+        let byte_end = name_byte_start + "Tëst".len();
+        assert!(
+            (byte_end as u32) > r.col_end,
+            "byte offset ({byte_end}) must exceed the UTF-16 col_end ({}) for a non-ASCII name",
+            r.col_end
+        );
+    }
+
+    #[test]
+    fn find_member_range_procedure_after_non_ascii_is_utf16() {
+        // Non-ASCII *before* the matched name shifts both columns; verify
+        // col_start is the UTF-16 offset rather than the byte offset.
+        let text = "    // café\n    procedure Foo()";
+        let r = find_member_range_in_text(text, "Foo", MemberKind::Procedure).unwrap();
+        // The procedure is on line index 1; the prefix on that line is ASCII.
+        assert_eq!(r.line, 1);
+        let line1 = text.lines().nth(1).unwrap();
+        let expected_start =
+            crate::syntax::byte_col_to_utf16_col(line1, line1.find("Foo").unwrap());
+        assert_eq!(r.col_start, expected_start);
+        assert_eq!(r.col_end, r.col_start + 3);
     }
 }
