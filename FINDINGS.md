@@ -1946,3 +1946,13 @@ Open backlog was empty and the worklist carried no new confirmed findings, so th
 | F-OPEN-241 | P1 | **Fixed (+ test).** `parse_xliff` (`crates/al-core/src/xliff.rs`) detected `<note>` elements with an exact `starts_with("<note>")` check. Business Central and the MS AL extension emit the attributed form (`<note from="Developer" annotates="general" priority="2">…</note>`), which never matched — so every note in a real-world language `.xlf` was silently dropped, and `refresh_xliff` (which preserves the parsed unit via `lang_unit.clone()`) lost the developer context on every refresh/merge. Now matches both `<note>` and `<note …>`, mirroring the existing `<source>`/`<target>` handling that anchors on the first `>` of the open tag. +1 regression test covering bare and attributed notes. |
 
 Workspace test count: 2179 → 2180 (+1 regression test for attributed-note parsing). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 110 (2026-06-02)
+
+Open backlog was empty and the worklist carried no new confirmed findings. This round was a fresh-subsystem audit plus a backlog-state confirmation. Adversarially reviewed four lower-traffic `symbols`/parsing modules — `xliff.rs` (multi-line tag accumulation, `extract_single_line`/`extract_open_only`, `xml_unescape` ordering), `symbols/manifest.rs` (`quick_xml`-based `NavxManifest` parsing), `symbols/events.rs` (`parse_subscriber_args` / `clean_quotes` AL subscriber-attribute string handling), and `symbols/cache.rs` (`decode_cache` 4-byte header bounds-checking, atomic temp-file write, `0o700` TOCTOU-safe dir creation, FNV-1a path hashing). All four were found correct and already well-hardened (bounds-checked slicing, lossless escape/unescape ordering, UTF-8-safe quote stripping) — **no new actionable findings**.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| — | — | No new findings. Fresh audit of `xliff.rs`, `symbols/manifest.rs`, `symbols/events.rs`, `symbols/cache.rs` surfaced no correctness or test-gap issues. Open backlog remains empty; nothing actionable left to drain. |
+
+Workspace test count: 2180 → 2180 (no code change this iteration; no fabricated finding forced). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite at 2180 passing, and `zed-al` `wasm32-wasip1` release build). Converged: zero new findings and zero open actionable items.
