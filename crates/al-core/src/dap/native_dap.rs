@@ -20,7 +20,7 @@ use tokio::io::{self, BufReader};
 use tokio::sync::{watch, Mutex};
 use tracing::{debug, error, info, warn};
 
-use super::bc_debug::{publish_app, BcDebugConfig, BcDebugSession, BcEvent};
+use super::bc_debug::{percent_encode_url, publish_app, BcDebugConfig, BcDebugSession, BcEvent};
 use super::framing::{read_dap_body, write_dap_frame};
 use super::{DapError, Result};
 
@@ -578,17 +578,7 @@ where
 
                         // Open browser with debug context params (must match SignalR ConnectionId)
                         if config.launch_browser {
-                            let web_url = if config.environment_type.eq_ignore_ascii_case("OnPrem")
-                            {
-                                // Use onprem_base() to include the port number in the URL.
-                                let base = config.onprem_base();
-                                format!("{base}/?page={}&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
-                                    config.startup_object_id)
-                            } else {
-                                let env = config.environment_name.as_deref().unwrap_or("sandbox");
-                                format!("https://businesscentral.dynamics.com/{}/{env}?page={}&noSignUpCheck=1&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
-                                    config.tenant, config.startup_object_id)
-                            };
+                            let web_url = build_debug_browser_url(&config, &conn_id);
 
                             // Send the URL as an event for Zed to handle
                             write_dap(
@@ -1182,6 +1172,30 @@ fn make_event(seq: &AtomicU64, event: &str, body: Option<serde_json::Value>) -> 
     evt
 }
 
+/// Build the browser URL that opens the BC debug context for a launch session.
+///
+/// For cloud sessions the tenant and environment name are percent-encoded so
+/// values containing special characters (spaces, ampersands, slashes) produce
+/// valid URLs — matching the encoding already applied in
+/// [`bc_debug::BcDebugConfig::base_url`] and `debug_hub_url`.
+fn build_debug_browser_url(config: &BcDebugConfig, conn_id: &str) -> String {
+    if config.environment_type.eq_ignore_ascii_case("OnPrem") {
+        // Use onprem_base() to include the port number in the URL.
+        let base = config.onprem_base();
+        format!(
+            "{base}/?page={}&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
+            config.startup_object_id
+        )
+    } else {
+        let tenant = percent_encode_url(&config.tenant);
+        let env = percent_encode_url(config.environment_name.as_deref().unwrap_or("sandbox"));
+        format!(
+            "https://businesscentral.dynamics.com/{tenant}/{env}?page={}&noSignUpCheck=1&connectioncontext={conn_id}&debuggingcontext={conn_id}&sk={conn_id}",
+            config.startup_object_id
+        )
+    }
+}
+
 /// Serialize `msg` to JSON and write a DAP frame to `writer`.
 ///
 /// Delegates to [`framing::write_dap_frame`] after serialization.
@@ -1519,5 +1533,68 @@ mod tests {
     fn bc_stack_to_dap_returns_empty_for_non_array_input() {
         let result = bc_stack_to_dap(serde_json::json!(null), &|_: i32, _: i32| None::<PathBuf>);
         assert!(result.is_empty(), "non-array input must yield empty vec");
+    }
+
+    #[test]
+    fn cloud_browser_url_percent_encodes_tenant_and_env() {
+        // A tenant/environment containing special characters must be encoded,
+        // otherwise the resulting URL is malformed (mirrors the encoding already
+        // applied in bc_debug::base_url / debug_hub_url).
+        let config = BcDebugConfig {
+            environment_type: "Cloud".to_string(),
+            tenant: "acme & co".to_string(),
+            environment_name: Some("prod/east".to_string()),
+            startup_object_id: 22,
+            ..Default::default()
+        };
+        let url = build_debug_browser_url(&config, "abc123");
+        assert!(
+            url.contains("acme%20%26%20co"),
+            "tenant special chars must be encoded: {url}"
+        );
+        assert!(
+            url.contains("prod%2Feast"),
+            "environment special chars must be encoded: {url}"
+        );
+        assert!(
+            !url.contains("acme & co"),
+            "raw unencoded tenant must not leak into URL: {url}"
+        );
+        assert!(
+            url.contains("page=22"),
+            "startup object id must be present: {url}"
+        );
+    }
+
+    #[test]
+    fn cloud_browser_url_defaults_env_to_sandbox() {
+        let config = BcDebugConfig {
+            environment_type: "Cloud".to_string(),
+            tenant: "tenant1".to_string(),
+            environment_name: None,
+            ..Default::default()
+        };
+        let url = build_debug_browser_url(&config, "conn");
+        assert!(
+            url.contains("/tenant1/sandbox?"),
+            "missing env should default to sandbox: {url}"
+        );
+    }
+
+    #[test]
+    fn onprem_browser_url_uses_onprem_base() {
+        let config = BcDebugConfig {
+            environment_type: "OnPrem".to_string(),
+            server: Some("http://localhost".to_string()),
+            server_instance: Some("BC".to_string()),
+            port: 7049,
+            startup_object_id: 5,
+            ..Default::default()
+        };
+        let url = build_debug_browser_url(&config, "conn");
+        assert!(
+            url.contains(":7049/BC/?page=5"),
+            "on-prem URL should include port and instance: {url}"
+        );
     }
 }

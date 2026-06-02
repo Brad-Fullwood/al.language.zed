@@ -1276,7 +1276,7 @@ fn signalr_to_bc_event(msg: &SignalRMessage) -> Option<BcEvent> {
 /// Unreserved characters (RFC 3986) are passed through unchanged; all other
 /// bytes are encoded as `%XX`. This is used to sanitize server-returned values
 /// (e.g. SignalR `connectionToken`) before they are embedded in WebSocket URLs.
-fn percent_encode_url(s: &str) -> String {
+pub(crate) fn percent_encode_url(s: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.bytes() {
