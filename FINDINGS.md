@@ -1878,3 +1878,14 @@ Drained the new confirmed worklist: one test-gap closed for the public `errors_f
 | F-OPEN-227 | P3 | **Fixed (cleanup).** `discover_events` set `publisher.event_name = String::new()` at construction and patched it in a second pass; `evt_name` is already in scope, so it is now initialized directly and the redundant fixup loop removed (one fewer allocation per event, behavior-preserving). `crates/al-core/src/insight/discovery.rs`. |
 
 Workspace test count: 2157 → 2159 (+2 new `errors_from_tree` regression tests). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 104 (2026-05-29)
+
+Drained the new confirmed worklist: one real P1 case-sensitivity bug (dataitem short-circuit gate) and one P1 unbounded-allocation/perf issue (test-failure error in code lens title). No standing open findings remained to drain (Open section was already empty).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-228 | P1 | **Fixed.** `collect_dataitem_vars`' short-circuit gate matched only a fixed set of case forms (`dataitem(`, `dataitem (`, `DataItem(`, `DATAITEM(`) and returned early for other valid casings like `dataItem(` / `Dataitem(`. Since AL keywords are case-insensitive (and the line parser already uses `to_ascii_lowercase`), report/query variables declared with non-standard casing silently failed to resolve in completions, hover, and definition. Now lowercases the text once and gates on `dataitem(`, matching the parser. +1 test. `crates/al-core/src/syntax/type_resolver.rs`. |
+| F-OPEN-229 | P1 | **Fixed (perf).** `test_lens_title` embedded the unbounded `TestRunRecord` error directly in the code lens title; multi-KB test-runner stack traces produced large LSP payloads and degraded UI rendering. Truncate to 256 bytes at a UTF-8 boundary with an ellipsis, mirroring the JUnit serializer's `MAX_FAILURE_MSG_BYTES`. +2 tests. `crates/al-core/src/queries/code_lens.rs`. |
+
+Workspace test count: 2159 → 2162 (+3 new regression tests: 1 mixed-case dataitem resolution, 2 code-lens title truncation/short-error). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
