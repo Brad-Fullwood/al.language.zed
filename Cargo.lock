@@ -62,6 +62,7 @@ dependencies = [
  "url",
  "urlencoding",
  "wiremock",
+ "zeroize",
  "zip 2.4.2",
 ]
 

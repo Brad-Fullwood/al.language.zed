@@ -46,6 +46,9 @@ memmap2 = { workspace = true }
 rayon = "1"
 getrandom = { workspace = true }
 futures = { workspace = true }
+# Zeroize OAuth bearer/refresh secrets on drop — al-lsp is a long-lived daemon
+# (F-OPEN-010). Pre-approved direct dependency.
+zeroize = { workspace = true }
 # Folded in from al-lsp (stage 7):
 # tracing-subscriber is binary-only — only the [[bin]] al-lsp target wires it
 # up. Opt-in via the `bin` feature so library consumers (al-test-harness, the

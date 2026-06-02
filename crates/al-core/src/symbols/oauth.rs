@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tracing::{debug, info, warn};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Azure CLI public client ID — first-party Microsoft app that supports
 /// auth code + PKCE with localhost redirect for any Microsoft API scope.
@@ -41,21 +42,33 @@ pub enum OAuthError {
 }
 
 /// Successful token response from the token endpoint.
-#[derive(Debug, Deserialize, Serialize)]
+///
+/// The `access_token`/`refresh_token` byte buffers are wiped from memory when
+/// this value drops (F-OPEN-010): al-lsp runs as a long-lived daemon (30-min
+/// idle window), so without an explicit scrub the bearer/refresh secrets would
+/// linger in freed heap allocations for the life of the process and could be
+/// recovered from a core dump or `/proc/<pid>/mem` read.
+#[derive(Debug, Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
 struct TokenResponse {
     access_token: String,
     #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
+    #[zeroize(skip)]
     expires_in: u64,
 }
 
 /// Cached token on disk.
-#[derive(Debug, Serialize, Deserialize)]
+///
+/// Secret fields are zeroized on drop for the same reason as [`TokenResponse`]
+/// (F-OPEN-010); `expires_at`/`tenant` are non-secret and skipped.
+#[derive(Debug, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct CachedToken {
     access_token: String,
     refresh_token: Option<String>,
+    #[zeroize(skip)]
     expires_at: u64,
+    #[zeroize(skip)]
     tenant: String,
 }
 
@@ -129,7 +142,9 @@ pub async fn acquire_token(
         let now = now_unix();
         if cached.expires_at > now + 60 {
             debug!(tenant, "Using cached BC access token");
-            return Ok(cached.access_token);
+            // Clone so `cached` drops intact and its secret fields are
+            // zeroized; a partial move would forfeit the `Drop` scrub.
+            return Ok(cached.access_token.clone());
         }
 
         // 2. Try refresh
@@ -139,7 +154,8 @@ pub async fn acquire_token(
                 Ok(tok) => {
                     save_cached_token(&cache_path, tenant, &tok);
                     info!(tenant, "Refreshed BC access token");
-                    return Ok(tok.access_token);
+                    // Clone so `tok` drops intact (Drop scrubs the secrets).
+                    return Ok(tok.access_token.clone());
                 }
                 Err(e) => {
                     debug!(error = %e, "Refresh failed, doing interactive sign-in");
@@ -152,7 +168,8 @@ pub async fn acquire_token(
     let tok = interactive_sign_in(client, tenant, &client_id, &on_message).await?;
     save_cached_token(&cache_path, tenant, &tok);
     info!(tenant, "Acquired BC access token");
-    Ok(tok.access_token)
+    // Clone so `tok` drops intact (Drop scrubs the secrets).
+    Ok(tok.access_token.clone())
 }
 
 /// Try browser-based auth code + PKCE flow first, fall back to device code.
@@ -1008,6 +1025,66 @@ mod cache_io_tests {
             Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
             Ok(_) => panic!("file shouldn't have existed"),
         }
+    }
+}
+
+#[cfg(test)]
+mod zeroize_tests {
+    //! F-OPEN-010 — OAuth secrets must be scrubbed from memory, not left in
+    //! freed heap allocations for the life of the (long-lived) daemon.
+    use super::*;
+
+    #[test]
+    fn zeroize_wipes_token_response_secrets() {
+        let mut tok = TokenResponse {
+            access_token: "super-secret-bearer".to_string(),
+            refresh_token: Some("super-secret-refresh".to_string()),
+            expires_in: 3600,
+        };
+        tok.zeroize();
+        assert!(
+            tok.access_token.is_empty(),
+            "access_token must be wiped by zeroize()"
+        );
+        assert!(
+            tok.refresh_token.is_none() || tok.refresh_token.as_deref() == Some(""),
+            "refresh_token must be wiped by zeroize()"
+        );
+        // Non-secret field is skipped and therefore preserved.
+        assert_eq!(tok.expires_in, 3600, "expires_in is #[zeroize(skip)]");
+    }
+
+    #[test]
+    fn zeroize_wipes_cached_token_secrets_and_keeps_metadata() {
+        let mut cached = CachedToken {
+            access_token: "secret-access".to_string(),
+            refresh_token: Some("secret-refresh".to_string()),
+            expires_at: 1_700_000_000,
+            tenant: "contoso.onmicrosoft.com".to_string(),
+        };
+        cached.zeroize();
+        assert!(cached.access_token.is_empty(), "access_token must be wiped");
+        assert!(
+            cached.refresh_token.is_none() || cached.refresh_token.as_deref() == Some(""),
+            "refresh_token must be wiped"
+        );
+        // #[zeroize(skip)] fields: tenant/expires_at are non-secret and kept.
+        assert_eq!(cached.expires_at, 1_700_000_000);
+        assert_eq!(cached.tenant, "contoso.onmicrosoft.com");
+    }
+
+    #[test]
+    fn token_response_with_no_refresh_token_zeroizes_cleanly() {
+        // Device-code / client-credential responses may omit refresh_token;
+        // zeroize must not panic on the None variant.
+        let mut tok = TokenResponse {
+            access_token: "only-access".to_string(),
+            refresh_token: None,
+            expires_in: 60,
+        };
+        tok.zeroize();
+        assert!(tok.access_token.is_empty());
+        assert!(tok.refresh_token.is_none());
     }
 }
 
