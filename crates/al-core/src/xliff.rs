@@ -146,57 +146,72 @@ fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) 
             field_id = fid;
             current_field = parse_field_name(trimmed);
         }
+        let context = current_field.as_deref().unwrap_or(&obj_name);
 
         // Caption = 'text';
         if let Some(caption) = parse_property_value(trimmed, "Caption") {
-            let context = current_field.as_deref().unwrap_or(&obj_name);
             let id = make_translation_id(
                 &obj_type, obj_id, &obj_name, "Caption", field_id, context, path,
             );
-            units.push(TranslationUnit {
+            units.push(make_translation_unit(
                 id,
-                object_type: obj_type.clone(),
-                object_id: obj_id,
-                object_name: obj_name.clone(),
-                source: caption,
-                target: None,
-                state: TranslationState::New,
-                note: current_field.as_ref().map(|f| format!("Caption for {}", f)),
-            });
+                &obj_type,
+                obj_id,
+                &obj_name,
+                caption,
+                current_field.as_ref().map(|f| format!("Caption for {}", f)),
+            ));
         }
 
         // ToolTip = 'text';
         if let Some(tooltip) = parse_property_value(trimmed, "ToolTip") {
-            let context = current_field.as_deref().unwrap_or(&obj_name);
             let id = make_translation_id(
                 &obj_type, obj_id, &obj_name, "ToolTip", field_id, context, path,
             );
-            units.push(TranslationUnit {
+            units.push(make_translation_unit(
                 id,
-                object_type: obj_type.clone(),
-                object_id: obj_id,
-                object_name: obj_name.clone(),
-                source: tooltip,
-                target: None,
-                state: TranslationState::New,
-                note: current_field.as_ref().map(|f| format!("ToolTip for {}", f)),
-            });
+                &obj_type,
+                obj_id,
+                &obj_name,
+                tooltip,
+                current_field.as_ref().map(|f| format!("ToolTip for {}", f)),
+            ));
         }
 
         // Label 'varname': 'text'  or   MyLabel: Label 'text';
         if let Some(label_text) = parse_label_declaration(trimmed) {
             let id = make_label_id(&obj_type, obj_id, &obj_name, field_id, path, units.len());
-            units.push(TranslationUnit {
+            units.push(make_translation_unit(
                 id,
-                object_type: obj_type.clone(),
-                object_id: obj_id,
-                object_name: obj_name.clone(),
-                source: label_text,
-                target: None,
-                state: TranslationState::New,
-                note: Some("Label".to_string()),
-            });
+                &obj_type,
+                obj_id,
+                &obj_name,
+                label_text,
+                Some("Label".to_string()),
+            ));
         }
+    }
+}
+
+/// Build a `TranslationUnit` with the common object/target/state fields,
+/// cloning the borrowed object identifiers.
+fn make_translation_unit(
+    id: String,
+    obj_type: &str,
+    obj_id: u32,
+    obj_name: &str,
+    source: String,
+    note: Option<String>,
+) -> TranslationUnit {
+    TranslationUnit {
+        id,
+        object_type: obj_type.to_string(),
+        object_id: obj_id,
+        object_name: obj_name.to_string(),
+        source,
+        target: None,
+        state: TranslationState::New,
+        note,
     }
 }
 
@@ -503,6 +518,15 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
         Some(xml_unescape(after))
     }
 
+    /// Append `text` to the multi-line accumulator, inserting a newline
+    /// separator before it when the accumulator already holds content.
+    fn append_to_accumulator(acc: &mut String, text: &str) {
+        if !acc.is_empty() {
+            acc.push('\n');
+        }
+        acc.push_str(text);
+    }
+
     for line in content.lines() {
         let trimmed = line.trim();
 
@@ -513,10 +537,7 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
             if let Some(close_idx) = line.find(&close_marker) {
                 // Last chunk — append everything up to the close marker.
                 let last = &line[..close_idx];
-                if !multi.accumulator.is_empty() {
-                    multi.accumulator.push('\n');
-                }
-                multi.accumulator.push_str(&xml_unescape(last));
+                append_to_accumulator(&mut multi.accumulator, &xml_unescape(last));
                 let body = std::mem::take(&mut multi.accumulator);
                 match tag {
                     "source" => current_source = Some(body),
@@ -526,10 +547,7 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
                 }
                 multi.target_tag = None;
             } else {
-                if !multi.accumulator.is_empty() {
-                    multi.accumulator.push('\n');
-                }
-                multi.accumulator.push_str(&xml_unescape(line));
+                append_to_accumulator(&mut multi.accumulator, &xml_unescape(line));
             }
             continue;
         }
@@ -718,6 +736,22 @@ pub struct TranslationSuggestion {
     pub source_object: String,
 }
 
+/// Build a `TranslationSuggestion` for `unit`, cloning its id/source.
+fn make_suggestion(
+    unit: &TranslationUnit,
+    suggested_translation: String,
+    confidence: f32,
+    source_object: String,
+) -> TranslationSuggestion {
+    TranslationSuggestion {
+        unit_id: unit.id.clone(),
+        source: unit.source.clone(),
+        suggested_translation,
+        confidence,
+        source_object,
+    }
+}
+
 /// Suggest translations for untranslated units by matching against base app symbols.
 ///
 /// Compares captions and tooltips in workspace symbols against untranslated source texts.
@@ -739,29 +773,24 @@ pub fn suggest_translations(
             let entry_name_lower = entry.name.to_lowercase();
             if entry_name_lower == source_lower {
                 // Exact match — confidence 1.0
-                suggestions.push(TranslationSuggestion {
-                    unit_id: unit.id.clone(),
-                    source: unit.source.clone(),
-                    suggested_translation: entry.name.clone(),
-                    confidence: 1.0,
-                    source_object: format!("{:?} {}", entry.kind, entry.name),
-                });
+                suggestions.push(make_suggestion(
+                    unit,
+                    entry.name.clone(),
+                    1.0,
+                    format!("{:?} {}", entry.kind, entry.name),
+                ));
                 continue;
             }
 
             // Check field captions
             for field in &entry.fields {
                 if field.name.to_lowercase() == source_lower {
-                    suggestions.push(TranslationSuggestion {
-                        unit_id: unit.id.clone(),
-                        source: unit.source.clone(),
-                        suggested_translation: field.name.clone(),
-                        confidence: 0.9,
-                        source_object: format!(
-                            "{:?} {} - Field {}",
-                            entry.kind, entry.name, field.name
-                        ),
-                    });
+                    suggestions.push(make_suggestion(
+                        unit,
+                        field.name.clone(),
+                        0.9,
+                        format!("{:?} {} - Field {}", entry.kind, entry.name, field.name),
+                    ));
                 }
             }
         }
