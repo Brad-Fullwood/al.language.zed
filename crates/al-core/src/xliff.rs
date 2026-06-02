@@ -957,6 +957,41 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_xliff_roundtrip_quoted_id_attribute() {
+        // AL object names can legitimately contain double quotes (quoted
+        // identifiers), so a translation-unit id may too. On generation the
+        // quote is escaped to `&quot;` inside the `id="..."` attribute; on
+        // parse, `extract_xml_attr` must find the real closing quote (not the
+        // escaped one) and unescape the value back to the exact original id.
+        let id = r#"Table 50100 "My Table" - Property Caption"#;
+        let units = vec![TranslationUnit {
+            id: id.to_string(),
+            object_type: "Table".to_string(),
+            object_id: 50100,
+            object_name: "My Table".to_string(),
+            source: "Hello".to_string(),
+            target: Some("Hallo".to_string()),
+            state: TranslationState::Translated,
+            note: None,
+        }];
+
+        let xml = generate_xliff("MyApp", "en-US", "de-DE", &units);
+        // The literal quote in the id must have been escaped in the attribute.
+        assert!(
+            xml.contains("&quot;"),
+            "quote in id should be XML-escaped in the attribute value"
+        );
+
+        let parsed = parse_xliff(&xml);
+        let unit = parsed
+            .get(id)
+            .expect("unit with quoted id present after roundtrip");
+        assert_eq!(unit.id, id, "quoted id did not survive the roundtrip");
+        assert_eq!(unit.source, "Hello");
+        assert_eq!(unit.target.as_deref(), Some("Hallo"));
+    }
+
+    #[test]
     fn test_refresh_xliff_adds_new_removes_old() {
         let generated = vec![
             TranslationUnit {
