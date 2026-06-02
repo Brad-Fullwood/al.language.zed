@@ -58,8 +58,12 @@ fn clamp_min_similarity(s: Option<f64>) -> f32 {
 /// misconfigured client could otherwise ask the daemon to write XML to
 /// arbitrary filesystem locations as the daemon's user.
 ///
-/// Returns `Some(canonical_path)` if the requested location is inside
-/// `project_root`, else `None`.
+/// Symlinks are resolved (including symlinked parent directories that point
+/// outside the project), so `/project/link/evil.xml` where `link -> /outside`
+/// is rejected even though it textually starts with the project root.
+///
+/// Returns `Some(canonical_path)` — the symlink-resolved absolute path — if the
+/// requested location is inside `project_root`, else `None`.
 fn resolve_output_path_within_project(
     requested: &std::path::Path,
     project_root: &std::path::Path,
@@ -92,8 +96,35 @@ fn resolve_output_path_within_project(
     // be used to spoof containment. The root must exist; if canonicalisation
     // fails, reject conservatively.
     let project_canonical = project_root.canonicalize().ok()?;
-    if normalised.starts_with(&project_canonical) || normalised.starts_with(project_root) {
-        Some(normalised)
+
+    // Logical normalisation alone is not enough: a symlink *inside* the
+    // project pointing outside (e.g. `/project/link -> /outside`) would let
+    // `/project/link/evil.xml` pass a textual `starts_with` check while the
+    // real write target is `/outside/evil.xml`. Resolve symlinks by
+    // canonicalising the deepest ancestor of `normalised` that actually
+    // exists, then re-appending the not-yet-created tail, and require the
+    // *canonical* result to stay within the canonical root.
+    let mut existing = normalised.as_path();
+    let mut tail = PathBuf::new();
+    let canonical_existing = loop {
+        match existing.canonicalize() {
+            Ok(c) => break c,
+            Err(_) => {
+                // Walk up one component, remembering the stripped tail.
+                let file = existing.file_name()?;
+                let mut new_tail = PathBuf::from(file);
+                new_tail.push(&tail);
+                tail = new_tail;
+                existing = existing.parent()?;
+            }
+        }
+    };
+    let resolved = canonical_existing.join(&tail);
+
+    if resolved.starts_with(&project_canonical) {
+        // Return the canonical, symlink-resolved path so the subsequent write
+        // targets exactly what we validated.
+        Some(resolved)
     } else {
         None
     }
@@ -3735,6 +3766,70 @@ mod p1_5_tests {
             resolved.is_none(),
             "absolute outside project must be rejected"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_path_rejects_symlink_dir_escape() {
+        // Negative: a symlinked directory inside the project that points
+        // outside must not let a write target escape, even though the textual
+        // path starts with the project root.
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = project.path().join("link");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        let resolved = resolve_output_path_within_project(
+            std::path::Path::new("link/evil.xml"),
+            project.path(),
+        );
+        assert!(
+            resolved.is_none(),
+            "symlinked dir escaping the project must be rejected, got {resolved:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_path_rejects_symlink_file_escape() {
+        // Negative: an existing output file that is itself a symlink to an
+        // outside location must be rejected (it would be followed by write()).
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("target.xml");
+        std::fs::write(&outside_file, b"x").unwrap();
+        let link = project.path().join("results.xml");
+        std::os::unix::fs::symlink(&outside_file, &link).unwrap();
+
+        let resolved =
+            resolve_output_path_within_project(std::path::Path::new("results.xml"), project.path());
+        assert!(
+            resolved.is_none(),
+            "symlinked output file escaping the project must be rejected, got {resolved:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_path_accepts_symlink_dir_staying_inside() {
+        // Positive: a symlink that points to another location *inside* the
+        // project must still be accepted, with the canonical target returned.
+        let project = tempfile::tempdir().unwrap();
+        let real_dir = project.path().join("real_out");
+        std::fs::create_dir(&real_dir).unwrap();
+        let link = project.path().join("out");
+        std::os::unix::fs::symlink(&real_dir, &link).unwrap();
+
+        let resolved = resolve_output_path_within_project(
+            std::path::Path::new("out/junit.xml"),
+            project.path(),
+        );
+        assert!(
+            resolved.is_some(),
+            "symlink staying inside the project must be accepted"
+        );
+        let canonical_root = project.path().canonicalize().unwrap();
+        assert!(resolved.unwrap().starts_with(&canonical_root));
     }
 
     // --- dispatch_generate (F-OPEN-033) --------------------------------------
