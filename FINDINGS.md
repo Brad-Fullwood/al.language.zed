@@ -1914,3 +1914,13 @@ Single new confirmed P2 from the worklist (OAuth device-code polling backoff). O
 | F-OPEN-236 | P2 | **Fixed (+ regression tests).** `device_code_flow()` in `crates/al-core/src/symbols/oauth.rs` bumped the polling `interval` by 5s on every `slow_down` token-endpoint response with no upper bound, so a buggy or hostile server could push the interval arbitrarily high (toward the ~900s deadline) and stall sign-in. Added `MAX_POLL_INTERVAL = 60s` plus a pure `next_slow_down_interval()` helper that saturates the bump and clamps to the cap. +3 tests: the 5s bump, cap behaviour (incl. saturating from `u64::MAX`), and convergence under 200 consecutive `slow_down` responses. |
 
 Workspace test count: 2168 → 2171 (+3 new oauth slow_down regression tests). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 107 (2026-06-02)
+
+Open backlog was empty and the worklist carried no new confirmed findings, so this was a fresh-subsystem audit pass (symbols disk cache / virtual-file deep-linking). Found and fixed one new P1 UTF-16 correctness bug.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-237 | P1 | **Fixed (+ regression tests).** `find_member_range_in_text` (`crates/al-core/src/symbols/virtual_file.rs`) built `MemberRange` from byte offsets produced by the byte-based inner parsers (`find_procedure_range` / `find_call_range`), but those columns flow straight into `Position.character`, which LSP defines as a UTF-16 code-unit offset. For a virtual `.app` member whose line contains non-ASCII characters (e.g. an accented field name), go-to-definition / go-to-implementation into the package landed at the wrong column. Now converts `col_start`/`col_end` via `syntax::byte_col_to_utf16_col` at the reporting site; the inner parsers keep operating on bytes. +3 tests (ASCII unchanged, non-ASCII name `col_end`, non-ASCII-before-name procedure). Closes the companion test-gap (the function previously had no tests). |
+
+Workspace test count: 2171 → 2174 (+3 new virtual-file member-range UTF-16 regression tests). All gates green (`cargo fmt --all`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite, and `zed-al` `wasm32-wasip1` release build).
