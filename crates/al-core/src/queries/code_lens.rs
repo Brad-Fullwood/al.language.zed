@@ -281,13 +281,39 @@ fn build_test_lens_context(
     })
 }
 
+/// Maximum number of bytes of a test failure message to embed in a code lens
+/// title. Test runners can emit multi-KB stack traces; an unbounded title would
+/// cause large LSP payloads and degrade UI rendering. Mirrors the JUnit
+/// serializer's `MAX_FAILURE_MSG_BYTES`.
+const MAX_ERROR_DISPLAY_BYTES: usize = 256;
+
+/// Truncate `s` to at most `max_bytes`, respecting UTF-8 char boundaries.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Human-readable label for a `TestLensStatus`.
 fn test_lens_title(status: &TestLensStatus) -> String {
     match status {
         TestLensStatus::NotRun => "○ Not run".to_string(),
         TestLensStatus::Running => "⟳ Running…".to_string(),
         TestLensStatus::Pass { duration_ms } => format!("✓ Pass ({duration_ms}ms)"),
-        TestLensStatus::Fail { error: Some(e) } => format!("✗ Fail: {e}"),
+        TestLensStatus::Fail { error: Some(e) } => {
+            if e.len() > MAX_ERROR_DISPLAY_BYTES {
+                // Reserve 3 bytes for the "…" ellipsis (single 3-byte char).
+                let head = truncate_utf8(e, MAX_ERROR_DISPLAY_BYTES - 3);
+                format!("✗ Fail: {head}…")
+            } else {
+                format!("✗ Fail: {e}")
+            }
+        }
         TestLensStatus::Fail { error: None } => "✗ Fail".to_string(),
         TestLensStatus::Skip => "⊘ Skip".to_string(),
     }
@@ -828,6 +854,35 @@ codeunit 50100 MyCodeunit
             "Fail title should include error: {}",
             beta_lens.title
         );
+    }
+
+    // Regression: an oversized failure message must be truncated in the title
+    // so we never embed multi-KB stack traces in the LSP payload.
+    #[test]
+    fn test_lens_title_truncates_long_error() {
+        let long_error = "x".repeat(10_000);
+        let status = TestLensStatus::Fail {
+            error: Some(long_error.clone()),
+        };
+        let title = test_lens_title(&status);
+        // The prefix "✗ Fail: " plus at most MAX_ERROR_DISPLAY_BYTES bytes of
+        // error plus a 3-byte ellipsis. Far smaller than the 10 KB input.
+        assert!(
+            title.len() < "✗ Fail: ".len() + MAX_ERROR_DISPLAY_BYTES + 4,
+            "title not truncated: {} bytes",
+            title.len()
+        );
+        assert!(title.starts_with("✗ Fail: "));
+        assert!(title.ends_with('…'), "expected ellipsis suffix: {title}");
+    }
+
+    // A short failure message is left intact (no ellipsis appended).
+    #[test]
+    fn test_lens_title_keeps_short_error() {
+        let status = TestLensStatus::Fail {
+            error: Some("boom".to_string()),
+        };
+        assert_eq!(test_lens_title(&status), "✗ Fail: boom");
     }
 
     // Negative test: history for a different method name → that procedure shows NotRun.
