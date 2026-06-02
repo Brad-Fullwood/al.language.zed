@@ -493,4 +493,307 @@ mod tests {
         assert!(json.contains("coverage"));
         assert!(json.contains("untested"));
     }
+
+    // -----------------------------------------------------------------------
+    // End-to-end behavior over a real (in-process) workspace.
+    //
+    // These exercise `test_coverage` through `collect_all_procedures`,
+    // `collect_procs_recursive`, the test-codeunit gating, and the untested
+    // filter — the logic that was previously only hit via the e2e harness.
+    // -----------------------------------------------------------------------
+
+    use std::path::PathBuf;
+
+    /// Build an in-memory workspace from `(path, al_source)` pairs.
+    fn workspace_with(files: &[(&str, &str)]) -> crate::workspace::Workspace {
+        let ws = crate::workspace::Workspace::new();
+        for (name, content) in files {
+            ws.file_index
+                .add_file(PathBuf::from(name), content.to_string());
+        }
+        ws
+    }
+
+    const PROD_CU: &str = r#"codeunit 50100 "Prod CU"
+{
+    procedure PublicProc()
+    begin
+    end;
+
+    local procedure HelperProc()
+    begin
+    end;
+}"#;
+
+    const TEST_CU: &str = r#"codeunit 50101 "Test CU"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestPublicProc()
+    begin
+        PublicProc();
+    end;
+
+    procedure SetupHelper()
+    begin
+    end;
+}"#;
+
+    /// A test codeunit's test procedures produce a coverage entry; its `[Test]`
+    /// procedure must never be reported as untested production code.
+    #[test]
+    fn test_codeunit_yields_coverage_entry_and_excludes_test_procs_from_untested() {
+        let ws = workspace_with(&[("/src/Test.al", TEST_CU)]);
+        let report = test_coverage(&ws);
+
+        // Exactly one coverage entry, for the [Test] procedure.
+        assert_eq!(report.coverage.len(), 1, "one [Test] proc => one entry");
+        let entry = &report.coverage[0];
+        assert_eq!(entry.codeunit, "Test CU");
+        assert_eq!(entry.test_procedure, "TestPublicProc");
+
+        // The [Test] procedure must never appear in `untested`.
+        assert!(
+            !report
+                .untested
+                .iter()
+                .any(|u| u.name.eq_ignore_ascii_case("TestPublicProc")),
+            "[Test] procedures are not production code and must not be untested"
+        );
+
+        // SetupHelper is a plain (non-[Test]) public proc inside a test
+        // codeunit; the is_test gating is attribute-based, so it counts as
+        // public production code and surfaces as untested.
+        assert!(
+            report.untested.iter().any(|u| u.name == "SetupHelper"),
+            "non-[Test] helper in a test codeunit counts as untested production"
+        );
+    }
+
+    /// Public production procedures with no resolved test call are reported as
+    /// untested; `local` procedures are excluded from the untested list.
+    #[test]
+    fn untested_lists_public_excludes_local() {
+        let ws = workspace_with(&[("/src/Prod.al", PROD_CU)]);
+        let report = test_coverage(&ws);
+
+        // No test codeunit => no coverage entries at all.
+        assert!(
+            report.coverage.is_empty(),
+            "a workspace with no Subtype=Test codeunit yields no coverage"
+        );
+
+        let names: Vec<&str> = report.untested.iter().map(|u| u.name.as_str()).collect();
+        assert!(
+            names.contains(&"PublicProc"),
+            "public proc with no coverage must be untested, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"HelperProc"),
+            "local procedures must be excluded from untested, got {names:?}"
+        );
+
+        // Line number is 1-based: `procedure PublicProc()` is on source line 3.
+        let pub_entry = report
+            .untested
+            .iter()
+            .find(|u| u.name == "PublicProc")
+            .expect("PublicProc present");
+        assert_eq!(pub_entry.line, 3, "1-based line of PublicProc declaration");
+        assert_eq!(pub_entry.object, "Prod CU");
+        assert_eq!(pub_entry.file, "/src/Prod.al");
+    }
+
+    /// Non-codeunit objects are skipped for *coverage* (only codeunits are
+    /// scanned for test procedures) but their public procedures are still
+    /// collected and surface in `untested`.
+    #[test]
+    fn non_codeunit_object_skipped_for_coverage_but_procs_collected() {
+        // A table with a public procedure — not a codeunit, so never a test CU.
+        let table = r#"table 50200 "My Table"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+    }
+
+    procedure Recalculate()
+    begin
+    end;
+}"#;
+        let ws = workspace_with(&[("/src/MyTable.al", table)]);
+        let report = test_coverage(&ws);
+
+        assert!(report.coverage.is_empty(), "tables produce no coverage");
+        assert!(
+            report
+                .untested
+                .iter()
+                .any(|u| u.name == "Recalculate" && u.object == "My Table"),
+            "public table procedures are collected as untested production code"
+        );
+    }
+
+    /// A codeunit WITHOUT `Subtype = Test` is not scanned for test procedures,
+    /// even if it declares a `[Test]`-attributed procedure.
+    #[test]
+    fn normal_codeunit_not_treated_as_test() {
+        let normal = r#"codeunit 50300 "Normal CU"
+{
+    [Test]
+    procedure LooksLikeTest()
+    begin
+    end;
+}"#;
+        let ws = workspace_with(&[("/src/Normal.al", normal)]);
+        let report = test_coverage(&ws);
+
+        assert!(
+            report.coverage.is_empty(),
+            "no Subtype=Test => not a test codeunit => no coverage"
+        );
+        // Because the codeunit is not a test codeunit, is_test is false, so the
+        // public procedure is reported as untested production code.
+        assert!(
+            report.untested.iter().any(|u| u.name == "LooksLikeTest"),
+            "a [Test] proc in a NON-test codeunit is still untested production"
+        );
+    }
+
+    /// A test codeunit with no `[Test]` procedures produces no coverage entries
+    /// (the `test_procs.is_empty()` early-continue).
+    #[test]
+    fn test_codeunit_without_test_procs_yields_no_coverage() {
+        let cu = r#"codeunit 50400 "Empty Test CU"
+{
+    Subtype = Test;
+
+    procedure JustAHelper()
+    begin
+    end;
+}"#;
+        let ws = workspace_with(&[("/src/EmptyTest.al", cu)]);
+        let report = test_coverage(&ws);
+        assert!(
+            report.coverage.is_empty(),
+            "test codeunit with zero [Test] procs => no coverage entries"
+        );
+    }
+
+    /// Multiple test codeunits each contribute their own coverage entries, and
+    /// the codeunit name is carried correctly per entry.
+    #[test]
+    fn multiple_test_codeunits_each_contribute_entries() {
+        let cu_a = r#"codeunit 50500 "Test A"
+{
+    Subtype = Test;
+    [Test]
+    procedure TA()
+    begin
+    end;
+}"#;
+        let cu_b = r#"codeunit 50501 "Test B"
+{
+    Subtype = Test;
+    [Test]
+    procedure TB1()
+    begin
+    end;
+    [Test]
+    procedure TB2()
+    begin
+    end;
+}"#;
+        let ws = workspace_with(&[("/src/A.al", cu_a), ("/src/B.al", cu_b)]);
+        let report = test_coverage(&ws);
+
+        assert_eq!(report.coverage.len(), 3, "1 + 2 [Test] procedures");
+        let from_b = report
+            .coverage
+            .iter()
+            .filter(|e| e.codeunit == "Test B")
+            .count();
+        assert_eq!(from_b, 2, "both Test B procedures carry the right codeunit");
+    }
+
+    /// `find_callee_name` returns the first identifier/name child, stripping
+    /// surrounding double-quotes from a quoted callee.
+    #[test]
+    fn find_callee_name_returns_first_identifier() {
+        let src = r#"codeunit 50600 "X"
+{
+    procedure P()
+    begin
+        DoThing();
+    end;
+}"#;
+        let result = crate::syntax::AlParser::parse_quick(src);
+        let tree = result.tree;
+        let source = src.as_bytes();
+
+        // Walk to find a node whose first identifier child text is "DoThing".
+        let mut cursor = tree.root_node().walk();
+        let mut stack = vec![tree.root_node()];
+        let mut found: Option<String> = None;
+        while let Some(node) = stack.pop() {
+            if let Some(name) = find_callee_name(node, source) {
+                if name == "DoThing" {
+                    found = Some(name.to_string());
+                    break;
+                }
+            }
+            for child in node.named_children(&mut cursor) {
+                stack.push(child);
+            }
+        }
+        assert_eq!(
+            found.as_deref(),
+            Some("DoThing"),
+            "find_callee_name should locate the callee identifier"
+        );
+    }
+
+    /// `has_local_modifier` distinguishes `local procedure` from a plain
+    /// `procedure`. Drives the helper directly off a parsed tree.
+    #[test]
+    fn has_local_modifier_detects_local_keyword() {
+        let src = r#"codeunit 50700 "Y"
+{
+    procedure Public()
+    begin
+    end;
+
+    local procedure Private()
+    begin
+    end;
+}"#;
+        let result = crate::syntax::AlParser::parse_quick(src);
+        let tree = result.tree;
+        let source = src.as_bytes();
+
+        let mut cursor = tree.root_node().walk();
+        let mut stack = vec![tree.root_node()];
+        let mut public_is_local = None;
+        let mut private_is_local = None;
+        while let Some(node) = stack.pop() {
+            if node.kind() == "procedure_declaration" {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    if let Ok(name) = name_node.utf8_text(source) {
+                        let is_local = has_local_modifier(node, source);
+                        match name {
+                            "Public" => public_is_local = Some(is_local),
+                            "Private" => private_is_local = Some(is_local),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            for child in node.named_children(&mut cursor) {
+                stack.push(child);
+            }
+        }
+        assert_eq!(public_is_local, Some(false), "plain procedure is not local");
+        assert_eq!(private_is_local, Some(true), "local procedure is local");
+    }
 }
