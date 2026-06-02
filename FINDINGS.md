@@ -1956,3 +1956,14 @@ Open backlog was empty and the worklist carried no new confirmed findings. This 
 | — | — | No new findings. Fresh audit of `xliff.rs`, `symbols/manifest.rs`, `symbols/events.rs`, `symbols/cache.rs` surfaced no correctness or test-gap issues. Open backlog remains empty; nothing actionable left to drain. |
 
 Workspace test count: 2180 → 2180 (no code change this iteration; no fabricated finding forced). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite at 2180 passing, and `zed-al` `wasm32-wasip1` release build). Converged: zero new findings and zero open actionable items.
+
+### Iteration 111 (2026-06-02)
+
+Open backlog was empty; the worklist carried two new confirmed P1 findings, both in `crates/al-core/src/bc_client.rs` — the BC Dev API HTTP client. Both are the same class of defect: response bodies read without the established capped-reader hardening, leaving the daemon open to unbounded memory buffering from a hostile/compromised BC server. Both entry points (`publish_extension`, `rad_publish`) are reachable from LSP callers.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-242 | P1 | **Fixed (+ tests).** `handle_response()` called `response.json::<T>().await` directly on the success path with no size limit, bypassing `read_json_body_capped` (16 MB cap via Content-Length pre-check + post-read re-check) used everywhere else. Routed the success path through `read_json_body_capped::<T>`. +1 end-to-end regression test through `publish_extension` proving a chunked/no-Content-Length 200 JSON body is now refused (would have returned Ok before the fix), plus a positive small-Content-Length parse test. |
+| F-OPEN-243 | P1 | **Fixed (+ test).** `map_error_response()` called `response.text().await` directly on the non-2xx path, so a multi-gigabyte error body was buffered fully into memory before `sanitize_error_body` truncated it. Routed the error path through `read_error_body_capped` (64 KiB cap; it runs `sanitize_error_body` itself). +1 end-to-end regression test through `publish_extension` proving an oversize-Content-Length 500 error body is not buffered. Extends the F-OPEN-014 / F-OPEN-044 BC-response hardening to error bodies. |
+
+Workspace test count: 2180 → 2183 (+3 regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite at 2183 passing, and `zed-al` `wasm32-wasip1` release build).
