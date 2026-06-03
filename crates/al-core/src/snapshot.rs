@@ -342,4 +342,278 @@ mod tests {
             Some(1024)
         );
     }
+
+    // ---- HTTP-orchestration tests (mocked BC server via wiremock) ----
+    //
+    // These exercise the real request construction, status handling, response
+    // parsing, and file-writing logic in `start_snapshot`, `list_snapshots`,
+    // and `download_snapshot` against a local mock server. They do not need a
+    // live BC instance. wiremock's `set_body_*` helpers set `Content-Length`
+    // automatically, which the capped-read helpers require.
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A config pointing at the given mock server URI, writing to a unique temp
+    /// dir so parallel tests do not collide.
+    fn config_for(server_uri: &str) -> SnapshotConfig {
+        let unique = format!(
+            "al-snapshots-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        );
+        SnapshotConfig {
+            server_url: server_uri.to_string(),
+            company: "CRONUS International Ltd.".to_string(),
+            output_dir: std::env::temp_dir().join(unique),
+            username: Some("admin".to_string()),
+            password: Some("password".to_string()),
+            accept_invalid_certs: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn start_snapshot_returns_id_from_id_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/dev/snapshot"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "snap-123"
+            })))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let id = start_snapshot(&config, Some("my debug session"))
+            .await
+            .expect("start should succeed");
+        assert_eq!(id, "snap-123");
+    }
+
+    #[tokio::test]
+    async fn start_snapshot_falls_back_to_snapshot_id_field() {
+        // BC variants return `snapshotId` instead of `id`. The fallback
+        // accessor must pick it up.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "snapshotId": "alt-999"
+            })))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let id = start_snapshot(&config, None)
+            .await
+            .expect("start should succeed");
+        assert_eq!(id, "alt-999");
+    }
+
+    #[tokio::test]
+    async fn start_snapshot_missing_id_errors() {
+        // A 200 response that carries no id/snapshotId must yield MissingId,
+        // not a silently-empty string.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "ok"
+            })))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = start_snapshot(&config, None)
+            .await
+            .expect_err("missing id should error");
+        assert!(
+            matches!(err, SnapshotError::MissingId),
+            "expected MissingId, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_snapshot_server_error_propagates_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden: no dev endpoint"))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = start_snapshot(&config, None)
+            .await
+            .expect_err("403 should error");
+        match err {
+            SnapshotError::ServerError { status, message } => {
+                assert_eq!(status, 403);
+                assert!(
+                    message.contains("forbidden"),
+                    "message should include server body, got {message:?}"
+                );
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_snapshots_parses_bare_array() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/dev/snapshots"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "id": "s1", "description": "first", "createdAt": "2024-01-01T00:00:00Z", "sizeBytes": 10 },
+                { "snapshotId": "s2", "timestamp": "2024-02-02T00:00:00Z", "size": 20 },
+            ])))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let snaps = list_snapshots(&config).await.expect("list should succeed");
+        assert_eq!(snaps.len(), 2);
+
+        assert_eq!(snaps[0].id, "s1");
+        assert_eq!(snaps[0].description.as_deref(), Some("first"));
+        assert_eq!(snaps[0].created_at.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(snaps[0].size_bytes, Some(10));
+
+        // Second entry exercises every fallback accessor: snapshotId/timestamp/size.
+        assert_eq!(snaps[1].id, "s2");
+        assert_eq!(snaps[1].description, None);
+        assert_eq!(snaps[1].created_at.as_deref(), Some("2024-02-02T00:00:00Z"));
+        assert_eq!(snaps[1].size_bytes, Some(20));
+    }
+
+    #[tokio::test]
+    async fn list_snapshots_skips_entries_without_id() {
+        // Entries with no id, empty id, or non-string id are nonsensical to
+        // download and must be filtered out.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [
+                    { "id": "keep" },
+                    { "id": "" },
+                    { "description": "no id at all" },
+                    { "id": 12345 },
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let snaps = list_snapshots(&config).await.expect("list should succeed");
+        assert_eq!(snaps.len(), 1, "only the entry with a usable id survives");
+        assert_eq!(snaps[0].id, "keep");
+    }
+
+    #[tokio::test]
+    async fn list_snapshots_unrecognized_shape_yields_empty() {
+        // Neither array nor {value:[...]} -> empty list, not an error.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "unexpected": "shape"
+            })))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let snaps = list_snapshots(&config).await.expect("list should succeed");
+        assert!(snaps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_snapshots_server_error_propagates_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = list_snapshots(&config).await.expect_err("500 should error");
+        assert!(
+            matches!(err, SnapshotError::ServerError { status: 500, .. }),
+            "expected ServerError 500, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_snapshot_writes_file_with_sanitized_name() {
+        let server = MockServer::start().await;
+        let payload = b"ALVSC-binary-payload".to_vec();
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(payload.clone()))
+            .mount(&server)
+            .await;
+
+        let mut config = config_for(&server.uri());
+        // Use a dedicated dir so we can assert on the produced filename.
+        config.output_dir = std::env::temp_dir().join(format!(
+            "al-snap-dl-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&config.output_dir);
+
+        // An id containing path-traversal + illegal filename chars must be
+        // sanitized to underscores so it cannot escape output_dir.
+        let dest = download_snapshot(&config, "../danger id/42")
+            .await
+            .expect("download should succeed");
+
+        let file_name = dest.file_name().unwrap().to_string_lossy();
+        // Every char that is not alphanumeric / '-' / '_' becomes '_', so the
+        // two dots, the slash, and the space all collapse to underscores. The
+        // result is a single flat filename that cannot escape output_dir.
+        assert_eq!(file_name, "___danger_id_42.alvsc");
+        assert!(dest.starts_with(&config.output_dir));
+
+        let written = std::fs::read(&dest).expect("file should exist");
+        assert_eq!(written, payload);
+
+        let _ = std::fs::remove_dir_all(&config.output_dir);
+    }
+
+    #[tokio::test]
+    async fn download_snapshot_rejects_relative_output_dir() {
+        // The guard must fire even when the server responded 200 — a relative
+        // output_dir is a misconfiguration we refuse to write through.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"data".to_vec()))
+            .mount(&server)
+            .await;
+
+        let mut config = config_for(&server.uri());
+        config.output_dir = PathBuf::from("relative/output");
+
+        let err = download_snapshot(&config, "snap-1")
+            .await
+            .expect_err("relative output_dir must error");
+        match err {
+            SnapshotError::RelativeOutputDir { path } => {
+                assert_eq!(path, "relative/output");
+            }
+            other => panic!("expected RelativeOutputDir, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn download_snapshot_server_error_propagates_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = download_snapshot(&config, "missing")
+            .await
+            .expect_err("404 should error");
+        assert!(
+            matches!(err, SnapshotError::ServerError { status: 404, .. }),
+            "expected ServerError 404, got {err:?}"
+        );
+    }
 }
