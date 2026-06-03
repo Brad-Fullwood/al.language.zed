@@ -2023,3 +2023,14 @@ One commit. Adversarial verification of the new-finding worklist against the nat
 
 Workspace test count: 2193 → 2196 (+3 browser-URL regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
 
+### Iteration 117 (2026-06-03)
+
+One commit. Adversarial verification of the new-finding worklist against the test-engine backends (`crates/al-core/src/test_engine/backends/{live_bc.rs,interp.rs}`). Both reported P1 duplicate-counting bugs confirmed as a single root cause and fixed together.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-253 | P1 | **Fixed (+ test).** `LiveBcMode::run` grouped `TestId`s by codeunit without deduplicating identical `(codeunit_id, method_name)` targets. A malformed/user-error `tests.run_batch` RPC repeating the same TestId caused `run_one_codeunit` to invoke the BC API once per duplicate, emitting duplicate `CaseStarted`/`CaseResult`/`SuiteComplete` events, and the SessionComplete tally summed every duplicate's `SuiteComplete` summary — inflating total/passed/failed/skipped. Now tracks seen `(codeunit_id, method_name)` pairs in a `HashSet` and skips duplicates before grouping; order preserved. +1 regression test (`test_live_bc_mode_duplicate_test_ids_deduplicated`): a doubled whole-codeunit TestId hits the BC endpoint exactly once and reports total=1. |
+| F-OPEN-254 | P1 | **Fixed (+ test).** Same root cause in `InterpMode::run` — duplicate TestIds propagated into the grouped method list, so the interpreter ran the procedure once per duplicate and `TestCodeunitResult::from_methods` (which counts `methods.len()`) double-counted, inflating the SuiteComplete/SessionComplete tally. Deduplicated at the grouping step with the same `HashSet<(i32, Option<String>)>` guard. +1 regression test (`duplicate_test_ids_deduplicated`): a doubled method TestId yields one `CaseResult` and total=1. |
+
+Workspace test count: 2196 → 2198 (+2 dedup regression tests, one per backend). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
