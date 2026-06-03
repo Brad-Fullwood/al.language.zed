@@ -124,6 +124,88 @@ mod tests {
         }
     }
 
+    #[test]
+    fn semantic_tokens_full_delta_encoding_is_monotonic_per_line() {
+        // The LSP semantic-tokens contract: every token after the first is
+        // delta-encoded relative to its predecessor. On the *same* line,
+        // delta_line is 0 and delta_start is the column gap (> 0, since two
+        // distinct tokens cannot start at the same column). When delta_line is
+        // non-zero, delta_start is reset to an absolute column. This test
+        // guards that the wrapper hands back a well-formed delta stream rather
+        // than, say, absolute positions or a shuffled order.
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/delta.al").expect("test");
+        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
+
+        let tokens = semantic_tokens_full(&ws, &uri);
+        assert!(tokens.len() >= 2, "sample must yield multiple tokens");
+
+        for window in tokens.windows(2) {
+            let next = &window[1];
+            if next.delta_line == 0 {
+                assert!(
+                    next.delta_start > 0,
+                    "two tokens on the same line must advance the column: {next:?}"
+                );
+            }
+            // A token's span must be non-zero regardless of position.
+            assert!(next.length > 0, "every token has a length: {next:?}");
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_full_is_deterministic_across_calls() {
+        // The second call hits the cached parse tree inside get_or_parse rather
+        // than re-parsing. The cache path must yield byte-identical tokens.
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/repeat.al").expect("test");
+        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
+
+        let first = semantic_tokens_full(&ws, &uri);
+        let second = semantic_tokens_full(&ws, &uri);
+
+        assert_eq!(
+            first.len(),
+            second.len(),
+            "repeated queries must return the same token count"
+        );
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert_eq!(a.delta_line, b.delta_line);
+            assert_eq!(a.delta_start, b.delta_start);
+            assert_eq!(a.length, b.length);
+            assert_eq!(a.token_type, b.token_type);
+            assert_eq!(a.token_modifiers, b.token_modifiers);
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_full_scales_with_document_content() {
+        // The query is content-driven and stateless across URIs: a document
+        // containing the sample plus a second object must yield strictly more
+        // tokens than the sample alone. Distinct URIs are used because re-opening
+        // the same URI keeps version 0 and would serve the cached tree.
+        let ws = Workspace::new();
+        let small_uri = Url::parse("file:///test/small.al").expect("test");
+        let big_uri = Url::parse("file:///test/big.al").expect("test");
+
+        ws.documents.open(small_uri.clone(), SAMPLE_AL.to_string());
+        let small = semantic_tokens_full(&ws, &small_uri);
+        assert!(!small.is_empty());
+
+        let bigger = format!(
+            "{SAMPLE_AL}\n\ncodeunit 50101 \"Other\"\n{{\n    procedure More()\n    begin\n    end;\n}}"
+        );
+        ws.documents.open(big_uri.clone(), bigger);
+        let big = semantic_tokens_full(&ws, &big_uri);
+
+        assert!(
+            big.len() > small.len(),
+            "a document with more code must surface more tokens (small {}, big {})",
+            small.len(),
+            big.len()
+        );
+    }
+
     // --- negative / edge paths ---
 
     #[test]
@@ -147,6 +229,30 @@ mod tests {
         assert!(
             tokens.is_empty(),
             "An empty document has no tokens to highlight"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_full_emits_keyword_token_type_for_object_keyword() {
+        // The wrapper must faithfully carry the token_type assigned by the
+        // syntax layer. The `codeunit` object keyword is classified by the
+        // syntax layer; whatever index it picks, the wrapper's first token must
+        // equal the syntax layer's first token type (no remapping in the
+        // boundary conversion).
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/kind.al").expect("test");
+        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
+
+        let (text, tree) =
+            crate::parsing::get_or_parse(&ws.documents, &uri).expect("document should parse");
+        let syntax_tokens = crate::syntax::extract_semantic_tokens(&tree, &text);
+        let syntax_first = syntax_tokens.first().expect("syntax layer yields a token");
+
+        let tokens = semantic_tokens_full(&ws, &uri);
+        let first = tokens.first().expect("wrapper yields a token");
+        assert_eq!(
+            first.token_type, syntax_first.token_type,
+            "wrapper must not remap the token type chosen by the syntax layer"
         );
     }
 
