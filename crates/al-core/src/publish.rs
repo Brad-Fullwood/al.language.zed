@@ -405,4 +405,337 @@ mod tests {
         let id = extract_app_id_from_manifest(dir.path());
         assert!(id.is_none());
     }
+
+    // -----------------------------------------------------------------------
+    // extract_app_id_from_manifest — error / edge paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_app_id_malformed_json_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        // Not valid JSON at all — serde_json::from_slice must fail and the
+        // function must swallow it into None rather than panicking.
+        std::fs::write(dir.path().join("app.json"), b"{ this is not json ]").unwrap();
+        assert!(extract_app_id_from_manifest(dir.path()).is_none());
+    }
+
+    #[test]
+    fn extract_app_id_missing_id_field_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        // Valid JSON, but no "id" key.
+        std::fs::write(
+            dir.path().join("app.json"),
+            br#"{"name":"Test","publisher":"Me"}"#,
+        )
+        .unwrap();
+        assert!(extract_app_id_from_manifest(dir.path()).is_none());
+    }
+
+    #[test]
+    fn extract_app_id_non_string_id_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        // "id" present but not a JSON string — as_str() returns None.
+        std::fs::write(dir.path().join("app.json"), br#"{"id":12345}"#).unwrap();
+        assert!(extract_app_id_from_manifest(dir.path()).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_server_config — named-config matching / failure modes
+    // -----------------------------------------------------------------------
+
+    /// Write a `.zed/debug.json` containing the given config entries.
+    fn write_zed_debug(dir: &Path, body: &str) {
+        let zed = dir.join(".zed");
+        std::fs::create_dir_all(&zed).unwrap();
+        std::fs::write(zed.join("debug.json"), body).unwrap();
+    }
+
+    #[test]
+    fn resolve_config_named_match_returns_that_config() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zed_debug(
+            dir.path(),
+            r#"[
+                {"label":"First","adapter":"al","environmentType":"OnPrem",
+                 "server":"http://first.example.com","serverInstance":"BC"},
+                {"label":"Second","adapter":"al","environmentType":"OnPrem",
+                 "server":"http://second.example.com","serverInstance":"NAV"}
+            ]"#,
+        );
+
+        let cfg = resolve_server_config(dir.path(), Some("Second")).unwrap();
+        assert_eq!(cfg.name, "Second");
+        assert_eq!(cfg.server.as_deref(), Some("http://second.example.com"));
+        // display_name should reflect the matched (second) config.
+        assert_eq!(cfg.display_name(), "http://second.example.com/NAV");
+    }
+
+    #[test]
+    fn resolve_config_named_no_match_returns_config_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zed_debug(
+            dir.path(),
+            r#"[
+                {"label":"First","adapter":"al","environmentType":"OnPrem",
+                 "server":"http://first.example.com","serverInstance":"BC"}
+            ]"#,
+        );
+
+        let result = resolve_server_config(dir.path(), Some("DoesNotExist"));
+        match result {
+            Err(PublishError::ConfigNotFound { name }) => assert_eq!(name, "DoesNotExist"),
+            other => panic!("expected ConfigNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_config_none_picks_first() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zed_debug(
+            dir.path(),
+            r#"[
+                {"label":"Alpha","adapter":"al","environmentType":"Sandbox",
+                 "environmentName":"MySandbox","tenant":"t.onmicrosoft.com"},
+                {"label":"Beta","adapter":"al","environmentType":"OnPrem",
+                 "server":"http://beta.example.com","serverInstance":"BC"}
+            ]"#,
+        );
+
+        let cfg = resolve_server_config(dir.path(), None).unwrap();
+        assert_eq!(cfg.name, "Alpha");
+        assert_eq!(cfg.display_name(), "BC Cloud (MySandbox)");
+    }
+
+    #[test]
+    fn resolve_config_empty_config_list_returns_no_launch_config() {
+        let dir = tempfile::tempdir().unwrap();
+        // File parses but every entry is dropped (unknown environmentType), so
+        // find_launch_config returns None (it requires non-empty configs).
+        write_zed_debug(
+            dir.path(),
+            r#"[
+                {"label":"Bad","adapter":"al","environmentType":"NotARealType"}
+            ]"#,
+        );
+
+        let result = resolve_server_config(dir.path(), None);
+        assert!(matches!(result, Err(PublishError::NoLaunchConfig)));
+    }
+
+    // -----------------------------------------------------------------------
+    // PublishError — documented Display messages
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn publish_error_display_messages() {
+        assert_eq!(
+            PublishError::NoLaunchConfig.to_string(),
+            "No launch.json configuration found in project root"
+        );
+        assert_eq!(
+            PublishError::ConfigNotFound {
+                name: "Prod".to_string()
+            }
+            .to_string(),
+            "Named configuration 'Prod' not found in launch.json"
+        );
+        assert_eq!(
+            PublishError::CompilationFailed { count: 3 }.to_string(),
+            "Compilation failed with 3 error(s)"
+        );
+        assert_eq!(
+            PublishError::NoAppFile.to_string(),
+            "No .app file produced by compiler"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // PublishResult serialization — skip_serializing_if omits None fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn publish_result_omits_optional_none_fields() {
+        let result = PublishResult {
+            success: false,
+            server: "BC Cloud (Sandbox)".to_string(),
+            method: "rad".to_string(),
+            app_path: None,
+            app_id: None,
+            app_version: None,
+            diagnostics: vec![],
+            steps: vec![],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"success\":false"));
+        assert!(json.contains("\"method\":\"rad\""));
+        // None optionals must be absent, not serialized as null.
+        assert!(!json.contains("appPath"));
+        assert!(!json.contains("appId"));
+        assert!(!json.contains("appVersion"));
+        // Non-optional fields are always present.
+        assert!(json.contains("\"diagnostics\":[]"));
+        assert!(json.contains("\"steps\":[]"));
+    }
+
+    #[test]
+    fn publish_step_omits_none_message_and_serializes_phase() {
+        let step = PublishStep {
+            phase: PublishPhase::Rad,
+            success: false,
+            message: None,
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        assert!(json.contains("\"phase\":\"rad\""));
+        assert!(json.contains("\"success\":false"));
+        assert!(!json.contains("message"));
+    }
+
+    // -----------------------------------------------------------------------
+    // do_standard_publish — exercised against a mock BC server (wiremock)
+    // -----------------------------------------------------------------------
+
+    /// Config whose base_url is the wiremock server with instance "BC", so the
+    /// publish endpoint is `{uri}/BC/dev/extensions`. Windows auth means no
+    /// credentials are required (apply_auth only errors for UserPassword/AAD).
+    fn mock_config(uri: &str) -> BcServerConfig {
+        use crate::launch::{AuthMethod, EnvironmentType};
+        BcServerConfig {
+            name: "mock".to_string(),
+            environment_type: EnvironmentType::OnPrem,
+            server: Some(uri.to_string()),
+            server_instance: Some("BC".to_string()),
+            port: None,
+            environment_name: None,
+            tenant: None,
+            authentication: AuthMethod::Windows,
+            accept_invalid_certs: false,
+        }
+    }
+
+    /// Create a throwaway .app file with some bytes for the uploader to read.
+    fn dummy_app(dir: &Path) -> PathBuf {
+        let p = dir.join("MyApp.app");
+        std::fs::write(&p, b"NAVX-fake-app-bytes").unwrap();
+        p
+    }
+
+    #[tokio::test]
+    async fn do_standard_publish_success_captures_id_and_version() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/extensions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "appId": "abc-123",
+                "name": "MyApp",
+                "version": "2.0.0.0",
+                "status": "Completed"
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = dummy_app(dir.path());
+        let client = BcClient::new(&mock_config(&server.uri()));
+        let mut steps = Vec::new();
+
+        let (app_id, version, success) = do_standard_publish(&client, &app, &mut steps).await;
+
+        assert!(success);
+        assert_eq!(app_id.as_deref(), Some("abc-123"));
+        assert_eq!(version.as_deref(), Some("2.0.0.0"));
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].phase, PublishPhase::Upload);
+        assert!(steps[0].success);
+        assert_eq!(steps[0].message.as_deref(), Some("Completed"));
+    }
+
+    #[tokio::test]
+    async fn do_standard_publish_failed_status_marks_step_unsuccessful() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/extensions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "Failed"
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = dummy_app(dir.path());
+        let client = BcClient::new(&mock_config(&server.uri()));
+        let mut steps = Vec::new();
+
+        let (app_id, version, success) = do_standard_publish(&client, &app, &mut steps).await;
+
+        // A "Failed" status from a 200 response must still mark the step failed.
+        assert!(!success);
+        assert!(app_id.is_none());
+        assert!(version.is_none());
+        assert_eq!(steps.len(), 1);
+        assert!(!steps[0].success);
+        assert_eq!(steps[0].message.as_deref(), Some("Failed"));
+    }
+
+    #[tokio::test]
+    async fn do_standard_publish_missing_status_defaults_to_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/extensions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "appId": "no-status-app"
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = dummy_app(dir.path());
+        let client = BcClient::new(&mock_config(&server.uri()));
+        let mut steps = Vec::new();
+
+        let (app_id, _version, success) = do_standard_publish(&client, &app, &mut steps).await;
+
+        // No status field => unwrap_or(true): treated as success, with a
+        // synthesized "Uploaded" message.
+        assert!(success);
+        assert_eq!(app_id.as_deref(), Some("no-status-app"));
+        assert_eq!(steps[0].message.as_deref(), Some("Uploaded"));
+    }
+
+    #[tokio::test]
+    async fn do_standard_publish_server_error_records_failure_step() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/extensions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = dummy_app(dir.path());
+        let client = BcClient::new(&mock_config(&server.uri()));
+        let mut steps = Vec::new();
+
+        let (app_id, version, success) = do_standard_publish(&client, &app, &mut steps).await;
+
+        assert!(!success);
+        assert!(app_id.is_none());
+        assert!(version.is_none());
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].phase, PublishPhase::Upload);
+        assert!(!steps[0].success);
+        // The error string from BcClientError should be propagated into the step.
+        assert!(steps[0].message.is_some());
+    }
 }
