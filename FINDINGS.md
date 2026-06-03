@@ -2044,3 +2044,19 @@ One commit. Adversarial verification + fix of the new-finding worklist: a symlin
 
 Workspace test count: 2198 → 2201 (+3 symlink regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
 
+### Iteration 119 (2026-06-03)
+
+Convergence check. The ledger's `## Open (actionable)` section is empty (all 255 prior findings resolved/parked), and the triage worklist supplied zero open findings and zero new confirmed findings. No code change this iteration.
+
+Re-ran the full gate suite on the worktree to confirm the baseline is genuinely green, then did a fresh adversarial spot-audit of subsystems that handle untrusted external input and had not been recently touched, looking for any actionable correctness/security gap:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (audit) `queries/signature.rs` `signature_help` | — | **No issue.** UTF-16 → byte column conversion is explicit and clamps past-end columns with an observable `debug` trace (F-OPEN-040 lineage). No raw `position.character as usize` slicing bug. |
+| (audit) `xliff.rs` `xml_unescape` / `xml_escape` | — | **No issue.** `&amp;` is deliberately unescaped last so the escape/unescape cycle is lossless; only the five named XML entities are handled, which matches Microsoft's AL XLIFF tooling output (it does not emit numeric character references). Adding numeric-ref handling would be speculative scope creep, not a fix. |
+| (audit) `build.rs` `.app` discovery | — | **No issue.** Symlink-escape already closed in iteration 118 (F-OPEN-255) via `symlink_metadata()` + `DirEntry::file_type()`. |
+
+Nothing actionable found. Project is converged: no open findings remain and every parked item is justified/won't-fix.
+
+Workspace test count: 2201 → 2201 (no tests added; no code change). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
