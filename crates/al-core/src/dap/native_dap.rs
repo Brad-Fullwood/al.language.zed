@@ -1582,6 +1582,198 @@ mod tests {
     }
 
     #[test]
+    fn kind_to_object_type_maps_all_known_kinds() {
+        // Each AL object kind string from the file index must map to its BC
+        // ObjectTypeWrapper integer. A regression here silently sends BC the
+        // wrong object type for breakpoints (breakpoints land in the wrong
+        // object or are rejected).
+        assert_eq!(kind_to_object_type("table"), bc_object_type::TABLE);
+        assert_eq!(kind_to_object_type("report"), bc_object_type::REPORT);
+        assert_eq!(kind_to_object_type("codeunit"), bc_object_type::CODEUNIT);
+        assert_eq!(kind_to_object_type("xmlport"), bc_object_type::XMLPORT);
+        assert_eq!(kind_to_object_type("page"), bc_object_type::PAGE);
+        assert_eq!(kind_to_object_type("query"), bc_object_type::QUERY);
+        assert_eq!(
+            kind_to_object_type("pageextension"),
+            bc_object_type::PAGE_EXTENSION
+        );
+        assert_eq!(
+            kind_to_object_type("tableextension"),
+            bc_object_type::TABLE_EXTENSION
+        );
+        assert_eq!(kind_to_object_type("enum"), bc_object_type::ENUM);
+        assert_eq!(
+            kind_to_object_type("enumextension"),
+            bc_object_type::ENUM_EXTENSION
+        );
+        assert_eq!(
+            kind_to_object_type("reportextension"),
+            bc_object_type::REPORT_EXTENSION
+        );
+    }
+
+    #[test]
+    fn kind_to_object_type_is_case_insensitive() {
+        // The file index may surface mixed-case kinds; matching is documented as
+        // lowercased so "Codeunit", "CODEUNIT" and "codeunit" must all resolve.
+        assert_eq!(kind_to_object_type("Codeunit"), bc_object_type::CODEUNIT);
+        assert_eq!(kind_to_object_type("TABLE"), bc_object_type::TABLE);
+        assert_eq!(
+            kind_to_object_type("PageExtension"),
+            bc_object_type::PAGE_EXTENSION
+        );
+    }
+
+    #[test]
+    fn kind_to_object_type_unknown_yields_unknown_sentinel() {
+        // An unrecognised kind must map to the UNKNOWN sentinel (-1), never
+        // accidentally collide with a valid type.
+        assert_eq!(kind_to_object_type(""), bc_object_type::UNKNOWN);
+        assert_eq!(kind_to_object_type("controladdin"), bc_object_type::UNKNOWN);
+        assert_eq!(kind_to_object_type("not-a-type"), bc_object_type::UNKNOWN);
+        assert_eq!(bc_object_type::UNKNOWN, -1);
+    }
+
+    #[test]
+    fn make_response_failure_carries_message_and_no_body() {
+        // A failed DAP response must report success=false and surface the error
+        // message; it must NOT carry a body. Zed shows `message` to the user.
+        let seq = AtomicU64::new(0);
+        let resp = make_response(
+            &seq,
+            3,
+            "launch",
+            false,
+            None,
+            Some("Compilation failed".to_string()),
+        );
+        assert_eq!(resp.get("success").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            resp.get("message").and_then(|v| v.as_str()),
+            Some("Compilation failed")
+        );
+        assert!(
+            resp.get("body").is_none(),
+            "failure response must not include a body"
+        );
+        assert_eq!(resp.get("type").and_then(|v| v.as_str()), Some("response"));
+        assert_eq!(resp.get("command").and_then(|v| v.as_str()), Some("launch"));
+    }
+
+    #[test]
+    fn make_response_success_carries_body_and_no_message() {
+        let seq = AtomicU64::new(0);
+        let resp = make_response(
+            &seq,
+            1,
+            "threads",
+            true,
+            Some(serde_json::json!({"threads": []})),
+            None,
+        );
+        assert_eq!(resp.get("success").and_then(|v| v.as_bool()), Some(true));
+        assert!(
+            resp.get("body").is_some(),
+            "success response must have body"
+        );
+        assert!(
+            resp.get("message").is_none(),
+            "success response must not carry an error message"
+        );
+    }
+
+    #[test]
+    fn make_response_seq_is_monotonic() {
+        // DAP requires non-decreasing seq across all messages. Each call must
+        // consume the next value from the shared counter.
+        let seq = AtomicU64::new(5);
+        let first = make_response(&seq, 0, "a", true, None, None);
+        let second = make_response(&seq, 0, "b", true, None, None);
+        assert_eq!(first.get("seq").and_then(|v| v.as_u64()), Some(5));
+        assert_eq!(second.get("seq").and_then(|v| v.as_u64()), Some(6));
+    }
+
+    #[test]
+    fn make_event_with_and_without_body() {
+        let seq = AtomicU64::new(10);
+        let with_body = make_event(
+            &seq,
+            "stopped",
+            Some(serde_json::json!({"reason": "breakpoint"})),
+        );
+        assert_eq!(
+            with_body.get("type").and_then(|v| v.as_str()),
+            Some("event")
+        );
+        assert_eq!(
+            with_body.get("event").and_then(|v| v.as_str()),
+            Some("stopped")
+        );
+        assert_eq!(
+            with_body
+                .get("body")
+                .and_then(|b| b.get("reason"))
+                .and_then(|v| v.as_str()),
+            Some("breakpoint")
+        );
+        assert_eq!(with_body.get("seq").and_then(|v| v.as_u64()), Some(10));
+
+        let without_body = make_event(&seq, "initialized", None);
+        assert!(
+            without_body.get("body").is_none(),
+            "event with no body must omit the body key"
+        );
+        assert_eq!(without_body.get("seq").and_then(|v| v.as_u64()), Some(11));
+    }
+
+    #[test]
+    fn onprem_browser_url_defaults_instance_when_absent() {
+        // When server_instance is None, onprem_base() falls back to "BC". The
+        // browser URL must reflect that default so the user lands on a valid
+        // dev endpoint rather than a malformed one.
+        let config = BcDebugConfig {
+            environment_type: "OnPrem".to_string(),
+            server: Some("http://localhost".to_string()),
+            server_instance: None,
+            port: 7049,
+            startup_object_id: 42,
+            ..Default::default()
+        };
+        let url = build_debug_browser_url(&config, "cid");
+        assert!(
+            url.contains(":7049/BC/?page=42"),
+            "default instance BC and port must appear: {url}"
+        );
+        assert!(
+            url.contains("connectioncontext=cid"),
+            "connection id must be threaded into the URL: {url}"
+        );
+    }
+
+    #[test]
+    fn onprem_browser_url_is_case_insensitive_for_env_type() {
+        // environment_type matching uses eq_ignore_ascii_case, so "onprem"
+        // (lowercase) must still take the on-prem branch, not the cloud branch.
+        let config = BcDebugConfig {
+            environment_type: "onprem".to_string(),
+            server: Some("http://localhost".to_string()),
+            server_instance: Some("BC".to_string()),
+            port: 8080,
+            startup_object_id: 9,
+            ..Default::default()
+        };
+        let url = build_debug_browser_url(&config, "conn");
+        assert!(
+            url.contains(":8080/BC/?page=9"),
+            "lowercase onprem must use the on-prem URL branch: {url}"
+        );
+        assert!(
+            !url.contains("businesscentral.dynamics.com"),
+            "must not fall through to the cloud branch: {url}"
+        );
+    }
+
+    #[test]
     fn onprem_browser_url_uses_onprem_base() {
         let config = BcDebugConfig {
             environment_type: "OnPrem".to_string(),
