@@ -2003,3 +2003,23 @@ One commit. Adversarial review of `CopyStr` in the test-runtime interpreter (`cr
 
 Workspace test count: 2190 → 2192 (+2 CopyStr regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite at 2192 passing, and `zed-al` `wasm32-wasip1` release build).
 
+### Iteration 115 (2026-06-03)
+
+One commit. Adversarial review of the daemon IPC client (`crates/al-protocol/src/client.rs`).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-251 | P1 | **Fixed (+ test).** `DaemonClient::from_stream` set only a 30s read timeout (`SO_RCVTIMEO`); the write path (`send_request`'s `write_all`/`flush`) relies on the independent `SO_SNDTIMEO` option, which was never set. Against a hung/unresponsive daemon that stops reading, the Unix-socket send buffer fills and the next write blocks forever, hanging CLI/TUI clients. Now sets a default 30s write timeout in `from_stream` and adds a public `set_write_timeout()` for parity with `set_read_timeout()` so callers can extend it for long-running operations. +1 regression test (`write_to_nonreading_daemon_times_out`) asserting the default write timeout is installed and that a non-reading daemon yields a bounded write-path error instead of an infinite hang. |
+
+Workspace test count: 2192 → 2193 (+1 write-timeout regression test). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 116 (2026-06-03)
+
+One commit. Adversarial verification of the new-finding worklist against the native DAP browser-launch path (`crates/al-core/src/dap/native_dap.rs`).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-252 | P1 | **Fixed (+ tests).** When launching the browser to open the cloud BC debug context, the tenant and environment name were interpolated into the URL (`https://businesscentral.dynamics.com/{tenant}/{env}?...`) without percent-encoding, while the same fields are already encoded in `bc_debug::base_url()` / `debug_hub_url()`. A tenant or environment containing special characters (spaces, ampersands, slashes — all legal in BC environment/tenant identifiers) produced a malformed URL, sending the user to the wrong page or breaking query-parameter parsing. Made `percent_encode_url()` crate-visible, extracted the inline URL construction into a pure `build_debug_browser_url()` helper, and applied encoding to both path segments. +3 unit tests: cloud special-char encoding, missing-env→`sandbox` default, and the on-prem branch (port + instance preserved). `crates/al-core/src/dap/{native_dap.rs,bc_debug.rs}`. |
+
+Workspace test count: 2193 → 2196 (+3 browser-URL regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
