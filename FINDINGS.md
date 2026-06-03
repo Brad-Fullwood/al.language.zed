@@ -2034,3 +2034,13 @@ One commit. Adversarial verification of the new-finding worklist against the tes
 
 Workspace test count: 2196 → 2198 (+2 dedup regression tests, one per backend). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
 
+### Iteration 118 (2026-06-03)
+
+One commit. Adversarial verification + fix of the new-finding worklist: a symlink-escape arbitrary-file-read in the `.app` discovery path (`crates/al-core/src/build.rs`).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-255 | P1 | **Fixed (+ tests).** `find_app_file_from_manifest()` used `Path::is_file()` and the fallback most-recent scan used `DirEntry::metadata()`, both of which follow symlinks. An attacker (or misconfiguration) could pre-plant a symlink with the expected `{publisher}_{name}_{version}.app` name (e.g. → `/etc/passwd`) in the project root; `find_app_file()` would return it, and that path flows into `read_app_capped()` in `bc_client.rs` (`tokio::fs::metadata`/`read`, both symlink-following) — an arbitrary-file read. Both paths now require a real regular file with no symlink following: the manifest path uses `std::fs::symlink_metadata()` (`is_file() && !file_type().is_symlink()`); the fallback uses `DirEntry::file_type()` (which does not follow symlinks) and rejects non-regular entries. Mirrors the F-OPEN-206/215 symlink-handling precedent. +3 regression tests: manifest-named symlink rejected (`find_app_file_rejects_manifest_symlink`), fallback-scan symlink rejected (`find_app_file_rejects_fallback_symlink`), and a legitimate regular `.app` still returned (`find_app_file_accepts_regular_manifest_file`). |
+
+Workspace test count: 2198 → 2201 (+3 symlink regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
