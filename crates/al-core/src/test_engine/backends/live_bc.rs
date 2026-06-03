@@ -5,7 +5,7 @@
 //! applies per-codeunit timeouts, and streams `TestEvent`s through the
 //! caller-supplied `mpsc::Sender`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -292,9 +292,19 @@ impl TestSession for LiveBcMode {
                 .collect(),
         };
 
+        // Deduplicate identical (codeunit_id, method_name) targets before
+        // grouping. A malformed RPC call can repeat the same TestId; without
+        // this guard the BC API would be invoked once per duplicate and every
+        // duplicate's SuiteComplete summary would be tallied into the final
+        // SessionComplete, inflating total/passed/failed/skipped.
+        let mut seen: HashSet<(i32, Option<String>)> = HashSet::new();
+
         // Group tests by codeunit_id → (codeunit_name, Vec<method_name>).
         let mut groups: HashMap<i32, (String, Vec<Option<String>>)> = HashMap::new();
         for test in tests {
+            if !seen.insert((test.codeunit_id, test.method_name.clone())) {
+                continue;
+            }
             let entry = groups
                 .entry(test.codeunit_id)
                 .or_insert_with(|| (test.codeunit_name.clone(), Vec::new()));
@@ -794,6 +804,82 @@ mod tests {
             }
             None => panic!("no SessionComplete in {events:?}"),
             _ => unreachable!(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: duplicate TestIds are deduplicated (no inflated counts)
+    // -----------------------------------------------------------------------
+
+    /// Regression: passing the same TestId twice must run the codeunit once and
+    /// report total=1 (not 2). Previously each duplicate invoked the BC API and
+    /// its SuiteComplete summary was tallied, inflating SessionComplete.
+    #[tokio::test]
+    async fn test_live_bc_mode_duplicate_test_ids_deduplicated() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/tests/50100/run"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [{ "name": "TestA", "result": "pass", "duration": 0.01 }]
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = config_for(&server.uri());
+        let mode = LiveBcMode::new(cfg);
+
+        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
+        // Same whole-codeunit TestId twice.
+        mode.run(
+            vec![test_id(50100, "MyTests"), test_id(50100, "MyTests")],
+            RunOptions::default(),
+            tx,
+        )
+        .await
+        .unwrap();
+
+        let mut events = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+
+        // The BC endpoint must have been hit exactly once.
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "duplicate TestId must not cause a second BC call"
+        );
+
+        // Exactly one SuiteComplete for the codeunit.
+        let suite_count = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    TestEvent::SuiteComplete {
+                        codeunit_id: 50100,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(suite_count, 1, "expected one SuiteComplete, got {events:?}");
+
+        // SessionComplete must report total=1, passed=1 (not doubled).
+        match events.last() {
+            Some(TestEvent::SessionComplete {
+                total,
+                passed,
+                failed,
+                skipped,
+            }) => {
+                assert_eq!(*total, 1, "total must not be inflated by the duplicate");
+                assert_eq!(*passed, 1);
+                assert_eq!(*failed, 0);
+                assert_eq!(*skipped, 0);
+            }
+            other => panic!("expected SessionComplete last, got {other:?}"),
         }
     }
 
