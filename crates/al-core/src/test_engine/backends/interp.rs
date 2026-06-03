@@ -12,7 +12,7 @@
 //! The backend mirrors the LiveBcMode pattern: parallel JoinSet dispatch,
 //! per-test timeout, and channel-closed detection.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -86,9 +86,17 @@ impl TestSession for InterpMode {
             .await
             .unwrap_or_default();
 
-        // Group TestIds by codeunit_id.
+        // Group TestIds by codeunit_id, deduplicating identical
+        // (codeunit_id, method_name) targets. A malformed RPC call can repeat
+        // the same TestId; without this guard the interpreter would run the
+        // procedure once per duplicate and `from_methods` would count each
+        // duplicate, inflating the SuiteComplete/SessionComplete tallies.
+        let mut seen: HashSet<(i32, Option<String>)> = HashSet::new();
         let mut grouped: HashMap<i32, Vec<Option<String>>> = HashMap::new();
         for test_id in &tests {
+            if !seen.insert((test_id.codeunit_id, test_id.method_name.clone())) {
+                continue;
+            }
             grouped
                 .entry(test_id.codeunit_id)
                 .or_default()
@@ -568,6 +576,58 @@ mod tests {
                 assert!(session_complete.is_some(), "must emit SessionComplete");
             }
             Some(other) => panic!("unexpected event: {:?}", other),
+        }
+    }
+
+    // ── Duplicate TestIds are deduplicated (no inflated counts) ──────────────
+
+    #[tokio::test]
+    async fn duplicate_test_ids_deduplicated() {
+        // Regression: the same TestId passed twice must run the procedure once
+        // and report total=1 (not 2). Previously each duplicate ran the
+        // interpreter and `from_methods` counted it, inflating the tally.
+        let source = r#"codeunit 50103 "Dup Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestPasses()
+    begin
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        let path = std::path::PathBuf::from("/tmp/DupTests.al");
+        workspace
+            .file_index
+            .add_file(path.clone(), source.to_string());
+
+        let session = InterpMode::new(Arc::new(workspace));
+        let one = TestId {
+            codeunit_id: 50103,
+            codeunit_name: "Dup Tests".to_string(),
+            method_name: Some("TestPasses".to_string()),
+        };
+        let tests = vec![one.clone(), one];
+
+        let events = collect_events(&session, tests, RunOptions::default()).await;
+
+        // Exactly one CaseResult for the procedure (not two).
+        let case_results = events
+            .iter()
+            .filter(|e| matches!(e, TestEvent::CaseResult { .. }))
+            .count();
+        assert_eq!(
+            case_results, 1,
+            "duplicate TestId must yield one CaseResult, got {events:?}"
+        );
+
+        // SessionComplete must report total=1 (not doubled).
+        match events.last() {
+            Some(TestEvent::SessionComplete { total, .. }) => {
+                assert_eq!(*total, 1, "total must not be inflated by the duplicate");
+            }
+            other => panic!("expected SessionComplete last, got {other:?}"),
         }
     }
 

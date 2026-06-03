@@ -2023,3 +2023,40 @@ One commit. Adversarial verification of the new-finding worklist against the nat
 
 Workspace test count: 2193 → 2196 (+3 browser-URL regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
 
+### Iteration 117 (2026-06-03)
+
+One commit. Adversarial verification of the new-finding worklist against the test-engine backends (`crates/al-core/src/test_engine/backends/{live_bc.rs,interp.rs}`). Both reported P1 duplicate-counting bugs confirmed as a single root cause and fixed together.
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-253 | P1 | **Fixed (+ test).** `LiveBcMode::run` grouped `TestId`s by codeunit without deduplicating identical `(codeunit_id, method_name)` targets. A malformed/user-error `tests.run_batch` RPC repeating the same TestId caused `run_one_codeunit` to invoke the BC API once per duplicate, emitting duplicate `CaseStarted`/`CaseResult`/`SuiteComplete` events, and the SessionComplete tally summed every duplicate's `SuiteComplete` summary — inflating total/passed/failed/skipped. Now tracks seen `(codeunit_id, method_name)` pairs in a `HashSet` and skips duplicates before grouping; order preserved. +1 regression test (`test_live_bc_mode_duplicate_test_ids_deduplicated`): a doubled whole-codeunit TestId hits the BC endpoint exactly once and reports total=1. |
+| F-OPEN-254 | P1 | **Fixed (+ test).** Same root cause in `InterpMode::run` — duplicate TestIds propagated into the grouped method list, so the interpreter ran the procedure once per duplicate and `TestCodeunitResult::from_methods` (which counts `methods.len()`) double-counted, inflating the SuiteComplete/SessionComplete tally. Deduplicated at the grouping step with the same `HashSet<(i32, Option<String>)>` guard. +1 regression test (`duplicate_test_ids_deduplicated`): a doubled method TestId yields one `CaseResult` and total=1. |
+
+Workspace test count: 2196 → 2198 (+2 dedup regression tests, one per backend). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 118 (2026-06-03)
+
+One commit. Adversarial verification + fix of the new-finding worklist: a symlink-escape arbitrary-file-read in the `.app` discovery path (`crates/al-core/src/build.rs`).
+
+| ID | Severity | Resolution |
+|---|---|---|
+| F-OPEN-255 | P1 | **Fixed (+ tests).** `find_app_file_from_manifest()` used `Path::is_file()` and the fallback most-recent scan used `DirEntry::metadata()`, both of which follow symlinks. An attacker (or misconfiguration) could pre-plant a symlink with the expected `{publisher}_{name}_{version}.app` name (e.g. → `/etc/passwd`) in the project root; `find_app_file()` would return it, and that path flows into `read_app_capped()` in `bc_client.rs` (`tokio::fs::metadata`/`read`, both symlink-following) — an arbitrary-file read. Both paths now require a real regular file with no symlink following: the manifest path uses `std::fs::symlink_metadata()` (`is_file() && !file_type().is_symlink()`); the fallback uses `DirEntry::file_type()` (which does not follow symlinks) and rejects non-regular entries. Mirrors the F-OPEN-206/215 symlink-handling precedent. +3 regression tests: manifest-named symlink rejected (`find_app_file_rejects_manifest_symlink`), fallback-scan symlink rejected (`find_app_file_rejects_fallback_symlink`), and a legitimate regular `.app` still returned (`find_app_file_accepts_regular_manifest_file`). |
+
+Workspace test count: 2198 → 2201 (+3 symlink regression tests). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
+### Iteration 119 (2026-06-03)
+
+Convergence check. The ledger's `## Open (actionable)` section is empty (all 255 prior findings resolved/parked), and the triage worklist supplied zero open findings and zero new confirmed findings. No code change this iteration.
+
+Re-ran the full gate suite on the worktree to confirm the baseline is genuinely green, then did a fresh adversarial spot-audit of subsystems that handle untrusted external input and had not been recently touched, looking for any actionable correctness/security gap:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (audit) `queries/signature.rs` `signature_help` | — | **No issue.** UTF-16 → byte column conversion is explicit and clamps past-end columns with an observable `debug` trace (F-OPEN-040 lineage). No raw `position.character as usize` slicing bug. |
+| (audit) `xliff.rs` `xml_unescape` / `xml_escape` | — | **No issue.** `&amp;` is deliberately unescaped last so the escape/unescape cycle is lossless; only the five named XML entities are handled, which matches Microsoft's AL XLIFF tooling output (it does not emit numeric character references). Adding numeric-ref handling would be speculative scope creep, not a fix. |
+| (audit) `build.rs` `.app` discovery | — | **No issue.** Symlink-escape already closed in iteration 118 (F-OPEN-255) via `symlink_metadata()` + `DirEntry::file_type()`. |
+
+Nothing actionable found. Project is converged: no open findings remain and every parked item is justified/won't-fix.
+
+Workspace test count: 2201 → 2201 (no tests added; no code change). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+

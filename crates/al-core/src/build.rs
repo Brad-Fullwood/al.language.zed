@@ -495,6 +495,13 @@ pub fn find_app_file(project_root: &Path) -> Option<PathBuf> {
         .filter_map(|e| {
             let path = e.path();
             if path.extension().is_some_and(|ext| ext == "app") {
+                // file_type() does NOT follow symlinks: reject pre-planted
+                // symlinks (e.g. MyPub_MyApp.app -> /etc/passwd) so the path is
+                // never handed to read_app_capped() for an arbitrary-file read.
+                let ft = e.file_type().ok()?;
+                if !ft.is_file() {
+                    return None;
+                }
                 let mtime = e.metadata().ok()?.modified().ok()?;
                 Some((mtime, path))
             } else {
@@ -521,10 +528,13 @@ fn find_app_file_from_manifest(project_root: &Path) -> Option<PathBuf> {
 
     let filename = format!("{publisher}_{name}_{version}.app");
     let path = project_root.join(&filename);
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
+    // symlink_metadata() does NOT follow symlinks: an attacker could pre-plant a
+    // symlink with the expected .app name pointing at e.g. /etc/passwd. The
+    // returned path flows into read_app_capped(), so a symlink here would become
+    // an arbitrary-file read. Require a real regular file.
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => Some(path),
+        _ => None,
     }
 }
 
@@ -675,6 +685,61 @@ Build failed.";
 
         let result = find_app_file(root).unwrap();
         assert_eq!(result.file_name().unwrap(), "Some_1.0.0.0.app");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_app_file_rejects_manifest_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
+        )
+        .unwrap();
+
+        // A target file outside the project, standing in for /etc/passwd.
+        let secret = dir.path().join("secret.txt");
+        std::fs::write(&secret, b"top secret").unwrap();
+
+        // Pre-plant a symlink with the EXACT expected manifest name.
+        std::os::unix::fs::symlink(&secret, root.join("MyPub_MyApp_2.0.0.0.app")).unwrap();
+
+        // Must be rejected: a symlink is not a legitimate build artifact and
+        // would otherwise enable an arbitrary-file read.
+        assert!(find_app_file(root).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn find_app_file_rejects_fallback_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // No app.json -> exercise the fallback most-recent scan.
+        let secret = dir.path().join("secret.txt");
+        std::fs::write(&secret, b"top secret").unwrap();
+        std::os::unix::fs::symlink(&secret, root.join("Evil_1.0.0.0.app")).unwrap();
+
+        assert!(find_app_file(root).is_none());
+    }
+
+    #[test]
+    fn find_app_file_accepts_regular_manifest_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"publisher":"MyPub","name":"MyApp","version":"2.0.0.0"}"#,
+        )
+        .unwrap();
+        // A legitimate regular .app file is still returned.
+        std::fs::write(root.join("MyPub_MyApp_2.0.0.0.app"), b"fresh").unwrap();
+
+        let result = find_app_file(root).unwrap();
+        assert_eq!(result.file_name().unwrap(), "MyPub_MyApp_2.0.0.0.app");
     }
 
     /// Serialize env-var access to avoid races between concurrent #[test] threads.
