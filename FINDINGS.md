@@ -2060,3 +2060,24 @@ Nothing actionable found. Project is converged: no open findings remain and ever
 
 Workspace test count: 2201 → 2201 (no tests added; no code change). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
 
+### Iteration 120 (2026-06-03)
+
+Convergence check. The ledger's `## Open (actionable)` section is empty (all 255 prior findings resolved/parked), and the triage worklist supplied zero open findings and zero new confirmed findings. No code change this iteration.
+
+Re-ran all five gates on the worktree to confirm the baseline is green, then ran a fresh adversarial spot-audit of subsystems concerned with position handling (a recurring UTF-16 bug class) and untrusted-input parsing that had not been re-examined recently:
+
+| ID | Severity | Resolution |
+|---|---|---|
+| (audit) `queries/inlay_hints.rs` + `queries/profiler_hints.rs` column emission | — | **No issue.** Every tree-sitter `start_position().column` / `end_position().column` fed into an emitted `Position` is routed through `crate::syntax::byte_col_to_utf16_col(source_line, col)` (parameter hints, return-type hints, profiler lens ranges). No raw byte column leaks into an LSP position, so non-ASCII identifiers stay aligned. |
+| (audit) `syntax/tokens.rs` semantic-token delta encoding | — | **No issue.** Token start/end columns and multi-line token lengths are all computed in UTF-16 code units (`byte_col_to_utf16_col`, `encode_utf16().count()`) before delta-encoding; the only raw `.column` is a `tracing` field. |
+| (audit) `xliff.rs` `extract_open_only` / `extract_single_line` | — | **No issue.** Self-closing `<target …/>` is detected via the pre-`>` slice ending in `/`; empty single-line bodies return `Some("")` (not `None`) so a trans-unit is never silently dropped — both already have regression tests. |
+| (audit) `bc_client.rs` `build_base_url` | — | **No issue.** On-prem URLs are forced to a scheme (defaulting to `http://`) and trailing slashes trimmed; cloud URLs percent-encode tenant/environment. No injection or double-slash defect. |
+| (audit) `file_index.rs` `incremental_scan` staleness | — | **No issue.** mtime+size `FileMetadata` comparison is the standard scanner heuristic; oversized files that grew past `MAX_AL_FILE_BYTES` are evicted (F-OPEN-019) and editor-driven edits bypass the scanner via `add_file`. |
+| (audit) workspace `#[allow(...)]` attributes (25 sites) | — | **No issue.** Each `clippy::too_many_arguments` / `dead_code` / `permissions_set_readonly_false` allow already carries an adjacent justification; the bare `#[allow(deprecated)]` sites are the standard `lsp_types::{DocumentSymbol,SymbolInformation}` deprecated-field construction pattern (self-evident, no comment required). |
+
+Nothing actionable found. Project remains converged: no open findings remain and every parked item is justified/won't-fix.
+
+Note: the "test count" line in iterations 113–119 read `2201` but the worktree's actual passing-test total had drifted upward (earlier iterations added tests in this tree without refreshing the figure). The authoritative count measured this iteration is **2316 passing** (86 ignored). The line below is corrected to that real number going forward.
+
+Workspace test count: 2201 → 2316 (count corrected to the real measured total; no tests added this iteration — no code change). All gates green (`cargo fmt --all -- --check`, `cargo check --workspace --exclude zed-al`, `cargo clippy --workspace --exclude zed-al -- -D warnings`, full test suite passing, and `zed-al` `wasm32-wasip1` release build).
+
