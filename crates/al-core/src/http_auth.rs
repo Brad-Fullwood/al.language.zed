@@ -146,4 +146,47 @@ mod tests {
             "password without username must not produce a Basic header"
         );
     }
+
+    #[test]
+    fn apply_basic_auth_password_containing_colon_encodes_verbatim() {
+        // RFC 7617: only the FIRST colon separates user from password, so a
+        // password containing colons must be base64-encoded verbatim (the
+        // colons inside it are not separators). This guards the real BC case
+        // where service-account passwords can contain ':'.
+        // "user:p:a:ss" => base64 "dXNlcjpwOmE6c3M=".
+        let req = apply_basic_auth(
+            get_request(),
+            &Some("user".to_string()),
+            &Some("p:a:ss".to_string()),
+        );
+        let header = authorization_header(req).expect("Authorization header must be present");
+        assert_eq!(header, "Basic dXNlcjpwOmE6c3M=");
+    }
+
+    #[test]
+    fn apply_basic_auth_non_ascii_credentials_utf8_base64_encoded() {
+        // Edge: non-ASCII (multi-byte UTF-8) credentials must be encoded by
+        // their UTF-8 bytes, not panic or mangle. "Bjørn:naïve" UTF-8 bytes
+        // base64-encode to "QmrDuHJuOm5hw692ZQ==".
+        let req = apply_basic_auth(
+            get_request(),
+            &Some("Bjørn".to_string()),
+            &Some("naïve".to_string()),
+        );
+        let header = authorization_header(req).expect("Authorization header must be present");
+        assert_eq!(header, "Basic QmrDuHJuOm5hw692ZQ==");
+    }
+
+    #[test]
+    fn apply_basic_auth_empty_username_nonempty_password_encodes() {
+        // Edge: present-but-empty username with a real password is still a
+        // credential (Some/Some matches). ":secret" => base64 "OnNlY3JldA==".
+        let req = apply_basic_auth(
+            get_request(),
+            &Some(String::new()),
+            &Some("secret".to_string()),
+        );
+        let header = authorization_header(req).expect("Authorization header must be present");
+        assert_eq!(header, "Basic OnNlY3JldA==");
+    }
 }
