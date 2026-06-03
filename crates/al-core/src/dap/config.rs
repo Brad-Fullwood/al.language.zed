@@ -708,4 +708,231 @@ mod tests {
         let df = find_launch_config(tmp.path()).expect("should fall back to VS Code");
         assert_eq!(df.configs[0].name, "VsCodeCfg");
     }
+
+    // -- parse_auth_method: remaining literal arms -----------------------
+
+    #[test]
+    fn auth_literal_aad_arm_matches() {
+        // The match has two cloud spellings: "AAD" and "MicrosoftEntraID".
+        // The existing suite only covers "MicrosoftEntraID"; assert the bare
+        // "AAD" literal resolves too, independent of env type.
+        assert_eq!(
+            parse_auth_method(Some("AAD"), &EnvironmentType::OnPrem),
+            AuthMethod::AAD
+        );
+        assert_eq!(
+            parse_auth_method(Some("AAD"), &EnvironmentType::Sandbox),
+            AuthMethod::AAD
+        );
+    }
+
+    // -- convert_zed_config: full field passthrough ----------------------
+
+    #[test]
+    fn zed_file_passes_through_onprem_server_port_and_explicit_auth() {
+        // Exercises convert_zed_config carrying server/serverInstance/port and an
+        // explicit authentication value (rather than the env-type default) — a
+        // combination the existing Zed tests don't cover.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            ".zed/debug.json",
+            r#"[
+              {
+                "label": "OnPrem Win",
+                "adapter": "al",
+                "environmentType": "OnPrem",
+                "server": "https://erp.example.com",
+                "serverInstance": "BC",
+                "port": 7049,
+                "authentication": "Windows"
+              }
+            ]"#,
+        );
+        let df = parse_zed_debug_file(&path).unwrap();
+        assert_eq!(df.configs.len(), 1);
+        let c = &df.configs[0];
+        assert_eq!(c.name, "OnPrem Win");
+        assert_eq!(c.environment_type, EnvironmentType::OnPrem);
+        assert_eq!(c.server.as_deref(), Some("https://erp.example.com"));
+        assert_eq!(c.server_instance.as_deref(), Some("BC"));
+        assert_eq!(c.port, Some(7049));
+        // Explicit Windows auth is honoured verbatim (not an env-type default).
+        assert_eq!(c.authentication, AuthMethod::Windows);
+    }
+
+    #[test]
+    fn zed_empty_array_yields_no_configs() {
+        // A syntactically valid but empty Zed array parses cleanly and produces
+        // zero configs (distinct from a parse error).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(tmp.path(), ".zed/debug.json", "[]");
+        let df = parse_zed_debug_file(&path).unwrap();
+        assert!(df.configs.is_empty());
+    }
+
+    #[test]
+    fn zed_port_out_of_u16_range_is_error() {
+        // `port` is typed u16; a value above 65535 must surface as a parse error,
+        // not silently truncate or default.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            ".zed/debug.json",
+            r#"[ { "label": "x", "adapter": "al", "environmentType": "OnPrem", "port": 70000 } ]"#,
+        );
+        assert!(parse_zed_debug_file(&path).is_err());
+    }
+
+    // -- parse_vscode_launch_file: multi-config --------------------------
+
+    #[test]
+    fn vscode_file_keeps_multiple_al_configs_and_filters_others() {
+        // Multiple AL configurations in one launch.json must all be retained in
+        // order, while non-AL entries are dropped.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{ "configurations": [
+                { "name": "Cloud", "type": "al", "environmentType": "Sandbox", "environmentName": "S1" },
+                { "name": "Node", "type": "node" },
+                { "name": "Prod", "type": "al", "environmentType": "Production", "tenant": "contoso.com" }
+            ] }"#,
+        );
+        let df = parse_vscode_launch_file(&path).unwrap();
+        assert_eq!(df.configs.len(), 2);
+        assert_eq!(df.configs[0].name, "Cloud");
+        assert_eq!(df.configs[0].environment_type, EnvironmentType::Sandbox);
+        assert_eq!(df.configs[0].environment_name.as_deref(), Some("S1"));
+        assert_eq!(df.configs[1].name, "Prod");
+        assert_eq!(df.configs[1].environment_type, EnvironmentType::Production);
+        assert_eq!(df.configs[1].tenant.as_deref(), Some("contoso.com"));
+    }
+
+    #[test]
+    fn vscode_port_out_of_u16_range_is_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{ "configurations": [
+                { "name": "x", "type": "al", "environmentType": "OnPrem", "port": 99999 }
+            ] }"#,
+        );
+        assert!(parse_vscode_launch_file(&path).is_err());
+    }
+
+    // -- find_launch_config: vscode-only & empty-zed paths ---------------
+
+    #[test]
+    fn find_uses_vscode_when_no_zed_file_present() {
+        // No .zed/debug.json at all: the Zed branch is skipped entirely and the
+        // VS Code file is used. Distinct from the malformed/empty-zed fallbacks.
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{ "configurations": [
+                { "name": "OnlyVsCode", "type": "al", "environmentType": "OnPrem" }
+            ] }"#,
+        );
+        let df = find_launch_config(tmp.path()).expect("should use VS Code file");
+        assert_eq!(df.configs.len(), 1);
+        assert_eq!(df.configs[0].name, "OnlyVsCode");
+        assert!(df.path.ends_with("launch.json"));
+    }
+
+    #[test]
+    fn find_returns_none_when_only_empty_zed_present() {
+        // Zed file exists but yields zero AL configs and there is no VS Code
+        // file => the whole function returns None (no panic, no fallback).
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            ".zed/debug.json",
+            r#"[ { "label": "Py", "adapter": "debugpy" } ]"#,
+        );
+        assert!(find_launch_config(tmp.path()).is_none());
+    }
+
+    // -- find_launch_config: log call sites execute under a subscriber ---
+
+    /// Minimal `tracing::Subscriber` that claims every level is enabled, forcing
+    /// `debug!`/`warn!` argument closures to actually run. No-ops everything
+    /// else. Used to drive the diagnostic branches inside `find_launch_config`.
+    struct AlwaysOnSubscriber;
+
+    impl tracing::Subscriber for AlwaysOnSubscriber {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    #[test]
+    fn find_drives_log_branches_with_active_subscriber() {
+        // The success and error diagnostic branches in find_launch_config only
+        // evaluate their log-argument closures when a subscriber accepts the
+        // level. Run the function end-to-end under such a subscriber so those
+        // call sites are genuinely exercised, then assert the real return value
+        // is still correct (the logging must not alter behaviour).
+        let tmp = tempfile::tempdir().unwrap();
+        // Malformed Zed (hits the warn! error arm) then a valid VS Code file
+        // (hits the debug! success arm) — both diagnostic branches in one run.
+        write(tmp.path(), ".zed/debug.json", "{ broken");
+        write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{ "configurations": [
+                { "name": "Logged", "type": "al", "environmentType": "Sandbox" }
+            ] }"#,
+        );
+
+        let df = tracing::subscriber::with_default(AlwaysOnSubscriber, || {
+            find_launch_config(tmp.path())
+        })
+        .expect("should fall back to VS Code even with logging active");
+        assert_eq!(df.configs.len(), 1);
+        assert_eq!(df.configs[0].name, "Logged");
+    }
+
+    #[test]
+    fn find_drives_zed_success_and_empty_log_branches() {
+        // Cover the Zed success debug! branch (configs present) and the Zed
+        // "no AL configurations" debug! branch (empty after filtering) under an
+        // active subscriber, in two separate find_launch_config runs.
+        // 1) Zed with a real AL config => success debug! branch.
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            ".zed/debug.json",
+            r#"[ { "label": "ZedOk", "adapter": "al", "environmentType": "Sandbox" } ]"#,
+        );
+        let df = tracing::subscriber::with_default(AlwaysOnSubscriber, || {
+            find_launch_config(tmp.path())
+        })
+        .expect("zed config should be found");
+        assert_eq!(df.configs[0].name, "ZedOk");
+
+        // 2) Zed present but empty-after-filter, no vscode => debug! "no AL
+        //    configurations" branch, then None.
+        let tmp2 = tempfile::tempdir().unwrap();
+        write(
+            tmp2.path(),
+            ".zed/debug.json",
+            r#"[ { "label": "Py", "adapter": "debugpy" } ]"#,
+        );
+        let none = tracing::subscriber::with_default(AlwaysOnSubscriber, || {
+            find_launch_config(tmp2.path())
+        });
+        assert!(none.is_none());
+    }
 }
