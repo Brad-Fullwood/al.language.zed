@@ -370,4 +370,342 @@ mod tests {
             AuthMethod::AAD
         );
     }
+
+    // -- parse_environment_type ------------------------------------------
+
+    #[test]
+    fn env_type_known_values_parse() {
+        assert_eq!(
+            parse_environment_type("OnPrem"),
+            Some(EnvironmentType::OnPrem)
+        );
+        assert_eq!(
+            parse_environment_type("Sandbox"),
+            Some(EnvironmentType::Sandbox)
+        );
+        assert_eq!(
+            parse_environment_type("Production"),
+            Some(EnvironmentType::Production)
+        );
+    }
+
+    #[test]
+    fn env_type_unknown_and_case_mismatch_drop() {
+        // Unknown value is dropped (returns None) — config entry is refused.
+        assert_eq!(parse_environment_type("Cloud"), None);
+        assert_eq!(parse_environment_type(""), None);
+        // Matching is case-sensitive: "sandbox" (lowercase) is not "Sandbox".
+        assert_eq!(parse_environment_type("sandbox"), None);
+        assert_eq!(parse_environment_type("ONPREM"), None);
+    }
+
+    // -- build_launch_config ---------------------------------------------
+
+    #[test]
+    fn build_launch_config_requires_env_type() {
+        // No environmentType => whole config entry is dropped.
+        let result = build_launch_config(
+            "no-env".into(),
+            None,
+            Some("Windows"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_none());
+
+        // Unrecognised environmentType => also dropped.
+        let result = build_launch_config(
+            "bad-env".into(),
+            Some("Nope"),
+            Some("Windows"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn build_launch_config_populates_all_fields() {
+        let cfg = build_launch_config(
+            "OnPrem BC".into(),
+            Some("OnPrem"),
+            Some("UserPassword"),
+            Some("https://erp.example.com".into()),
+            Some("BC".into()),
+            Some(7049),
+            Some("Sandbox".into()),
+            Some("default".into()),
+        )
+        .expect("valid OnPrem config should build");
+
+        assert_eq!(cfg.name, "OnPrem BC");
+        assert_eq!(cfg.environment_type, EnvironmentType::OnPrem);
+        assert_eq!(cfg.authentication, AuthMethod::UserPassword);
+        assert_eq!(cfg.server.as_deref(), Some("https://erp.example.com"));
+        assert_eq!(cfg.server_instance.as_deref(), Some("BC"));
+        assert_eq!(cfg.port, Some(7049));
+        assert_eq!(cfg.environment_name.as_deref(), Some("Sandbox"));
+        assert_eq!(cfg.tenant.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn build_launch_config_applies_auth_env_default_when_auth_absent() {
+        // OnPrem with no auth => Windows (env default), not AAD.
+        let onprem = build_launch_config(
+            "x".into(),
+            Some("OnPrem"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(onprem.authentication, AuthMethod::Windows);
+
+        // Sandbox with no auth => AAD.
+        let sandbox = build_launch_config(
+            "y".into(),
+            Some("Sandbox"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(sandbox.authentication, AuthMethod::AAD);
+    }
+
+    // -- parse_zed_debug_file --------------------------------------------
+
+    fn write(dir: &std::path::Path, rel: &str, content: &str) -> PathBuf {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn zed_file_parses_al_adapter_entry_with_jsonc() {
+        let tmp = tempfile::tempdir().unwrap();
+        // JSONC: includes a // comment and a trailing comma — both must be tolerated.
+        let path = write(
+            tmp.path(),
+            ".zed/debug.json",
+            r#"[
+              // AL cloud sandbox
+              {
+                "label": "Cloud",
+                "adapter": "al",
+                "environmentType": "Sandbox",
+                "environmentName": "MySandbox",
+                "tenant": "contoso.com",
+              }
+            ]"#,
+        );
+        let df = parse_zed_debug_file(&path).unwrap();
+        assert_eq!(df.path, path);
+        assert_eq!(df.configs.len(), 1);
+        let c = &df.configs[0];
+        assert_eq!(c.name, "Cloud");
+        assert_eq!(c.environment_type, EnvironmentType::Sandbox);
+        assert_eq!(c.environment_name.as_deref(), Some("MySandbox"));
+        assert_eq!(c.tenant.as_deref(), Some("contoso.com"));
+        // No auth specified + Sandbox => AAD default.
+        assert_eq!(c.authentication, AuthMethod::AAD);
+    }
+
+    #[test]
+    fn zed_file_filters_non_al_entries_without_env_type() {
+        let tmp = tempfile::tempdir().unwrap();
+        // First entry is a non-AL adapter with no environmentType => filtered out.
+        // Second entry has environmentType set (no adapter) => kept by the
+        // `adapter == "al" || environment_type.is_some()` filter.
+        let path = write(
+            tmp.path(),
+            ".zed/debug.json",
+            r#"[
+              { "label": "Python", "adapter": "debugpy" },
+              { "label": "OnPremBC", "environmentType": "OnPrem" }
+            ]"#,
+        );
+        let df = parse_zed_debug_file(&path).unwrap();
+        assert_eq!(df.configs.len(), 1);
+        assert_eq!(df.configs[0].name, "OnPremBC");
+        assert_eq!(df.configs[0].environment_type, EnvironmentType::OnPrem);
+        // OnPrem with no auth => Windows.
+        assert_eq!(df.configs[0].authentication, AuthMethod::Windows);
+    }
+
+    #[test]
+    fn zed_file_drops_entry_with_unknown_env_type() {
+        let tmp = tempfile::tempdir().unwrap();
+        // adapter == "al" passes the first filter, but the bad environmentType
+        // makes convert/build return None, so it's filtered by filter_map.
+        let path = write(
+            tmp.path(),
+            ".zed/debug.json",
+            r#"[ { "label": "Bad", "adapter": "al", "environmentType": "Galaxy" } ]"#,
+        );
+        let df = parse_zed_debug_file(&path).unwrap();
+        assert!(df.configs.is_empty());
+    }
+
+    #[test]
+    fn zed_file_malformed_json_is_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(tmp.path(), ".zed/debug.json", "{ not an array");
+        assert!(parse_zed_debug_file(&path).is_err());
+    }
+
+    // -- parse_vscode_launch_file ----------------------------------------
+
+    #[test]
+    fn vscode_file_parses_configurations_array() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{
+              "version": "0.2.0",
+              "configurations": [
+                {
+                  "name": "On-prem",
+                  "type": "al",
+                  "environmentType": "OnPrem",
+                  "server": "https://erp.example.com",
+                  "serverInstance": "BC",
+                  "port": 7049,
+                  "authentication": "UserPassword"
+                }
+              ]
+            }"#,
+        );
+        let df = parse_vscode_launch_file(&path).unwrap();
+        assert_eq!(df.configs.len(), 1);
+        let c = &df.configs[0];
+        assert_eq!(c.name, "On-prem");
+        assert_eq!(c.environment_type, EnvironmentType::OnPrem);
+        assert_eq!(c.server.as_deref(), Some("https://erp.example.com"));
+        assert_eq!(c.server_instance.as_deref(), Some("BC"));
+        assert_eq!(c.port, Some(7049));
+        assert_eq!(c.authentication, AuthMethod::UserPassword);
+    }
+
+    #[test]
+    fn vscode_file_filters_non_al_type() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{ "configurations": [
+                { "name": "Node", "type": "node" },
+                { "name": "AL", "type": "al", "environmentType": "Production" }
+            ] }"#,
+        );
+        let df = parse_vscode_launch_file(&path).unwrap();
+        assert_eq!(df.configs.len(), 1);
+        assert_eq!(df.configs[0].name, "AL");
+        assert_eq!(df.configs[0].environment_type, EnvironmentType::Production);
+    }
+
+    #[test]
+    fn vscode_file_missing_configurations_yields_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `configurations` has #[serde(default)] => absent key is an empty Vec,
+        // not a parse error.
+        let path = write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{ "version": "0.2.0" }"#,
+        );
+        let df = parse_vscode_launch_file(&path).unwrap();
+        assert!(df.configs.is_empty());
+    }
+
+    #[test]
+    fn vscode_file_malformed_json_is_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(tmp.path(), ".vscode/launch.json", "}{");
+        assert!(parse_vscode_launch_file(&path).is_err());
+    }
+
+    // -- find_launch_config ----------------------------------------------
+
+    #[test]
+    fn find_returns_none_when_no_config_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(find_launch_config(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn find_prefers_zed_over_vscode() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            ".zed/debug.json",
+            r#"[ { "label": "ZedCfg", "adapter": "al", "environmentType": "Sandbox" } ]"#,
+        );
+        write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{ "configurations": [
+                { "name": "VsCodeCfg", "type": "al", "environmentType": "OnPrem" }
+            ] }"#,
+        );
+        let df = find_launch_config(tmp.path()).expect("should find a config");
+        // Zed takes precedence when both exist and Zed has configs.
+        assert_eq!(df.configs.len(), 1);
+        assert_eq!(df.configs[0].name, "ZedCfg");
+        assert!(df.path.ends_with("debug.json"));
+    }
+
+    #[test]
+    fn find_falls_back_to_vscode_when_zed_has_no_al_configs() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Zed file exists but contains only a non-AL entry => empty configs =>
+        // function continues on to the VS Code file.
+        write(
+            tmp.path(),
+            ".zed/debug.json",
+            r#"[ { "label": "Py", "adapter": "debugpy" } ]"#,
+        );
+        write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{ "configurations": [
+                { "name": "VsCodeCfg", "type": "al", "environmentType": "OnPrem" }
+            ] }"#,
+        );
+        let df = find_launch_config(tmp.path()).expect("should fall back to VS Code");
+        assert_eq!(df.configs.len(), 1);
+        assert_eq!(df.configs[0].name, "VsCodeCfg");
+        assert!(df.path.ends_with("launch.json"));
+    }
+
+    #[test]
+    fn find_falls_back_to_vscode_when_zed_is_malformed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Malformed Zed file => parse error is logged and swallowed; the
+        // function still continues to the VS Code file.
+        write(tmp.path(), ".zed/debug.json", "{ broken");
+        write(
+            tmp.path(),
+            ".vscode/launch.json",
+            r#"{ "configurations": [
+                { "name": "VsCodeCfg", "type": "al", "environmentType": "Sandbox" }
+            ] }"#,
+        );
+        let df = find_launch_config(tmp.path()).expect("should fall back to VS Code");
+        assert_eq!(df.configs[0].name, "VsCodeCfg");
+    }
 }
