@@ -568,4 +568,182 @@ mod tests {
         assert!(!out.contains("first"));
         assert!(!out.contains("second"));
     }
+
+    #[test]
+    fn redactor_passes_through_non_json_body() {
+        // Non-JSON capture content must be returned unchanged (best-effort log).
+        let body = b"this is not json at all";
+        let out = redact_dap_body_for_log(body);
+        assert_eq!(out, "this is not json at all");
+    }
+
+    // --- patch_launch_args ---------------------------------------------------
+
+    /// Helper: parse a JSON object literal into the map shape `patch_launch_args`
+    /// expects, run the patcher, and hand back the mutated map.
+    fn run_patch_launch_args(json: &str) -> serde_json::Map<String, serde_json::Value> {
+        let val: serde_json::Value = serde_json::from_str(json).expect("valid json object");
+        let mut map = val.as_object().expect("object").clone();
+        patch_launch_args(&mut map);
+        map
+    }
+
+    #[test]
+    fn patch_launch_args_converts_break_on_error_string_to_bool() {
+        // Any value other than "none" must become boolean `true`.
+        let map = run_patch_launch_args(r#"{"breakOnError":"All"}"#);
+        assert_eq!(
+            map.get("breakOnError"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn patch_launch_args_break_on_error_none_becomes_false() {
+        // The documented sentinel "none" maps to boolean `false`.
+        let map = run_patch_launch_args(r#"{"breakOnError":"none"}"#);
+        assert_eq!(
+            map.get("breakOnError"),
+            Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn patch_launch_args_break_on_error_none_is_case_insensitive() {
+        // "None" / "NONE" must also be treated as the disable sentinel.
+        let map = run_patch_launch_args(r#"{"breakOnError":"NONE"}"#);
+        assert_eq!(
+            map.get("breakOnError"),
+            Some(&serde_json::Value::Bool(false)),
+            "case-insensitive 'none' must disable"
+        );
+    }
+
+    #[test]
+    fn patch_launch_args_converts_break_on_record_write() {
+        let map = run_patch_launch_args(r#"{"breakOnRecordWrite":"All"}"#);
+        assert_eq!(
+            map.get("breakOnRecordWrite"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let map = run_patch_launch_args(r#"{"breakOnRecordWrite":"none"}"#);
+        assert_eq!(
+            map.get("breakOnRecordWrite"),
+            Some(&serde_json::Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn patch_launch_args_leaves_non_string_values_untouched() {
+        // If breakOnError is already a bool, the patcher must not touch it
+        // (only string values are transformed).
+        let map = run_patch_launch_args(r#"{"breakOnError":true}"#);
+        assert_eq!(
+            map.get("breakOnError"),
+            Some(&serde_json::Value::Bool(true))
+        );
+
+        let map = run_patch_launch_args(r#"{"breakOnError":false}"#);
+        assert_eq!(
+            map.get("breakOnError"),
+            Some(&serde_json::Value::Bool(false)),
+            "pre-existing bool false must survive untouched"
+        );
+    }
+
+    #[test]
+    fn patch_launch_args_ignores_unrelated_fields() {
+        // Fields the patcher does not know about must pass through verbatim,
+        // and absence of the break* keys must not insert them.
+        let map = run_patch_launch_args(
+            r#"{"server":"http://localhost","authentication":"UserPassword"}"#,
+        );
+        assert_eq!(
+            map.get("server").and_then(|v| v.as_str()),
+            Some("http://localhost")
+        );
+        assert_eq!(
+            map.get("authentication").and_then(|v| v.as_str()),
+            Some("UserPassword")
+        );
+        assert!(!map.contains_key("breakOnError"));
+        assert!(!map.contains_key("breakOnRecordWrite"));
+    }
+
+    // --- patch_incoming ------------------------------------------------------
+
+    #[test]
+    fn patch_incoming_injects_missing_seq() {
+        let counter = AtomicI64::new(42);
+        let out = patch_incoming(br#"{"type":"event","event":"output"}"#, &counter);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        // The counter started at 42, fetch_add returns the pre-increment value.
+        assert_eq!(v.get("seq").and_then(|s| s.as_i64()), Some(42));
+        // And the counter advanced for the next message.
+        assert_eq!(counter.load(Ordering::Relaxed), 43);
+    }
+
+    #[test]
+    fn patch_incoming_preserves_existing_seq() {
+        let counter = AtomicI64::new(1);
+        let out = patch_incoming(br#"{"seq":7,"type":"event"}"#, &counter);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v.get("seq").and_then(|s| s.as_i64()), Some(7));
+        // Counter must NOT advance when seq is already present.
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            1,
+            "existing seq must not consume a counter value"
+        );
+    }
+
+    #[test]
+    fn patch_incoming_replaces_null_string_fields() {
+        let counter = AtomicI64::new(1);
+        let out = patch_incoming(
+            br#"{"seq":1,"type":null,"command":null,"event":null,"message":null}"#,
+            &counter,
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        for field in ["type", "command", "event", "message"] {
+            assert_eq!(
+                v.get(field).and_then(|x| x.as_str()),
+                Some(""),
+                "null {field} must become empty string"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_incoming_leaves_non_null_strings_intact() {
+        let counter = AtomicI64::new(1);
+        let out = patch_incoming(
+            br#"{"seq":1,"type":"response","command":"launch"}"#,
+            &counter,
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v.get("type").and_then(|x| x.as_str()), Some("response"));
+        assert_eq!(v.get("command").and_then(|x| x.as_str()), Some("launch"));
+    }
+
+    #[test]
+    fn patch_incoming_passes_through_invalid_json() {
+        let counter = AtomicI64::new(1);
+        let body = b"not json";
+        let out = patch_incoming(body, &counter);
+        assert_eq!(out, body);
+        // No seq consumed on the error path.
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn patch_incoming_passes_through_non_object_json() {
+        // A JSON array is valid JSON but not a DAP object — must pass through.
+        let counter = AtomicI64::new(1);
+        let body = br#"[1,2,3]"#;
+        let out = patch_incoming(body, &counter);
+        assert_eq!(out, body);
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+    }
 }
