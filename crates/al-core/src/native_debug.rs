@@ -431,6 +431,94 @@ mod timestamp_tests {
         let s = format_event_timestamp(t);
         assert!(s.starts_with("19") || s.starts_with("20"));
     }
+
+    /// Exact-value tests. The original suite only pinned the ISO-8601 *shape*
+    /// (out of caution that the hand-rolled calendar math might be off-by-one).
+    /// It isn't — these values were cross-checked against Python's `datetime`.
+    /// Pinning the real rendered string is a far stronger guard: it catches a
+    /// silently wrong date (e.g. an off-by-one in `days_to_civil` or a broken
+    /// h/m/s split) that the shape test would wave through.
+    #[test]
+    fn known_seconds_render_exact_date_and_time() {
+        // Non-zero hour/min/sec exercises the full hms decomposition, not just
+        // the all-zero epoch case.
+        let t = UNIX_EPOCH + Duration::from_secs(1_778_160_318);
+        assert_eq!(format_event_timestamp(t), "2026-05-07T13:25:18Z");
+    }
+
+    #[test]
+    fn second_day_after_epoch() {
+        // Boundary: exactly one day past epoch must roll the day, not the month.
+        let t = UNIX_EPOCH + Duration::from_secs(86_400);
+        assert_eq!(format_event_timestamp(t), "1970-01-02T00:00:00Z");
+    }
+
+    #[test]
+    fn leap_day_2000_renders_feb_29() {
+        // Year 2000 is divisible by 400 → a leap year → Feb 29 exists. This is
+        // the classic case the Gregorian "century rule" gets wrong; it forces
+        // the `m <= 2 ? y+1` year-correction branch in days_to_civil.
+        let t = UNIX_EPOCH + Duration::from_secs(951_782_400);
+        assert_eq!(format_event_timestamp(t), "2000-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn non_leap_century_2100_has_no_feb_29() {
+        // Year 2100 is divisible by 100 but NOT 400 → NOT a leap year. The day
+        // that would be "Feb 29" must render as "Feb 28". A naive leap rule
+        // (every 4 years) would render 02-29 here — this test catches that.
+        let t = UNIX_EPOCH + Duration::from_secs(4_107_456_000);
+        assert_eq!(format_event_timestamp(t), "2100-02-28T00:00:00Z");
+    }
+
+    #[test]
+    fn march_first_crosses_month_boundary() {
+        // March 1 is where Hinnant's "year starts in March" internal calendar
+        // wraps back to the real January. Pins the month-rollover edge.
+        let t = UNIX_EPOCH + Duration::from_secs(1_583_020_800);
+        assert_eq!(format_event_timestamp(t), "2020-03-01T00:00:00Z");
+    }
+}
+
+#[cfg(test)]
+mod days_to_civil_tests {
+    use super::days_to_civil;
+
+    // `days_to_civil` takes days since 0000-03-01 (Hinnant's epoch). The
+    // Unix-epoch offset is 719_468, so `719_468 + n` is "n days after
+    // 1970-01-01". Testing the helper directly nails down the month-index
+    // remap (`mp < 10 ? mp+3 : mp-9`) and the year correction independently of
+    // the timestamp formatter.
+    const UNIX_OFFSET: i64 = 719_468;
+
+    #[test]
+    fn unix_epoch_is_1970_01_01() {
+        assert_eq!(days_to_civil(UNIX_OFFSET), (1970, 1, 1));
+    }
+
+    #[test]
+    fn january_uses_high_month_index_branch() {
+        // Jan/Feb come from mp >= 10 (the `mp - 9` branch) because Hinnant's
+        // internal year starts in March. Jan 31 1970 is 30 days after epoch.
+        assert_eq!(days_to_civil(UNIX_OFFSET + 30), (1970, 1, 31));
+    }
+
+    #[test]
+    fn december_uses_low_month_index_branch() {
+        // December comes from mp < 10 (the `mp + 3` branch). Dec 31 1970 is
+        // day 364 (1970 is not a leap year).
+        assert_eq!(days_to_civil(UNIX_OFFSET + 364), (1970, 12, 31));
+    }
+
+    #[test]
+    fn handles_pre_epoch_negative_internal_days() {
+        // z can be < 0 inside the function's own era math even though the
+        // formatter clamps before calling it. Year 0001-01-01 is a deep
+        // negative offset and must not panic or misclassify the era.
+        // (Cross-checked: 0001-01-01 is 719_162 days before the Hinnant epoch.)
+        let (y, m, d) = days_to_civil(UNIX_OFFSET - 719_162);
+        assert_eq!((y, m, d), (1, 1, 1));
+    }
 }
 
 #[cfg(test)]
