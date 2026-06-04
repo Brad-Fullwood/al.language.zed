@@ -724,6 +724,7 @@ mod tests {
     // -- get_or_build / cache -------------------------------------------------
 
     #[test]
+    #[serial_test::serial]
     fn get_or_build_caches_same_arc_and_resolves_content() {
         let path = write_app(&[("src/Cod1.X.al", "codeunit 1 X { }")]);
         let p = path.to_path_buf();
@@ -753,5 +754,301 @@ mod tests {
     #[test]
     fn get_or_build_errors_for_missing_file() {
         assert!(get_or_build(Path::new("/no/such/path/nope.app")).is_err());
+    }
+
+    // -- MAX_HEADER_BYTES truncation ------------------------------------------
+
+    /// Like `build_app` but takes owned `(String, Vec<u8>)` entries so callers
+    /// can synthesise large / binary contents (header truncation, zip bombs).
+    fn build_app_owned(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"NAVX");
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&40u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 28]);
+
+        let mut zip_buf = Vec::new();
+        {
+            let cursor = Cursor::new(&mut zip_buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (path, contents) in files {
+                zip.start_file(path.as_str(), opts).unwrap();
+                zip.write_all(contents).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        data.extend_from_slice(&zip_buf);
+        data
+    }
+
+    fn write_app_owned(files: &[(String, Vec<u8>)]) -> tempfile::TempPath {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(&build_app_owned(files)).unwrap();
+        tmp.flush().unwrap();
+        tmp.into_temp_path()
+    }
+
+    #[test]
+    fn header_indexing_truncates_at_max_header_bytes_but_extract_returns_full() {
+        // The object header sits at the very start, then a large body pushes the
+        // file past MAX_HEADER_BYTES. Indexing only reads the first 256 KiB, but
+        // extract_source_by_path must still return the *entire* decompressed file.
+        let mut src = String::from("codeunit 50100 BigOne\n{\n");
+        // Body that pushes total size well beyond the 256 KiB header window.
+        src.push_str(&"// filler line padding padding padding\n".repeat(20_000));
+        src.push_str("}\n");
+        assert!(
+            src.len() > MAX_HEADER_BYTES,
+            "test fixture must exceed the header cap"
+        );
+
+        let files = vec![(
+            "src/Cod50100.BigOne.al".to_string(),
+            src.clone().into_bytes(),
+        )];
+        let path = write_app_owned(&files);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+
+        // Header (within the first 256 KiB) was parsed -> object is indexed.
+        let e = entry(ObjectKind::Codeunit, 50100, "BigOne");
+        assert_eq!(
+            idx.source_path_for_entry(&e),
+            Some("src/Cod50100.BigOne.al")
+        );
+
+        // Extraction is NOT capped by MAX_HEADER_BYTES — full content comes back.
+        let extracted = idx.extract_source_for_entry(&e).unwrap();
+        assert_eq!(extracted.len(), src.len());
+        assert_eq!(extracted, src);
+    }
+
+    #[test]
+    fn header_truncation_misses_object_declared_after_window() {
+        // If the object header only appears AFTER the 256 KiB window, the
+        // .take(MAX_HEADER_BYTES) cut means it is never seen during indexing.
+        // (This pins the documented behaviour of the header cap.)
+        let mut src = String::new();
+        // Leading filler that is NOT a valid object header, exceeding the window.
+        src.push_str(&"// noise noise noise noise noise noise\n".repeat(8_000));
+        assert!(src.len() > MAX_HEADER_BYTES);
+        src.push_str("codeunit 50111 HiddenAfterCap\n{\n}\n");
+
+        let files = vec![("src/late.al".to_string(), src.into_bytes())];
+        let path = write_app_owned(&files);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+
+        let e = entry(ObjectKind::Codeunit, 50111, "HiddenAfterCap");
+        assert_eq!(
+            idx.source_path_for_entry(&e),
+            None,
+            "header past the 256 KiB cap must not be indexed"
+        );
+    }
+
+    // -- zip-bomb guard (MAX_TOTAL_DECOMPRESSED_BYTES) ------------------------
+
+    #[test]
+    fn zip_bomb_guard_rejects_excessive_total_decompressed_bytes() {
+        // Each .al entry contributes at most MAX_HEADER_BYTES (256 KiB) to the
+        // running decompressed total. To trip the 1 GiB guard we need just over
+        // 4096 such entries. Contents are a single repeated byte so deflate
+        // keeps the on-disk .app tiny while decompressing to 256 KiB each.
+        const PER_FILE: usize = MAX_HEADER_BYTES; // fills the .take() buffer
+        let needed = (MAX_TOTAL_DECOMPRESSED_BYTES_TEST / PER_FILE as u64) as usize + 2;
+
+        let body = vec![b'a'; PER_FILE];
+        let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(needed);
+        for i in 0..needed {
+            // Names end in .al so they are scanned; content has no valid header,
+            // which is irrelevant — the guard counts bytes regardless of parse.
+            files.push((format!("src/f{i}.al"), body.clone()));
+        }
+
+        let path = write_app_owned(&files);
+        let err = AppSourceIndex::from_app_path(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("zip bomb"),
+            "guard error message should mention the zip-bomb refusal, got: {err}"
+        );
+    }
+
+    // Mirror of the private constant so the bomb test is self-documenting and
+    // fails loudly if the production constant ever changes.
+    const MAX_TOTAL_DECOMPRESSED_BYTES_TEST: u64 = 1_073_741_824;
+
+    #[test]
+    fn just_under_bomb_threshold_is_accepted() {
+        // A package whose total decompressed header bytes stay strictly under
+        // the 1 GiB cap must index successfully (boundary: total == cap is the
+        // accept side because the guard fires only on `>`).
+        // Use a handful of small valid entries — comfortably under the cap.
+        let files = vec![
+            ("src/a.al".to_string(), b"codeunit 1 A\n{\n}".to_vec()),
+            ("src/b.al".to_string(), b"table 2 B\n{\n}".to_vec()),
+        ];
+        let path = write_app_owned(&files);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+        assert_eq!(
+            idx.source_path_for_entry(&entry(ObjectKind::Codeunit, 1, "A")),
+            Some("src/a.al")
+        );
+    }
+
+    // -- duplicate (kind,id) first-wins ---------------------------------------
+
+    #[test]
+    fn duplicate_kind_id_keeps_first_seen_path() {
+        // Two .al files declare the same (Codeunit, 50100). `or_insert_with`
+        // must keep the FIRST entry encountered (ZIP iteration order) and not
+        // overwrite it with the second.
+        let path = write_app(&[
+            ("src/First.al", "codeunit 50100 Dup\n{\n}"),
+            ("src/Second.al", "codeunit 50100 Dup\n{\n}"),
+        ]);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+        let e = entry(ObjectKind::Codeunit, 50100, "Dup");
+        assert_eq!(idx.source_path_for_entry(&e), Some("src/First.al"));
+    }
+
+    // -- case-insensitive .al extension matching ------------------------------
+
+    #[test]
+    fn uppercase_al_extension_is_indexed() {
+        // Extension match is case-insensitive (`name.to_lowercase().ends_with(".al")`).
+        let path = write_app(&[("src/UPPER.AL", "page 60 UpperPage\n{\n}")]);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+        let e = entry(ObjectKind::Page, 60, "UpperPage");
+        assert_eq!(idx.source_path_for_entry(&e), Some("src/UPPER.AL"));
+    }
+
+    #[test]
+    fn non_al_files_are_skipped_during_indexing() {
+        // A perfectly valid-looking object header in a non-.al file must be
+        // ignored (extension filter runs before parsing).
+        let path = write_app(&[
+            ("manifest.xml", "codeunit 70 NotIndexed\n{\n}"),
+            ("readme.txt", "table 71 AlsoNot\n{\n}"),
+        ]);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+        assert_eq!(
+            idx.source_path_for_entry(&entry(ObjectKind::Codeunit, 70, "NotIndexed")),
+            None
+        );
+        assert_eq!(
+            idx.source_path_for_entry(&entry(ObjectKind::Table, 71, "AlsoNot")),
+            None
+        );
+    }
+
+    // -- staleness / rebuild on mtime change ----------------------------------
+
+    /// Set a file's mtime using only std (`File::set_modified`, stable since
+    /// Rust 1.75) so the staleness tests don't need an extra crate.
+    fn set_mtime(path: &Path, t: SystemTime) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(t).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn get_or_build_rebuilds_when_file_mtime_changes() {
+        use std::time::Duration;
+
+        clear_source_index_cache();
+
+        // Write to a stable on-disk path we control (NamedTempFile so it persists
+        // across rewrites and keeps the same path).
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        std::fs::write(&path, build_app(&[("src/V1.al", "codeunit 1 V1\n{\n}")])).unwrap();
+        // Pin a known-old mtime so the rewrite below is unambiguously newer.
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        set_mtime(&path, old);
+
+        let first = get_or_build(&path).unwrap();
+        assert_eq!(
+            first.source_path_for_entry(&entry(ObjectKind::Codeunit, 1, "V1")),
+            Some("src/V1.al")
+        );
+
+        // Replace contents AND bump mtime forward -> staleness check must trigger
+        // a rebuild returning a *different* Arc whose contents reflect the rewrite.
+        std::fs::write(&path, build_app(&[("src/V2.al", "table 2 V2\n{\n}")])).unwrap();
+        let newer = old + Duration::from_secs(10);
+        set_mtime(&path, newer);
+
+        let second = get_or_build(&path).unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "changed mtime must force a fresh build, not the cached Arc"
+        );
+        // New index reflects the rewritten package.
+        assert_eq!(
+            second.source_path_for_entry(&entry(ObjectKind::Table, 2, "V2")),
+            Some("src/V2.al")
+        );
+        assert_eq!(
+            second.source_path_for_entry(&entry(ObjectKind::Codeunit, 1, "V1")),
+            None,
+            "stale V1 object must be gone after rebuild"
+        );
+
+        clear_source_index_cache();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn get_or_build_keeps_cache_when_mtime_unchanged() {
+        clear_source_index_cache();
+
+        let path = write_app(&[("src/Same.al", "codeunit 3 Same\n{\n}")]);
+        let p = path.to_path_buf();
+
+        let a = get_or_build(&p).unwrap();
+        let b = get_or_build(&p).unwrap();
+        // Unchanged mtime -> identical Arc via the fast path (no rebuild).
+        assert!(Arc::ptr_eq(&a, &b));
+
+        clear_source_index_cache();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn get_or_build_is_safe_under_concurrent_access() {
+        use std::thread;
+
+        clear_source_index_cache();
+
+        let path = write_app(&[("src/Conc.al", "codeunit 9 Conc\n{\n}")]);
+        let p = Arc::new(path.to_path_buf());
+
+        // Many threads race to build the same path concurrently. Double-checked
+        // locking must serialise the build and every thread must observe the
+        // SAME cached Arc afterwards (no torn / duplicate indices).
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let p = Arc::clone(&p);
+            handles.push(thread::spawn(move || get_or_build(&p).unwrap()));
+        }
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        let first = &results[0];
+        for r in &results[1..] {
+            assert!(
+                Arc::ptr_eq(first, r),
+                "all concurrent callers must share one cached index Arc"
+            );
+        }
+        assert_eq!(
+            first.source_path_for_entry(&entry(ObjectKind::Codeunit, 9, "Conc")),
+            Some("src/Conc.al")
+        );
+
+        clear_source_index_cache();
     }
 }
