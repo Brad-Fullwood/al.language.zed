@@ -457,6 +457,209 @@ mod tests {
     }
 
     #[test]
+    fn analyze_profile_anonymous_function_name() {
+        // A node whose callFrame omits functionName falls back to "(anonymous)"
+        // (not filtered, because it is neither empty nor "(root)"/"(idle)").
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 1000000,
+            "nodes": [
+                {
+                    "id": 1,
+                    "callFrame": { "url": "Mystery.al" },
+                    "hitCount": 7,
+                }
+            ],
+        });
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        assert_eq!(result.hotspots.len(), 1);
+        assert_eq!(result.hotspots[0].procedure, "(anonymous)");
+        assert_eq!(result.hotspots[0].object.as_deref(), Some("Mystery.al"));
+    }
+
+    #[test]
+    fn analyze_profile_empty_function_name_filtered() {
+        // An explicitly-empty functionName is filtered out, same as (root)/(idle).
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 1000000,
+            "nodes": [
+                {
+                    "id": 1,
+                    "callFrame": { "functionName": "", "url": "x.al" },
+                    "hitCount": 99,
+                },
+                {
+                    "id": 2,
+                    "callFrame": { "functionName": "Keep.Me", "url": "y.al" },
+                    "hitCount": 3,
+                }
+            ],
+        });
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        assert_eq!(result.hotspots.len(), 1);
+        assert_eq!(result.hotspots[0].procedure, "Keep.Me");
+    }
+
+    #[test]
+    fn analyze_profile_object_falls_back_to_node_object_field() {
+        // When callFrame.url is empty/absent, the object name is taken from the
+        // node's top-level "object" field instead.
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 1000000,
+            "nodes": [
+                {
+                    "id": 1,
+                    "callFrame": { "functionName": "Foo.Bar", "url": "" },
+                    "object": "Codeunit 50000",
+                    "hitCount": 5,
+                }
+            ],
+        });
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        assert_eq!(result.hotspots.len(), 1);
+        assert_eq!(result.hotspots[0].object.as_deref(), Some("Codeunit 50000"));
+    }
+
+    #[test]
+    fn analyze_profile_no_object_when_url_and_field_absent() {
+        // No url and no object field -> object is None.
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 1000000,
+            "nodes": [
+                {
+                    "id": 1,
+                    "callFrame": { "functionName": "Foo.Bar" },
+                    "hitCount": 5,
+                }
+            ],
+        });
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        assert_eq!(result.hotspots.len(), 1);
+        assert!(result.hotspots[0].object.is_none());
+    }
+
+    #[test]
+    fn analyze_profile_node_without_callframe_skipped() {
+        // A node missing callFrame entirely is dropped (the `?` short-circuit),
+        // not counted as a hotspot.
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 1000000,
+            "nodes": [
+                { "id": 1, "hitCount": 1000 },
+                {
+                    "id": 2,
+                    "callFrame": { "functionName": "Real.Proc", "url": "r.al" },
+                    "hitCount": 4,
+                }
+            ],
+        });
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        assert_eq!(result.hotspots.len(), 1);
+        assert_eq!(result.hotspots[0].procedure, "Real.Proc");
+    }
+
+    #[test]
+    fn analyze_profile_missing_nodes_key_yields_no_hotspots() {
+        // No "nodes" key at all -> unwrap_or_default gives an empty Vec, so no
+        // hotspots and no panic.
+        let profile = serde_json::json!({
+            "startTime": 1000,
+            "endTime": 3000,
+        });
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        assert_eq!(result.hotspots.len(), 0);
+        // (3000 - 1000) / 1000 == 2.0 ms
+        assert!((result.duration_ms - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn analyze_profile_end_before_start_clamps_duration_to_zero() {
+        // endTime <= startTime must not produce a negative duration; it clamps
+        // to 0.0 (the `else` branch).
+        let profile = serde_json::json!({
+            "startTime": 5000000,
+            "endTime": 1000000,
+            "nodes": [],
+        });
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        assert_eq!(result.duration_ms, 0.0);
+    }
+
+    #[test]
+    fn analyze_profile_top_n_zero_returns_empty() {
+        // truncate(0) drops every hotspot even when nodes are present.
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 1000000,
+            "nodes": [
+                {
+                    "id": 1,
+                    "callFrame": { "functionName": "A.B", "url": "a.al" },
+                    "hitCount": 50,
+                }
+            ],
+        });
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 0).unwrap();
+        assert_eq!(result.hotspots.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn analyze_profile_file_reads_and_sets_path() {
+        // analyze_profile_file reads from disk and stamps profile_path with the
+        // source path.
+        let dir = std::env::temp_dir().join(format!(
+            "al-profiling-file-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sample.alcpuprofile");
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 2000000,
+            "nodes": [
+                {
+                    "id": 1,
+                    "callFrame": { "functionName": "Disk.Proc", "url": "d.al" },
+                    "hitCount": 11,
+                }
+            ],
+        });
+        std::fs::write(&path, serde_json::to_vec(&profile).unwrap()).unwrap();
+
+        let result = analyze_profile_file(&path, 10).await.unwrap();
+        assert_eq!(result.profile_path.as_deref(), Some(path.as_path()));
+        assert_eq!(result.hotspots.len(), 1);
+        assert_eq!(result.hotspots[0].procedure, "Disk.Proc");
+        assert!((result.duration_ms - 2000.0).abs() < 1e-9);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn analyze_profile_file_missing_file_is_io_error() {
+        let path = std::env::temp_dir().join("al-profiling-does-not-exist.alcpuprofile");
+        let _ = std::fs::remove_file(&path);
+        let err = analyze_profile_file(&path, 10).await;
+        assert!(
+            matches!(err, Err(ProfilingError::Io(_))),
+            "expected Io error, got {err:?}"
+        );
+    }
+
+    #[test]
     fn profiling_result_roundtrip() {
         let result = ProfilingResult {
             session_id: Some("session-1".to_string()),
@@ -476,5 +679,212 @@ mod tests {
         assert_eq!(parsed.session_id.as_deref(), Some("session-1"));
         assert_eq!(parsed.hotspots.len(), 1);
         assert_eq!(parsed.hotspots[0].procedure, "Test.Proc");
+    }
+
+    #[test]
+    fn config_password_never_serialized() {
+        // The password is annotated #[serde(skip_serializing)] to prevent
+        // credential leaks into persisted config. Confirm it stays out of JSON.
+        let config = test_config();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            !json.contains("password"),
+            "serialized config leaked password: {json}"
+        );
+    }
+
+    // ---- HTTP-orchestration tests (mocked BC server via wiremock) ----
+    //
+    // These exercise the real request construction, status handling, response
+    // parsing, and file-writing logic in `start_profiling` and `stop_profiling`
+    // against a local mock server, without needing a live BC instance.
+    // wiremock's `set_body_*` helpers set Content-Length automatically, which
+    // the capped-read helpers require.
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A config pointing at the given mock server URI, writing to a unique temp
+    /// dir so parallel tests do not collide.
+    fn config_for(server_uri: &str) -> ProfilingConfig {
+        let unique = format!(
+            "al-profiling-http-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        );
+        ProfilingConfig {
+            server_url: server_uri.to_string(),
+            company: "CRONUS International Ltd.".to_string(),
+            output_dir: std::env::temp_dir().join(unique),
+            username: Some("admin".to_string()),
+            password: Some("password".to_string()),
+            accept_invalid_certs: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn start_profiling_returns_id_from_id_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/dev/profiler/start"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "prof-123"
+            })))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let id = start_profiling(&config)
+            .await
+            .expect("start should succeed");
+        assert_eq!(id, "prof-123");
+    }
+
+    #[tokio::test]
+    async fn start_profiling_falls_back_to_session_id_field() {
+        // BC variants return `sessionId` instead of `id`.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "sessionId": "sess-999"
+            })))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let id = start_profiling(&config)
+            .await
+            .expect("start should succeed");
+        assert_eq!(id, "sess-999");
+    }
+
+    #[tokio::test]
+    async fn start_profiling_empty_id_yields_no_active_session() {
+        // A 200 with an empty id string must be rejected (the `filter` drops
+        // empty strings) rather than returning an empty session id.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": ""
+            })))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = start_profiling(&config)
+            .await
+            .expect_err("empty id should error");
+        assert!(
+            matches!(err, ProfilingError::NoActiveSession),
+            "expected NoActiveSession, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_profiling_missing_id_yields_no_active_session() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "ok"
+            })))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = start_profiling(&config)
+            .await
+            .expect_err("missing id should error");
+        assert!(
+            matches!(err, ProfilingError::NoActiveSession),
+            "expected NoActiveSession, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_profiling_server_error_propagates_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden: no dev endpoint"))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = start_profiling(&config)
+            .await
+            .expect_err("403 should error");
+        match err {
+            ProfilingError::ServerError { status, message } => {
+                assert_eq!(status, 403);
+                assert!(
+                    message.contains("forbidden"),
+                    "message should include server body, got {message:?}"
+                );
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_profiling_writes_profile_file() {
+        let server = MockServer::start().await;
+        let payload = b"{\"nodes\":[]}".to_vec();
+        Mock::given(method("POST"))
+            .and(path("/dev/profiler/stop"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(payload.clone()))
+            .mount(&server)
+            .await;
+
+        let mut config = config_for(&server.uri());
+        config.output_dir = std::env::temp_dir().join(format!(
+            "al-prof-stop-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&config.output_dir);
+
+        let dest = stop_profiling(&config, "sess-1")
+            .await
+            .expect("stop should succeed");
+
+        assert!(dest.starts_with(&config.output_dir));
+        let file_name = dest.file_name().unwrap().to_string_lossy();
+        assert!(
+            file_name.starts_with("profile-") && file_name.ends_with(".alcpuprofile"),
+            "unexpected filename: {file_name}"
+        );
+
+        let written = std::fs::read(&dest).expect("file should exist");
+        assert_eq!(written, payload);
+
+        let _ = std::fs::remove_dir_all(&config.output_dir);
+    }
+
+    #[tokio::test]
+    async fn stop_profiling_server_error_propagates_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let mut config = config_for(&server.uri());
+        config.output_dir = std::env::temp_dir().join(format!(
+            "al-prof-stop-err-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+
+        let err = stop_profiling(&config, "sess-1")
+            .await
+            .expect_err("500 should error");
+        match err {
+            ProfilingError::ServerError { status, message } => {
+                assert_eq!(status, 500);
+                assert!(message.contains("boom"), "got {message:?}");
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
+        // On the error path no file dir should have been created.
+        assert!(!config.output_dir.exists());
     }
 }
