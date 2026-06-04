@@ -1716,4 +1716,116 @@ mod tests {
         // A query matching nothing must yield None.
         assert!(handle_workspace_symbol(server, "ZZZ_no_such_symbol").is_none());
     }
+
+    #[tokio::test]
+    async fn handle_workspace_symbol_child_has_method_kind_and_container() {
+        // The child-results branch must (a) map the transport-agnostic symbol
+        // kind to the LSP kind (a procedure → FUNCTION, NOT the OBJECT kind used
+        // for top-level objects) and (b) carry the parent object name as a
+        // non-empty container_name → Some(...).
+        let service = test_server();
+        let server = service.inner();
+        server.workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/MathUtil.al"),
+            "codeunit 50100 \"Math Util\"\n{\n    procedure AddNumbers(a: Integer): Integer\n    begin\n    end;\n}\n".to_string(),
+        );
+
+        let results = handle_workspace_symbol(server, "AddNumbers")
+            .expect("procedure query must return Some");
+        let child = results
+            .iter()
+            .find(|s| s.name == "AddNumbers")
+            .expect("AddNumbers child must be present");
+        // Procedure maps to FUNCTION, distinguishing it from a top-level OBJECT.
+        assert_eq!(child.kind, SymbolKind::FUNCTION);
+        assert_ne!(child.kind, SymbolKind::OBJECT);
+        // Container is the parent object name, mapped to Some(...).
+        assert_eq!(child.container_name.as_deref(), Some("Math Util"));
+    }
+
+    #[tokio::test]
+    async fn handle_workspace_symbol_empty_query_returns_objects_and_children() {
+        // An empty query matches everything: the result set must contain BOTH
+        // the top-level object (OBJECT kind) and its child procedure (METHOD).
+        let service = test_server();
+        let server = service.inner();
+        server.workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/MathUtil.al"),
+            "codeunit 50100 \"Math Util\"\n{\n    procedure AddNumbers(a: Integer): Integer\n    begin\n    end;\n}\n".to_string(),
+        );
+
+        let results =
+            handle_workspace_symbol(server, "").expect("empty query must return all symbols");
+        assert!(
+            results
+                .iter()
+                .any(|s| s.name == "Math Util" && s.kind == SymbolKind::OBJECT),
+            "top-level object must be present for empty query"
+        );
+        assert!(
+            results
+                .iter()
+                .any(|s| s.name == "AddNumbers" && s.kind == SymbolKind::FUNCTION),
+            "child procedure must be present for empty query"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_jsonc_comments_and_parse — block-comment EOF + CRLF-in-block edges
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn block_comment_terminated_exactly_at_eof_after_star() {
+        // Hits the block-comment loop arm where `*` is seen but the stream ends
+        // before the closing `/` (peek() == None). The earlier object stays
+        // parseable; the dangling `/*...*` is stripped without panic.
+        let input = "{ \"a\": 1 } /* trailing star then eof *";
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["a"], 1);
+    }
+
+    #[test]
+    fn block_comment_with_crlf_preserves_line_count_and_following_keys() {
+        // A block comment spanning CRLF lines: the loop's `Some('\n')` arm pushes
+        // a newline to preserve line numbers. The keys around it survive.
+        let input =
+            "{\r\n  \"a\": 1,\r\n  /* multi\r\n     line\r\n     comment */\r\n  \"b\": 2\r\n}";
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], 2);
+    }
+
+    #[test]
+    fn line_comment_at_eof_without_newline_is_stripped() {
+        // A `//` line comment that runs to EOF with no terminating newline must
+        // be fully consumed, leaving the preceding object parseable.
+        let input = "{ \"a\": 1 } // trailing line comment, no newline";
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["a"], 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // deep_merge — base-without-key insert path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deep_merge_inserts_override_key_absent_in_base() {
+        // The `None => override_val.clone()` arm: a nested object key present in
+        // the override but absent in the base is inserted wholesale.
+        let base = json!({"lsp": {"existing": 1}});
+        let overrides = json!({"lsp": {"al-lsp": {"settings": {"x": 5}}}});
+        let merged = deep_merge(&base, &overrides);
+        // The brand-new nested subtree is inserted verbatim...
+        assert_eq!(merged["lsp"]["al-lsp"]["settings"]["x"], 5);
+        // ...without disturbing the sibling that only existed in base.
+        assert_eq!(merged["lsp"]["existing"], 1);
+    }
+
+    #[test]
+    fn deep_merge_into_empty_base_yields_overrides() {
+        // Merging into an empty object returns the overrides intact.
+        let merged = deep_merge(&json!({}), &recommended_al_settings());
+        assert!(merged["lsp"]["al-lsp"]["settings"].is_object());
+        assert_eq!(merged["languages"]["AL"]["language_servers"][0], "al-lsp");
+    }
 }
