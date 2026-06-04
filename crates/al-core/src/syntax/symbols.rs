@@ -1792,4 +1792,185 @@ enum 50102 Third { value(0; A) { } }"#;
         assert_eq!(symbols[2].name, "Third");
         assert_eq!(symbols[2].kind, SymbolKind::Enum);
     }
+
+    #[test]
+    fn test_section_keyword_kind_mapping() {
+        // Exercise the section-keyword -> SymbolKind map (extract_section_symbol).
+        // Each of these keywords parses as an `object_section` whose outline
+        // kind is fixed by the keyword, not by AL release.
+        let src = r#"page 50100 "P"
+{
+    layout { area(Content) { } }
+    views { view(MyView) { } }
+    actions { area(Processing) { } }
+}
+table 50101 "T2" { fieldgroups { fieldgroup(DropDown; "No.") { } } }
+report 50102 "R2" { rendering { layout(L) { } } requestpage { layout { } } dataset { } }"#;
+        let symbols = parse_symbols(src);
+
+        // Helper that returns the kind of the first section named `name`.
+        fn kind_of(syms: &[DocumentSymbol], name: &str) -> Option<SymbolKind> {
+            for s in syms {
+                if s.name == name {
+                    return Some(s.kind);
+                }
+                if let Some(children) = &s.children {
+                    if let Some(k) = kind_of(children, name) {
+                        return Some(k);
+                    }
+                }
+            }
+            None
+        }
+
+        assert_eq!(kind_of(&symbols, "layout"), Some(SymbolKind::Namespace));
+        assert_eq!(kind_of(&symbols, "views"), Some(SymbolKind::Namespace));
+        assert_eq!(kind_of(&symbols, "actions"), Some(SymbolKind::Namespace));
+        assert_eq!(kind_of(&symbols, "fieldgroups"), Some(SymbolKind::Struct));
+        assert_eq!(kind_of(&symbols, "rendering"), Some(SymbolKind::Namespace));
+        // requestpage maps to Class — a distinct mapping arm, not the generic
+        // Namespace fallback, so this guards the specific branch.
+        assert_eq!(kind_of(&symbols, "requestpage"), Some(SymbolKind::Class));
+        assert_eq!(kind_of(&symbols, "dataset"), Some(SymbolKind::Namespace));
+    }
+
+    #[test]
+    fn test_table_field_nested_trigger_is_child_event() {
+        // A `trigger OnValidate()` inside a table field's braced body is parsed
+        // as a raw `control_keyword("trigger")` + identifier, surfaced via
+        // try_extract_inline_trigger and nested under the field symbol.
+        let src = r#"table 50100 "T"
+{
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+            trigger OnValidate()
+            begin
+            end;
+        }
+    }
+}"#;
+        let symbols = parse_symbols(src);
+        let field = find_sym(&symbols, "No.").expect("No. field");
+        assert_eq!(field.kind, SymbolKind::Field);
+        let field_children = field
+            .children
+            .as_ref()
+            .expect("field should have its nested trigger as a child");
+        let trig = field_children
+            .iter()
+            .find(|c| c.name == "OnValidate")
+            .expect("OnValidate trigger nested under field");
+        assert_eq!(trig.kind, SymbolKind::Event);
+        assert_eq!(trig.detail.as_deref(), Some("trigger"));
+        // The selection range must point at the name token, which starts after
+        // the keyword column — proves try_extract_inline_trigger picked the
+        // name node (not the whole keyword span) for selection.
+        assert!(trig.selection_range.start.character > trig.range.start.character);
+    }
+
+    #[test]
+    fn test_page_field_without_integer_id_uses_first_identifier() {
+        // A page field `field("Caption"; Rec.Foo)` has no integer ID before the
+        // first semicolon. extract_field_name_from_paren must fall through to
+        // the "no-semicolon-yet" identifier branch and use the first token.
+        let src = r#"page 50100 "P"
+{
+    layout
+    {
+        area(Content)
+        {
+            field("Caption"; Rec.Foo) { }
+        }
+    }
+}"#;
+        let symbols = parse_symbols(src);
+        let field = find_sym(&symbols, "Caption").expect("Caption field");
+        assert_eq!(field.kind, SymbolKind::Field);
+        assert_eq!(field.detail.as_deref(), Some("field"));
+    }
+
+    #[test]
+    fn test_control_keyword_to_symbol_kind_mapping() {
+        // Direct unit test of the page-control keyword -> SymbolKind map.
+        // Keywords come from page_controls.json (loaded at runtime), so this
+        // exercises the real lookup + each match arm.
+        assert_eq!(control_keyword_to_symbol_kind("area"), SymbolKind::Struct);
+        assert_eq!(control_keyword_to_symbol_kind("field"), SymbolKind::Field);
+        assert_eq!(control_keyword_to_symbol_kind("part"), SymbolKind::Class);
+        assert_eq!(control_keyword_to_symbol_kind("action"), SymbolKind::Event);
+        assert_eq!(
+            control_keyword_to_symbol_kind("label"),
+            SymbolKind::Constant
+        );
+        // An unknown keyword falls back to Namespace.
+        assert_eq!(
+            control_keyword_to_symbol_kind("definitely_not_a_control"),
+            SymbolKind::Namespace
+        );
+    }
+
+    #[test]
+    fn test_event_decorated_procedure_surfaces_with_param_detail() {
+        // A [BusinessEvent]-decorated procedure still surfaces as a symbol with
+        // parameter detail (procedure / event extraction path).
+        let src = r#"codeunit 50100 "Pub"
+{
+    [BusinessEvent(false)]
+    procedure OnSomethingHappened(Sender: Integer)
+    begin
+    end;
+}"#;
+        let symbols = parse_symbols(src);
+        let ev = find_sym(&symbols, "OnSomethingHappened").expect("event procedure");
+        assert!(matches!(ev.kind, SymbolKind::Function | SymbolKind::Event));
+        assert!(ev.detail.as_deref().unwrap().contains("Sender"));
+    }
+
+    #[test]
+    fn test_multiple_vars_share_type_each_get_own_symbol() {
+        // `Alpha, Beta, Gamma: Integer;` must yield three Variable symbols, each
+        // carrying the shared type as detail (multi-name var extraction path).
+        let src = r#"codeunit 50100 Test
+{
+    var
+        Alpha, Beta, Gamma: Integer;
+}"#;
+        let symbols = parse_symbols(src);
+        let children = symbols[0].children.as_ref().expect("var children");
+        let vars: Vec<&DocumentSymbol> = children
+            .iter()
+            .filter(|c| c.kind == SymbolKind::Variable)
+            .collect();
+        assert_eq!(
+            vars.len(),
+            3,
+            "one symbol per declared name, got {:?}",
+            vars
+        );
+        for v in &vars {
+            assert_eq!(v.detail.as_deref(), Some("Integer"));
+        }
+        let names: Vec<&str> = vars.iter().map(|v| v.name.as_str()).collect();
+        assert!(names.contains(&"Alpha"));
+        assert!(names.contains(&"Beta"));
+        assert!(names.contains(&"Gamma"));
+    }
+
+    #[test]
+    fn test_label_not_duplicated_when_already_a_variable() {
+        // collect_label_symbols_from_text dedupes against existing Variable
+        // symbols (case-insensitive). A label parsed by the grammar must not be
+        // emitted a second time by the text-scan fallback.
+        let src = r#"codeunit 50100 Test
+{
+    var
+        GreetingLbl: Label 'Hello';
+}"#;
+        let symbols = parse_symbols(src);
+        let children = symbols[0].children.as_ref().expect("var children");
+        let count = children.iter().filter(|c| c.name == "GreetingLbl").count();
+        assert_eq!(count, 1, "label must appear exactly once, not duplicated");
+    }
 }
