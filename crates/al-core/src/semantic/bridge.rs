@@ -1044,4 +1044,167 @@ mod tests {
         seed_timeout_stamp(&new_bridge, 1_234);
         assert_eq!(new_bridge.load(Ordering::Relaxed), 1_234);
     }
+
+    // -- parse_response: the shared response-deserialization boundary --
+    //
+    // Every async bridge method funnels its raw JSON result through
+    // `SemanticBridge::parse_response`. It maps a successful `serde_json`
+    // decode straight through and converts any decode failure into
+    // `SemanticError::SerializationError` carrying the serde message. These
+    // exercise that boundary without a live CLR (the value is constructed
+    // directly, exactly as `call()` would hand it over).
+
+    #[test]
+    fn test_parse_response_ok_maps_through() {
+        // A well-formed CompileResult value decodes successfully and the
+        // fields survive the round-trip — this is the happy path shared by
+        // compile(), builtin_types(), error_codes(), etc.
+        let value = serde_json::json!({
+            "success": true,
+            "diagnostics": [],
+            "appPath": "/out/My.app"
+        });
+        let parsed: CompileResult =
+            SemanticBridge::parse_response(value).expect("valid payload should decode");
+        assert!(parsed.success);
+        assert_eq!(parsed.app_path.unwrap(), PathBuf::from("/out/My.app"));
+    }
+
+    #[test]
+    fn test_parse_response_type_mismatch_is_serialization_error() {
+        // `success` is required to be a bool; a string here is a hard schema
+        // violation. parse_response must convert the serde error into
+        // SemanticError::SerializationError (NOT panic, NOT a silent default).
+        let value = serde_json::json!({
+            "success": "yes",          // wrong type
+            "diagnostics": [],
+            "appPath": null
+        });
+        match SemanticBridge::parse_response::<CompileResult>(value) {
+            Err(SemanticError::SerializationError(msg)) => {
+                assert!(!msg.is_empty(), "serde message should be propagated");
+            }
+            other => panic!("expected SerializationError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_response_missing_required_field_is_serialization_error() {
+        // `diagnostics` is a required (non-defaulted) field of CompileResult.
+        // Its absence is a decode failure that must surface as
+        // SerializationError, mirroring a malformed bridge response.
+        let value = serde_json::json!({ "success": true, "appPath": null });
+        assert!(matches!(
+            SemanticBridge::parse_response::<CompileResult>(value),
+            Err(SemanticError::SerializationError(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_response_vec_of_diagnostics() {
+        // builtin_types()/error_codes()/analyze() decode into Vec<T>. A JSON
+        // array of diagnostic entries must decode into the corresponding Vec.
+        let value = serde_json::json!([
+            {
+                "file": "/src/a.al", "line": 1, "column": 2,
+                "endLine": 1, "endColumn": 9,
+                "severity": "Error", "code": "AL0001", "message": "boom"
+            }
+        ]);
+        let parsed: Vec<DiagnosticEntry> =
+            SemanticBridge::parse_response(value).expect("array should decode");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].code, "AL0001");
+    }
+
+    // -- MethodParameter Display (signature rendering) --
+    //
+    // The Display impl renders a parameter for signature help / hover. Both
+    // the `var` and non-`var` branches feed user-visible signature strings.
+
+    #[test]
+    fn test_method_parameter_display_by_value() {
+        let p = MethodParameter {
+            name: "Position".to_string(),
+            type_name: "Integer".to_string(),
+            is_var: false,
+        };
+        // No `var ` prefix for a by-value parameter.
+        assert_eq!(p.to_string(), "Position: Integer");
+    }
+
+    #[test]
+    fn test_method_parameter_display_by_reference() {
+        let p = MethodParameter {
+            name: "Result".to_string(),
+            type_name: "Text".to_string(),
+            is_var: true,
+        };
+        // A `var` parameter is prefixed with `var ` — this is the branch the
+        // signature renderer relies on to mark by-reference args.
+        assert_eq!(p.to_string(), "var Result: Text");
+    }
+
+    // -- serde defaults on the builtin-type schema --
+    //
+    // BuiltinMethod / MethodParameter carry `#[serde(default)]` on every
+    // optional field so a sparse bridge payload (older bridge build, omitted
+    // fields) still decodes. Exercise the default-fallback paths.
+
+    #[test]
+    fn test_builtin_method_defaults_when_fields_omitted() {
+        // Only `name` present — parameters, returnType and documentation must
+        // fall back to their defaults rather than failing to decode.
+        let value = serde_json::json!({ "name": "StrLen" });
+        let m: BuiltinMethod =
+            serde_json::from_value(value).expect("sparse method should decode via defaults");
+        assert_eq!(m.name, "StrLen");
+        assert!(m.parameters.is_empty());
+        assert!(m.return_type.is_none());
+        assert_eq!(m.documentation, "");
+    }
+
+    #[test]
+    fn test_method_parameter_defaults_when_fields_omitted() {
+        // An empty object decodes into a fully-defaulted parameter.
+        let m: MethodParameter =
+            serde_json::from_value(serde_json::json!({})).expect("empty param should decode");
+        assert_eq!(m.name, "");
+        assert_eq!(m.type_name, "");
+        assert!(!m.is_var);
+        // And the Display of the defaulted parameter is well-formed.
+        assert_eq!(m.to_string(), ": ");
+    }
+
+    #[test]
+    fn test_builtin_type_defaults_when_collections_omitted() {
+        // `methods` and `enumValues` both default to empty.
+        let bt: BuiltinType = serde_json::from_value(serde_json::json!({ "name": "Boolean" }))
+            .expect("sparse builtin type should decode");
+        assert_eq!(bt.name, "Boolean");
+        assert!(bt.methods.is_empty());
+        assert!(bt.enum_values.is_empty());
+    }
+
+    #[test]
+    fn test_compile_result_missing_app_path_defaults_to_none() {
+        // `appPath` is an Option; omitting the key entirely (not just null)
+        // must decode to None, not error.
+        let value = serde_json::json!({ "success": true, "diagnostics": [] });
+        let r: CompileResult =
+            serde_json::from_value(value).expect("missing appPath should decode to None");
+        assert!(r.app_path.is_none());
+    }
+
+    // -- Cooldown / Poisoned error Display (failure-mode messages) --
+
+    #[test]
+    fn test_cooldown_and_poisoned_error_display() {
+        let c = SemanticError::Cooldown("hung call still holding the lock");
+        assert!(c.to_string().contains("cooldown"), "cooldown display: {c}");
+        assert!(c.to_string().contains("hung call still holding the lock"));
+
+        let p = SemanticError::Poisoned;
+        assert!(p.to_string().contains("poisoned"), "poisoned display: {p}");
+    }
 }
