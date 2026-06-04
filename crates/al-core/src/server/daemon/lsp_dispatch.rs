@@ -810,4 +810,305 @@ mod tests {
         );
         assert_eq!(resp.result, Some(serde_json::json!([])));
     }
+
+    // -----------------------------------------------------------------------
+    // ok_response_opt — the None branch must produce a JSON-RPC null result
+    // (no error), not be confused with an error response.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ok_response_opt_none_yields_null_result_no_error() {
+        let resp = ok_response_opt::<Vec<u8>>(3, None, "test/method");
+        assert_eq!(resp.id, 3);
+        assert!(resp.result.is_none(), "None must map to absent result");
+        assert!(resp.error.is_none(), "None is not an error");
+    }
+
+    #[test]
+    fn ok_response_opt_some_serializes_value() {
+        let resp = ok_response_opt(4, Some(vec![1u8, 2, 3]), "test/method");
+        assert_eq!(resp.id, 4);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result, Some(serde_json::json!([1, 2, 3])));
+    }
+
+    // -----------------------------------------------------------------------
+    // Parameter-validation / error paths shared by every position dispatcher.
+    // These run entirely in-process against an empty Workspace.
+    // -----------------------------------------------------------------------
+
+    fn assert_invalid_params(resp: &Response, id: u64) {
+        assert_eq!(resp.id, id);
+        assert!(
+            resp.result.is_none(),
+            "invalid params must not carry a result"
+        );
+        let err = resp.error.as_ref().expect("expected an RpcError");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn dispatch_definition_rejects_missing_uri() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_definition(&ws, 1, &serde_json::json!({ "line": 0, "character": 0 }));
+        assert_invalid_params(&resp, 1);
+    }
+
+    #[test]
+    fn dispatch_definition_rejects_missing_position() {
+        let ws = crate::workspace::Workspace::new();
+        // uri present but no line/character — extract_position must fail.
+        let resp = dispatch_definition(&ws, 2, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
+        assert_invalid_params(&resp, 2);
+    }
+
+    #[test]
+    fn dispatch_references_rejects_missing_position() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_references(&ws, 5, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
+        assert_invalid_params(&resp, 5);
+    }
+
+    #[test]
+    fn dispatch_implementations_rejects_missing_uri() {
+        let ws = crate::workspace::Workspace::new();
+        let resp =
+            dispatch_implementations(&ws, 6, &serde_json::json!({ "line": 0, "character": 0 }));
+        assert_invalid_params(&resp, 6);
+    }
+
+    #[test]
+    fn dispatch_signature_help_rejects_missing_position() {
+        let ws = crate::workspace::Workspace::new();
+        let resp =
+            dispatch_signature_help(&ws, 7, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
+        assert_invalid_params(&resp, 7);
+    }
+
+    #[test]
+    fn dispatch_document_symbols_rejects_missing_uri() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_document_symbols(&ws, 8, &serde_json::json!({}));
+        assert_invalid_params(&resp, 8);
+    }
+
+    #[test]
+    fn dispatch_code_actions_rejects_missing_position() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_code_actions(&ws, 9, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
+        assert_invalid_params(&resp, 9);
+    }
+
+    /// rename has an extra required `newName` parameter beyond uri/position.
+    #[test]
+    fn dispatch_rename_rejects_missing_new_name() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_rename(
+            &ws,
+            10,
+            &serde_json::json!({ "uri": "file:///tmp/x.al", "line": 0, "character": 0 }),
+        );
+        assert_invalid_params(&resp, 10);
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_search — limit clamping + empty-workspace happy path.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_search_rejects_missing_query() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_search(&ws, 11, &serde_json::json!({ "limit": 5 }));
+        assert_invalid_params(&resp, 11);
+    }
+
+    #[test]
+    fn dispatch_search_empty_workspace_returns_empty_array() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_search(&ws, 12, &serde_json::json!({ "query": "Customer" }));
+        assert!(
+            resp.error.is_none(),
+            "search must not error: {:?}",
+            resp.error
+        );
+        assert_eq!(
+            resp.result,
+            Some(serde_json::json!([])),
+            "empty workspace yields no matches"
+        );
+    }
+
+    /// An absurdly large `limit` must be clamped to MAX_SEARCH_RESULTS, not
+    /// passed through verbatim (a u64 → usize that could exhaust memory).
+    /// We can observe the clamp indirectly: the call succeeds and does not
+    /// hang/allocate unboundedly. The value handed to the index is the
+    /// min(limit, 500_000); we assert the request completes with an empty
+    /// array on an empty workspace.
+    #[test]
+    fn dispatch_search_clamps_oversized_limit() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_search(
+            &ws,
+            13,
+            &serde_json::json!({ "query": "x", "limit": u64::MAX }),
+        );
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result, Some(serde_json::json!([])));
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_object / dispatch_by_id / dispatch_composed — kind parsing and
+    // not-found error responses.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_object_rejects_unknown_kind() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_object(
+            &ws,
+            14,
+            &serde_json::json!({ "kind": "frobnicator", "name": "Foo" }),
+        );
+        let err = resp.error.expect("unknown kind must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(
+            err.message.contains("frobnicator"),
+            "message should name the bad kind: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn dispatch_object_rejects_missing_name() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_object(&ws, 15, &serde_json::json!({ "kind": "table" }));
+        assert_invalid_params(&resp, 15);
+    }
+
+    /// A valid kind+name with no matching object yields an INVALID_PARAMS error
+    /// whose message names the object, not a silent empty success.
+    #[test]
+    fn dispatch_object_not_found_returns_error() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_object(
+            &ws,
+            16,
+            &serde_json::json!({ "kind": "table", "name": "NoSuchTable" }),
+        );
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("not-found must be an error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(
+            err.message.contains("NoSuchTable"),
+            "message should name the missing object: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn dispatch_by_id_rejects_overflowing_id() {
+        let ws = crate::workspace::Workspace::new();
+        // (i32::MAX as i64) + 1 must be rejected by extract_i32, not wrapped.
+        let resp = dispatch_by_id(
+            &ws,
+            17,
+            &serde_json::json!({ "kind": "table", "id": (i32::MAX as i64) + 1 }),
+        );
+        assert_invalid_params(&resp, 17);
+    }
+
+    #[test]
+    fn dispatch_by_id_not_found_returns_error() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_by_id(
+            &ws,
+            18,
+            &serde_json::json!({ "kind": "table", "id": 50000 }),
+        );
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("not-found must be an error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(
+            err.message.contains("50000"),
+            "message should name the missing id: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn dispatch_composed_not_found_returns_error() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_composed(
+            &ws,
+            19,
+            &serde_json::json!({ "kind": "table", "name": "Ghost" }),
+        );
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("not-found must be an error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("Ghost"));
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_events / dispatch_subscribers — empty-workspace success shape.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_events_rejects_missing_name() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_events(&ws, 20, &serde_json::json!({}));
+        assert_invalid_params(&resp, 20);
+    }
+
+    #[test]
+    fn dispatch_events_empty_returns_empty_array() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_events(&ws, 21, &serde_json::json!({ "name": "OnAfterPost" }));
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result, Some(serde_json::json!([])));
+    }
+
+    #[test]
+    fn dispatch_subscribers_rejects_missing_event() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_subscribers(&ws, 22, &serde_json::json!({}));
+        assert_invalid_params(&resp, 22);
+    }
+
+    #[test]
+    fn dispatch_subscribers_empty_returns_empty_array() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_subscribers(&ws, 23, &serde_json::json!({ "event": "OnAfterPost" }));
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result, Some(serde_json::json!([])));
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_packages / dispatch_deps — no-project / empty states.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_packages_empty_returns_empty_array() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_packages(&ws, 24);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result, Some(serde_json::json!([])));
+    }
+
+    /// With no project loaded, deps reports an INTERNAL_ERROR rather than a
+    /// bogus empty success — clients must distinguish "no project" from
+    /// "project with zero dependencies".
+    #[test]
+    fn dispatch_deps_no_project_returns_internal_error() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_deps(&ws, 25);
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("no project must be an error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("No project loaded"),
+            "message: {}",
+            err.message
+        );
+    }
 }
