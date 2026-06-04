@@ -673,4 +673,172 @@ mod tests {
         let result = get_or_init_bridge(&ws).await;
         assert!(result.is_none());
     }
+
+    // -- find_methods_by_name ------------------------------------------------
+
+    #[test]
+    fn find_methods_by_name_returns_all_overloads_across_types() {
+        // Two distinct types both expose a method named "Compute" so the
+        // by-name index must return one entry per type, not collapse them.
+        let builtins = vec![
+            BuiltinType {
+                name: "Alpha".to_string(),
+                methods: vec![BuiltinMethod {
+                    name: "Compute".to_string(),
+                    parameters: vec![],
+                    return_type: Some("Integer".to_string()),
+                    documentation: String::new(),
+                }],
+                enum_values: vec![],
+            },
+            BuiltinType {
+                name: "Beta".to_string(),
+                methods: vec![BuiltinMethod {
+                    name: "Compute".to_string(),
+                    parameters: vec![],
+                    return_type: Some("Decimal".to_string()),
+                    documentation: String::new(),
+                }],
+                enum_values: vec![],
+            },
+        ];
+        let cache = SemanticCache::build(&builtins, "1.0.0".to_string());
+
+        let mut found = cache.find_methods_by_name("compute");
+        assert_eq!(found.len(), 2, "both types' Compute must be returned");
+        // Sort for a deterministic assertion (HashMap iteration order is unspecified).
+        found.sort_by(|a, b| a.0.cmp(b.0));
+        assert_eq!(found[0].0, "Alpha");
+        assert_eq!(found[0].1.return_type.as_deref(), Some("Integer"));
+        assert_eq!(found[1].0, "Beta");
+        assert_eq!(found[1].1.return_type.as_deref(), Some("Decimal"));
+    }
+
+    #[test]
+    fn find_methods_by_name_case_insensitive_and_returns_original_type_name() {
+        let cache = SemanticCache::build(&sample_builtins(), "1.0.0".to_string());
+        // Mixed-case query against "StrLen" on type "Text".
+        let found = cache.find_methods_by_name("STRLEN");
+        assert_eq!(found.len(), 1);
+        // The returned type name preserves the original casing from BuiltinType.name.
+        assert_eq!(found[0].0, "Text");
+        assert_eq!(found[0].1.name, "StrLen");
+    }
+
+    #[test]
+    fn find_methods_by_name_unknown_returns_empty_and_counts_miss() {
+        let cache = SemanticCache::build(&sample_builtins(), "1.0.0".to_string());
+        let (h0, m0) = cache.stats();
+        let found = cache.find_methods_by_name("DoesNotExist");
+        assert!(found.is_empty());
+        let (h1, m1) = cache.stats();
+        assert_eq!(h1, h0, "unknown method must not register a hit");
+        assert_eq!(m1, m0 + 1, "unknown method must register exactly one miss");
+    }
+
+    #[test]
+    fn find_methods_by_name_hit_increments_hit_counter() {
+        let cache = SemanticCache::build(&sample_builtins(), "1.0.0".to_string());
+        let (h0, m0) = cache.stats();
+        let found = cache.find_methods_by_name("FindFirst");
+        assert_eq!(found.len(), 1);
+        let (h1, m1) = cache.stats();
+        assert_eq!(h1, h0 + 1, "found method must register exactly one hit");
+        assert_eq!(m1, m0, "found method must not register a miss");
+    }
+
+    // -- Default impl --------------------------------------------------------
+
+    #[test]
+    fn default_cache_is_empty_and_stale() {
+        let cache = SemanticCache::default();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.version(), "");
+        assert!(cache.is_stale("anything"));
+    }
+
+    // -- set_builtins --------------------------------------------------------
+
+    #[test]
+    fn set_builtins_populates_workspace_and_cache() {
+        let ws = Workspace::new();
+        // Pre-condition: empty.
+        assert!(ws.builtins.read().unwrap().is_empty());
+        assert!(ws.semantic_cache.read().unwrap().is_empty());
+
+        set_builtins(&ws, sample_builtins(), "1.0.0");
+
+        let builtins = ws.builtins.read().unwrap();
+        assert_eq!(builtins.len(), 3);
+        let cache = ws.semantic_cache.read().unwrap();
+        assert_eq!(cache.len(), 3);
+        assert_eq!(cache.version(), "1.0.0");
+        assert!(cache.get_type("Text").is_some());
+    }
+
+    #[test]
+    fn set_builtins_skips_when_already_populated_same_version() {
+        let ws = Workspace::new();
+        set_builtins(&ws, sample_builtins(), "1.0.0");
+
+        // A second call with the SAME version and a DIFFERENT (smaller) payload
+        // must be skipped — the concurrent double-check keeps the first write.
+        let single = vec![BuiltinType {
+            name: "OnlyOne".to_string(),
+            methods: vec![],
+            enum_values: vec![],
+        }];
+        set_builtins(&ws, single, "1.0.0");
+
+        let cache = ws.semantic_cache.read().unwrap();
+        assert_eq!(
+            cache.len(),
+            3,
+            "matching-version re-population must be skipped"
+        );
+        assert!(cache.get_type("Text").is_some());
+        assert!(
+            cache.get_type("OnlyOne").is_none(),
+            "the skipped payload must not have been applied"
+        );
+    }
+
+    #[test]
+    fn set_builtins_replaces_when_version_changes() {
+        let ws = Workspace::new();
+        set_builtins(&ws, sample_builtins(), "1.0.0");
+
+        // A newer toolchain version must force a replace even though builtins
+        // are already populated.
+        let v2 = vec![BuiltinType {
+            name: "BrandNew".to_string(),
+            methods: vec![],
+            enum_values: vec![],
+        }];
+        set_builtins(&ws, v2, "2.0.0");
+
+        let builtins = ws.builtins.read().unwrap();
+        assert_eq!(builtins.len(), 1, "stale builtins must be replaced");
+        let cache = ws.semantic_cache.read().unwrap();
+        assert_eq!(cache.version(), "2.0.0");
+        assert!(cache.get_type("BrandNew").is_some());
+        assert!(
+            cache.get_type("Text").is_none(),
+            "old builtins must be gone after version change"
+        );
+    }
+
+    #[test]
+    fn set_builtins_into_empty_workspace_accepts_empty_payload() {
+        // An empty payload on a fresh workspace: builtins stay empty, but the
+        // cache version is updated to reflect the toolchain that was probed.
+        let ws = Workspace::new();
+        set_builtins(&ws, vec![], "1.0.0");
+        let builtins = ws.builtins.read().unwrap();
+        assert!(builtins.is_empty());
+        let cache = ws.semantic_cache.read().unwrap();
+        assert_eq!(cache.version(), "1.0.0");
+        assert!(cache.is_empty());
+    }
 }
