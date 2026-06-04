@@ -507,3 +507,129 @@ mod history_cap_tests {
         assert_eq!(h.back().unwrap().seq, HISTORY_CAP as u32);
     }
 }
+
+#[cfg(test)]
+mod make_bp_info_tests {
+    use super::make_bp_info;
+
+    #[test]
+    fn empty_condition_normalises_to_none() {
+        // The set_breakpoints path passes `condition.unwrap_or("")`, so an
+        // unconditional breakpoint arrives here as "". That must serialise as
+        // `condition: None`, not `Some("")` — clients distinguish "no condition"
+        // from "empty condition expression".
+        let info = make_bp_info("src/Foo.al", 42, "", 7, true);
+        assert_eq!(info.condition, None);
+        assert_eq!(info.id, 7);
+        assert_eq!(info.file, "src/Foo.al");
+        assert_eq!(info.line, 42);
+        assert!(info.verified);
+    }
+
+    #[test]
+    fn non_empty_condition_is_preserved() {
+        // Positive: a real condition expression is carried through verbatim.
+        let info = make_bp_info("src/Bar.al", 10, "x > 5", 3, true);
+        assert_eq!(info.condition.as_deref(), Some("x > 5"));
+    }
+
+    #[test]
+    fn failed_breakpoint_records_zero_id_and_unverified() {
+        // Error path mirror: when add_breakpoint fails, set_breakpoints builds
+        // an info with id=0 / verified=false so the client sees the breakpoint
+        // was rejected rather than silently dropping it.
+        let info = make_bp_info("src/Baz.al", 1, "", 0, false);
+        assert_eq!(info.id, 0);
+        assert!(!info.verified);
+        assert_eq!(info.condition, None);
+    }
+}
+
+#[cfg(test)]
+mod parse_bc_variables_tests {
+    use super::parse_bc_variables;
+    use serde_json::json;
+
+    #[test]
+    fn parses_pascal_case_local_nodes() {
+        // BC's newer servers return PascalCase keys. The happy path: a fully
+        // populated LocalNode becomes a Variable with name/value/type.
+        let json = json!([
+            { "Name": "Customer", "Value": "10000", "TypeName": "Record" }
+        ]);
+        let vars = parse_bc_variables(&json);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].name, "Customer");
+        assert_eq!(vars[0].value, "10000");
+        assert_eq!(vars[0].type_name, "Record");
+        assert!(vars[0].fields.is_empty());
+    }
+
+    #[test]
+    fn parses_camel_case_keys() {
+        // Older BC servers use camelCase. Both spellings must be accepted so
+        // variable inspection works regardless of server version.
+        let json = json!([
+            { "name": "i", "value": "5", "typeName": "Integer" }
+        ]);
+        let vars = parse_bc_variables(&json);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].name, "i");
+        assert_eq!(vars[0].value, "5");
+        assert_eq!(vars[0].type_name, "Integer");
+    }
+
+    #[test]
+    fn type_falls_back_to_bare_type_key() {
+        // The parser tries TypeName, then typeName, then "Type". This locks in
+        // that third fallback so a server emitting only "Type" still yields the
+        // type instead of an empty string.
+        let json = json!([
+            { "Name": "amt", "Value": "1.0", "Type": "Decimal" }
+        ]);
+        let vars = parse_bc_variables(&json);
+        assert_eq!(vars[0].type_name, "Decimal");
+    }
+
+    #[test]
+    fn node_without_name_is_skipped() {
+        // Edge: a node missing its Name (the only required key — note the `?`
+        // in the filter_map) is dropped entirely rather than producing a
+        // nameless variable. The well-formed sibling survives.
+        let json = json!([
+            { "Value": "orphan" },
+            { "Name": "keep", "Value": "v" }
+        ]);
+        let vars = parse_bc_variables(&json);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].name, "keep");
+    }
+
+    #[test]
+    fn missing_value_and_type_default_to_empty() {
+        // A node with only a Name is still a valid variable — value and type
+        // default to "" rather than being dropped.
+        let json = json!([{ "Name": "flag" }]);
+        let vars = parse_bc_variables(&json);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].name, "flag");
+        assert_eq!(vars[0].value, "");
+        assert_eq!(vars[0].type_name, "");
+    }
+
+    #[test]
+    fn non_array_json_yields_empty() {
+        // Malformed/unexpected shape: BC sometimes returns an error object or
+        // null instead of the LocalNode array. The parser must degrade to an
+        // empty Vec, never panic.
+        assert!(parse_bc_variables(&json!(null)).is_empty());
+        assert!(parse_bc_variables(&json!({ "Name": "notanarray" })).is_empty());
+        assert!(parse_bc_variables(&json!("string")).is_empty());
+    }
+
+    #[test]
+    fn empty_array_yields_no_variables() {
+        // Boundary: an empty frame (no locals) returns an empty Vec.
+        assert!(parse_bc_variables(&json!([])).is_empty());
+    }
+}
