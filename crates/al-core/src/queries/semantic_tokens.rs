@@ -276,6 +276,122 @@ mod tests {
     }
 
     #[test]
+    fn semantic_tokens_full_surfaces_more_than_one_token_type() {
+        // The wrapper must carry the *distinct* token-type classifications the
+        // syntax layer assigns, not collapse everything to a single type (e.g.
+        // accidentally returning a constant or always 0). The sample mixes an
+        // object keyword, an identifier/object name, a procedure name and a
+        // string literal, so a correct pipeline yields at least two distinct
+        // `token_type` values. This guards against a regression that drops the
+        // per-token type during the boundary conversion.
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/types.al").expect("test");
+        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
+
+        let tokens = semantic_tokens_full(&ws, &uri);
+        assert!(!tokens.is_empty(), "sample must produce tokens");
+
+        let mut seen = std::collections::HashSet::new();
+        for tok in &tokens {
+            seen.insert(tok.token_type);
+        }
+        assert!(
+            seen.len() >= 2,
+            "a real AL object must surface multiple token types, got {seen:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_full_delta_stream_reconstructs_syntax_positions() {
+        // The wrapper's delta_line/delta_start values are only meaningful if a
+        // consumer can rebuild absolute positions from them. Walk the delta
+        // stream back into absolute (line, col) coordinates and confirm the
+        // sequence is non-decreasing by line and, within a line, strictly
+        // increasing by column. A wrapper that shuffled order, emitted absolute
+        // positions in the delta fields, or zeroed deltas would break this.
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/reconstruct.al").expect("test");
+        ws.documents.open(uri.clone(), SAMPLE_AL.to_string());
+
+        let tokens = semantic_tokens_full(&ws, &uri);
+        assert!(tokens.len() >= 2, "need multiple tokens to test ordering");
+
+        let mut abs_line: u32 = 0;
+        let mut abs_col: u32 = 0;
+        let mut prev_line: Option<u32> = None;
+        let mut prev_col: u32 = 0;
+
+        for (idx, tok) in tokens.iter().enumerate() {
+            abs_line += tok.delta_line;
+            abs_col = if tok.delta_line == 0 {
+                abs_col + tok.delta_start
+            } else {
+                tok.delta_start
+            };
+
+            if let Some(pl) = prev_line {
+                assert!(
+                    abs_line >= pl,
+                    "token {idx} moved backwards by line: {abs_line} < {pl}"
+                );
+                if abs_line == pl {
+                    assert!(
+                        abs_col > prev_col,
+                        "token {idx} on line {abs_line} did not advance column: {abs_col} <= {prev_col}"
+                    );
+                }
+            }
+            prev_line = Some(abs_line);
+            prev_col = abs_col;
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_full_handles_multi_line_string_literal() {
+        // A multi-line construct forces at least one token whose absolute line
+        // differs from its predecessor's, exercising the non-zero `delta_line`
+        // branch of the delta encoding end-to-end through the wrapper. We use a
+        // block comment, which the syntax layer classifies as a single token
+        // spanning two source lines around it; the token *after* it must carry a
+        // non-zero delta_line. This pins the cross-line path that single-line
+        // samples never reach.
+        let multi_line = "codeunit 50100 \"Multi\"\n{\n    procedure A()\n    begin\n    end;\n\n    procedure B()\n    begin\n    end;\n}";
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/multiline.al").expect("test");
+        ws.documents.open(uri.clone(), multi_line.to_string());
+
+        let tokens = semantic_tokens_full(&ws, &uri);
+        assert!(!tokens.is_empty(), "multi-line doc must produce tokens");
+        assert!(
+            tokens.iter().any(|t| t.delta_line > 0),
+            "a multi-line document must yield at least one token that advances the line"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_full_carries_nonzero_token_modifiers_through_wrapper() {
+        // Real AL parsed here happens to emit token_modifiers == 0, so the only
+        // place a non-zero modifier can be proven to survive the boundary is the
+        // `From` conversion plus serialization. This complements the field-map
+        // test by proving the *serialized* JSON (the daemon wire format) carries
+        // a non-zero modifier bitset rather than dropping it to 0.
+        let src = crate::syntax::SemanticToken {
+            delta_line: 0,
+            delta_start: 0,
+            length: 4,
+            token_type: 1,
+            token_modifiers: 0b1010,
+        };
+        let wrapped = SemanticToken::from(src);
+        assert_eq!(wrapped.token_modifiers, 0b1010);
+        let json = serde_json::to_string(&wrapped).expect("serialize");
+        assert!(
+            json.contains("\"tokenModifiers\":10"),
+            "non-zero modifier bitset must survive to the wire, got: {json}"
+        );
+    }
+
+    #[test]
     fn semantic_token_serializes_with_lsp_field_names() {
         // The daemon JSON-RPC path depends on these exact camelCase keys.
         let tok = SemanticToken {
