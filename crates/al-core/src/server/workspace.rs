@@ -1435,4 +1435,285 @@ mod tests {
         assert!(zed_has_al_settings());
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    // -----------------------------------------------------------------------
+    // strip_jsonc_comments_and_parse — block-comment & escape edge paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn block_comment_preserves_following_keys() {
+        // A multi-line block comment in the middle must be removed entirely
+        // while leaving surrounding keys intact.
+        let input = "{\n  \"a\": 1,\n  /* this\n     spans\n     lines */\n  \"b\": 2\n}";
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], 2);
+    }
+
+    #[test]
+    fn unterminated_block_comment_does_not_panic_and_strips_to_eof() {
+        // Hits the `None => break` arm of the block-comment loop: the comment
+        // runs to EOF without a closing `*/`. The content up to the comment is
+        // still valid JSON, so the value before it must parse.
+        let input = "{ \"a\": 1 } /* dangling comment never closed";
+        // Everything after the `}` is stripped, leaving a parseable object.
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["a"], 1);
+    }
+
+    #[test]
+    fn escaped_quote_inside_string_is_not_treated_as_string_end() {
+        // Hits the `escape_next` path: a backslash-escaped quote must not close
+        // the JSON string, so the `//` that follows stays inside the string and
+        // is NOT stripped as a comment.
+        let input = r#"{ "path": "C:\\dir\"// still in string", "n": 1 }"#;
+        let parsed = strip_jsonc_comments_and_parse(input).unwrap();
+        assert_eq!(parsed["path"], r#"C:\dir"// still in string"#);
+        assert_eq!(parsed["n"], 1);
+    }
+
+    #[test]
+    fn lone_slash_not_a_comment_is_an_error_not_silently_dropped() {
+        // A bare `/` that is neither `//` nor `/*` must be preserved (pushed),
+        // which then makes the JSON invalid — proving it was NOT swallowed.
+        let input = r#"{ "a": 1 / 2 }"#;
+        assert!(strip_jsonc_comments_and_parse(input).is_err());
+    }
+
+    #[test]
+    fn malformed_json_after_stripping_returns_err() {
+        // Comment stripping succeeds but the residue is not valid JSON.
+        let input = "{ // comment\n  not valid json here\n}";
+        assert!(strip_jsonc_comments_and_parse(input).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // deep_merge — type-replacement at nested depth
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn deep_merge_override_object_replaces_base_scalar() {
+        // base has a scalar where the override has an object: the object wins
+        // (the `(_, override_val)` arm), not a merge attempt.
+        let base = json!({"al-lsp": "scalar"});
+        let overrides = json!({"al-lsp": {"settings": {"x": 1}}});
+        let merged = deep_merge(&base, &overrides);
+        assert!(merged["al-lsp"].is_object());
+        assert_eq!(merged["al-lsp"]["settings"]["x"], 1);
+    }
+
+    #[test]
+    fn deep_merge_override_scalar_replaces_base_object() {
+        // Inverse: base has an object, override has a scalar — scalar replaces.
+        let base = json!({"al-lsp": {"settings": {"x": 1}}});
+        let overrides = json!({"al-lsp": "scalar"});
+        let merged = deep_merge(&base, &overrides);
+        assert_eq!(merged["al-lsp"], "scalar");
+    }
+
+    #[test]
+    fn deep_merge_recurses_three_levels_deep() {
+        let base = json!({"a": {"b": {"keep": 1}}});
+        let overrides = json!({"a": {"b": {"add": 2}}});
+        let merged = deep_merge(&base, &overrides);
+        assert_eq!(merged["a"]["b"]["keep"], 1);
+        assert_eq!(merged["a"]["b"]["add"], 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // recommended_al_settings — load-bearing keys the apply flow depends on
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn recommended_settings_registers_al_lsp_language_server() {
+        let s = recommended_al_settings();
+        let servers = s["languages"]["AL"]["language_servers"]
+            .as_array()
+            .expect("language_servers must be an array");
+        assert!(
+            servers.iter().any(|v| v.as_str() == Some("al-lsp")),
+            "recommended settings must register the al-lsp language server"
+        );
+        // The al debugger and code-analysis flag are also part of the contract.
+        assert_eq!(s["languages"]["AL"]["debuggers"][0], "al");
+        assert_eq!(
+            s["lsp"]["al-lsp"]["settings"]["al.enableCodeAnalysis"],
+            true
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // zed_has_al_settings — remaining early-return branches
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn zed_has_al_settings_false_when_text_lacks_al_lsp_marker() {
+        // The fast `!content.contains("al-lsp")` early-out: a settings file with
+        // no mention of al-lsp at all returns false without parsing.
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        let base = write_zed_settings(&guard, r#"{ "ui_font_size": 14 }"#);
+        assert!(!zed_has_al_settings());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn zed_has_al_settings_false_when_jsonc_is_malformed() {
+        // Contains "al-lsp" (passes the text gate) but the JSON is broken, so
+        // strip_jsonc_comments_and_parse errors → the function returns false.
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        let base = write_zed_settings(&guard, r#"{ "lsp": { "al-lsp": broken }"#);
+        assert!(!zed_has_al_settings());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn zed_has_al_settings_tolerates_comments_around_real_settings() {
+        // JSONC comments must be stripped before the structural check, so a
+        // commented but valid AL settings file is still recognized as valid.
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        let base = write_zed_settings(
+            &guard,
+            "{\n  // language server config\n  \"lsp\": { \"al-lsp\": { \"settings\": {} } },\n  \"languages\": { \"AL\": { \"language_servers\": [\"al-lsp\"] } },\n}",
+        );
+        assert!(zed_has_al_settings());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // -----------------------------------------------------------------------
+    // apply_recommended_settings — fresh-file and JSONC-input paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn apply_recommended_settings_creates_file_when_absent() {
+        // Exercises the `else { json!({}) }` branch: no settings file exists yet.
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        let base = std::env::temp_dir().join(format!("al-apply-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        guard.set("XDG_CONFIG_HOME", &base);
+        let path = zed_settings_path().unwrap();
+        assert!(!path.exists(), "precondition: file must not exist");
+
+        apply_recommended_settings().unwrap();
+
+        assert!(path.exists(), "apply must create the settings file");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["languages"]["AL"]["language_servers"][0], "al-lsp");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn apply_recommended_settings_parses_existing_jsonc_with_comments() {
+        // Exercises the JSONC read+strip branch of apply: the existing file has
+        // comments and a trailing comma (legal in Zed) that must survive the
+        // read-merge-write round-trip.
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        let base = std::env::temp_dir().join(format!("al-apply-jsonc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        guard.set("XDG_CONFIG_HOME", &base);
+        let path = zed_settings_path().unwrap();
+        ensure_parent_dir(&path).unwrap();
+        std::fs::write(
+            &path,
+            "{\n  // my editor prefs\n  \"ui_font_size\": 20,\n  \"theme\": \"Solarized\",\n}",
+        )
+        .unwrap();
+
+        apply_recommended_settings().unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // User values from the commented JSONC survived.
+        assert_eq!(v["ui_font_size"], 20);
+        assert_eq!(v["theme"], "Solarized");
+        // Recommended AL settings were merged in.
+        assert!(v["lsp"]["al-lsp"]["settings"].is_object());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // -----------------------------------------------------------------------
+    // handle_workspace_symbol — top-level objects + child symbols
+    // -----------------------------------------------------------------------
+
+    /// Build an `AlServer` (with a real tower-lsp `Client`) for in-process tests.
+    /// `LspService::new` wires a live client without spawning the LSP transport.
+    fn test_server() -> tower_lsp::LspService<AlServer> {
+        let (service, _socket) = tower_lsp::LspService::new(AlServer::new);
+        service
+    }
+
+    #[tokio::test]
+    async fn handle_workspace_symbol_empty_workspace_returns_none() {
+        let service = test_server();
+        let server = service.inner();
+        // No files indexed → no symbols → None (not an empty Vec).
+        assert!(handle_workspace_symbol(server, "anything").is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_workspace_symbol_returns_top_level_objects() {
+        let service = test_server();
+        let server = service.inner();
+        server.workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/CustomerCard.al"),
+            r#"page 50100 "Customer Card" { }"#.to_string(),
+        );
+        server.workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/VendorCard.al"),
+            r#"page 50101 "Vendor Card" { }"#.to_string(),
+        );
+
+        let results = handle_workspace_symbol(server, "Customer")
+            .expect("a matching object must yield Some results");
+        assert_eq!(results.len(), 1, "only the Customer object matches");
+        let sym = &results[0];
+        assert_eq!(sym.name, "Customer Card");
+        assert_eq!(sym.kind, SymbolKind::OBJECT);
+        // container_name carries the object kind (e.g. "page").
+        assert_eq!(sym.container_name.as_deref(), Some("page"));
+        // Location URI points at the originating .al file.
+        assert!(sym.location.uri.as_str().ends_with("CustomerCard.al"));
+    }
+
+    #[tokio::test]
+    async fn handle_workspace_symbol_includes_child_procedures() {
+        let service = test_server();
+        let server = service.inner();
+        server.workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/MathUtil.al"),
+            "codeunit 50100 \"Math Util\"\n{\n    procedure AddNumbers(a: Integer): Integer\n    begin\n    end;\n}\n".to_string(),
+        );
+
+        // Querying the procedure name must surface the child symbol, not just
+        // the top-level object.
+        let results = handle_workspace_symbol(server, "AddNumbers")
+            .expect("procedure query must return Some");
+        assert!(
+            results.iter().any(|s| s.name == "AddNumbers"),
+            "child procedure AddNumbers must appear in the results: {:?}",
+            results.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_workspace_symbol_no_match_returns_none() {
+        let service = test_server();
+        let server = service.inner();
+        server.workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/CustomerCard.al"),
+            r#"page 50100 "Customer Card" { }"#.to_string(),
+        );
+        // A query matching nothing must yield None.
+        assert!(handle_workspace_symbol(server, "ZZZ_no_such_symbol").is_none());
+    }
 }
