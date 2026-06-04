@@ -856,8 +856,8 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
 mod tests {
     use super::{
         dispatch_diag, dispatch_request, ensure_document, extract_i32, extract_position,
-        file_uri_from_params, parse_object_kind, read_bounded_line, require_document_text,
-        require_project_root,
+        extract_uri, file_not_found, file_uri_from_params, invalid_params, parse_object_kind,
+        read_bounded_line, require_document_text, require_project_root, rpc_error,
     };
     use al_protocol::jsonrpc::{error_codes, Request};
     use futures::FutureExt;
@@ -1228,5 +1228,243 @@ mod tests {
         let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
         let got = rt.block_on(async { ensure_document(&ws, &uri) });
         assert!(got.is_none());
+    }
+
+    // --- extract_uri --------------------------------------------------------
+
+    #[test]
+    fn extract_uri_parses_valid_file_url() {
+        let params = serde_json::json!({ "uri": "file:///a/b.al" });
+        let uri = extract_uri(&params).expect("a valid file URL must parse");
+        assert_eq!(uri.as_str(), "file:///a/b.al");
+        assert_eq!(uri.scheme(), "file");
+    }
+
+    #[test]
+    fn extract_uri_returns_none_when_uri_missing_or_unparseable() {
+        // Missing key.
+        assert!(extract_uri(&serde_json::json!({})).is_none());
+        // Present but not a string.
+        assert!(extract_uri(&serde_json::json!({ "uri": 42 })).is_none());
+        // Present string but not a parseable URL (no scheme → relative-ref error).
+        assert!(extract_uri(&serde_json::json!({ "uri": "not a url" })).is_none());
+    }
+
+    // --- extract_position ---------------------------------------------------
+
+    #[test]
+    fn extract_position_parses_valid_line_and_character() {
+        let params = serde_json::json!({ "line": 12, "character": 34 });
+        let pos = extract_position(&params).expect("valid coords must parse");
+        assert_eq!(pos.line, 12);
+        assert_eq!(pos.character, 34);
+    }
+
+    #[test]
+    fn extract_position_returns_none_when_a_field_is_missing() {
+        // Only line present.
+        assert!(extract_position(&serde_json::json!({ "line": 1 })).is_none());
+        // Only character present.
+        assert!(extract_position(&serde_json::json!({ "character": 1 })).is_none());
+        // Neither present.
+        assert!(extract_position(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn extract_position_rejects_character_overflow() {
+        // line in range, character out of u32 range — must reject the whole
+        // position rather than truncate the character.
+        let params = serde_json::json!({ "line": 0, "character": (u32::MAX as u64) + 1 });
+        assert!(extract_position(&params).is_none());
+    }
+
+    // --- invalid_params / file_not_found / rpc_error helpers ----------------
+
+    #[test]
+    fn invalid_params_carries_invalid_params_code_and_id() {
+        let resp = invalid_params(42);
+        assert_eq!(resp.id, 42);
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("invalid_params must carry an error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(!err.message.is_empty());
+    }
+
+    #[test]
+    fn file_not_found_carries_file_not_found_code_and_id() {
+        let resp = file_not_found(13);
+        assert_eq!(resp.id, 13);
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("file_not_found must carry an error");
+        assert_eq!(err.code, error_codes::FILE_NOT_FOUND);
+    }
+
+    #[test]
+    fn rpc_error_preserves_code_message_and_id() {
+        let resp = rpc_error(77, error_codes::INTERNAL_ERROR, "boom");
+        assert_eq!(resp.id, 77);
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("rpc_error must carry an error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert_eq!(err.message, "boom");
+    }
+
+    // --- dispatch_request: routing to no-param success methods --------------
+
+    /// `rules` is a static query (lint rule catalogue) needing no project; it
+    /// must route through `dispatch_request` and return a JSON array result
+    /// with no error. (The catalogue itself is currently empty because all
+    /// diagnostics come from the .NET bridge, but the routing + JSON shape
+    /// are what we pin here.)
+    #[tokio::test]
+    async fn dispatch_rules_returns_array_result() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let resp = dispatch_request(&ws, Request::new(21, "rules", None), &shutdown).await;
+        assert_eq!(resp.id, 21);
+        assert!(resp.error.is_none(), "rules must succeed: {:?}", resp.error);
+        assert!(
+            resp.result.expect("rules must return a result").is_array(),
+            "rules result must be a JSON array"
+        );
+    }
+
+    /// `packages` reads package_info (empty on a fresh workspace) and must
+    /// return an empty JSON array, not an error.
+    #[tokio::test]
+    async fn dispatch_packages_returns_empty_array_on_fresh_workspace() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let resp = dispatch_request(&ws, Request::new(22, "packages", None), &shutdown).await;
+        assert_eq!(resp.id, 22);
+        assert!(resp.error.is_none());
+        let arr = resp.result.expect("packages result").as_array().cloned();
+        assert_eq!(arr, Some(vec![]));
+    }
+
+    /// `entrypoints` builds the insight graph lazily; on a fresh (empty)
+    /// workspace it must still succeed and return a JSON array.
+    #[tokio::test]
+    async fn dispatch_entrypoints_succeeds_on_empty_workspace() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let resp = dispatch_request(&ws, Request::new(23, "entrypoints", None), &shutdown).await;
+        assert_eq!(resp.id, 23);
+        assert!(resp.error.is_none());
+        assert!(resp.result.expect("entrypoints result").is_array());
+    }
+
+    // --- dispatch_request: routing to param-validating methods --------------
+
+    /// `hover` requires uri + position; with null params (the default when the
+    /// wire omits `params`) it must route through and surface INVALID_PARAMS,
+    /// proving both the routing entry and the shared `invalid_params` helper.
+    #[tokio::test]
+    async fn dispatch_hover_without_params_is_invalid_params() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let resp = dispatch_request(&ws, Request::new(31, "hover", None), &shutdown).await;
+        assert_eq!(resp.id, 31);
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("missing hover params must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+    }
+
+    /// Routing for synchronous LSP methods that also validate params. Each must
+    /// be reachable via `dispatch_request` and return INVALID_PARAMS for the
+    /// empty-params case — this covers a swath of the routing table at once.
+    #[tokio::test]
+    async fn dispatch_param_validating_methods_route_and_reject_empty_params() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        for method in [
+            "definition",
+            "references",
+            "implementations",
+            "signatureHelp",
+            "rename",
+            "documentSymbols",
+            "foldingRanges",
+            "semanticTokens",
+            "lint",
+            "format",
+            "trace",
+        ] {
+            let req = Request::new(40, method, None);
+            let resp = dispatch_request(&ws, req, &shutdown).await;
+            assert_eq!(resp.id, 40, "{method}: id must be preserved");
+            assert!(
+                resp.result.is_none(),
+                "{method}: empty params must not yield a result"
+            );
+            let err = resp
+                .error
+                .unwrap_or_else(|| panic!("{method}: empty params must error"));
+            assert_eq!(
+                err.code,
+                error_codes::INVALID_PARAMS,
+                "{method}: expected INVALID_PARAMS, got code {}",
+                err.code
+            );
+        }
+    }
+
+    /// `object` requires a `kind` param; an unknown kind string must route
+    /// through `parse_object_kind` and surface INVALID_PARAMS naming the input.
+    #[tokio::test]
+    async fn dispatch_object_with_bad_kind_is_invalid_params() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let params = serde_json::json!({ "kind": "notakind", "name": "X" });
+        let req = Request::new(45, "object", Some(params));
+        let resp = dispatch_request(&ws, req, &shutdown).await;
+        assert_eq!(resp.id, 45);
+        let err = resp.error.expect("bad kind must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("notakind"));
+    }
+
+    /// The request id must be threaded through to the response for the
+    /// not-found path too — a regression here would mismatch client futures.
+    #[tokio::test]
+    async fn dispatch_preserves_request_id_on_unknown_method() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let resp = dispatch_request(&ws, Request::new(9_999, "nope.nope", None), &shutdown).await;
+        assert_eq!(resp.id, 9_999);
+        assert_eq!(
+            resp.error.expect("unknown must error").code,
+            error_codes::METHOD_NOT_FOUND
+        );
+    }
+
+    // --- lint_diag_to_json --------------------------------------------------
+
+    #[test]
+    fn lint_diag_to_json_uses_one_based_positions() {
+        use crate::syntax::{LintDiagnostic, LintSeverity};
+        use tree_sitter::{Point, Range};
+        let diag = LintDiagnostic {
+            code: "AL0001".to_string(),
+            message: "bad thing".to_string(),
+            severity: LintSeverity::Warning,
+            range: Range {
+                start_byte: 0,
+                end_byte: 5,
+                start_point: Point { row: 4, column: 2 },
+                end_point: Point { row: 4, column: 7 },
+            },
+        };
+        let json = super::lint_diag_to_json(&diag);
+        assert_eq!(json.get("code").and_then(|v| v.as_str()), Some("AL0001"));
+        assert_eq!(
+            json.get("message").and_then(|v| v.as_str()),
+            Some("bad thing")
+        );
+        // tree-sitter rows/columns are 0-based; the wire format is 1-based.
+        assert_eq!(json.get("line").and_then(|v| v.as_u64()), Some(5));
+        assert_eq!(json.get("column").and_then(|v| v.as_u64()), Some(3));
+        assert_eq!(json.get("endLine").and_then(|v| v.as_u64()), Some(5));
+        assert_eq!(json.get("endColumn").and_then(|v| v.as_u64()), Some(8));
     }
 }
