@@ -935,4 +935,43 @@ mod tests {
         });
         assert!(none.is_none());
     }
+
+    #[test]
+    fn find_drives_vscode_empty_and_error_log_branches() {
+        // The VS Code-side diagnostic branches of find_launch_config (the
+        // Ok(empty) debug! arm and the Err(e) warn! arm) are only reached when
+        // there is NO Zed file but the VS Code file is present-but-useless. The
+        // existing suite drives the Zed-side arms and the VS Code *success* arm,
+        // but never these two. Exercise both under an active subscriber so the
+        // log-argument closures genuinely run, and assert the documented
+        // behaviour: find_launch_config returns None in each case.
+
+        // 1) VS Code present but every entry filtered out (no AL config) =>
+        //    Ok(df) with empty configs => debug! "no AL configurations" arm.
+        let empty = tempfile::tempdir().unwrap();
+        write(
+            empty.path(),
+            ".vscode/launch.json",
+            r#"{ "configurations": [ { "name": "Node", "type": "node" } ] }"#,
+        );
+        let none_empty = tracing::subscriber::with_default(AlwaysOnSubscriber, || {
+            find_launch_config(empty.path())
+        });
+        assert!(
+            none_empty.is_none(),
+            "VS Code file with no AL configs must yield None"
+        );
+
+        // 2) VS Code present but malformed JSON => Err(e) => warn! arm, then the
+        //    parse error is swallowed and the function falls through to None.
+        let broken = tempfile::tempdir().unwrap();
+        write(broken.path(), ".vscode/launch.json", "}{ not json");
+        let none_err = tracing::subscriber::with_default(AlwaysOnSubscriber, || {
+            find_launch_config(broken.path())
+        });
+        assert!(
+            none_err.is_none(),
+            "malformed VS Code file must be swallowed and yield None"
+        );
+    }
 }
