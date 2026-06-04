@@ -454,6 +454,226 @@ mod tests {
         let _a = AuthMethod::AAD;
     }
 
+    /// Build a dependency with the given name/publisher/version for download tests.
+    fn dep(name: &str, publisher: &str, version: &str) -> AppDependency {
+        AppDependency {
+            id: "00000000-0000-0000-0000-000000000000".into(),
+            name: name.into(),
+            publisher: publisher.into(),
+            version: version.into(),
+        }
+    }
+
+    /// A client that never authenticates (Windows auth adds no headers), so
+    /// `download_one` can be driven against a mock server without touching the
+    /// OAuth flow or env vars.
+    fn no_auth_client() -> BcServerClient {
+        BcServerClient::new(AuthMethod::Windows, None, Arc::new(|_| {}), false)
+            .expect("client builds")
+    }
+
+    #[tokio::test]
+    async fn download_one_200_writes_app_file_to_dest() {
+        // Happy path: a 200 with a small body is written to
+        // `<dest>/<publisher>_<name>.app` and the returned path points at it.
+        let body = b"AL-PACKAGE-BYTES";
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_bytes(body.to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let tmp = std::env::temp_dir().join(format!("bc_server_dl_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let dep = dep("System Application", "Microsoft", "1.0.0.0");
+
+        let out = no_auth_client()
+            .download_one(&server.uri(), &dep, &tmp)
+            .await
+            .expect("download succeeds");
+
+        assert_eq!(out, tmp.join("Microsoft_System_Application.app"));
+        assert_eq!(std::fs::read(&out).unwrap(), body);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn download_one_404_maps_to_package_not_found() {
+        // A 404 must surface as PackageNotFound carrying the dep name+version,
+        // not a generic ServerError.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let dep = dep("Missing", "Pub", "2.3.4.5");
+        let err = no_auth_client()
+            .download_one(&server.uri(), &dep, Path::new("/tmp/nope"))
+            .await
+            .expect_err("404 must error");
+
+        match err {
+            BcServerError::PackageNotFound { name, version } => {
+                assert_eq!(name, "Missing");
+                assert_eq!(version, "2.3.4.5");
+            }
+            other => panic!("expected PackageNotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn download_one_503_maps_to_server_error_with_status() {
+        // Any other non-2xx status is a ServerError carrying the real HTTP code.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(503).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let dep = dep("Pkg", "Pub", "1.0.0.0");
+        let err = no_auth_client()
+            .download_one(&server.uri(), &dep, Path::new("/tmp/nope"))
+            .await
+            .expect_err("503 must error");
+
+        match err {
+            BcServerError::ServerError { status, .. } => assert_eq!(status, 503),
+            other => panic!("expected ServerError 503, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn download_one_401_maps_to_authentication_failed() {
+        // A 401 is mapped to AuthenticationFailed carrying the status. (Windows
+        // auth here means no env-token side effects fire.)
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(401).set_body_string("denied"))
+            .mount(&server)
+            .await;
+
+        let dep = dep("Pkg", "Pub", "1.0.0.0");
+        let err = no_auth_client()
+            .download_one(&server.uri(), &dep, Path::new("/tmp/nope"))
+            .await
+            .expect_err("401 must error");
+
+        match err {
+            BcServerError::AuthenticationFailed { status, .. } => assert_eq!(status, 401),
+            other => panic!("expected AuthenticationFailed 401, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn download_all_preserves_order_and_per_entry_results() {
+        // download_all returns one result per input entry, in the same order,
+        // mixing a success (first) with a 404 failure (second).
+        let server = wiremock::MockServer::start().await;
+        let body = b"ok-bytes";
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/ok"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_bytes(body.to_vec()),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/missing"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let tmp = std::env::temp_dir().join(format!("bc_server_all_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let url_deps = vec![
+            (
+                format!("{}/ok", server.uri()),
+                dep("Good", "Pub", "1.0.0.0"),
+            ),
+            (
+                format!("{}/missing", server.uri()),
+                dep("Bad", "Pub", "9.9.9.9"),
+            ),
+        ];
+
+        let results = no_auth_client().download_all(&url_deps, &tmp).await;
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok(), "first entry should succeed");
+        assert!(
+            matches!(results[1], Err(BcServerError::PackageNotFound { .. })),
+            "second entry should be PackageNotFound, got {:?}",
+            results[1]
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn add_auth_userpassword_missing_creds_errors() {
+        // UserPassword auth with no BC_USERNAME/BC_PASSWORD must produce
+        // CredentialsRequired rather than sending an unauthenticated request.
+        std::env::remove_var("BC_USERNAME");
+        std::env::remove_var("BC_PASSWORD");
+        let client = BcServerClient::new(AuthMethod::UserPassword, None, Arc::new(|_| {}), false)
+            .expect("client builds");
+        let req = client.client.get("http://example.invalid/dev/packages");
+
+        let err = client
+            .add_auth(req)
+            .await
+            .expect_err("missing creds must error");
+        assert!(matches!(err, BcServerError::CredentialsRequired));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn add_auth_userpassword_with_creds_succeeds() {
+        // With both env vars set, add_auth attaches basic auth and returns Ok.
+        std::env::set_var("BC_USERNAME", "alice");
+        std::env::set_var("BC_PASSWORD", "secret");
+        let client = BcServerClient::new(AuthMethod::UserPassword, None, Arc::new(|_| {}), false)
+            .expect("client builds");
+        let req = client.client.get("http://example.invalid/dev/packages");
+
+        let result = client.add_auth(req).await;
+        assert!(result.is_ok(), "creds present should yield Ok");
+
+        std::env::remove_var("BC_USERNAME");
+        std::env::remove_var("BC_PASSWORD");
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn add_auth_aad_uses_env_access_token() {
+        // AAD auth honours an explicit BC_ACCESS_TOKEN override (fast path that
+        // never touches the OAuth flow), and skips it once flagged stale.
+        std::env::set_var("BC_ACCESS_TOKEN", "env-token-123");
+        let client = BcServerClient::new(
+            AuthMethod::AAD,
+            Some("contoso".into()),
+            Arc::new(|_| {}),
+            false,
+        )
+        .expect("client builds");
+        let req = client.client.get("http://example.invalid/dev/packages");
+        // The env override is active, so add_auth returns Ok without any
+        // network sign-in.
+        assert!(client.add_auth(req).await.is_ok());
+
+        // Once flagged stale, the env override is no longer honoured.
+        client.mark_env_token_stale();
+        assert!(!client.env_token_active());
+        std::env::remove_var("BC_ACCESS_TOKEN");
+    }
+
     #[tokio::test]
     async fn test_reset_cached_token_clears_in_memory_token() {
         // F-OPEN-013: a 401/403 must be able to forget the session-level
