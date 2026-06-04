@@ -2014,6 +2014,49 @@ mod tests {
     // Content-Length header. Exercises the framing boundary without stdio.
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // try_spawn / open_browser — the process-spawn helper used to auto-open the
+    // AAD device-code page. Pure enough to unit-test both outcomes without a GUI:
+    // a real binary spawns successfully; a guaranteed-missing binary fails. The
+    // child does no work (true / a missing name), so no window or side effect.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn try_spawn_returns_true_for_spawnable_command() {
+        // `true` exists on every supported unix; on Windows `cmd` is always
+        // present. We pick a per-platform no-op that exits immediately.
+        #[cfg(not(target_os = "windows"))]
+        let spawned = try_spawn("true", &[]);
+        #[cfg(target_os = "windows")]
+        let spawned = try_spawn("cmd", &["/c", "exit"]);
+        assert!(
+            spawned,
+            "spawning an existing no-op binary must report success"
+        );
+    }
+
+    #[test]
+    fn try_spawn_returns_false_for_missing_command() {
+        // A binary name that cannot exist on PATH must make spawn() fail, and
+        // try_spawn must surface that as `false` rather than panicking. This is
+        // the branch open_browser relies on to know the opener was unavailable.
+        let spawned = try_spawn("al-no-such-binary-xyzzy-1234567890", &["irrelevant"]);
+        assert!(
+            !spawned,
+            "spawning a nonexistent binary must report failure, not panic"
+        );
+    }
+
+    #[test]
+    fn open_browser_does_not_panic_and_returns_bool() {
+        // open_browser dispatches to the platform opener via try_spawn. Whether
+        // the opener exists is environment-dependent (headless CI may lack
+        // xdg-open), so we only assert it completes without panicking and yields
+        // a concrete bool. The important invariant — that a failed spawn maps to
+        // `false` — is pinned by try_spawn_returns_false_for_missing_command.
+        let _: bool = open_browser("https://example.invalid/path?x=1");
+    }
+
     #[tokio::test]
     async fn write_dap_emits_content_length_framed_body() {
         let seq = AtomicU64::new(1);
