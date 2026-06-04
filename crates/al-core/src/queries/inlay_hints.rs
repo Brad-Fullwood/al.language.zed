@@ -1089,4 +1089,372 @@ mod tests {
             "Should emit only one hint for one known param: {hints:?}"
         );
     }
+
+    // ---- parse_type_string ----------------------------------------------
+
+    #[test]
+    fn parse_type_string_quoted_subtype() {
+        // `Record "Sales Header"` → base "Record", subtype "Sales Header".
+        let (base, sub) = parse_type_string(r#"Record "Sales Header""#);
+        assert_eq!(base, "Record");
+        assert_eq!(sub, Some("Sales Header"));
+    }
+
+    #[test]
+    fn parse_type_string_unquoted_takes_first_word() {
+        // No quote → first whitespace-delimited token, no subtype.
+        let (base, sub) = parse_type_string("Integer");
+        assert_eq!(base, "Integer");
+        assert_eq!(sub, None);
+
+        let (base2, sub2) = parse_type_string("  Boolean  ");
+        assert_eq!(base2, "Boolean");
+        assert_eq!(sub2, None);
+    }
+
+    #[test]
+    fn parse_type_string_unterminated_quote_no_subtype() {
+        // An opening quote with no closing quote must not panic and yields no
+        // subtype; base is the text before the quote, trimmed.
+        let (base, sub) = parse_type_string(r#"Record "Unterminated"#);
+        assert_eq!(base, "Record");
+        assert_eq!(sub, None);
+    }
+
+    // ---- score_overload --------------------------------------------------
+
+    #[test]
+    fn score_overload_exact_arity_beats_excess_arity() {
+        // Exact arity match (+1000) must outscore an over-arity candidate (+100).
+        let exact = OverloadCandidate {
+            names: vec!["A".into()],
+            types: vec!["Integer".into()],
+        };
+        let excess = OverloadCandidate {
+            names: vec!["A".into(), "B".into()],
+            types: vec!["Integer".into(), "Integer".into()],
+        };
+        let arg_types = vec![Some(InferredType {
+            base: "Integer".into(),
+            subtype: None,
+        })];
+        assert!(
+            score_overload(&exact, &arg_types) > score_overload(&excess, &arg_types),
+            "exact-arity overload must score higher than an over-arity one"
+        );
+    }
+
+    #[test]
+    fn score_overload_subtype_match_adds_bonus() {
+        // Same base type, but only one candidate also matches the subtype; it
+        // must score 25 higher (the subtype bonus).
+        let with_sub = OverloadCandidate {
+            names: vec!["Rec".into()],
+            types: vec![r#"Record "Customer""#.into()],
+        };
+        let without_sub = OverloadCandidate {
+            names: vec!["Rec".into()],
+            types: vec![r#"Record "Vendor""#.into()],
+        };
+        let arg_types = vec![Some(InferredType {
+            base: "Record".into(),
+            subtype: Some("Customer".into()),
+        })];
+        assert_eq!(
+            score_overload(&with_sub, &arg_types) - score_overload(&without_sub, &arg_types),
+            25,
+            "matching subtype must add exactly the 25-point bonus"
+        );
+    }
+
+    #[test]
+    fn score_overload_fewer_params_than_args_no_arity_bonus() {
+        // Candidate with fewer params than args gets neither the exact (+1000)
+        // nor the over-arity (+100) bonus, and no per-arg type bonus past its
+        // param count.
+        let candidate = OverloadCandidate {
+            names: vec!["Only".into()],
+            types: vec!["Integer".into()],
+        };
+        let arg_types = vec![
+            Some(InferredType {
+                base: "Integer".into(),
+                subtype: None,
+            }),
+            Some(InferredType {
+                base: "Integer".into(),
+                subtype: None,
+            }),
+        ];
+        // Only the first arg's base matches (+50); no arity bonus.
+        assert_eq!(score_overload(&candidate, &arg_types), 50);
+    }
+
+    // ---- overload_candidates_from_symbols --------------------------------
+
+    #[test]
+    fn overload_candidates_from_symbols_extracts_procedure_params() {
+        // A codeunit with a parameterized procedure must yield one candidate
+        // whose names/types come from the procedure's detail string.
+        let src = r#"codeunit 50100 Test
+{
+    procedure Add(First: Integer; Second: Integer): Integer
+    begin
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let symbols = doc_symbols(&text, &tree);
+        let candidates = overload_candidates_from_symbols(&symbols, "Add");
+        assert_eq!(candidates.len(), 1, "expected one Add overload");
+        assert_eq!(candidates[0].names, vec!["First", "Second"]);
+        assert_eq!(candidates[0].types, vec!["Integer", "Integer"]);
+    }
+
+    #[test]
+    fn overload_candidates_from_symbols_unknown_name_is_empty() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure Add(First: Integer): Integer
+    begin
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let symbols = doc_symbols(&text, &tree);
+        let candidates = overload_candidates_from_symbols(&symbols, "DoesNotExist");
+        assert!(
+            candidates.is_empty(),
+            "no procedure named DoesNotExist exists, expected no candidates"
+        );
+    }
+
+    // ---- infer_argument_type edge cases ----------------------------------
+
+    /// Build a single-argument call and return its first inferred argument type.
+    fn infer_single(src: &str) -> Option<InferredType> {
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let resolver = crate::syntax::TypeResolver::new(&tree, &text);
+        let arg_list = first_arg_list(tree.root_node()).expect("an argument list");
+        let pos = Position {
+            line: 0,
+            character: 0,
+        };
+        infer_argument_types(arg_list, source, &resolver, pos)
+            .into_iter()
+            .next()
+            .flatten()
+    }
+
+    #[test]
+    fn infer_argument_type_enum_scope_uses_left_of_double_colon() {
+        // `MyEnum::Value` infers base "MyEnum" from the text left of `::`.
+        let inferred = infer_single(
+            "codeunit 50100 Test\n{\n    procedure Caller()\n    begin\n        Foo(MyEnum::Value);\n    end;\n}",
+        )
+        .expect("enum scope should infer a type");
+        assert_eq!(inferred.base, "MyEnum");
+        assert_eq!(inferred.subtype, None);
+    }
+
+    #[test]
+    fn infer_argument_type_negative_integer() {
+        // A leading '-' must still be treated as a numeric literal (Integer).
+        let inferred = infer_single(
+            "codeunit 50100 Test\n{\n    procedure Caller()\n    begin\n        Foo(-7);\n    end;\n}",
+        )
+        .expect("negative number should infer a type");
+        assert_eq!(inferred.base, "Integer");
+    }
+
+    #[test]
+    fn infer_argument_type_negative_decimal() {
+        let inferred = infer_single(
+            "codeunit 50100 Test\n{\n    procedure Caller()\n    begin\n        Foo(-2.5);\n    end;\n}",
+        )
+        .expect("negative decimal should infer a type");
+        assert_eq!(inferred.base, "Decimal");
+    }
+
+    // ---- extract_receiver_before via member_suffix chain -----------------
+
+    #[test]
+    fn extract_call_info_chained_member_receiver() {
+        // `Rec.Field.SetRange(1)` — the receiver before SetRange's call suffix
+        // is a member_suffix; extract_receiver_before must pull the member name.
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller(Rec: Record Customer)
+    begin
+        Rec.Name.SetRange(1);
+    end;
+}"#;
+        let (text, tree) = parse(src);
+        let source = text.as_bytes();
+        let arg_list = first_arg_list(tree.root_node()).expect("an argument list");
+        let parent = arg_list.parent().expect("a parent");
+        let info = extract_call_info(parent, source).expect("call info");
+        assert_eq!(info.0, "SetRange");
+        // Receiver resolves to the nearest member name in the chain.
+        assert_eq!(info.1.as_deref(), Some("Name"));
+    }
+
+    // ---- source_line -----------------------------------------------------
+
+    #[test]
+    fn source_line_returns_requested_row() {
+        let source = b"line0\nline1\nline2";
+        assert_eq!(source_line(source, 0), "line0");
+        assert_eq!(source_line(source, 1), "line1");
+        assert_eq!(source_line(source, 2), "line2");
+    }
+
+    #[test]
+    fn source_line_out_of_bounds_is_empty() {
+        let source = b"only-one-line";
+        assert_eq!(
+            source_line(source, 5),
+            "",
+            "out-of-range row must yield empty string, not panic"
+        );
+    }
+
+    #[test]
+    fn source_line_invalid_utf8_is_empty() {
+        // Row 1 contains an invalid UTF-8 byte (0xFF); must degrade to "".
+        let source: &[u8] = b"ok\n\xff\xfe";
+        assert_eq!(source_line(source, 0), "ok");
+        assert_eq!(
+            source_line(source, 1),
+            "",
+            "invalid UTF-8 row must yield empty string"
+        );
+    }
+
+    // ---- lookup_embedded_builtin -----------------------------------------
+
+    #[test]
+    fn lookup_embedded_builtin_matches_language_data() {
+        // Don't hardcode a builtin name — discover one from LanguageData at
+        // runtime, then assert lookup_embedded_builtin returns exactly that
+        // function's parameter names. Unknown names must return None.
+        let first_builtin = crate::syntax::language_data::builtin_functions()
+            .iter()
+            .find(|f| !f.parameters.is_empty());
+
+        if let Some(func) = first_builtin {
+            let expected: Vec<String> = func.parameters.iter().map(|p| p.name.clone()).collect();
+            let got = lookup_embedded_builtin(&func.name)
+                .expect("a known builtin must resolve to its parameter names");
+            assert_eq!(got, expected);
+        }
+
+        assert!(
+            lookup_embedded_builtin("ThisIsDefinitelyNotABuiltinFunction").is_none(),
+            "an unknown function name must not resolve to an embedded builtin"
+        );
+    }
+
+    // ---- top-level inlay_hints entry point -------------------------------
+
+    #[test]
+    fn inlay_hints_none_for_unopened_document() {
+        // No document in the store → get_or_parse returns None → no hints.
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///nonexistent.al").unwrap();
+        assert!(
+            inlay_hints(&ws, &uri, full_range()).is_none(),
+            "an unopened document must produce no inlay hints"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_emits_parameter_hints_for_open_document() {
+        // Default config has parameter_names = true. Opening a file with a
+        // local call should yield parameter hints end-to-end.
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    begin
+        Add(1, 2);
+    end;
+
+    procedure Add(First: Integer; Second: Integer): Integer
+    begin
+    end;
+}"#;
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///tmp/inlay_param_test.al").unwrap();
+        ws.documents.open(uri.clone(), src.to_string());
+
+        let hints = inlay_hints(&ws, &uri, full_range()).expect("some hints");
+        let param_labels: Vec<String> = hints
+            .iter()
+            .filter(|h| h.kind == Some(AlInlayHintKind::Parameter))
+            .map(|h| {
+                let AlInlayHintLabel::String(s) = &h.label;
+                s.clone()
+            })
+            .collect();
+        assert_eq!(
+            param_labels,
+            vec!["First:".to_string(), "Second:".to_string()],
+            "expected First:/Second: parameter hints end-to-end, got: {hints:?}"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_respects_disabled_parameter_names() {
+        // With parameter_names disabled and return_types disabled (default),
+        // a file that only has call sites yields no hints at all.
+        let src = r#"codeunit 50100 Test
+{
+    procedure Caller()
+    begin
+        Add(1, 2);
+    end;
+
+    procedure Add(First: Integer; Second: Integer): Integer
+    begin
+    end;
+}"#;
+        let ws = Workspace::new();
+        {
+            let mut cfg = ws.config.try_write().unwrap();
+            cfg.inlay_hints.parameter_names = false;
+            cfg.inlay_hints.return_types = false;
+        }
+        let uri = Url::parse("file:///tmp/inlay_disabled_test.al").unwrap();
+        ws.documents.open(uri.clone(), src.to_string());
+
+        assert!(
+            inlay_hints(&ws, &uri, full_range()).is_none(),
+            "with both hint kinds disabled there should be no hints"
+        );
+    }
+
+    #[test]
+    fn inlay_hints_emits_return_type_hints_when_enabled() {
+        // Enable return_types; a procedure with a return type must yield a
+        // Type-kind hint via the top-level entry point.
+        let src = r#"codeunit 50100 Test
+{
+    procedure GetCount(): Integer
+    begin
+    end;
+}"#;
+        let ws = Workspace::new();
+        {
+            let mut cfg = ws.config.try_write().unwrap();
+            cfg.inlay_hints.parameter_names = false;
+            cfg.inlay_hints.return_types = true;
+        }
+        let uri = Url::parse("file:///tmp/inlay_return_test.al").unwrap();
+        ws.documents.open(uri.clone(), src.to_string());
+
+        let hints = inlay_hints(&ws, &uri, full_range()).expect("a return-type hint");
+        assert!(
+            hints.iter().any(|h| h.kind == Some(AlInlayHintKind::Type)),
+            "expected a Type-kind return hint, got: {hints:?}"
+        );
+    }
 }
