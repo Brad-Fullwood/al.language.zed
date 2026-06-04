@@ -144,4 +144,188 @@ mod tests {
         let tokens = semantic_token_data(&result);
         assert_eq!(tokens, vec![[0, 0, 3, 1, 0], [0, 5, 4, 1, 0]]);
     }
+
+    // ----- hover_content -----
+
+    #[test]
+    fn hover_content_extracts_markdown_value() {
+        let hover = json!({ "contents": { "kind": "markdown", "value": "# Record\nA table." } });
+        assert_eq!(hover_content(&hover), Some("# Record\nA table."));
+    }
+
+    #[test]
+    fn hover_content_missing_returns_none() {
+        // No `contents` at all.
+        assert_eq!(hover_content(&json!({})), None);
+        // `contents` present but no `value`.
+        assert_eq!(hover_content(&json!({ "contents": {} })), None);
+        // `value` present but not a string.
+        assert_eq!(hover_content(&json!({ "contents": { "value": 42 } })), None);
+        // `contents` is a bare string (legacy LSP MarkedString) — helper only
+        // reads the object form, so this must be None, not the string itself.
+        assert_eq!(hover_content(&json!({ "contents": "plain" })), None);
+    }
+
+    // ----- completion_labels -----
+
+    #[test]
+    fn completion_labels_extracts_in_order() {
+        let items = vec![
+            json!({ "label": "Message" }),
+            json!({ "label": "Error" }),
+            json!({ "label": "Confirm" }),
+        ];
+        assert_eq!(
+            completion_labels(&items),
+            vec!["Message", "Error", "Confirm"]
+        );
+    }
+
+    #[test]
+    fn completion_labels_skips_items_without_string_label() {
+        let items = vec![
+            json!({ "label": "Good" }),
+            json!({ "detail": "no label here" }),
+            json!({ "label": 123 }),
+            json!({ "label": "AlsoGood" }),
+        ];
+        assert_eq!(completion_labels(&items), vec!["Good", "AlsoGood"]);
+    }
+
+    #[test]
+    fn completion_labels_empty_input() {
+        assert!(completion_labels(&[]).is_empty());
+    }
+
+    // ----- symbol_names (iterative, with children) -----
+
+    #[test]
+    fn symbol_names_collects_nested_children() {
+        let symbols = vec![json!({
+            "name": "MyCodeunit",
+            "children": [
+                { "name": "DoWork" },
+                { "name": "Helper", "children": [ { "name": "Inner" } ] },
+            ],
+        })];
+        let mut names = symbol_names(&symbols);
+        names.sort_unstable();
+        assert_eq!(names, vec!["DoWork", "Helper", "Inner", "MyCodeunit"]);
+    }
+
+    #[test]
+    fn symbol_names_skips_entries_without_name() {
+        let symbols = vec![json!({ "detail": "no name" }), json!({ "name": "Named" })];
+        assert_eq!(symbol_names(&symbols), vec!["Named"]);
+    }
+
+    #[test]
+    fn symbol_names_ignores_non_array_children() {
+        // `children` present but not an array must not break traversal.
+        let symbols = vec![json!({ "name": "Top", "children": "oops" })];
+        assert_eq!(symbol_names(&symbols), vec!["Top"]);
+    }
+
+    #[test]
+    fn symbol_names_empty_input() {
+        assert!(symbol_names(&[]).is_empty());
+    }
+
+    // ----- definition_uri -----
+
+    #[test]
+    fn definition_uri_single_location() {
+        let result = json!({ "uri": "file:///a.al", "range": {} });
+        assert_eq!(definition_uri(&result), Some("file:///a.al"));
+    }
+
+    #[test]
+    fn definition_uri_array_uses_first() {
+        let result = json!([
+            { "uri": "file:///first.al" },
+            { "uri": "file:///second.al" },
+        ]);
+        assert_eq!(definition_uri(&result), Some("file:///first.al"));
+    }
+
+    #[test]
+    fn definition_uri_none_when_absent() {
+        assert_eq!(definition_uri(&json!({})), None);
+        assert_eq!(definition_uri(&json!([])), None);
+        // Array whose first element lacks a uri.
+        assert_eq!(definition_uri(&json!([ { "range": {} } ])), None);
+        // uri present but not a string.
+        assert_eq!(definition_uri(&json!({ "uri": 5 })), None);
+    }
+
+    // ----- definition_start_line -----
+
+    #[test]
+    fn definition_start_line_single_location() {
+        let result = json!({ "range": { "start": { "line": 12, "character": 4 } } });
+        assert_eq!(definition_start_line(&result), Some(12));
+    }
+
+    #[test]
+    fn definition_start_line_array_uses_first() {
+        let result = json!([
+            { "range": { "start": { "line": 7 } } },
+            { "range": { "start": { "line": 99 } } },
+        ]);
+        assert_eq!(definition_start_line(&result), Some(7));
+    }
+
+    #[test]
+    fn definition_start_line_none_when_absent() {
+        assert_eq!(definition_start_line(&json!({})), None);
+        assert_eq!(definition_start_line(&json!([])), None);
+        assert_eq!(definition_start_line(&json!({ "range": {} })), None);
+    }
+
+    // ----- sig_label -----
+
+    #[test]
+    fn sig_label_first_signature() {
+        let result = json!({
+            "signatures": [
+                { "label": "MyProc(a: Integer): Boolean" },
+                { "label": "Other()" },
+            ],
+        });
+        assert_eq!(sig_label(&result), Some("MyProc(a: Integer): Boolean"));
+    }
+
+    #[test]
+    fn sig_label_none_when_absent() {
+        assert_eq!(sig_label(&json!({})), None);
+        assert_eq!(sig_label(&json!({ "signatures": [] })), None);
+        assert_eq!(sig_label(&json!({ "signatures": [ {} ] })), None);
+    }
+
+    // ----- folding_range_lines -----
+
+    #[test]
+    fn folding_range_lines_extracts_pairs() {
+        let ranges = vec![
+            json!({ "startLine": 0, "endLine": 5 }),
+            json!({ "startLine": 7, "endLine": 9 }),
+        ];
+        assert_eq!(folding_range_lines(&ranges), vec![(0, 5), (7, 9)]);
+    }
+
+    #[test]
+    fn folding_range_lines_skips_incomplete_entries() {
+        let ranges = vec![
+            json!({ "startLine": 1, "endLine": 4 }),
+            json!({ "startLine": 2 }),                 // missing endLine
+            json!({ "endLine": 8 }),                   // missing startLine
+            json!({ "startLine": "x", "endLine": 3 }), // non-numeric
+        ];
+        assert_eq!(folding_range_lines(&ranges), vec![(1, 4)]);
+    }
+
+    #[test]
+    fn folding_range_lines_empty_input() {
+        assert!(folding_range_lines(&[]).is_empty());
+    }
 }
