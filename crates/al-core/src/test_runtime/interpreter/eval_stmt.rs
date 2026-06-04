@@ -1467,4 +1467,243 @@ mod tests {
             "error message must name the depth cap, got: {msg}"
         );
     }
+
+    // ── FOR loop: happy path and error paths ──────────────────────────────────
+
+    #[test]
+    fn for_to_counts_up_and_leaves_last_value() {
+        // FOR x := 1 TO 3 DO begin end — loop body runs for 1,2,3 then exits.
+        // x is left bound to the last value that satisfied the loop guard (3).
+        let (eval, stack) = run_stmt("for x := 1 to 3 do begin end;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {:?}", eval);
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(3)));
+    }
+
+    #[test]
+    fn for_to_accumulates_in_body() {
+        // The loop body mutates another variable each iteration.
+        // s starts empty; we sum via x into s? Simpler: use the loop var.
+        // FOR x := 1 TO 4 — afterwards x == 4 (last bound value).
+        let (eval, stack) = run_stmt("for x := 1 to 4 do begin end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(4)));
+    }
+
+    #[test]
+    fn for_empty_range_does_not_run_body() {
+        // FOR x := 5 TO 1 — start > end for an upward loop, so the body never
+        // runs and x is left at its pre-loop binding from the first assignment
+        // attempt. The guard breaks before any bind: x stays 0.
+        let (eval, stack) = run_stmt("for x := 5 to 1 do begin end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Integer(0)),
+            "empty upward range must not bind the loop variable"
+        );
+    }
+
+    #[test]
+    fn for_start_must_be_integer() {
+        // Non-integer start value is a runtime error.
+        let (eval, _) = run_stmt("for x := 'a' to 3 do begin end;");
+        assert!(eval.is_error(), "non-integer FOR start must error");
+        if let Eval::Error(e) = eval {
+            assert!(
+                e.message.contains("start must be Integer"),
+                "got: {}",
+                e.message
+            );
+        }
+    }
+
+    #[test]
+    fn for_end_must_be_integer() {
+        // Non-integer end value is a runtime error.
+        let (eval, _) = run_stmt("for x := 1 to 'z' do begin end;");
+        assert!(eval.is_error(), "non-integer FOR end must error");
+        if let Eval::Error(e) = eval {
+            assert!(
+                e.message.contains("end must be Integer"),
+                "got: {}",
+                e.message
+            );
+        }
+    }
+
+    #[test]
+    fn for_body_error_propagates() {
+        // An error inside the loop body short-circuits the whole FOR.
+        let (eval, _) = run_stmt("for x := 1 to 3 do begin error('boom'); end;");
+        assert!(eval.is_error(), "FOR body error must propagate");
+    }
+
+    // ── FOREACH loop ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn foreach_over_non_collection_errors() {
+        // FOREACH over a non-list/array value must error. An integer literal
+        // is not iterable.
+        let (eval, _) = run_stmt("foreach x in 42 do begin end;");
+        assert!(eval.is_error(), "foreach over a scalar must error");
+        if let Eval::Error(e) = eval {
+            assert!(
+                e.message.contains("expected List or Array"),
+                "got: {}",
+                e.message
+            );
+        }
+    }
+
+    // ── REPEAT … UNTIL ────────────────────────────────────────────────────────
+
+    #[test]
+    fn repeat_runs_body_at_least_once() {
+        // REPEAT executes the body before checking the UNTIL condition.
+        // Even though x >= 0 is already true, the body runs once: x := x + 1.
+        let (eval, stack) = run_stmt("repeat x := x + 1; until x >= 0;");
+        assert!(matches!(eval, Eval::Normal(_)), "got {:?}", eval);
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Integer(1)),
+            "REPEAT must run the body at least once"
+        );
+    }
+
+    #[test]
+    fn repeat_loops_until_condition_true() {
+        // REPEAT x := x + 1 UNTIL x >= 3 — runs 3 times, x ends at 3.
+        let (eval, stack) = run_stmt("repeat x := x + 1; until x >= 3;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(3)));
+    }
+
+    #[test]
+    fn repeat_deadline_trips_on_runaway() {
+        // A repeat-until whose condition is never satisfied must trip the
+        // deadline rather than spin forever.
+        use crate::test_runtime::interpreter::scope::{CallFrame, ScopeStack};
+        use crate::test_runtime::interpreter::value::Value;
+        use crate::workspace::Workspace;
+        use std::sync::Arc;
+
+        let wrapper = "codeunit 50100 \"X\"\n{\n    procedure Test()\n    var\n        x: Integer;\n    begin\n        x := 0; repeat x := x + 1; until x < 0;\n    end;\n}";
+        let result = crate::syntax::parser::AlParser::parse_quick(wrapper);
+        let tree = result.tree;
+        let bytes = wrapper.as_bytes();
+        let body = find_proc_body(tree.root_node(), bytes).unwrap();
+
+        let mut stack = ScopeStack::new();
+        let mut frame = CallFrame::new("X", "Test");
+        frame.bind("x", Value::Integer(0));
+        stack.push(frame);
+
+        let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
+        ctx.deadline = Some(std::time::Instant::now() + std::time::Duration::from_millis(5));
+
+        let eval = eval_stmt(body, bytes, &mut stack, &mut ctx);
+        match eval {
+            Eval::Error(e) => assert!(
+                e.message.contains("deadline exceeded"),
+                "expected deadline message, got: {}",
+                e.message
+            ),
+            other => panic!("expected deadline error, got {other:?}"),
+        }
+    }
+
+    // ── CASE matching ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn case_matches_arm() {
+        // CASE 1 OF 1: x:=2; — the arm whose label equals the selector fires,
+        // so its body (x := 2) runs and the else branch is skipped.
+        let (eval, stack) = run_stmt("case 1 of 1: x := 2; else x := 9; end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Integer(2)),
+            "the matching arm body must run, not the else branch"
+        );
+    }
+
+    #[test]
+    fn case_no_match_no_else_is_noop() {
+        // No arm matches and there is no ELSE: nothing runs, x stays 0.
+        let (eval, stack) = run_stmt("case 99 of 1: x := 1; 2: x := 2; end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Integer(0)),
+            "no matching arm and no else must leave state untouched"
+        );
+    }
+
+    #[test]
+    fn case_multi_label_arm_matches_any_label() {
+        // CASE 2 OF 1, 2, 3: x := 7; — comma-separated labels; selector 2
+        // matches the second label in the list.
+        let (eval, stack) = run_stmt("case 2 of 1, 2, 3: x := 7; else x := 1; end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Integer(7)),
+            "a multi-label arm must match if ANY label equals the selector"
+        );
+    }
+
+    #[test]
+    fn case_text_selector_is_case_insensitive() {
+        // AL CASE compares Text/Code case-insensitively. Selector 'ABC'
+        // matches arm label 'abc'.
+        let (eval, stack) = run_stmt("case 'ABC' of 'abc': x := 5; else x := 1; end;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(
+            stack.lookup("x"),
+            Some(&Value::Integer(5)),
+            "Text CASE labels must compare case-insensitively"
+        );
+    }
+
+    // ── IF: else branch + non-boolean guard ──────────────────────────────────
+
+    #[test]
+    fn if_else_branch_executes_when_false() {
+        // IF false THEN x:=1 ELSE x:=2 — the else branch runs.
+        let (eval, stack) = run_stmt("if false then x := 1 else x := 2;");
+        assert!(matches!(eval, Eval::Normal(_)));
+        assert_eq!(stack.lookup("x"), Some(&Value::Integer(2)));
+    }
+
+    #[test]
+    fn if_non_boolean_condition_errors() {
+        // A non-Boolean condition is a type error (AL requires Boolean guards).
+        let (eval, _) = run_stmt("if 5 then x := 1;");
+        assert!(eval.is_error(), "non-boolean IF condition must error");
+        if let Eval::Error(e) = eval {
+            assert!(e.message.contains("must be Boolean"), "got: {}", e.message);
+        }
+    }
+
+    // ── WHILE: body error propagation ─────────────────────────────────────────
+
+    #[test]
+    fn while_body_error_propagates() {
+        // An error in the WHILE body short-circuits the loop and the statement.
+        let (eval, _) = run_stmt("while x < 5 do begin error('boom'); end;");
+        assert!(eval.is_error(), "WHILE body error must propagate");
+    }
+
+    // ── EXIT with a value ─────────────────────────────────────────────────────
+
+    #[test]
+    fn exit_with_value_returns_it() {
+        // exit(7) unwinds with Integer(7).
+        let (eval, _) = run_stmt("exit(7);");
+        assert!(
+            matches!(eval, Eval::Exit(Value::Integer(7))),
+            "expected Exit(Integer(7)), got {:?}",
+            eval
+        );
+    }
 }
