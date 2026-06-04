@@ -1431,4 +1431,331 @@ mod tests {
             "OAuth cache dir must be owner-only"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // html_escape — XSS defence on the OAuth redirect page
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn html_escape_neutralizes_script_injection() {
+        // The redirect page renders server-supplied error/description verbatim;
+        // a malicious authorization server could inject markup. Every HTML
+        // metacharacter must be entity-encoded.
+        let out = html_escape("<script>alert('x&y')</script>\"q\"");
+        assert!(!out.contains('<'), "raw '<' must not survive: {out}");
+        assert!(!out.contains('>'), "raw '>' must not survive: {out}");
+        assert_eq!(
+            out,
+            "&lt;script&gt;alert(&#x27;x&amp;y&#x27;)&lt;/script&gt;&quot;q&quot;"
+        );
+    }
+
+    #[test]
+    fn html_escape_leaves_safe_text_untouched() {
+        // Boundary: ordinary text (incl. non-ASCII) passes through verbatim.
+        let s = "Signed in: café 123";
+        assert_eq!(html_escape(s), s);
+    }
+
+    // -----------------------------------------------------------------------
+    // percent_decode — malformed-escape edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn percent_decode_handles_truncated_and_invalid_escapes() {
+        // A trailing '%' with no following hex digits must be preserved, not
+        // panic or eat past the end of the string.
+        assert_eq!(percent_decode("abc%"), "abc%");
+        assert_eq!(percent_decode("a%2"), "a%2");
+        // A '%' followed by non-hex is left as a literal '%'.
+        assert_eq!(percent_decode("%zz"), "%zz");
+        // Mixed valid + plus-as-space.
+        assert_eq!(percent_decode("a%2Bb+c"), "a+b c");
+    }
+
+    // -----------------------------------------------------------------------
+    // generate_random_string — length + charset invariants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn generate_random_string_respects_length_and_charset() {
+        const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        for len in [0usize, 1, 16, 100] {
+            let s = generate_random_string(len).expect("entropy available in test");
+            assert_eq!(s.len(), len, "exact requested length");
+            assert!(
+                s.bytes().all(|b| CHARS.contains(&b)),
+                "only the URL-safe alphabet may appear: {s:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // token_cache_path — filename sanitization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn token_cache_path_sanitizes_unsafe_chars() {
+        // A domain tenant keeps its dots replaced by underscores; path
+        // separators and other punctuation must never reach the filename.
+        let p = token_cache_path("contoso.onmicrosoft.com");
+        let name = p.file_name().unwrap().to_string_lossy();
+        assert_eq!(name, "contoso_onmicrosoft_com.json");
+
+        // A hostile tenant with slashes/dots must not escape the cache dir.
+        let evil = token_cache_path("../../etc/passwd");
+        let evil_name = evil.file_name().unwrap().to_string_lossy();
+        assert!(
+            !evil_name.contains('/') && !evil_name.contains('.') || evil_name.ends_with(".json"),
+            "unsafe chars must be folded to '_': {evil_name}"
+        );
+        assert_eq!(evil_name, "______etc_passwd.json");
+        // GUID/hyphen/underscore chars are preserved.
+        let guid = token_cache_path("12345678-1234-1234-1234-123456789012");
+        assert_eq!(
+            guid.file_name().unwrap().to_string_lossy(),
+            "12345678-1234-1234-1234-123456789012.json"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_token_error — JSON body vs. opaque fallback
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_token_error_extracts_oauth_fields() {
+        let body = r#"{"error":"invalid_grant","error_description":"AADSTS70008: expired"}"#;
+        let err: OAuthError = parse_token_error::<TokenResponse>(body).unwrap_err();
+        match err {
+            OAuthError::Protocol { error, description } => {
+                assert_eq!(error, "invalid_grant");
+                assert!(description.contains("AADSTS70008"));
+            }
+            other => panic!("expected Protocol, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_token_error_falls_back_for_non_json_body() {
+        // Boundary: an HTML/plain-text error page (not JSON) must still yield a
+        // Protocol error carrying the raw body as the description.
+        let body = "<html>503 upstream down</html>";
+        let err: OAuthError = parse_token_error::<TokenResponse>(body).unwrap_err();
+        match err {
+            OAuthError::Protocol { error, description } => {
+                assert_eq!(error, "unknown");
+                assert_eq!(description, body);
+            }
+            other => panic!("expected Protocol, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // load_cached_token — corrupt vs. valid vs. missing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_cached_token_returns_none_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent.json");
+        assert!(load_cached_token(&path).is_none());
+    }
+
+    #[test]
+    fn load_cached_token_returns_none_for_corrupt_json() {
+        // A truncated / corrupt cache file must be ignored (forces re-auth),
+        // not propagate a parse error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.json");
+        std::fs::write(&path, b"{not valid json").unwrap();
+        assert!(load_cached_token(&path).is_none());
+    }
+
+    #[test]
+    fn load_cached_token_roundtrips_saved_token() {
+        // Positive: a token written by save_cached_token loads back with all
+        // fields intact and a future expiry.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.json");
+        let tok = TokenResponse {
+            access_token: "AAA".into(),
+            refresh_token: Some("RRR".into()),
+            expires_in: 3600,
+        };
+        save_cached_token(&path, "common", &tok);
+        let loaded = load_cached_token(&path).expect("must load");
+        assert_eq!(loaded.access_token, "AAA");
+        assert_eq!(loaded.refresh_token.as_deref(), Some("RRR"));
+        assert_eq!(loaded.tenant, "common");
+        assert!(
+            loaded.expires_at > now_unix(),
+            "expiry must be in the future"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // handle_token_response — drives a real reqwest::Response from wiremock
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn handle_token_response_parses_success_body() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"access_token":"TOK","refresh_token":"REF","expires_in":3599}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .post(server.uri())
+            .send()
+            .await
+            .unwrap();
+        let tok = handle_token_response(resp).await.expect("success body");
+        assert_eq!(tok.access_token, "TOK");
+        assert_eq!(tok.refresh_token.as_deref(), Some("REF"));
+        assert_eq!(tok.expires_in, 3599);
+    }
+
+    #[tokio::test]
+    async fn handle_token_response_surfaces_error_body() {
+        // A non-2xx status must be turned into an OAuthError::Protocol carrying
+        // the parsed error fields — NOT silently swallowed as success.
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_string(
+                    r#"{"error":"invalid_request","error_description":"bad code"}"#,
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let resp = reqwest::Client::new()
+            .post(server.uri())
+            .send()
+            .await
+            .unwrap();
+        match handle_token_response(resp).await {
+            Err(OAuthError::Protocol { error, description }) => {
+                assert_eq!(error, "invalid_request");
+                assert_eq!(description, "bad code");
+            }
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // acquire_token — pre-network input validation
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn acquire_token_rejects_malformed_tenant_before_network() {
+        // A tenant containing URL punctuation must be rejected up-front with
+        // OAuthError::Other and never touch the network. The wiremock client
+        // is unreachable host, so any network attempt would surface a different
+        // error; getting Other proves the guard short-circuits first.
+        let client = reqwest::Client::new();
+        let err = acquire_token(&client, "evil.com/redirect?to=phish", |_| {})
+            .await
+            .unwrap_err();
+        match err {
+            OAuthError::Other(msg) => assert!(msg.contains("Invalid tenant"), "got {msg}"),
+            other => panic!("expected Other(Invalid tenant), got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // wait_for_auth_callback — code extraction, CSRF state, error params
+    // -----------------------------------------------------------------------
+
+    /// Drive `wait_for_auth_callback` against a loopback listener: a client
+    /// connects and sends a single GET line carrying `query`, then the callback
+    /// processes it. Returns the callback's result.
+    async fn run_callback_with_query(
+        query: &str,
+        expected_state: &str,
+    ) -> Result<String, OAuthError> {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let q = query.to_string();
+        let writer = tokio::spawn(async move {
+            let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let req = format!("GET /?{q} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            client.write_all(req.as_bytes()).await.unwrap();
+            // Drain the HTTP response so the callback's write_all succeeds.
+            use tokio::io::AsyncReadExt;
+            let mut sink = Vec::new();
+            let _ = client.read_to_end(&mut sink).await;
+        });
+        let res = wait_for_auth_callback(&listener, expected_state).await;
+        writer.await.unwrap();
+        res
+    }
+
+    #[tokio::test]
+    async fn callback_extracts_code_when_state_matches() {
+        let code = run_callback_with_query("code=AUTH123&state=GOOD", "GOOD")
+            .await
+            .expect("happy path yields the code");
+        assert_eq!(code, "AUTH123");
+    }
+
+    #[tokio::test]
+    async fn callback_rejects_state_mismatch() {
+        // CSRF defence: a code arriving with the wrong state must be refused.
+        let err = run_callback_with_query("code=AUTH123&state=ATTACKER", "EXPECTED")
+            .await
+            .unwrap_err();
+        match err {
+            OAuthError::Protocol { error, .. } => assert_eq!(error, "state_mismatch"),
+            other => panic!("expected state_mismatch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_maps_access_denied_to_denied() {
+        let err = run_callback_with_query("error=access_denied&error_description=nope", "GOOD")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, OAuthError::Denied),
+            "access_denied must map to Denied, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_surfaces_other_oauth_errors() {
+        let err =
+            run_callback_with_query("error=invalid_scope&error_description=Bad%20scope", "GOOD")
+                .await
+                .unwrap_err();
+        match err {
+            OAuthError::Protocol { error, description } => {
+                assert_eq!(error, "invalid_scope");
+                assert_eq!(description, "Bad scope", "description is percent-decoded");
+            }
+            other => panic!("expected Protocol, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_errors_when_code_missing() {
+        // No error, state matches, but no code present → missing_code.
+        let err = run_callback_with_query("state=GOOD&session_state=x", "GOOD")
+            .await
+            .unwrap_err();
+        match err {
+            OAuthError::Protocol { error, .. } => assert_eq!(error, "missing_code"),
+            other => panic!("expected missing_code, got {other:?}"),
+        }
+    }
 }
