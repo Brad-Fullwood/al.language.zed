@@ -5349,4 +5349,276 @@ mod p1_5_tests {
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("absolute"));
     }
+
+    // -----------------------------------------------------------------------
+    // parse_bc_server_params: defaults vs explicit overrides (shared by the
+    // snapshot + profiling dispatchers). Pure, no BC server required.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bc_server_params_apply_documented_defaults_when_absent() {
+        // Empty params: every field must fall back to its documented default
+        // and the output dir must end in the supplied subdir.
+        let bc = parse_bc_server_params(&serde_json::json!({}), "snapshots");
+        assert_eq!(bc.server_url, "http://localhost:7049/BC");
+        assert_eq!(bc.company, "");
+        assert!(bc.username.is_none());
+        assert!(bc.password.is_none());
+        assert!(!bc.accept_invalid_certs);
+        assert!(
+            bc.output_dir.ends_with("snapshots"),
+            "default output dir must end in the subdir, got {:?}",
+            bc.output_dir
+        );
+    }
+
+    #[test]
+    fn bc_server_params_honour_explicit_overrides() {
+        // Positive: every explicit field is threaded through verbatim, and an
+        // explicit outputDir wins over the subdir-based default.
+        let bc = parse_bc_server_params(
+            &serde_json::json!({
+                "serverUrl": "https://bc.example/inst",
+                "company": "CRONUS",
+                "outputDir": "/data/out",
+                "username": "admin",
+                "password": "s3cret",
+                "acceptInvalidCerts": true,
+            }),
+            "profiles",
+        );
+        assert_eq!(bc.server_url, "https://bc.example/inst");
+        assert_eq!(bc.company, "CRONUS");
+        assert_eq!(bc.output_dir, std::path::PathBuf::from("/data/out"));
+        assert_eq!(bc.username.as_deref(), Some("admin"));
+        assert_eq!(bc.password.as_deref(), Some("s3cret"));
+        assert!(bc.accept_invalid_certs);
+    }
+
+    #[test]
+    fn bc_server_params_ignore_wrong_typed_fields() {
+        // Negative: a client sending the wrong JSON type (number where a
+        // string is expected) must not poison the value — it falls back to
+        // the default rather than e.g. stringifying the number.
+        let bc = parse_bc_server_params(
+            &serde_json::json!({
+                "serverUrl": 7049,
+                "acceptInvalidCerts": "yes",
+            }),
+            "snapshots",
+        );
+        assert_eq!(bc.server_url, "http://localhost:7049/BC");
+        assert!(
+            !bc.accept_invalid_certs,
+            "non-bool acceptInvalidCerts must default to false, not be coerced true"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // capitalize_first / sanitize_filename: pure helpers used by
+    // dispatch_organize_files to build canonical `.al` file names.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn capitalize_first_uppercases_only_leading_char() {
+        assert_eq!(capitalize_first("table"), "Table");
+        assert_eq!(capitalize_first("pageExtension"), "PageExtension");
+        // Already-capitalised input is left intact.
+        assert_eq!(capitalize_first("Codeunit"), "Codeunit");
+    }
+
+    #[test]
+    fn capitalize_first_handles_empty_and_unicode() {
+        // Empty string must not panic — returns empty.
+        assert_eq!(capitalize_first(""), "");
+        // A non-ASCII leading char must uppercase without slicing mid-codepoint.
+        assert_eq!(capitalize_first("ärger"), "Ärger");
+    }
+
+    #[test]
+    fn sanitize_filename_replaces_path_and_reserved_chars() {
+        // Every reserved/separator char must become `_` so the rename target
+        // can't escape its directory or produce an invalid filename.
+        assert_eq!(
+            sanitize_filename(r#"a/b\c:d*e?f"g<h>i|j"#),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
+        // Ordinary names with spaces and dots survive untouched.
+        assert_eq!(sanitize_filename("Sales Header"), "Sales Header");
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_permissions: xml format branch + objectCount shaping.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn permissions_xml_format_returns_xml_content_and_count() {
+        // The `xml` format branch must report format=xml, surface an
+        // objectCount, and emit XML (not the AL permissionset syntax).
+        let ws = empty_ws();
+        let resp = dispatch_permissions(
+            &ws,
+            1,
+            &serde_json::json!({ "format": "xml", "roleId": "TESTROLE", "name": "Demo" }),
+        );
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert_eq!(r.get("format").and_then(|v| v.as_str()), Some("xml"));
+        assert!(
+            r.get("objectCount").and_then(|v| v.as_u64()).is_some(),
+            "xml branch must expose objectCount"
+        );
+        let content = r.get("content").and_then(|v| v.as_str()).expect("content");
+        // XML output, not the AL `permissionset` declaration.
+        assert!(
+            content.contains('<'),
+            "xml branch must render XML, got: {content}"
+        );
+    }
+
+    #[test]
+    fn permissions_default_format_is_al() {
+        // An unrecognised format falls through to the AL renderer (the `_`
+        // arm), not the xml branch.
+        let ws = empty_ws();
+        let resp = dispatch_permissions(&ws, 2, &serde_json::json!({ "format": "totally-bogus" }));
+        let r = resp.result.expect("result");
+        assert_eq!(r.get("format").and_then(|v| v.as_str()), Some("al"));
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_sort_members: content path, dry-run, and missing-param branch.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sort_members_with_content_returns_sorted_and_changed_flags() {
+        // The `content` branch must echo back `sorted` text and a `changed`
+        // bool without requiring a file on disk.
+        let ws = empty_ws();
+        let src = r#"codeunit 50100 "X" { procedure B() begin end; procedure A() begin end; }"#;
+        let resp = dispatch_sort_members(&ws, 1, &serde_json::json!({ "content": src }));
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert!(
+            r.get("sorted").and_then(|v| v.as_str()).is_some(),
+            "must return sorted text"
+        );
+        assert!(
+            r.get("changed").and_then(|v| v.as_bool()).is_some(),
+            "must return a changed flag"
+        );
+    }
+
+    #[test]
+    fn sort_members_missing_content_and_file_is_invalid_params() {
+        // Neither `content` nor `file`: must be INVALID_PARAMS, not a panic.
+        let ws = empty_ws();
+        let resp = dispatch_sort_members(&ws, 2, &serde_json::json!({}));
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_organize_files: no-project root must surface an error rather
+    // than scanning an undefined root.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn organize_files_without_project_returns_error() {
+        let ws = empty_ws();
+        let resp = dispatch_organize_files(&ws, 1, &serde_json::json!({ "dryRun": true }));
+        assert!(
+            resp.error.is_some(),
+            "no project root must yield an error, got result: {:?}",
+            resp.result
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_profiler_hints: an absent/empty `hotspots` array must produce
+    // a well-formed (array) result, never an error.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn profiler_hints_absent_hotspots_returns_array() {
+        let ws = empty_ws();
+        let resp = dispatch_profiler_hints(&ws, 1, &serde_json::json!({}));
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert!(
+            r.is_array(),
+            "profiler hints must serialize to a JSON array, got {r:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_authenticate: status/clear branches resolve without a network
+    // call when the workspace has no configured tenants.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn authenticate_status_no_tenants_returns_empty_list() {
+        let ws = empty_ws();
+        let resp = dispatch_authenticate(&ws, 1, &serde_json::json!({ "cmd": "status" })).await;
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let tenants = resp
+            .result
+            .as_ref()
+            .and_then(|v| v.get("tenants"))
+            .and_then(|v| v.as_array())
+            .expect("tenants array");
+        assert!(tenants.is_empty(), "no project tenants → empty list");
+    }
+
+    #[tokio::test]
+    async fn authenticate_clear_no_tenants_clears_zero() {
+        let ws = empty_ws();
+        let resp = dispatch_authenticate(&ws, 2, &serde_json::json!({ "cmd": "clear" })).await;
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        assert_eq!(
+            resp.result
+                .as_ref()
+                .and_then(|v| v.get("cleared"))
+                .and_then(|v| v.as_u64()),
+            Some(0),
+            "no tenants → cleared count of 0"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_tests_mutate: no-project must short-circuit to an error before
+    // any variant generation.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn tests_mutate_no_project_returns_error() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_mutate(&ws, 1, &serde_json::json!({})).await;
+        let err = resp.error.expect("no project must error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("project"),
+            "error must reference the missing project: {}",
+            err.message
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // dispatch_clear_cache: response shape — `deleted`/`existed` booleans and
+    // a `path`. With no index dir present, both flags must be false and no
+    // error must be reported.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn clear_cache_reports_shape_and_no_error() {
+        let resp = dispatch_clear_cache(7).await;
+        assert!(resp.error.is_none(), "transport error: {:?}", resp.error);
+        let r = resp.result.expect("result");
+        for key in ["deleted", "existed", "path", "error"] {
+            assert!(r.get(key).is_some(), "clearCache result missing `{key}`");
+        }
+        assert!(
+            r.get("deleted").and_then(|v| v.as_bool()).is_some(),
+            "`deleted` must be a bool"
+        );
+    }
 }
