@@ -663,4 +663,289 @@ mod tests {
         let result = format_builtin_method(&method);
         assert_eq!(result, "CopyStr(String: Text; Position: Integer): Text");
     }
+
+    // ---------------------------------------------------------------------
+    // Helpers for the symbol-/index-backed hover paths.
+    // ---------------------------------------------------------------------
+
+    fn table_entry() -> crate::symbols::SymbolEntry {
+        crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "Base Application".to_string(),
+            methods: vec![
+                crate::symbols::MethodSymbol {
+                    name: "PublicMethod".to_string(),
+                    parameters: vec![],
+                    return_type: None,
+                    attributes: vec![],
+                    is_local: false,
+                },
+                crate::symbols::MethodSymbol {
+                    name: "SecretLocalMethod".to_string(),
+                    parameters: vec![],
+                    return_type: None,
+                    attributes: vec![],
+                    is_local: true,
+                },
+            ],
+            fields: vec![],
+            controls: vec![],
+            enum_values: vec![],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // format_symbol_hover branches not covered by the original test.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn format_symbol_hover_filters_out_local_methods() {
+        let entry = table_entry();
+        let result = format_symbol_hover(&entry);
+        assert!(
+            result.contains("PublicMethod"),
+            "public method should be shown: {result:?}"
+        );
+        assert!(
+            !result.contains("SecretLocalMethod"),
+            "local method must be filtered out: {result:?}"
+        );
+    }
+
+    #[test]
+    fn format_symbol_hover_renders_enum_values() {
+        let entry = crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Enum,
+            id: 50100,
+            name: "Color".to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "MyApp".to_string(),
+            methods: vec![],
+            fields: vec![],
+            controls: vec![],
+            enum_values: vec![
+                crate::symbols::EnumValueSymbol {
+                    name: "Red".to_string(),
+                    ordinal: 0,
+                },
+                crate::symbols::EnumValueSymbol {
+                    name: "Green".to_string(),
+                    ordinal: 1,
+                },
+            ],
+            keys: vec![],
+            properties: vec![],
+            variables: vec![],
+        };
+        let result = format_symbol_hover(&entry);
+        assert!(result.contains("Enum"), "got: {result:?}");
+        assert!(result.contains("50100"), "got: {result:?}");
+        assert!(result.contains("**Values:** Red, Green"), "got: {result:?}");
+    }
+
+    #[test]
+    fn format_symbol_hover_omits_id_when_zero() {
+        let mut entry = table_entry();
+        entry.id = 0;
+        let result = format_symbol_hover(&entry);
+        // The codeblock line should be `Table "Customer"` with no leading id.
+        assert!(
+            result.contains("Table \"Customer\""),
+            "id 0 should be omitted: {result:?}"
+        );
+        assert!(
+            !result.contains("Table 0"),
+            "id 0 must not render a literal 0: {result:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // End-to-end hover via the SymbolIndex (path 3).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn hover_resolves_package_symbol_from_index() {
+        let ws = Workspace::new();
+        // Reference an object name that is in the SymbolIndex but is not a
+        // procedure/parameter/variable/builtin so we fall through to path 3.
+        let src = "codeunit 50150 \"Test\"\n{\n    procedure Foo()\n    var\n        C: Record Customer;\n    begin\n        C.Init();\n    end;\n}\n";
+        let uri = open_doc(&ws, src);
+        ws.symbols.add_entries(std::slice::from_ref(&table_entry()));
+
+        // Line 4, col 18 — cursor on "Customer" in the Record subtype.
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 18,
+            },
+        )
+        .expect("hover on a known package symbol should resolve");
+        assert!(r.contents.contains("Customer"), "got: {:?}", r.contents);
+        assert!(
+            r.contents.contains("Base Application package"),
+            "got: {:?}",
+            r.contents
+        );
+        assert!(r.range.is_some());
+    }
+
+    // ---------------------------------------------------------------------
+    // Built-in global function hover (path 3b).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn hover_resolves_builtin_global_function() {
+        // Guard: this path only exists if the static language data ships the
+        // function. If "Message" ever stops loading, this test is meaningless,
+        // so assert the precondition explicitly.
+        let builtin = crate::syntax::language_data::builtin_function_by_name("Message")
+            .expect("Message builtin should be present in language data");
+
+        let ws = Workspace::new();
+        let src = "codeunit 50150 \"Test\"\n{\n    procedure Foo()\n    begin\n        Message('hi');\n    end;\n}\n";
+        let uri = open_doc(&ws, src);
+
+        // Line 4, col 10 — cursor on the "Message" identifier.
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 4,
+                character: 10,
+            },
+        )
+        .expect("hover on a built-in global function should resolve");
+        assert!(
+            r.contents.contains(&builtin.signature),
+            "expected signature {:?} in {:?}",
+            builtin.signature,
+            r.contents
+        );
+        assert!(
+            r.contents.contains("(built-in"),
+            "expected built-in marker, got: {:?}",
+            r.contents
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Local variable declaration hover (path 2b — TypeResolver).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn hover_resolves_local_variable_declaration() {
+        let ws = Workspace::new();
+        let src = "codeunit 50150 \"Test\"\n{\n    procedure Foo()\n    var\n        Counter: Integer;\n    begin\n        Counter := 1;\n    end;\n}\n";
+        let uri = open_doc(&ws, src);
+
+        // Line 6, col 8 — cursor on "Counter" in the assignment statement.
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 6,
+                character: 8,
+            },
+        )
+        .expect("hover on a declared local variable should resolve");
+        assert!(
+            r.contents.contains("Counter: Integer"),
+            "got: {:?}",
+            r.contents
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Workspace object index hover (path 5).
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn hover_resolves_workspace_object_from_file_index() {
+        let ws = Workspace::new();
+        // Index a workspace object "MyHelper" so it lives in file_index.objects.
+        let helper_src = "codeunit 50160 \"MyHelper\"\n{\n    procedure Run() begin end;\n}\n";
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/tmp/MyHelper.al"),
+            helper_src.to_string(),
+        );
+
+        // The document we hover in references "MyHelper" by name. It is not a
+        // procedure/parameter/variable/builtin/package symbol here, so the
+        // only resolver that can answer is the workspace object index (path 5).
+        let src = "codeunit 50150 \"Caller\"\n{\n    var\n        H: Codeunit \"MyHelper\";\n}\n";
+        let uri = open_doc(&ws, src);
+
+        // Line 3, col 22 — cursor on "MyHelper" in the subtype reference.
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 3,
+                character: 22,
+            },
+        )
+        .expect("hover on a workspace object should resolve via the file index");
+        assert!(r.contents.contains("MyHelper"), "got: {:?}", r.contents);
+        assert!(
+            r.contents.contains("(workspace)"),
+            "expected workspace marker, got: {:?}",
+            r.contents
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Edge: hover on a position that resolves to no identifier.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn hover_on_empty_document_returns_none() {
+        let ws = Workspace::new();
+        let uri = open_doc(&ws, "");
+        let r = hover(
+            &ws,
+            &uri,
+            Position {
+                line: 0,
+                character: 0,
+            },
+        );
+        assert!(
+            r.is_none(),
+            "empty document should yield no hover, got {r:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // hover_full falls back to the synchronous native hover when it succeeds,
+    // without needing the .NET bridge.
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn hover_full_returns_native_result_without_bridge() {
+        let ws = Workspace::new();
+        let uri = open_doc(&ws, PARAM_FIXTURE);
+        let r = hover_full(
+            &ws,
+            &uri,
+            Position {
+                line: 2,
+                character: 18,
+            },
+        )
+        .await
+        .expect("hover_full should return the native hover result");
+        assert!(r.contents.contains("A: Integer"), "got: {:?}", r.contents);
+    }
 }
