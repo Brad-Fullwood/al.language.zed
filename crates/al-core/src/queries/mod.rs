@@ -708,4 +708,476 @@ mod query_types_tests {
         assert!(v["changes"].is_object());
         assert_eq!(v["changes"].as_object().unwrap().len(), 0);
     }
+
+    // -----------------------------------------------------------------------
+    // node_clean_name
+    // -----------------------------------------------------------------------
+
+    /// Parse `source` and return the named node whose text equals `target`,
+    /// so we can exercise `node_clean_name` against a real tree-sitter node.
+    fn first_node_with_text<'a>(
+        tree: &'a tree_sitter::Tree,
+        source: &[u8],
+        target: &str,
+    ) -> tree_sitter::Node<'a> {
+        let mut cursor = tree.walk();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            if node.utf8_text(source).map(|t| t == target).unwrap_or(false) {
+                return node;
+            }
+            stack.extend(node.named_children(&mut cursor));
+        }
+        panic!("no node with text {target:?} found");
+    }
+
+    #[test]
+    fn node_clean_name_strips_surrounding_quotes() {
+        let source = "codeunit 50000 \"My Codeunit\"\n{\n}\n";
+        let mut parser = crate::syntax::AlParser::new();
+        let result = parser.parse(source);
+        let bytes = source.as_bytes();
+        let node = first_node_with_text(&result.tree, bytes, "\"My Codeunit\"");
+        // The quoted identifier must come back without its double-quotes.
+        assert_eq!(node_clean_name(node, bytes), Some("My Codeunit"));
+    }
+
+    #[test]
+    fn node_clean_name_unquoted_identifier_passthrough() {
+        let source = "codeunit 50000 MyCodeunit\n{\n}\n";
+        let mut parser = crate::syntax::AlParser::new();
+        let result = parser.parse(source);
+        let bytes = source.as_bytes();
+        let node = first_node_with_text(&result.tree, bytes, "MyCodeunit");
+        assert_eq!(node_clean_name(node, bytes), Some("MyCodeunit"));
+    }
+
+    #[test]
+    fn node_clean_name_returns_none_for_empty_after_strip() {
+        // A node whose entire text is `""` (empty quoted name) trims to "".
+        let source = "codeunit 50000 \"\"\n{\n}\n";
+        let mut parser = crate::syntax::AlParser::new();
+        let result = parser.parse(source);
+        let bytes = source.as_bytes();
+        let node = first_node_with_text(&result.tree, bytes, "\"\"");
+        assert_eq!(node_clean_name(node, bytes), None);
+    }
+
+    #[test]
+    fn node_clean_name_invalid_utf8_returns_none() {
+        // utf8_text fails on invalid UTF-8 within the node's byte span,
+        // which must surface as None rather than a panic.
+        let source = "codeunit 50000 MyCodeunit\n{\n}\n";
+        let mut parser = crate::syntax::AlParser::new();
+        let result = parser.parse(source);
+        // Same byte length as the source but with an invalid UTF-8 byte where
+        // the identifier sits, so utf8_text() over the node's range errors.
+        let mut bad = source.as_bytes().to_vec();
+        let idx = source.find("MyCodeunit").unwrap();
+        bad[idx] = 0xFF;
+        let node = first_node_with_text(&result.tree, source.as_bytes(), "MyCodeunit");
+        assert_eq!(node_clean_name(node, &bad), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_detail_params
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_detail_params_basic_named_typed() {
+        let params = parse_detail_params("(var SalesHeader: Record; Preview: Boolean): Boolean");
+        assert_eq!(params.len(), 2);
+        // raw label keeps the `var` modifier
+        assert_eq!(params[0].0, "var SalesHeader: Record");
+        // name strips `var ` prefix
+        assert_eq!(params[0].1, "SalesHeader");
+        assert_eq!(params[0].2, "Record");
+        assert_eq!(params[1].0, "Preview: Boolean");
+        assert_eq!(params[1].1, "Preview");
+        assert_eq!(params[1].2, "Boolean");
+    }
+
+    #[test]
+    fn parse_detail_params_no_paren_returns_empty() {
+        assert!(parse_detail_params("no parens here").is_empty());
+        assert!(parse_detail_params("").is_empty());
+    }
+
+    #[test]
+    fn parse_detail_params_empty_params_returns_empty() {
+        assert!(parse_detail_params("(): Boolean").is_empty());
+        assert!(parse_detail_params("(   )").is_empty());
+    }
+
+    #[test]
+    fn parse_detail_params_quoted_name_stripped() {
+        let params = parse_detail_params("(\"My Param\": Integer)");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].1, "My Param");
+        assert_eq!(params[0].2, "Integer");
+    }
+
+    #[test]
+    fn parse_detail_params_param_without_colon_has_empty_type() {
+        // A bare name with no `:` yields an empty type string.
+        let params = parse_detail_params("(SomeName)");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].1, "SomeName");
+        assert_eq!(params[0].2, "");
+    }
+
+    #[test]
+    fn parse_detail_params_nested_parens_in_type() {
+        // Depth-aware scanning must keep the outer parameter list intact when a
+        // type contains parentheses, e.g. a Dictionary type.
+        let params = parse_detail_params("(Items: Dictionary of [Integer, Text]; Flag: Boolean)");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].1, "Items");
+        assert_eq!(params[1].1, "Flag");
+    }
+
+    #[test]
+    fn parse_detail_params_skips_blank_segments() {
+        // A trailing `;` produces an empty segment which must be filtered out.
+        let params = parse_detail_params("(A: Integer; )");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].1, "A");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_procedure_symbol / scope_label
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_procedure_symbol_true_only_for_function_and_event() {
+        assert!(is_procedure_symbol(AlSymbolKind::Function));
+        assert!(is_procedure_symbol(AlSymbolKind::Event));
+        assert!(!is_procedure_symbol(AlSymbolKind::Method));
+        assert!(!is_procedure_symbol(AlSymbolKind::Field));
+        assert!(!is_procedure_symbol(AlSymbolKind::Variable));
+    }
+
+    #[test]
+    fn scope_label_covers_all_variants() {
+        use crate::syntax::type_resolver::VariableScope as V;
+        assert_eq!(scope_label(&V::Local), "local variable");
+        assert_eq!(scope_label(&V::Parameter), "parameter");
+        assert_eq!(scope_label(&V::Global), "global variable");
+        assert_eq!(scope_label(&V::SelfImplicit), "self");
+        assert_eq!(scope_label(&V::TriggerImplicit), "trigger variable");
+    }
+
+    // -----------------------------------------------------------------------
+    // Position / Range conversions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn position_roundtrips_through_lsp() {
+        let p = Position {
+            line: 3,
+            character: 7,
+        };
+        let lsp: tower_lsp::lsp_types::Position = p.into();
+        assert_eq!(lsp.line, 3);
+        assert_eq!(lsp.character, 7);
+        let back: Position = lsp.into();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn range_roundtrips_through_lsp() {
+        let r = Range {
+            start: Position {
+                line: 1,
+                character: 2,
+            },
+            end: Position {
+                line: 3,
+                character: 4,
+            },
+        };
+        let lsp: tower_lsp::lsp_types::Range = r.into();
+        let back: Range = lsp.into();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn position_roundtrips_through_syntax() {
+        let p = Position {
+            line: 9,
+            character: 11,
+        };
+        let syn: crate::syntax::types::SyntaxPosition = p.into();
+        assert_eq!(syn.line, 9);
+        assert_eq!(syn.character, 11);
+        let back: Position = syn.into();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn range_roundtrips_through_syntax() {
+        let r = Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 5,
+                character: 6,
+            },
+        };
+        let syn: crate::syntax::types::SyntaxRange = r.into();
+        let back: Range = syn.into();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn location_roundtrips_through_lsp() {
+        let loc = Location {
+            uri: url::Url::parse("file:///x.al").unwrap(),
+            range: Range {
+                start: Position {
+                    line: 2,
+                    character: 1,
+                },
+                end: Position {
+                    line: 2,
+                    character: 8,
+                },
+            },
+        };
+        let lsp: tower_lsp::lsp_types::Location = loc.clone().into();
+        assert_eq!(lsp.uri.as_str(), "file:///x.al");
+        let back: Location = lsp.into();
+        assert_eq!(back.uri, loc.uri);
+        assert_eq!(back.range, loc.range);
+    }
+
+    // -----------------------------------------------------------------------
+    // SymbolKind conversions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn symbol_kind_roundtrips_through_lsp_for_all_variants() {
+        use AlSymbolKind::*;
+        for k in [
+            File,
+            Module,
+            Namespace,
+            Class,
+            Method,
+            Property,
+            Field,
+            Constructor,
+            Enum,
+            EnumMember,
+            Interface,
+            Function,
+            Variable,
+            Constant,
+            String,
+            Number,
+            Boolean,
+            Array,
+            Object,
+            Struct,
+            Event,
+            Operator,
+            TypeParameter,
+        ] {
+            let lsp: tower_lsp::lsp_types::SymbolKind = k.into();
+            let back: AlSymbolKind = lsp.into();
+            assert_eq!(back, k, "roundtrip failed for {k:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_lsp_symbol_kind_maps_to_object() {
+        // tower-lsp has kinds we don't model (e.g. KEY/PACKAGE); they must
+        // fall through to the Object default rather than panic.
+        let k: AlSymbolKind = tower_lsp::lsp_types::SymbolKind::KEY.into();
+        assert_eq!(k, AlSymbolKind::Object);
+    }
+
+    #[test]
+    fn syntax_symbol_kind_key_maps_to_struct() {
+        use crate::syntax::types::SyntaxSymbolKind as S;
+        let k: AlSymbolKind = S::Key.into();
+        assert_eq!(k, AlSymbolKind::Struct);
+        // a representative non-Key mapping
+        let f: AlSymbolKind = S::Function.into();
+        assert_eq!(f, AlSymbolKind::Function);
+    }
+
+    // -----------------------------------------------------------------------
+    // Folding range conversions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn folding_range_kind_converts_to_lsp() {
+        use tower_lsp::lsp_types::FoldingRangeKind as L;
+        assert_eq!(L::from(AlFoldingRangeKind::Comment), L::Comment);
+        assert_eq!(L::from(AlFoldingRangeKind::Imports), L::Imports);
+        assert_eq!(L::from(AlFoldingRangeKind::Region), L::Region);
+    }
+
+    #[test]
+    fn folding_range_converts_to_lsp_preserving_fields() {
+        let r = AlFoldingRange {
+            start_line: 1,
+            start_character: Some(2),
+            end_line: 10,
+            end_character: None,
+            kind: Some(AlFoldingRangeKind::Region),
+        };
+        let lsp: tower_lsp::lsp_types::FoldingRange = r.into();
+        assert_eq!(lsp.start_line, 1);
+        assert_eq!(lsp.start_character, Some(2));
+        assert_eq!(lsp.end_line, 10);
+        assert_eq!(lsp.end_character, None);
+        assert_eq!(
+            lsp.kind,
+            Some(tower_lsp::lsp_types::FoldingRangeKind::Region)
+        );
+    }
+
+    #[test]
+    fn syntax_folding_range_kind_converts() {
+        use crate::syntax::types::SyntaxFoldingRangeKind as S;
+        assert_eq!(
+            AlFoldingRangeKind::from(S::Comment),
+            AlFoldingRangeKind::Comment
+        );
+        assert_eq!(
+            AlFoldingRangeKind::from(S::Imports),
+            AlFoldingRangeKind::Imports
+        );
+        assert_eq!(
+            AlFoldingRangeKind::from(S::Region),
+            AlFoldingRangeKind::Region
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Inlay hint conversions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inlay_hint_kind_roundtrips() {
+        use tower_lsp::lsp_types::InlayHintKind as L;
+        assert_eq!(L::from(AlInlayHintKind::Type), L::TYPE);
+        assert_eq!(L::from(AlInlayHintKind::Parameter), L::PARAMETER);
+        assert_eq!(AlInlayHintKind::from(L::TYPE), AlInlayHintKind::Type);
+        assert_eq!(
+            AlInlayHintKind::from(L::PARAMETER),
+            AlInlayHintKind::Parameter
+        );
+    }
+
+    #[test]
+    fn inlay_hint_string_label_converts_to_lsp() {
+        let h = AlInlayHint {
+            position: Position {
+                line: 4,
+                character: 2,
+            },
+            label: AlInlayHintLabel::String(": Integer".to_string()),
+            kind: Some(AlInlayHintKind::Type),
+            padding_left: Some(true),
+            padding_right: Some(false),
+        };
+        let lsp: tower_lsp::lsp_types::InlayHint = h.into();
+        match lsp.label {
+            tower_lsp::lsp_types::InlayHintLabel::String(s) => assert_eq!(s, ": Integer"),
+            _ => panic!("expected string label"),
+        }
+        assert_eq!(lsp.position.line, 4);
+        assert_eq!(lsp.padding_left, Some(true));
+        assert_eq!(lsp.padding_right, Some(false));
+        assert_eq!(lsp.kind, Some(tower_lsp::lsp_types::InlayHintKind::TYPE));
+    }
+
+    #[test]
+    fn inlay_hint_from_lsp_string_label() {
+        let lsp = tower_lsp::lsp_types::InlayHint {
+            position: tower_lsp::lsp_types::Position::new(1, 1),
+            label: tower_lsp::lsp_types::InlayHintLabel::String("x".to_string()),
+            kind: Some(tower_lsp::lsp_types::InlayHintKind::PARAMETER),
+            text_edits: None,
+            tooltip: None,
+            padding_left: None,
+            padding_right: None,
+            data: None,
+        };
+        let h: AlInlayHint = lsp.into();
+        match h.label {
+            AlInlayHintLabel::String(s) => assert_eq!(s, "x"),
+        }
+        assert_eq!(h.kind, Some(AlInlayHintKind::Parameter));
+    }
+
+    #[test]
+    fn inlay_hint_from_lsp_label_parts_concatenated() {
+        // The defensive LabelParts branch concatenates the part values.
+        let parts = vec![
+            tower_lsp::lsp_types::InlayHintLabelPart {
+                value: "Foo".to_string(),
+                tooltip: None,
+                location: None,
+                command: None,
+            },
+            tower_lsp::lsp_types::InlayHintLabelPart {
+                value: "Bar".to_string(),
+                tooltip: None,
+                location: None,
+                command: None,
+            },
+        ];
+        let lsp = tower_lsp::lsp_types::InlayHint {
+            position: tower_lsp::lsp_types::Position::new(0, 0),
+            label: tower_lsp::lsp_types::InlayHintLabel::LabelParts(parts),
+            kind: None,
+            text_edits: None,
+            tooltip: None,
+            padding_left: None,
+            padding_right: None,
+            data: None,
+        };
+        let h: AlInlayHint = lsp.into();
+        match h.label {
+            AlInlayHintLabel::String(s) => assert_eq!(s, "FooBar"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // DocumentSymbol conversions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn document_symbol_converts_to_lsp_with_children() {
+        let child = AlDocumentSymbol {
+            name: "Child".to_string(),
+            detail: None,
+            kind: AlSymbolKind::Field,
+            range: Range::default(),
+            selection_range: Range::default(),
+            children: None,
+        };
+        let parent = AlDocumentSymbol {
+            name: "Parent".to_string(),
+            detail: Some("detail".to_string()),
+            kind: AlSymbolKind::Class,
+            range: Range::default(),
+            selection_range: Range::default(),
+            children: Some(vec![child]),
+        };
+        let lsp: tower_lsp::lsp_types::DocumentSymbol = parent.into();
+        assert_eq!(lsp.name, "Parent");
+        assert_eq!(lsp.detail, Some("detail".to_string()));
+        assert_eq!(lsp.kind, tower_lsp::lsp_types::SymbolKind::CLASS);
+        let kids = lsp.children.expect("children present");
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].name, "Child");
+        assert_eq!(kids[0].kind, tower_lsp::lsp_types::SymbolKind::FIELD);
+    }
 }
