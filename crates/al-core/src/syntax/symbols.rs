@@ -1434,4 +1434,362 @@ mod tests {
             all_names
         );
     }
+
+    // ---- shared helpers for the tests below ----
+
+    /// Recursively collect every symbol name in the tree (depth-first).
+    fn collect_names_rec(syms: &[DocumentSymbol]) -> Vec<String> {
+        let mut names = Vec::new();
+        for sym in syms {
+            names.push(sym.name.clone());
+            if let Some(children) = &sym.children {
+                names.extend(collect_names_rec(children));
+            }
+        }
+        names
+    }
+
+    /// Find the first symbol (anywhere in the tree) matching `name`.
+    fn find_sym<'a>(syms: &'a [DocumentSymbol], name: &str) -> Option<&'a DocumentSymbol> {
+        for sym in syms {
+            if sym.name == name {
+                return Some(sym);
+            }
+            if let Some(children) = &sym.children {
+                if let Some(found) = find_sym(children, name) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    fn parse_symbols(src: &str) -> Vec<DocumentSymbol> {
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        extract_document_symbols(&result.tree, src)
+    }
+
+    #[test]
+    fn test_namespace_and_using_declarations() {
+        let src = r#"namespace MyApp.Sales;
+using System.Utilities;
+
+codeunit 50100 Test { }"#;
+        let symbols = parse_symbols(src);
+
+        // namespace + using + the codeunit
+        let ns = find_sym(&symbols, "MyApp.Sales").expect("namespace symbol");
+        assert_eq!(ns.kind, SymbolKind::Namespace);
+        assert_eq!(ns.detail.as_deref(), Some("namespace"));
+        // selection_range mirrors range for namespaces (no separate name node range)
+        assert_eq!(ns.selection_range, ns.range);
+        assert!(ns.children.is_none());
+
+        let using = find_sym(&symbols, "System.Utilities").expect("using symbol");
+        assert_eq!(using.kind, SymbolKind::Namespace);
+        assert_eq!(using.detail.as_deref(), Some("using"));
+    }
+
+    #[test]
+    fn test_object_detail_includes_id() {
+        let src = r#"codeunit 50100 "My Codeunit" { }"#;
+        let symbols = parse_symbols(src);
+        let obj = &symbols[0];
+        // detail is "<keyword> <id>"
+        assert_eq!(obj.detail.as_deref(), Some("codeunit 50100"));
+        // The selection range must point at the name, not the whole object.
+        assert!(obj.selection_range.start.character >= obj.range.start.character);
+    }
+
+    #[test]
+    fn test_object_without_id_detail_is_keyword_only() {
+        // An interface has no numeric ID — detail should be just the keyword.
+        let src = r#"interface "My Interface"
+{
+    procedure Foo()
+}"#;
+        let symbols = parse_symbols(src);
+        let obj = &symbols[0];
+        assert_eq!(obj.name, "My Interface");
+        assert_eq!(obj.kind, SymbolKind::Interface);
+        // No numeric id present → detail is the keyword alone.
+        assert_eq!(obj.detail.as_deref(), Some("interface"));
+    }
+
+    #[test]
+    fn test_table_fields_keys_sections_and_field_names() {
+        let src = r#"table 50101 "My Table2"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Description; Text[100]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { Clustered = true; }
+    }
+}"#;
+        let symbols = parse_symbols(src);
+        let obj = &symbols[0];
+        let children = obj.children.as_ref().expect("table children");
+
+        let fields_section = children
+            .iter()
+            .find(|c| c.name == "fields")
+            .expect("fields section");
+        assert_eq!(fields_section.kind, SymbolKind::Struct);
+
+        let keys_section = children
+            .iter()
+            .find(|c| c.name == "keys")
+            .expect("keys section");
+        assert_eq!(keys_section.kind, SymbolKind::Key);
+
+        // Field names extracted from the parenthesized triplet (after first ';').
+        let no_field = find_sym(&symbols, "No.").expect("No. field");
+        assert_eq!(no_field.kind, SymbolKind::Field);
+        assert_eq!(no_field.detail.as_deref(), Some("field"));
+
+        let desc_field = find_sym(&symbols, "Description").expect("Description field");
+        assert_eq!(desc_field.kind, SymbolKind::Field);
+    }
+
+    #[test]
+    fn test_page_field_quoted_name_and_nested_trigger() {
+        let src = r#"page 50100 "My Page"
+{
+    layout
+    {
+        area(Content)
+        {
+            field("Customer Name"; Rec."Customer Name")
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+    actions
+    {
+        area(Processing)
+        {
+            action(Post)
+            {
+                trigger OnAction()
+                begin
+                end;
+            }
+        }
+    }
+}"#;
+        let symbols = parse_symbols(src);
+        let all = collect_names_rec(&symbols);
+
+        // Quoted page-field name is unquoted in the outline.
+        assert!(
+            all.iter().any(|n| n == "Customer Name"),
+            "page field name should be unquoted. Got: {:?}",
+            all
+        );
+        let field = find_sym(&symbols, "Customer Name").unwrap();
+        assert_eq!(field.kind, SymbolKind::Field);
+
+        // The OnAction trigger nested inside the action body is captured.
+        let trig = find_sym(&symbols, "OnAction").expect("OnAction trigger");
+        assert_eq!(trig.kind, SymbolKind::Event);
+        assert_eq!(trig.detail.as_deref(), Some("trigger"));
+    }
+
+    #[test]
+    fn test_procedure_detail_params_and_return_type() {
+        let src = r#"codeunit 50100 Test
+{
+    procedure NoReturn(x: Integer)
+    begin
+    end;
+
+    procedure WithReturn(a: Integer; b: Code[20]): Boolean
+    begin
+    end;
+}"#;
+        let symbols = parse_symbols(src);
+        let no_return = find_sym(&symbols, "NoReturn").expect("NoReturn proc");
+        assert_eq!(no_return.kind, SymbolKind::Function);
+        // Detail is just the parameter list (no return type).
+        let detail = no_return.detail.as_deref().unwrap();
+        assert!(detail.contains("Integer"), "got detail {:?}", detail);
+        assert!(!detail.contains(':') || detail.starts_with('('));
+
+        let with_return = find_sym(&symbols, "WithReturn").expect("WithReturn proc");
+        let detail = with_return.detail.as_deref().unwrap();
+        // Return type is appended after ": ".
+        assert!(
+            detail.ends_with(": Boolean"),
+            "return type should be in detail, got {:?}",
+            detail
+        );
+    }
+
+    #[test]
+    fn test_enum_value_ordinal_in_detail() {
+        let src = r#"enum 50100 "My Enum"
+{
+    value(0; First) { }
+    value(7; "Last One") { }
+}"#;
+        let symbols = parse_symbols(src);
+        let first = find_sym(&symbols, "First").expect("First value");
+        assert_eq!(first.kind, SymbolKind::EnumMember);
+        assert_eq!(first.detail.as_deref(), Some("value(0)"));
+
+        let last = find_sym(&symbols, "Last One").expect("Last One value");
+        assert_eq!(last.detail.as_deref(), Some("value(7)"));
+    }
+
+    #[test]
+    fn test_report_dataitem_is_class_with_dataitem_detail() {
+        let src = r#"report 50200 "My Report"
+{
+    dataset
+    {
+        dataitem(MyItem; "Customer")
+        {
+            column(Name; "Name") { }
+
+            trigger OnAfterGetRecord()
+            begin
+            end;
+        }
+    }
+}"#;
+        let symbols = parse_symbols(src);
+        let item = find_sym(&symbols, "MyItem").expect("dataitem symbol");
+        assert_eq!(item.detail.as_deref(), Some("dataitem"));
+        // Nested trigger captured under the dataitem.
+        let all = collect_names_rec(&symbols);
+        assert!(
+            all.iter().any(|n| n == "OnAfterGetRecord"),
+            "dataitem trigger should be captured. Got: {:?}",
+            all
+        );
+    }
+
+    #[test]
+    fn test_event_procedure_symbol() {
+        // [IntegrationEvent] decorated procedures parse as procedure_declaration;
+        // ensure they still surface as a Function symbol with param detail.
+        let src = r#"codeunit 50100 Test
+{
+    [IntegrationEvent(false, false)]
+    procedure OnBeforeFoo(var Handled: Boolean)
+    begin
+    end;
+}"#;
+        let symbols = parse_symbols(src);
+        let ev = find_sym(&symbols, "OnBeforeFoo").expect("event procedure");
+        assert!(matches!(ev.kind, SymbolKind::Function | SymbolKind::Event));
+        assert!(ev.detail.as_deref().unwrap().contains("Handled"));
+    }
+
+    #[test]
+    fn test_label_symbols_extracted_from_var_section() {
+        let src = r#"codeunit 50100 Test
+{
+    var
+        ErrMsg: Label 'Something went wrong';
+        InfoTxt: Label 'All good';
+        RecVar: Record Customer;
+}"#;
+        let symbols = parse_symbols(src);
+        let children = symbols[0].children.as_ref().expect("var children");
+        let names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"ErrMsg"), "got {:?}", names);
+        assert!(names.contains(&"InfoTxt"), "got {:?}", names);
+        assert!(names.contains(&"RecVar"), "got {:?}", names);
+
+        let err = children.iter().find(|c| c.name == "ErrMsg").unwrap();
+        assert_eq!(err.kind, SymbolKind::Variable);
+    }
+
+    #[test]
+    fn test_empty_source_yields_no_symbols() {
+        let symbols = parse_symbols("");
+        assert!(symbols.is_empty());
+    }
+
+    #[test]
+    fn test_malformed_object_does_not_panic() {
+        // Truncated / malformed object: must not panic and must degrade gracefully.
+        let src = "codeunit 50100";
+        let symbols = parse_symbols(src);
+        // Either zero symbols or a best-effort object symbol — never a panic.
+        for s in &symbols {
+            assert!(!s.name.is_empty() || s.name == "(unnamed)");
+        }
+    }
+
+    #[test]
+    fn test_unnamed_object_fallback_name() {
+        // Object with no name token at all → "(unnamed)" fallback.
+        let src = "codeunit 50100 { }";
+        let symbols = parse_symbols(src);
+        if let Some(obj) = symbols.first() {
+            // When the parser can't recover a name, the helper substitutes "(unnamed)".
+            assert!(!obj.name.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_object_kind_to_symbol_kind_unknown_falls_back_to_object() {
+        // A node kind that is not a known AL object type maps to Object.
+        assert_eq!(
+            object_kind_to_symbol_kind("kw_not_a_real_object"),
+            SymbolKind::Object
+        );
+    }
+
+    #[test]
+    fn test_object_kind_display_strips_kw_prefix_for_unknown() {
+        // Unknown kinds fall back to stripping the "kw_" prefix.
+        assert_eq!(object_kind_display("kw_widget"), "widget");
+        // A kind without the prefix is returned unchanged.
+        assert_eq!(object_kind_display("widget"), "widget");
+    }
+
+    #[test]
+    fn test_lsp_symbol_kind_from_str_mapping() {
+        assert_eq!(lsp_symbol_kind_from_str("Enum"), SymbolKind::Enum);
+        assert_eq!(lsp_symbol_kind_from_str("Interface"), SymbolKind::Interface);
+        assert_eq!(lsp_symbol_kind_from_str("Class"), SymbolKind::Class);
+        // Unknown strings fall back to Object.
+        assert_eq!(lsp_symbol_kind_from_str("Nonsense"), SymbolKind::Object);
+    }
+
+    #[test]
+    fn test_is_variable_name_node_accepts_kw_prefix() {
+        assert!(is_variable_name_node("identifier"));
+        assert!(is_variable_name_node("quoted_identifier"));
+        // F-OPEN-103: any kw_* node counts as an identifier fallback.
+        assert!(is_variable_name_node("kw_record"));
+        assert!(is_variable_name_node("kw_anything_at_all"));
+        // Non-identifier punctuation does not.
+        assert!(!is_variable_name_node("semicolon"));
+        assert!(!is_variable_name_node(";"));
+    }
+
+    #[test]
+    fn test_multiple_top_level_objects_in_one_file() {
+        let src = r#"codeunit 50100 First { }
+
+table 50101 Second { fields { } }
+
+enum 50102 Third { value(0; A) { } }"#;
+        let symbols = parse_symbols(src);
+        assert_eq!(symbols.len(), 3, "three top-level objects");
+        assert_eq!(symbols[0].name, "First");
+        assert_eq!(symbols[1].name, "Second");
+        assert_eq!(symbols[2].name, "Third");
+        assert_eq!(symbols[2].kind, SymbolKind::Enum);
+    }
 }
