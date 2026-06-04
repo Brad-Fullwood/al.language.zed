@@ -535,4 +535,312 @@ mod tests {
 
         assert_eq!(pick_active_signature(&[s0, s1], 7), 1);
     }
+
+    // ---------------------------------------------------------------------
+    // build_signature_info_from_method — additional shape coverage
+    // ---------------------------------------------------------------------
+
+    /// A method with no return type must NOT emit a trailing `: <type>`; the
+    /// label is just `Name(params)`. Exercises the `unwrap_or_default()` branch
+    /// of the return-type formatting that the existing happy-path test (which
+    /// always supplies `Some("Boolean")`) never reaches.
+    #[test]
+    fn build_signature_info_no_return_type_omits_colon() {
+        let m = make_method("DoWork", vec!["A", "B"], None);
+        let s = build_signature_info_from_method(&m, 1);
+
+        assert_eq!(s.label, "DoWork(A: Text; B: Text)");
+        assert!(
+            !s.label.contains(':') || s.label.contains(": Text"),
+            "no return-type colon should be appended, label = {}",
+            s.label
+        );
+        assert_eq!(s.parameters.len(), 2);
+        assert_eq!(s.parameters[0].label, "A: Text");
+        // documentation is always None on this primitive (package methods
+        // carry their docs separately).
+        assert!(s.documentation.is_none());
+        assert!(s.parameters.iter().all(|p| p.documentation.is_none()));
+    }
+
+    /// A `var` (by-reference) parameter must render with the `var ` prefix in
+    /// both the per-parameter label and the joined signature label. This pins
+    /// that `ParameterSymbol::Display` (which prepends `var `) flows through
+    /// the builder untouched.
+    #[test]
+    fn build_signature_info_preserves_var_modifier() {
+        let m = MethodSymbol {
+            name: "Modify".to_string(),
+            parameters: vec![ParameterSymbol {
+                name: "Rec".to_string(),
+                type_name: "Record".to_string(),
+                is_var: true,
+            }],
+            return_type: Some("Boolean".to_string()),
+            attributes: vec![],
+            is_local: false,
+        };
+        let s = build_signature_info_from_method(&m, 0);
+
+        assert_eq!(s.label, "Modify(var Rec: Record): Boolean");
+        assert_eq!(s.parameters.len(), 1);
+        assert_eq!(s.parameters[0].label, "var Rec: Record");
+    }
+
+    /// The `active_param` argument is forwarded verbatim onto the produced
+    /// SignatureInfo regardless of how many parameters the method actually
+    /// has — even when it exceeds the parameter count (the caller decides
+    /// validity, not this primitive).
+    #[test]
+    fn build_signature_info_forwards_out_of_range_active_param() {
+        let m = make_method("Tiny", vec!["A"], Some("Integer"));
+        let s = build_signature_info_from_method(&m, 99);
+        assert_eq!(s.active_parameter, Some(99));
+    }
+
+    // ---------------------------------------------------------------------
+    // pick_active_signature — boundary inputs
+    // ---------------------------------------------------------------------
+
+    /// An empty signature list must not panic and must fall back to index 0
+    /// (the `map_or(0, ..)` default on the `max_by_key` over an empty
+    /// iterator). This is the documented safe default.
+    #[test]
+    fn pick_active_signature_empty_slice_returns_zero() {
+        assert_eq!(pick_active_signature(&[], 0), 0);
+        assert_eq!(pick_active_signature(&[], 42), 0);
+    }
+
+    /// With a single overload that accommodates the active param, its index
+    /// (0) is returned via the fast `position(..)` path.
+    #[test]
+    fn pick_active_signature_single_matching_overload() {
+        let m = make_method("Solo", vec!["A", "B", "C"], Some("Boolean"));
+        let s = build_signature_info_from_method(&m, 1);
+        assert_eq!(pick_active_signature(&[s], 1), 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // parse_parameters_from_detail — malformed / boundary inputs
+    // ---------------------------------------------------------------------
+
+    /// A detail string with no parentheses at all yields zero parameters
+    /// rather than panicking — the documented behaviour of the underlying
+    /// paren-depth scanner.
+    #[test]
+    fn parse_parameters_from_detail_no_parens() {
+        assert!(parse_parameters_from_detail("DoWork").is_empty());
+        assert!(parse_parameters_from_detail("").is_empty());
+    }
+
+    /// Nested parentheses inside a parameter type (e.g. a Dictionary type or a
+    /// length spec) must be split on the TOP-LEVEL semicolons only — the
+    /// paren-depth-aware splitter keeps inner `(...)` intact.
+    #[test]
+    fn parse_parameters_from_detail_nested_parens_in_type() {
+        let detail = "(Items: List of [Integer]; Opt: Option(A,B,C)): Boolean";
+        let params = parse_parameters_from_detail(detail);
+        assert_eq!(params.len(), 2, "got {:?}", params);
+        assert_eq!(params[0].label, "Items: List of [Integer]");
+        assert_eq!(params[1].label, "Opt: Option(A,B,C)");
+    }
+
+    // ---------------------------------------------------------------------
+    // signature_help — end-to-end through a real Workspace (document-symbol
+    // path). These cover the largest previously-untested region: prefix
+    // slicing, find_call_context, document-symbol extraction, and result
+    // assembly.
+    // ---------------------------------------------------------------------
+
+    use crate::workspace::Workspace;
+
+    const SRC: &str = "codeunit 50100 \"Sig CU\"\n{\n    procedure Compute(Amount: Decimal; Factor: Integer): Decimal\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Compute(\n    end;\n}\n";
+
+    /// Happy path: cursor inside a call to a procedure declared in the same
+    /// document. signature_help finds the local procedure symbol, parses its
+    /// detail into parameters, and returns one signature with the call's
+    /// active parameter index.
+    #[test]
+    fn signature_help_local_procedure_happy_path() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/sig.al").expect("uri");
+        ws.documents.open(uri.clone(), SRC.to_string());
+
+        // Line index of `        Compute(` — the call line. Position the
+        // cursor immediately after the open paren so active_param == 0.
+        let lines: Vec<&str> = SRC.lines().collect();
+        let call_line = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("Compute("))
+            .expect("call line present") as u32;
+        let col = lines[call_line as usize].find('(').expect("open paren") as u32 + 1;
+
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: call_line,
+                character: col,
+            },
+        )
+        .expect("expected signature help for local procedure");
+
+        assert_eq!(result.signatures.len(), 1);
+        let sig = &result.signatures[0];
+        assert!(sig.label.starts_with("Compute("), "label = {}", sig.label);
+        assert_eq!(sig.parameters.len(), 2, "params = {:?}", sig.parameters);
+        assert_eq!(sig.parameters[0].label, "Amount: Decimal");
+        assert_eq!(sig.parameters[1].label, "Factor: Integer");
+        assert_eq!(result.active_parameter, Some(0));
+        assert_eq!(result.active_signature, Some(0));
+    }
+
+    /// The active parameter index tracks the comma count: with one comma
+    /// typed in the call, the cursor sits on the second parameter (index 1).
+    #[test]
+    fn signature_help_tracks_active_parameter_after_comma() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/sig2.al").expect("uri");
+        let src = "codeunit 50100 \"Sig CU\"\n{\n    procedure Compute(Amount: Decimal; Factor: Integer): Decimal\n    begin\n    end;\n\n    procedure Run()\n    begin\n        Compute(100,\n    end;\n}\n";
+        ws.documents.open(uri.clone(), src.to_string());
+
+        let lines: Vec<&str> = src.lines().collect();
+        let call_line = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("Compute(100,"))
+            .expect("call line") as u32;
+        // Cursor at end of `        Compute(100,`
+        let col = lines[call_line as usize].chars().count() as u32;
+
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: call_line,
+                character: col,
+            },
+        )
+        .expect("expected signature help");
+
+        assert_eq!(
+            result.active_parameter,
+            Some(1),
+            "one comma typed => second parameter active"
+        );
+    }
+
+    /// No open document for the URI: signature_help returns None rather than
+    /// panicking on the `get_text_arc` miss.
+    #[test]
+    fn signature_help_unknown_document_returns_none() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/missing.al").expect("uri");
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: 0,
+                character: 0,
+            },
+        );
+        assert!(result.is_none(), "no document => None");
+    }
+
+    /// Cursor not inside any call expression (no open paren before it):
+    /// find_call_context yields None and signature_help returns None.
+    #[test]
+    fn signature_help_not_in_call_context_returns_none() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/nocall.al").expect("uri");
+        ws.documents.open(uri.clone(), SRC.to_string());
+        // Point at the very start of the file — column 0, no call context.
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: 0,
+                character: 0,
+            },
+        );
+        assert!(result.is_none(), "not in a call => None");
+    }
+
+    /// Calling an unknown function (no matching local symbol, no package or
+    /// builtin) falls through every branch and returns None.
+    #[test]
+    fn signature_help_unknown_function_returns_none() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/unknownfn.al").expect("uri");
+        let src = "codeunit 50100 \"Sig CU\"\n{\n    procedure Run()\n    begin\n        NoSuchProcXYZ(\n    end;\n}\n";
+        ws.documents.open(uri.clone(), src.to_string());
+
+        let lines: Vec<&str> = src.lines().collect();
+        let call_line = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("NoSuchProcXYZ("))
+            .expect("call line") as u32;
+        let col = lines[call_line as usize].find('(').expect("paren") as u32 + 1;
+
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: call_line,
+                character: col,
+            },
+        );
+        assert!(
+            result.is_none(),
+            "unknown function with no symbol/package/builtin match => None, got {:?}",
+            result.map(|r| r.signatures.len())
+        );
+    }
+
+    /// A position whose line index is past the end of the document returns
+    /// None (the `lines().nth(..)` miss), not a panic.
+    #[test]
+    fn signature_help_line_out_of_range_returns_none() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/oob.al").expect("uri");
+        ws.documents.open(uri.clone(), SRC.to_string());
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: 9999,
+                character: 0,
+            },
+        );
+        assert!(result.is_none(), "line past EOF => None");
+    }
+
+    /// A UTF-16 column far past the end of the line is clamped to line.len()
+    /// rather than panicking. With the cursor effectively at end-of-line on a
+    /// `Compute(` line, the call context is still recovered and a signature
+    /// returned. Exercises the clamp branch (clamped_remaining > 0).
+    #[test]
+    fn signature_help_column_past_eol_clamps() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///test/clamp.al").expect("uri");
+        ws.documents.open(uri.clone(), SRC.to_string());
+
+        let lines: Vec<&str> = SRC.lines().collect();
+        let call_line = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("Compute("))
+            .expect("call line") as u32;
+
+        // Column way past the actual line length — must clamp, not panic.
+        let result = signature_help(
+            &ws,
+            &uri,
+            Position {
+                line: call_line,
+                character: 1000,
+            },
+        )
+        .expect("clamped cursor still resolves the Compute( call");
+        assert_eq!(result.signatures.len(), 1);
+        assert!(result.signatures[0].label.starts_with("Compute("));
+    }
 }
