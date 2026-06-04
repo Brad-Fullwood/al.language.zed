@@ -638,6 +638,208 @@ mod resolve_object_metadata_tests {
 }
 
 #[cfg(test)]
+mod dispatch_debug_tests {
+    //! In-process coverage for [`dispatch_debug`]'s param-validation and
+    //! no-session error paths. A fresh `Workspace` starts with
+    //! `debug_session == None`, so every "no active session" branch and every
+    //! argument-validation branch is reachable without spawning a real BC
+    //! debugger.
+    use super::dispatch_debug;
+    use crate::workspace::Workspace;
+    use al_protocol::jsonrpc::error_codes;
+    use serde_json::json;
+
+    fn err_code(r: &al_protocol::jsonrpc::Response) -> i32 {
+        r.error.as_ref().expect("error expected").code
+    }
+
+    fn err_msg(r: &al_protocol::jsonrpc::Response) -> String {
+        r.error.as_ref().expect("error expected").message.clone()
+    }
+
+    #[tokio::test]
+    async fn missing_cmd_is_invalid_params() {
+        // No `cmd` key at all → INVALID_PARAMS, not a panic or success.
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 1, &json!({})).await;
+        assert_eq!(r.id, 1);
+        assert!(r.result.is_none());
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+        assert!(err_msg(&r).contains("Missing 'cmd'"), "{}", err_msg(&r));
+    }
+
+    #[tokio::test]
+    async fn non_string_cmd_is_invalid_params() {
+        // `cmd` present but not a string → as_str() is None → same branch.
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 2, &json!({"cmd": 42})).await;
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn unknown_cmd_is_invalid_params_and_echoes_name() {
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 3, &json!({"cmd": "frobnicate"})).await;
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+        assert!(
+            err_msg(&r).contains("frobnicate"),
+            "unknown cmd name must be echoed: {}",
+            err_msg(&r)
+        );
+    }
+
+    #[tokio::test]
+    async fn breakpoint_missing_file_is_invalid_params() {
+        // The `file` guard fires before any session lock is taken.
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 4, &json!({"cmd": "breakpoint", "line": 5})).await;
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+        assert!(err_msg(&r).contains("file"), "{}", err_msg(&r));
+    }
+
+    #[tokio::test]
+    async fn breakpoint_missing_line_is_invalid_params() {
+        // The `line` guard rejects a missing line rather than defaulting to 0.
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 5, &json!({"cmd": "breakpoint", "file": "/tmp/Foo.al"})).await;
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+        assert!(err_msg(&r).contains("line"), "{}", err_msg(&r));
+    }
+
+    #[tokio::test]
+    async fn breakpoint_out_of_range_line_is_invalid_params() {
+        // A line beyond u32::MAX must be rejected, not wrapped.
+        let ws = Workspace::new();
+        let big = u64::from(u32::MAX) + 1;
+        let r = dispatch_debug(
+            &ws,
+            6,
+            &json!({"cmd": "breakpoint", "file": "/tmp/Foo.al", "line": big}),
+        )
+        .await;
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+        assert!(err_msg(&r).contains("line"), "{}", err_msg(&r));
+    }
+
+    #[tokio::test]
+    async fn breakpoint_unresolvable_metadata_is_invalid_params() {
+        // file + valid line present, but the file isn't indexed and the caller
+        // supplied neither objectType nor objectId → metadata cannot be
+        // resolved → INVALID_PARAMS (NOT the no-session error, which would
+        // only be reached after metadata resolves).
+        let ws = Workspace::new();
+        let r = dispatch_debug(
+            &ws,
+            7,
+            &json!({"cmd": "breakpoint", "file": "/nope/Foo.al", "line": 3}),
+        )
+        .await;
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+        assert!(err_msg(&r).contains("object metadata"), "{}", err_msg(&r));
+    }
+
+    #[tokio::test]
+    async fn breakpoint_with_caller_metadata_but_no_session_is_no_session() {
+        // Caller supplies objectType + objectId so metadata resolves; we then
+        // hit the session lock and find None → INTERNAL_ERROR "No active
+        // debug session". This proves the metadata path can fall through.
+        let ws = Workspace::new();
+        let r = dispatch_debug(
+            &ws,
+            8,
+            &json!({
+                "cmd": "breakpoint",
+                "file": "/nope/Foo.al",
+                "line": 3,
+                "objectType": 5,
+                "objectId": 50100
+            }),
+        )
+        .await;
+        assert_eq!(err_code(&r), error_codes::INTERNAL_ERROR);
+        assert!(
+            err_msg(&r).contains("No active debug session"),
+            "{}",
+            err_msg(&r)
+        );
+    }
+
+    #[tokio::test]
+    async fn state_without_session_is_no_session() {
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 9, &json!({"cmd": "state"})).await;
+        assert_eq!(err_code(&r), error_codes::INTERNAL_ERROR);
+        assert!(err_msg(&r).contains("No active debug session"));
+    }
+
+    #[tokio::test]
+    async fn eval_missing_expr_is_invalid_params() {
+        // The expr guard fires before the session lock.
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 10, &json!({"cmd": "eval"})).await;
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+        assert!(err_msg(&r).contains("expr"), "{}", err_msg(&r));
+    }
+
+    #[tokio::test]
+    async fn eval_with_expr_but_no_session_is_no_session() {
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 11, &json!({"cmd": "eval", "expr": "x + 1"})).await;
+        assert_eq!(err_code(&r), error_codes::INTERNAL_ERROR);
+        assert!(err_msg(&r).contains("No active debug session"));
+    }
+
+    #[tokio::test]
+    async fn continue_without_session_is_no_session() {
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 12, &json!({"cmd": "continue"})).await;
+        assert_eq!(err_code(&r), error_codes::INTERNAL_ERROR);
+        assert!(err_msg(&r).contains("No active debug session"));
+    }
+
+    #[tokio::test]
+    async fn step_without_session_is_no_session() {
+        // step defaults stepType to "over" and still requires a session.
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 13, &json!({"cmd": "step"})).await;
+        assert_eq!(err_code(&r), error_codes::INTERNAL_ERROR);
+        assert!(err_msg(&r).contains("No active debug session"));
+    }
+
+    #[tokio::test]
+    async fn history_without_session_is_no_session() {
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 14, &json!({"cmd": "history"})).await;
+        assert_eq!(err_code(&r), error_codes::INTERNAL_ERROR);
+        assert!(err_msg(&r).contains("No active debug session"));
+    }
+
+    #[tokio::test]
+    async fn stop_without_session_is_idempotent_success() {
+        // Stopping when nothing is running is NOT an error: it returns a
+        // success result reporting "stopped". This is the one no-session
+        // branch that intentionally succeeds.
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 15, &json!({"cmd": "stop"})).await;
+        assert_eq!(r.id, 15);
+        assert!(r.error.is_none(), "stop with no session must not error");
+        let result = r.result.expect("stop must return a result");
+        assert_eq!(result["status"], "stopped");
+        assert_eq!(result["cmd"], "stop");
+    }
+
+    #[tokio::test]
+    async fn start_without_project_or_config_is_invalid_params() {
+        // No `server` key and no project → resolve_debug_config errors with
+        // "No active project", surfaced as INVALID_PARAMS (not a panic).
+        let ws = Workspace::new();
+        let r = dispatch_debug(&ws, 16, &json!({"cmd": "start"})).await;
+        assert_eq!(err_code(&r), error_codes::INVALID_PARAMS);
+        assert!(err_msg(&r).contains("No active project"), "{}", err_msg(&r));
+    }
+}
+
+#[cfg(test)]
 mod serialization_helper_tests {
     use super::{serialize_each, state_response};
     use serde::Serialize;
