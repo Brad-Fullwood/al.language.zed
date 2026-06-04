@@ -1158,4 +1158,281 @@ mod tests {
         assert!(settings["lsp"]["al-lsp"]["settings"].is_object());
         assert!(settings["languages"]["AL"].is_object());
     }
+
+    // -----------------------------------------------------------------------
+    // DownloadSource::display_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn download_source_display_names() {
+        assert_eq!(DownloadSource::Server.display_name(), "BC server");
+        assert_eq!(DownloadSource::NuGet.display_name(), "NuGet");
+    }
+
+    // -----------------------------------------------------------------------
+    // map_nuget_feeds
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn map_nuget_feeds_preserves_index_urls_in_order() {
+        let feeds = vec![
+            crate::project::NuGetFeed {
+                name: "first".to_string(),
+                index_url: "https://a.example/index.json".to_string(),
+            },
+            crate::project::NuGetFeed {
+                name: "second".to_string(),
+                index_url: "https://b.example/index.json".to_string(),
+            },
+        ];
+        let mapped = map_nuget_feeds(&feeds);
+        assert_eq!(mapped.len(), 2);
+        // The `name` field is dropped; only `index_url` carries over, in order.
+        assert_eq!(mapped[0].index_url, "https://a.example/index.json");
+        assert_eq!(mapped[1].index_url, "https://b.example/index.json");
+    }
+
+    #[test]
+    fn map_nuget_feeds_empty_yields_empty() {
+        let mapped = map_nuget_feeds(&[]);
+        assert!(mapped.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // ensure_parent_dir
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ensure_parent_dir_creates_missing_parents() {
+        let tmp = std::env::temp_dir().join(format!("al-ws-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let target = tmp.join("nested").join("deep").join("file.txt");
+        ensure_parent_dir(&target).unwrap();
+        assert!(target.parent().unwrap().is_dir());
+        // Now an actual write into the created directory must succeed.
+        std::fs::write(&target, b"ok").unwrap();
+        assert!(target.exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ensure_parent_dir_handles_path_without_parent() {
+        // A bare relative file name has parent == "" — create_dir_all("") is Ok.
+        let p = Path::new("just_a_name");
+        assert!(ensure_parent_dir(p).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // log_source_availability — must not panic on odd inputs / empty list
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn log_source_availability_handles_empty_and_missing_files() {
+        // Empty package list: no-op, no panic.
+        log_source_availability(&[]);
+        // Non-existent .app path: app_has_source returns false, the stem is
+        // collected, and the function logs without panicking.
+        log_source_availability(&[PathBuf::from("/nonexistent/Some.App.app")]);
+        // Path with no file stem must fall back to "unknown" without panic.
+        log_source_availability(&[PathBuf::from("/")]);
+    }
+
+    // -----------------------------------------------------------------------
+    // sentinel_path / settings_prompt_shown / mark_settings_prompt_shown
+    // -----------------------------------------------------------------------
+
+    /// RAII guard that snapshots and restores process env vars used by the
+    /// path helpers, so these serial tests don't leak state into one another.
+    struct EnvGuard {
+        keys: Vec<(&'static str, Option<String>)>,
+    }
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let snapshot = keys.iter().map(|&k| (k, std::env::var(k).ok())).collect();
+            Self { keys: snapshot }
+        }
+        fn set(&self, key: &str, val: &Path) {
+            std::env::set_var(key, val);
+        }
+        fn remove(&self, key: &str) {
+            std::env::remove_var(key);
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in &self.keys {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sentinel_path_uses_xdg_data_home() {
+        let guard = EnvGuard::new(&["XDG_DATA_HOME", "HOME"]);
+        let base = std::env::temp_dir().join("al-xdg-data");
+        guard.set("XDG_DATA_HOME", &base);
+        let p = sentinel_path().expect("path should resolve from XDG_DATA_HOME");
+        assert_eq!(p, base.join("al-lsp").join(".settings-prompt-shown"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sentinel_path_falls_back_to_home() {
+        let guard = EnvGuard::new(&["XDG_DATA_HOME", "HOME"]);
+        guard.remove("XDG_DATA_HOME");
+        let home = std::env::temp_dir().join("al-home");
+        guard.set("HOME", &home);
+        let p = sentinel_path().expect("path should resolve from HOME fallback");
+        assert_eq!(
+            p,
+            home.join(".local/share")
+                .join("al-lsp")
+                .join(".settings-prompt-shown")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn sentinel_path_none_without_env() {
+        let guard = EnvGuard::new(&["XDG_DATA_HOME", "HOME"]);
+        guard.remove("XDG_DATA_HOME");
+        guard.remove("HOME");
+        assert!(sentinel_path().is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn settings_prompt_round_trip_via_sentinel() {
+        let guard = EnvGuard::new(&["XDG_DATA_HOME", "HOME"]);
+        let base = std::env::temp_dir().join(format!("al-sentinel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        guard.set("XDG_DATA_HOME", &base);
+        // Fresh: sentinel absent → not shown.
+        assert!(!settings_prompt_shown());
+        // After marking, the sentinel exists → shown.
+        mark_settings_prompt_shown();
+        assert!(settings_prompt_shown());
+        assert!(sentinel_path().unwrap().exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // -----------------------------------------------------------------------
+    // zed_has_al_settings
+    // -----------------------------------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    fn write_zed_settings(guard: &EnvGuard, contents: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "al-zedcfg-{}-{}",
+            std::process::id(),
+            // unique-ish per call so cases don't collide
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        guard.set("XDG_CONFIG_HOME", &base);
+        let path = zed_settings_path().unwrap();
+        ensure_parent_dir(&path).unwrap();
+        std::fs::write(&path, contents).unwrap();
+        base
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn zed_has_al_settings_true_when_both_sections_present() {
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        let base = write_zed_settings(
+            &guard,
+            r#"{
+                "lsp": { "al-lsp": { "settings": {} } },
+                "languages": { "AL": { "language_servers": ["al-lsp"] } }
+            }"#,
+        );
+        assert!(zed_has_al_settings());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn zed_has_al_settings_false_when_language_server_missing() {
+        // Has the lsp.al-lsp block, but language_servers is empty: must be false
+        // (the documented guard against "present but broken" settings).
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        let base = write_zed_settings(
+            &guard,
+            r#"{
+                "lsp": { "al-lsp": { "settings": {} } },
+                "languages": { "AL": { "language_servers": [] } }
+            }"#,
+        );
+        assert!(!zed_has_al_settings());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn zed_has_al_settings_false_when_no_lsp_section() {
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        // Mentions "al-lsp" only in language_servers, so the early text check
+        // passes, but lsp.al-lsp is absent → false.
+        let base = write_zed_settings(
+            &guard,
+            r#"{ "languages": { "AL": { "language_servers": ["al-lsp"] } } }"#,
+        );
+        assert!(!zed_has_al_settings());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn zed_has_al_settings_false_when_file_missing() {
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        let base = std::env::temp_dir().join(format!("al-zedcfg-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        guard.set("XDG_CONFIG_HOME", &base);
+        // File does not exist → read fails → false.
+        assert!(!zed_has_al_settings());
+    }
+
+    // -----------------------------------------------------------------------
+    // apply_recommended_settings (end-to-end merge + write)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn apply_recommended_settings_creates_and_merges() {
+        let guard = EnvGuard::new(&["XDG_CONFIG_HOME", "HOME"]);
+        let base = std::env::temp_dir().join(format!("al-apply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        guard.set("XDG_CONFIG_HOME", &base);
+        let path = zed_settings_path().unwrap();
+        // Pre-existing user setting that must survive the merge.
+        ensure_parent_dir(&path).unwrap();
+        std::fs::write(&path, r#"{ "ui_font_size": 18, "theme": "Custom" }"#).unwrap();
+
+        apply_recommended_settings().unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&written).unwrap();
+        // Recommended settings applied.
+        assert_eq!(v["languages"]["AL"]["language_servers"][0], "al-lsp");
+        assert!(v["lsp"]["al-lsp"]["settings"].is_object());
+        // Pre-existing user values preserved.
+        assert_eq!(v["ui_font_size"], 18);
+        assert_eq!(v["theme"], "Custom");
+        // The just-written file is itself recognized as having AL settings.
+        assert!(zed_has_al_settings());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
