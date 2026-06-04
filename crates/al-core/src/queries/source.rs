@@ -705,6 +705,193 @@ mod tests {
         );
     }
 
+    // -- extract_signature_from_text edge / boundary paths -----------------
+
+    #[test]
+    fn extract_signature_no_parens_falls_back_to_first_line() {
+        // No '(' or ')' at all: `end` stays 0 and the function returns the
+        // first line (fallback branch).
+        let text = "trigger OnInsert\nbegin\nend;";
+        let sig = extract_signature_from_text(text);
+        assert_eq!(sig, "trigger OnInsert");
+    }
+
+    #[test]
+    fn extract_signature_strips_trailing_semicolon_on_return_type() {
+        // Return type on the same line, terminated by ';' — the ';' must be stripped.
+        let text = "procedure GetValue(): Decimal;\nbegin\nend;";
+        let sig = extract_signature_from_text(text);
+        assert_eq!(sig, "procedure GetValue(): Decimal");
+    }
+
+    #[test]
+    fn extract_signature_empty_input_returns_empty() {
+        // No parens, no newline: lines().next() yields "" -> fallback returns "".
+        let sig = extract_signature_from_text("");
+        assert_eq!(sig, "");
+    }
+
+    #[test]
+    fn extract_signature_no_return_type_after_close_paren() {
+        // ')' closes the signature and the rest of the line has no ':'.
+        let text = "procedure Foo(a: Integer) // comment\nbegin\nend;";
+        let sig = extract_signature_from_text(text);
+        assert_eq!(sig, "procedure Foo(a: Integer)");
+    }
+
+    // -- extract_procedure_from_text ---------------------------------------
+
+    #[test]
+    fn extract_procedure_from_text_finds_target() {
+        let src = "codeunit 50100 \"Helper\"\n{\n    procedure Alpha()\n    begin\n    end;\n\n    procedure Beta(x: Integer): Boolean\n    begin\n        exit(true);\n    end;\n}\n";
+        let (code, sig) = extract_procedure_from_text(src, "Beta").expect("Beta found");
+        assert!(code.contains("procedure Beta(x: Integer): Boolean"));
+        assert!(code.contains("exit(true)"));
+        assert_eq!(sig, "procedure Beta(x: Integer): Boolean");
+    }
+
+    #[test]
+    fn extract_procedure_from_text_missing_returns_none() {
+        let src = "codeunit 50100 \"Helper\"\n{\n    procedure Alpha()\n    begin\n    end;\n}\n";
+        assert!(extract_procedure_from_text(src, "DoesNotExist").is_none());
+    }
+
+    // -- find_procedure_node branches --------------------------------------
+
+    #[test]
+    fn find_procedure_node_matches_trigger_and_quoted_name_case_insensitive() {
+        let src = "table 50100 \"My Tab\"\n{\n    trigger OnInsert()\n    begin\n    end;\n\n    procedure \"Do Work\"()\n    begin\n    end;\n}\n";
+        let parsed = crate::syntax::AlParser::parse_quick(src);
+        let root = parsed.tree.root_node();
+
+        // trigger_declaration branch, case-insensitive match.
+        assert!(find_procedure_node(&root, src, "oninsert").is_some());
+
+        // Quoted procedure name: the surrounding quotes are trimmed before compare.
+        assert!(find_procedure_node(&root, src, "Do Work").is_some());
+
+        // Non-existent member.
+        assert!(find_procedure_node(&root, src, "Nope").is_none());
+    }
+
+    // -- try_package_source via the public source() entrypoint -------------
+    //
+    // No app path is registered for the package, so source() falls through to
+    // the SymbolReference.json outline-rendering branches.
+
+    fn ws_with(entry: SymbolEntry) -> crate::workspace::Workspace {
+        let ws = crate::workspace::Workspace::new();
+        ws.symbols.add_entries_owned(vec![entry]);
+        ws
+    }
+
+    #[test]
+    fn source_outline_full_object() {
+        let ws = ws_with(make_table_entry());
+        let result = source(&ws, "Customer", None, None, None).expect("found");
+
+        assert_eq!(result.src, SourceLevel::Outline);
+        assert_eq!(result.k, ObjectKind::Table);
+        assert_eq!(result.id, 18);
+        assert_eq!(result.pkg.as_deref(), Some("Base Application"));
+        assert!(result.proc_name.is_none());
+        assert!(result.sig.is_none());
+        assert!(result.note.is_some());
+        // Body is the rendered outline.
+        assert!(result.code.contains("table 18 Customer"));
+        assert!(result.code.contains("procedure SetFilter"));
+    }
+
+    #[test]
+    fn source_outline_procedure_filter_renders_signature_only() {
+        let ws = ws_with(make_table_entry());
+        let result = source(&ws, "Customer", None, Some("GetBalance"), None).expect("found");
+
+        assert_eq!(result.src, SourceLevel::Outline);
+        assert_eq!(result.proc_name.as_deref(), Some("GetBalance"));
+        // code == sig for outline procedure mode, and it is a bare signature.
+        assert_eq!(result.code, "procedure GetBalance(): Decimal");
+        assert_eq!(
+            result.sig.as_deref(),
+            Some("procedure GetBalance(): Decimal")
+        );
+        assert!(result.note.unwrap().contains("signature only"));
+    }
+
+    #[test]
+    fn source_outline_procedure_filter_case_insensitive() {
+        let ws = ws_with(make_table_entry());
+        // eq_ignore_ascii_case branch on the method lookup.
+        let result = source(&ws, "Customer", None, Some("setfilter"), None).expect("found");
+        assert_eq!(
+            result.sig.as_deref(),
+            Some("procedure SetFilter(FilterStr: Text)")
+        );
+    }
+
+    #[test]
+    fn source_outline_trigger_filter_used_when_no_proc_filter() {
+        let ws = ws_with(make_table_entry());
+        // trigger_filter is the fallback member filter; GetBalance is a method here.
+        let result = source(&ws, "Customer", None, None, Some("GetBalance")).expect("found");
+        assert_eq!(result.proc_name.as_deref(), Some("GetBalance"));
+        assert_eq!(result.code, "procedure GetBalance(): Decimal");
+    }
+
+    #[test]
+    fn source_outline_unknown_procedure_returns_none() {
+        let ws = ws_with(make_table_entry());
+        assert!(source(&ws, "Customer", None, Some("NoSuchMethod"), None).is_none());
+    }
+
+    #[test]
+    fn source_kind_filter_mismatch_returns_none() {
+        let ws = ws_with(make_table_entry());
+        // Customer is a Table; asking for a Codeunit named Customer finds nothing.
+        assert!(source(&ws, "Customer", Some(ObjectKind::Codeunit), None, None).is_none());
+    }
+
+    #[test]
+    fn source_kind_filter_selects_matching_entry() {
+        let ws = crate::workspace::Workspace::new();
+        // Two objects sharing the name "Item": a Table and a Codeunit.
+        let mut table = make_table_entry();
+        table.name = "Item".to_string();
+        table.kind = ObjectKind::Table;
+        table.id = 27;
+        let codeunit = SymbolEntry {
+            kind: ObjectKind::Codeunit,
+            id: 99,
+            name: "Item".to_string(),
+            extends: None,
+            implements: Vec::new(),
+            namespace: String::new(),
+            package: "Base Application".to_string(),
+            methods: Vec::new(),
+            fields: Vec::new(),
+            controls: Vec::new(),
+            enum_values: Vec::new(),
+            keys: Vec::new(),
+            properties: Vec::new(),
+            variables: Vec::new(),
+        };
+        ws.symbols.add_entries_owned(vec![table, codeunit]);
+
+        let cu = source(&ws, "Item", Some(ObjectKind::Codeunit), None, None).expect("codeunit");
+        assert_eq!(cu.k, ObjectKind::Codeunit);
+        assert_eq!(cu.id, 99);
+
+        let tbl = source(&ws, "Item", Some(ObjectKind::Table), None, None).expect("table");
+        assert_eq!(tbl.k, ObjectKind::Table);
+        assert_eq!(tbl.id, 27);
+    }
+
+    #[test]
+    fn source_unknown_name_returns_none() {
+        let ws = ws_with(make_table_entry());
+        assert!(source(&ws, "DoesNotExist", None, None, None).is_none());
+    }
+
     #[test]
     fn source_level_serialization() {
         assert_eq!(
