@@ -585,6 +585,184 @@ mod tests {
         );
     }
 
+    fn entry(label: &str, kind: CompletionKind) -> CompletionEntry {
+        CompletionEntry {
+            label: label.to_string(),
+            kind,
+            detail: None,
+            documentation: None,
+            insert_text: None,
+            sort_text: None,
+        }
+    }
+
+    // --- CompletionKind serialization: full LSP integer mapping ---
+
+    #[test]
+    fn completion_kind_serializes_all_variants() {
+        // Covers every arm of the hand-written Serialize impl, including the
+        // less common kinds the original test omitted.
+        let cases = [
+            (CompletionKind::Text, 1u32),
+            (CompletionKind::Method, 2),
+            (CompletionKind::Function, 3),
+            (CompletionKind::Field, 5),
+            (CompletionKind::Variable, 6),
+            (CompletionKind::Class, 7),
+            (CompletionKind::Module, 9),
+            (CompletionKind::Property, 10),
+            (CompletionKind::Value, 12),
+            (CompletionKind::Enum, 13),
+            (CompletionKind::Keyword, 14),
+            (CompletionKind::Snippet, 15),
+            (CompletionKind::Reference, 18),
+            (CompletionKind::EnumMember, 20),
+            (CompletionKind::Struct, 22),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                expected,
+                "{kind:?} should serialize to {expected}"
+            );
+        }
+    }
+
+    // --- finalize_completion_items: ordering, dedup, sort_text generation ---
+
+    #[test]
+    fn finalize_dedups_case_insensitively() {
+        let mut items = vec![
+            entry("MyProc", CompletionKind::Function),
+            entry("myproc", CompletionKind::Variable),
+            entry("Other", CompletionKind::Variable),
+        ];
+        finalize_completion_items(&mut items);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|l| l.eq_ignore_ascii_case("myproc"))
+                .count(),
+            1,
+            "case-insensitive duplicate labels must collapse to one, got: {labels:?}"
+        );
+        assert!(labels.contains(&"Other"));
+    }
+
+    #[test]
+    fn finalize_keeps_non_keyword_over_keyword_on_collision() {
+        // A workspace procedure that collides with a keyword name must survive
+        // dedup, because non-keywords are sorted ahead of keywords first.
+        let mut items = vec![
+            entry("if", CompletionKind::Keyword),
+            entry("if", CompletionKind::Function),
+        ];
+        finalize_completion_items(&mut items);
+        assert_eq!(items.len(), 1, "collision should leave a single entry");
+        assert_eq!(
+            items[0].kind,
+            CompletionKind::Function,
+            "the non-keyword entry must win the collision, not the keyword"
+        );
+    }
+
+    #[test]
+    fn finalize_callable_sort_text_encodes_param_count() {
+        // Callables get a "1_<paramcount:02>_<label>" sort key derived from the
+        // detail's parameter list, so 0-param overloads sort before 2-param ones.
+        let mut zero = entry("Run", CompletionKind::Method);
+        zero.detail = Some("()".to_string());
+        let mut two = entry("Calc", CompletionKind::Function);
+        two.detail = Some("(A: Text; B: Integer)".to_string());
+        let mut items = vec![two, zero];
+        finalize_completion_items(&mut items);
+
+        let run = items.iter().find(|i| i.label == "Run").unwrap();
+        let calc = items.iter().find(|i| i.label == "Calc").unwrap();
+        assert_eq!(run.sort_text.as_deref(), Some("1_00_run"));
+        assert_eq!(calc.sort_text.as_deref(), Some("1_02_calc"));
+    }
+
+    #[test]
+    fn finalize_non_callable_sort_text_omits_param_count() {
+        let mut items = vec![entry("MyVar", CompletionKind::Variable)];
+        finalize_completion_items(&mut items);
+        assert_eq!(items[0].sort_text.as_deref(), Some("1_myvar"));
+    }
+
+    #[test]
+    fn finalize_preserves_existing_sort_text() {
+        // Items that already carry a sort_text (e.g. locals tagged "0_") must
+        // not be overwritten by the callable/non-callable fallback.
+        let mut item = entry("Local", CompletionKind::Variable);
+        item.sort_text = Some("0_Local".to_string());
+        let mut items = vec![item];
+        finalize_completion_items(&mut items);
+        assert_eq!(
+            items[0].sort_text.as_deref(),
+            Some("0_Local"),
+            "pre-set sort_text must be preserved"
+        );
+    }
+
+    #[test]
+    fn finalize_orders_by_sort_text() {
+        // After finalize, items are sorted by sort_text. A local (0_) precedes a
+        // bridge result (2_) precedes a generic keyword/non-callable (1_).
+        let mut local = entry("zzz", CompletionKind::Variable);
+        local.sort_text = Some("0_zzz".to_string());
+        let mut bridge = entry("aaa", CompletionKind::Variable);
+        bridge.sort_text = Some("2_aaa".to_string());
+        let plain = entry("mmm", CompletionKind::Variable); // becomes "1_mmm"
+        let mut items = vec![bridge, plain, local];
+        finalize_completion_items(&mut items);
+        let order: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(order, vec!["zzz", "mmm", "aaa"]);
+    }
+
+    // --- from_lsp_completion: candidate-kind mapping + field passthrough ---
+
+    #[test]
+    fn from_lsp_completion_maps_all_kinds() {
+        use resolution::CompletionCandidateKind as K;
+        let cases = [
+            (K::Variable, CompletionKind::Variable),
+            (K::Method, CompletionKind::Method),
+            (K::Field, CompletionKind::Field),
+            (K::EnumMember, CompletionKind::EnumMember),
+        ];
+        for (src, expected) in cases {
+            let cand = resolution::CompletionCandidate {
+                label: "X".to_string(),
+                kind: src,
+                detail: None,
+                documentation: None,
+                insert_text: None,
+                sort_text: None,
+            };
+            assert_eq!(from_lsp_completion(cand).kind, expected, "{src:?}");
+        }
+    }
+
+    #[test]
+    fn from_lsp_completion_passes_through_fields() {
+        let cand = resolution::CompletionCandidate {
+            label: "Foo".to_string(),
+            kind: resolution::CompletionCandidateKind::Method,
+            detail: Some("(A: Text)".to_string()),
+            documentation: Some("docs".to_string()),
+            insert_text: Some("Foo()".to_string()),
+            sort_text: Some("1_foo".to_string()),
+        };
+        let out = from_lsp_completion(cand);
+        assert_eq!(out.label, "Foo");
+        assert_eq!(out.detail.as_deref(), Some("(A: Text)"));
+        assert_eq!(out.documentation.as_deref(), Some("docs"));
+        assert_eq!(out.insert_text.as_deref(), Some("Foo()"));
+        assert_eq!(out.sort_text.as_deref(), Some("1_foo"));
+    }
+
     #[test]
     fn completions_include_local_procedures() {
         let ws = Workspace::new();
