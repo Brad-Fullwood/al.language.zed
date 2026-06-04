@@ -702,4 +702,205 @@ mod tests {
             "STALE_LOCK_AGE must comfortably exceed the 5s spawn wait window"
         );
     }
+
+    /// `find_al_lsp_binary` and these tests mutate the process-global `PATH`
+    /// env var, which cannot run concurrently with other env-reading tests.
+    /// Serialise them on a local mutex (no extra dev-dependency needed).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Create a fresh temp directory unique to this test invocation.
+    fn unique_dir(tag: &str) -> PathBuf {
+        let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "al-protocol-bin-test/{}-{}-{}",
+            tag,
+            std::process::id(),
+            n
+        ));
+        std::fs::create_dir_all(&dir).expect("test dir");
+        dir
+    }
+
+    /// `find_al_lsp_binary` must locate an `al-lsp` file living in a PATH
+    /// directory when none sits next to the current exe. This exercises the
+    /// PATH-search branch (lines 344-351) and the success return.
+    #[test]
+    fn find_al_lsp_binary_locates_in_path() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Guard: if the test runner's own dir happens to hold an `al-lsp`,
+        // the next-to-exe branch wins first and this test is moot. Skip then.
+        if let Ok(exe) = std::env::current_exe() {
+            if exe.parent().map(|d| d.join("al-lsp").exists()) == Some(true) {
+                return;
+            }
+        }
+
+        let bin_dir = unique_dir("haspath");
+        let bin = bin_dir.join("al-lsp");
+        std::fs::write(&bin, b"#!/bin/sh\n").expect("write fake binary");
+
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", &bin_dir);
+        let result = find_al_lsp_binary();
+        match saved {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&bin_dir);
+
+        let found = result.expect("al-lsp on PATH must be found");
+        assert_eq!(
+            found.file_name().and_then(|n| n.to_str()),
+            Some("al-lsp"),
+            "found path must end in al-lsp: {found:?}"
+        );
+    }
+
+    /// Negative: with an empty PATH and no `al-lsp` beside the exe,
+    /// `find_al_lsp_binary` returns the documented not-found error
+    /// (line 352) rather than panicking.
+    #[test]
+    fn find_al_lsp_binary_missing_returns_error() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        if let Ok(exe) = std::env::current_exe() {
+            if exe.parent().map(|d| d.join("al-lsp").exists()) == Some(true) {
+                return;
+            }
+        }
+
+        // Point PATH at an empty directory so the search finds nothing.
+        let empty = unique_dir("nopath");
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", &empty);
+        let result = find_al_lsp_binary();
+        match saved {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&empty);
+
+        let err = result.expect_err("missing al-lsp must error");
+        assert!(
+            err.contains("Cannot find al-lsp binary"),
+            "error must name the missing binary: {err}"
+        );
+    }
+
+    /// A non-file entry named `al-lsp` on PATH (here: a *directory*) must be
+    /// skipped — `is_file()` guards against treating a directory as the
+    /// binary. The search then falls through to the not-found error.
+    #[test]
+    fn find_al_lsp_binary_skips_non_file_on_path() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        if let Ok(exe) = std::env::current_exe() {
+            if exe.parent().map(|d| d.join("al-lsp").exists()) == Some(true) {
+                return;
+            }
+        }
+
+        let dir = unique_dir("dirnamed");
+        // Create a *directory* named al-lsp inside the PATH dir.
+        std::fs::create_dir_all(dir.join("al-lsp")).expect("mkdir al-lsp");
+
+        let saved = std::env::var_os("PATH");
+        std::env::set_var("PATH", &dir);
+        let result = find_al_lsp_binary();
+        match saved {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let err = result.expect_err("a directory named al-lsp must not be accepted as the binary");
+        assert!(err.contains("Cannot find al-lsp binary"), "got: {err}");
+    }
+
+    /// F-046 stale-lock recovery: a `.lock` file older than `STALE_LOCK_AGE`
+    /// is treated as a crashed spawner — it is removed and the caller
+    /// re-acquires `Acquired`. Exercises the stale branch (lines 109-122)
+    /// that the existing fast-path tests never reach.
+    #[test]
+    fn f046_stale_lock_is_reclaimed() {
+        let sock = unique_sock();
+        let lock_path = sock.with_extension("lock");
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(&lock_path, b"pid=99999\n").expect("seed lock");
+
+        // Back-date the lock's mtime well past STALE_LOCK_AGE.
+        let old = std::time::SystemTime::now() - (STALE_LOCK_AGE + Duration::from_secs(60));
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&lock_path)
+            .expect("open lock");
+        f.set_modified(old).expect("backdate mtime");
+        drop(f);
+
+        // A stale lock must be reclaimed: the result is Acquired, not Contended.
+        let result = try_acquire_spawn_lock(&sock).expect("io ok");
+        match result {
+            SpawnLockResult::Acquired(p) => {
+                assert!(p.exists(), "reclaimed lock file must exist");
+                std::fs::remove_file(&p).ok();
+            }
+            SpawnLockResult::Contended => {
+                std::fs::remove_file(&lock_path).ok();
+                panic!("a stale lock must be reclaimed (Acquired), not Contended");
+            }
+        }
+    }
+
+    /// A *fresh* lock (mtime ~now) must NOT be treated as stale — a
+    /// concurrent caller sees `Contended`. This is the complement of the
+    /// stale-recovery test and guards against an over-eager staleness check
+    /// clobbering a live spawner's lock.
+    #[test]
+    fn f046_fresh_lock_is_not_reclaimed() {
+        let sock = unique_sock();
+        let lock_path = sock.with_extension("lock");
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        // Real first acquirer writes a fresh lock.
+        let first = try_acquire_spawn_lock(&sock).expect("io ok");
+        let SpawnLockResult::Acquired(held) = first else {
+            panic!("first must be acquired");
+        };
+
+        let second = try_acquire_spawn_lock(&sock).expect("io ok");
+        let contended = matches!(second, SpawnLockResult::Contended);
+        std::fs::remove_file(&held).ok();
+        assert!(
+            contended,
+            "a fresh lock must not be reclaimed; second caller must be Contended"
+        );
+    }
+
+    /// `set_read_timeout` overrides the default 30s read timeout on the
+    /// underlying stream. Exercises lines 229-231, previously uncovered.
+    #[test]
+    fn set_read_timeout_overrides_default() {
+        let sock = unique_sock();
+        let _listener = UnixListener::bind(&sock).expect("bind");
+        let stream = UnixStream::connect(&sock).expect("connect");
+        let mut client = DaemonClient::from_stream(stream).expect("from_stream");
+
+        // Default installed by from_stream.
+        assert_eq!(
+            client.reader.get_ref().read_timeout().expect("query"),
+            Some(Duration::from_secs(30)),
+            "from_stream must install a default read timeout"
+        );
+
+        client.set_read_timeout(Duration::from_millis(250));
+        assert_eq!(
+            client.reader.get_ref().read_timeout().expect("query"),
+            Some(Duration::from_millis(250)),
+            "set_read_timeout must override the default"
+        );
+    }
 }
