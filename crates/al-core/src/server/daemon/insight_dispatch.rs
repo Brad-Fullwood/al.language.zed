@@ -246,5 +246,192 @@ mod tests {
         let resp = dispatch_trace(&ws, 5, &serde_json::json!({ "event": "OnAfterPost" }));
         assert!(resp.error.is_none(), "valid event must not error");
         assert!(resp.result.is_some());
+        assert_eq!(resp.id, 5);
+    }
+
+    /// A non-string `event` (here an integer) does not satisfy `as_str()` and
+    /// must be treated exactly like a missing event.
+    #[test]
+    fn dispatch_trace_non_string_event_is_invalid_params() {
+        let ws = Workspace::new();
+        let resp = dispatch_trace(&ws, 6, &serde_json::json!({ "event": 42 }));
+        assert_invalid_params(&resp);
+    }
+
+    /// `depth` is clamped to 50; passing a huge value (or an out-of-range /
+    /// non-numeric one that defaults to 10) must still succeed without error.
+    /// On an empty graph the trace is empty regardless of depth, but the call
+    /// must remain well-formed.
+    #[test]
+    fn dispatch_trace_oversized_depth_is_clamped_and_succeeds() {
+        let ws = Workspace::new();
+        let resp = dispatch_trace(
+            &ws,
+            7,
+            &serde_json::json!({ "event": "OnAfterPost", "depth": 10_000 }),
+        );
+        assert!(resp.error.is_none());
+        assert!(resp.result.is_some());
+    }
+
+    #[test]
+    fn dispatch_entrypoints_returns_array_result() {
+        let ws = Workspace::new();
+        let resp = dispatch_entrypoints(&ws, 8);
+        assert!(resp.error.is_none(), "entrypoints must not error");
+        let value = resp.result.expect("entrypoints must carry a result");
+        // An empty workspace has no entry points, but the result is a JSON array.
+        assert!(value.is_array(), "expected a JSON array of entry points");
+        assert_eq!(resp.id, 8);
+    }
+
+    #[test]
+    fn dispatch_insight_stats_reports_node_and_edge_counts() {
+        let ws = Workspace::new();
+        let resp = dispatch_insight_stats(&ws, 9);
+        assert!(resp.error.is_none());
+        let value = resp.result.expect("stats must carry a result");
+        // Both counts must be present and numeric (0 for an empty workspace).
+        assert_eq!(value.get("nodes").and_then(|v| v.as_u64()), Some(0));
+        assert_eq!(value.get("edges").and_then(|v| v.as_u64()), Some(0));
+    }
+
+    #[test]
+    fn dispatch_dead_code_returns_array_result() {
+        let ws = Workspace::new();
+        let resp = dispatch_dead_code(&ws, 10);
+        assert!(resp.error.is_none());
+        let value = resp.result.expect("dead_code must carry a result");
+        assert!(
+            value.is_array(),
+            "expected a JSON array of dead-code entries"
+        );
+    }
+
+    #[test]
+    fn dispatch_graph_export_defaults_to_json() {
+        let ws = Workspace::new();
+        // No `format` field at all -> the `_` arm exports JSON.
+        let resp = dispatch_graph_export(&ws, 11, &serde_json::json!({}));
+        assert!(resp.error.is_none());
+        let value = resp.result.expect("json export must carry a result");
+        // GraphJson serializes as an object (not the {"format","content"} dot shape).
+        assert!(value.is_object());
+        assert!(
+            value.get("content").is_none(),
+            "json export must not be wrapped in a dot envelope"
+        );
+    }
+
+    #[test]
+    fn dispatch_graph_export_dot_format_wraps_content() {
+        let ws = Workspace::new();
+        let resp = dispatch_graph_export(&ws, 12, &serde_json::json!({ "format": "dot" }));
+        assert!(resp.error.is_none());
+        let value = resp.result.expect("dot export must carry a result");
+        assert_eq!(value.get("format").and_then(|v| v.as_str()), Some("dot"));
+        // The DOT body is a string (a graphviz digraph), even when empty.
+        assert!(value.get("content").and_then(|v| v.as_str()).is_some());
+    }
+
+    /// An unrecognised format string falls through the `_` arm to JSON export,
+    /// it must not error.
+    #[test]
+    fn dispatch_graph_export_unknown_format_falls_back_to_json() {
+        let ws = Workspace::new();
+        let resp = dispatch_graph_export(&ws, 13, &serde_json::json!({ "format": "xml" }));
+        assert!(resp.error.is_none());
+        let value = resp.result.expect("fallback export must carry a result");
+        assert!(value.is_object());
+        assert!(value.get("content").is_none());
+    }
+
+    /// The size cap is `node_count + edge_count > MAX`. An empty workspace is
+    /// well under the cap, so export must succeed rather than tripping the
+    /// INVALID_PARAMS guard.
+    #[test]
+    fn dispatch_graph_export_under_cap_succeeds() {
+        let ws = Workspace::new();
+        let graph = ws.get_or_build_insight_graph();
+        assert!(
+            graph.node_count() + graph.edge_count() <= MAX_GRAPH_EXPORT_NODES_AND_EDGES,
+            "empty workspace must be under the export cap"
+        );
+        let resp = dispatch_graph_export(&ws, 14, &serde_json::json!({ "format": "json" }));
+        assert!(
+            resp.error.is_none(),
+            "graphs under the cap must not be rejected"
+        );
+    }
+
+    #[test]
+    fn dispatch_impact_valid_symbol_returns_result() {
+        let ws = Workspace::new();
+        let resp = dispatch_impact(&ws, 15, &serde_json::json!({ "symbol": "MyCodeunit" }));
+        assert!(resp.error.is_none(), "valid symbol must not error");
+        let value = resp.result.expect("impact must carry a result");
+        // The response echoes the queried symbol and lists impacted entries.
+        assert_eq!(
+            value.get("symbol").and_then(|v| v.as_str()),
+            Some("MyCodeunit")
+        );
+        assert!(value.get("impacted").is_some());
+    }
+
+    /// A non-string `symbol` does not satisfy `as_str()`, so it defaults to ""
+    /// and trips the empty-symbol guard.
+    #[test]
+    fn dispatch_impact_non_string_symbol_is_invalid_params() {
+        let ws = Workspace::new();
+        let resp = dispatch_impact(&ws, 16, &serde_json::json!({ "symbol": 123 }));
+        assert_invalid_params(&resp);
+    }
+
+    #[test]
+    fn dispatch_suggest_event_structured_query_succeeds() {
+        let ws = Workspace::new();
+        // A well-formed `query` with a `source` discriminated union.
+        let resp = dispatch_suggest_event(
+            &ws,
+            17,
+            &serde_json::json!({
+                "query": {
+                    "source": { "type": "table", "table": "Customer" }
+                }
+            }),
+        );
+        assert!(
+            resp.error.is_none(),
+            "valid structured query must not error"
+        );
+        let value = resp.result.expect("suggest_event must carry a result");
+        // The result carries integrationPoints + partial fields.
+        assert!(value.get("integrationPoints").is_some());
+        assert!(value.get("partial").is_some());
+    }
+
+    /// When no `query` field is present, the whole params object is used as the
+    /// query (legacy/flat shape). A valid flat `source` must therefore succeed.
+    #[test]
+    fn dispatch_suggest_event_legacy_flat_query_succeeds() {
+        let ws = Workspace::new();
+        let resp = dispatch_suggest_event(
+            &ws,
+            18,
+            &serde_json::json!({
+                "source": { "type": "table", "table": "Item" }
+            }),
+        );
+        assert!(resp.error.is_none(), "valid flat query must not error");
+        assert!(resp.result.is_some());
+    }
+
+    /// A flat params object missing the required `source` field cannot
+    /// deserialize into `EventQuery` and must surface as INVALID_PARAMS.
+    #[test]
+    fn dispatch_suggest_event_missing_source_is_invalid_params() {
+        let ws = Workspace::new();
+        let resp = dispatch_suggest_event(&ws, 19, &serde_json::json!({ "unrelated": true }));
+        assert_invalid_params(&resp);
     }
 }
