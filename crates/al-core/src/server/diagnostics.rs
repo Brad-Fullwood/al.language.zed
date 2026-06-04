@@ -556,6 +556,295 @@ mod tests {
         assert_eq!(diag.range.start.line, 0); // saturating_sub(1) on 0 stays 0
     }
 
+    // -----------------------------------------------------------------------
+    // full_diagnostic_report
+    // -----------------------------------------------------------------------
+
+    fn sample_diag(msg: &str) -> Diagnostic {
+        Diagnostic {
+            message: msg.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn full_diagnostic_report_wraps_items() {
+        let items = vec![sample_diag("a"), sample_diag("b")];
+        let report = full_diagnostic_report(items);
+
+        // Drill into the nested report variant and assert the items survived.
+        match report {
+            DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(full)) => {
+                assert!(full.related_documents.is_none());
+                assert!(full.full_document_diagnostic_report.result_id.is_none());
+                let msgs: Vec<_> = full
+                    .full_document_diagnostic_report
+                    .items
+                    .iter()
+                    .map(|d| d.message.clone())
+                    .collect();
+                assert_eq!(msgs, vec!["a".to_string(), "b".to_string()]);
+            }
+            _ => panic!("expected a Full report variant"),
+        }
+    }
+
+    #[test]
+    fn full_diagnostic_report_empty_is_full_not_unchanged() {
+        // An empty input must still produce a Full report (not an "unchanged"
+        // report), otherwise the client would never clear stale diagnostics.
+        let report = full_diagnostic_report(vec![]);
+        match report {
+            DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(full)) => {
+                assert!(full.full_document_diagnostic_report.items.is_empty());
+            }
+            _ => panic!("expected a Full report variant even for empty items"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // is_cache_path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn is_cache_path_true_for_cache_file() {
+        let cache_root = crate::symbols::virtual_file::cache_dir();
+        let file = cache_root.join("SomePackage").join("Table 27 Item.al");
+        let uri = Url::from_file_path(&file).expect("cache path must convert to a file URL");
+        assert!(
+            is_cache_path(&uri),
+            "URI under the symbol cache dir must be recognized as a cache path"
+        );
+    }
+
+    #[test]
+    fn is_cache_path_false_for_workspace_file() {
+        // A normal project file outside the cache dir must NOT be treated as a
+        // cache file, or diagnostics would be wrongly suppressed for it.
+        let uri = Url::from_file_path("/home/dev/project/src/MyCodeunit.al")
+            .expect("path must convert to a file URL");
+        assert!(!is_cache_path(&uri));
+    }
+
+    #[test]
+    fn is_cache_path_false_for_non_file_uri() {
+        // A non-file URI (e.g. untitled:) cannot be a cache path.
+        let uri = Url::parse("untitled:Untitled-1").unwrap();
+        assert!(!is_cache_path(&uri));
+    }
+
+    // -----------------------------------------------------------------------
+    // syntax_diag_to_lsp
+    // -----------------------------------------------------------------------
+
+    fn make_syntax_diag(
+        sev: crate::queries::diagnostics::SyntaxDiagnosticSeverity,
+    ) -> crate::queries::diagnostics::SyntaxDiagnostic {
+        crate::queries::diagnostics::SyntaxDiagnostic {
+            message: "boom".to_string(),
+            range: crate::queries::Range {
+                start: crate::queries::Position {
+                    line: 3,
+                    character: 7,
+                },
+                end: crate::queries::Position {
+                    line: 3,
+                    character: 12,
+                },
+            },
+            severity: sev,
+            code: "syntax".to_string(),
+            source: "al".to_string(),
+        }
+    }
+
+    #[test]
+    fn syntax_diag_to_lsp_maps_fields_and_range() {
+        use crate::queries::diagnostics::SyntaxDiagnosticSeverity;
+        let diag = syntax_diag_to_lsp(&make_syntax_diag(SyntaxDiagnosticSeverity::Error));
+        assert_eq!(diag.message, "boom");
+        assert_eq!(diag.severity, Some(DiagnosticSeverity::ERROR));
+        assert_eq!(diag.source, Some("al".to_string()));
+        assert_eq!(
+            diag.code,
+            Some(NumberOrString::String("syntax".to_string()))
+        );
+        // Range must be copied verbatim (already UTF-16 at the query layer).
+        assert_eq!(diag.range.start.line, 3);
+        assert_eq!(diag.range.start.character, 7);
+        assert_eq!(diag.range.end.line, 3);
+        assert_eq!(diag.range.end.character, 12);
+    }
+
+    #[test]
+    fn syntax_diag_to_lsp_severity_mapping_all_variants() {
+        use crate::queries::diagnostics::SyntaxDiagnosticSeverity;
+        assert_eq!(
+            syntax_diag_to_lsp(&make_syntax_diag(SyntaxDiagnosticSeverity::Error)).severity,
+            Some(DiagnosticSeverity::ERROR)
+        );
+        assert_eq!(
+            syntax_diag_to_lsp(&make_syntax_diag(SyntaxDiagnosticSeverity::Warning)).severity,
+            Some(DiagnosticSeverity::WARNING)
+        );
+        assert_eq!(
+            syntax_diag_to_lsp(&make_syntax_diag(SyntaxDiagnosticSeverity::Info)).severity,
+            Some(DiagnosticSeverity::INFORMATION)
+        );
+        assert_eq!(
+            syntax_diag_to_lsp(&make_syntax_diag(SyntaxDiagnosticSeverity::Hint)).severity,
+            Some(DiagnosticSeverity::HINT)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // semantic_to_diagnostic — additional edge / branch coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn semantic_to_diagnostic_unknown_severity_defaults_to_warning() {
+        // Any unrecognized severity string must fall through to WARNING, not
+        // panic or default to ERROR — this is the documented `_ =>` arm.
+        let entry = crate::semantic::DiagnosticEntry {
+            file: std::path::PathBuf::from("test.al"),
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 1,
+            severity: "totally-bogus".to_string(),
+            code: "X".to_string(),
+            message: "m".to_string(),
+        };
+        assert_eq!(
+            semantic_to_diagnostic(&entry).severity,
+            Some(DiagnosticSeverity::WARNING)
+        );
+    }
+
+    #[test]
+    fn semantic_to_diagnostic_severity_is_case_insensitive() {
+        let entry = crate::semantic::DiagnosticEntry {
+            file: std::path::PathBuf::from("test.al"),
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 1,
+            severity: "ERROR".to_string(),
+            code: "X".to_string(),
+            message: "m".to_string(),
+        };
+        assert_eq!(
+            semantic_to_diagnostic(&entry).severity,
+            Some(DiagnosticSeverity::ERROR)
+        );
+    }
+
+    #[test]
+    fn semantic_to_diagnostic_info_alias_maps_to_information() {
+        // Both "info" and "information" must map to INFORMATION.
+        for sev in ["info", "information", "INFO"] {
+            let entry = crate::semantic::DiagnosticEntry {
+                file: std::path::PathBuf::from("test.al"),
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 1,
+                severity: sev.to_string(),
+                code: "X".to_string(),
+                message: "m".to_string(),
+            };
+            assert_eq!(
+                semantic_to_diagnostic(&entry).severity,
+                Some(DiagnosticSeverity::INFORMATION),
+                "severity {sev:?} should map to INFORMATION"
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_to_diagnostic_clamps_line_and_column_zero() {
+        // A bridge entry with line/column 0 (1-based) must saturate to 0 rather
+        // than underflow when converted to 0-based LSP positions.
+        let entry = crate::semantic::DiagnosticEntry {
+            file: std::path::PathBuf::from("test.al"),
+            line: 0,
+            column: 0,
+            end_line: 0,
+            end_column: 0,
+            severity: "Warning".to_string(),
+            code: "X".to_string(),
+            message: "m".to_string(),
+        };
+        let diag = semantic_to_diagnostic(&entry);
+        assert_eq!(diag.range.start.line, 0);
+        assert_eq!(diag.range.start.character, 0);
+        assert_eq!(diag.range.end.line, 0);
+        assert_eq!(diag.range.end.character, 0);
+    }
+
+    #[test]
+    fn semantic_to_diagnostic_keeps_forward_range_unchanged() {
+        // A well-formed (start <= end) range must be preserved exactly, not
+        // swapped — this guards the normalization branch in the false direction.
+        let entry = crate::semantic::DiagnosticEntry {
+            file: std::path::PathBuf::from("test.al"),
+            line: 2,
+            column: 3,
+            end_line: 4,
+            end_column: 9,
+            severity: "Error".to_string(),
+            code: "X".to_string(),
+            message: "m".to_string(),
+        };
+        let diag = semantic_to_diagnostic(&entry);
+        assert_eq!((diag.range.start.line, diag.range.start.character), (1, 2));
+        assert_eq!((diag.range.end.line, diag.range.end.character), (3, 8));
+    }
+
+    // -----------------------------------------------------------------------
+    // test_diag_to_lsp — remaining severity variants
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_diag_information_and_hint_severities() {
+        use crate::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
+        let mk = |sev: TDSev| TestDiagnostic {
+            file: "/src/Tests.al".to_string(),
+            line: 3,
+            severity: sev,
+            message: "m".to_string(),
+            test_name: "T".to_string(),
+            codeunit: "CU".to_string(),
+        };
+        assert_eq!(
+            test_diag_to_lsp(&mk(TDSev::Information)).severity,
+            Some(DiagnosticSeverity::INFORMATION)
+        );
+        assert_eq!(
+            test_diag_to_lsp(&mk(TDSev::Hint)).severity,
+            Some(DiagnosticSeverity::HINT)
+        );
+    }
+
+    #[test]
+    fn test_diag_message_and_code_format() {
+        use crate::queries::test_diagnostics::{DiagnosticSeverity as TDSev, TestDiagnostic};
+        let td = TestDiagnostic {
+            file: "/src/Tests.al".to_string(),
+            line: 7,
+            severity: TDSev::Error,
+            message: "expected 1 got 2".to_string(),
+            test_name: "MyTest".to_string(),
+            codeunit: "MyTests".to_string(),
+        };
+        let diag = test_diag_to_lsp(&td);
+        assert_eq!(diag.message, "[MyTest] expected 1 got 2");
+        assert_eq!(
+            diag.code,
+            Some(NumberOrString::String("AL-TEST".to_string()))
+        );
+    }
+
     #[test]
     fn test_semantic_severity_mapping() {
         let make = |sev: &str| crate::semantic::DiagnosticEntry {
