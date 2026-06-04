@@ -854,7 +854,14 @@ async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path)
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_i32, extract_position, file_uri_from_params, read_bounded_line};
+    use super::{
+        dispatch_diag, dispatch_request, ensure_document, extract_i32, extract_position,
+        file_uri_from_params, parse_object_kind, read_bounded_line, require_document_text,
+        require_project_root,
+    };
+    use al_protocol::jsonrpc::{error_codes, Request};
+    use futures::FutureExt;
+    use tokio::sync::Notify;
 
     #[test]
     fn extract_i32_accepts_in_range() {
@@ -1020,5 +1027,206 @@ mod tests {
     fn file_uri_returns_none_without_uri_or_file() {
         let params = serde_json::json!({ "something": "else" });
         assert!(file_uri_from_params(&params).is_none());
+    }
+
+    // --- dispatch_request: routing ------------------------------------------
+
+    /// `ping` is a static health-check that needs no project; it must echo
+    /// `"pong"` with the request id and no error.
+    #[tokio::test]
+    async fn dispatch_ping_returns_pong() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let req = Request::new(7, "ping", None);
+        let resp = dispatch_request(&ws, req, &shutdown).await;
+        assert_eq!(resp.id, 7);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result, Some(serde_json::json!("pong")));
+    }
+
+    /// An unrecognised method must produce a METHOD_NOT_FOUND error that names
+    /// the offending method, and must NOT return a result.
+    #[tokio::test]
+    async fn dispatch_unknown_method_is_method_not_found() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let req = Request::new(11, "definitelyNotAMethod", None);
+        let resp = dispatch_request(&ws, req, &shutdown).await;
+        assert_eq!(resp.id, 11);
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("unknown method must yield an error");
+        assert_eq!(err.code, error_codes::METHOD_NOT_FOUND);
+        assert!(
+            err.message.contains("definitelyNotAMethod"),
+            "message should name the method: {}",
+            err.message
+        );
+    }
+
+    /// `status` reports daemon state as a JSON object including the live pid;
+    /// it needs no project and must succeed.
+    #[tokio::test]
+    async fn dispatch_status_reports_pid() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let req = Request::new(3, "status", None);
+        let resp = dispatch_request(&ws, req, &shutdown).await;
+        assert_eq!(resp.id, 3);
+        assert!(resp.error.is_none());
+        let result = resp.result.expect("status must return a result");
+        assert_eq!(
+            result.get("pid").and_then(|v| v.as_u64()),
+            Some(u64::from(std::process::id()))
+        );
+        // Fresh workspace has no indexed symbols.
+        assert_eq!(
+            result.get("indexedSymbols").and_then(|v| v.as_u64()),
+            Some(0)
+        );
+    }
+
+    /// `shutdown` must signal the shared Notify so the accept loop can break,
+    /// AND reply with an "ok" result. We prove the notification by awaiting it.
+    #[tokio::test]
+    async fn dispatch_shutdown_signals_notify_and_acks() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        // Register interest BEFORE dispatch so notify_one is not lost.
+        let notified = shutdown.notified();
+        tokio::pin!(notified);
+        // Poll once to arm the waiter — it must not be pre-signalled.
+        assert!(
+            notified.as_mut().now_or_never().is_none(),
+            "notify should not be pre-signalled"
+        );
+
+        let req = Request::new(99, "shutdown", None);
+        let resp = dispatch_request(&ws, req, &shutdown).await;
+        assert_eq!(resp.id, 99);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result, Some(serde_json::json!("ok")));
+
+        // The armed waiter must now resolve — proving notify_one fired.
+        assert!(
+            notified.as_mut().now_or_never().is_some(),
+            "shutdown must have signalled the Notify"
+        );
+    }
+
+    /// `params` is optional on the wire; a method that tolerates null params
+    /// (`diag` defaults to the `summary` subcommand) must still succeed when
+    /// no params are supplied.
+    #[tokio::test]
+    async fn dispatch_diag_defaults_to_summary_when_params_absent() {
+        let ws = crate::workspace::Workspace::new();
+        let shutdown = Notify::new();
+        let req = Request::new(5, "diag", None);
+        let resp = dispatch_request(&ws, req, &shutdown).await;
+        assert_eq!(resp.id, 5);
+        assert!(
+            resp.error.is_none(),
+            "diag summary must succeed: {:?}",
+            resp.error
+        );
+        assert!(resp.result.is_some());
+    }
+
+    // --- dispatch_diag ------------------------------------------------------
+
+    #[test]
+    fn dispatch_diag_summary_serializes_memory_stats() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_diag(&ws, 1, &serde_json::json!({ "cmd": "summary" }));
+        assert_eq!(resp.id, 1);
+        assert!(resp.error.is_none());
+        let result = resp.result.expect("summary must return memory stats");
+        assert!(
+            result.is_object(),
+            "memory stats serialize to a JSON object"
+        );
+    }
+
+    #[test]
+    fn dispatch_diag_rejects_unknown_subcommand() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_diag(&ws, 2, &serde_json::json!({ "cmd": "bogus" }));
+        assert_eq!(resp.id, 2);
+        assert!(resp.result.is_none());
+        let err = resp.error.expect("unknown subcommand must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("bogus"));
+    }
+
+    // --- parse_object_kind --------------------------------------------------
+
+    #[test]
+    fn parse_object_kind_rejects_garbage_with_invalid_params() {
+        // A non-AL kind string must map to an INVALID_PARAMS error Response
+        // that names the bad input — never panic, never default silently.
+        let err = parse_object_kind(8, "notakind").expect_err("garbage kind must be rejected");
+        assert_eq!(err.id, 8);
+        let rpc = err.error.expect("must carry an RpcError");
+        assert_eq!(rpc.code, error_codes::INVALID_PARAMS);
+        assert!(rpc.message.contains("notakind"));
+    }
+
+    // --- require_project_root ----------------------------------------------
+
+    #[test]
+    fn require_project_root_errors_when_no_project_loaded() {
+        // A fresh workspace has no project; require_project_root must return
+        // an INTERNAL_ERROR Response rather than a path.
+        let ws = crate::workspace::Workspace::new();
+        let err = require_project_root(&ws, 4).expect_err("no project => Err");
+        assert_eq!(err.id, 4);
+        let rpc = err.error.expect("must carry an RpcError");
+        assert_eq!(rpc.code, error_codes::INTERNAL_ERROR);
+    }
+
+    // --- ensure_document / require_document_text ---------------------------
+
+    #[test]
+    fn ensure_document_loads_file_from_disk_then_serves_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("On.al");
+        std::fs::write(&file, b"codeunit 50000 Foo {}").unwrap();
+        let uri = url::Url::from_file_path(&file).unwrap();
+
+        let ws = crate::workspace::Workspace::new();
+        // Not yet in the document store.
+        assert!(ws.documents.get_text(&uri).is_none());
+
+        // ensure_document uses block_in_place, which requires a multi-thread
+        // runtime context.
+        let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        let text = rt.block_on(async { require_document_text(&ws, &uri, 1) });
+        assert_eq!(text.unwrap(), "codeunit 50000 Foo {}");
+        // The document is now cached in the store.
+        assert_eq!(
+            ws.documents.get_text(&uri).as_deref(),
+            Some("codeunit 50000 Foo {}")
+        );
+    }
+
+    #[test]
+    fn require_document_text_returns_file_not_found_for_missing_file() {
+        let ws = crate::workspace::Workspace::new();
+        let uri = url::Url::parse("file:///no/such/al-file-xyz.al").unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        let err = rt.block_on(async { require_document_text(&ws, &uri, 6).unwrap_err() });
+        assert_eq!(err.id, 6);
+        let rpc = err.error.expect("must carry an RpcError");
+        assert_eq!(rpc.code, error_codes::FILE_NOT_FOUND);
+    }
+
+    #[test]
+    fn ensure_document_returns_none_for_non_file_uri() {
+        // A non-file URI has no filesystem path; ensure_document must return
+        // None rather than panicking.
+        let ws = crate::workspace::Workspace::new();
+        let uri = url::Url::parse("https://example.com/x.al").unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread().build().unwrap();
+        let got = rt.block_on(async { ensure_document(&ws, &uri) });
+        assert!(got.is_none());
     }
 }
