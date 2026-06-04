@@ -1946,4 +1946,405 @@ mod tests {
         assert!(labels.contains(&"Green"), "base value present");
         assert!(labels.contains(&"Blue"), "extension value present");
     }
+
+    // ------------------------------------------------------------------
+    // parse_type_expr — type-string parsing.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_type_expr_splits_name_and_quoted_subtype() {
+        let ty = parse_type_expr("Record \"Sales Header\"");
+        assert_eq!(ty.type_name, "Record");
+        assert_eq!(ty.type_subtype.as_deref(), Some("Sales Header"));
+    }
+
+    #[test]
+    fn parse_type_expr_strips_single_quoted_subtype() {
+        let ty = parse_type_expr("Codeunit 'My Cu'");
+        assert_eq!(ty.type_name, "Codeunit");
+        assert_eq!(ty.type_subtype.as_deref(), Some("My Cu"));
+    }
+
+    #[test]
+    fn parse_type_expr_simple_type_has_no_subtype() {
+        let ty = parse_type_expr("  Integer  ");
+        assert_eq!(ty.type_name, "Integer");
+        assert_eq!(ty.type_subtype, None);
+    }
+
+    #[test]
+    fn parse_type_expr_unquoted_subtype_collapses_to_name_only() {
+        // When the post-space segment is non-empty but is e.g. just whitespace
+        // after trimming quotes, the function falls through to the no-subtype
+        // branch. Here a trailing space-only subtype yields name-only.
+        let ty = parse_type_expr("Text ");
+        assert_eq!(ty.type_name, "Text");
+        assert_eq!(ty.type_subtype, None);
+    }
+
+    #[test]
+    fn parse_type_expr_strips_outer_quotes_from_single_token() {
+        // A single quoted token with no inner space stays name-only with the
+        // quotes stripped (the space-split branch is not taken).
+        let ty = parse_type_expr("\"QuotedOnly\"");
+        assert_eq!(ty.type_name, "QuotedOnly");
+        assert_eq!(ty.type_subtype, None);
+    }
+
+    #[test]
+    fn parse_type_expr_splits_on_first_space() {
+        // split_once(' ') splits on the FIRST space, so a leading quote becomes
+        // part of the name and the remainder (minus quotes) becomes the subtype.
+        let ty = parse_type_expr("\"Quoted Only\"");
+        assert_eq!(ty.type_name, "\"Quoted");
+        assert_eq!(ty.type_subtype.as_deref(), Some("Only"));
+    }
+
+    // ------------------------------------------------------------------
+    // extract_return_type — pull return type from a signature detail.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn extract_return_type_finds_trailing_type() {
+        assert_eq!(
+            extract_return_type("(a: Integer): Boolean"),
+            Some("Boolean")
+        );
+    }
+
+    #[test]
+    fn extract_return_type_takes_last_colon_segment() {
+        // rsplit_once on ": " -> takes the final segment after the last ": ".
+        assert_eq!(extract_return_type("(x: Code[20]): Text"), Some("Text"));
+    }
+
+    #[test]
+    fn extract_return_type_splits_on_last_colon_space_even_in_params() {
+        // The function rsplits on the LAST ": ", which for a no-return signature
+        // is the parameter's type — documenting the (lossy) real behavior.
+        assert_eq!(extract_return_type("(a: Integer)"), Some("Integer)"));
+    }
+
+    #[test]
+    fn extract_return_type_none_without_separator() {
+        // No ": " anywhere -> None.
+        assert_eq!(extract_return_type("(Integer)"), None);
+    }
+
+    // ------------------------------------------------------------------
+    // split_last — rfind-based split used for scope/dot chains.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn split_last_splits_on_last_occurrence() {
+        assert_eq!(split_last("a::b::c", "::"), Some(("a::b", "c")));
+        assert_eq!(split_last("a.b.c", "."), Some(("a.b", "c")));
+    }
+
+    #[test]
+    fn split_last_none_when_missing() {
+        assert_eq!(split_last("abc", "::"), None);
+    }
+
+    // ------------------------------------------------------------------
+    // format_method_signature / format_builtin_signature.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn format_method_signature_with_params_and_return() {
+        let params = vec![
+            crate::symbols::ParameterSymbol {
+                name: "Amount".into(),
+                type_name: "Decimal".into(),
+                is_var: false,
+            },
+            crate::symbols::ParameterSymbol {
+                name: "Result".into(),
+                type_name: "Integer".into(),
+                is_var: true,
+            },
+        ];
+        let sig = format_method_signature("Calc", &params, Some("Boolean"));
+        assert_eq!(sig, "Calc(Amount: Decimal; var Result: Integer): Boolean");
+    }
+
+    #[test]
+    fn format_method_signature_no_return_no_params() {
+        let sig = format_method_signature("Run", &[], None);
+        assert_eq!(sig, "Run()");
+    }
+
+    #[test]
+    fn format_builtin_signature_renders_var_prefix_and_return() {
+        let method = crate::semantic::BuiltinMethod {
+            name: "Get".into(),
+            parameters: vec![
+                crate::semantic::MethodParameter {
+                    name: "Key".into(),
+                    type_name: "Code[20]".into(),
+                    is_var: false,
+                },
+                crate::semantic::MethodParameter {
+                    name: "Rec".into(),
+                    type_name: "Record".into(),
+                    is_var: true,
+                },
+            ],
+            return_type: Some("Boolean".into()),
+            documentation: String::new(),
+        };
+        let sig = format_builtin_signature(&method);
+        assert_eq!(sig, "Get(Key: Code[20]; var Rec: Record): Boolean");
+    }
+
+    #[test]
+    fn format_builtin_signature_no_return() {
+        let method = crate::semantic::BuiltinMethod {
+            name: "Init".into(),
+            parameters: Vec::new(),
+            return_type: None,
+            documentation: String::new(),
+        };
+        assert_eq!(format_builtin_signature(&method), "Init()");
+    }
+
+    // ------------------------------------------------------------------
+    // format_type_detail.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn format_type_detail_with_subtype_quotes_it() {
+        assert_eq!(
+            format_type_detail("Record", Some("Customer")),
+            "Record \"Customer\""
+        );
+    }
+
+    #[test]
+    fn format_type_detail_empty_subtype_is_name_only() {
+        assert_eq!(format_type_detail("Integer", Some("")), "Integer");
+        assert_eq!(format_type_detail("Integer", None), "Integer");
+    }
+
+    // ------------------------------------------------------------------
+    // extract_doc_comment — gather /// lines above a declaration line.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn extract_doc_comment_collects_preceding_triple_slash_lines() {
+        let text = "/// First line.\n/// Second line.\nprocedure Foo()";
+        // line_idx 2 is the procedure; docs are on lines 0 and 1.
+        let doc = extract_doc_comment(text, 2).expect("doc comment found");
+        assert_eq!(doc, "First line.\nSecond line.");
+    }
+
+    #[test]
+    fn extract_doc_comment_stops_at_non_doc_line() {
+        let text = "// regular comment\n/// real doc\nprocedure Foo()";
+        let doc = extract_doc_comment(text, 2).expect("doc found");
+        assert_eq!(doc, "real doc");
+    }
+
+    #[test]
+    fn extract_doc_comment_none_when_no_docs() {
+        let text = "procedure Foo()\nbegin\nend;";
+        assert_eq!(extract_doc_comment(text, 1), None);
+    }
+
+    #[test]
+    fn extract_doc_comment_boundary_line_zero_and_past_end() {
+        let text = "/// doc\nprocedure Foo()";
+        // line_idx 0 -> there is nothing above; documented guard returns None.
+        assert_eq!(extract_doc_comment(text, 0), None);
+        // line_idx beyond the number of lines returns None.
+        assert_eq!(extract_doc_comment(text, 99), None);
+    }
+
+    // ------------------------------------------------------------------
+    // parse_field_line — parse a `field(id; name; type)` declaration.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_field_line_extracts_name_and_type() {
+        let (name, ty) = parse_field_line("field(1; Name; Text[50]) { }").expect("parsed");
+        assert_eq!(name, "Name");
+        assert_eq!(ty, "Text[50]");
+    }
+
+    #[test]
+    fn parse_field_line_none_for_non_field() {
+        assert_eq!(parse_field_line("procedure Foo()"), None);
+    }
+
+    #[test]
+    fn parse_field_line_none_when_missing_segments() {
+        // Only an id present, no name/type segments.
+        assert_eq!(parse_field_line("field(1)"), None);
+    }
+
+    #[test]
+    fn parse_field_line_none_when_name_empty() {
+        // Empty name segment must be rejected.
+        assert_eq!(parse_field_line("field(1; ; Integer)"), None);
+    }
+
+    // ------------------------------------------------------------------
+    // XML helpers: extract_tag_content, extract_attribute, strip_all_tags.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn extract_tag_content_returns_inner_text() {
+        assert_eq!(
+            extract_tag_content("<summary>Hello</summary>", "summary"),
+            Some("Hello".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_tag_content_none_when_empty() {
+        assert_eq!(extract_tag_content("<summary></summary>", "summary"), None);
+    }
+
+    #[test]
+    fn extract_tag_content_none_when_close_before_open() {
+        // Malformed: closing tag appears before the open-tag's content start.
+        assert_eq!(
+            extract_tag_content("</summary>text<summary x", "summary"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_attribute_reads_value() {
+        assert_eq!(
+            extract_attribute("<param name=\"Code\">desc</param>", "name"),
+            Some("Code".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_attribute_none_when_absent() {
+        assert_eq!(extract_attribute("<param>desc</param>", "name"), None);
+    }
+
+    #[test]
+    fn strip_all_tags_keeps_text_and_trims_blank_lines() {
+        let s = "<a>Hello</a>\n\n<b>World</b>";
+        assert_eq!(strip_all_tags(s), "Hello\nWorld");
+    }
+
+    #[test]
+    fn format_xml_doc_with_example_renders_code_block() {
+        let xml = "<summary>Do it.</summary>\n<example>Foo();</example>";
+        let result = format_xml_doc(xml);
+        assert!(result.contains("**Example:**"));
+        assert!(result.contains("```al\nFoo();\n```"));
+    }
+
+    // ------------------------------------------------------------------
+    // resolve_expression_type — empty / scope-split / object-index paths.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn resolve_expression_type_empty_returns_none() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///x.al").unwrap();
+        let mut parser = AlParser::new();
+        let parsed = parser.parse("");
+        assert!(
+            resolve_expression_type(&ws, &uri, "", &parsed.tree, "   ", Position::default())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn resolve_expression_type_resolves_object_from_symbol_index() {
+        // An expression naming a known object resolves to that object's type
+        // via the symbol index (kind + subtype).
+        let ws = workspace_with(vec![table_entry(18, "Customer", vec![])]);
+        let uri = Url::parse("file:///x.al").unwrap();
+        let mut parser = AlParser::new();
+        let parsed = parser.parse("codeunit 1 X { }");
+        let ty = resolve_expression_type(
+            &ws,
+            &uri,
+            "codeunit 1 X { }",
+            &parsed.tree,
+            "Customer",
+            Position::default(),
+        )
+        .expect("object resolves from symbol index");
+        assert_eq!(ty.type_subtype.as_deref(), Some("Customer"));
+    }
+
+    #[test]
+    fn resolve_expression_type_unknown_name_returns_none() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///x.al").unwrap();
+        let mut parser = AlParser::new();
+        let parsed = parser.parse("codeunit 1 X { }");
+        assert!(resolve_expression_type(
+            &ws,
+            &uri,
+            "codeunit 1 X { }",
+            &parsed.tree,
+            "NoSuchThing",
+            Position::default()
+        )
+        .is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // resolve_member — unresolvable receiver returns None.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn resolve_member_unknown_member_returns_none() {
+        let ws = workspace_with(vec![table_entry(
+            18,
+            "Customer",
+            vec![field(1, "No.", "Code")],
+        )]);
+        let uri = Url::parse("file:///x.al").unwrap();
+        let receiver = ResolvedType {
+            type_name: "Record".to_string(),
+            type_subtype: Some("Customer".to_string()),
+        };
+        assert!(resolve_member(&ws, &uri, &receiver, "DoesNotExist").is_none());
+    }
+
+    #[test]
+    fn resolve_member_returns_field_type_info() {
+        let ws = workspace_with(vec![table_entry(
+            18,
+            "Customer",
+            vec![field(1, "No.", "Code[20]")],
+        )]);
+        let uri = Url::parse("file:///x.al").unwrap();
+        let receiver = ResolvedType {
+            type_name: "Record".to_string(),
+            type_subtype: Some("Customer".to_string()),
+        };
+        let member = resolve_member(&ws, &uri, &receiver, "No.").expect("field resolves");
+        let info = member.type_info.expect("field has a type");
+        assert_eq!(info.type_name, "Code[20]");
+    }
+
+    // ------------------------------------------------------------------
+    // ResolvedType Display.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn resolved_type_display_with_and_without_subtype() {
+        let with = ResolvedType {
+            type_name: "Record".into(),
+            type_subtype: Some("Item".into()),
+        };
+        assert_eq!(with.to_string(), "Record \"Item\"");
+        let without = ResolvedType {
+            type_name: "Integer".into(),
+            type_subtype: None,
+        };
+        assert_eq!(without.to_string(), "Integer");
+    }
 }
