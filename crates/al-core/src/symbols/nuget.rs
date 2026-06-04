@@ -625,6 +625,121 @@ mod tests {
     }
 
     #[test]
+    fn resolve_core_base_application() {
+        // Base Application uses special naming: with GUID embedded in the name.
+        let deps = vec![AppDependency {
+            id: "437dbf0e-84ff-417a-965d-ed2bb9650972".to_string(),
+            name: "Base Application".to_string(),
+            publisher: "Microsoft".to_string(),
+            version: "26.0.0.0".to_string(),
+        }];
+
+        let refs = resolve_dependencies(&deps);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].id,
+            "Microsoft.BaseApplication.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972"
+        );
+    }
+
+    #[test]
+    fn resolve_core_business_foundation() {
+        // Business Foundation uses special naming: with GUID embedded in the name.
+        let deps = vec![AppDependency {
+            id: "f3552374-a1f2-4356-848e-196002525837".to_string(),
+            name: "Business Foundation".to_string(),
+            publisher: "Microsoft".to_string(),
+            version: "26.0.0.0".to_string(),
+        }];
+
+        let refs = resolve_dependencies(&deps);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(
+            refs[0].id,
+            "Microsoft.BusinessFoundation.symbols.f3552374-a1f2-4356-848e-196002525837"
+        );
+    }
+
+    #[test]
+    fn resolve_core_id_is_case_insensitive() {
+        // The match arms lowercase the id first, so an UPPERCASE GUID from
+        // app.json must still hit the special-naming branch (no general fallback).
+        let deps = vec![AppDependency {
+            id: "C1335042-3002-4257-BF8A-75C898CCB1B8".to_string(),
+            name: "Application".to_string(),
+            publisher: "Microsoft".to_string(),
+            version: "26.5.0.0".to_string(),
+        }];
+
+        let refs = resolve_dependencies(&deps);
+        assert_eq!(refs[0].id, "Microsoft.Application.symbols");
+    }
+
+    #[test]
+    fn resolve_third_party_lowercases_guid_and_strips_spaces() {
+        // General pattern: spaces removed from publisher+name, GUID lowercased.
+        let deps = vec![AppDependency {
+            id: "AB12CD34-0000-0000-0000-000000000000".to_string(),
+            name: "Cool Tool".to_string(),
+            publisher: "Acme Corp".to_string(),
+            version: "1.0.0.0".to_string(),
+        }];
+
+        let refs = resolve_dependencies(&deps);
+        assert_eq!(
+            refs[0].id,
+            "AcmeCorp.CoolTool.symbols.ab12cd34-0000-0000-0000-000000000000"
+        );
+        assert_eq!(refs[0].display_name, "Cool Tool");
+    }
+
+    #[test]
+    fn resolve_dependencies_preserves_order_and_count() {
+        let deps = vec![
+            AppDependency {
+                id: "id-a".to_string(),
+                name: "A".to_string(),
+                publisher: "P".to_string(),
+                version: "1.0.0.0".to_string(),
+            },
+            AppDependency {
+                id: "id-b".to_string(),
+                name: "B".to_string(),
+                publisher: "P".to_string(),
+                version: "2.0.0.0".to_string(),
+            },
+        ];
+        let refs = resolve_dependencies(&deps);
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].display_name, "A");
+        assert_eq!(refs[1].display_name, "B");
+        assert_eq!(refs[0].version.as_deref(), Some("1.0.0.0"));
+        assert_eq!(refs[1].version.as_deref(), Some("2.0.0.0"));
+    }
+
+    #[test]
+    fn nuget_feed_default_points_at_public_feed() {
+        let feed = NuGetFeed::default();
+        assert_eq!(feed.index_url, "https://api.nuget.org/v3/index.json");
+    }
+
+    #[test]
+    fn version_prefix_extracts_major_minor() {
+        // Multi-component versions yield the major.minor prefix with trailing dot.
+        assert_eq!(version_prefix("26.5.0.0"), "26.5.");
+        assert_eq!(version_prefix("26.0.40469"), "26.0.");
+        // Exactly two components still works.
+        assert_eq!(version_prefix("12.3"), "12.3.");
+    }
+
+    #[test]
+    fn version_prefix_single_component_falls_back() {
+        // Fewer than two components: the whole string plus a trailing dot.
+        assert_eq!(version_prefix("26"), "26.");
+        assert_eq!(version_prefix(""), ".");
+    }
+
+    #[test]
     fn resolve_third_party_dependency() {
         let deps = vec![AppDependency {
             id: "id-2".to_string(),
@@ -672,6 +787,65 @@ mod tests {
         assert!(path.to_str().unwrap().ends_with(".app"));
 
         // Cleanup
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn extract_app_strips_subfolder_path() {
+        // A .app nested in a subfolder must be extracted to dest using only the
+        // bare filename — the path prefix is stripped (ZIP-slip defence).
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let mut nupkg_buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut nupkg_buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options = SimpleFileOptions::default();
+            zip.start_file("lib/net/Nested.app", options).unwrap();
+            zip.write_all(b"NAVX").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let dest = std::env::temp_dir().join("al-symbols-test-subfolder");
+        let _ = std::fs::remove_dir_all(&dest);
+        let result = extract_app_from_nupkg(&nupkg_buf, &dest, "Test");
+        let path = result.expect("nested .app should extract");
+        // The file lands directly under dest, NOT under dest/lib/net/.
+        assert_eq!(path, dest.join("Nested.app"));
+        assert!(dest.join("Nested.app").exists());
+        assert!(!dest.join("lib").exists(), "subfolder must not be created");
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn extract_app_rejects_dotdot_basename() {
+        // The guard rejects any .app whose *basename* (after stripping path
+        // separators) still contains "..". Such an entry is skipped, and with
+        // no other safe .app the result is NoAppInNupkg — nothing is written.
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let mut nupkg_buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut nupkg_buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options = SimpleFileOptions::default();
+            // Basename survives splitting and still contains "..".
+            zip.start_file("lib/evil..payload.app", options).unwrap();
+            zip.write_all(b"NAVX").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let dest = std::env::temp_dir().join("al-symbols-test-dotdot");
+        let _ = std::fs::remove_dir_all(&dest);
+        let result = extract_app_from_nupkg(&nupkg_buf, &dest, "Test");
+        assert!(
+            matches!(result, Err(NuGetError::NoAppInNupkg)),
+            "entry with '..' in basename must be skipped, got {result:?}"
+        );
+        // The unsafe basename must never be materialised under dest.
+        assert!(!dest.join("evil..payload.app").exists());
         let _ = std::fs::remove_dir_all(&dest);
     }
 
@@ -872,5 +1046,127 @@ mod tests {
             "10 × 5ms serial waits should take >= 45ms (got {elapsed:?}) — \
              if they ran concurrently the mutex isn't serialising"
         );
+    }
+
+    // --- get_package_base_address -------------------------------------------
+
+    /// Mount a service index that advertises `base_id` as a PackageBaseAddress
+    /// resource (alongside an unrelated resource to prove selection works).
+    async fn mount_service_index(server: &wiremock::MockServer, base_id: &str) {
+        let body = format!(
+            r#"{{"resources":[
+                {{"@id":"https://example/search","@type":"SearchQueryService"}},
+                {{"@id":"{base_id}","@type":"PackageBaseAddress/3.0.0"}}
+            ]}}"#
+        );
+        let len = body.len().to_string();
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", len.as_str())
+                    .set_body_string(body),
+            )
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn base_address_selected_and_trailing_slash_appended() {
+        // The PackageBaseAddress resource is picked out by @type prefix, and a
+        // trailing slash is appended when the advertised id lacks one.
+        let server = wiremock::MockServer::start().await;
+        mount_service_index(&server, "https://feed.example/base").await;
+
+        let client = reqwest::Client::new();
+        let url = get_package_base_address(&client, &server.uri())
+            .await
+            .expect("https base address should resolve");
+        assert_eq!(url, "https://feed.example/base/");
+    }
+
+    #[tokio::test]
+    async fn base_address_keeps_existing_trailing_slash() {
+        let server = wiremock::MockServer::start().await;
+        mount_service_index(&server, "https://feed.example/base/").await;
+
+        let client = reqwest::Client::new();
+        let url = get_package_base_address(&client, &server.uri())
+            .await
+            .unwrap();
+        assert_eq!(url, "https://feed.example/base/");
+    }
+
+    #[tokio::test]
+    async fn base_address_missing_resource_errors() {
+        // A service index with no PackageBaseAddress resource → NoBaseAddress.
+        let server = wiremock::MockServer::start().await;
+        let body = r#"{"resources":[{"@id":"https://x/s","@type":"SearchQueryService"}]}"#;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("Content-Length", body.len().to_string().as_str())
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let res = get_package_base_address(&client, &server.uri()).await;
+        assert!(
+            matches!(res, Err(NuGetError::NoBaseAddress)),
+            "expected NoBaseAddress, got {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(al_lsp_http_feed_env)]
+    async fn base_address_refuses_plain_http_by_default() {
+        // An HTTP PackageBaseAddress must be refused unless explicitly opted in.
+        std::env::remove_var("AL_LSP_ALLOW_HTTP_FEED");
+        let server = wiremock::MockServer::start().await;
+        mount_service_index(&server, "http://insecure.example/base").await;
+
+        let client = reqwest::Client::new();
+        let res = get_package_base_address(&client, &server.uri()).await;
+        match res {
+            Err(NuGetError::Io(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+                assert!(e.to_string().contains("not HTTPS"));
+            }
+            other => panic!("expected Io(InvalidInput) refusing HTTP, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(al_lsp_http_feed_env)]
+    async fn base_address_allows_http_when_opted_in() {
+        // With AL_LSP_ALLOW_HTTP_FEED=1 the HTTP base address is accepted.
+        std::env::set_var("AL_LSP_ALLOW_HTTP_FEED", "1");
+        let server = wiremock::MockServer::start().await;
+        mount_service_index(&server, "http://insecure.example/base").await;
+
+        let client = reqwest::Client::new();
+        let url = get_package_base_address(&client, &server.uri()).await;
+        std::env::remove_var("AL_LSP_ALLOW_HTTP_FEED");
+        assert_eq!(url.unwrap(), "http://insecure.example/base/");
+    }
+
+    #[tokio::test]
+    async fn fetch_metadata_json_propagates_http_error_status() {
+        // A 500 from the feed surfaces as an error via error_for_status(),
+        // never as a successful deserialisation.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(500)
+                    .insert_header("Content-Length", "2")
+                    .set_body_string("{}"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let res: Result<DummyJson, NuGetError> = fetch_metadata_json(&client, &server.uri()).await;
+        assert!(res.is_err(), "HTTP 500 must yield an error");
     }
 }
