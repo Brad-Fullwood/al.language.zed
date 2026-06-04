@@ -4827,4 +4827,526 @@ mod p1_5_tests {
             std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
         ));
     }
+
+    // -----------------------------------------------------------------------
+    // Analysis dispatchers: param-validation & happy-path branches.
+    // These exercise the synchronous, in-process error/edge paths that need
+    // neither a live BC server nor a spawned binary.
+    // -----------------------------------------------------------------------
+
+    /// Open a real `.al` file on disk and return its `file://` URI string,
+    /// suitable for the `{ "file": ... }` param shape the dispatchers accept.
+    /// The file must exist because `file_uri_from_params` canonicalises it.
+    fn write_al(tmp: &tempfile::TempDir, name: &str, content: &str) -> String {
+        let path = tmp.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        path.canonicalize().unwrap().to_string_lossy().to_string()
+    }
+
+    // --- dispatch_lint -------------------------------------------------------
+
+    #[test]
+    fn lint_missing_file_param_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_lint(&ws, 1, &serde_json::json!({}));
+        let err = resp.error.expect("missing file/uri must be invalid params");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn lint_single_file_reports_parse_errors() {
+        // Positive + behavior: a file with a syntax error must surface at
+        // least one diagnostic (the parse-error branch appends them).
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Deliberately malformed AL — unterminated object.
+        let file = write_al(&tmp, "Bad.al", "codeunit 50100 \"Bad\" { procedure X( ");
+        let resp = dispatch_lint(&ws, 2, &serde_json::json!({ "file": file }));
+        assert!(
+            resp.error.is_none(),
+            "lint should succeed: {:?}",
+            resp.error
+        );
+        let diags = resp
+            .result
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .expect("diagnostics array");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.get("code") == Some(&serde_json::json!("parse-error"))),
+            "malformed AL must produce a parse-error diagnostic; got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn lint_all_mode_returns_array_for_empty_workspace() {
+        // `all` mode iterates the file index; an empty workspace yields [].
+        let ws = empty_ws();
+        let resp = dispatch_lint(&ws, 3, &serde_json::json!({ "all": true }));
+        assert!(resp.error.is_none());
+        let arr = resp
+            .result
+            .and_then(|v| v.as_array().cloned())
+            .expect("array");
+        assert!(arr.is_empty(), "empty workspace → no per-file lint entries");
+    }
+
+    // --- dispatch_format -----------------------------------------------------
+
+    #[test]
+    fn format_content_returns_formatted_text() {
+        // Positive: passing raw `content` avoids any file I/O and returns the
+        // formatted source plus a `changed` flag.
+        let ws = empty_ws();
+        let resp = dispatch_format(
+            &ws,
+            1,
+            &serde_json::json!({ "content": "codeunit 50100 \"X\"\n{\n}" }),
+        );
+        assert!(resp.error.is_none());
+        let r = resp.result.expect("result");
+        assert!(r.get("formatted").and_then(|v| v.as_str()).is_some());
+        assert!(r.get("changed").and_then(|v| v.as_bool()).is_some());
+    }
+
+    #[test]
+    fn format_check_mode_only_reports_changed_flag() {
+        // In check mode the response carries ONLY `changed`, never `formatted`.
+        let ws = empty_ws();
+        let resp = dispatch_format(
+            &ws,
+            2,
+            &serde_json::json!({ "content": "codeunit 50100 X {}", "check": true }),
+        );
+        let r = resp.result.expect("result");
+        assert!(r.get("changed").is_some(), "check mode must report changed");
+        assert!(
+            r.get("formatted").is_none(),
+            "check mode must NOT include formatted text"
+        );
+    }
+
+    #[test]
+    fn format_missing_content_and_file_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_format(&ws, 3, &serde_json::json!({}));
+        let err = resp.error.expect("no content and no file → invalid params");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+    }
+
+    // --- dispatch_fix --------------------------------------------------------
+
+    #[test]
+    fn fix_missing_file_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_fix(&ws, 1, &serde_json::json!({}));
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn fix_reports_zero_fixes_for_clean_file() {
+        // No custom lint rules are registered, so `fixes` is always 0 and the
+        // dryRun flag round-trips. Exercises the happy path + filter branch.
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = write_al(&tmp, "Ok.al", "codeunit 50100 \"Ok\"\n{\n}\n");
+        let resp = dispatch_fix(&ws, 2, &serde_json::json!({ "file": file, "dryRun": true }));
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert_eq!(r["fixes"], serde_json::json!(0));
+        assert_eq!(r["dryRun"], serde_json::json!(true));
+    }
+
+    // --- dispatch_rules ------------------------------------------------------
+
+    #[test]
+    fn rules_returns_json_array_mirroring_registry() {
+        // Native lint rules are intentionally empty (all diagnostics come from
+        // the .NET bridge), so the dispatcher must return a JSON array whose
+        // length matches the registry exactly — proving it maps the registry
+        // rather than fabricating entries.
+        let resp = dispatch_rules(1);
+        assert!(resp.error.is_none());
+        let arr = resp
+            .result
+            .and_then(|v| v.as_array().cloned())
+            .expect("array");
+        assert_eq!(
+            arr.len(),
+            crate::syntax::lint_rules().len(),
+            "dispatch_rules length must mirror the lint-rule registry"
+        );
+    }
+
+    // --- dispatch_parse ------------------------------------------------------
+
+    #[test]
+    fn parse_missing_file_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_parse(&ws, 1, &serde_json::json!({}));
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn parse_reports_node_count_and_errors() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = write_al(&tmp, "P.al", "codeunit 50100 \"P\"\n{\n}\n");
+        let resp = dispatch_parse(&ws, 2, &serde_json::json!({ "file": file }));
+        assert!(resp.error.is_none());
+        let r = resp.result.expect("result");
+        let nodes = r["nodeCount"].as_u64().expect("nodeCount");
+        assert!(nodes > 0, "a non-empty file must parse to >0 nodes");
+        assert!(r.get("parseErrors").is_some());
+    }
+
+    // --- dispatch_location ---------------------------------------------------
+
+    #[test]
+    fn location_missing_name_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_location(&ws, 1, &serde_json::json!({}));
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn location_unknown_object_is_invalid_params_with_name() {
+        let ws = empty_ws();
+        let resp = dispatch_location(&ws, 2, &serde_json::json!({ "name": "Nope" }));
+        let err = resp.error.expect("unknown object must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("Nope"), "error names the object");
+    }
+
+    // --- dispatch_source -----------------------------------------------------
+
+    #[test]
+    fn source_missing_name_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_source(&ws, 1, &serde_json::json!({}));
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn source_unknown_object_returns_not_found() {
+        let ws = empty_ws();
+        let resp = dispatch_source(&ws, 2, &serde_json::json!({ "name": "GhostObject" }));
+        let err = resp.error.expect("unknown object must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("GhostObject"));
+    }
+
+    // --- dispatch_new_project ------------------------------------------------
+
+    #[test]
+    fn new_project_missing_dir_is_invalid_params() {
+        let resp = dispatch_new_project(1, &serde_json::json!({}));
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn new_project_rejects_relative_dir() {
+        // Path-traversal guard: relative dirs must be rejected before any
+        // scaffold write happens.
+        let resp = dispatch_new_project(2, &serde_json::json!({ "dir": "../evil" }));
+        let err = resp.error.expect("relative dir must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("absolute"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn new_project_scaffolds_into_absolute_dir() {
+        // Positive: an absolute target dir scaffolds a project (creates app.json).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("MyApp");
+        let resp = dispatch_new_project(
+            3,
+            &serde_json::json!({
+                "dir": dir.to_string_lossy(),
+                "name": "MyApp",
+                "publisher": "Acme",
+            }),
+        );
+        assert!(resp.error.is_none(), "scaffold failed: {:?}", resp.error);
+        assert!(dir.join("app.json").exists(), "app.json must be created");
+    }
+
+    // --- dispatch_metrics ----------------------------------------------------
+
+    #[test]
+    fn metrics_missing_file_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_metrics(&ws, 1, &serde_json::json!({}));
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn metrics_single_file_returns_thresholds_and_procedures() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file = write_al(
+            &tmp,
+            "M.al",
+            "codeunit 50100 \"M\"\n{\n  procedure Do()\n  begin\n  end;\n}\n",
+        );
+        let resp = dispatch_metrics(&ws, 2, &serde_json::json!({ "file": file }));
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert_eq!(r["thresholdCyclomatic"], serde_json::json!(10));
+        assert_eq!(r["thresholdCognitive"], serde_json::json!(15));
+        assert!(r.get("procedures").and_then(|v| v.as_array()).is_some());
+    }
+
+    // --- dispatch_snapshot ---------------------------------------------------
+
+    #[tokio::test]
+    async fn snapshot_missing_cmd_is_invalid_params() {
+        let resp = dispatch_snapshot(1, &serde_json::json!({})).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("cmd"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_unknown_cmd_is_invalid_params() {
+        let resp = dispatch_snapshot(2, &serde_json::json!({ "cmd": "bogus" })).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("Unknown snapshot command"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_download_missing_id_is_invalid_params() {
+        let resp = dispatch_snapshot(3, &serde_json::json!({ "cmd": "download" })).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("snapshotId"));
+    }
+
+    // --- dispatch_profiling --------------------------------------------------
+
+    #[tokio::test]
+    async fn profiling_missing_cmd_is_invalid_params() {
+        let resp = dispatch_profiling(1, &serde_json::json!({})).await;
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
+    }
+
+    #[tokio::test]
+    async fn profiling_unknown_cmd_is_invalid_params() {
+        let resp = dispatch_profiling(2, &serde_json::json!({ "cmd": "zzz" })).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("Unknown profiling command"));
+    }
+
+    #[tokio::test]
+    async fn profiling_analyze_missing_path_is_invalid_params() {
+        let resp = dispatch_profiling(3, &serde_json::json!({ "cmd": "analyze" })).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("path"));
+    }
+
+    #[tokio::test]
+    async fn profiling_analyze_rejects_relative_path() {
+        // Path-traversal guard before any file read.
+        let resp = dispatch_profiling(
+            4,
+            &serde_json::json!({ "cmd": "analyze", "path": "rel/profile.json" }),
+        )
+        .await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("absolute"), "got: {}", err.message);
+    }
+
+    // --- dispatch_tests_snapshot_record / replay / diff ----------------------
+
+    #[tokio::test]
+    async fn snapshot_record_missing_codeunit_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_snapshot_record(&ws, 1, &serde_json::json!({})).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("codeunitId"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_record_rejects_out_of_range_codeunit() {
+        let ws = empty_ws();
+        let resp = dispatch_tests_snapshot_record(
+            &ws,
+            2,
+            &serde_json::json!({ "codeunitId": (i32::MAX as i64) + 1 }),
+        )
+        .await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("out of range"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_record_missing_breakpoints_is_invalid_params() {
+        // Past codeunitId + methodName validation, an empty breakpoints array
+        // must still be rejected — proving the guard fires, not the BC stub.
+        let ws = empty_ws();
+        let resp = dispatch_tests_snapshot_record(
+            &ws,
+            3,
+            &serde_json::json!({ "codeunitId": 50100, "methodName": "T", "breakpoints": [] }),
+        )
+        .await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("breakpoints"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_record_fully_valid_reaches_not_wired_stub() {
+        // All params valid → the dispatcher reaches the documented
+        // "not yet wired" INTERNAL_ERROR rather than an INVALID_PARAMS.
+        let ws = empty_ws();
+        let resp = dispatch_tests_snapshot_record(
+            &ws,
+            4,
+            &serde_json::json!({
+                "codeunitId": 50100,
+                "methodName": "T",
+                "breakpoints": [{ "file": "a.al", "line": 1 }],
+            }),
+        )
+        .await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert!(err.message.contains("not yet wired"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_replay_missing_path_is_invalid_params() {
+        let resp = dispatch_tests_snapshot_replay(1, &serde_json::json!({})).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("snapshotPath"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_replay_unreadable_path_is_internal_error() {
+        let resp = dispatch_tests_snapshot_replay(
+            2,
+            &serde_json::json!({ "snapshotPath": "/nonexistent/snap.bin" }),
+        )
+        .await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+    }
+
+    #[tokio::test]
+    async fn snapshot_diff_missing_paths_is_invalid_params() {
+        let only_a = dispatch_tests_snapshot_diff(1, &serde_json::json!({ "pathA": "/x" })).await;
+        let err = only_a.error.expect("missing pathB must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("pathB"));
+
+        let none = dispatch_tests_snapshot_diff(2, &serde_json::json!({})).await;
+        let err = none.error.expect("missing pathA must error");
+        assert!(err.message.contains("pathA"));
+    }
+
+    // --- dispatch_generate (kind / table branches) ---------------------------
+
+    #[test]
+    fn generate_unknown_kind_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_generate(&ws, 1, &serde_json::json!({ "kind": "frobnicate" }));
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("Unknown generate kind"));
+    }
+
+    #[test]
+    fn generate_page_missing_table_reports_table_not_found() {
+        // A page requires a source table; an unknown table name must surface
+        // a "not found in symbol index" error (the `table_entry` None branch).
+        let ws = empty_ws();
+        let resp = dispatch_generate(
+            &ws,
+            2,
+            &serde_json::json!({ "kind": "page", "name": "P", "table": "NoSuchTable" }),
+        );
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("NoSuchTable"));
+    }
+
+    // --- dispatch_deps_graph -------------------------------------------------
+
+    #[test]
+    fn deps_graph_dot_format_returns_dot_content() {
+        let ws = empty_ws();
+        let resp = dispatch_deps_graph(&ws, 1, &serde_json::json!({ "format": "dot" }));
+        assert!(resp.error.is_none());
+        let r = resp.result.expect("result");
+        assert_eq!(r["format"], serde_json::json!("dot"));
+        assert!(r.get("content").and_then(|v| v.as_str()).is_some());
+    }
+
+    #[test]
+    fn deps_graph_default_format_is_json_object() {
+        let ws = empty_ws();
+        let resp = dispatch_deps_graph(&ws, 2, &serde_json::json!({}));
+        assert!(resp.error.is_none());
+        // JSON branch serialises the graph struct (not the {format,content} shape).
+        let r = resp.result.expect("result");
+        assert!(
+            r.get("content").is_none(),
+            "json branch must not carry the dot `content` field"
+        );
+    }
+
+    // --- dispatch_xlf_* path guards ------------------------------------------
+
+    #[test]
+    fn xlf_untranslated_missing_param_is_invalid_params() {
+        let resp = dispatch_xlf_untranslated(1, &serde_json::json!({}));
+        assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn xlf_untranslated_rejects_relative_path() {
+        let resp = dispatch_xlf_untranslated(2, &serde_json::json!({ "xlf": "rel/de-DE.xlf" }));
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("absolute"));
+    }
+
+    #[tokio::test]
+    async fn xlf_suggest_rejects_relative_path() {
+        let ws = empty_ws();
+        let resp = dispatch_xlf_suggest(&ws, 1, &serde_json::json!({ "xlf": "rel.xlf" })).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("absolute"));
+    }
+
+    #[tokio::test]
+    async fn xlf_refresh_missing_param_is_invalid_params() {
+        let ws = empty_ws();
+        let resp = dispatch_xlf_refresh(&ws, 1, &serde_json::json!({})).await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("xlf"));
+    }
+
+    #[tokio::test]
+    async fn xlf_refresh_rejects_relative_path() {
+        let ws = empty_ws();
+        let resp =
+            dispatch_xlf_refresh(&ws, 2, &serde_json::json!({ "xlf": "Translations/de.xlf" }))
+                .await;
+        let err = resp.error.expect("err");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("absolute"));
+    }
 }
