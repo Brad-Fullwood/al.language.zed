@@ -68,6 +68,16 @@ pub use protocol::*;
 
 /// Find the al-lsp binary, checking debug build first.
 fn find_binary() -> PathBuf {
+    // Explicit override wins. Coverage runs set this to the INSTRUMENTED binary
+    // so the al-lsp subprocess contributes to coverage (see scripts/coverage.sh);
+    // CI / Zed packaging can also pin an exact path here.
+    if let Some(path) = std::env::var_os("AL_LSP_BIN") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return path;
+        }
+    }
+
     // Check cargo target directory
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_root = PathBuf::from(manifest_dir)

@@ -75,10 +75,26 @@ let opts = args
 if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch (e) { opts = null } }
 if (!opts || typeof opts !== 'object') opts = {}
 const maxFiles = opts.maxFiles || 3   // files to improve per run (sequential commits)
+// Skip already-well-covered files: never spend a run polishing >= this %.
+const ceiling = typeof opts.ceiling === 'number' ? opts.ceiling : 80
+// Explicit target override: [{file, linePct?}] — bypasses the fuzzy Measure pick
+// so the caller can aim runs straight at known low-coverage files.
+const explicit = Array.isArray(opts.files) ? opts.files : null
 
 // ---- Measure: one coverage run → ranked genuine gaps ----
 phase('Measure')
-const measure = await rAgent(`${RULES}
+let measure
+if (explicit) {
+  log(`Explicit targets (${explicit.length}); skipping Measure pick.`)
+  measure = {
+    overallLinePct: 0,
+    overallFnPct: 0,
+    gaps: explicit.map((f) => (typeof f === 'string'
+      ? { file: f, linePct: 0, why: 'caller-specified low-coverage target', testableInProcess: true }
+      : { file: f.file, linePct: f.linePct || 0, why: f.why || 'caller-specified low-coverage target', testableInProcess: true })),
+  }
+} else {
+  measure = await rAgent(`${RULES}
 
 Measure current test coverage and identify the worst GENUINE red/green gaps.
 
@@ -87,12 +103,16 @@ Run: \`scripts/coverage.sh\` (cargo-llvm-cov + nextest, ~2 min) OR \`cargo llvm-
 CRITICAL — distinguish two kinds of 0%/low coverage:
 - Transport adapters (server/*.rs hover/definition/formatting/handlers/lsp/completions, bin/al-lsp.rs) show 0% ONLY because the e2e harness spawns al-lsp as a SUBPROCESS (uncounted). Their logic (queries/*) is covered. These are NOT priority gaps — mark testableInProcess=false.
 - Genuine gaps = production logic with thin/no coverage that IS unit-testable in-process (e.g. http_auth.rs at 0% with zero tests, parsing/config helpers, symbol indexing). These are the targets.
+- Do NOT pick files already at or above ${ceiling}% line coverage — polishing near-complete files to squeeze out a point or two is vanity work, not a real gap. Only return files genuinely below ${ceiling}%.
 
 Return overall % and the ranked genuine gaps (most-impactful, in-process-testable first).`,
-  { label: 'measure coverage', phase: 'Measure', schema: MEASURE_SCHEMA, agentType: 'Explore' })
+    { label: 'measure coverage', phase: 'Measure', schema: MEASURE_SCHEMA, agentType: 'Explore' })
+}
 
 if (!measure) { log('Coverage measurement failed.'); return { error: 'measure failed' } }
-const targets = (measure.gaps || []).filter((g) => g.testableInProcess).slice(0, maxFiles)
+const targets = (measure.gaps || [])
+  .filter((g) => g.testableInProcess && (explicit || g.linePct < ceiling))
+  .slice(0, maxFiles)
 log(`Coverage: ${measure.overallLinePct}% line / ${measure.overallFnPct}% fn. Targeting ${targets.length} files: ${targets.map((t) => t.file.split('/').pop()).join(', ')}`)
 
 if (targets.length === 0) {
