@@ -146,7 +146,10 @@ fn find_implements_clause_match(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::symbols::model::{ObjectKind, SymbolEntry};
+    use crate::workspace::Workspace;
+    use std::path::PathBuf;
 
     fn make_codeunit_entry(name: &str, id: i32, implements: Vec<String>) -> SymbolEntry {
         SymbolEntry {
@@ -231,6 +234,194 @@ mod tests {
         assert!(
             matches.is_empty(),
             "Should find no implementations for an unknown interface"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // End-to-end tests that drive the real `find_implementations` entry point
+    // and the tree-walking helpers (`find_codeunit_implementing_interface`,
+    // `find_implements_clause_match`).
+    // -----------------------------------------------------------------------
+
+    /// A codeunit source that references an interface via an `implements` clause.
+    /// The caret is placed on the interface name so `node_clean_name` yields it.
+    fn impl_source(codeunit_name: &str, iface: &str) -> String {
+        format!("codeunit 50100 {codeunit_name} implements {iface}\n{{\n}}\n")
+    }
+
+    /// Byte/char column of the interface name within `impl_source` line 0.
+    fn iface_position(codeunit_name: &str) -> Position {
+        // "codeunit 50100 <name> implements <iface>"
+        let prefix = format!("codeunit 50100 {codeunit_name} implements ");
+        Position {
+            line: 0,
+            character: prefix.chars().count() as u32,
+        }
+    }
+
+    #[test]
+    fn find_implementations_returns_empty_for_unopened_document() {
+        let ws = Workspace::new();
+        let uri = Url::parse("file:///nonexistent/Closed.al").unwrap();
+        // Document was never opened, so get_or_parse returns None.
+        let result = find_implementations(
+            &ws,
+            &uri,
+            Position {
+                line: 0,
+                character: 0,
+            },
+        );
+        assert!(
+            result.is_empty(),
+            "an unopened document must yield no implementations"
+        );
+    }
+
+    #[test]
+    fn find_implementations_finds_workspace_source_codeunit() {
+        let ws = Workspace::new();
+
+        // Open the "current" document where the caret sits on the interface name.
+        let cur_uri = Url::parse("file:///proj/Caller.al").unwrap();
+        let caller_src = impl_source("Caller", "IFoo");
+        ws.documents.open(cur_uri.clone(), caller_src);
+
+        // A *different* workspace source file implements IFoo.
+        let impl_path = PathBuf::from("/proj/FooImpl.al");
+        ws.file_index
+            .add_file(impl_path.clone(), impl_source("FooImpl", "IFoo"));
+
+        let pos = iface_position("Caller");
+        let result = find_implementations(&ws, &cur_uri, pos);
+
+        assert_eq!(
+            result.len(),
+            1,
+            "expected exactly the workspace source implementation, got {result:?}"
+        );
+        let found = &result[0];
+        assert_eq!(
+            found.uri,
+            Url::from_file_path(&impl_path).unwrap(),
+            "located implementation should be the FooImpl source file"
+        );
+        // The returned range spans the codeunit object declaration starting at line 0.
+        assert_eq!(found.range.start.line, 0);
+    }
+
+    #[test]
+    fn find_implementations_is_case_insensitive_in_source_scan() {
+        let ws = Workspace::new();
+
+        let cur_uri = Url::parse("file:///proj/Caller.al").unwrap();
+        // Caret references "IFoo"; implementation declares "ifoo" (different case).
+        ws.documents
+            .open(cur_uri.clone(), impl_source("Caller", "IFoo"));
+
+        let impl_path = PathBuf::from("/proj/FooImpl.al");
+        ws.file_index
+            .add_file(impl_path.clone(), impl_source("FooImpl", "ifoo"));
+
+        let result = find_implementations(&ws, &cur_uri, iface_position("Caller"));
+        assert_eq!(
+            result.len(),
+            1,
+            "interface match must ignore ASCII case in the source scan"
+        );
+    }
+
+    #[test]
+    fn find_implementations_skips_the_current_file() {
+        let ws = Workspace::new();
+
+        let cur_path = PathBuf::from("/proj/Caller.al");
+        let cur_uri = Url::from_file_path(&cur_path).unwrap();
+        let caller_src = impl_source("Caller", "IFoo");
+        ws.documents.open(cur_uri.clone(), caller_src.clone());
+        // The current file is ALSO in the file index and implements IFoo, but the
+        // `current_path` skip branch must exclude it so we don't return self.
+        ws.file_index.add_file(cur_path, caller_src);
+
+        let result = find_implementations(&ws, &cur_uri, iface_position("Caller"));
+        assert!(
+            result.is_empty(),
+            "the file under the caret must be skipped, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn find_implementations_ignores_unknown_interface_in_source_scan() {
+        let ws = Workspace::new();
+
+        let cur_uri = Url::parse("file:///proj/Caller.al").unwrap();
+        ws.documents
+            .open(cur_uri.clone(), impl_source("Caller", "IUnknown"));
+
+        // The only source implements IFoo, which is not the caret's interface.
+        ws.file_index.add_file(
+            PathBuf::from("/proj/FooImpl.al"),
+            impl_source("FooImpl", "IFoo"),
+        );
+
+        let result = find_implementations(&ws, &cur_uri, iface_position("Caller"));
+        assert!(
+            result.is_empty(),
+            "no source implements IUnknown, expected no locations"
+        );
+    }
+
+    // --- Direct unit tests of the tree-walking helpers ---------------------
+
+    fn parse(src: &str) -> tree_sitter::Tree {
+        crate::syntax::AlParser::parse_quick(src).tree
+    }
+
+    #[test]
+    fn find_codeunit_implementing_interface_matches_codeunit() {
+        let src = impl_source("FooImpl", "IFoo");
+        let tree = parse(&src);
+        let range = find_codeunit_implementing_interface(&tree, &src, "ifoo");
+        assert!(
+            range.is_some(),
+            "codeunit declaring `implements IFoo` should match interface `ifoo`"
+        );
+        // Object declaration begins on the first line.
+        assert_eq!(range.unwrap().start.line, 0);
+    }
+
+    #[test]
+    fn find_codeunit_implementing_interface_rejects_non_codeunit() {
+        // A page object is not a codeunit, so the `is_codeunit` guard must reject
+        // it even though the text otherwise mentions the interface name.
+        let src = "page 50100 FooPage\n{\n    Caption = 'IFoo';\n}\n";
+        let tree = parse(src);
+        let range = find_codeunit_implementing_interface(&tree, src, "ifoo");
+        assert!(
+            range.is_none(),
+            "a non-codeunit object must never be reported as an implementation"
+        );
+    }
+
+    #[test]
+    fn find_codeunit_implementing_interface_rejects_wrong_interface() {
+        let src = impl_source("FooImpl", "IFoo");
+        let tree = parse(&src);
+        assert!(
+            find_codeunit_implementing_interface(&tree, &src, "ibar").is_none(),
+            "codeunit implementing IFoo must not match a search for IBar"
+        );
+    }
+
+    #[test]
+    fn find_implements_clause_match_handles_quoted_interface_name() {
+        // Interface names with spaces are quoted in AL; matching strips the quotes.
+        let src = "codeunit 50100 FooImpl implements \"My Foo\"\n{\n}\n";
+        let tree = parse(src);
+        let range = find_codeunit_implementing_interface(&tree, src, "my foo");
+        assert!(
+            range.is_some(),
+            "quoted interface name `\"My Foo\"` should match `my foo`"
         );
     }
 }
