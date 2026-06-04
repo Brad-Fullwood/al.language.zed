@@ -358,4 +358,298 @@ mod tests {
             "NaN == NaN under total_cmp (consistent sentinel)"
         );
     }
+
+    // ── default_for: full coverage of every supported type arm ────────────────
+
+    #[test]
+    fn default_for_covers_every_supported_type() {
+        use std::cmp::Ordering;
+        // biginteger aliases integer.
+        assert_eq!(Value::default_for("biginteger"), Some(Value::Integer(0)));
+        // Decimal default is 0.0 (not NaN, not unset).
+        assert_eq!(Value::default_for("decimal"), Some(Value::Decimal(0.0)));
+        assert_eq!(Value::default_for("date"), Some(Value::Date(0)));
+        assert_eq!(Value::default_for("time"), Some(Value::Time(0)));
+        assert_eq!(Value::default_for("datetime"), Some(Value::DateTime(0)));
+        assert_eq!(Value::default_for("duration"), Some(Value::Duration(0)));
+        assert_eq!(Value::default_for("char"), Some(Value::Char('\0')));
+        // Code is its own variant with an empty string.
+        assert!(matches!(Value::default_for("code"), Some(Value::Code(s)) if s.is_empty()));
+        // Guid default is the AL nil GUID.
+        match Value::default_for("guid") {
+            Some(Value::Guid(g)) => {
+                assert_eq!(g, "00000000-0000-0000-0000-000000000000");
+            }
+            other => panic!("guid default wrong: {other:?}"),
+        }
+        // Case-insensitive: mixed-case names resolve identically.
+        assert_eq!(
+            Value::default_for("DateTime").cmp(&Value::default_for("datetime")),
+            Ordering::Equal
+        );
+    }
+
+    // ── Ord: cross-variant ordering follows declaration index ─────────────────
+
+    #[test]
+    fn cross_variant_order_follows_declaration_index() {
+        // Variants are ordered by their declaration index regardless of inner
+        // payload. Null(0) < Empty(1) < Integer(2) < ... < ErrorInfo(21).
+        // A huge integer must still sort BELOW a tiny decimal, because the
+        // variant index dominates the inner value.
+        let huge_int = Value::Integer(i64::MAX);
+        let tiny_dec = Value::Decimal(-1.0e300);
+        assert!(
+            huge_int < tiny_dec,
+            "Integer variant precedes Decimal variant"
+        );
+
+        // A representative ascending chain across the whole enum.
+        let ascending = vec![
+            Value::Null,
+            Value::Empty,
+            Value::Integer(0),
+            Value::Decimal(0.0),
+            Value::Boolean(false),
+            Value::Char('\0'),
+            Value::Text(String::new()),
+            Value::Code(String::new()),
+            Value::Date(0),
+            Value::Time(0),
+            Value::DateTime(0),
+            Value::Duration(0),
+            Value::Guid(String::new()),
+            Value::Option {
+                type_name: String::new(),
+                member: String::new(),
+                ordinal: 0,
+            },
+            Value::Record(RecordValue {
+                table_name: String::new(),
+                table_id: 0,
+                handle: None,
+            }),
+            Value::RecordRef(RecordValue {
+                table_name: String::new(),
+                table_id: 0,
+                handle: None,
+            }),
+            Value::Variant(Box::new(Value::Null)),
+            Value::Array(vec![]),
+            Value::List(vec![]),
+            Value::Dict(BTreeMap::new()),
+            Value::Blob(vec![]),
+            Value::ErrorInfo(Box::new(ErrorInfo {
+                message: String::new(),
+                error_type: None,
+                source: None,
+            })),
+        ];
+        for win in ascending.windows(2) {
+            assert!(
+                win[0] < win[1],
+                "{} must sort before {}",
+                win[0].type_name(),
+                win[1].type_name()
+            );
+        }
+    }
+
+    // ── Ord: within-variant natural ordering for scalar arms ──────────────────
+
+    #[test]
+    fn within_variant_scalar_ordering() {
+        assert!(Value::Integer(-5) < Value::Integer(5));
+        assert!(Value::Decimal(1.5) < Value::Decimal(2.5));
+        // false < true.
+        assert!(Value::Boolean(false) < Value::Boolean(true));
+        assert!(Value::Char('a') < Value::Char('z'));
+        assert!(Value::Text("apple".into()) < Value::Text("banana".into()));
+        assert!(Value::Code("AAA".into()) < Value::Code("AAB".into()));
+        assert!(Value::Date(1) < Value::Date(2));
+        assert!(Value::Time(100) < Value::Time(200));
+        assert!(Value::DateTime(10) < Value::DateTime(20));
+        assert!(Value::Duration(-1) < Value::Duration(1));
+        assert!(Value::Guid("a".into()) < Value::Guid("b".into()));
+    }
+
+    // ── Ord: Option compares by (ordinal, type_name, member) ──────────────────
+
+    #[test]
+    fn option_orders_by_ordinal_first() {
+        let opt = |t: &str, m: &str, o: i64| Value::Option {
+            type_name: t.into(),
+            member: m.into(),
+            ordinal: o,
+        };
+        // Ordinal dominates: a "Zzz" member with ordinal 0 sorts before an
+        // "Aaa" member with ordinal 1, because ordinal is the primary key.
+        assert!(opt("Status", "Zzz", 0) < opt("Status", "Aaa", 1));
+        // Same ordinal: fall back to type_name, then member.
+        assert!(opt("AStatus", "X", 5) < opt("BStatus", "X", 5));
+        assert!(opt("Status", "Aaa", 5) < opt("Status", "Bbb", 5));
+        // Equal triple => Equal.
+        assert_eq!(opt("S", "M", 3), opt("S", "M", 3));
+    }
+
+    // ── Ord: Record / RecordRef compare by (table_id, table_name, handle) ─────
+
+    #[test]
+    fn record_orders_by_table_id_then_name_then_handle() {
+        let rec = |id: i32, name: &str, handle: Option<u64>| {
+            Value::Record(RecordValue {
+                table_name: name.into(),
+                table_id: id,
+                handle,
+            })
+        };
+        // table_id is primary: lower id sorts first even with a "later" name.
+        assert!(rec(18, "Zebra", Some(99)) < rec(27, "Aardvark", Some(1)));
+        // Same id: compare table_name.
+        assert!(rec(18, "Apple", None) < rec(18, "Banana", None));
+        // Same id + name: compare handle (None < Some).
+        assert!(rec(18, "Customer", None) < rec(18, "Customer", Some(0)));
+        assert!(rec(18, "Customer", Some(1)) < rec(18, "Customer", Some(2)));
+        // RecordRef uses the identical comparison path.
+        let rref = |id: i32| {
+            Value::RecordRef(RecordValue {
+                table_name: "T".into(),
+                table_id: id,
+                handle: None,
+            })
+        };
+        assert!(rref(1) < rref(2));
+    }
+
+    // ── Ord: structured collections (Variant, Array, List, Dict, Blob) ────────
+
+    #[test]
+    fn structured_collection_ordering() {
+        // Variant delegates to the inner value.
+        assert!(
+            Value::Variant(Box::new(Value::Integer(1)))
+                < Value::Variant(Box::new(Value::Integer(2)))
+        );
+        // Array / List use lexicographic Vec ordering.
+        assert!(
+            Value::Array(vec![Value::Integer(1)])
+                < Value::Array(vec![Value::Integer(1), Value::Integer(0)])
+        );
+        assert!(Value::List(vec![Value::Integer(1)]) < Value::List(vec![Value::Integer(2)]));
+        // Blob uses byte-vector ordering.
+        assert!(Value::Blob(vec![1, 2]) < Value::Blob(vec![1, 3]));
+        assert!(Value::Blob(vec![1]) < Value::Blob(vec![1, 0]));
+    }
+
+    #[test]
+    fn dict_ordering_compares_entry_sequences() {
+        let mut a = BTreeMap::new();
+        a.insert("k1".to_string(), Value::Integer(1));
+        let mut b = BTreeMap::new();
+        b.insert("k1".to_string(), Value::Integer(2));
+        // Same key, larger value => b > a.
+        assert!(Value::Dict(a.clone()) < Value::Dict(b));
+        // Adding a second entry makes the longer sequence sort after.
+        let mut c = a.clone();
+        c.insert("k2".to_string(), Value::Integer(0));
+        assert!(Value::Dict(a) < Value::Dict(c));
+    }
+
+    #[test]
+    fn error_info_orders_by_message() {
+        let err = |msg: &str| {
+            Value::ErrorInfo(Box::new(ErrorInfo {
+                message: msg.into(),
+                error_type: Some("Internal".into()),
+                source: Some("CU 50000".into()),
+            }))
+        };
+        // Only the message participates in ordering; error_type/source ignored.
+        assert!(err("aaa") < err("bbb"));
+        assert_eq!(err("same"), err("same"));
+    }
+
+    // ── PartialEq / Eq consistency with Ord ───────────────────────────────────
+
+    #[test]
+    fn eq_mirrors_cmp_including_nan_self_equality() {
+        // Eq contract a == a must hold even for NaN decimals (total_cmp).
+        let nan = Value::Decimal(f64::NAN);
+        #[allow(clippy::eq_op)]
+        let nan_self_eq = nan == nan;
+        assert!(nan_self_eq, "Decimal(NaN) must equal itself to satisfy Eq");
+        // Cross-variant values are never equal.
+        assert_ne!(Value::Integer(0), Value::Decimal(0.0));
+        // PartialOrd is consistent with Ord.
+        assert_eq!(
+            Value::Integer(1).partial_cmp(&Value::Integer(2)),
+            Some(std::cmp::Ordering::Less)
+        );
+    }
+
+    // ── type_name: structured-variant labels ──────────────────────────────────
+
+    #[test]
+    fn type_name_covers_structured_variants() {
+        assert_eq!(Value::Null.type_name(), "Null");
+        assert_eq!(Value::Empty.type_name(), "Empty");
+        assert_eq!(Value::Decimal(0.0).type_name(), "Decimal");
+        assert_eq!(Value::Char('x').type_name(), "Char");
+        assert_eq!(Value::Text(String::new()).type_name(), "Text");
+        assert_eq!(Value::Code(String::new()).type_name(), "Code");
+        assert_eq!(Value::Date(0).type_name(), "Date");
+        assert_eq!(Value::Time(0).type_name(), "Time");
+        assert_eq!(Value::DateTime(0).type_name(), "DateTime");
+        assert_eq!(Value::Duration(0).type_name(), "Duration");
+        assert_eq!(Value::Guid(String::new()).type_name(), "Guid");
+        assert_eq!(Value::Variant(Box::new(Value::Null)).type_name(), "Variant");
+        assert_eq!(Value::Array(vec![]).type_name(), "Array");
+        assert_eq!(Value::List(vec![]).type_name(), "List");
+        assert_eq!(Value::Dict(BTreeMap::new()).type_name(), "Dict");
+        assert_eq!(Value::Blob(vec![]).type_name(), "Blob");
+        assert_eq!(
+            Value::Record(RecordValue {
+                table_name: String::new(),
+                table_id: 0,
+                handle: None,
+            })
+            .type_name(),
+            "Record"
+        );
+        assert_eq!(
+            Value::RecordRef(RecordValue {
+                table_name: String::new(),
+                table_id: 0,
+                handle: None,
+            })
+            .type_name(),
+            "RecordRef"
+        );
+        assert_eq!(
+            Value::ErrorInfo(Box::new(ErrorInfo {
+                message: String::new(),
+                error_type: None,
+                source: None,
+            }))
+            .type_name(),
+            "ErrorInfo"
+        );
+    }
+
+    // ── Value as a BTreeMap key (the documented purpose of the Ord impl) ──────
+
+    #[test]
+    fn value_is_usable_as_btreemap_key() {
+        // The whole point of the total Ord impl: Value must work as a key.
+        let mut map: BTreeMap<Value, &str> = BTreeMap::new();
+        map.insert(Value::Integer(2), "two");
+        map.insert(Value::Integer(1), "one");
+        map.insert(Value::Decimal(f64::NAN), "nan");
+        // Lookups round-trip, including the NaN key (total_cmp makes it stable).
+        assert_eq!(map.get(&Value::Integer(1)), Some(&"one"));
+        assert_eq!(map.get(&Value::Decimal(f64::NAN)), Some(&"nan"));
+        // BTreeMap keeps keys sorted: Integer(1) before Integer(2).
+        let keys: Vec<_> = map.keys().cloned().collect();
+        assert!(keys[0] < keys[1]);
+    }
 }
