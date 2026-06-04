@@ -407,6 +407,7 @@ fn path_to_pdcstring(path: &Path) -> Result<netcorehost::pdcstring::PdCString, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_find_bridge_returns_error_when_not_found() {
@@ -452,6 +453,142 @@ mod tests {
         #[cfg(feature = "semantic")]
         {
             // nothing to assert — real impl tested via integration tests with .NET
+        }
+    }
+
+    // ---- check_bridge_pair: both files must exist for Some(...) ----------
+
+    /// Both files present -> Some, and the returned tuple echoes the inputs.
+    #[test]
+    fn test_check_bridge_pair_both_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let dll = dir.path().join("AlBridge.dll");
+        let config = dir.path().join("AlBridge.runtimeconfig.json");
+        std::fs::write(&dll, b"fake dll").unwrap();
+        std::fs::write(&config, b"{}").unwrap();
+
+        let result = check_bridge_pair(dll.clone(), config.clone());
+        assert_eq!(result, Some((dll, config)));
+    }
+
+    /// DLL present but config missing -> None. This guards the AND in the
+    /// `dll.is_file() && config.is_file()` check: dropping the second
+    /// conjunct would make this return Some.
+    #[test]
+    fn test_check_bridge_pair_config_missing_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let dll = dir.path().join("AlBridge.dll");
+        let config = dir.path().join("AlBridge.runtimeconfig.json"); // not created
+        std::fs::write(&dll, b"fake dll").unwrap();
+
+        assert_eq!(check_bridge_pair(dll, config), None);
+    }
+
+    /// Config present but DLL missing -> None (guards the first conjunct).
+    #[test]
+    fn test_check_bridge_pair_dll_missing_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let dll = dir.path().join("AlBridge.dll"); // not created
+        let config = dir.path().join("AlBridge.runtimeconfig.json");
+        std::fs::write(&config, b"{}").unwrap();
+
+        assert_eq!(check_bridge_pair(dll, config), None);
+    }
+
+    /// Neither file present -> None.
+    #[test]
+    fn test_check_bridge_pair_neither_present_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let dll = dir.path().join("AlBridge.dll");
+        let config = dir.path().join("AlBridge.runtimeconfig.json");
+
+        assert_eq!(check_bridge_pair(dll, config), None);
+    }
+
+    /// A directory at the DLL path is not a regular file -> None. `is_file()`
+    /// must reject directories; `exists()` alone would wrongly accept them.
+    #[test]
+    fn test_check_bridge_pair_directory_is_not_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dll = dir.path().join("AlBridge.dll");
+        let config = dir.path().join("AlBridge.runtimeconfig.json");
+        std::fs::create_dir(&dll).unwrap(); // a dir, not a file
+        std::fs::write(&config, b"{}").unwrap();
+
+        assert_eq!(check_bridge_pair(dll, config), None);
+    }
+
+    // ---- find_bridge_dll: strategy 3 (AL_BRIDGE_DIR) --------------------
+
+    /// When `AL_BRIDGE_DIR` points at a directory containing both bridge
+    /// files, `find_bridge_dll` resolves to a valid existing pair. Serialized
+    /// because it mutates a process-global env var that other tests also read.
+    ///
+    /// Strategies 1 (OUT_DIR) and 2 (next to the test exe) run before
+    /// strategy 3, and the unit-test build may bake a real bridge into
+    /// OUT_DIR. So we don't assert the resolved paths equal our temp dir;
+    /// instead we assert success and that both resolved files actually exist
+    /// on disk. (The exact path-matching guarantee for strategy 3 is proven by
+    /// `check_bridge_pair` tests above, which strategy 3 calls verbatim.)
+    #[test]
+    #[serial]
+    fn test_find_bridge_dll_uses_al_bridge_dir() {
+        let prev = std::env::var("AL_BRIDGE_DIR").ok();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dll = dir.path().join("AlBridge.dll");
+        let config = dir.path().join("AlBridge.runtimeconfig.json");
+        std::fs::write(&dll, b"fake dll").unwrap();
+        std::fs::write(&config, b"{}").unwrap();
+
+        std::env::set_var("AL_BRIDGE_DIR", dir.path());
+        let result = find_bridge_dll();
+
+        // restore env before asserting
+        match prev {
+            Some(v) => std::env::set_var("AL_BRIDGE_DIR", v),
+            None => std::env::remove_var("AL_BRIDGE_DIR"),
+        }
+
+        let (got_dll, got_config) = result.expect("a valid bridge pair should resolve");
+        // Whichever strategy won, the contract is that both returned paths
+        // are real files.
+        assert!(got_dll.is_file(), "resolved DLL must exist: {got_dll:?}");
+        assert!(
+            got_config.is_file(),
+            "resolved config must exist: {got_config:?}"
+        );
+    }
+
+    /// `AL_BRIDGE_DIR` set to a directory that is missing the config file must
+    /// NOT resolve via strategy 3 (the pair check fails). It then falls
+    /// through to strategy 4 / the final error, so the result must not be the
+    /// half-populated temp dir.
+    #[test]
+    #[serial]
+    fn test_find_bridge_dll_al_bridge_dir_incomplete_does_not_resolve() {
+        let prev = std::env::var("AL_BRIDGE_DIR").ok();
+
+        let dir = tempfile::tempdir().unwrap();
+        let dll = dir.path().join("AlBridge.dll");
+        std::fs::write(&dll, b"fake dll").unwrap();
+        // deliberately do NOT create the runtimeconfig.json
+
+        std::env::set_var("AL_BRIDGE_DIR", dir.path());
+        let result = find_bridge_dll();
+
+        match prev {
+            Some(v) => std::env::set_var("AL_BRIDGE_DIR", v),
+            None => std::env::remove_var("AL_BRIDGE_DIR"),
+        }
+
+        // Whatever happens downstream, strategy 3 must not have returned our
+        // incomplete temp dir's DLL.
+        if let Ok((got_dll, _)) = result {
+            assert_ne!(
+                got_dll, dll,
+                "incomplete AL_BRIDGE_DIR must not resolve via strategy 3"
+            );
         }
     }
 }
