@@ -769,4 +769,232 @@ mod workspace_lifecycle_tests {
         let stale: Vec<String> = previous.difference(&current).cloned().collect();
         assert!(stale.is_empty(), "no diff means no stale clears");
     }
+
+    /// Per-test unique temp directory (mirrors project.rs::tempdir()), so
+    /// filesystem-touching tests don't collide across the test binary.
+    fn unique_tempdir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "al-core-workspace-test-{}-{}-{}",
+            tag,
+            std::process::id(),
+            id
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// memory_stats reflects the *actual* live state of the workspace, not
+    /// constant zeros. After indexing one .al file the workspace_files count
+    /// and procedure_index_entries must rise above the empty baseline.
+    #[test]
+    fn memory_stats_reflects_indexed_file() {
+        let workspace = make_workspace();
+
+        let empty = workspace.memory_stats();
+        assert_eq!(empty.workspace_files, 0, "fresh workspace has no files");
+        assert_eq!(empty.open_docs, 0, "fresh workspace has no open docs");
+
+        let dir = unique_tempdir("memstats");
+        let file = dir.join("MyCodeunit.al");
+        let uri = Url::from_file_path(&file).unwrap();
+        let text = r#"codeunit 50300 "Mem Stats CU"
+{
+    procedure DoThing()
+    begin
+    end;
+
+    procedure DoOther()
+    begin
+    end;
+}"#;
+        workspace.documents.open(uri.clone(), text.to_string());
+        on_document_change(&workspace, &uri, text);
+
+        let after = workspace.memory_stats();
+        assert_eq!(
+            after.workspace_files, 1,
+            "indexing one file must report exactly one workspace file"
+        );
+        assert_eq!(
+            after.open_docs, 1,
+            "one opened document must be counted in open_docs"
+        );
+        assert!(
+            after.procedure_index_entries >= 2,
+            "both procedures must be indexed (got {})",
+            after.procedure_index_entries
+        );
+    }
+
+    /// memory_stats counts loaded package metadata. Writing a PackageInfo into
+    /// the workspace's package_info store must be visible via memory_stats.
+    #[test]
+    fn memory_stats_counts_package_info_and_error_codes() {
+        let workspace = make_workspace();
+        assert_eq!(workspace.memory_stats().package_count, 0);
+        assert_eq!(workspace.memory_stats().error_code_count, 0);
+
+        workspace.package_info.write().unwrap().push(PackageInfo {
+            name: "Base Application".to_string(),
+            publisher: "Microsoft".to_string(),
+            version: "1.0.0.0".to_string(),
+            object_count: 42,
+        });
+        workspace
+            .error_codes
+            .insert("AL0118".to_string(), "Unknown identifier".to_string());
+
+        let stats = workspace.memory_stats();
+        assert_eq!(stats.package_count, 1, "one package must be counted");
+        assert_eq!(stats.error_code_count, 1, "one error code must be counted");
+    }
+
+    /// on_document_close with a real file URI invalidates the composed cache
+    /// for that file's object and invalidates the insight graph (topology can
+    /// change when a file leaves the working set). The cached insight graph
+    /// must be dropped so the next access rebuilds a fresh Arc.
+    #[test]
+    fn on_document_close_file_uri_invalidates_insight_graph() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("close");
+        let file = dir.join("CloseTable.al");
+        let uri = Url::from_file_path(&file).unwrap();
+        let text = r#"table 50400 "Close Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+}"#;
+        workspace.documents.open(uri.clone(), text.to_string());
+        on_document_change(&workspace, &uri, text);
+
+        // Object info must exist so the file-URI branch (not the fallback)
+        // is exercised.
+        let path = uri.to_file_path().unwrap();
+        assert!(
+            workspace.file_index.object_info.contains_key(&path),
+            "precondition: object_info populated"
+        );
+
+        // Build & cache a graph, then close: close must drop it.
+        let before = workspace.get_or_build_insight_graph();
+        on_document_close(&workspace, &uri);
+        let after = workspace.get_or_build_insight_graph();
+        assert!(
+            !std::sync::Arc::ptr_eq(&before, &after),
+            "on_document_close must invalidate the cached insight graph"
+        );
+    }
+
+    /// on_document_close with a non-file URI takes the fallback branch
+    /// (invalidate_all_composed) and must not panic.
+    #[test]
+    fn on_document_close_non_file_uri_does_not_panic() {
+        let workspace = make_workspace();
+        let uri = Url::parse("http://example.com/Untitled-1.al").unwrap();
+        // Must not panic; full composed-cache invalidation is the fallback.
+        on_document_close(&workspace, &uri);
+        // Closing a never-opened virtual buffer leaves the index empty.
+        assert!(workspace.file_index.is_empty());
+    }
+
+    /// invalidate_call_graph_only drops the call graph but keeps the insight
+    /// graph cached (F-OPEN-066 body-only-edit optimisation). The insight Arc
+    /// must survive; only the call graph is rebuilt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalidate_call_graph_only_keeps_insight_graph() {
+        let workspace = make_workspace();
+
+        // Build both graphs. get_or_build_call_graph builds an *enriched*
+        // insight graph and stores it, so capture the insight Arc it leaves
+        // cached (NOT an earlier symbol-only one).
+        let insight_before = {
+            let (ig, cg) = workspace.get_or_build_call_graph();
+            assert!(cg.is_some(), "call graph must be built");
+            ig
+        };
+
+        workspace.invalidate_call_graph_only();
+
+        // Insight graph Arc is unchanged (same pointer) — only the call
+        // graph was dropped. A fresh read returns the still-cached insight.
+        let insight_after = workspace.get_or_build_insight_graph();
+        assert!(
+            std::sync::Arc::ptr_eq(&insight_before, &insight_after),
+            "invalidate_call_graph_only must NOT drop the insight graph"
+        );
+
+        // And the call graph really was dropped: rebuilding it succeeds.
+        let (_ig2, cg2) = workspace.get_or_build_call_graph();
+        assert!(cg2.is_some(), "call graph must rebuild after invalidation");
+    }
+
+    /// initialize_core_workspace on a directory with no app.json takes the
+    /// project-discovery-failure branch: it still scans for .al files and
+    /// returns a CoreInitResult with zero packages.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn initialize_core_workspace_no_project_scans_files() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("noproject");
+        // A loose .al file but NO app.json anywhere up the tree.
+        std::fs::write(dir.join("Loose.al"), r#"codeunit 50500 "Loose" { }"#).unwrap();
+
+        let result = initialize_core_workspace(&workspace, &dir).await;
+
+        assert_eq!(result.package_count, 0, "no app.json => no packages loaded");
+        assert_eq!(
+            result.total_symbols, 0,
+            "no packages => zero package symbols"
+        );
+        assert_eq!(
+            result.file_count, 1,
+            "the loose .al file must still be scanned without a project"
+        );
+        // Project discovery failed => workspace.project stays None.
+        assert!(
+            workspace.project.read().await.is_none(),
+            "no project must be stored when discovery fails"
+        );
+    }
+
+    /// initialize_core_workspace with a valid app.json takes the happy path:
+    /// the project is discovered and stored, files are scanned, and package
+    /// metadata is recorded. (No .alpackages => zero packages, which is fine.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn initialize_core_workspace_with_project_stores_project() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("withproject");
+        std::fs::write(
+            dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "InitTest",
+                "publisher": "Tester",
+                "version": "1.0.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("Obj.al"), r#"codeunit 50600 "Init Obj" { }"#).unwrap();
+
+        let result = initialize_core_workspace(&workspace, &dir).await;
+
+        assert_eq!(
+            result.file_count, 1,
+            "the one .al file must be scanned under the discovered project"
+        );
+        let stored = workspace.project.read().await;
+        let project = stored
+            .as_ref()
+            .expect("project must be stored on the happy path");
+        assert_eq!(
+            project.app_json.name, "InitTest",
+            "the discovered project's manifest name must be stored"
+        );
+    }
 }
