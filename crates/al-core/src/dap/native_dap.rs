@@ -1789,4 +1789,250 @@ mod tests {
             "on-prem URL should include port and instance: {url}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // bc_stack_to_dap — additional coverage for camelCase variants, frame
+    // indexing, and field-default fallbacks. These exercise the real BC payload
+    // shapes (newer BC versions serialise camelCase; some frames omit fields).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bc_stack_to_dap_reads_camelcase_inner_keys() {
+        // The mapper reads the *inner* position/object keys with a camelCase
+        // fallback (Line→line, Column→column, ObjectType→objectType, etc.).
+        // The outer container keys are still PascalCase (SourcePosition,
+        // ApplicationObjectId); DisplayName has its own displayName fallback.
+        let frames = serde_json::json!([{
+            "displayName": "CamelProc",
+            "SourcePosition": { "line": 12, "column": 3 },
+            "ApplicationObjectId": { "objectType": 5, "objectNumber": 50100 }
+        }]);
+        let resolve = |ot: i32, on: i32| -> Option<PathBuf> {
+            if ot == bc_object_type::CODEUNIT && on == 50100 {
+                Some(PathBuf::from("/ws/Cu.al"))
+            } else {
+                None
+            }
+        };
+        let result = bc_stack_to_dap(frames, &resolve);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["name"], "CamelProc");
+        assert_eq!(result[0]["line"], 12);
+        assert_eq!(result[0]["column"], 3);
+        assert_eq!(
+            result[0]["source"]["path"].as_str().unwrap_or(""),
+            "/ws/Cu.al"
+        );
+    }
+
+    #[test]
+    fn bc_stack_to_dap_assigns_sequential_frame_ids() {
+        // DAP stackTrace frame ids must be the array index so scopes/variables
+        // can map a frameId back to the BC stack frame. A regression that reused
+        // a constant id would break per-frame variable inspection.
+        let frames = serde_json::json!([
+            { "DisplayName": "Top", "SourcePosition": { "Line": 1, "Column": 0 } },
+            { "DisplayName": "Mid", "SourcePosition": { "Line": 2, "Column": 0 } },
+            { "DisplayName": "Bottom", "SourcePosition": { "Line": 3, "Column": 0 } },
+        ]);
+        let result = bc_stack_to_dap(frames, &|_: i32, _: i32| None::<PathBuf>);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0]["id"], 0);
+        assert_eq!(result[1]["id"], 1);
+        assert_eq!(result[2]["id"], 2);
+        assert_eq!(result[0]["name"], "Top");
+        assert_eq!(result[2]["name"], "Bottom");
+    }
+
+    #[test]
+    fn bc_stack_to_dap_defaults_missing_fields() {
+        // A frame missing DisplayName / SourcePosition must not panic and must
+        // fall back to documented defaults: "(unknown)" name, line 0, column 0.
+        let frames = serde_json::json!([{}]);
+        let result = bc_stack_to_dap(frames, &|_: i32, _: i32| None::<PathBuf>);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["name"], "(unknown)");
+        assert_eq!(result[0]["line"], 0);
+        assert_eq!(result[0]["column"], 0);
+        assert!(result[0].get("source").is_none());
+    }
+
+    #[test]
+    fn bc_stack_to_dap_empty_array_yields_empty_vec() {
+        let result = bc_stack_to_dap(serde_json::json!([]), &|_: i32, _: i32| None::<PathBuf>);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn bc_stack_to_dap_omits_source_when_only_object_type_present() {
+        // resolve_path is only consulted when BOTH object_type and object_number
+        // are present. A frame with object_type but no object_number must not
+        // resolve a source (the (Some, None) match arm yields None).
+        let frames = serde_json::json!([{
+            "DisplayName": "Partial",
+            "SourcePosition": { "Line": 1, "Column": 0 },
+            "ApplicationObjectId": { "ObjectType": 5 }
+        }]);
+        let result = bc_stack_to_dap(frames, &|_: i32, _: i32| None::<PathBuf>);
+        assert_eq!(result.len(), 1);
+        assert!(
+            result[0].get("source").is_none(),
+            "source must be absent when object_number is missing"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // compile_timeout — env-var parsing. Mirrors the build.rs convention:
+    // a process-global env var serialised behind a Mutex so parallel tests
+    // do not race.
+    // -----------------------------------------------------------------------
+
+    /// Serialize access to the process-global AL_COMPILE_TIMEOUT_SECS env var.
+    static COMPILE_TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn compile_timeout_defaults_when_env_unset() {
+        let _g = COMPILE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
+        assert_eq!(
+            compile_timeout(),
+            Some(std::time::Duration::from_secs(DAP_COMPILE_TIMEOUT_SECS))
+        );
+    }
+
+    #[test]
+    fn compile_timeout_zero_or_negative_disables_cap() {
+        let _g = COMPILE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "0");
+        assert_eq!(compile_timeout(), None, "0 must disable the timeout cap");
+        std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "-5");
+        assert_eq!(
+            compile_timeout(),
+            None,
+            "negative value must disable the timeout cap"
+        );
+        std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
+    }
+
+    #[test]
+    fn compile_timeout_positive_value_is_honoured() {
+        let _g = COMPILE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "  45  ");
+        assert_eq!(
+            compile_timeout(),
+            Some(std::time::Duration::from_secs(45)),
+            "a positive (trimmed) value must be used verbatim"
+        );
+        std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
+    }
+
+    #[test]
+    fn compile_timeout_unparseable_falls_back_to_default() {
+        let _g = COMPILE_TIMEOUT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "not-a-number");
+        assert_eq!(
+            compile_timeout(),
+            Some(std::time::Duration::from_secs(DAP_COMPILE_TIMEOUT_SECS)),
+            "garbage must fall back to the default, not disable the cap"
+        );
+        std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
+    }
+
+    // -----------------------------------------------------------------------
+    // compile_project — the no-app.json guard is reachable without a real
+    // toolchain (it returns before spawning alc).
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn compile_project_errors_when_no_app_json() {
+        let dir = tempfile::tempdir().unwrap();
+        // Empty project root — no app.json present.
+        let err = compile_project(
+            Path::new("/nonexistent/alc.dll"),
+            dir.path().to_str().unwrap(),
+        )
+        .await
+        .expect_err("missing app.json must be an error");
+        match err {
+            DapError::CompilationFailed(msg) => {
+                assert!(
+                    msg.contains("No app.json found"),
+                    "error must name the missing app.json: {msg}"
+                );
+            }
+            other => panic!("expected CompilationFailed, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // find_app_file — directory scan for a .app artifact.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn find_app_file_returns_app_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        // Decoy files that must be ignored.
+        std::fs::write(dir.path().join("app.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("readme.txt"), "x").unwrap();
+        let app = dir.path().join("Publisher_App_1.0.0.0.app");
+        std::fs::write(&app, b"PK").unwrap();
+
+        let found = find_app_file(dir.path().to_str().unwrap()).await;
+        assert_eq!(
+            found.as_deref(),
+            Some(app.as_path()),
+            "the .app artifact must be located by extension"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_app_file_returns_none_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.json"), "{}").unwrap();
+        let found = find_app_file(dir.path().to_str().unwrap()).await;
+        assert!(found.is_none(), "no .app present must yield None");
+    }
+
+    #[tokio::test]
+    async fn find_app_file_returns_none_for_missing_dir() {
+        // read_dir fails on a nonexistent path; the helper swallows the error
+        // via `.ok()?` and returns None rather than propagating.
+        let found = find_app_file("/this/path/does/not/exist/anywhere").await;
+        assert!(found.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // write_dap — serialises a JSON value into a DAP frame with a valid
+    // Content-Length header. Exercises the framing boundary without stdio.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn write_dap_emits_content_length_framed_body() {
+        let seq = AtomicU64::new(1);
+        let resp = make_response(&seq, 7, "threads", true, None, None);
+        let body = serde_json::to_vec(&resp).unwrap();
+
+        let mut buf: Vec<u8> = Vec::new();
+        crate::dap::framing::write_dap_frame(&mut buf, &body)
+            .await
+            .unwrap();
+
+        let text = String::from_utf8(buf).unwrap();
+        assert!(
+            text.starts_with(&format!("Content-Length: {}\r\n\r\n", body.len())),
+            "frame must lead with an accurate Content-Length header: {text:?}"
+        );
+        assert!(
+            text.contains("\"command\":\"threads\""),
+            "serialised body must follow the header: {text:?}"
+        );
+    }
 }
