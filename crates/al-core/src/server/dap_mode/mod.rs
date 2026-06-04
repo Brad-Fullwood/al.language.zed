@@ -746,4 +746,150 @@ mod tests {
         assert_eq!(out, body);
         assert_eq!(counter.load(Ordering::Relaxed), 1);
     }
+
+    #[test]
+    fn patch_incoming_seq_counter_is_monotonic_across_calls() {
+        // Two consecutive seq-less messages must receive distinct, increasing
+        // seq numbers — a shared counter is the whole point of the patch.
+        let counter = AtomicI64::new(100);
+        let a = patch_incoming(br#"{"type":"event"}"#, &counter);
+        let b = patch_incoming(br#"{"type":"event"}"#, &counter);
+        let va: serde_json::Value = serde_json::from_slice(&a).unwrap();
+        let vb: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(va.get("seq").and_then(|s| s.as_i64()), Some(100));
+        assert_eq!(vb.get("seq").and_then(|s| s.as_i64()), Some(101));
+        assert_eq!(counter.load(Ordering::Relaxed), 102);
+    }
+
+    #[test]
+    fn patch_incoming_does_not_patch_non_null_type_field() {
+        // `type` is in the null-string patch list; a present non-null value
+        // (even one that isn't a string) must be left exactly as-is.
+        let counter = AtomicI64::new(1);
+        let out = patch_incoming(br#"{"seq":1,"type":"event","extra":123}"#, &counter);
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v.get("type").and_then(|x| x.as_str()), Some("event"));
+        assert_eq!(v.get("extra").and_then(|x| x.as_i64()), Some(123));
+    }
+
+    // --- redact: nested arrays / object recursion ---------------------------
+
+    #[test]
+    fn redactor_recurses_into_arrays_of_objects() {
+        // The array branch of `walk` must be exercised: a secret nested inside
+        // an array element has to be scrubbed too.
+        let body = br#"{"items":[{"token":"leakme"},{"name":"ok"}]}"#;
+        let out = redact_dap_body_for_log(body);
+        assert!(!out.contains("leakme"), "got: {out}");
+        assert!(out.contains("\"name\":\"ok\""), "got: {out}");
+    }
+
+    #[test]
+    fn redactor_leaves_non_string_sensitive_value_untouched() {
+        // A sensitive field whose value is NOT a string (e.g. numeric) is not
+        // a credential string — the redactor must not stringify/replace it.
+        let body = br#"{"token":12345}"#;
+        let out = redact_dap_body_for_log(body);
+        assert!(out.contains("12345"), "got: {out}");
+        assert!(!out.contains("<redacted>"), "got: {out}");
+    }
+
+    // --- compile_project: pure early-return error path ----------------------
+
+    /// Build a throwaway toolchain pointing at non-existent paths. Sufficient
+    /// for the `compile_project` early-return branch, which never reaches the
+    /// compiler because `app.json` is missing.
+    fn dummy_toolchain() -> AlToolchain {
+        use std::path::PathBuf;
+        AlToolchain {
+            alc: PathBuf::from("/nonexistent/alc.dll"),
+            aldoc: None,
+            code_analysis: PathBuf::from("/nonexistent/code_analysis.dll"),
+            analyzers: crate::toolchain::AnalyzerPaths {
+                code_cop: PathBuf::from("/nonexistent/CodeCop.dll"),
+                app_source_cop: PathBuf::from("/nonexistent/AppSourceCop.dll"),
+                ui_cop: PathBuf::from("/nonexistent/UICop.dll"),
+                per_tenant_cop: PathBuf::from("/nonexistent/PerTenantCop.dll"),
+                common: PathBuf::from("/nonexistent/Common.dll"),
+                custom: Vec::new(),
+            },
+            dotnet_root: PathBuf::from("/nonexistent"),
+            version: "0.0.0-test".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn compile_project_errors_when_app_json_missing() {
+        // A directory with no app.json must fail fast with CompilationFailed,
+        // never spawning the compiler.
+        let dir =
+            std::env::temp_dir().join(format!("al_dap_test_noappjson_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let toolchain = dummy_toolchain();
+
+        let result = compile_project(&toolchain, dir.to_str().unwrap()).await;
+
+        let _ = std::fs::remove_dir_all(&dir);
+        match result {
+            Err(DapError::CompilationFailed(msg)) => {
+                assert!(
+                    msg.contains("No app.json"),
+                    "expected missing-app.json message, got: {msg}"
+                );
+            }
+            other => panic!("expected CompilationFailed, got: {other:?}"),
+        }
+    }
+
+    // --- patch_outgoing: pass-through paths (no spawn) ----------------------
+
+    #[tokio::test]
+    async fn patch_outgoing_passes_through_invalid_json() {
+        // Non-JSON body must be returned verbatim and must NOT trigger a
+        // compile/spawn (command extraction never happens).
+        let toolchain = dummy_toolchain();
+        let seq = AtomicI64::new(1);
+        let mut out = io::stdout();
+        let body = b"not json at all";
+        let patched = patch_outgoing(body, &toolchain, "/tmp", &mut out, &seq).await;
+        assert_eq!(patched, body);
+    }
+
+    #[tokio::test]
+    async fn patch_outgoing_non_launch_command_is_unchanged() {
+        // A request that is neither `launch` nor `attach` must pass through
+        // structurally unchanged — no compile, no arg patching.
+        let toolchain = dummy_toolchain();
+        let seq = AtomicI64::new(1);
+        let mut out = io::stdout();
+        let body =
+            br#"{"type":"request","command":"setBreakpoints","arguments":{"breakOnError":"All"}}"#;
+        let patched = patch_outgoing(body, &toolchain, "/tmp", &mut out, &seq).await;
+        let v: serde_json::Value = serde_json::from_slice(&patched).unwrap();
+        // breakOnError must remain the original string — patch_launch_args is
+        // only applied to launch/attach.
+        assert_eq!(
+            v.pointer("/arguments/breakOnError")
+                .and_then(|x| x.as_str()),
+            Some("All"),
+            "non-launch/attach command must not have its args patched"
+        );
+    }
+
+    #[tokio::test]
+    async fn patch_outgoing_attach_patches_args_without_compiling() {
+        // `attach` triggers patch_launch_args (string→bool) but must NOT
+        // compile the project (only `launch` compiles).
+        let toolchain = dummy_toolchain();
+        let seq = AtomicI64::new(1);
+        let mut out = io::stdout();
+        let body = br#"{"type":"request","command":"attach","arguments":{"breakOnError":"none"}}"#;
+        let patched = patch_outgoing(body, &toolchain, "/tmp", &mut out, &seq).await;
+        let v: serde_json::Value = serde_json::from_slice(&patched).unwrap();
+        assert_eq!(
+            v.pointer("/arguments/breakOnError"),
+            Some(&serde_json::Value::Bool(false)),
+            "attach must apply patch_launch_args ('none' → false)"
+        );
+    }
 }
