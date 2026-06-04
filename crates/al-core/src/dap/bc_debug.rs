@@ -2083,4 +2083,356 @@ mod tests {
         let msg = invocation(None, None);
         assert!(signalr_to_bc_event(&msg).is_none());
     }
+
+    // --- parse_bool_or_string ------------------------------------------------
+
+    #[test]
+    fn parse_bool_or_string_handles_bool_variant() {
+        // A real JSON bool passes through verbatim regardless of the default.
+        assert!(parse_bool_or_string(&serde_json::json!(true), false));
+        assert!(!parse_bool_or_string(&serde_json::json!(false), true));
+    }
+
+    #[test]
+    fn parse_bool_or_string_string_none_and_false_are_falsey() {
+        // The documented disabling strings "none"/"false" (case-insensitive)
+        // map to false even though they are non-empty strings.
+        for s in ["none", "None", "NONE", "false", "False", "FALSE"] {
+            assert!(
+                !parse_bool_or_string(&serde_json::json!(s), true),
+                "{s:?} must parse as false"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_bool_or_string_other_strings_are_truthy() {
+        // Any other string (e.g. "all", "true", an event filter name) is true.
+        for s in ["true", "all", "yes", "RecordWrite"] {
+            assert!(
+                parse_bool_or_string(&serde_json::json!(s), false),
+                "{s:?} must parse as true"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_bool_or_string_non_bool_non_string_returns_default() {
+        // Numbers, null, arrays and objects are neither bool nor string, so the
+        // caller-supplied default is returned (both polarities exercised).
+        for v in [
+            serde_json::json!(1),
+            serde_json::json!(null),
+            serde_json::json!([1, 2]),
+            serde_json::json!({"a": 1}),
+        ] {
+            assert!(parse_bool_or_string(&v, true), "{v} default=true");
+            assert!(!parse_bool_or_string(&v, false), "{v} default=false");
+        }
+    }
+
+    // --- BcDebugConfig::from_dap_args ----------------------------------------
+
+    #[test]
+    fn from_dap_args_empty_yields_defaults() {
+        // No keys present → every field keeps its Default value.
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({}));
+        let def = BcDebugConfig::default();
+        assert_eq!(cfg.port, def.port);
+        assert_eq!(cfg.tenant, def.tenant);
+        assert_eq!(cfg.environment_type, def.environment_type);
+        assert_eq!(cfg.break_on_error, def.break_on_error);
+        assert_eq!(cfg.break_on_record_write, def.break_on_record_write);
+        assert_eq!(cfg.startup_object_type, def.startup_object_type);
+        assert_eq!(cfg.startup_object_id, def.startup_object_id);
+        assert_eq!(cfg.accept_invalid_certs, def.accept_invalid_certs);
+    }
+
+    #[test]
+    fn from_dap_args_maps_all_scalar_fields() {
+        // Each recognised DAP arg key lands in the matching config field.
+        let args = serde_json::json!({
+            "server": "http://bc.local",
+            "serverInstance": "BC240",
+            "port": 8080,
+            "tenant": "mytenant",
+            "environmentType": "OnPrem",
+            "environmentName": "Prod",
+            "authentication": "AAD",
+            "breakOnNext": "RecordWrite",
+            "startupObjectType": "Table",
+            "startupObjectId": 18,
+            "schemaUpdateMode": "Recreate",
+            "dependencyPublishingOption": "Ignore",
+        });
+        let cfg = BcDebugConfig::from_dap_args(&args);
+        assert_eq!(cfg.server.as_deref(), Some("http://bc.local"));
+        assert_eq!(cfg.server_instance.as_deref(), Some("BC240"));
+        assert_eq!(cfg.port, 8080);
+        assert_eq!(cfg.tenant, "mytenant");
+        assert_eq!(cfg.environment_type, "OnPrem");
+        assert_eq!(cfg.environment_name.as_deref(), Some("Prod"));
+        assert_eq!(cfg.authentication, "AAD");
+        assert_eq!(cfg.break_on_next.as_deref(), Some("RecordWrite"));
+        assert_eq!(cfg.startup_object_type, "Table");
+        assert_eq!(cfg.startup_object_id, 18);
+        assert_eq!(cfg.schema_update_mode, "Recreate");
+        assert_eq!(cfg.dependency_publishing_option, "Ignore");
+    }
+
+    #[test]
+    fn from_dap_args_break_flags_accept_bool_and_string() {
+        // breakOnError / breakOnRecordWrite accept either a JSON bool or the
+        // "none"/"false" disabling strings.
+        let bool_args = serde_json::json!({
+            "breakOnError": false,
+            "breakOnRecordWrite": true,
+        });
+        let cfg = BcDebugConfig::from_dap_args(&bool_args);
+        assert!(!cfg.break_on_error);
+        assert!(cfg.break_on_record_write);
+
+        let str_args = serde_json::json!({
+            "breakOnError": "none",
+            "breakOnRecordWrite": "all",
+        });
+        let cfg = BcDebugConfig::from_dap_args(&str_args);
+        assert!(!cfg.break_on_error, "\"none\" disables break_on_error");
+        assert!(
+            cfg.break_on_record_write,
+            "\"all\" enables break_on_record_write"
+        );
+    }
+
+    #[test]
+    fn from_dap_args_validate_server_certificate_inverts_to_accept_invalid_certs() {
+        // accept_invalid_certs is the logical inverse of validateServerCertificate.
+        // validateServerCertificate=false → certs NOT validated → accept_invalid_certs=true.
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
+            "validateServerCertificate": false,
+        }));
+        assert!(
+            cfg.accept_invalid_certs,
+            "validateServerCertificate=false must enable accept_invalid_certs"
+        );
+
+        // validateServerCertificate=true → certs validated → accept_invalid_certs=false.
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
+            "validateServerCertificate": true,
+        }));
+        assert!(
+            !cfg.accept_invalid_certs,
+            "validateServerCertificate=true must keep certs validated"
+        );
+    }
+
+    #[test]
+    fn from_dap_args_ignores_wrong_typed_values() {
+        // A key present with the wrong JSON type (e.g. port as a string) is
+        // ignored via the as_u64/as_str guards, leaving the default in place.
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
+            "port": "not-a-number",
+            "startupObjectId": "nope",
+            "server": 123,
+        }));
+        let def = BcDebugConfig::default();
+        assert_eq!(cfg.port, def.port);
+        assert_eq!(cfg.startup_object_id, def.startup_object_id);
+        assert_eq!(cfg.server, def.server);
+    }
+
+    // --- onprem_base defaults ------------------------------------------------
+
+    #[test]
+    fn onprem_base_uses_localhost_and_bc_defaults() {
+        // When server / serverInstance are unset, on-prem URLs fall back to
+        // http://localhost and the "BC" instance.
+        let cfg = BcDebugConfig {
+            environment_type: "OnPrem".to_string(),
+            port: 7049,
+            ..BcDebugConfig::default()
+        };
+        assert_eq!(cfg.base_url(), "http://localhost:7049/BC/dev");
+        assert_eq!(
+            cfg.debug_hub_url(),
+            "http://localhost:7049/BC/dev/DebuggerHub"
+        );
+    }
+
+    #[test]
+    fn onprem_base_trims_trailing_slash_on_server() {
+        // A server value with a trailing slash must not produce a double slash
+        // before the port.
+        let cfg = onprem_config("http://bc.local/", "BC", 7049);
+        assert_eq!(cfg.base_url(), "http://bc.local:7049/BC/dev");
+    }
+
+    #[test]
+    fn cloud_base_url_defaults_environment_name_to_sandbox() {
+        // A cloud config with no environmentName uses "sandbox" in the URL.
+        let cfg = BcDebugConfig {
+            environment_type: "Sandbox".to_string(),
+            tenant: "t".to_string(),
+            environment_name: None,
+            ..BcDebugConfig::default()
+        };
+        assert_eq!(
+            cfg.base_url(),
+            "https://api.businesscentral.dynamics.com/v2.0/t/sandbox/dev"
+        );
+    }
+
+    #[test]
+    fn cloud_url_percent_encodes_tenant_and_env() {
+        // Special characters in tenant / env name are percent-encoded so the
+        // URL stays valid (space → %20).
+        let cfg = cloud_config("my tenant", "My Env");
+        let url = cfg.base_url();
+        assert!(url.contains("my%20tenant"), "tenant encoded: {url}");
+        assert!(url.contains("My%20Env"), "env encoded: {url}");
+    }
+
+    // --- default_invoke_timeout: remaining buckets ---------------------------
+
+    #[test]
+    fn invoke_timeout_isalive_is_5s() {
+        // The connection ping has the tightest budget.
+        assert_eq!(
+            default_invoke_timeout("IsAlive"),
+            tokio::time::Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn invoke_timeout_teardown_is_10s() {
+        // Teardown should be quick; if it isn't we abandon and tear down anyway.
+        for target in ["StopDebugging", "TerminateSession"] {
+            assert_eq!(
+                default_invoke_timeout(target),
+                tokio::time::Duration::from_secs(10),
+                "{target} should get the 10s teardown budget"
+            );
+        }
+    }
+
+    #[test]
+    fn invoke_timeout_breakpoint_ops_are_30s() {
+        // Breakpoint operations can serialise behind a BC compilation step.
+        for target in [
+            "AddBreakpoint",
+            "RemoveBreakpoint",
+            "UpdateBreakpoint",
+            "SetBreakpointResponse",
+        ] {
+            assert_eq!(
+                default_invoke_timeout(target),
+                tokio::time::Duration::from_secs(30),
+                "{target} should get the 30s breakpoint budget"
+            );
+        }
+    }
+
+    #[test]
+    fn invoke_timeout_get_source_is_variable_bucket() {
+        // GetSource shares the 30s variable-walk budget.
+        assert_eq!(
+            default_invoke_timeout("GetSource"),
+            tokio::time::Duration::from_secs(30)
+        );
+    }
+
+    // --- redact_connection_token: all redacted keys --------------------------
+
+    #[test]
+    fn redact_connection_token_redacts_pascal_case_and_access_token() {
+        // The redactor must scrub every credential-bearing key variant, not
+        // just the lowercase connectionToken.
+        let body = r#"{"ConnectionToken":"ct-secret","accessToken":"at-secret","url":"/hub"}"#;
+        let out = redact_connection_token(body);
+        assert!(
+            !out.contains("ct-secret"),
+            "ConnectionToken not redacted: {out}"
+        );
+        assert!(
+            !out.contains("at-secret"),
+            "accessToken not redacted: {out}"
+        );
+        assert!(out.contains("/hub"), "non-secret fields preserved: {out}");
+    }
+
+    // --- break_location_from_args edge paths ---------------------------------
+
+    #[test]
+    fn break_location_none_when_arguments_absent() {
+        // No arguments → no location.
+        assert_eq!(break_location_from_args(&None), None);
+    }
+
+    #[test]
+    fn break_location_none_when_no_stack_frame_argument() {
+        // arguments[1] (the StackFrame[]) is missing → no location.
+        let args = Some(vec![serde_json::json!({ "ObjectType": 5 })]);
+        assert_eq!(break_location_from_args(&args), None);
+    }
+
+    #[test]
+    fn break_location_none_when_frames_empty() {
+        // arguments[1] is an empty array → no first frame → no location.
+        let args = Some(vec![
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!("msg"),
+        ]);
+        assert_eq!(break_location_from_args(&args), None);
+    }
+
+    #[test]
+    fn break_location_defaults_line_column_to_zero_when_missing() {
+        // A frame with no SourcePosition still yields a location with line/col 0
+        // (the unwrap_or(0) fallback), rather than None.
+        let args = Some(vec![
+            serde_json::Value::Null,
+            serde_json::json!([{ "DisplayName": "OnRun" }]),
+            serde_json::json!(""),
+        ]);
+        let loc = break_location_from_args(&args).expect("frame present → Some location");
+        assert_eq!(loc.line, 0);
+        assert_eq!(loc.column, 0);
+        assert_eq!(loc.procedure.as_deref(), Some("OnRun"));
+        assert_eq!(loc.object_type, None);
+        assert_eq!(loc.object_number, None);
+    }
+
+    #[test]
+    fn break_location_empty_display_name_becomes_none_procedure() {
+        // An empty DisplayName is filtered out (treated as no procedure name).
+        let args = Some(vec![
+            serde_json::Value::Null,
+            serde_json::json!([{
+                "DisplayName": "",
+                "SourcePosition": { "Line": 3, "Column": 1 }
+            }]),
+            serde_json::json!(""),
+        ]);
+        let loc = break_location_from_args(&args).expect("Some location");
+        assert_eq!(loc.procedure, None, "empty DisplayName must map to None");
+        assert_eq!(loc.line, 3);
+        assert_eq!(loc.column, 1);
+    }
+
+    #[test]
+    fn break_location_reads_camelcase_object_id() {
+        // camelCase applicationObjectId / objectType / objectNumber are accepted.
+        let args = Some(vec![
+            serde_json::Value::Null,
+            serde_json::json!([{
+                "sourcePosition": { "line": 9, "column": 2 },
+                "applicationObjectId": { "objectType": 7, "objectNumber": 50200 }
+            }]),
+            serde_json::json!(""),
+        ]);
+        let loc = break_location_from_args(&args).expect("Some location");
+        assert_eq!(loc.object_type, Some(7));
+        assert_eq!(loc.object_number, Some(50200));
+    }
 }
