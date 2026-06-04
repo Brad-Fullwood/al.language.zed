@@ -616,4 +616,117 @@ mod tests {
             "expected ServerError 404, got {err:?}"
         );
     }
+
+    #[tokio::test]
+    async fn start_snapshot_malformed_json_yields_server_error_status_zero() {
+        // A 200 whose body is not valid JSON must not panic or be silently
+        // swallowed: the capped-read parse failure is wrapped as a
+        // ServerError with status 0 (the "no HTTP status, body-level failure"
+        // sentinel used throughout this module). This exercises the map_err
+        // closure on the `read_json_body_capped` result, which is otherwise
+        // never hit by the well-formed mocks.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/dev/snapshot"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("this is not json{{{"))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = start_snapshot(&config, Some("desc"))
+            .await
+            .expect_err("malformed JSON should error");
+        match err {
+            SnapshotError::ServerError { status, message } => {
+                assert_eq!(status, 0, "body-level failure uses the 0 sentinel");
+                assert!(
+                    message.contains("parse") || message.contains("JSON"),
+                    "message should mention the parse failure, got {message:?}"
+                );
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_snapshots_malformed_json_yields_server_error_status_zero() {
+        // Same body-level parse-failure path as start_snapshot, but on the
+        // list endpoint: the map_err on `read_json_body_capped` must surface a
+        // ServerError(status: 0) rather than an empty list or a panic.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/dev/snapshots"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not json</html>"))
+            .mount(&server)
+            .await;
+
+        let config = config_for(&server.uri());
+        let err = list_snapshots(&config)
+            .await
+            .expect_err("malformed JSON should error");
+        match err {
+            SnapshotError::ServerError { status, message } => {
+                assert_eq!(status, 0, "body-level failure uses the 0 sentinel");
+                assert!(
+                    message.contains("parse") || message.contains("JSON"),
+                    "message should mention the parse failure, got {message:?}"
+                );
+            }
+            other => panic!("expected ServerError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn start_snapshot_network_failure_yields_http_error() {
+        // Point at a port nobody is listening on: the `send().await?` must
+        // bubble up as the `Http` (reqwest) error variant, not a ServerError.
+        // This is the transport-failure branch — distinct from an HTTP error
+        // status, which would be a ServerError.
+        // 127.0.0.1:1 is the canonical "connection refused" target.
+        let config = config_for("http://127.0.0.1:1");
+
+        let err = start_snapshot(&config, None)
+            .await
+            .expect_err("connection to a dead port must fail");
+        assert!(
+            matches!(err, SnapshotError::Http(_)),
+            "expected Http transport error, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_snapshot_unsanitized_id_writes_verbatim_filename() {
+        // An id consisting only of allowed chars (alphanumeric, '-', '_') must
+        // pass through the sanitizer unchanged and produce "<id>.alvsc". This
+        // covers the identity branch of the per-char map and the successful
+        // file-write + info! logging tail of download_snapshot.
+        let server = MockServer::start().await;
+        let payload = b"clean-payload-bytes".to_vec();
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(payload.clone()))
+            .mount(&server)
+            .await;
+
+        let mut config = config_for(&server.uri());
+        config.output_dir = std::env::temp_dir().join(format!(
+            "al-snap-clean-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&config.output_dir);
+
+        let dest = download_snapshot(&config, "Session-2024_01")
+            .await
+            .expect("download should succeed");
+
+        assert_eq!(
+            dest.file_name().unwrap().to_string_lossy(),
+            "Session-2024_01.alvsc",
+            "clean id must be preserved verbatim"
+        );
+        assert!(dest.starts_with(&config.output_dir));
+        assert_eq!(std::fs::read(&dest).unwrap(), payload);
+
+        let _ = std::fs::remove_dir_all(&config.output_dir);
+    }
 }
