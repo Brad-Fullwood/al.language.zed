@@ -21,7 +21,7 @@ ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-core/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip1/release/zed_al.wasm
 
-.PHONY: build install dev-setup watch rust wasm bridges grammar clean
+.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar clean
 
 # ── Default: rebuild everything ──────────────────────────────────
 build: rust wasm bridges
@@ -31,12 +31,14 @@ build: rust wasm bridges
 # ── First-time install ───────────────────────────────────────────
 install: build
 	@mkdir -p $(INSTALL_DIR)
-	@if [ ! -L "$(INSTALL_DIR)/al-lsp" ] && [ ! -f "$(INSTALL_DIR)/al-lsp" ]; then \
-		ln -sf "$(LSP_BIN)" "$(INSTALL_DIR)/al-lsp"; \
-		echo "Symlinked al-lsp -> $(INSTALL_DIR)/al-lsp"; \
-	else \
-		echo "al-lsp already in $(INSTALL_DIR) (OK)"; \
-	fi
+	@# al-lsp is COPIED, not symlinked — see the install-lsp target for why a
+	@# symlink into target/debug/ silently breaks semantic analysis. `build` ran
+	@# `rust`, whose last step produced the --features semantic binary.
+	@rm -f "$(INSTALL_DIR)/al-lsp"
+	@cp -f "$(LSP_BIN)" "$(INSTALL_DIR)/al-lsp"
+	@bdir=$$(ls -dt target/debug/build/al-core-*/out/bridge 2>/dev/null | head -1); \
+	 if [ -n "$$bdir" ]; then rm -rf "$(INSTALL_DIR)/bridge"; cp -r "$$bdir" "$(INSTALL_DIR)/bridge"; fi
+	@echo "Installed al-lsp (semantic, copied) -> $(INSTALL_DIR)/al-lsp"
 	@if [ ! -L "$(INSTALL_DIR)/al-explorer" ] && [ ! -f "$(INSTALL_DIR)/al-explorer" ]; then \
 		ln -sf "$(EXPLORER_BIN)" "$(INSTALL_DIR)/al-explorer"; \
 		echo "Symlinked al-explorer -> $(INSTALL_DIR)/al-explorer"; \
@@ -60,6 +62,31 @@ install: build
 	fi
 	@echo ""
 	@echo "Install complete."
+
+# ── Fast refresh of just the semantic al-lsp ─────────────────────
+# Rebuild al-lsp WITH --features semantic and COPY it into INSTALL_DIR.
+#
+# WHY a copy and not a symlink: ~/.local/bin/al-lsp must be the
+# `--features semantic` binary (the real in-process .NET CLR host). A symlink
+# into target/debug/al-lsp is unsafe because any `cargo build --workspace`
+# (tests, coverage runs, plain builds) compiles al-lsp WITHOUT the feature and
+# rewrites that same path with the no-op stub host. cargo does not encode
+# features in the bin path, so last-build-wins and the stub silently replaces
+# the real host — Zed then shows "AL semantic bridge failed to initialize:
+# Bridge not initialized" on every semantic request. Copying decouples the
+# installed binary from cargo's shared output path. The bridge dir is copied
+# alongside so it also resolves via host.rs Strategy 2 (<exe-dir>/bridge/) even
+# after `cargo clean`. Run this after editing al-core to refresh Zed's binary.
+install-lsp:
+	@echo "=== Rebuild + reinstall semantic al-lsp ==="
+	cargo build -p al-core --bin al-lsp --features semantic
+	@mkdir -p $(INSTALL_DIR)
+	@rm -f "$(INSTALL_DIR)/al-lsp"
+	@cp -f "$(LSP_BIN)" "$(INSTALL_DIR)/al-lsp"
+	@bdir=$$(ls -dt target/debug/build/al-core-*/out/bridge 2>/dev/null | head -1); \
+	 if [ -n "$$bdir" ]; then rm -rf "$(INSTALL_DIR)/bridge"; cp -r "$$bdir" "$(INSTALL_DIR)/bridge"; echo "  bridge: $$bdir"; fi
+	@echo "Reinstalled semantic al-lsp -> $(INSTALL_DIR)/al-lsp"
+	@echo "Restart the AL language server in Zed (or reopen the .al file) to load it."
 
 # ── One-shot dev environment setup ───────────────────────────────
 # Installs prerequisites then builds + symlinks everything. Run once
