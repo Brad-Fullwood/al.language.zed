@@ -5621,4 +5621,414 @@ mod p1_5_tests {
             "`deleted` must be a bool"
         );
     }
+
+    // =======================================================================
+    // Mock-harness coverage for the live-infra dispatchers.
+    //
+    // These exercise the REAL code paths of `dispatch_compile`,
+    // `dispatch_package`, `dispatch_snapshot`, and `dispatch_profiling`
+    // without a live BC server or a real AL toolchain:
+    //   * BC HTTP is mocked with wiremock — the dispatcher's `serverUrl`
+    //     param points at the mock, so the request shape it builds and the
+    //     response it parses are asserted end-to-end.
+    //   * The AL toolchain is obtained through the `AL_TOOL_PATH` seam
+    //     (`toolchain::find_toolchain`) pointed at a fixture dir holding
+    //     empty `alc.dll` + `CodeAnalysis.dll` files. No subprocess is
+    //     spawned: `compile_project_with_analyzers` rejects the missing
+    //     `app.json` before it ever shells out to `dotnet`.
+    // No production behaviour is changed by any of this.
+    // =======================================================================
+
+    use wiremock::matchers::{body_json, method as wm_method, path as wm_path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Serializes the tests that mutate the process-global `AL_TOOL_PATH` env
+    /// var so they can't observe each other's half-set state. Mirrors the
+    /// `ENV_LOCK` pattern in `toolchain.rs`.
+    static AL_TOOL_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Build an `AlProject` rooted at `root` with no server configs/packages.
+    fn make_project(root: &std::path::Path) -> crate::project::AlProject {
+        crate::project::AlProject {
+            root: root.to_path_buf(),
+            app_json: crate::project::AppManifest {
+                id: String::new(),
+                name: "test".into(),
+                publisher: "test".into(),
+                version: "1.0.0.0".into(),
+                dependencies: Vec::new(),
+                application: None,
+                platform: None,
+                runtime: None,
+            },
+            packages_dir: root.join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: Vec::new(),
+        }
+    }
+
+    /// Write an empty fixture toolchain (`alc.dll` + CodeAnalysis.dll) into
+    /// `dir` so `toolchain::find_toolchain` accepts it via the `AL_TOOL_PATH`
+    /// seam. The files only need to exist — discovery checks `is_file()`.
+    fn write_fixture_toolchain(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("alc.dll"), b"").unwrap();
+        std::fs::write(dir.join("Microsoft.Dynamics.Nav.CodeAnalysis.dll"), b"").unwrap();
+    }
+
+    // --- dispatch_compile (toolchain + project validation, no .NET) ----------
+
+    #[tokio::test]
+    async fn compile_no_project_returns_internal_error() {
+        // With no project loaded the dispatcher must bail before touching the
+        // semantic bridge / toolchain.
+        let ws = empty_ws();
+        let resp = dispatch_compile(&ws, 1).await;
+        let err = resp.error.expect("no project must error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert_eq!(err.message, ERR_NO_PROJECT);
+    }
+
+    #[tokio::test]
+    async fn compile_project_without_toolchain_reports_no_toolchain() {
+        // A loaded project but no toolchain must surface the explicit
+        // "No toolchain loaded" error — proving the toolchain guard fires
+        // AFTER the project check and BEFORE any semantic-bridge work.
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        {
+            let mut g = ws.project.write().await;
+            *g = Some(make_project(tmp.path()));
+        }
+        // toolchain stays None.
+        let resp = dispatch_compile(&ws, 2).await;
+        let err = resp.error.expect("missing toolchain must error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("No toolchain"),
+            "expected a toolchain error, got: {}",
+            err.message
+        );
+    }
+
+    // --- dispatch_package (AL_TOOL_PATH seam + build error propagation) -------
+
+    #[tokio::test]
+    async fn package_without_toolchain_reports_setup_hint() {
+        // No toolchain → the dispatcher must NOT attempt a build; it returns
+        // the actionable "run 'al setup'" message.
+        let ws = empty_ws();
+        let resp = dispatch_package(&ws, 1).await;
+        let err = resp.error.expect("missing toolchain must error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("No toolchain available"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn package_with_toolchain_but_no_project_reports_no_project() {
+        // Toolchain present (constructed via the AL_TOOL_PATH fixture) but no
+        // project loaded → "No project loaded", proving the project guard runs
+        // after the toolchain guard.
+        let ws = empty_ws();
+        let tc_dir = tempfile::TempDir::new().unwrap();
+        write_fixture_toolchain(tc_dir.path());
+        let tc = {
+            let _lock = AL_TOOL_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var_os("AL_TOOL_PATH");
+            // SAFETY: serialized via env_lock; restored immediately after.
+            unsafe { std::env::set_var("AL_TOOL_PATH", tc_dir.path()) };
+            let tc = crate::toolchain::find_toolchain()
+                .expect("fixture AL_TOOL_PATH toolchain must be discovered");
+            unsafe {
+                match prev {
+                    Some(v) => std::env::set_var("AL_TOOL_PATH", v),
+                    None => std::env::remove_var("AL_TOOL_PATH"),
+                }
+            }
+            tc
+        };
+        {
+            let mut g = ws.toolchain.write().await;
+            *g = Some(tc);
+        }
+        // project stays None.
+        let resp = dispatch_package(&ws, 2).await;
+        let err = resp.error.expect("missing project must error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert_eq!(err.message, ERR_NO_PROJECT);
+    }
+
+    #[tokio::test]
+    async fn package_missing_app_json_propagates_build_error() {
+        // Toolchain + project both present, but the project root has no
+        // app.json. `compile_project_with_analyzers` rejects this BEFORE
+        // spawning the compiler, and the dispatcher must propagate that error
+        // verbatim as an INTERNAL_ERROR (exercising the real build wiring +
+        // empty analyzer-filter branch, with no subprocess).
+        let ws = empty_ws();
+        let tc_dir = tempfile::TempDir::new().unwrap();
+        write_fixture_toolchain(tc_dir.path());
+        let tc = {
+            let _lock = AL_TOOL_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var_os("AL_TOOL_PATH");
+            // SAFETY: serialized via env_lock; restored immediately after.
+            unsafe { std::env::set_var("AL_TOOL_PATH", tc_dir.path()) };
+            let tc = crate::toolchain::find_toolchain().expect("fixture toolchain");
+            unsafe {
+                match prev {
+                    Some(v) => std::env::set_var("AL_TOOL_PATH", v),
+                    None => std::env::remove_var("AL_TOOL_PATH"),
+                }
+            }
+            tc
+        };
+        let proj = tempfile::TempDir::new().unwrap(); // intentionally no app.json
+        {
+            let mut g = ws.toolchain.write().await;
+            *g = Some(tc);
+        }
+        {
+            let mut g = ws.project.write().await;
+            *g = Some(make_project(proj.path()));
+        }
+        let resp = dispatch_package(&ws, 3).await;
+        let err = resp.error.expect("missing app.json must error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("No app.json"),
+            "build error must propagate verbatim, got: {}",
+            err.message
+        );
+    }
+
+    // --- dispatch_snapshot via wiremock (BC HTTP request shape + parsing) -----
+
+    #[tokio::test]
+    async fn snapshot_start_posts_and_parses_id() {
+        // Positive: the dispatcher must POST to /dev/snapshot with the
+        // company query param taken from `parse_bc_server_params`, parse the
+        // returned id, and shape it into {cmd, snapshotId, status}.
+        let server = MockServer::start().await;
+        Mock::given(wm_method("POST"))
+            .and(wm_path("/dev/snapshot"))
+            .and(query_param("company", "CRONUS"))
+            .and(body_json(serde_json::json!({ "description": "dbg" })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "snap-77" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = dispatch_snapshot(
+            1,
+            &serde_json::json!({
+                "cmd": "start",
+                "serverUrl": server.uri(),
+                "company": "CRONUS",
+                "description": "dbg",
+            }),
+        )
+        .await;
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert_eq!(r["cmd"], "start");
+        assert_eq!(r["snapshotId"], "snap-77");
+        assert_eq!(r["status"], "started");
+    }
+
+    #[tokio::test]
+    async fn snapshot_start_server_error_maps_to_internal_error() {
+        // Negative: a 500 from BC must become an INTERNAL_ERROR whose message
+        // names the failed operation — not a silent success.
+        let server = MockServer::start().await;
+        Mock::given(wm_method("POST"))
+            .and(wm_path("/dev/snapshot"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let resp = dispatch_snapshot(
+            2,
+            &serde_json::json!({
+                "cmd": "start",
+                "serverUrl": server.uri(),
+                "company": "CRONUS",
+            }),
+        )
+        .await;
+        let err = resp.error.expect("500 must surface an error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("snapshot start failed"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_list_parses_value_envelope() {
+        // The OData `{ "value": [...] }` envelope must be parsed into the
+        // dispatcher's `snapshots` array with id/description carried through.
+        let server = MockServer::start().await;
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/dev/snapshots"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": [
+                    { "id": "s1", "description": "first" },
+                    { "id": "s2", "size": 1024 },
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let resp = dispatch_snapshot(
+            3,
+            &serde_json::json!({
+                "cmd": "list",
+                "serverUrl": server.uri(),
+                "company": "CRONUS",
+            }),
+        )
+        .await;
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert_eq!(r["cmd"], "list");
+        let snaps = r["snapshots"].as_array().expect("snapshots array");
+        assert_eq!(snaps.len(), 2, "both entries must be parsed");
+        assert_eq!(snaps[0]["id"], "s1");
+        assert_eq!(snaps[0]["description"], "first");
+    }
+
+    #[tokio::test]
+    async fn snapshot_download_writes_file_and_returns_path() {
+        // The download branch must GET /dev/snapshots/{id}, persist the bytes
+        // under the supplied outputDir, and report the written path + status.
+        let server = MockServer::start().await;
+        Mock::given(wm_method("GET"))
+            .and(wm_path("/dev/snapshots/snap-9"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"BINARY".to_vec()))
+            .mount(&server)
+            .await;
+
+        let out = tempfile::TempDir::new().unwrap();
+        let resp = dispatch_snapshot(
+            4,
+            &serde_json::json!({
+                "cmd": "download",
+                "snapshotId": "snap-9",
+                "serverUrl": server.uri(),
+                "company": "CRONUS",
+                "outputDir": out.path().to_string_lossy(),
+            }),
+        )
+        .await;
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert_eq!(r["status"], "downloaded");
+        let written = r["path"].as_str().expect("path string");
+        assert_eq!(
+            std::fs::read(written).expect("downloaded file must exist"),
+            b"BINARY"
+        );
+    }
+
+    // --- dispatch_profiling via wiremock --------------------------------------
+
+    #[tokio::test]
+    async fn profiling_start_posts_and_parses_session_id() {
+        let server = MockServer::start().await;
+        Mock::given(wm_method("POST"))
+            .and(wm_path("/dev/profiler/start"))
+            .and(query_param("company", "CRONUS"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "sessionId": "sess-1" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let resp = dispatch_profiling(
+            1,
+            &serde_json::json!({
+                "cmd": "start",
+                "serverUrl": server.uri(),
+                "company": "CRONUS",
+            }),
+        )
+        .await;
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert_eq!(r["cmd"], "start");
+        assert_eq!(r["sessionId"], "sess-1");
+        assert_eq!(r["status"], "profiling");
+    }
+
+    #[tokio::test]
+    async fn profiling_start_server_error_maps_to_internal_error() {
+        let server = MockServer::start().await;
+        Mock::given(wm_method("POST"))
+            .and(wm_path("/dev/profiler/start"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+            .mount(&server)
+            .await;
+
+        let resp = dispatch_profiling(
+            2,
+            &serde_json::json!({
+                "cmd": "start",
+                "serverUrl": server.uri(),
+                "company": "CRONUS",
+            }),
+        )
+        .await;
+        let err = resp.error.expect("503 must surface an error");
+        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("profiling start failed"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn profiling_stop_posts_session_and_writes_profile() {
+        // The stop branch must POST the sessionId, persist the returned bytes
+        // under outputDir, and report the written path + status.
+        let server = MockServer::start().await;
+        Mock::given(wm_method("POST"))
+            .and(wm_path("/dev/profiler/stop"))
+            .and(body_json(serde_json::json!({ "sessionId": "sess-42" })))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"PROFILE".to_vec()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let out = tempfile::TempDir::new().unwrap();
+        let resp = dispatch_profiling(
+            3,
+            &serde_json::json!({
+                "cmd": "stop",
+                "sessionId": "sess-42",
+                "serverUrl": server.uri(),
+                "company": "CRONUS",
+                "outputDir": out.path().to_string_lossy(),
+            }),
+        )
+        .await;
+        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
+        let r = resp.result.expect("result");
+        assert_eq!(r["cmd"], "stop");
+        assert_eq!(r["status"], "stopped");
+        let written = r["path"].as_str().expect("path string");
+        assert_eq!(
+            std::fs::read(written).expect("profile file must exist"),
+            b"PROFILE"
+        );
+    }
 }
