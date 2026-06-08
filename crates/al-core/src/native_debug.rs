@@ -300,6 +300,34 @@ impl NativeDebugSession {
     }
 }
 
+#[cfg(test)]
+impl NativeDebugSession {
+    /// Test-only: wrap an already-constructed (fake) `BcDebugSession` without
+    /// running the real connect / attach / configuration_done network handshake
+    /// that [`NativeDebugSession::start`] performs. Uses the identical field
+    /// initialisers `start` does, so it introduces no new runtime behaviour and
+    /// is compiled only under `#[cfg(test)]`.
+    fn from_parts(session: BcDebugSession, config: BcDebugConfig) -> Self {
+        Self {
+            session,
+            config,
+            breakpoints: HashMap::new(),
+            history: VecDeque::new(),
+        }
+    }
+
+    /// Test-only: pre-populate the Break-event history so the pure `history()`
+    /// filter / ordering logic can be exercised directly. `drain_events`
+    /// records hits with empty `variables`, so the variable-name filter branch
+    /// is otherwise unreachable from a real Break event. Goes through the same
+    /// `push_with_cap` the production path uses.
+    fn seed_history(&mut self, hits: impl IntoIterator<Item = BreakpointHit>) {
+        for h in hits {
+            push_with_cap(&mut self.history, h, HISTORY_CAP);
+        }
+    }
+}
+
 /// Build a `BreakpointInfo` from the common fields, normalising empty conditions to `None`.
 fn make_bp_info(file: &str, line: u32, condition: &str, id: i64, verified: bool) -> BreakpointInfo {
     BreakpointInfo {
@@ -719,5 +747,511 @@ mod parse_bc_variables_tests {
     fn empty_array_yields_no_variables() {
         // Boundary: an empty frame (no locals) returns an empty Vec.
         assert!(parse_bc_variables(&json!([])).is_empty());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NativeDebugSession async methods — driven against a fake BC debug hub.
+//
+// `crate::dap::bc_debug::fake::FakeBc` wraps the SignalR channels the real
+// `connect()` builds (skipping the negotiate + WebSocket handshake) and spawns
+// a responder that records every frame the session sends and replies to each
+// `invoke` with a queued canned completion — exactly as the live hub would.
+// These tests therefore exercise the REAL invoke loop, breakpoint bookkeeping,
+// event draining (F-014) and response parsing, asserting on both the on-wire
+// request shape and the parsed results / state transitions.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod native_session_tests {
+    use super::*;
+    use crate::dap::bc_debug::fake::FakeBc;
+    use serde_json::json;
+
+    /// Build a `NativeDebugSession` around a fresh fake hub.
+    fn session(conn: &str) -> (NativeDebugSession, FakeBc) {
+        let (bc, fake) = FakeBc::start(conn);
+        (
+            NativeDebugSession::from_parts(bc, BcDebugConfig::default()),
+            fake,
+        )
+    }
+
+    fn hit_with_var(seq: u32, var: &str) -> BreakpointHit {
+        BreakpointHit {
+            seq,
+            breakpoint_id: 0,
+            timestamp: String::new(),
+            location: Location {
+                file: String::new(),
+                line: seq,
+                column: 0,
+                procedure: None,
+            },
+            variables: vec![Variable {
+                name: var.to_string(),
+                value: String::new(),
+                type_name: String::new(),
+                fields: Vec::new(),
+            }],
+        }
+    }
+
+    // --- set_breakpoints -----------------------------------------------------
+
+    #[tokio::test]
+    async fn set_breakpoints_adds_and_parses_pascalcase_response() {
+        // Happy path: one breakpoint, PascalCase Id/Verified parsed, and the
+        // AddBreakpoint invoke carries object id + source position.
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok("AddBreakpoint", json!({ "Id": 77, "Verified": true }));
+
+        let infos = nds
+            .set_breakpoints("src/Foo.al", &[(10, None)], 5, 50100)
+            .await
+            .unwrap();
+
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].id, 77);
+        assert!(infos[0].verified);
+        assert_eq!(infos[0].line, 10);
+        assert_eq!(infos[0].file, "src/Foo.al");
+        assert_eq!(infos[0].condition, None);
+
+        let frames = fake.sent_frames();
+        assert_eq!(frames.len(), 1, "exactly one AddBreakpoint invoke");
+        assert_eq!(frames[0]["target"], "AddBreakpoint");
+        assert_eq!(frames[0]["arguments"][0]["ObjectType"], 5);
+        assert_eq!(frames[0]["arguments"][0]["ObjectNumber"], 50100);
+        assert_eq!(frames[0]["arguments"][1]["Line"], 10);
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_parses_camelcase_response() {
+        // Older BC returns camelCase id/verified. Without the camelCase
+        // fallback the id would default to 0 and verified to true.
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok("AddBreakpoint", json!({ "id": 5, "verified": false }));
+
+        let infos = nds
+            .set_breakpoints("src/A.al", &[(3, None)], 1, 18)
+            .await
+            .unwrap();
+
+        assert_eq!(infos[0].id, 5, "camelCase id parsed");
+        assert!(!infos[0].verified, "camelCase verified parsed");
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_normalizes_conditions_and_forwards_them() {
+        // A real condition is preserved; an empty condition normalises to None
+        // but is still forwarded verbatim ("") to BC as the third arg.
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok("AddBreakpoint", json!({ "Id": 1, "Verified": true }));
+        fake.reply_ok("AddBreakpoint", json!({ "Id": 2, "Verified": true }));
+
+        let infos = nds
+            .set_breakpoints("src/B.al", &[(1, Some("x > 5")), (2, Some(""))], 5, 99)
+            .await
+            .unwrap();
+
+        assert_eq!(infos[0].condition.as_deref(), Some("x > 5"));
+        assert_eq!(infos[1].condition, None, "empty condition → None");
+
+        let frames = fake.sent_frames();
+        assert_eq!(frames[0]["arguments"][2], "x > 5");
+        assert_eq!(frames[1]["arguments"][2], "");
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_removes_prior_ids_for_same_file() {
+        // F: file→breakpoint-id mapping. Re-setting breakpoints on the same
+        // file must remove the previously-added ids first.
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok("AddBreakpoint", json!({ "Id": 100, "Verified": true }));
+        fake.reply_ok("AddBreakpoint", json!({ "Id": 101, "Verified": true }));
+        nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50)
+            .await
+            .unwrap();
+
+        fake.reply_ok("RemoveBreakpoint", json!(null));
+        fake.reply_ok("RemoveBreakpoint", json!(null));
+        fake.reply_ok("AddBreakpoint", json!({ "Id": 200, "Verified": true }));
+        nds.set_breakpoints("src/C.al", &[(9, None)], 5, 50)
+            .await
+            .unwrap();
+
+        let removed: Vec<i64> = fake
+            .sent_frames()
+            .iter()
+            .filter(|f| f["target"] == "RemoveBreakpoint")
+            .map(|f| f["arguments"][0].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            removed,
+            vec![100, 101],
+            "prior ids removed before re-adding"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_partial_failure_marks_failed_unverified() {
+        // Some adds succeed, some fail: the failed one yields id=0/verified=false
+        // rather than aborting the whole batch.
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok("AddBreakpoint", json!({ "Id": 11, "Verified": true }));
+        fake.reply_err("AddBreakpoint", "compilation error");
+
+        let infos = nds
+            .set_breakpoints("src/D.al", &[(1, None), (2, None)], 5, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos[0].id, 11);
+        assert!(infos[0].verified);
+        assert_eq!(infos[1].id, 0, "failed add → id 0");
+        assert!(!infos[1].verified, "failed add → unverified");
+    }
+
+    // --- state ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn state_stopped_reports_paused_with_variables_and_location() {
+        // A Break that arrived since the last command is drained (F-014),
+        // flips the session to Paused, records the location, and variables are
+        // queried for frame 0 and parsed.
+        let (mut nds, fake) = session("sess-7");
+        fake.push_callback(
+            "Break",
+            json!([
+                null,
+                [{ "DisplayName": "OnRun", "SourcePosition": { "Line": 42, "Column": 8 } }],
+                "stopped"
+            ]),
+        );
+        fake.reply_ok(
+            "GetVariables",
+            json!([{ "Name": "Customer", "Value": "10000", "TypeName": "Record" }]),
+        );
+
+        let st = nds.state().await.unwrap();
+
+        assert_eq!(st.status, SessionStatus::Paused);
+        assert_eq!(st.session_id, "sess-7");
+        assert_eq!(st.variables.len(), 1);
+        assert_eq!(st.variables[0].name, "Customer");
+        assert_eq!(st.variables[0].type_name, "Record");
+        let loc = st.location.expect("location recorded from Break");
+        assert_eq!(loc.line, 42);
+        assert_eq!(loc.column, 8);
+        assert_eq!(loc.procedure.as_deref(), Some("OnRun"));
+    }
+
+    #[tokio::test]
+    async fn state_running_reports_no_variables_and_no_query() {
+        // With no Break pending, the session is Running, has no variables/
+        // location, and must NOT issue a GetVariables request.
+        let (mut nds, fake) = session("sess-run");
+        let st = nds.state().await.unwrap();
+
+        assert_eq!(st.status, SessionStatus::Running);
+        assert!(st.variables.is_empty());
+        assert!(st.location.is_none());
+        assert!(
+            fake.sent_frames()
+                .iter()
+                .all(|f| f["target"] != "GetVariables"),
+            "running state must not query variables"
+        );
+    }
+
+    // --- drain_events (F-014) ------------------------------------------------
+
+    #[tokio::test]
+    async fn drain_events_records_breaks_with_incrementing_seq() {
+        // Two Break events drained in one pass get FIFO seq numbers 1, 2 and
+        // their genuine locations.
+        let (mut nds, fake) = session("c1");
+        fake.push_callback(
+            "Break",
+            json!([null, [{ "SourcePosition": { "Line": 1, "Column": 0 } }], ""]),
+        );
+        fake.push_callback(
+            "Break",
+            json!([null, [{ "SourcePosition": { "Line": 2, "Column": 0 } }], ""]),
+        );
+        fake.reply_ok("GetVariables", json!([]));
+
+        nds.state().await.unwrap();
+
+        let hist = nds.history(None);
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].seq, 1);
+        assert_eq!(hist[1].seq, 2);
+        assert_eq!(hist[0].location.line, 1);
+        assert_eq!(hist[1].location.line, 2);
+    }
+
+    #[tokio::test]
+    async fn drain_events_extracts_camelcase_break_location() {
+        // BreakLocation extraction must accept camelCase field names from BC.
+        let (mut nds, fake) = session("c1");
+        fake.push_callback(
+            "Break",
+            json!([
+                null,
+                [{ "displayName": "MyProc", "sourcePosition": { "line": 7, "column": 3 } }],
+                ""
+            ]),
+        );
+        fake.reply_ok("GetVariables", json!([]));
+
+        let st = nds.state().await.unwrap();
+        let loc = st.location.expect("camelCase location extracted");
+        assert_eq!(loc.line, 7);
+        assert_eq!(loc.column, 3);
+        assert_eq!(loc.procedure.as_deref(), Some("MyProc"));
+    }
+
+    #[tokio::test]
+    async fn drain_events_flushes_events_buffered_during_an_invoke() {
+        // A Break that lands while an invoke holds event_rx is buffered into
+        // pending_events (not dropped); the next drain flushes it to history.
+        let (mut nds, fake) = session("c1");
+        fake.push_callback(
+            "Break",
+            json!([null, [{ "SourcePosition": { "Line": 5, "Column": 1 } }], ""]),
+        );
+        fake.reply_ok(
+            "GetWatchNode",
+            json!({ "Value": "1", "TypeName": "Integer" }),
+        );
+
+        // eval does not drain — the Break is buffered, history stays empty.
+        let _ = nds.eval("x").await.unwrap();
+        assert!(
+            nds.history(None).is_empty(),
+            "eval does not drain pending events"
+        );
+
+        fake.reply_ok("GetVariables", json!([]));
+        nds.state().await.unwrap();
+
+        let hist = nds.history(None);
+        assert_eq!(hist.len(), 1, "buffered Break flushed by next drain");
+        assert_eq!(hist[0].location.line, 5);
+    }
+
+    // --- eval ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn eval_extracts_value_and_type_name() {
+        // GetWatchNode result Value/TypeName map to EvalResult, and the invoke
+        // carries frame 0 + the expression.
+        let (nds, fake) = session("c1");
+        fake.reply_ok(
+            "GetWatchNode",
+            json!({ "Value": "10000", "TypeName": "Code[20]" }),
+        );
+
+        let r = nds.eval("Customer.\"No.\"").await.unwrap();
+        assert_eq!(r.result, "10000");
+        assert_eq!(r.type_name, "Code[20]");
+
+        let frames = fake.sent_frames();
+        assert_eq!(frames[0]["target"], "GetWatchNode");
+        assert_eq!(frames[0]["arguments"][0], 0);
+        assert_eq!(frames[0]["arguments"][1], "Customer.\"No.\"");
+    }
+
+    #[tokio::test]
+    async fn eval_type_name_falls_back_camel_then_bare_type() {
+        // type_name fallback chain: TypeName → typeName → Type.
+        let (nds, fake) = session("c1");
+        fake.reply_ok(
+            "GetWatchNode",
+            json!({ "value": "1", "typeName": "Integer" }),
+        );
+        let r = nds.eval("i").await.unwrap();
+        assert_eq!(r.result, "1");
+        assert_eq!(r.type_name, "Integer", "camelCase typeName fallback");
+
+        let (nds2, fake2) = session("c2");
+        fake2.reply_ok("GetWatchNode", json!({ "Value": "2.5", "Type": "Decimal" }));
+        let r2 = nds2.eval("amt").await.unwrap();
+        assert_eq!(r2.type_name, "Decimal", "bare Type fallback");
+    }
+
+    #[tokio::test]
+    async fn eval_missing_fields_default_to_empty() {
+        // A watch node missing Value/Type yields empty strings, not an error.
+        let (nds, fake) = session("c1");
+        fake.reply_ok("GetWatchNode", json!({}));
+        let r = nds.eval("nothing").await.unwrap();
+        assert_eq!(r.result, "");
+        assert_eq!(r.type_name, "");
+    }
+
+    // --- continue_exec -------------------------------------------------------
+
+    #[tokio::test]
+    async fn continue_exec_drains_pending_then_resumes_running() {
+        // F-014: a Break that fired before `continue` is recorded before we
+        // resume, and the resume sends BreakpointExitReason 0.
+        let (mut nds, fake) = session("sess-c");
+        fake.push_callback(
+            "Break",
+            json!([null, [{ "SourcePosition": { "Line": 12, "Column": 0 } }], ""]),
+        );
+        fake.reply_ok("SetBreakpointResponse", json!(null));
+
+        let st = nds.continue_exec().await.unwrap();
+        assert_eq!(st.status, SessionStatus::Running);
+        assert_eq!(st.session_id, "sess-c");
+        assert!(st.location.is_none());
+
+        let hist = nds.history(None);
+        assert_eq!(hist.len(), 1, "F-014: Break recorded before resume");
+        assert_eq!(hist[0].location.line, 12);
+
+        let resume = fake
+            .sent_frames()
+            .into_iter()
+            .find(|f| f["target"] == "SetBreakpointResponse")
+            .expect("resume invoke sent");
+        assert_eq!(resume["arguments"][0], 0, "continue → exit reason 0");
+    }
+
+    // --- step ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn step_dispatches_exit_reason_by_type() {
+        // over/in/out map to BreakpointExitReason 1/2/3 and report Running.
+        for (kind, expected) in [("over", 1), ("in", 2), ("out", 3)] {
+            let (mut nds, fake) = session("c");
+            fake.reply_ok("SetBreakpointResponse", json!(null));
+            let st = nds.step(kind).await.unwrap();
+            assert_eq!(st.status, SessionStatus::Running, "step {kind} → Running");
+            let f = fake
+                .sent_frames()
+                .into_iter()
+                .find(|f| f["target"] == "SetBreakpointResponse")
+                .expect("step invoke sent");
+            assert_eq!(f["arguments"][0], expected, "step {kind} exit reason");
+        }
+    }
+
+    #[tokio::test]
+    async fn step_unknown_type_defaults_to_step_over() {
+        // The `_` arm of the match dispatches unknown step types to step-over.
+        let (mut nds, fake) = session("c");
+        fake.reply_ok("SetBreakpointResponse", json!(null));
+        nds.step("bogus").await.unwrap();
+        let f = fake
+            .sent_frames()
+            .into_iter()
+            .find(|f| f["target"] == "SetBreakpointResponse")
+            .expect("step invoke sent");
+        assert_eq!(f["arguments"][0], 1, "unknown step type → step-over (1)");
+    }
+
+    #[tokio::test]
+    async fn step_drains_pending_break_before_advancing() {
+        // F-014 symmetry with continue: a pending Break is recorded before step.
+        let (mut nds, fake) = session("c");
+        fake.push_callback(
+            "Break",
+            json!([null, [{ "SourcePosition": { "Line": 8, "Column": 0 } }], ""]),
+        );
+        fake.reply_ok("SetBreakpointResponse", json!(null));
+
+        nds.step("over").await.unwrap();
+
+        let hist = nds.history(None);
+        assert_eq!(hist.len(), 1, "F-014: Break recorded before step");
+        assert_eq!(hist[0].location.line, 8);
+    }
+
+    // --- history -------------------------------------------------------------
+
+    #[tokio::test]
+    async fn history_filters_by_variable_name_case_insensitive() {
+        let (mut nds, _fake) = session("c");
+        nds.seed_history([
+            hit_with_var(1, "Customer"),
+            hit_with_var(2, "Vendor"),
+            hit_with_var(3, "customer"),
+        ]);
+        let filtered = nds.history(Some("CUSTOMER"));
+        assert_eq!(filtered.len(), 2, "case-insensitive match");
+        assert_eq!(filtered[0].seq, 1);
+        assert_eq!(filtered[1].seq, 3);
+    }
+
+    #[tokio::test]
+    async fn history_unfiltered_returns_fifo_order() {
+        let (mut nds, _fake) = session("c");
+        nds.seed_history([
+            hit_with_var(10, "a"),
+            hit_with_var(20, "b"),
+            hit_with_var(30, "c"),
+        ]);
+        let seqs: Vec<u32> = nds.history(None).iter().map(|h| h.seq).collect();
+        assert_eq!(seqs, vec![10, 20, 30]);
+    }
+
+    #[tokio::test]
+    async fn history_empty_returns_empty() {
+        let (nds, _fake) = session("c");
+        assert!(nds.history(None).is_empty());
+        assert!(nds.history(Some("anything")).is_empty());
+    }
+
+    // --- stop ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn stop_invokes_stop_debugging_then_terminate() {
+        let (mut nds, fake) = session("c");
+        fake.reply_ok("StopDebugging", json!(null));
+        fake.reply_ok("TerminateSession", json!(null));
+
+        nds.stop().await.unwrap();
+
+        let targets: Vec<String> = fake
+            .sent_frames()
+            .iter()
+            .map(|f| f["target"].as_str().unwrap_or("").to_string())
+            .collect();
+        let stop_idx = targets
+            .iter()
+            .position(|t| t == "StopDebugging")
+            .expect("StopDebugging invoked");
+        let term_idx = targets
+            .iter()
+            .position(|t| t == "TerminateSession")
+            .expect("TerminateSession invoked");
+        assert!(stop_idx < term_idx, "stop_debugging before terminate");
+    }
+
+    #[tokio::test]
+    async fn stop_tolerates_errors_and_still_attempts_both_teardowns() {
+        // Both teardown RPCs erroring must still yield Ok and must still have
+        // attempted both calls (terminate is not skipped after a stop error).
+        let (mut nds, fake) = session("c");
+        fake.reply_err("StopDebugging", "already gone");
+        fake.reply_err("TerminateSession", "no session");
+
+        nds.stop().await.expect("stop tolerates teardown errors");
+
+        let targets: Vec<String> = fake
+            .sent_frames()
+            .iter()
+            .map(|f| f["target"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert!(targets.iter().any(|t| t == "StopDebugging"));
+        assert!(
+            targets.iter().any(|t| t == "TerminateSession"),
+            "terminate attempted even after stop_debugging errored"
+        );
     }
 }
