@@ -267,4 +267,374 @@ mod tests {
         }
         // If cat doesn't exist (unlikely), that's ok — skip
     }
+
+    // ----------------------------------------------------------------------
+    // Mock DAP adapter harness.
+    //
+    // These tests exercise the REAL `DapClient::spawn` seam: a POSIX shell
+    // script acts as a fake DAP adapter, reading `Content-Length`-framed
+    // requests from stdin and emitting framed responses/events on stdout.
+    //
+    // `DapClient::spawn(binary, args)` forwards `args` straight to the
+    // subprocess, so each `args` entry below is one scripted "step" the
+    // fake adapter performs (read a request + reply, or emit an event).
+    //
+    // The client's `seq_counter` starts at 1 and increments by 1 per
+    // request, so the adapter mirrors that with its own step counter `i`
+    // to echo the correct `request_seq` without parsing stdin's payload.
+    // ----------------------------------------------------------------------
+
+    /// Body of the fake DAP adapter shell script.
+    ///
+    /// `read-*` steps consume exactly one request frame (so the client's
+    /// `write_dap_frame` always completes before a reply is emitted, and so
+    /// the pipe stays open); `event:*` steps emit an event without reading.
+    const FAKE_ADAPTER: &str = r#"#!/bin/sh
+export LC_ALL=C
+i=1
+
+read_frame() {
+  len=0
+  while IFS= read -r line; do
+    line=$(printf '%s' "$line" | tr -dc '0-9A-Za-z:; ')
+    [ -z "$line" ] && break
+    case "$line" in
+      Content-Length:*) len=$(printf '%s' "$line" | tr -dc '0-9') ;;
+    esac
+  done
+  if [ -n "$len" ] && [ "$len" -gt 0 ] 2>/dev/null; then
+    dd bs=1 count="$len" >/dev/null 2>&1
+  fi
+}
+
+emit() {
+  b="$1"
+  printf 'Content-Length: %d\r\n\r\n%s' "${#b}" "$b"
+}
+
+for action in "$@"; do
+  case "$action" in
+    read-ok)
+      read_frame
+      emit "{\"seq\":$((1000+i)),\"type\":\"response\",\"request_seq\":$i,\"success\":true,\"command\":\"test\",\"body\":{\"ok\":true,\"n\":$i}}"
+      i=$((i+1))
+      ;;
+    read-fail)
+      read_frame
+      emit "{\"seq\":$((1000+i)),\"type\":\"response\",\"request_seq\":$i,\"success\":false,\"command\":\"test\",\"message\":\"boom\"}"
+      i=$((i+1))
+      ;;
+    read-hang)
+      read_frame
+      sleep 30
+      i=$((i+1))
+      ;;
+    read-unmatched)
+      read_frame
+      emit "{\"seq\":$((1000+i)),\"type\":\"response\",\"request_seq\":9999,\"success\":true,\"command\":\"ghost\"}"
+      emit "{\"seq\":$((2000+i)),\"type\":\"response\",\"request_seq\":$i,\"success\":true,\"command\":\"test\",\"body\":{\"ok\":true}}"
+      i=$((i+1))
+      ;;
+    read-parseerr)
+      read_frame
+      emit "this-is-not-valid-json{{{"
+      emit "{\"seq\":$((2000+i)),\"type\":\"response\",\"request_seq\":$i,\"success\":true,\"command\":\"test\",\"body\":{\"ok\":true}}"
+      i=$((i+1))
+      ;;
+    read-reverse)
+      read_frame
+      emit "{\"seq\":$((1000+i)),\"type\":\"request\",\"command\":\"runInTerminal\",\"arguments\":{\"x\":1}}"
+      emit "{\"seq\":$((2000+i)),\"type\":\"response\",\"request_seq\":$i,\"success\":true,\"command\":\"test\",\"body\":{\"ok\":true}}"
+      i=$((i+1))
+      ;;
+    read-noseq)
+      read_frame
+      emit "{\"type\":\"response\",\"request_seq\":$i,\"success\":true,\"command\":\"test\",\"body\":{\"ok\":true}}"
+      i=$((i+1))
+      ;;
+    event:*)
+      name=${action#event:}
+      emit "{\"seq\":$((3000+i)),\"type\":\"event\",\"event\":\"$name\",\"body\":{\"k\":\"$name\"}}"
+      i=$((i+1))
+      ;;
+    hang)
+      sleep 30
+      ;;
+    *)
+      ;;
+  esac
+done
+"#;
+
+    /// Write the fake adapter script to a fresh tempdir and return both the
+    /// `TempDir` (keep it alive for the spawned child — `sh` reads the script
+    /// lazily for the whole run) and the script path.
+    fn write_fake_adapter() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fake_dap_adapter.sh");
+        std::fs::write(&path, FAKE_ADAPTER).expect("write script");
+        (dir, path)
+    }
+
+    /// Spawn a `DapClient` backed by the fake adapter running `steps`.
+    ///
+    /// The script is run via `/bin/sh <script> <steps...>` rather than exec'd
+    /// directly: `sh` opens the script read-only, sidestepping the ETXTBSY
+    /// fork/exec race that hits freshly-written executables under parallel
+    /// tests. This still drives the real `DapClient::spawn` seam.
+    fn spawn_fake(steps: &[&str]) -> (tempfile::TempDir, DapClient) {
+        let (dir, path) = write_fake_adapter();
+        let path_str = path.to_str().expect("utf8 path").to_string();
+        let mut args: Vec<&str> = Vec::with_capacity(steps.len() + 1);
+        args.push(&path_str);
+        args.extend_from_slice(steps);
+        let client =
+            DapClient::spawn(Path::new("/bin/sh"), &args).expect("spawn fake adapter via /bin/sh");
+        (dir, client)
+    }
+
+    /// Bound an await so a regressed code path fails fast instead of hanging
+    /// the whole test run (used during red/green mutation checks).
+    async fn bounded<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::time::timeout(Duration::from_secs(10), fut)
+            .await
+            .expect("operation did not complete within 10s (likely a regression)")
+    }
+
+    #[tokio::test]
+    async fn send_request_success_routes_response_by_seq() {
+        let (_dir, mut client) = spawn_fake(&["read-ok"]);
+        // Default-timeout entry point (`send_request` -> `send_request_timeout`).
+        let resp = bounded(client.send_request("test", Some(serde_json::json!({"a": 1}))))
+            .await
+            .expect("expected success response");
+        assert!(resp.success);
+        assert_eq!(resp.command, "test");
+        // request_seq must match the first request's seq (1) — proves the
+        // background reader routed by request_seq through the pending map.
+        assert_eq!(resp.request_seq, 1);
+        assert_eq!(resp.body.unwrap()["ok"], true);
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_request_failure_maps_to_protocol_error() {
+        let (_dir, mut client) = spawn_fake(&["read-fail"]);
+        let err = bounded(client.send_request("test", None))
+            .await
+            .expect_err("expected protocol error");
+        match err {
+            DapError::DapProtocolError { command, message } => {
+                assert_eq!(command, "test");
+                assert_eq!(message, "boom");
+            }
+            other => panic!("expected DapProtocolError, got {other}"),
+        }
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_request_timeout_returns_timeout_error() {
+        let (_dir, mut client) = spawn_fake(&["read-hang"]);
+        // Adapter reads the request then sleeps; we must hit the timeout arm.
+        let timeout = Duration::from_millis(250);
+        let err = client
+            .send_request_timeout("test", None, timeout)
+            .await
+            .expect_err("expected timeout");
+        // The custom timeout parameter must be honored and surfaced verbatim.
+        match err {
+            DapError::Timeout(d) => assert_eq!(d, timeout),
+            other => panic!("expected Timeout, got {other}"),
+        }
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_request_timeout_honors_custom_duration() {
+        // A distinct, small custom timeout proves `send_request_timeout`
+        // uses its parameter (not the hard-coded 30s default).
+        let (_dir, mut client) = spawn_fake(&["read-hang"]);
+        let custom = Duration::from_millis(120);
+        let start = std::time::Instant::now();
+        let err = client
+            .send_request_timeout("test", None, custom)
+            .await
+            .expect_err("expected timeout");
+        assert!(matches!(err, DapError::Timeout(d) if d == custom));
+        // Should fire near the custom deadline, well under the 30s default.
+        assert!(start.elapsed() < Duration::from_secs(5));
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reader_patches_missing_seq_via_ensure_seq() {
+        // The adapter omits the top-level `seq`. `DapResponse` requires it,
+        // so without `ensure_seq` patching in the reader the message would
+        // fail to parse and never reach the pending waiter (-> timeout).
+        let (_dir, mut client) = spawn_fake(&["read-noseq"]);
+        let resp = bounded(client.send_request_timeout("test", None, Duration::from_secs(5)))
+            .await
+            .expect("ensure_seq must let a seq-less response parse + route");
+        assert!(resp.success);
+        assert_eq!(resp.request_seq, 1);
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reader_skips_unmatched_response_then_delivers_match() {
+        // First reply carries an unknown request_seq (unmatched -> logged,
+        // dropped); the second carries the real one. The waiter must still
+        // receive the matching response.
+        let (_dir, mut client) = spawn_fake(&["read-unmatched"]);
+        let resp = bounded(client.send_request_timeout("test", None, Duration::from_secs(5)))
+            .await
+            .expect("matching response must still be delivered");
+        assert!(resp.success);
+        assert_eq!(resp.command, "test");
+        assert_eq!(resp.request_seq, 1);
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reader_skips_parse_error_then_delivers_match() {
+        // A malformed frame must be logged and skipped without breaking the
+        // stream; the following valid response must still be routed.
+        let (_dir, mut client) = spawn_fake(&["read-parseerr"]);
+        let resp = bounded(client.send_request_timeout("test", None, Duration::from_secs(5)))
+            .await
+            .expect("valid response after a parse error must be delivered");
+        assert!(resp.success);
+        assert_eq!(resp.request_seq, 1);
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reader_ignores_reverse_request_then_delivers_match() {
+        // A reverse request (adapter -> client, e.g. runInTerminal) must be
+        // ignored without disrupting response routing.
+        let (_dir, mut client) = spawn_fake(&["read-reverse"]);
+        let resp = bounded(client.send_request_timeout("test", None, Duration::from_secs(5)))
+            .await
+            .expect("response after a reverse request must be delivered");
+        assert!(resp.success);
+        assert_eq!(resp.request_seq, 1);
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_use_independent_seqs() {
+        // Two sequential requests must get seq 1 then seq 2, each routed back
+        // to the correct waiter.
+        let (_dir, mut client) = spawn_fake(&["read-ok", "read-ok"]);
+        let r1 = bounded(client.send_request_timeout("test", None, Duration::from_secs(5)))
+            .await
+            .expect("first response");
+        let r2 = bounded(client.send_request_timeout("test", None, Duration::from_secs(5)))
+            .await
+            .expect("second response");
+        assert_eq!(r1.request_seq, 1);
+        assert_eq!(r1.body.unwrap()["n"], 1);
+        assert_eq!(r2.request_seq, 2);
+        assert_eq!(r2.body.unwrap()["n"], 2);
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn next_event_returns_some_then_none_on_eof() {
+        // Adapter emits one event then exits (EOF). The reader routes the
+        // event to the mpsc channel, then ends and drops `events_tx`, so the
+        // next `recv` resolves to None.
+        let (_dir, mut client) = spawn_fake(&["event:stopped"]);
+        let ev = bounded(client.next_event())
+            .await
+            .expect("expected an event");
+        assert_eq!(ev.event, "stopped");
+        // Adapter has exited -> channel closes -> None.
+        let none = bounded(client.next_event()).await;
+        assert!(none.is_none(), "expected None after adapter EOF");
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn drain_events_empty_when_no_events() {
+        // Adapter emits nothing and stays alive; a non-blocking drain returns
+        // an empty vec.
+        let (_dir, mut client) = spawn_fake(&["hang"]);
+        assert!(client.drain_events().is_empty());
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn drain_events_collects_buffered_events() {
+        // Adapter emits three events then stays alive; the non-blocking drain
+        // accumulates everything the reader has queued.
+        let (_dir, mut client) = spawn_fake(&["event:a", "event:b", "event:c", "hang"]);
+        let mut all = Vec::new();
+        for _ in 0..200 {
+            all.extend(client.drain_events());
+            if all.len() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(all.len(), 3, "drain should collect all buffered events");
+        let names: Vec<&str> = all.iter().map(|e| e.event.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_filters_until_match() {
+        // First event ("output") must be skipped; the loop keeps waiting until
+        // the requested "stopped" event arrives.
+        let (_dir, mut client) = spawn_fake(&["event:output", "event:stopped", "hang"]);
+        let ev = bounded(client.wait_for_event("stopped", Duration::from_secs(5)))
+            .await
+            .expect("expected stopped event");
+        assert_eq!(ev.event, "stopped");
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_times_out_when_event_never_arrives() {
+        // Only a non-matching event arrives; the adapter then hangs, so the
+        // deadline must fire with a Timeout error.
+        let (_dir, mut client) = spawn_fake(&["event:output", "hang"]);
+        let err = client
+            .wait_for_event("stopped", Duration::from_millis(250))
+            .await
+            .expect_err("expected timeout");
+        assert!(matches!(err, DapError::Timeout(_)), "got {err}");
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_errors_when_channel_closes() {
+        // Adapter emits a non-matching event then exits, closing the channel.
+        // wait_for_event must surface a protocol error, not hang.
+        let (_dir, mut client) = spawn_fake(&["event:output"]);
+        let err = bounded(client.wait_for_event("stopped", Duration::from_secs(5)))
+            .await
+            .expect_err("expected channel-closed error");
+        match err {
+            DapError::DapProtocolError { command, message } => {
+                assert!(command.contains("stopped"), "got command {command}");
+                assert!(message.contains("closed"), "got message {message}");
+            }
+            other => panic!("expected DapProtocolError, got {other}"),
+        }
+        client.kill().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn kill_terminates_subprocess_and_aborts_reader() {
+        // A long-lived adapter must be killable; afterwards the reader task is
+        // aborted so its `events_tx` drops and the event channel closes.
+        let (_dir, mut client) = spawn_fake(&["hang"]);
+        client.kill().await.expect("kill should succeed");
+        // Reader aborted -> events channel closed -> next_event yields None.
+        let none = bounded(client.next_event()).await;
+        assert!(none.is_none(), "event channel should be closed after kill");
+    }
 }

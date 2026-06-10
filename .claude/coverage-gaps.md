@@ -1,47 +1,78 @@
-# Coverage-based red/green gaps (2026-06-02)
+# Coverage-based red/green gaps (updated 2026-06-04)
 
-One `scripts/coverage.sh` run (cargo-llvm-cov + nextest, ~2 min, whole workspace).
-**Overall: 68.0% line / 67.1% function coverage** — ~2,201 functions have no test
-exercising them in-process.
+`scripts/coverage.sh` (cargo-llvm-cov + nextest) over the whole native workspace.
 
-## How to read this
+## Status (2026-06-04)
 
-Two kinds of "0%" — only one is a real gap:
+Whole-workspace line coverage **~77%** (up from 68% on 2026-06-02). This session
+added ~600 verified red-green tests (each proven to FAIL when the code-under-test
+is deliberately broken) across these files, worst-first:
 
-- **Transport-adapter artifact (NOT a gap):** `server/*.rs` (hover, definition,
-  formatting, handlers, lsp, completions), `bin/al-lsp.rs`. These show 0% because
-  the e2e harness exercises them by spawning `al-lsp` as a SUBPROCESS, whose
-  coverage isn't counted in-process. The logic they call (`queries/*`) is covered.
-  To measure them, thread `LLVM_PROFILE_FILE` into the spawned binary (future).
+- native_debug 29→56, native_dap 30→42, semantic/host 30→54, signature 38→79
+- daemon: build_dispatch 36→59, lsp_dispatch 26→73, debug_dispatch 32→74,
+  insight_dispatch 49→96, mod 32→79
+- server/workspace 23→61, oauth 50→75, syntax/symbols 61→89, resolution 66→78
+- dap/bc_debug 48→62, dap_mode 44→62
+- queries: hover 52→75, mod 50→95, completions 60→74, implementation 45→93,
+  inlay_hints 73→85, source 72→86
+- symbols: nuget 61→85, bc_server 50→87
+- interpreter: eval_stmt 68→79, value 61→98
+- profiling 67→99, semantic/bridge 67→73, semantic/lifecycle 78→89,
+  diagnostics 56→78, al-protocol/client 78→84, al-test-harness/protocol 29→100
 
-- **Genuine gaps (real red/green holes):** production logic with thin/no coverage
-  that is NOT just a transport shim. Ranked below — these are what the loop should
-  target with fast inline unit tests.
+The genuine in-process-testable pure-logic surface is now largely at its ceiling.
 
-## Genuine gaps, worst first
+## How to read remaining "low" coverage — four categories, only one is a real gap
 
-| Line% | File | Notes |
-|---|---|---|
-| 0%  | `al-core/src/http_auth.rs` | **0 tests anywhere** — TLS/auth helper, real gap, highest priority |
-| 0%  | `queries/semantic_tokens.rs` | e2e-only (10 files); add fast inline tests |
-| 0%  | `queries/symbols.rs` | e2e-only (12 files); add fast inline tests |
-| 8%  | `symbols/source_index.rs` | thin |
-| 16% | `dap/native_dap.rs` | DAP server; hard to unit-test, partly subprocess |
-| 20% | `queries/test_coverage.rs` | |
-| 21% | `snapshot.rs` | |
-| 23% | `dap/config.rs` | parsing — easy wins |
-| 26% | `queries/search.rs` | |
-| 29% | `native_debug.rs` / `semantic/host.rs` | |
-| 32% | `publish.rs` | |
-| 33% | `symbols/language_data.rs` | |
-| 38% | `queries/signature.rs` | |
+1. **Transport shim / clap dispatcher (NOT a unit gap, ~6,500 lines):**
+   `server/{lsp,handlers,formatting,definition,hover,completions}.rs`,
+   `bin/al-lsp.rs`, `al-explorer/src/cli/commands/*`, `al-explorer/src/main.rs`.
+   These read ~0% because the e2e harness spawns `al-lsp` as a SUBPROCESS and the
+   CLI is exercised manually — the code IS run, just uncounted. See "Subprocess
+   coverage" below for the proper (approval-gated) fix.
 
-al-explorer CLI commands (`cli/commands/*`, `main.rs`) are also ~0% — they're
-thin clap dispatchers exercised manually; lower priority.
+2. **Live-infra (needs mock harness or live BC/.NET, ~3,800 lines):**
+   `dap/native_dap.rs` (live DAP socket event loop), `dap/client.rs`,
+   `dap/bc_debug.rs` (live SignalR), `server/daemon/build_dispatch.rs` (spawns
+   real ALTool compiles), `native_debug.rs`, `semantic/host.rs` (live .NET CLR).
+   Pure helpers in these are tested; the rest needs a fake DAP peer / fake ALTool
+   / wiremock BC server — a real harness investment, and the tests would assert
+   against the mock, not against BC.
+
+3. **Test-support code (covering tests is pointless, ~550 lines):**
+   `test_engine/*`, `test_runtime/interpreter/tests_adversarial_wave2.rs`,
+   `test_snapshots/*`, `test_runner.rs`.
+
+4. **Genuine pure-logic gap:** mostly closed this session. Re-run
+   `scripts/coverage.sh --uncovered` to find any new ones; feed them to the
+   coverage-loop workflow's explicit `{files:[...]}` arg.
+
+## Subprocess coverage (the biggest remaining HONEST % lever — approval-gated)
+
+The server-adapter layer (category 1, ~1,500 lines) is already exercised by 2,977
+passing e2e tests; it just isn't COUNTED because the harness spawns a
+non-instrumented `al-lsp`. cargo-llvm-cov's two-phase script form runs the tests
+fine but its split `report` step can't track an externally-built binary, so it
+reports 0%. The robust fix needs a `CARGO_BIN_EXE_al-lsp` build-edge, which only
+exists in the crate that owns the bin (al-core):
+
+1. Add `al-test-harness` as a **dev-dependency of al-core** (NEW DEP — needs
+   approval per CLAUDE.md; al-test-harness must not depend on al-core, so no cycle).
+2. Add `crates/al-core/tests/e2e_subprocess.rs` that sets
+   `AL_LSP_BIN = env!("CARGO_BIN_EXE_al-lsp")` (override already honored by
+   `find_binary()` as of commit f35e3da) and drives a representative e2e subset.
+3. Under `cargo llvm-cov nextest`, cargo then builds the al-lsp bin instrumented,
+   cargo-llvm-cov tracks its coverage map, and the spawned bin's profraws merge —
+   counting the server adapters legitimately.
+
+Estimated effect: +several TOTAL points, all honest (no new assertions, just
+counting tests that already run). Gated on the dev-dependency approval.
 
 ## Efficient strategy (tiered by cost)
 
-1. **Coverage** (`scripts/coverage.sh`, ~2 min) — finds untested code. Run per PR.
-2. **Mutation on diff** (`cargo mutants --in-diff origin/dev`, minutes) — checks
-   whether the tests on CHANGED code actually assert. Run in the loop/CI.
-3. **Full mutation** (the 1am `al-mutation-sweep.timer`) — exhaustive, overnight.
+1. **Coverage** (`scripts/coverage.sh`, ~10 min) — finds untested code. Per PR.
+2. **coverage-loop workflow** — pass `{files:[...], ceiling:80}` to aim runs at
+   specific sub-ceiling files; each agent writes verified red-green tests, gates,
+   commits, pushes.
+3. **Mutation on diff** (`cargo mutants --in-diff origin/dev`) — checks the tests
+   on CHANGED code actually assert.
