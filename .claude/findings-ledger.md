@@ -8,6 +8,12 @@ FINDINGS.md remains the narrative history; this is the index.
 
 | ID | Severity | Title |
 |---|---|---|
+| F-OPEN-268 | P1 | Workspace objects invisible to daemon queries: by-id/composed/events/generate-page consult only the .app SymbolIndex — `by-id codeunit 50100` fails while `object` finds the same workspace object; `generate page --table` fails for the user's own tables; `events` misses workspace publishers. (tool-audit 2026-06-10 §1) |
+| F-OPEN-269 | P1 | Insight graph builds 0 edges on workspace-only projects (8 nodes/0 edges on the fixture) — trace, entrypoints, graph export and the TUI Events/CallGraph views are all empty. Possibly same root cause as F-OPEN-268. (tool-audit §2) |
+| F-OPEN-270 | P1 | test-run-all executes 0/0 interpreter-routed tests (discovery=2, classify=interp) and wrongly requires a launch config (.zed/debug.json) even for offline interp runs; mutation scores are meaningless (all mutants survive) until this works. (tool-audit §3) |
+| F-OPEN-271 | P2 | al-protocol client read fails with EAGAIN (os error 11) on slow daemon ops — organize-files reproducibly errors "Failed to read response: Resource temporarily unavailable". Timeout/nonblocking mishandling. (tool-audit §4) |
+| F-OPEN-272 | P2 | compile/package error "Failed to initialize semantic bridge" instead of falling back to the documented alc subprocess when the bridge is unavailable (ALTool v17 installed, semantic feature off). (tool-audit §5) |
+| F-OPEN-273 | P3 | xlf untranslated mangles quoted object names ('Pageextension 50101 Sales Order Pageext" extends "Sales Order'). (tool-audit §6) |
 | F-OPEN-257 | P2 | Decompose run_native_dap (~1,038 lines, dap/native_dap.rs:92): extract per-request handlers over a NativeDapState struct so handlers become unit-testable (file is a coverage gap because only the whole loop is drivable). (FR-5) |
 | F-OPEN-258 | P2 | Split server/daemon/build_dispatch.rs (~3,650 prod lines, ~60 dispatch fns + 2,371 inline test lines) into domain submodules (build, symbols/auth, xliff, tests, analysis, codegen, fixes); mechanical moves. (FR-6) |
 | F-OPEN-259 | P2 | Public NuGet symbol-feed parity (BC 2026 W1): support MSSymbols + AppSourceSymbols public feeds, globalSourcesOnly-equivalent, symbolsCountryRegion + custom-feeds settings in nuget.rs + extension settings schema. Source: ecosystem roadmap R4 (.claude/research/ecosystem-roadmap-2026-06-09.md) |
