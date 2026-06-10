@@ -131,9 +131,13 @@ impl AlExtension {
     /// 2. Locally installed binary (extension work dir, previously downloaded)
     /// 3. PATH lookup (dev builds, `cargo install`, system installs)
     /// 4. GitHub release download → cache in work dir
+    /// `status_id` is the language-server id used to surface download progress
+    /// in Zed's status UI. The DAP path passes `None` (there is no way to
+    /// construct a `LanguageServerId` for it on the released API), which only
+    /// skips the progress spinner — resolution and download behave identically.
     fn find_or_download_binary(
         &mut self,
-        language_server_id: &zed::LanguageServerId,
+        status_id: Option<&zed::LanguageServerId>,
         worktree: &zed::Worktree,
         user_configured_path: Option<&str>,
     ) -> Result<String> {
@@ -156,10 +160,12 @@ impl AlExtension {
         }
 
         // 4. Download from GitHub releases.
-        zed::set_language_server_installation_status(
-            language_server_id,
-            &zed::LanguageServerInstallationStatus::CheckingForUpdate,
-        );
+        if let Some(id) = status_id {
+            zed::set_language_server_installation_status(
+                id,
+                &zed::LanguageServerInstallationStatus::CheckingForUpdate,
+            );
+        }
 
         let (os, arch) = zed::current_platform();
 
@@ -224,10 +230,12 @@ impl AlExtension {
         let binary_path = format!("{version_dir}/{binary_name}");
 
         if !fs::metadata(&binary_path).is_ok_and(|m| m.is_file()) {
-            zed::set_language_server_installation_status(
-                language_server_id,
-                &zed::LanguageServerInstallationStatus::Downloading,
-            );
+            if let Some(id) = status_id {
+                zed::set_language_server_installation_status(
+                    id,
+                    &zed::LanguageServerInstallationStatus::Downloading,
+                );
+            }
 
             // TLS / integrity: zed::download_file uses Zed's host HTTP
             // client, which forces rustls-with-platform-verifier (validates
@@ -298,7 +306,7 @@ impl zed::Extension for AlExtension {
             .map(|p| p.to_string());
 
         let binary_path = self.find_or_download_binary(
-            language_server_id,
+            Some(language_server_id),
             worktree,
             user_configured_path.as_deref(),
         )?;
@@ -342,34 +350,13 @@ impl zed::Extension for AlExtension {
         Ok(Some(init_options))
     }
 
-    fn language_server_workspace_configuration_schema(
-        &mut self,
-        _language_server_id: &zed::LanguageServerId,
-        _worktree: &zed::Worktree,
-    ) -> Option<serde_json::Value> {
-        let schema = include_str!("../schemas/settings.json");
-        serde_json::from_str(schema).ok()
-    }
-
-    fn language_server_initialization_options_schema(
-        &mut self,
-        _language_server_id: &zed::LanguageServerId,
-        _worktree: &zed::Worktree,
-    ) -> Option<serde_json::Value> {
-        Some(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "workspacePath": {
-                    "type": "string",
-                    "description": "Path to the AL project root (auto-detected from workspace)"
-                },
-                "al": {
-                    "type": "object",
-                    "description": "AL language server settings (see workspace configuration schema for details)"
-                }
-            }
-        }))
-    }
+    // NOTE: `language_server_workspace_configuration_schema` and
+    // `language_server_initialization_options_schema` (settings-editor
+    // autocomplete) exist only on the UNRELEASED extension API (git main /
+    // 0.8.x). They were removed when the project moved to the released 0.7.0
+    // API (F-OPEN-256) so the extension loads on Stable Zed and can be
+    // published to the registry. Restore them — schema content lives in
+    // schemas/settings.json — once 0.8.x ships on crates.io.
 
     fn language_server_workspace_configuration(
         &mut self,
@@ -390,16 +377,18 @@ impl zed::Extension for AlExtension {
 
     fn get_dap_binary(
         &mut self,
-        language_server_id: String,
+        _adapter_name: String,
         config: zed::DebugTaskDefinition,
         user_provided_debug_adapter_path: Option<String>,
         worktree: &zed::Worktree,
     ) -> Result<zed::DebugAdapterBinary> {
         // Resolve al-lsp via the same 4-step chain used for LSP:
         // user config → cached download → PATH → GitHub release download.
-        let lsp_id = zed::LanguageServerId::new(language_server_id);
+        // No LanguageServerId exists on the DAP path (and the released API has
+        // no way to construct one), so download progress is not surfaced in
+        // the status UI — see find_or_download_binary's status_id doc.
         let al_lsp_path = self.find_or_download_binary(
-            &lsp_id,
+            None,
             worktree,
             user_provided_debug_adapter_path.as_deref(),
         )?;

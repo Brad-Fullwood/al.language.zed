@@ -12,61 +12,46 @@ ERROR [extension_host] Failed to load extension: al ... loading wasm extension: 
 unreleased versions of the extension API can only be used on development builds of Zed
 ```
 
-**Cause.** This extension targets the **unreleased** Zed extension API
-(`zed_extension_api` from git `main`, surfaced as `[lib] version = "0.8.0"` in
-`extension.toml`). Zed only permits unreleased-API extensions on the **Dev** and
-**Nightly** release channels. On **Stable** and **Preview** Zed the extension is
-rejected *before any of its code runs*, so `al-lsp` is never spawned — that's why
-the log shows only `json-language-server` / `rust-analyzer` starting and never
-`al-lsp`.
+**Cause.** The extension was built against the **unreleased** Zed extension API
+(`zed_extension_api` from git `main`). Zed only permits unreleased-API extensions
+on the **Dev** and **Nightly** release channels; on **Stable** and **Preview**
+the extension is rejected *before any of its code runs*, so `al-lsp` is never
+spawned — that's why the log shows only `json-language-server` / `rust-analyzer`
+starting and never `al-lsp`.
+
+**The committed state of this repository targets the released API (`0.7.0`),
+which loads on ALL Zed channels** — a clean checkout never hits this error. It
+can only appear if the working tree was locally switched to the unreleased API
+with `scripts/use-api.sh dev` (for experiments against Zed's git main). The
+`committed_api_target_is_released` guard test fails in that state, so it cannot
+be committed unnoticed.
 
 The gate is in Zed itself
 (`crates/extension_host/src/wasm_host/wit.rs`):
 
 ```rust
 let max_version = match release_channel {
-    ReleaseChannel::Dev | ReleaseChannel::Nightly => latest::MAX_VERSION,     // 0.8.0
-    ReleaseChannel::Stable | ReleaseChannel::Preview => since_v0_6_0::MAX_VERSION,
+    ReleaseChannel::Dev | ReleaseChannel::Nightly => latest::MAX_VERSION,     // unreleased line
+    ReleaseChannel::Stable | ReleaseChannel::Preview => /* released APIs only */,
 };
 ```
 
-**Check which channel you are on:** Zed → menu/command palette → **About**, or:
+### Fix — return to the released API
 
 ```sh
-zed --version          # "Zed nightly 1.x.x" → OK;  "Zed 1.x.x" (no channel) → Stable → will NOT load
+scripts/use-api.sh show       # confirm what the tree currently targets
+scripts/use-api.sh stable     # released 0.7.0; rebuilds the WASM
 ```
 
-### Fix A — run Zed Nightly (keep the 0.8 API)
+All LSP and DAP functionality lives in the released API. The only thing the
+unreleased line adds today is settings-editor autocomplete via two
+`language_server_*_schema` methods (removed under F-OPEN-256; restore them from
+`schemas/settings.json` once 0.8.x ships on crates.io).
 
-Nightly is a normal downloadable build (you do **not** need to compile Zed from
-source). Install it alongside Stable:
-
-```sh
-curl -fsSL https://zed.dev/install.sh | ZED_CHANNEL=nightly sh
-```
-
-This installs to `~/.local/zed-nightly.app`, puts `zed` on your `PATH`
-(`~/.local/bin/zed`), and adds a **"Zed Nightly"** entry to your application
-launcher (`~/.local/share/applications/dev.zed.Zed-Nightly.desktop`). Your Stable
-install is untouched. Open this project with **Zed Nightly** and the AL extension
-loads.
-
-> **Preview does NOT work** — Preview is grouped with Stable above and only allows
-> released API versions.
-
-### Fix B — downgrade to the released API (run on Stable Zed)
-
-If you want to run on **Stable** Zed (and to publish to the Zed extension
-registry, which requires a released API), retarget the latest released API:
-
-```sh
-scripts/use-api.sh stable     # currently 0.7.0; rebuilds the WASM
-```
-
-This drops two cosmetic methods (`language_server_*_schema`, which only feed
-settings-editor autocomplete) and adjusts one debugger constructor. All
-LSP/DAP functionality is unaffected. Switch back with `scripts/use-api.sh dev`.
-Run `scripts/use-api.sh show` to see the current target.
+To experiment against Zed git main: `scripts/use-api.sh dev` plus a Nightly
+build (`curl -fsSL https://zed.dev/install.sh | ZED_CHANNEL=nightly sh` —
+installs alongside Stable, adds a "Zed Nightly" launcher entry). Switch back to
+`stable` before committing.
 
 ---
 

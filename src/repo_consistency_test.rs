@@ -227,15 +227,79 @@ fn asset_not_found_is_actionable() {
     );
 }
 
-/// Channel-coupling guard. The extension's `[lib] version` in extension.toml and
-/// the `zed_extension_api` target in the root Cargo.toml together decide which
-/// Zed release channels can load the extension at all:
-///   * unreleased API (git `main`, 0.8.x) → loads only on Dev / Nightly Zed
-///   * released API (0.7.x and below)      → loads on Stable / Preview too
-/// A new user on Stable Zed whose build targets an unreleased API sees the
-/// extension silently fail to load and `al-lsp` never spawns. That trap is
-/// documented in TROUBLESHOOTING.md and at the dep in Cargo.toml; this test
-/// keeps that documentation honest so the coupling can never drift unnoticed.
+/// F-OPEN-256: the COMMITTED state must always target a RELEASED extension API.
+///
+/// Unreleased APIs (git `main`) load only on Dev/Nightly Zed; on Stable/Preview
+/// the extension silently fails to load and `al-lsp` never spawns. This trap
+/// shipped four separate times. The registry also rejects unreleased APIs, so
+/// any committed git/branch dep blocks publication outright. Local experiments
+/// against git main are fine (`scripts/use-api.sh dev`) — but `use-api.sh stable`
+/// must be run before committing, and this test is the enforcement.
+#[test]
+fn committed_api_target_is_released() {
+    let cargo = include_str!("../Cargo.toml");
+    let manifest = include_str!("../extension.toml");
+
+    let api_line = cargo
+        .lines()
+        .find(|l| l.trim_start().starts_with("zed_extension_api"))
+        .expect("Cargo.toml must declare zed_extension_api");
+
+    assert!(
+        !api_line.contains("git") && !api_line.contains("branch"),
+        "Cargo.toml pins zed_extension_api to a git branch — that is an UNRELEASED API: \
+         it silently fails to load on Stable Zed and is rejected by the extension registry. \
+         Run scripts/use-api.sh stable before committing. Offending line: {api_line}"
+    );
+
+    // Extract the quoted version from e.g. `zed_extension_api = "0.7.0"`.
+    let dep_version = api_line
+        .split('"')
+        .nth(1)
+        .expect("zed_extension_api dep must be a quoted registry version");
+    assert!(
+        dep_version.starts_with("0.7"),
+        "zed_extension_api must target the latest RELEASED line (0.7.x); got {dep_version}. \
+         If 0.8.x has been released to crates.io, update this test alongside the bump."
+    );
+
+    // extension.toml's [lib] version tells Zed which API the WASM was built
+    // against; it must advertise the same released line as the dep.
+    let lib_version = manifest
+        .lines()
+        .skip_while(|l| l.trim() != "[lib]")
+        .find_map(|l| {
+            l.trim().strip_prefix("version").map(|v| {
+                v.trim_start_matches([' ', '=', '"'])
+                    .trim_end_matches('"')
+                    .to_string()
+            })
+        })
+        .expect("extension.toml must declare a [lib] version");
+    assert!(
+        lib_version.starts_with("0.7"),
+        "extension.toml [lib] version ({lib_version}) must match the released API line (0.7.x) \
+         declared in Cargo.toml ({dep_version}); a mismatch breaks extension loading"
+    );
+}
+
+/// The `use-api.sh` helper's `stable` mode must hand out the latest RELEASED
+/// API, not a stale one — it sat at 0.6.0 (which predates DAP support) long
+/// after 0.7.0 shipped, making "stable" look like it cost the debugger.
+#[test]
+fn use_api_helper_stable_targets_latest_released() {
+    let script = include_str!("../scripts/use-api.sh");
+    assert!(
+        script.contains("STABLE_VER=\"0.7.0\""),
+        "scripts/use-api.sh STABLE_VER must be 0.7.0 (the latest released API with full \
+         DAP/locator support); 0.6.0 lacks the debugger surface"
+    );
+}
+
+/// Channel-coupling guard (dormant while the committed state targets a released
+/// API; fires only on local `use-api.sh dev` working trees). If anyone flips to
+/// the unreleased API, the trap documentation must still exist so a Stable-Zed
+/// user can self-diagnose the silent load failure.
 #[test]
 fn unreleased_api_channel_requirement_is_documented() {
     let cargo = include_str!("../Cargo.toml");

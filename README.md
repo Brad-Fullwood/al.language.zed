@@ -44,7 +44,7 @@ code generation) happens in `al-lsp` outside the Zed sandbox.
 | Compilation | Requires ALTool; falls back to `alc` subprocess |
 | Debugging (native REST + SignalR) | Working against live BC services |
 | Debugging (EditorServices proxy) | Working when Microsoft's adapter is available |
-| Zed extension API | Tracks `zed_extension_api` on `main`; API version `0.8.0` |
+| Zed extension API | Released `zed_extension_api` `0.7.0` — loads on all Zed channels (Stable, Preview, Dev, Nightly) |
 
 ---
 
@@ -646,7 +646,7 @@ and `RUST_LOG` are the most-used test environment knobs.
 .
 ├── Cargo.toml            # workspace manifest; root crate is zed-al (cdylib)
 ├── Makefile              # build / install / wasm / bridges / clean
-├── extension.toml        # Zed extension metadata (id: al, API version 0.8.0)
+├── extension.toml        # Zed extension metadata (id: al, released API 0.7.0)
 ├── CLAUDE.md             # rules for AI agents contributing to this repo
 ├── crates/
 │   ├── al-core/          # all logic + the al-lsp binary

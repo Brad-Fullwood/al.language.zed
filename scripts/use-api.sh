@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Switch which Zed extension API the AL extension targets.
 #
-#   dev     unreleased API (git main, v0.8.0). Loads ONLY on Zed dev/nightly/
-#           preview builds. Use on machines running bleeding-edge Zed.
-#   stable  latest RELEASED API (v0.6.0). Loads on stable Zed and is required
-#           for the public extension registry. A released API also works on
-#           dev Zed, so "stable" is the safe default for shipping.
+#   dev     unreleased API (git main, v0.8.0). Loads ONLY on Zed dev/nightly
+#           builds. LOCAL EXPERIMENTS ONLY — never commit this state: the
+#           committed_api_target_is_released guard test fails on it, and the
+#           src/lib.rs schema methods removed under F-OPEN-256 would need to
+#           be restored for it to add anything over stable.
+#   stable  latest RELEASED API (v0.7.0, full DAP/locator support). Loads on
+#           ALL Zed channels and is required for the public extension
+#           registry. This is the committed/shipping state.
 #
 # Usage:
-#   scripts/use-api.sh stable   # public / stable-Zed machines
-#   scripts/use-api.sh dev      # this machine if it runs dev/nightly Zed
+#   scripts/use-api.sh stable   # the default, committed state
+#   scripts/use-api.sh dev      # local experiments against zed git main
 #   scripts/use-api.sh show     # print current target
 #
 # After switching, the WASM is rebuilt. In Zed, reload the dev extension
@@ -18,7 +21,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DEV_VER="0.8.0"
-STABLE_VER="0.6.0"
+STABLE_VER="0.7.0"
 DEV_DEP='zed_extension_api = { git = "https://github.com/zed-industries/zed", branch = "main" }'
 STABLE_DEP="zed_extension_api = \"$STABLE_VER\""
 
