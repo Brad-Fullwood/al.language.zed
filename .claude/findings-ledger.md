@@ -8,6 +8,18 @@ FINDINGS.md remains the narrative history; this is the index.
 
 | ID | Severity | Title |
 |---|---|---|
+| F-OPEN-256 | P0 | Ship on stable Zed: add a released-API 0.7.0 build target (verified against docs.rs 2026-06-09: 0.7.0 has the FULL DAP/locator surface + all types we use; it lacks ONLY the two cosmetic language_server_*_schema trait methods, which must be cfg-gated/dropped, plus one LanguageServerId::new call to adapt in the debugger path). Keep dev/0.8 for local Nightly (Brad's 2026-06-01 choice) but make stable/0.7.0 the registry/release target; update use-api.sh ("stable" is stale at 0.6.0), repo_consistency guard test, README line 47; then publish to zed-industries/extensions. Source: Fable system review (.claude/research/fable-system-review-2026-06-09.md FR-1) |
+| F-OPEN-257 | P2 | Decompose run_native_dap (~1,038 lines, dap/native_dap.rs:92): extract per-request handlers over a NativeDapState struct so handlers become unit-testable (file is a coverage gap because only the whole loop is drivable). (FR-5) |
+| F-OPEN-258 | P2 | Split server/daemon/build_dispatch.rs (~3,650 prod lines, ~60 dispatch fns + 2,371 inline test lines) into domain submodules (build, symbols/auth, xliff, tests, analysis, codegen, fixes); mechanical moves. (FR-6) |
+| F-OPEN-259 | P2 | Public NuGet symbol-feed parity (BC 2026 W1): support MSSymbols + AppSourceSymbols public feeds, globalSourcesOnly-equivalent, symbolsCountryRegion + custom-feeds settings in nuget.rs + extension settings schema. Source: ecosystem roadmap R4 (.claude/research/ecosystem-roadmap-2026-06-09.md) |
+| F-OPEN-260 | P2 | Official-ALTool LSP delegation mode: detect `altool` (PATH / dotnet tool / VS Code ext dir) and optionally spawn `launchlspserver` for Microsoft-exact semantics alongside the native server; native remains default/fallback. (roadmap R3) |
+| F-OPEN-261 | P2 | Expose al-lsp as an MCP server (daemon-MCP bridge) registered via Zed context_servers; mirror Microsoft tool names (al_build, al_symbolsearch, al_getdiagnostics…) so agents transfer. (roadmap R5) |
+| F-OPEN-262 | P3 | code_actions.rs → queries/code_actions/ per-action submodules (~2,640 prod lines; each action already a self-contained fn cluster). (FR-7) |
+| F-OPEN-263 | P3 | al-explorer main.rs → per-view modules; collapse duplicated view boilerplate (new/ensure_client/run/next_row/prev_row × 4 views). (FR-8) |
+| F-OPEN-264 | P3 | lsp.rs execute_command (~346 lines) → per-command functions. (FR-9) |
+| F-OPEN-265 | P3 | Iterative-traversal conformance: extract_section_body_children (syntax/symbols.rs:554) recurses on nested braced_blocks on the documentSymbol hot path — convert to explicit stack; add depth caps to test_runtime interpreter eval_expr/eval_stmt so degenerate nesting returns Eval::Error instead of risking stack overflow. (FR-10) |
+| F-OPEN-266 | P3 | AlConfig unwired fields (config.rs:30 TODO): audit which fields are read; wire or remove. (FR-3) |
+| F-OPEN-267 | P3 | Move queries/mod.rs lsp_types From/Into conversion impls (lines 349–657) into server/ so queries/ is greppably lsp_types-free; add LanguageData-driven completeness test asserting ObjectKind covers every object type in tree-sitter-al data. (FR-11) |
 
 ## Resolved / parked (not actionable — do not re-open)
 
