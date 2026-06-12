@@ -539,6 +539,7 @@ pub(crate) async fn dispatch_request(
         "sortMembers" => build_dispatch::dispatch_sort_members(workspace, id, &params),
         "organizeFiles" => build_dispatch::dispatch_organize_files(workspace, id, &params),
         "source" => build_dispatch::dispatch_source(workspace, id, &params),
+        "eventSource" => build_dispatch::dispatch_event_source(workspace, id, &params),
         "location" => build_dispatch::dispatch_location(workspace, id, &params),
         // Insight engine
         "trace" => insight_dispatch::dispatch_trace(workspace, id, &params),

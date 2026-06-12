@@ -34,6 +34,10 @@ pub struct CompileResult {
     pub success: bool,
     pub diagnostics: Vec<DiagnosticEntry>,
     pub app_path: Option<PathBuf>,
+    /// Raw compiler stdout+stderr (capped bridge-side). Present so a
+    /// failed compile with no parseable diagnostics is never silent.
+    #[serde(default)]
+    pub output: Option<String>,
 }
 
 /// A single diagnostic from compilation or analysis.

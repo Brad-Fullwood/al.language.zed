@@ -449,8 +449,8 @@ pub(super) fn dispatch_location(
         Some(n) => n,
         None => return invalid_params(id),
     };
-    match workspace.file_index.find_by_object_name(name) {
-        Some(path) => Response {
+    if let Some(path) = workspace.file_index.find_by_object_name(name) {
+        return Response {
             id,
             result: Some(serde_json::json!({
                 "path": path.to_string_lossy(),
@@ -458,16 +458,77 @@ pub(super) fn dispatch_location(
             })),
             error: None,
             ..Default::default()
-        },
-        None => Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: format!("Object '{}' not found in workspace", name),
-            }),
-            ..Default::default()
-        },
+        };
+    }
+
+    // FB-4: not a workspace file — fall back to the symbol index and
+    // materialise the package object's source as a virtual .al file, the
+    // same mechanism go-to-definition uses. Without this, double-clicking
+    // any object from a symbol package (i.e. almost everything in the
+    // browser) silently did nothing.
+    let kind_filter = params
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<crate::symbols::ObjectKind>().ok());
+    let id_filter = params.get("id").and_then(|v| v.as_i64());
+
+    let mut candidates = workspace.symbols.get_by_name(name);
+    if let Some(kind) = kind_filter {
+        candidates.retain(|e| e.kind == kind);
+    }
+    if let Some(obj_id) = id_filter {
+        // Only narrow by ID when it is a real object ID — ID-less kinds
+        // (interfaces & co.) carry sentinel/hash values that callers may
+        // forward verbatim.
+        if obj_id > 0 {
+            candidates.retain(|e| i64::from(e.id) == obj_id || e.id <= 0);
+        }
+    }
+
+    if let Some(entry) = candidates.first() {
+        let app_path = workspace.symbols.app_path(&entry.package);
+        match crate::symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
+            Ok(path) => {
+                return Response {
+                    id,
+                    result: Some(serde_json::json!({
+                        "path": path.to_string_lossy(),
+                        "line": 1,
+                        "virtual": true,
+                    })),
+                    error: None,
+                    ..Default::default()
+                };
+            }
+            Err(e) => {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INTERNAL_ERROR,
+                        message: format!(
+                            "Object '{}' found in package '{}' but its source could not \
+                             be materialised: {}",
+                            name, entry.package, e
+                        ),
+                    }),
+                    ..Default::default()
+                };
+            }
+        }
+    }
+
+    Response {
+        id,
+        result: None,
+        error: Some(RpcError {
+            code: error_codes::INVALID_PARAMS,
+            message: format!(
+                "Object '{}' not found in workspace or symbol packages",
+                name
+            ),
+        }),
+        ..Default::default()
     }
 }
 
@@ -512,6 +573,42 @@ pub(super) fn dispatch_source(
 // ---------------------------------------------------------------------------
 // Permission set generation
 // ---------------------------------------------------------------------------
+
+/// FB-9/FB-10: resolve the publisher behind the `[EventSubscriber]`
+/// attribute at a file:line position.
+pub(super) fn dispatch_event_source(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let Some(file) = params.get("file").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let Some(line) = params.get("line").and_then(|v| v.as_u64()) else {
+        return invalid_params(id);
+    };
+    match crate::queries::source::event_source(
+        workspace,
+        std::path::Path::new(file),
+        line.min(u64::from(u32::MAX)) as u32,
+    ) {
+        Ok(result) => Response {
+            id,
+            result: Some(serde_json::to_value(&result).unwrap_or_default()),
+            error: None,
+            ..Default::default()
+        },
+        Err(msg) => Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: msg,
+            }),
+            ..Default::default()
+        },
+    }
+}
 
 pub(super) fn dispatch_permissions(
     workspace: &Workspace,
@@ -645,8 +742,15 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
         // `dotnet alc` subprocess (F-OPEN-272; the documented behavior).
         if let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await {
             if let Some(bridge) = guard.as_ref() {
+                // Pass the daemon's authoritative alc path and package cache —
+                // the C# side's own discovery guesses VS Code extension
+                // layouts and can pick a different (or no) compiler (FB-14).
                 let compile_result = bridge
-                    .compile(&project_root, None, None)
+                    .compile(
+                        &project_root,
+                        Some(&toolchain.alc),
+                        package_cache.as_deref(),
+                    )
                     .await
                     .map_err(|e| format!("Compilation failed: {}", e))?;
                 // Semantic bridge may not return appPath — fall back to finding
@@ -676,6 +780,9 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
                         "message": d.message,
                     })).collect::<Vec<_>>(),
                     "appPath": app_path,
+                    // Raw compiler output so the CLI can show WHY when a
+                    // failure produced no structured diagnostics (FB-14).
+                    "output": compile_result.output,
                 }));
             }
         }

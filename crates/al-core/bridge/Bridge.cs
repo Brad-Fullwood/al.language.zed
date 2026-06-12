@@ -463,6 +463,13 @@ internal class CodeAnalysisBridge
             {
                 startInfo.FileName = "dotnet";
                 startInfo.Arguments = $"\"{alcPath}\" {alcArgs}";
+                // alc.dll targets net8.0; machines that only have a newer
+                // runtime installed refuse to launch it without roll-forward.
+                // The Rust-side alc fallback sets this too (toolchain.rs) —
+                // without it the child died with "You must install or update
+                // .NET" on stderr and this handler reported success=false
+                // with ZERO diagnostics (FB-14).
+                startInfo.EnvironmentVariables["DOTNET_ROLL_FORWARD"] = "Major";
             }
             else
             {
@@ -473,9 +480,17 @@ internal class CodeAnalysisBridge
             using var process = System.Diagnostics.Process.Start(startInfo);
             if (process == null) throw new Exception("Failed to start alc compiler process");
 
+            // Read stderr on a background task: reading both pipes
+            // sequentially can deadlock when the child fills the un-drained
+            // pipe's kernel buffer.
+            var stderrTask = process.StandardError.ReadToEndAsync();
             var stdout = process.StandardOutput.ReadToEnd();
-            var stderr = process.StandardError.ReadToEnd();
-            process.WaitForExit(120000);
+            if (!process.WaitForExit(120000))
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw new Exception("alc compiler timed out after 120s");
+            }
+            var stderr = stderrTask.GetAwaiter().GetResult();
 
             var diagnostics = new List<object>();
             string? appPath = null;
@@ -504,7 +519,13 @@ internal class CodeAnalysisBridge
             }
             catch { /* ignore */ }
 
-            return new { success = process.ExitCode == 0, diagnostics, appPath };
+            // Always include raw compiler output (capped) so a failure can
+            // never be silent — a non-zero exit with no parsed diagnostics
+            // must still tell the user WHY (FB-14).
+            var rawOutput = (stdout + (string.IsNullOrWhiteSpace(stderr) ? "" : "\n" + stderr)).Trim();
+            if (rawOutput.Length > 64 * 1024) rawOutput = rawOutput.Substring(0, 64 * 1024) + "\n…(truncated)";
+
+            return new { success = process.ExitCode == 0, diagnostics, appPath, output = rawOutput };
         }
         finally
         {
@@ -574,6 +595,12 @@ internal class CodeAnalysisBridge
             if (p1 < 0 || p2 < 0) continue;
             var file = ln[..p1];
             var posStr = ln[(p1 + 1)..p2]; var rest = ln[(p2 + 1)..].TrimStart(':', ' ');
+            // Only accept the `path(line,col)` diagnostic shape: the parens
+            // content must be numeric. Without this check, banner lines like
+            // "Microsoft (R) AL Compiler version ..." parsed as phantom
+            // warnings ("Microsoft :0:0: warning : AL Compiler version ...").
+            if (!posStr.Split(',').All(part => part.Trim().Length > 0 && part.Trim().All(char.IsDigit)))
+                continue;
             var pp = posStr.Split(',');
             uint lineNum = 0, colNum = 0;
             if (pp.Length >= 1) uint.TryParse(pp[0], out lineNum);
