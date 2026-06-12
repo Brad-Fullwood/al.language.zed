@@ -491,7 +491,7 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn dispatch_request(
+pub(crate) async fn dispatch_request(
     workspace: &std::sync::Arc<Workspace>,
     req: Request,
     shutdown: &Notify,
@@ -836,7 +836,7 @@ pub(crate) fn lint_diag_to_json(d: &crate::syntax::LintDiagnostic) -> serde_json
 // Workspace initialization (daemon mode — no LSP Client)
 // ---------------------------------------------------------------------------
 
-async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path) {
+pub(crate) async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path) {
     // Delegate common steps (find project, load packages, scan, toolchain) to al-core.
     let result = crate::workspace::initialize_core_workspace(workspace, project_root).await;
 

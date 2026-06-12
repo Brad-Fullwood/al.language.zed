@@ -378,6 +378,22 @@ impl zed::Extension for AlExtension {
         Ok(Some(json!({ "al": al_config })))
     }
 
+    fn context_server_command(
+        &mut self,
+        _context_server_id: &zed::ContextServerId,
+        _project: &zed::Project,
+    ) -> Result<zed::Command> {
+        // The MCP server reuses the al-lsp binary (`al-lsp mcp`). The
+        // context-server API hands us a Project (not a Worktree), so the
+        // 4-step download chain isn't available here — PATH is the contract
+        // (set up by `make install`), with an actionable error otherwise.
+        Ok(zed::Command {
+            command: "al-lsp".to_string(),
+            args: vec!["mcp".to_string()],
+            env: vec![],
+        })
+    }
+
     fn get_dap_binary(
         &mut self,
         _adapter_name: String,

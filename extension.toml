@@ -17,6 +17,11 @@ version = "0.7.0"
 name = "AL Language Server"
 languages = ["AL"]
 
+# MCP server exposing AL tools (al_build, al_symbolsearch, al_deadcode, …)
+# to Zed's agent panel. Spawns `al-lsp mcp` from PATH (`make install`).
+[context_servers.al-tools]
+name = "AL Tools"
+
 [debug_adapters.al]
 
 [debug_locators.al]

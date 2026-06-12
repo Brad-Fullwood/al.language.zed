@@ -311,6 +311,30 @@ async fn main() {
             tracing::error!(error = %e, "DAP server exited with error");
             std::process::exit(1);
         }
+    } else if args.iter().any(|a| a == "mcp") {
+        // MCP server mode (F-OPEN-261) — newline-delimited JSON-RPC on stdio
+        // exposing AL tools (al_build, al_symbolsearch, …) to agents.
+        let project_arg = args
+            .iter()
+            .position(|a| a == "--project")
+            .and_then(|i| args.get(i + 1))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| env::current_dir().expect("cannot determine cwd"));
+        let project_root = match project_arg.canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    path = %project_arg.display(),
+                    error = %e,
+                    "Cannot canonicalize MCP project root — refusing to start"
+                );
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = al_core::server::mcp::run_mcp(project_root).await {
+            tracing::error!(error = %e, "MCP server failed");
+            std::process::exit(1);
+        }
     } else if args.iter().any(|a| a == "daemon") {
         // Daemon mode — JSON-RPC over Unix socket
         let project_arg = args

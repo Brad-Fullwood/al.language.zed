@@ -18,6 +18,7 @@ pub mod formatting;
 pub mod handlers;
 pub mod hover;
 pub mod lsp;
+pub mod mcp;
 pub mod workspace;
 
 pub use lsp::{run_lsp, AlServer};
