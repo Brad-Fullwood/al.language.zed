@@ -10,7 +10,6 @@ FINDINGS.md remains the narrative history; this is the index.
 |---|---|---|
 | F-OPEN-257 | P2 | Decompose run_native_dap (~1,038 lines, dap/native_dap.rs:92): extract per-request handlers over a NativeDapState struct so handlers become unit-testable (file is a coverage gap because only the whole loop is drivable). (FR-5) |
 | F-OPEN-258 | P2 | Split server/daemon/build_dispatch.rs (~3,650 prod lines, ~60 dispatch fns + 2,371 inline test lines) into domain submodules (build, symbols/auth, xliff, tests, analysis, codegen, fixes); mechanical moves. (FR-6) |
-| F-OPEN-261 | P2 | Expose al-lsp as an MCP server (daemon-MCP bridge) registered via Zed context_servers; mirror Microsoft tool names (al_build, al_symbolsearch, al_getdiagnostics…) so agents transfer. (roadmap R5) |
 | F-OPEN-262 | P3 | code_actions.rs → queries/code_actions/ per-action submodules (~2,640 prod lines; each action already a self-contained fn cluster). (FR-7) |
 | F-OPEN-263 | P3 | al-explorer main.rs → per-view modules; collapse duplicated view boilerplate (new/ensure_client/run/next_row/prev_row × 4 views). (FR-8) |
 | F-OPEN-264 | P3 | lsp.rs execute_command (~346 lines) → per-command functions. (FR-9) |
@@ -19,6 +18,7 @@ FINDINGS.md remains the narrative history; this is the index.
 
 | ID | Severity | Status | Title |
 |---|---|---|---|
+| F-OPEN-261 | P2 | fixed | MCP server mode: `al-lsp mcp` (ndjson JSON-RPC, MCP 2024-11-05) forwards 10 curated tools to the daemon dispatchers (al_build/al_symbolsearch/al_getdiagnostics/al_runtests + al_deadcode/al_sqlscan/al_entrypoints/al_trace_event/al_impact); Zed context_servers.al-tools spawns it from PATH. Live-verified full session. |
 | F-OPEN-260 | P2 | fixed | Official-LSP delegation: al-lsp --official-lsp discovers altool.dll (sibling of alc.dll, v17+) and execs launchlspserver on the same stdio; Zed setting al.useOfficialLsp (all shapes) selects it via resolve_server_args; actionable errors for missing toolchain/altool; dotnet framework diagnostics pass through. NOTE: full live session on this machine needs `sudo pacman -S aspnet-runtime` (altool is an ASP.NET Core app). |
 | F-OPEN-259 | P2 | fixed | NuGet feed parity (BC 2026 W1): effective_nuget_feeds honors al.nugetFeeds (custom-first) + al.useOnlyCustomFeeds on both LSP and daemon download paths; NuGetClient::with_country resolves localized core packages (Microsoft.Application.DE.symbols etc., w1=worldwide); schema documents the settings. Public MSSymbols/AppSourceSymbols/BCPublic feeds were already the defaults. |
 | F-OPEN-265 | P3 | fixed | eval_expr depth cap (256, in ScopeStack — ~400 nested parens overflowed a 2MiB thread stack and aborted the process, proven by regression test) + extract_section_body_children converted to explicit frame stack preserving in-order emission. eval_stmt already had its own cap. |
