@@ -548,7 +548,7 @@ pub(crate) fn map_nuget_feeds(
 
 /// Resolve the EFFECTIVE NuGet feed list from user config + built-in defaults
 /// (VS Code v17 parity, F-OPEN-259): custom feeds (`al.nugetFeeds`) are tried
-/// first; the public Microsoft feeds (MSSymbols/AppSourceSymbols/BCPublic)
+/// first; the public Microsoft feeds (MSSymbols/AppSourceSymbols/MSApps)
 /// are appended unless `al.useOnlyCustomFeeds` is set.
 pub(crate) fn effective_nuget_feeds(
     config: &crate::config::AlConfig,

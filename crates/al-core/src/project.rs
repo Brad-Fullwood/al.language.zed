@@ -244,8 +244,12 @@ pub fn nuget_feeds() -> Vec<NuGetFeed> {
             index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/AppSourceSymbols/nuget/v3/index.json".into(),
         },
         NuGetFeed {
-            name: "BC Public".into(),
-            index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/BCPublic/nuget/v3/index.json".into(),
+            // Microsoft's full-apps feed (runtime packages, country
+            // localizations). NOTE: an earlier revision pointed at
+            // "BCPublic", which does not exist on Azure DevOps (404 —
+            // TF1600011) and added a noisy failure to every download run.
+            name: "MS Apps".into(),
+            index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSApps/nuget/v3/index.json".into(),
         },
     ]
 }
