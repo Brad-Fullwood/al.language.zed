@@ -292,6 +292,7 @@ behind green fixtures.
 ```sh
 scripts/validate-real-projects.sh        # the real-project gate (must pass)
 AL_VALIDATE_NETWORK=1 scripts/validate-real-projects.sh   # + symbol downloads
+python3 scripts/audit-zed-tasks.py       # every shipped Zed task, run live (must report 0 failing)
 ```
 
 The gate exercises the exact user entry points (CLI commands as the Zed
