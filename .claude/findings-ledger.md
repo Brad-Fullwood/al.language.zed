@@ -16,14 +16,14 @@ FINDINGS.md remains the narrative history; this is the index.
 | F-OPEN-262 | P3 | code_actions.rs → queries/code_actions/ per-action submodules (~2,640 prod lines; each action already a self-contained fn cluster). (FR-7) |
 | F-OPEN-263 | P3 | al-explorer main.rs → per-view modules; collapse duplicated view boilerplate (new/ensure_client/run/next_row/prev_row × 4 views). (FR-8) |
 | F-OPEN-264 | P3 | lsp.rs execute_command (~346 lines) → per-command functions. (FR-9) |
-| F-OPEN-265 | P3 | Iterative-traversal conformance: extract_section_body_children (syntax/symbols.rs:554) recurses on nested braced_blocks on the documentSymbol hot path — convert to explicit stack; add depth caps to test_runtime interpreter eval_expr/eval_stmt so degenerate nesting returns Eval::Error instead of risking stack overflow. (FR-10) |
-| F-OPEN-266 | P3 | AlConfig unwired fields (config.rs:30 TODO): audit which fields are read; wire or remove. (FR-3) |
-| F-OPEN-267 | P3 | Move queries/mod.rs lsp_types From/Into conversion impls (lines 349–657) into server/ so queries/ is greppably lsp_types-free; add LanguageData-driven completeness test asserting ObjectKind covers every object type in tree-sitter-al data. (FR-11) |
 
 ## Resolved / parked (not actionable — do not re-open)
 
 | ID | Severity | Status | Title |
 |---|---|---|---|
+| F-OPEN-265 | P3 | fixed | eval_expr depth cap (256, in ScopeStack — ~400 nested parens overflowed a 2MiB thread stack and aborted the process, proven by regression test) + extract_section_body_children converted to explicit frame stack preserving in-order emission. eval_stmt already had its own cap. |
+| F-OPEN-266 | P3 | fixed | Config audit: blanket 'unwired' TODO was mostly false (7 fields have real consumers). enableCodeActions now actually gates code actions at the query level (both transports); no-op semanticFolding removed from config+schema; 4 analyzer-plumbing fields documented accurately as retained-pending-plumbing. |
+| F-OPEN-267 | P3 | fixed | LSP wire conversions (+ round-trip tests) moved from queries/mod.rs to new server::conversions (transport boundary); queries/ now code-level lsp_types-free. New ObjectKind-vs-LanguageData completeness guard found and fixed two real gaps: profileextension and dotnet variants added. |
 | F-OPEN-272 | P2 | fixed | dispatch_compile falls back to build::compile_project (dotnet alc) when the semantic bridge is unavailable; bridge stays preferred. Routing regression test via AL_TOOL_PATH fixture; live fixture compile yields real alc AL0104 diagnostics instead of 'Failed to initialize semantic bridge'. |
 | F-OPEN-273 | P3 | fixed | xlf object-name extraction stops at the closing quote (parse_object_name); extension headers no longer leak ' extends "Base"' into unit ids. Regression tests for quoted + bare names. |
 | F-OPEN-271 | P2 | fixed | organize-files daemon deadlock (commit follows 39c3b78): dispatcher held file_index.files DashMap iter guard while rename_al_file_and_refresh wrote the same map; snapshot-before-loop fix + 10s-timeout regression test. Live: 13-file fixture organizes in 0.1s (was 30s EAGAIN). |
