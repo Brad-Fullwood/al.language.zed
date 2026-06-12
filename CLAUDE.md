@@ -279,6 +279,36 @@ This ensures `git submodule update --init --recursive` fetches the correct revis
 
 ---
 
+## Validation Standard — "tested" means real projects
+
+Fixture projects and hermetic e2e suites are NOT sufficient evidence that a
+user-facing feature works. Fixtures are small, ASCII, space-free, and have
+no real symbol packages; an entire batch of basic-operation failures
+(format, compile, download symbols — see `Feedback.md`, 2026-06-12) shipped
+behind green fixtures.
+
+**Before claiming any user-facing behavior is "tested and working":**
+
+```sh
+scripts/validate-real-projects.sh        # the real-project gate (must pass)
+AL_VALIDATE_NETWORK=1 scripts/validate-real-projects.sh   # + symbol downloads
+```
+
+The gate exercises the exact user entry points (CLI commands as the Zed
+tasks invoke them — through the shell, with paths containing spaces) against
+real AL projects. Defaults point at local real projects; override with
+`AL_VALIDATE_PROJECT_A` / `AL_VALIDATE_PROJECT_B`.
+
+Rules:
+1. Test the **user-visible operation** (Zed task / TUI keypress / CLI
+   invocation), not just the underlying library function.
+2. Any new path-handling code must be exercised with a path containing
+   spaces.
+3. A feature that fails this gate is **broken**, regardless of unit-test
+   coverage. Never report it otherwise.
+
+---
+
 ## Commit Standards
 
 - Every commit must compile (`cargo check`) and pass tests (`cargo test`).
