@@ -214,6 +214,11 @@ struct EventChainView {
     /// Flattened trace rows from the daemon.
     rows: Vec<TraceRow>,
     list_state: ListState,
+    /// Live event-name suggestions for the current query (FB-6:
+    /// search-as-you-type). Refreshed on each keystroke, rendered in the
+    /// results area until a trace is run.
+    suggestions: Vec<String>,
+    suggestion_state: ListState,
     /// Status/error message shown below the list.
     status: String,
     /// Daemon client (None if not connected).
@@ -229,7 +234,9 @@ impl EventChainView {
             input_focused: true,
             rows: Vec::new(),
             list_state: ListState::default(),
-            status: String::from("Type an event name and press Enter to trace"),
+            suggestions: Vec::new(),
+            suggestion_state: ListState::default(),
+            status: String::from("Type an event name — matches appear as you type"),
             client: None,
             project_root,
         }
@@ -237,6 +244,54 @@ impl EventChainView {
 
     fn ensure_client(&mut self) {
         ensure_daemon_client(&mut self.client, &self.project_root, &mut self.status);
+    }
+
+    /// FB-6: refresh the search-as-you-type suggestion list from the
+    /// daemon's `events` substring search. Cheap (index-backed) and
+    /// synchronous — runs on each keystroke.
+    fn refresh_suggestions(&mut self) {
+        self.suggestions.clear();
+        self.suggestion_state.select(None);
+        let q = self.query.trim().to_string();
+        if q.len() < 2 {
+            self.status = String::from("Type an event name — matches appear as you type");
+            return;
+        }
+        self.ensure_client();
+        let Some(client) = self.client.as_mut() else {
+            return;
+        };
+        match client.request("events", Some(serde_json::json!({ "name": q }))) {
+            Ok(val) => {
+                if let Some(arr) = val.as_array() {
+                    let mut seen = std::collections::HashSet::new();
+                    for item in arr {
+                        let obj = item
+                            .get("objectName")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        let method = item
+                            .get("methodName")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        if seen.insert((obj.to_string(), method.to_string())) {
+                            self.suggestions.push(format!("{obj}::{method}"));
+                        }
+                        if self.suggestions.len() >= 100 {
+                            break;
+                        }
+                    }
+                }
+                self.status = format!(
+                    "{} matching events — ↓ to select, Enter to trace",
+                    self.suggestions.len()
+                );
+            }
+            Err(e) => {
+                self.client = None;
+                self.status = format!("Daemon error: {e}");
+            }
+        }
     }
 
     fn run_trace(&mut self) {
@@ -387,23 +442,70 @@ impl CallGraphView {
                             kind: CallRowKind::Entry,
                         });
                     } else {
+                        // FB-11: group by reference type and render each
+                        // entry as readable text — kind, ID, name, and the
+                        // field/procedure that creates the reference. The
+                        // previous code dumped raw JSON for non-string
+                        // entries.
+                        let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
+                            std::collections::BTreeMap::new();
+                        for entry in impacted {
+                            if let Some(s) = entry.as_str() {
+                                by_type
+                                    .entry("other".to_string())
+                                    .or_default()
+                                    .push(s.to_string());
+                                continue;
+                            }
+                            let kind = entry.get("k").and_then(|v| v.as_str()).unwrap_or("?");
+                            let name = entry.get("n").and_then(|v| v.as_str()).unwrap_or("?");
+                            let id = entry.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let ref_type = entry
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("reference")
+                                .to_string();
+                            let pkg = entry.get("package").and_then(|v| v.as_str()).unwrap_or("");
+                            let mut label = if id > 0 {
+                                format!("{kind} {id} \"{name}\"")
+                            } else {
+                                format!("{kind} \"{name}\"")
+                            };
+                            if let Some(field) = entry.get("field").and_then(|v| v.as_str()) {
+                                label.push_str(&format!(" — field \"{field}\""));
+                            }
+                            if let Some(proc) = entry.get("proc").and_then(|v| v.as_str()) {
+                                label.push_str(&format!(" — {proc}"));
+                            }
+                            if !pkg.is_empty() {
+                                label.push_str(&format!("  [{pkg}]"));
+                            }
+                            by_type.entry(ref_type).or_default().push(label);
+                        }
+                        let total: usize = by_type.values().map(Vec::len).sum();
                         self.rows.push(CallRow {
-                            label: format!("  Impacted symbols ({}):", impacted.len()),
+                            label: format!("  {total} impacted symbols:"),
                             kind: CallRowKind::Header,
                         });
-                        for entry in impacted {
-                            let display =
-                                entry.as_str().map(|s| s.to_string()).unwrap_or_else(|| {
-                                    serde_json::to_string(entry).unwrap_or_default()
-                                });
+                        for (ref_type, labels) in by_type {
                             self.rows.push(CallRow {
-                                label: format!("    {display}"),
-                                kind: CallRowKind::Entry,
+                                label: format!("  {} ({}):", ref_type, labels.len()),
+                                kind: CallRowKind::Header,
                             });
+                            for label in labels {
+                                self.rows.push(CallRow {
+                                    label: format!("    {label}"),
+                                    kind: CallRowKind::Entry,
+                                });
+                            }
                         }
                     }
                 }
-                self.status = format!("Impact query complete for '{}'", self.query.trim());
+                self.status = format!(
+                    "Impact query complete for '{}' — tip: use Object.Member \
+                     (e.g. Customer.OnBeforePost) to narrow",
+                    self.query.trim()
+                );
                 if !self.rows.is_empty() {
                     self.list_state.select(Some(0));
                 }
@@ -841,6 +943,12 @@ fn find_method_status(
 // Main application
 // ---------------------------------------------------------------------------
 
+/// Payload handed from the background workspace-init thread to the event
+/// loop: the connected daemon client plus the full symbol listing, or a
+/// human-readable error.
+#[cfg(unix)]
+type InitResult = Result<(DaemonClient, Vec<types::SymbolEntry>), String>;
+
 #[cfg(unix)]
 struct App {
     pub view_mode: ViewMode,
@@ -877,6 +985,15 @@ struct App {
 
     // Persistent daemon connection for open_selected_object
     pub daemon_client: Option<DaemonClient>,
+
+    // Background workspace-init handoff. `Some` while the init thread is
+    // still running; the event loop polls it every tick so the first frame
+    // renders immediately ("Loading workspace…") instead of blocking the
+    // terminal for the whole daemon cold-start (FB-1).
+    pub init_rx: Option<std::sync::mpsc::Receiver<InitResult>>,
+    // Human-readable init state shown in the object browser while loading,
+    // or the error if init failed.
+    pub init_status: Option<String>,
 
     // Project root resolved once at startup. Subsequent code paths must use
     // this field rather than calling current_dir() again — the user can `cd`
@@ -916,28 +1033,49 @@ impl App {
             profiler: ProfilerView::new(),
             test_runner: TestRunnerView::new(project_root.clone()),
             daemon_client: None,
+            init_rx: None,
+            init_status: None,
             project_root,
         }
     }
 
-    fn init_workspace(&mut self) -> Result<(), Box<dyn Error>> {
+    /// Kick off workspace init on a background thread so the UI renders
+    /// immediately. `poll_init` integrates the result on the event loop.
+    fn start_init_workspace(&mut self) {
         let root = self.project_root.clone();
-        let mut client = DaemonClient::connect(&root)
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.init_rx = Some(rx);
+        self.init_status = Some("Loading workspace symbols…".to_string());
+        std::thread::spawn(move || {
+            let _ = tx.send(Self::load_workspace_entries(&root));
+        });
+    }
+
+    /// Connect to the daemon (auto-starting it) and fetch the full symbol
+    /// listing. `request()` itself waits through "Workspace is initializing"
+    /// for up to 60s, so no blind sleeps are needed here. A brief
+    /// empty-result re-poll remains as a belt-and-suspenders for the window
+    /// where the daemon answers before its package load has produced
+    /// entries (ISSUE-071).
+    fn load_workspace_entries(root: &std::path::Path) -> InitResult {
+        let mut client = DaemonClient::connect(root)
             .map_err(|e| format!("Cannot connect to al-lsp daemon: {e}"))?;
 
-        // ISSUE-071: daemon may still be loading packages at startup.
-        // Retry up to 5 times with 800ms delay if the result is empty.
         let mut entries: Vec<types::SymbolEntry> = Vec::new();
-        for attempt in 0..5usize {
+        for attempt in 0..20usize {
             if attempt > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(800));
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
             let result = client
                 .request(
                     "search",
                     Some(serde_json::json!({
                         "query": "",
-                        "limit": 100_000
+                        "limit": 100_000,
+                        // FB-1: slim entries (no member arrays) — a full
+                        // dump is ~60 MB JSON. Members hydrate lazily per
+                        // selected object (`hydrate_selected_object`).
+                        "summary": true
                     })),
                 )
                 .map_err(|e| format!("search request failed: {e}"))?;
@@ -951,20 +1089,42 @@ impl App {
         }
 
         if entries.is_empty() {
-            return Err("Daemon returned no symbols after 5 attempts. \
+            return Err("Daemon returned no symbols. \
                 Run 'al-lsp daemon --project .' first, then relaunch al-explorer."
-                .into());
+                .to_string());
         }
+        Ok((client, entries))
+    }
 
-        self.daemon_client = Some(client);
-        self.symbols.load(entries);
-        self.packages = self.symbols.package_names();
-
-        if !self.packages.is_empty() {
-            self.package_list_state.select(Some(0));
-            self.update_objects_list(true);
+    /// Poll the background init thread; returns once per tick from the
+    /// event loop. Populates the browser on success, records the error on
+    /// failure (shown in the objects pane).
+    fn poll_init(&mut self) {
+        let Some(rx) = self.init_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok((client, entries))) => {
+                self.init_rx = None;
+                self.init_status = None;
+                self.daemon_client = Some(client);
+                self.symbols.load(entries);
+                self.packages = self.symbols.package_names();
+                if !self.packages.is_empty() {
+                    self.package_list_state.select(Some(0));
+                    self.update_objects_list(true);
+                }
+            }
+            Ok(Err(e)) => {
+                self.init_rx = None;
+                self.init_status = Some(format!("Workspace load failed: {e}"));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.init_rx = None;
+                self.init_status = Some("Workspace load thread died unexpectedly".to_string());
+            }
         }
-        Ok(())
     }
 
     fn update_objects_list(&mut self, reset_selection: bool) {
@@ -1120,7 +1280,65 @@ impl App {
         }
     }
 
+    /// FB-1: the startup symbol dump is slim (no member arrays — a full
+    /// dump is ~60 MB JSON). Hydrate the selected object's members from the
+    /// daemon on demand, replacing the slim entry in place.
+    fn hydrate_selected_object(&mut self) {
+        let Some(selected) = self.object_list_state.selected() else {
+            return;
+        };
+        let needs_members = match self.current_objects.get(selected) {
+            Some(e) => {
+                e.methods.is_empty()
+                    && e.fields.is_empty()
+                    && e.controls.is_empty()
+                    && e.enum_values.is_empty()
+                    && e.keys.is_empty()
+                    && e.properties.is_empty()
+            }
+            None => false,
+        };
+        if !needs_members {
+            return;
+        }
+        let (kind, name, package) = match self.current_objects.get(selected) {
+            Some(e) => (e.kind, e.name.clone(), e.package.clone()),
+            None => return,
+        };
+        if self.daemon_client.is_none() {
+            self.daemon_client = DaemonClient::connect(&self.project_root).ok();
+        }
+        let Some(client) = self.daemon_client.as_mut() else {
+            return;
+        };
+        let result = client.request(
+            "object",
+            Some(serde_json::json!({
+                "kind": format!("{:?}", kind),
+                "name": name,
+            })),
+        );
+        let Ok(val) = result else {
+            self.daemon_client = None;
+            return;
+        };
+        let full: Vec<types::SymbolEntry> = match serde_json::from_value(val) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        // `object` returns every match for (kind, name) — prefer the entry
+        // from the same package as the slim one we're hydrating.
+        if let Some(hydrated) = full
+            .iter()
+            .find(|e| e.package == package)
+            .or_else(|| full.first())
+        {
+            self.current_objects[selected] = Arc::new(hydrated.clone());
+        }
+    }
+
     fn update_details_items(&mut self) {
+        self.hydrate_selected_object();
         self.details_items.clear();
 
         if let Some(selected) = self.object_list_state.selected()
@@ -1135,7 +1353,12 @@ impl App {
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(entry.id.to_string(), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        display_object_id(entry)
+                            .map(|id| id.to_string())
+                            .unwrap_or_default(),
+                        Style::default().fg(Color::Cyan),
+                    ),
                     Span::raw(" ".to_string()),
                     Span::styled(
                         entry.name.clone(),
@@ -1547,20 +1770,10 @@ fn run_tui() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
-    let init_result = app.init_workspace();
-
-    // Always restore terminal state before propagating any error — failure to
-    // do so leaves the terminal in raw mode + alternate screen.
-    let cleanup = || -> io::Result<()> {
-        disable_raw_mode()?;
-        execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
-        Ok(())
-    };
-
-    if let Err(e) = init_result {
-        let _ = cleanup();
-        return Err(e);
-    }
+    // Non-blocking: the first frame renders immediately with a
+    // "Loading workspace…" status while the daemon starts and indexes
+    // in the background (FB-1).
+    app.start_init_workspace();
 
     let res = run_app(&mut terminal, app);
 
@@ -1585,6 +1798,7 @@ fn run_app<B: Backend<Error = io::Error>>(
     mut app: App,
 ) -> io::Result<()> {
     loop {
+        app.poll_init();
         terminal.draw(|f| ui(f, &mut app))?;
 
         if event::poll(std::time::Duration::from_millis(250))? {
@@ -1598,25 +1812,41 @@ fn run_app<B: Backend<Error = io::Error>>(
                         return Ok(());
                     }
 
-                    // Global view switching — F1/F2/F3/F4/F5
-                    match key.code {
-                        KeyCode::F(1) => {
+                    // Global view switching — F1..F5, with Alt+1..Alt+5 as
+                    // equivalents for terminals where the host editor
+                    // swallows the function keys (FB-5: Zed binds F4/F5 to
+                    // its own debugger commands and they never reach the
+                    // embedded terminal).
+                    let alt_digit = if key.modifiers.contains(KeyModifiers::ALT) {
+                        match key.code {
+                            KeyCode::Char(c @ '1'..='5') => Some(c as u8 - b'0'),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let fkey = match key.code {
+                        KeyCode::F(n @ 1..=5) => Some(n),
+                        _ => alt_digit,
+                    };
+                    match fkey {
+                        Some(1) => {
                             app.view_mode = ViewMode::ObjectBrowser;
                             continue;
                         }
-                        KeyCode::F(2) => {
+                        Some(2) => {
                             app.view_mode = ViewMode::EventChain;
                             continue;
                         }
-                        KeyCode::F(3) => {
+                        Some(3) => {
                             app.view_mode = ViewMode::CallGraph;
                             continue;
                         }
-                        KeyCode::F(4) => {
+                        Some(4) => {
                             app.view_mode = ViewMode::Profiler;
                             continue;
                         }
-                        KeyCode::F(5) => {
+                        Some(5) => {
                             app.view_mode = ViewMode::TestRunner;
                             app.test_runner.refresh_discovery();
                             continue;
@@ -1734,14 +1964,17 @@ fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEvent) {
             KeyCode::Char(c) => {
                 if view.query.len() < MAX_INPUT_LEN {
                     view.query.push(c);
+                    view.refresh_suggestions();
                 }
             }
             KeyCode::Backspace => {
                 view.query.pop();
+                view.refresh_suggestions();
             }
             KeyCode::Esc => {
                 view.query.clear();
                 view.rows.clear();
+                view.suggestions.clear();
                 view.status = "Cleared".to_string();
             }
             KeyCode::Enter => {
@@ -1751,10 +1984,45 @@ fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
             KeyCode::Down | KeyCode::Tab => {
-                if !view.rows.is_empty() {
+                // Prefer the live suggestion list when present (FB-6),
+                // otherwise fall back to the trace rows.
+                if view.rows.is_empty() && !view.suggestions.is_empty() {
+                    view.input_focused = false;
+                    view.suggestion_state.select(Some(0));
+                } else if !view.rows.is_empty() {
                     view.input_focused = false;
                     view.list_state.select(Some(0));
                 }
+            }
+            _ => {}
+        }
+    } else if view.rows.is_empty() && !view.suggestions.is_empty() {
+        // Navigating the suggestion list.
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                advance_list_selection(&mut view.suggestion_state, view.suggestions.len(), true);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                advance_list_selection(&mut view.suggestion_state, view.suggestions.len(), false);
+            }
+            KeyCode::Enter => {
+                if let Some(s) = view
+                    .suggestion_state
+                    .selected()
+                    .and_then(|sel| view.suggestions.get(sel))
+                {
+                    // Suggestion format is "Object::Event" — trace by
+                    // the event name.
+                    let event = s.rsplit("::").next().unwrap_or(s).to_string();
+                    view.query = event;
+                    view.run_trace();
+                    if !view.rows.is_empty() {
+                        view.list_state.select(Some(0));
+                    }
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::BackTab => {
+                view.input_focused = true;
             }
             _ => {}
         }
@@ -2067,14 +2335,27 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// Object ID for display: `None` when the kind has no developer-visible ID
+/// in AL syntax, or when the entry carries a sentinel/synthetic ID (≤ 0).
+#[cfg(unix)]
+fn display_object_id(entry: &SymbolEntry) -> Option<i32> {
+    if entry.kind.has_numeric_id() && entry.id > 0 {
+        Some(entry.id)
+    } else {
+        None
+    }
+}
+
 #[cfg(unix)]
 fn render_mode_bar(f: &mut Frame, area: Rect, mode: ViewMode) {
+    // Alt+1..5 are equivalents for terminals where the host editor (e.g.
+    // Zed's debugger keymap) swallows the function keys (FB-5).
     let tabs = [
-        (" F1: Objects ", ViewMode::ObjectBrowser),
-        (" F2: Events  ", ViewMode::EventChain),
-        (" F3: CallGraph ", ViewMode::CallGraph),
-        (" F4: Profiler ", ViewMode::Profiler),
-        (" F5: Tests ", ViewMode::TestRunner),
+        (" F1|M-1: Objects ", ViewMode::ObjectBrowser),
+        (" F2|M-2: Events ", ViewMode::EventChain),
+        (" F3|M-3: CallGraph ", ViewMode::CallGraph),
+        (" F4|M-4: Profiler ", ViewMode::Profiler),
+        (" F5|M-5: Tests ", ViewMode::TestRunner),
     ];
 
     let spans: Vec<Span> = tabs
@@ -2281,33 +2562,59 @@ fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
     // ==========================================
     // 4. Objects List (Middle Bottom)
     // ==========================================
-    let objects: Vec<ListItem> = app
-        .current_objects
-        .iter()
-        .map(|entry| {
-            let display = format!("{} {}", entry.id, entry.name);
-            ListItem::new(Line::from(vec![Span::raw(display)]))
-        })
-        .collect();
+    if let Some(status) = &app.init_status {
+        // Workspace still loading (or failed): show the status where the
+        // objects will appear instead of a silently empty pane (FB-1).
+        let style = if status.starts_with("Workspace load failed") {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
+        let loading = Paragraph::new(status.as_str())
+            .style(style)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(obj_style),
+            );
+        f.render_widget(loading, layout.middle_column[1]);
+    } else {
+        let objects: Vec<ListItem> = app
+            .current_objects
+            .iter()
+            .map(|entry| {
+                // Object IDs: AL interfaces (and a few other kinds) have no
+                // developer-visible ID — symbol packages carry an internal
+                // compiler hash there. Render blank instead of the hash /
+                // `-1` sentinel (FB-2/FB-3).
+                let display = match display_object_id(entry) {
+                    Some(id) => format!("{} {}", id, entry.name),
+                    None => entry.name.clone(),
+                };
+                ListItem::new(Line::from(vec![Span::raw(display)]))
+            })
+            .collect();
 
-    let objects_list = List::new(objects)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(obj_style),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
-    f.render_stateful_widget(
-        objects_list,
-        layout.middle_column[1],
-        &mut app.object_list_state,
-    );
+        let objects_list = List::new(objects)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(obj_style),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Blue)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol(">> ");
+        f.render_stateful_widget(
+            objects_list,
+            layout.middle_column[1],
+            &mut app.object_list_state,
+        );
+    }
 
     // ==========================================
     // 5. Details Pane (Right Full Column)
@@ -2375,6 +2682,49 @@ fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
     } else {
         Style::default().fg(Color::DarkGray)
     };
+
+    // FB-6: before a trace has run, the results area shows live
+    // search-as-you-type matches for the current query.
+    if view.rows.is_empty() && !view.suggestions.is_empty() {
+        let items: Vec<ListItem> = view
+            .suggestions
+            .iter()
+            .map(|s| {
+                let (obj, evt) = s.rsplit_once("::").unwrap_or(("", s.as_str()));
+                ListItem::new(Line::from(vec![
+                    Span::styled(obj.to_string(), Style::default().fg(Color::DarkGray)),
+                    Span::raw("::"),
+                    Span::styled(
+                        evt.to_string(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]))
+            })
+            .collect();
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Matching events (↓ then Enter to trace) ")
+                    .border_style(list_style),
+            )
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Blue)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol(">> ");
+        f.render_stateful_widget(list, chunks[1], &mut view.suggestion_state);
+
+        f.render_widget(
+            Paragraph::new(view.status.clone()).style(Style::default().fg(Color::DarkGray)),
+            chunks[2],
+        );
+        return;
+    }
 
     let items: Vec<ListItem> = view
         .rows

@@ -310,11 +310,32 @@ pub(super) fn dispatch_search(
     let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     const MAX_SEARCH_RESULTS: usize = 500_000;
     let limit = limit.min(MAX_SEARCH_RESULTS);
+    // FB-1: `summary: true` strips member arrays (methods/fields/controls/
+    // enum values/keys/properties/variables) from the response. A full dump
+    // of a real workspace is ~60 MB of JSON and took seconds at every TUI
+    // start; the browser list only needs identity fields and fetches
+    // members lazily per selected object.
+    let summary = params
+        .get("summary")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     // Package symbols
     let results = workspace.symbols.search(query, limit);
     let mut value: Vec<serde_json::Value> = results
         .iter()
-        .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
+        .filter_map(|e| {
+            if summary {
+                Some(serde_json::json!({
+                    "kind": e.kind,
+                    "id": e.id,
+                    "name": e.name,
+                    "package": e.package,
+                    "extends": e.extends,
+                }))
+            } else {
+                serde_json::to_value(e.as_ref()).ok() // SILENT: serialization of valid structs should not fail
+            }
+        })
         .collect();
     // Workspace file objects — use al-core search to avoid duplicating the filter logic.
     let remaining = limit.saturating_sub(value.len());
