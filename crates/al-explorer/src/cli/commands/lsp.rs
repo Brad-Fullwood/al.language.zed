@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use super::{
-    absolutize_path, collect_al_files, connect, file_to_uri, print_json, print_lint_diag,
-    print_symbol_entries, project_root, report_error, run_command,
+    absolutize_path, collect_al_files, connect, file_to_uri, kind_has_numeric_id, print_json,
+    print_lint_diag, print_symbol_entries, project_root, report_error, run_command,
 };
 
 pub fn cmd_version(json: bool) -> ExitCode {
@@ -226,6 +226,10 @@ pub fn cmd_download_symbols(
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
+    // Symbol downloads pull multi-hundred-MB packages from NuGet or a BC
+    // server — allow up to 15 minutes before declaring the daemon stuck
+    // (FB-15: this used to die at 30s with a raw EAGAIN).
+    client.set_request_timeout(std::time::Duration::from_secs(900));
     let params = serde_json::json!({
         "source": source.unwrap_or("nuget"),
     });
@@ -291,7 +295,15 @@ pub fn cmd_search(query: &str, limit: usize, json: bool) -> ExitCode {
                     let id = e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
                     let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     let pkg = e.get("package").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("{:<18} {:>6}  {:<40} {}", kind, id, name, pkg);
+                    // Interfaces & co. have no developer-visible object ID —
+                    // symbol packages put an internal compiler hash in the
+                    // Id slot. Render blank instead of the hash / -1 (FB-2/3).
+                    let id_text = if id > 0 && kind_has_numeric_id(kind) {
+                        id.to_string()
+                    } else {
+                        String::new()
+                    };
+                    println!("{:<18} {:>6}  {:<40} {}", kind, id_text, name, pkg);
                 }
                 eprintln!("\n{} results", entries.len());
             }
@@ -331,7 +343,11 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
                     eprintln!("No event publishers matching '{name}'");
                     return ExitCode::SUCCESS;
                 }
-                for e in events {
+                // FB-6: enrich each publisher with its workspace subscribers
+                // so the result is a chain view, not a flat name list. One
+                // extra daemon round-trip per distinct event name, capped.
+                const SUBSCRIBER_LOOKUP_CAP: usize = 25;
+                for (i, e) in events.iter().enumerate() {
                     let obj_kind = e.get("objectKind").and_then(|v| v.as_str()).unwrap_or("?");
                     let obj_name = e.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
                     let method = e.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
@@ -346,8 +362,45 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
                             println!("  {var_prefix}{pname}: {ptype}");
                         }
                     }
+                    if i < SUBSCRIBER_LOOKUP_CAP {
+                        if let Ok(subs) = client
+                            .request("subscribers", Some(serde_json::json!({ "event": method })))
+                        {
+                            let subs = subs.as_array().map(|v| &v[..]).unwrap_or(&[]);
+                            let mine: Vec<_> = subs
+                                .iter()
+                                .filter(|s| {
+                                    s.get("targetObjectName")
+                                        .and_then(|v| v.as_str())
+                                        .map(|t| t.eq_ignore_ascii_case(obj_name))
+                                        .unwrap_or(false)
+                                })
+                                .collect();
+                            if mine.is_empty() {
+                                println!("  ← no workspace subscribers");
+                            }
+                            for s in mine {
+                                let sobj =
+                                    s.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
+                                let smethod =
+                                    s.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
+                                println!("  ← subscribed by {sobj}.{smethod}");
+                            }
+                        }
+                    }
+                }
+                if events.len() > SUBSCRIBER_LOOKUP_CAP {
+                    eprintln!(
+                        "(subscriber lookup shown for the first {SUBSCRIBER_LOOKUP_CAP} \
+                         publishers — narrow the search for full chains)"
+                    );
                 }
                 eprintln!("\n{} publishers", events.len());
+                eprintln!(
+                    "Tip: `al-explorer trace <event>` shows the full chain; \
+                     subscriber coverage is workspace source only (symbol packages \
+                     don't carry subscriber metadata)."
+                );
             }
             ExitCode::SUCCESS
         }
@@ -389,8 +442,69 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
                     println!("{obj}.{method} → {target_type}::{target_name}.{target_event}");
                 }
                 eprintln!("\n{} subscribers", subs.len());
+                // FB-7: be explicit about coverage — Microsoft symbol
+                // packages strip EventSubscriber attributes, so package
+                // subscribers are fundamentally invisible to any tool.
+                eprintln!(
+                    "Note: covers source code in this workspace. Symbol (.app) packages do \
+                     not carry subscriber metadata, so subscribers living in referenced \
+                     packages cannot be listed (platform limitation)."
+                );
             }
             ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+/// FB-9/FB-10: resolve and show the actual publisher declaration behind the
+/// `[EventSubscriber(...)]` attribute at FILE:LINE.
+pub fn cmd_event_source(file: &str, line: u32, json: bool) -> ExitCode {
+    let abs = absolutize_path(file);
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let params = serde_json::json!({ "file": abs, "line": line });
+    match client.request("eventSource", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+                return ExitCode::SUCCESS;
+            }
+            let kind = result
+                .get("targetKind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let obj = result
+                .get("targetObject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let evt = result
+                .get("targetEvent")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            println!("Publisher: {kind} \"{obj}\" — event {evt}");
+            if let Some(sig) = result.get("signature").and_then(|v| v.as_str()) {
+                println!("  {sig}");
+            }
+            if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
+                let decl_line = result.get("line").and_then(|v| v.as_u64()).unwrap_or(1);
+                println!("  at {path}:{decl_line}");
+                if result
+                    .get("fromPackage")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    eprintln!("  (source extracted from symbol package)");
+                }
+                ExitCode::SUCCESS
+            } else {
+                if let Some(note) = result.get("note").and_then(|v| v.as_str()) {
+                    eprintln!("{note}");
+                }
+                ExitCode::FAILURE
+            }
         }
         Err(e) => report_error(&e, json),
     }
@@ -2061,6 +2175,8 @@ pub fn cmd_test_run_all(
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
+    // A full test run (live BC or interpreter) can take many minutes.
+    client.set_request_timeout(std::time::Duration::from_secs(1800));
 
     match client.request("tests.run_auto", Some(params)) {
         Ok(result) => {
@@ -2692,6 +2808,10 @@ pub fn cmd_test_mutate(
     if let Some(ms) = timeout_ms {
         params["timeoutMs"] = serde_json::Value::Number(serde_json::Number::from(ms));
     }
+
+    // Mutation testing re-runs the suite once per mutant — the longest
+    // operation the daemon offers.
+    client.set_request_timeout(std::time::Duration::from_secs(3600));
 
     match client.request("tests.mutate", Some(params)) {
         Ok(result) => {

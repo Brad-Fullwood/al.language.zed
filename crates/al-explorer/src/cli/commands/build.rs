@@ -70,11 +70,16 @@ fn print_build_result(result: &Value, json: bool) -> ExitCode {
 // Commands
 // ---------------------------------------------------------------------------
 
+/// Real-project compiles routinely exceed the default 30s request
+/// deadline (alc on a large workspace, cold .NET start). 10 minutes.
+const BUILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 pub fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
     let mut client = match connect(project_dir) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
+    client.set_request_timeout(BUILD_TIMEOUT);
     match client.request("compile", None) {
         Ok(result) => print_build_result(&result, json),
         Err(e) => report_error(&e, json),
@@ -86,6 +91,7 @@ pub fn cmd_package(json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
+    client.set_request_timeout(BUILD_TIMEOUT);
     match client.request("package", None) {
         Ok(result) => print_build_result(&result, json),
         Err(e) => report_error(&e, json),

@@ -17,12 +17,28 @@ use crate::jsonrpc::{Request, Response};
 #[cfg(unix)]
 use crate::socket::socket_path;
 
-/// Max retries for "Workspace is initializing" errors.
+/// Default delay between retries while the daemon reports "initializing".
 #[cfg(unix)]
-const INIT_RETRY_MAX: u32 = 3;
-/// Delay between retries.
+const INIT_RETRY_DELAY: Duration = Duration::from_millis(250);
+/// Default total time to keep retrying "Workspace is initializing"
+/// responses. Cold daemon startup on a real project loads symbol
+/// packages (seconds, not milliseconds); a short retry budget made
+/// every first command after boot fail spuriously (FB-1).
 #[cfg(unix)]
-const INIT_RETRY_DELAY: Duration = Duration::from_millis(500);
+const INIT_WAIT_TOTAL: Duration = Duration::from_secs(60);
+/// Default per-request response deadline. Individual commands override
+/// this via [`DaemonClient::set_request_timeout`] for long operations
+/// (symbol downloads, compiles, test runs).
+#[cfg(unix)]
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Socket-level read timeout = polling granularity. A timed-out socket
+/// read is NOT a request failure — `read_bounded_line` keeps polling
+/// until the caller's request deadline expires. Previously the socket
+/// timeout WAS the request deadline, so any daemon operation slower
+/// than 30s surfaced as a raw `EAGAIN` ("Resource temporarily
+/// unavailable (os error 11)") to the user (FB-15).
+#[cfg(unix)]
+const READ_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Hard cap on a single JSON-RPC response line. Enforced *during* read
 /// so a hostile or broken daemon cannot force an unbounded allocation
 /// before we get a chance to reject the message.
@@ -33,14 +49,36 @@ const MAX_RESPONSE_LINE: usize = 64 * 1024 * 1024;
 /// reading. Returns `Ok(None)` on EOF with empty buffer, `Err` if the
 /// line would exceed `max_bytes`. Sync mirror of the daemon-side
 /// `read_bounded_line` in `al_core::server::daemon`.
+///
+/// `deadline`: socket-level read timeouts (`WouldBlock`/`TimedOut`) are
+/// retried until this instant, preserving any partially-read line bytes.
+/// `None` means a single socket timeout is fatal (legacy behaviour, used
+/// by tests).
 #[cfg(unix)]
 fn read_bounded_line<R: BufRead>(
     reader: &mut R,
     max_bytes: usize,
+    deadline: Option<std::time::Instant>,
 ) -> std::io::Result<Option<String>> {
     let mut buf: Vec<u8> = Vec::new();
     loop {
-        let available = reader.fill_buf()?;
+        let available = match reader.fill_buf() {
+            Ok(a) => a,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                // Socket read timeout: the daemon is still working, not
+                // gone. Keep polling until the request deadline.
+                match deadline {
+                    Some(d) if std::time::Instant::now() < d => continue,
+                    _ => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
         if available.is_empty() {
             return if buf.is_empty() {
                 Ok(None)
@@ -146,6 +184,13 @@ pub struct DaemonClient {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     next_id: u64,
+    /// Overall per-request response deadline (NOT the socket timeout —
+    /// the socket polls at `READ_POLL_INTERVAL` granularity).
+    request_timeout: Duration,
+    /// Total budget for retrying "Workspace is initializing" errors.
+    init_wait_total: Duration,
+    /// Delay between "initializing" retries.
+    init_retry_delay: Duration,
 }
 
 #[cfg(unix)]
@@ -204,8 +249,12 @@ impl DaemonClient {
 
     /// Create a client from an already-connected stream (for testing).
     pub fn from_stream(stream: UnixStream) -> Result<Self, String> {
+        // Socket read timeout = poll granularity, NOT the request deadline.
+        // `read_bounded_line` retries timed-out reads until the per-request
+        // deadline (see `request_timeout`), so long daemon operations no
+        // longer surface as raw EAGAIN errors (FB-15).
         stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
+            .set_read_timeout(Some(READ_POLL_INTERVAL))
             .map_err(|e| format!("Failed to set read timeout: {}", e))?;
         // A read timeout alone does not bound write_all()/flush(): those use the
         // independent SO_SNDTIMEO option. Without it, a hung/unresponsive daemon
@@ -222,12 +271,31 @@ impl DaemonClient {
             reader: BufReader::new(stream),
             writer,
             next_id: 1,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            init_wait_total: INIT_WAIT_TOTAL,
+            init_retry_delay: INIT_RETRY_DELAY,
         })
     }
 
-    /// Override the read timeout (useful for long-running operations).
+    /// Set the per-request response deadline (for long-running operations
+    /// like symbol downloads, compiles, and test runs). This is an overall
+    /// deadline — the socket itself polls at a short fixed interval.
+    pub fn set_request_timeout(&mut self, timeout: Duration) {
+        self.request_timeout = timeout;
+    }
+
+    /// Deprecated name for [`Self::set_request_timeout`] — older call sites
+    /// used the socket read timeout as the de-facto request deadline.
     pub fn set_read_timeout(&mut self, timeout: Duration) {
-        let _ = self.reader.get_ref().set_read_timeout(Some(timeout));
+        self.set_request_timeout(timeout);
+    }
+
+    /// Override how long `request` keeps retrying while the daemon reports
+    /// "Workspace is initializing" (and the delay between retries).
+    /// Primarily for tests; production callers keep the 60s default.
+    pub fn set_init_wait(&mut self, total: Duration, retry_delay: Duration) {
+        self.init_wait_total = total;
+        self.init_retry_delay = retry_delay;
     }
 
     /// Override the write timeout (useful for long-running operations).
@@ -237,19 +305,32 @@ impl DaemonClient {
 
     /// Send a JSON-RPC request and receive the response.
     ///
-    /// Retries up to [`INIT_RETRY_MAX`] times with 500ms backoff if the daemon
-    /// reports "Workspace is initializing, try again". Each retry sends a new
-    /// request (new ID) and validates that the response ID matches.
+    /// While the daemon reports "Workspace is initializing, try again",
+    /// retries every [`Self::init_retry_delay`] up to a total of
+    /// [`Self::init_wait_total`] — cold daemon startup on a real project
+    /// takes seconds, and the first command after boot should wait for it
+    /// rather than fail. Each retry sends a new request (new ID) and
+    /// validates that the response ID matches.
     pub fn request(
         &mut self,
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
+        self.request_with_timeout(method, params, self.request_timeout)
+    }
+
+    /// [`Self::request`] with an explicit per-call response deadline.
+    pub fn request_with_timeout(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        let init_deadline = std::time::Instant::now() + self.init_wait_total;
         let mut expected_id = self.send_request(method, &params)?;
 
-        // Total attempts = INIT_RETRY_MAX + 1 (initial send already done above).
-        for attempt in 0..=INIT_RETRY_MAX {
-            let response = self.read_response()?;
+        loop {
+            let response = self.read_response(timeout)?;
 
             if response.id != expected_id {
                 return Err(format!(
@@ -259,8 +340,9 @@ impl DaemonClient {
             }
 
             if let Some(ref err) = response.error {
-                if err.message.contains("initializing") && attempt < INIT_RETRY_MAX {
-                    std::thread::sleep(INIT_RETRY_DELAY);
+                if err.message.contains("initializing") && std::time::Instant::now() < init_deadline
+                {
+                    std::thread::sleep(self.init_retry_delay);
                     expected_id = self.send_request(method, &params)?;
                     continue;
                 }
@@ -269,8 +351,6 @@ impl DaemonClient {
 
             return Ok(response.result.unwrap_or(serde_json::Value::Null));
         }
-
-        unreachable!("loop always returns")
     }
 
     fn send_request(
@@ -296,9 +376,24 @@ impl DaemonClient {
         Ok(id)
     }
 
-    fn read_response(&mut self) -> Result<Response, String> {
-        let line = read_bounded_line(&mut self.reader, MAX_RESPONSE_LINE)
-            .map_err(|e| format!("Failed to read response: {}", e))?
+    fn read_response(&mut self, timeout: Duration) -> Result<Response, String> {
+        let deadline = std::time::Instant::now() + timeout;
+        let line = read_bounded_line(&mut self.reader, MAX_RESPONSE_LINE, Some(deadline))
+            .map_err(|e| {
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) {
+                    format!(
+                        "Daemon did not respond within {}s — the operation may still be \
+                         running. Retry with a longer timeout, or check the daemon log at \
+                         ~/.local/share/al-lsp/logs/al-lsp.log",
+                        timeout.as_secs()
+                    )
+                } else {
+                    format!("Failed to read response: {}", e)
+                }
+            })?
             .ok_or_else(|| "Connection closed by daemon (EOF)".to_string())?;
         serde_json::from_str(line.trim()).map_err(|e| format!("Failed to parse response: {}", e))
     }
@@ -410,11 +505,13 @@ mod tests {
     }
 
     #[test]
-    fn request_fails_after_max_retries() {
+    fn request_fails_after_init_wait_budget() {
         let sock = unique_sock();
         let (_listener, _handle) = mock_daemon(&sock, 100);
         let stream = UnixStream::connect(&sock).expect("test");
         let mut client = DaemonClient::from_stream(stream).expect("test");
+        // Shrink the init-wait budget so the test completes quickly.
+        client.set_init_wait(Duration::from_millis(100), Duration::from_millis(10));
         let result = client.request("test/ping", None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("initializing"));
@@ -548,7 +645,8 @@ mod tests {
     fn f022_bounded_read_accepts_line_at_or_under_cap() {
         let payload = b"hello world\n";
         let mut reader = std::io::BufReader::new(&payload[..]);
-        let result = read_bounded_line(&mut reader, 64).expect("under-cap line should succeed");
+        let result =
+            read_bounded_line(&mut reader, 64, None).expect("under-cap line should succeed");
         assert_eq!(result.as_deref(), Some("hello world"));
     }
 
@@ -561,7 +659,7 @@ mod tests {
         // 100 bytes, no newline; cap is 5 bytes.
         let payload = [b'X'; 100];
         let mut reader = std::io::BufReader::new(&payload[..]);
-        let err = read_bounded_line(&mut reader, 5).expect_err("must reject oversized line");
+        let err = read_bounded_line(&mut reader, 5, None).expect_err("must reject oversized line");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("5 byte limit"));
     }
@@ -572,7 +670,7 @@ mod tests {
     fn f022_bounded_read_returns_none_on_empty_eof() {
         let payload: &[u8] = &[];
         let mut reader = std::io::BufReader::new(payload);
-        let result = read_bounded_line(&mut reader, 64).expect("EOF must not error");
+        let result = read_bounded_line(&mut reader, 64, None).expect("EOF must not error");
         assert!(result.is_none());
     }
 
@@ -585,8 +683,8 @@ mod tests {
         // 0xC3 is a 2-byte-sequence lead byte; no continuation, no newline.
         let payload: &[u8] = &[b'o', b'k', 0xC3];
         let mut reader = std::io::BufReader::new(payload);
-        let err =
-            read_bounded_line(&mut reader, 64).expect_err("incomplete UTF-8 at EOF must error");
+        let err = read_bounded_line(&mut reader, 64, None)
+            .expect_err("incomplete UTF-8 at EOF must error");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 
@@ -598,7 +696,7 @@ mod tests {
         // Lead byte 0xC3 followed immediately by the newline terminator.
         let payload: &[u8] = &[b'o', b'k', 0xC3, b'\n'];
         let mut reader = std::io::BufReader::new(payload);
-        let err = read_bounded_line(&mut reader, 64)
+        let err = read_bounded_line(&mut reader, 64, None)
             .expect_err("incomplete UTF-8 before newline must error");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
@@ -611,7 +709,7 @@ mod tests {
     fn empty_line_yields_empty_string_then_graceful_parse_error() {
         let payload: &[u8] = b"\n";
         let mut reader = std::io::BufReader::new(payload);
-        let result = read_bounded_line(&mut reader, 64).expect("bare newline must not error");
+        let result = read_bounded_line(&mut reader, 64, None).expect("bare newline must not error");
         assert_eq!(result.as_deref(), Some(""));
 
         // A mock daemon that replies with a blank line before the real
@@ -880,27 +978,111 @@ mod tests {
         );
     }
 
-    /// `set_read_timeout` overrides the default 30s read timeout on the
-    /// underlying stream. Exercises lines 229-231, previously uncovered.
+    /// `from_stream` installs the short poll-interval socket timeout, and
+    /// `set_read_timeout` (the legacy name) now adjusts the per-request
+    /// deadline rather than the socket option — the socket keeps polling.
     #[test]
-    fn set_read_timeout_overrides_default() {
+    fn set_read_timeout_adjusts_request_deadline_not_socket() {
         let sock = unique_sock();
         let _listener = UnixListener::bind(&sock).expect("bind");
         let stream = UnixStream::connect(&sock).expect("connect");
         let mut client = DaemonClient::from_stream(stream).expect("from_stream");
 
-        // Default installed by from_stream.
+        // Socket timeout is the fixed poll interval.
         assert_eq!(
             client.reader.get_ref().read_timeout().expect("query"),
-            Some(Duration::from_secs(30)),
-            "from_stream must install a default read timeout"
+            Some(READ_POLL_INTERVAL),
+            "from_stream must install the poll-interval socket timeout"
         );
+        assert_eq!(client.request_timeout, DEFAULT_REQUEST_TIMEOUT);
 
-        client.set_read_timeout(Duration::from_millis(250));
+        client.set_read_timeout(Duration::from_secs(900));
+        assert_eq!(
+            client.request_timeout,
+            Duration::from_secs(900),
+            "set_read_timeout must adjust the request deadline"
+        );
         assert_eq!(
             client.reader.get_ref().read_timeout().expect("query"),
-            Some(Duration::from_millis(250)),
-            "set_read_timeout must override the default"
+            Some(READ_POLL_INTERVAL),
+            "socket poll interval must remain fixed"
+        );
+    }
+
+    /// FB-15 regression: a daemon that takes longer than one socket poll
+    /// interval to respond must NOT surface EAGAIN — the client keeps
+    /// polling until the request deadline and then returns the real
+    /// response. (Previously `download-symbols` & co. died at 30s with
+    /// "Resource temporarily unavailable (os error 11)".)
+    #[test]
+    fn slow_daemon_response_survives_socket_poll_timeouts() {
+        let sock = unique_sock();
+        let listener = UnixListener::bind(&sock).expect("bind");
+        let listener_clone = listener.try_clone().expect("clone");
+        let _handle = std::thread::spawn(move || {
+            let (stream, _) = listener_clone.accept().expect("accept");
+            let reader = std::io::BufReader::new(&stream);
+            let mut writer = &stream;
+            for line in reader.lines() {
+                let line = line.expect("read");
+                let req: Request = serde_json::from_str(&line).expect("parse");
+                // Respond well after the socket poll interval used below.
+                std::thread::sleep(Duration::from_millis(600));
+                let response = Response::ok(req.id, serde_json::json!({"slow": true}));
+                let mut json = serde_json::to_string(&response).expect("ser");
+                json.push('\n');
+                writer.write_all(json.as_bytes()).expect("write");
+                writer.flush().expect("flush");
+            }
+        });
+
+        let stream = UnixStream::connect(&sock).expect("connect");
+        let mut client = DaemonClient::from_stream(stream).expect("from_stream");
+        // Force several socket-level poll timeouts before the response lands.
+        client
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("set poll");
+        let result = client.request_with_timeout("test/slow", None, Duration::from_secs(10));
+        assert_eq!(
+            result.expect("slow response must succeed")["slow"],
+            true,
+            "response after multiple poll timeouts must be returned intact"
+        );
+    }
+
+    /// When the request deadline itself expires, the error message must be
+    /// actionable — naming the timeout — not a raw EAGAIN.
+    #[test]
+    fn request_deadline_expiry_yields_actionable_error() {
+        let sock = unique_sock();
+        let listener = UnixListener::bind(&sock).expect("bind");
+        let listener_clone = listener.try_clone().expect("clone");
+        let _handle = std::thread::spawn(move || {
+            let (stream, _) = listener_clone.accept().expect("accept");
+            // Never respond; hold the connection open past the deadline.
+            std::thread::sleep(Duration::from_secs(5));
+            drop(stream);
+        });
+
+        let stream = UnixStream::connect(&sock).expect("connect");
+        let mut client = DaemonClient::from_stream(stream).expect("from_stream");
+        client
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .expect("set poll");
+        let err = client
+            .request_with_timeout("test/never", None, Duration::from_millis(300))
+            .expect_err("no response must time out");
+        assert!(
+            err.contains("did not respond"),
+            "error must be actionable, got: {err}"
+        );
+        assert!(
+            !err.contains("os error 11"),
+            "raw EAGAIN must not leak to the user: {err}"
         );
     }
 }
