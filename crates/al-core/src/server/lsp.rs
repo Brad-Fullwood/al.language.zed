@@ -8,6 +8,7 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use super::commands;
 use super::completions;
 use super::definition;
 use super::diagnostics;
@@ -1008,6 +1009,7 @@ impl LanguageServer for AlServer {
         tracing::info!(command = %params.command, "execute_command");
 
         let start = std::time::Instant::now();
+        // F-OPEN-264: one function per command in `server::commands`.
         let result = match params.command.as_str() {
             "al.downloadSymbols" | "al.downloadSymbolsNuget" => {
                 workspace::download_symbols_command(self, workspace::DownloadSource::NuGet).await;
@@ -1018,324 +1020,28 @@ impl LanguageServer for AlServer {
                 Ok(None)
             }
             "al.clearSymbolCache" => {
-                let cache_dir = crate::symbols::virtual_file::cache_dir();
-                match tokio::fs::remove_dir_all(&cache_dir).await {
-                    Ok(()) => {
-                        tracing::info!(path = ?cache_dir, "Cleared symbol cache");
-                        self.client
-                            .show_message(MessageType::INFO, "Symbol cache cleared")
-                            .await;
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to clear symbol cache");
-                        self.client
-                            .show_message(
-                                MessageType::WARNING,
-                                format!("Failed to clear cache: {e}"),
-                            )
-                            .await;
-                    }
-                }
+                commands::clear_symbol_cache(self).await;
                 Ok(None)
             }
             "al.formatFile" => {
-                // Formatting is now handled as a CodeAction with WorkspaceEdit directly in handlers.rs.
-                // This command is kept for backward compatibility or direct calls.
-                // SILENT: .ok() on from_value — invalid argument from client is not user-affecting
-                if let Some(uri) = params
-                    .arguments
-                    .first()
-                    .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok())
-                {
-                    if let Some(edits) = formatting::handle_formatting(
-                        self,
-                        &uri,
-                        &FormattingOptions {
-                            tab_size: 4,
-                            insert_spaces: true,
-                            ..Default::default()
-                        },
-                    ) {
-                        let mut changes = std::collections::HashMap::new();
-                        changes.insert(uri.clone(), edits);
-                        match self
-                            .client
-                            .apply_edit(WorkspaceEdit {
-                                changes: Some(changes),
-                                ..Default::default()
-                            })
-                            .await
-                        {
-                            Ok(resp) if resp.applied => {}
-                            Ok(resp) => {
-                                let reason = resp
-                                    .failure_reason
-                                    .unwrap_or_else(|| "edit rejected by editor".to_string());
-                                tracing::warn!(uri = %uri, reason = %reason, "al.formatFile: apply_edit not applied");
-                                self.client
-                                    .show_message(
-                                        MessageType::WARNING,
-                                        format!("Format failed: {reason}"),
-                                    )
-                                    .await;
-                            }
-                            Err(e) => {
-                                tracing::warn!(uri = %uri, error = %e, "al.formatFile: apply_edit transport error");
-                                self.client
-                                    .show_message(
-                                        MessageType::WARNING,
-                                        format!("Format failed: {e}"),
-                                    )
-                                    .await;
-                            }
-                        }
-                    }
-                }
+                commands::format_file(self, &params.arguments).await;
                 Ok(None)
             }
             "al.lintFile" => {
-                // SILENT: .ok() on from_value — invalid argument from client is not user-affecting
-                if let Some(uri) = params
-                    .arguments
-                    .first()
-                    .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok())
-                {
-                    if let Some(text) = self.workspace.documents.get_text(&uri) {
-                        diagnostics::publish_diagnostics(self, &uri, &text).await;
-                    }
-                }
+                commands::lint_file(self, &params.arguments).await;
                 Ok(None)
             }
-            "al.getStatus" => {
-                let has_bridge = self.workspace.semantic.read().await.is_some();
-                let has_toolchain = self.workspace.toolchain.read().await.is_some();
-                let indexed_symbols = self.workspace.symbols.len();
-                let workspace_files = self.workspace.file_index.len();
-                let workspace_objects = self.workspace.file_index.objects.len();
-                let builtins = self
-                    .workspace
-                    .builtins
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .len(); // SILENT: recover from RwLock poison
-
-                Ok(Some(serde_json::json!({
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "pid": std::process::id(),
-                    "semanticBridge": has_bridge,
-                    "toolchain": has_toolchain,
-                    "indexedSymbols": indexed_symbols,
-                    "workspaceFiles": workspace_files,
-                    "workspaceObjects": workspace_objects,
-                    "builtinTypes": builtins,
-                })))
-            }
+            "al.getStatus" => Ok(Some(commands::get_status(self).await)),
             "al.reindex" => {
-                let root_uri = self.root_uri.read().await.clone();
-                if let Some(uri) = &root_uri {
-                    tracing::info!(root = %uri, "Reindexing workspace (background)");
-                    let ws = Arc::clone(&self.workspace);
-                    let client = self.client.clone();
-                    let uri_cloned = uri.clone();
-                    // Reindex path: pass throwaway ready/notify pair so the
-                    // call satisfies the signature; reindex doesn't need to
-                    // gate request handlers since the workspace is already
-                    // serving traffic.
-                    let throwaway_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    let throwaway_notify = Arc::new(tokio::sync::Notify::new());
-                    let handle = tokio::spawn(async move {
-                        workspace::initialize_workspace(
-                            ws,
-                            client.clone(),
-                            Some(uri_cloned),
-                            throwaway_flag,
-                            throwaway_notify,
-                        )
-                        .await;
-                        client
-                            .show_message(MessageType::INFO, "Workspace reindex complete")
-                            .await;
-                    });
-                    // Cancel any previous in-flight reindex so rapid clicks
-                    // don't run two full scans concurrently.
-                    let mut slot = self.reindex_task.lock().await;
-                    if let Some(prev) = slot.replace(handle) {
-                        prev.abort();
-                    }
-                } else {
-                    self.client
-                        .show_message(MessageType::WARNING, "No workspace root — cannot reindex")
-                        .await;
-                }
+                commands::reindex(self).await;
                 Ok(None)
             }
-            // al.compile — run alc and publish per-file diagnostics as publishDiagnostics.
-            // ISSUE-075 fix: compile errors now show as Zed editor squiggles, not only terminal output.
             "al.compile" => {
-                let toolchain_guard = self.workspace.toolchain.read().await;
-                let project_guard = self.workspace.project.read().await;
-                let toolchain = toolchain_guard.clone();
-                let project_root = project_guard.as_ref().map(|p| p.root.clone());
-                drop(toolchain_guard);
-                drop(project_guard);
-
-                match (toolchain, project_root) {
-                    (Some(tc), Some(root)) => {
-                        match crate::build::compile_project(&tc, &root, None).await {
-                            Ok(result) => {
-                                // Group compile diagnostics by file and publish per-file.
-                                let mut by_file: std::collections::HashMap<
-                                    String,
-                                    Vec<Diagnostic>,
-                                > = std::collections::HashMap::new();
-                                for d in &result.diagnostics {
-                                    let severity = match d.severity {
-                                        crate::build::DiagnosticSeverity::Error => {
-                                            DiagnosticSeverity::ERROR
-                                        }
-                                        crate::build::DiagnosticSeverity::Warning => {
-                                            DiagnosticSeverity::WARNING
-                                        }
-                                        crate::build::DiagnosticSeverity::Info => {
-                                            DiagnosticSeverity::INFORMATION
-                                        }
-                                    };
-                                    let start_line = d.line.saturating_sub(1);
-                                    let start_char = d.column.saturating_sub(1);
-                                    let lsp_diag = Diagnostic {
-                                        range: Range {
-                                            start: Position {
-                                                line: start_line,
-                                                character: start_char,
-                                            },
-                                            // alc only reports start position; the LSP-spec way to
-                                            // express "to end of line" is `start of next line`
-                                            // (Position{ line+1, character: 0 }). The previous
-                                            // u32::MAX sentinel was tolerated by Zed/VS Code but
-                                            // is undefined by the LSP spec and breaks stricter
-                                            // clients (T067 / stb-server-lsp-1059).
-                                            end: Position {
-                                                line: start_line.saturating_add(1),
-                                                character: 0,
-                                            },
-                                        },
-                                        severity: Some(severity),
-                                        code: Some(NumberOrString::String(d.code.clone())),
-                                        source: Some("al-compiler".to_string()),
-                                        message: d.message.clone(),
-                                        ..Default::default()
-                                    };
-                                    // F-019: alc emits relative paths
-                                    // (`src/Foo.al`) when run from project_root.
-                                    // `Url::from_file_path` requires an absolute
-                                    // path, so resolve relative entries against
-                                    // the project root before grouping —
-                                    // otherwise the per-file URI conversion
-                                    // below silently drops the diagnostic.
-                                    let abs_path = {
-                                        let p = std::path::Path::new(&d.file);
-                                        if p.is_absolute() {
-                                            d.file.clone()
-                                        } else {
-                                            root.join(p).to_string_lossy().into_owned()
-                                        }
-                                    };
-                                    by_file.entry(abs_path).or_default().push(lsp_diag);
-                                }
-                                let current_affected: std::collections::HashSet<String> =
-                                    by_file.keys().cloned().collect();
-                                for (file, diags) in by_file {
-                                    if let Ok(uri) = Url::from_file_path(&file) {
-                                        self.client.publish_diagnostics(uri, diags, None).await;
-                                    }
-                                }
-
-                                // F-008: clear compiler diagnostics for files that were
-                                // affected last compile but are clean now. We re-publish
-                                // syntax/lint diagnostics if the file is open (so
-                                // existing squiggles stay), or an empty list otherwise.
-                                let last = self.workspace.last_compile_affected.lock().await;
-                                let stale: Vec<String> =
-                                    last.difference(&current_affected).cloned().collect();
-                                drop(last);
-                                for file in &stale {
-                                    if let Ok(uri) = Url::from_file_path(file) {
-                                        if let Some(text) = self.workspace.documents.get_text(&uri)
-                                        {
-                                            crate::server::diagnostics::publish_diagnostics(
-                                                self, &uri, &text,
-                                            )
-                                            .await;
-                                        } else {
-                                            self.client
-                                                .publish_diagnostics(uri, Vec::new(), None)
-                                                .await;
-                                        }
-                                    }
-                                }
-                                *self.workspace.last_compile_affected.lock().await =
-                                    current_affected;
-
-                                if result.success {
-                                    self.client
-                                        .show_message(MessageType::INFO, "Compilation succeeded")
-                                        .await;
-                                }
-                            }
-                            Err(e) => {
-                                self.client
-                                    .show_message(
-                                        MessageType::ERROR,
-                                        format!("Compilation error: {e}"),
-                                    )
-                                    .await;
-                            }
-                        }
-                    }
-                    (None, _) => {
-                        self.client
-                            .show_message(
-                                MessageType::WARNING,
-                                "No AL toolchain configured — run 'al setup' first",
-                            )
-                            .await;
-                    }
-                    (_, None) => {
-                        self.client
-                            .show_message(
-                                MessageType::WARNING,
-                                "No AL project loaded — open an AL workspace first",
-                            )
-                            .await;
-                    }
-                }
+                commands::compile(self).await;
                 Ok(None)
             }
             "al.applyRecommendedSettings" => {
-                let result = tokio::task::spawn_blocking(
-                    crate::server::workspace::apply_recommended_settings,
-                )
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r.map_err(|e| e.to_string()));
-                match result {
-                    Ok(()) => {
-                        self.client
-                            .show_message(
-                                MessageType::INFO,
-                                "Applied recommended AL settings. Reload Zed to activate.",
-                            )
-                            .await;
-                    }
-                    Err(e) => {
-                        self.client
-                            .show_message(
-                                MessageType::WARNING,
-                                format!("Failed to apply settings: {e}"),
-                            )
-                            .await;
-                    }
-                }
+                commands::apply_recommended_settings(self).await;
                 Ok(None)
             }
             _ => {
