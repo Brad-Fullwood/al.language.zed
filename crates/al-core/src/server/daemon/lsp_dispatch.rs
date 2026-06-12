@@ -351,20 +351,78 @@ pub(super) fn dispatch_search(
     }
 }
 
+/// Resolve an object kind from a bare name: succeeds when exactly one
+/// non-synthetic kind matches; returns an actionable error response
+/// otherwise. Shared by `object` and `composed` when the caller (an
+/// editor task with only the symbol under the cursor) omits the kind.
+fn resolve_unique_kind_by_name(
+    workspace: &Workspace,
+    id: u64,
+    name: &str,
+    command: &str,
+) -> std::result::Result<crate::symbols::ObjectKind, Response> {
+    let mut kinds: Vec<crate::symbols::ObjectKind> = workspace
+        .symbols
+        .get_by_name(name)
+        .iter()
+        .filter(|e| !e.synthetic)
+        .map(|e| e.kind)
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    match kinds.as_slice() {
+        [single] => Ok(*single),
+        [] => Err(Response {
+            id,
+            result: None,
+            error: Some(RpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: format!("Object '{name}' not found in any package"),
+            }),
+            ..Default::default()
+        }),
+        many => {
+            let list = many
+                .iter()
+                .map(|k| k.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INVALID_PARAMS,
+                    message: format!(
+                        "'{name}' is ambiguous — specify the kind ({list}), e.g. `{command} table \"{name}\"`"
+                    ),
+                }),
+                ..Default::default()
+            })
+        }
+    }
+}
+
 pub(super) fn dispatch_object(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(kind_str) = params.get("kind").and_then(|v| v.as_str()) else {
-        return invalid_params(id);
-    };
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let kind = match super::parse_object_kind(id, kind_str) {
-        Ok(k) => k,
-        Err(e) => return e,
+    // `kind` is optional (audit 2026-06-12): editor tasks only have the
+    // symbol under the cursor. When omitted, resolve by name — unambiguous
+    // single-kind matches proceed; multi-kind matches get an actionable
+    // error listing the candidates.
+    let kind = match params.get("kind").and_then(|v| v.as_str()) {
+        Some(kind_str) => match super::parse_object_kind(id, kind_str) {
+            Ok(k) => k,
+            Err(e) => return e,
+        },
+        None => match resolve_unique_kind_by_name(workspace, id, name, "object") {
+            Ok(k) => k,
+            Err(resp) => return resp,
+        },
     };
     // Package symbols
     let candidates = workspace.symbols.get_by_name(name);
@@ -554,15 +612,20 @@ pub(super) fn dispatch_composed(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(kind_str) = params.get("kind").and_then(|v| v.as_str()) else {
-        return invalid_params(id);
-    };
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
-    let kind = match super::parse_object_kind(id, kind_str) {
-        Ok(k) => k,
-        Err(e) => return e,
+    // `kind` is optional (audit 2026-06-12): the Zed task only has the
+    // symbol under the cursor.
+    let kind = match params.get("kind").and_then(|v| v.as_str()) {
+        Some(kind_str) => match super::parse_object_kind(id, kind_str) {
+            Ok(k) => k,
+            Err(e) => return e,
+        },
+        None => match resolve_unique_kind_by_name(workspace, id, name, "composed") {
+            Ok(k) => k,
+            Err(resp) => return resp,
+        },
     };
     // F-OPEN-268: composition must see workspace extensions/bases as well —
     // they enter the SymbolIndex via the enrichment pass.
@@ -868,6 +931,49 @@ mod tests {
     /// F-OPEN-268: `composed` must merge a WORKSPACE base table with its
     /// WORKSPACE extension — previously it returned "No Table named ... or no
     /// extensions found" because neither object was in the SymbolIndex.
+    /// Audit 2026-06-12: the Zed task only has the symbol under the cursor,
+    /// so `composed` must resolve the kind from a bare name when it is
+    /// unambiguous, and explain itself when it is not.
+    #[test]
+    fn dispatch_composed_resolves_kind_from_bare_name() {
+        let ws = crate::workspace::Workspace::new();
+        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Table,
+            id: 18,
+            name: "Customer".to_string(),
+            package: "Base".to_string(),
+            ..Default::default()
+        }]);
+        // No "kind" param — unique name resolves.
+        let resp = dispatch_composed(&ws, 7, &serde_json::json!({ "name": "Customer" }));
+        assert!(
+            resp.error.is_none(),
+            "unique bare name must resolve: {:?}",
+            resp.error
+        );
+
+        // Unknown name → actionable not-found error.
+        let resp = dispatch_composed(&ws, 8, &serde_json::json!({ "name": "Nope" }));
+        let err = resp.error.expect("unknown name must error");
+        assert!(err.message.contains("not found"), "got: {}", err.message);
+
+        // Two kinds sharing the name → ambiguity error listing kinds.
+        ws.symbols.add_entries(&[crate::symbols::SymbolEntry {
+            kind: crate::symbols::ObjectKind::Page,
+            id: 21,
+            name: "Customer".to_string(),
+            package: "Base".to_string(),
+            ..Default::default()
+        }]);
+        let resp = dispatch_composed(&ws, 9, &serde_json::json!({ "name": "Customer" }));
+        let err = resp.error.expect("ambiguous name must error");
+        assert!(
+            err.message.contains("ambiguous") && err.message.contains("Table"),
+            "got: {}",
+            err.message
+        );
+    }
+
     #[test]
     fn dispatch_composed_merges_workspace_table_and_extension() {
         let ws = crate::workspace::Workspace::new();

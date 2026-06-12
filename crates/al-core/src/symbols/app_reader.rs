@@ -87,6 +87,7 @@ pub fn read_app_bytes(data: &[u8]) -> Result<SymbolPackage, AppReaderError> {
         name: manifest.name,
         publisher: manifest.publisher,
         version: manifest.version,
+        object_count: objects.len(),
         objects,
     })
 }

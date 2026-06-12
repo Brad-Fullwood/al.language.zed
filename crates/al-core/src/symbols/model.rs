@@ -359,6 +359,12 @@ pub struct SymbolPackage {
     pub publisher: String,
     pub version: String,
     pub objects: Vec<SymbolEntry>,
+    /// Number of objects this package contributed. Survives the
+    /// `mem::take(&mut objects)` move into the index — callers reading
+    /// `objects.len()` after loading saw 0 for every package (the
+    /// `packages` command's OBJECTS column and the daemon's
+    /// "loaded symbol packages symbols=0" log line).
+    pub object_count: usize,
 }
 
 /// A composed object: base + merged extensions.

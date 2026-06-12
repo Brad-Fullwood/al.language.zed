@@ -135,6 +135,7 @@ impl SymbolCache {
             name: header.package_name.clone(),
             publisher: header.publisher.clone(),
             version: header.version.clone(),
+            object_count: objects.len(),
             objects,
         };
 
@@ -348,6 +349,7 @@ mod tests {
             name: name.to_string(),
             publisher: "Test".to_string(),
             version: "1.0.0.0".to_string(),
+            object_count: 1,
             objects: vec![SymbolEntry {
                 synthetic: false,
                 kind: ObjectKind::Table,

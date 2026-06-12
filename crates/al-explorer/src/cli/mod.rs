@@ -94,9 +94,11 @@ Examples:
     },
     /// Show base + all extensions merged
     Composed {
-        #[arg(value_name = "TYPE")]
+        /// Object kind (table, page, …) or — with one argument — the name
+        #[arg(value_name = "TYPE_OR_NAME")]
         kind: String,
-        name: String,
+        /// Object name (omit to resolve the kind by name automatically)
+        name: Option<String>,
     },
     /// List loaded packages with stats
     Packages,
@@ -822,7 +824,7 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::Events { name } => lsp::cmd_events(&name, cli.json),
         Commands::Subscribers { event } => lsp::cmd_subscribers(&event, cli.json),
         Commands::EventSource { file, line } => lsp::cmd_event_source(&file, line, cli.json),
-        Commands::Composed { kind, name } => lsp::cmd_composed(&kind, &name, cli.json),
+        Commands::Composed { kind, name } => lsp::cmd_composed(&kind, name.as_deref(), cli.json),
         Commands::Packages => lsp::cmd_packages(cli.json),
         Commands::Deps => lsp::cmd_deps(cli.json),
         Commands::Compile { project } => build::cmd_compile(project.as_deref(), cli.json),

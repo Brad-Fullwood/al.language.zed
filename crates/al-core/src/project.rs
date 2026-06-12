@@ -229,7 +229,55 @@ fn scan_packages(packages_dir: &Path) -> Vec<PathBuf> {
         .collect();
 
     packages.sort();
-    packages
+    dedup_package_versions(packages)
+}
+
+/// Keep only the highest version when `.alpackages` holds several versions
+/// of the same package (`Publisher_Name_1.0.0.0.app` + `_1.0.2.0.app`).
+///
+/// Real project folders accumulate old versions (every symbol download or
+/// vendor update adds one); loading all of them indexed every object once
+/// PER VERSION — duplicate search results, doubled symbol counts, and
+/// ambiguous go-to-definition. Files whose names don't end in a parseable
+/// dotted version are kept unconditionally (e.g. `System.app`).
+fn dedup_package_versions(packages: Vec<PathBuf>) -> Vec<PathBuf> {
+    fn split_versioned(path: &Path) -> Option<(String, Vec<u64>)> {
+        let stem = path.file_stem()?.to_str()?;
+        let (prefix, version) = stem.rsplit_once('_')?;
+        let parts: Vec<u64> = version
+            .split('.')
+            .map(|p| p.parse::<u64>())
+            .collect::<std::result::Result<_, _>>()
+            .ok()?;
+        if parts.is_empty() {
+            return None;
+        }
+        Some((prefix.to_lowercase(), parts))
+    }
+
+    let mut best: std::collections::HashMap<String, (Vec<u64>, PathBuf)> =
+        std::collections::HashMap::new();
+    let mut unversioned: Vec<PathBuf> = Vec::new();
+
+    for path in packages {
+        match split_versioned(&path) {
+            Some((key, version)) => match best.get(&key) {
+                Some((existing, _)) if *existing >= version => {}
+                _ => {
+                    best.insert(key, (version, path));
+                }
+            },
+            None => unversioned.push(path),
+        }
+    }
+
+    let mut result: Vec<PathBuf> = best
+        .into_values()
+        .map(|(_, p)| p)
+        .chain(unversioned)
+        .collect();
+    result.sort();
+    result
 }
 
 /// Returns the 3 public BC NuGet feeds (Azure DevOps hosted).
@@ -266,6 +314,66 @@ pub fn home_dir() -> Option<PathBuf> {
             None
         }
     })
+}
+
+#[cfg(test)]
+mod dedup_tests {
+    use super::dedup_package_versions;
+    use std::path::PathBuf;
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    /// Audit 2026-06-12: .alpackages folders accumulate old versions; loading
+    /// all of them indexed every object once per version (duplicate search
+    /// rows, doubled counts). Only the highest version may survive.
+    #[test]
+    fn keeps_only_highest_version_per_package() {
+        let result = dedup_package_versions(paths(&[
+            "/p/Microsoft_Application_27.3.44313.45677.app",
+            "/p/Microsoft_Application_27.4.45366.45675.app",
+            "/p/Insight Works_Product Configurator_4.0.9405.1.app",
+            "/p/Insight Works_Product Configurator_4.0.9447.1.app",
+        ]));
+        let names: Vec<String> = result
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "Insight Works_Product Configurator_4.0.9447.1.app",
+                "Microsoft_Application_27.4.45366.45675.app",
+            ],
+            "only the newest version of each package may remain"
+        );
+    }
+
+    /// Files without a parseable version suffix are kept unconditionally,
+    /// and different packages never collapse into each other.
+    #[test]
+    fn unversioned_and_distinct_packages_survive() {
+        let result = dedup_package_versions(paths(&[
+            "/p/System.app",
+            "/p/Microsoft_Application_27.4.45366.45675.app",
+            "/p/Microsoft_Base Application_27.4.45366.45675.app",
+        ]));
+        assert_eq!(result.len(), 3, "got: {result:?}");
+    }
+
+    /// Version comparison is numeric, not lexicographic: 10.0 > 9.0.
+    #[test]
+    fn version_compare_is_numeric() {
+        let result = dedup_package_versions(paths(&[
+            "/p/Vendor_App_9.0.0.0.app",
+            "/p/Vendor_App_10.0.0.0.app",
+        ]));
+        assert_eq!(
+            result[0].file_name().unwrap().to_string_lossy(),
+            "Vendor_App_10.0.0.0.app"
+        );
+    }
 }
 
 #[cfg(test)]

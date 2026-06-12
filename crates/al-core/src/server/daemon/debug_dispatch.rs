@@ -477,9 +477,14 @@ pub(super) async fn dispatch_debug(
         "stop" => {
             let mut guard = workspace.debug_session.lock().await;
             match guard.as_mut() {
+                // No active session: say so instead of claiming a stop
+                // happened (audit 2026-06-12 — `debug stop` printed
+                // "Debug session stopped." on a machine with no session).
                 None => Response {
                     id,
-                    result: Some(serde_json::json!({"cmd": "stop", "status": "stopped"})),
+                    result: Some(
+                        serde_json::json!({"cmd": "stop", "status": "no active debug session"}),
+                    ),
                     error: None,
                     ..Default::default()
                 },
@@ -815,16 +820,17 @@ mod dispatch_debug_tests {
     }
 
     #[tokio::test]
-    async fn stop_without_session_is_idempotent_success() {
-        // Stopping when nothing is running is NOT an error: it returns a
-        // success result reporting "stopped". This is the one no-session
-        // branch that intentionally succeeds.
+    async fn stop_without_session_is_idempotent_and_honest() {
+        // Stopping when nothing is running is NOT an error — but it must
+        // SAY no session was active rather than claim a stop happened
+        // (audit 2026-06-12: `debug stop` printed "Debug session stopped."
+        // on a machine that never started one).
         let ws = Workspace::new();
         let r = dispatch_debug(&ws, 15, &json!({"cmd": "stop"})).await;
         assert_eq!(r.id, 15);
         assert!(r.error.is_none(), "stop with no session must not error");
         let result = r.result.expect("stop must return a result");
-        assert_eq!(result["status"], "stopped");
+        assert_eq!(result["status"], "no active debug session");
         assert_eq!(result["cmd"], "stop");
     }
 

@@ -45,12 +45,20 @@ install: build
 	else \
 		echo "al-explorer already in $(INSTALL_DIR) (OK)"; \
 	fi
-	@# `al` is a back-compat alias for al-explorer's CLI mode (the old al-cli binary)
-	@if [ ! -L "$(INSTALL_DIR)/al" ] && [ ! -f "$(INSTALL_DIR)/al" ]; then \
+	@# `al` back-compat alias: ONLY create/claim it when the name is free or
+	@# already ours. On machines with Microsoft's AL dotnet tool installed
+	@# (a prerequisite for the toolchain!), `al` is Microsoft's altool
+	@# wrapper — clobbering it would break alc discovery, and the previous
+	@# blanket "(OK)" message claimed a foreign binary as our alias
+	@# (audit 2026-06-12). Use `al-explorer` in scripts; `al` is best-effort.
+	@if [ -L "$(INSTALL_DIR)/al" ] && [ "$$(readlink "$(INSTALL_DIR)/al")" = "$(EXPLORER_BIN)" ]; then \
+		echo "al alias -> al-explorer already installed (OK)"; \
+	elif [ ! -e "$(INSTALL_DIR)/al" ]; then \
 		ln -sf "$(EXPLORER_BIN)" "$(INSTALL_DIR)/al"; \
 		echo "Symlinked al -> $(INSTALL_DIR)/al (alias for al-explorer)"; \
 	else \
-		echo "al already in $(INSTALL_DIR) (OK)"; \
+		echo "NOTE: $(INSTALL_DIR)/al exists and is NOT our alias (likely Microsoft's AL dotnet tool)."; \
+		echo "      Leaving it untouched — use 'al-explorer' for this project's CLI."; \
 	fi
 	@mkdir -p "$(ZED_EXT_DIR)"
 	@if [ ! -L "$(ZED_EXT_DIR)/al" ] && [ ! -d "$(ZED_EXT_DIR)/al" ]; then \

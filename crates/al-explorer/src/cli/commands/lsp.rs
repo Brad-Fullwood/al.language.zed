@@ -251,16 +251,27 @@ pub fn cmd_download_symbols(
                     for r in results {
                         let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                         let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        if status == "ok" {
-                            let path = r.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                            eprintln!("[OK] {name} -> {path}");
-                        } else {
-                            let err = r.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            eprintln!("[!!] {name} — {err}");
+                        match status {
+                            "ok" => {
+                                let path = r.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                                eprintln!("[OK] {name} -> {path}");
+                            }
+                            "skipped" => {
+                                let path = r.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                                eprintln!("[--] {name} — already in .alpackages ({path})");
+                            }
+                            _ => {
+                                let err =
+                                    r.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                eprintln!("[!!] {name} — {err}");
+                            }
                         }
                     }
                 }
-                eprintln!("\n{downloaded} downloaded, {failed} failed (source: {source_name})");
+                let skipped = result.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0);
+                eprintln!(
+                    "\n{downloaded} downloaded, {skipped} already present, {failed} failed (source: {source_name})"
+                );
             }
             if result.get("failed").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
                 ExitCode::FAILURE
@@ -510,12 +521,18 @@ pub fn cmd_event_source(file: &str, line: u32, json: bool) -> ExitCode {
     }
 }
 
-pub fn cmd_composed(kind: &str, name: &str, json: bool) -> ExitCode {
+pub fn cmd_composed(kind_or_name: &str, name: Option<&str>, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    let params = serde_json::json!({ "kind": kind, "name": name });
+    // Two forms (audit 2026-06-12 — the Zed task only has the symbol under
+    // the cursor): `composed <kind> <name>` and `composed <name>` (kind
+    // resolved daemon-side, with an actionable error when ambiguous).
+    let params = match name {
+        Some(n) => serde_json::json!({ "kind": kind_or_name, "name": n }),
+        None => serde_json::json!({ "name": kind_or_name }),
+    };
     match client.request("composed", Some(params)) {
         Ok(result) => {
             if json {

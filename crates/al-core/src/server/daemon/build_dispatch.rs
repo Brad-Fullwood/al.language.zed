@@ -203,7 +203,11 @@ pub(super) fn dispatch_lint(
     let all = params.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if all {
-        // Lint all workspace files using cached parse trees
+        // Lint all workspace files using cached parse trees. Clean files are
+        // included with an empty diagnostics array — previously only dirty
+        // files were returned, so a fully-clean 62-file workspace reported
+        // "0 diagnostics across 0 files", indistinguishable from "scanned
+        // nothing" (audit 2026-06-12).
         let mut results: Vec<serde_json::Value> = Vec::new();
         for entry in workspace.file_index.files.iter() {
             let path = entry.key();
@@ -211,14 +215,11 @@ pub(super) fn dispatch_lint(
                 continue;
             };
             let diagnostics = crate::syntax::lint(&tree, &content);
-            if !diagnostics.is_empty() {
-                let diags: Vec<serde_json::Value> =
-                    diagnostics.iter().map(lint_diag_to_json).collect();
-                results.push(serde_json::json!({
-                    "file": path.display().to_string(),
-                    "diagnostics": diags,
-                }));
-            }
+            let diags: Vec<serde_json::Value> = diagnostics.iter().map(lint_diag_to_json).collect();
+            results.push(serde_json::json!({
+                "file": path.display().to_string(),
+                "diagnostics": diags,
+            }));
         }
         return Response {
             id,
@@ -1314,6 +1315,29 @@ pub(super) async fn dispatch_download_symbols(
     // Release the lock before async work
     let _ = project;
 
+    // Audit 2026-06-12: don't re-download dependencies already satisfied in
+    // .alpackages. The resolver fetched app.json MINIMUM versions — pulling
+    // OLDER duplicates of Microsoft/vendor apps next to the installed newer
+    // ones (polluting the package folder) and failing outright on vendor
+    // apps that aren't on the public feeds even though their .app was
+    // sitting right there.
+    let mut skipped: Vec<serde_json::Value> = Vec::new();
+    let all_deps: Vec<crate::symbols::nuget::AppDependency> = all_deps
+        .into_iter()
+        .filter(|dep| match find_satisfied_package(&dest, dep) {
+            Some(existing) => {
+                skipped.push(serde_json::json!({
+                    "name": dep.name,
+                    "status": "skipped",
+                    "path": existing,
+                    "note": "already present in .alpackages",
+                }));
+                false
+            }
+            None => true,
+        })
+        .collect();
+
     let result: Vec<serde_json::Value> = {
         async {
             if source == "server" {
@@ -1398,6 +1422,12 @@ pub(super) async fn dispatch_download_symbols(
         .await
     };
 
+    let mut result = result;
+    let skipped_count = skipped.len();
+    // Skipped entries lead the list so users see what was already covered.
+    skipped.append(&mut result);
+    let result = skipped;
+
     let success = result
         .iter()
         .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("ok"))
@@ -1420,12 +1450,52 @@ pub(super) async fn dispatch_download_symbols(
             "source": source,
             "downloaded": success,
             "failed": failed,
+            "skipped": skipped_count,
             "loaded_into_index": loaded,
             "results": result,
         })),
         error: None,
         ..Default::default()
     }
+}
+
+/// Whether a dependency is already satisfied by a `.app` in `dest`.
+/// Matches on the normalized `Publisher_Name` filename prefix (alphanumeric,
+/// case-insensitive — NuGet-written names drop spaces, server-written names
+/// keep them); files without a version suffix (e.g. `System.app`) match on
+/// the whole stem. Returns the matching file path.
+fn find_satisfied_package(
+    dest: &std::path::Path,
+    dep: &crate::symbols::nuget::AppDependency,
+) -> Option<String> {
+    fn normalize(s: &str) -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
+    }
+    let want_full = format!("{}{}", normalize(&dep.publisher), normalize(&dep.name));
+    let want_name = normalize(&dep.name);
+    if want_name.is_empty() {
+        return None;
+    }
+    for entry in std::fs::read_dir(dest).ok()?.flatten() {
+        let fname = entry.file_name().to_string_lossy().into_owned();
+        let Some(stem) = fname.strip_suffix(".app") else {
+            continue;
+        };
+        // `Publisher_Name_1.2.3.4` → compare the prefix; bare stems
+        // (`System`) compare whole.
+        let prefix = match stem.rsplit_once('_') {
+            Some((p, version)) if version.chars().all(|c| c.is_ascii_digit() || c == '.') => p,
+            _ => stem,
+        };
+        let norm = normalize(prefix);
+        if norm == want_full || norm == want_name {
+            return Some(entry.path().display().to_string());
+        }
+    }
+    None
 }
 
 /// F-011: Write `.al` content to disk and refresh the workspace's

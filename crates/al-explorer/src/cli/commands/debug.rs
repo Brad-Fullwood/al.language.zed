@@ -224,7 +224,12 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                         print_json(&result);
                     } else {
                         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("Debug session {status}.");
+                        if status == "stopped" {
+                            println!("Debug session stopped.");
+                        } else {
+                            // e.g. "no active debug session"
+                            println!("Debug stop: {status}.");
+                        }
                     }
                     ExitCode::SUCCESS
                 }

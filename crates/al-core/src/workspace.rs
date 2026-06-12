@@ -441,7 +441,7 @@ pub async fn initialize_core_workspace(
             let loaded = workspace
                 .symbols
                 .load_packages_cached(&project.packages, &cache);
-            total_symbols = loaded.iter().map(|p| p.objects.len()).sum();
+            total_symbols = loaded.iter().map(|p| p.object_count).sum();
             package_count = loaded.len();
             tracing::info!(
                 packages = package_count,
@@ -481,7 +481,7 @@ pub async fn initialize_core_workspace(
                     name: p.name.clone(),
                     publisher: p.publisher.clone(),
                     version: p.version.clone(),
-                    object_count: p.objects.len(),
+                    object_count: p.object_count,
                 })
                 .collect();
             *workspace
