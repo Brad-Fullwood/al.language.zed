@@ -315,6 +315,14 @@ pub struct SymbolEntry {
     pub kind: ObjectKind,
     pub id: i32,
     pub name: String,
+    /// `true` for entries fabricated by the loader rather than declared in
+    /// AL source — currently the pseudo-enums synthesized from
+    /// Option-typed fields/parameters so the type resolver can complete
+    /// their members. Synthetic entries are excluded from user-facing
+    /// search/browse results (FB-2: they swamped the real enums with
+    /// `id: -1` rows) but remain in the index for type resolution.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub synthetic: bool,
     /// For extensions: the name of the object being extended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
@@ -747,6 +755,10 @@ impl SymbolReferenceJson {
                 entries.push(SymbolEntry {
                     kind: ObjectKind::Enum,
                     id: -1,
+                    // Fabricated from an Option-typed field/parameter so the
+                    // type resolver can complete its members — not a real AL
+                    // enum object. Hidden from search/browse (FB-2).
+                    synthetic: true,
                     name: field_name.clone(),
                     extends: None,
                     package: pkg.clone(),
@@ -770,6 +782,7 @@ impl ObjectJson {
         SymbolEntry {
             kind,
             id: self.id,
+            synthetic: false,
             name: self.name,
             extends: self.extends,
             package: package.to_string(),
@@ -1102,6 +1115,7 @@ mod tests {
     #[test]
     fn test_symbol_entry_default_fields() {
         let entry = SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id: 1,
             name: "Test".to_string(),
@@ -1269,6 +1283,7 @@ mod tests {
     #[test]
     fn test_symbol_entry_serialization_roundtrip() {
         let entry = SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Enum,
             id: 50100,
             name: "MyEnum".to_string(),

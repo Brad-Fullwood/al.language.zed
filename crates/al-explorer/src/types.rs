@@ -32,9 +32,11 @@ pub enum ObjectKind {
     PermissionSet,
     PermissionSetExtension,
     Profile,
+    ProfileExtension,
     PageCustomization,
     ControlAddIn,
     Entitlement,
+    DotNet,
 }
 
 impl ObjectKind {
@@ -60,10 +62,31 @@ impl ObjectKind {
             ObjectKind::PermissionSet => "PermissionSet",
             ObjectKind::PermissionSetExtension => "PermissionSetExtension",
             ObjectKind::Profile => "Profile",
+            ObjectKind::ProfileExtension => "ProfileExtension",
             ObjectKind::PageCustomization => "PageCustomization",
             ObjectKind::ControlAddIn => "ControlAddIn",
             ObjectKind::Entitlement => "Entitlement",
+            ObjectKind::DotNet => "DotNet",
         }
+    }
+
+    /// Whether this object kind carries a developer-assigned numeric ID in
+    /// AL syntax. Interfaces, profiles, page customizations, control
+    /// add-ins, entitlements, and .NET packages are declared without one —
+    /// symbol packages store an internal compiler hash in the `Id` slot for
+    /// some of these, which is meaningless to users and must not be shown
+    /// (FB-3).
+    pub fn has_numeric_id(&self) -> bool {
+        !matches!(
+            self,
+            ObjectKind::Interface
+                | ObjectKind::Profile
+                | ObjectKind::ProfileExtension
+                | ObjectKind::PageCustomization
+                | ObjectKind::ControlAddIn
+                | ObjectKind::Entitlement
+                | ObjectKind::DotNet
+        )
     }
 }
 

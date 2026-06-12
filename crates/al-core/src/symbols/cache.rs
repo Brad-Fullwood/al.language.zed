@@ -17,8 +17,18 @@ use tracing::debug;
 use super::model::SymbolPackage;
 
 /// Cache header stored alongside each cached package.
+/// Bump whenever `SymbolEntry`'s semantics change in a way that defaults
+/// can't repair — old caches are then rejected and the .app re-parsed.
+/// v1: `synthetic` flag on entries (FB-2) — pre-flag caches contain
+/// fabricated Option-enums that would deserialize as `synthetic: false`
+/// and reappear in search results.
+const CACHE_SCHEMA_VERSION: u32 = 1;
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheHeader {
+    /// Cache schema version; pre-versioning caches default to 0.
+    #[serde(default)]
+    schema_version: u32,
     /// Modification time seconds component (Unix timestamp).
     mtime_secs: u64,
     /// Modification time nanoseconds component (sub-second precision).
@@ -84,6 +94,16 @@ impl SymbolCache {
         // If the header has mtime_nanos == 0 (old cache format), only compare seconds.
         let mtime_matches = header.mtime_secs == mtime_secs
             && (header.mtime_nanos == 0 || header.mtime_nanos == mtime_nanos);
+
+        if header.schema_version != CACHE_SCHEMA_VERSION {
+            debug!(
+                app = %app_path.display(),
+                cached = header.schema_version,
+                current = CACHE_SCHEMA_VERSION,
+                "Cache schema version mismatch — re-parsing .app"
+            );
+            return None;
+        }
 
         if !mtime_matches || header.file_size != file_size {
             debug!(
@@ -165,6 +185,7 @@ impl SymbolCache {
             .map_err(std::io::Error::other)?;
 
         let header = CacheHeader {
+            schema_version: CACHE_SCHEMA_VERSION,
             mtime_secs: mtime.as_secs(),
             mtime_nanos: mtime.subsec_nanos(),
             file_size: meta.len(),
@@ -328,6 +349,7 @@ mod tests {
             publisher: "Test".to_string(),
             version: "1.0.0.0".to_string(),
             objects: vec![SymbolEntry {
+                synthetic: false,
                 kind: ObjectKind::Table,
                 id: 1,
                 name: "TestTable".to_string(),

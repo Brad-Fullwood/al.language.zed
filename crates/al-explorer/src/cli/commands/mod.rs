@@ -21,6 +21,25 @@ pub fn print_json<T: Serialize>(value: &T) {
     }
 }
 
+/// Whether an object kind (as the daemon serializes it) carries a
+/// developer-assigned numeric ID in AL syntax. Interfaces, profiles, page
+/// customizations, control add-ins, entitlements, and .NET packages are
+/// declared without one — for some of these the symbol packages store an
+/// internal compiler hash in the `Id` slot, which must not be displayed
+/// as if it were a real object ID (FB-3).
+pub fn kind_has_numeric_id(kind: &str) -> bool {
+    !matches!(
+        kind,
+        "Interface"
+            | "Profile"
+            | "ProfileExtension"
+            | "PageCustomization"
+            | "ControlAddIn"
+            | "Entitlement"
+            | "DotNet"
+    )
+}
+
 /// Build JSON params for a BC server command with common connection fields.
 pub fn bc_server_params(
     cmd: &str,
@@ -175,7 +194,11 @@ pub fn print_symbol_entries(result: &serde_json::Value) {
         let id = e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
         let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         let pkg = e.get("package").and_then(|v| v.as_str()).unwrap_or("?");
-        println!("{kind} {id} \"{name}\" (package: {pkg})");
+        if id > 0 && kind_has_numeric_id(kind) {
+            println!("{kind} {id} \"{name}\" (package: {pkg})");
+        } else {
+            println!("{kind} \"{name}\" (package: {pkg})");
+        }
 
         if let Some(extends) = e.get("extends").and_then(|v| v.as_str()) {
             println!("  extends: {extends}");

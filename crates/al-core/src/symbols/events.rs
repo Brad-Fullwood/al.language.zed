@@ -202,6 +202,7 @@ mod tests {
     fn make_codeunit_with_events() -> Vec<SymbolEntry> {
         vec![
             SymbolEntry {
+                synthetic: false,
                 kind: ObjectKind::Codeunit,
                 id: 50100,
                 name: "Sales Event Publisher".to_string(),
@@ -246,6 +247,7 @@ mod tests {
                 variables: Vec::new(),
             },
             SymbolEntry {
+                synthetic: false,
                 kind: ObjectKind::Codeunit,
                 id: 50101,
                 name: "Sales Subscriber".to_string(),

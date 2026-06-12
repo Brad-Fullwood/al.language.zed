@@ -29,9 +29,11 @@ const EXPECTED_VARIANT_NAMES: &[&str] = &[
     "PermissionSet",
     "PermissionSetExtension",
     "Profile",
+    "ProfileExtension",
     "PageCustomization",
     "ControlAddIn",
     "Entitlement",
+    "DotNet",
 ];
 
 const EXPECTED_VARIANT_COUNT: usize = EXPECTED_VARIANT_NAMES.len();

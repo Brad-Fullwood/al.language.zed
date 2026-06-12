@@ -208,6 +208,9 @@ impl SymbolIndex {
             entries.push(SymbolEntry {
                 kind: ObjectKind::Enum,
                 id: -1,
+                // Real platform enums (not synthetic): browsable, but the
+                // -1 sentinel is never displayed as an object ID.
+                synthetic: false,
                 name: re.name.clone(),
                 extends: None,
                 implements: Vec::new(),
@@ -325,10 +328,17 @@ impl SymbolIndex {
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
         let mut results = Vec::new();
 
+        // Synthetic entries (pseudo-enums fabricated from Option-typed
+        // fields) stay out of user-facing search results — they swamped
+        // real enums with `id: -1` rows (FB-2). Exact-name lookups
+        // (`get_by_name`) still see them for type resolution.
         if query.is_empty() {
             // Short-circuit: return the first `limit` entries without filtering
             for entry in self.all.iter() {
                 let (arc, _) = entry.value();
+                if arc.synthetic {
+                    continue;
+                }
                 results.push(Arc::clone(arc));
                 if results.len() >= limit {
                     break;
@@ -338,7 +348,7 @@ impl SymbolIndex {
             let query_lower = query.to_lowercase();
             for entry in self.all.iter() {
                 let (arc, name_lower) = entry.value();
-                if name_lower.contains(&query_lower) {
+                if !arc.synthetic && name_lower.contains(&query_lower) {
                     results.push(Arc::clone(arc));
                     if results.len() >= limit {
                         break;
@@ -359,7 +369,8 @@ impl SymbolIndex {
 
         for entry in self.all.iter() {
             let (arc, name_lower) = entry.value();
-            if arc.package.to_lowercase() == target_pkg
+            if !arc.synthetic
+                && arc.package.to_lowercase() == target_pkg
                 && (query_lower.is_empty() || name_lower.contains(&query_lower))
             {
                 results.push(Arc::clone(arc));
@@ -571,6 +582,7 @@ mod tests {
 
     fn make_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind,
             id,
             name: name.to_string(),
@@ -590,6 +602,7 @@ mod tests {
 
     fn make_extension(kind: ObjectKind, id: i32, name: &str, extends: &str) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind,
             id,
             name: name.to_string(),
