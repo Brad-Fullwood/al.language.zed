@@ -59,6 +59,11 @@ fn single_edit_ws(uri: &Url, edits: Vec<TextEdit>) -> WorkspaceEdit {
 /// Diagnostic-based quick fixes are handled by `quick_fix_for_diagnostic`.
 #[must_use]
 pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<CodeActionEntry> {
+    // F-OPEN-266: honor the `enableCodeActions` setting (VS Code parity) at
+    // the query level so both the LSP and daemon transports respect it.
+    if !code_actions_enabled(workspace) {
+        return Vec::new();
+    }
     let Some(text) = workspace.documents.get_text_arc(uri) else {
         return Vec::new();
     };
@@ -141,6 +146,10 @@ pub fn namespace_quick_fix_for_diagnostic(
     text: &str,
     diag: &DiagnosticInfo,
 ) -> Vec<CodeActionEntry> {
+    // F-OPEN-266: quick fixes are code actions too — honor the toggle.
+    if !code_actions_enabled(workspace) {
+        return Vec::new();
+    }
     // Only handle AL0185 or diagnostics whose message indicates an unresolved type
     let is_al0185 = diag.code.as_deref() == Some("AL0185");
     let msg_matches = diag.message.contains("could not be found")
@@ -246,6 +255,19 @@ pub fn quick_fix_for_diagnostic(
     _diag: &DiagnosticInfo,
 ) -> Option<CodeActionEntry> {
     None
+}
+
+/// Whether code actions are enabled in the workspace config
+/// (`enableCodeActions`, default true). Checked at the query level so the
+/// LSP and daemon transports both honor the setting (F-OPEN-266).
+fn code_actions_enabled(workspace: &Workspace) -> bool {
+    // `config` is a tokio RwLock and this query is sync — try_read and fail
+    // OPEN on contention (a briefly-contended lock must not hide actions).
+    workspace
+        .config
+        .try_read()
+        .map(|c| c.enable_code_actions)
+        .unwrap_or(true)
 }
 
 fn detect_indent(text: &str, line: u32) -> String {
@@ -2638,6 +2660,48 @@ mod tests {
     use super::*;
     use crate::symbols::{ObjectKind, SymbolEntry};
     use crate::workspace::Workspace;
+
+    /// F-OPEN-266: `enableCodeActions` was parsed from user settings but never
+    /// consumed — setting it to false had no effect. The query (the common
+    /// choke point for both the LSP and daemon transports) must honor it.
+    #[test]
+    fn source_actions_respect_enable_code_actions_toggle() {
+        let ws = Workspace::new();
+        let uri = url::Url::parse("file:///proj/src/X.al").unwrap();
+        let source =
+            "codeunit 50100 \"Hello World\"\n{\n    procedure Greet()\n    begin\n    end;\n}\n";
+        ws.documents.open(uri.clone(), source.to_string());
+
+        let range = Range {
+            start: crate::queries::Position {
+                line: 2,
+                character: 14,
+            },
+            end: crate::queries::Position {
+                line: 2,
+                character: 14,
+            },
+        };
+
+        // Enabled (default): the doc-comment action (at minimum) is offered.
+        let enabled = source_actions(&ws, &uri, range);
+        assert!(
+            !enabled.is_empty(),
+            "expected at least one source action with code actions enabled"
+        );
+
+        // Disabled: the query returns nothing on any transport.
+        {
+            let mut cfg = ws.config.try_write().expect("config lock");
+            cfg.enable_code_actions = false;
+        }
+        let disabled = source_actions(&ws, &uri, range);
+        assert!(
+            disabled.is_empty(),
+            "enableCodeActions=false must suppress source actions; got {} action(s)",
+            disabled.len()
+        );
+    }
 
     #[test]
     fn detect_object_kind_routes_known_types() {

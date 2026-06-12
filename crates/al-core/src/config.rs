@@ -24,10 +24,6 @@ pub struct AlConfig {
     // -----------------------------------------------------------------------
     // Semantic analysis
     // -----------------------------------------------------------------------
-
-    // ----- Fields below are parsed from user settings but not yet wired to behavior. -----
-    // They are retained so existing user configs don't break on deserialization.
-    // TODO: Wire up or remove each field as features are implemented.
     /// Enable semantic code analysis via .NET bridge.
     pub enable_code_analysis: bool,
 
@@ -45,6 +41,12 @@ pub struct AlConfig {
     /// Which analyzers to run (e.g., "CodeCop", "AppSourceCop", "UICop", "PerTenantCop").
     pub code_analyzers: Vec<String>,
 
+    // ----- Analyzer plumbing fields (parsed, not yet passed through). -----
+    // These four map 1:1 to alc / CodeAnalysis-bridge parameters (--ruleset,
+    // --assemblyprobingpaths, analyzer statistics) but the plumbing into
+    // build::compile_project / semantic::bridge is not yet written. They are
+    // retained so existing user configs keep deserializing; wiring them is
+    // tracked work, not dead weight (F-OPEN-266 audit, 2026-06-12).
     /// Enable external rulesets (local .ruleset.json files).
     pub enable_external_rulesets: bool,
 
@@ -65,9 +67,6 @@ pub struct AlConfig {
 
     /// Inlay hint settings.
     pub inlay_hints: InlayHintConfig,
-
-    /// Enable semantic folding (fold based on AST, not just indentation).
-    pub semantic_folding: bool,
 
     // -----------------------------------------------------------------------
     // Native lint (placeholder — see notes)
@@ -222,7 +221,6 @@ impl Default for AlConfig {
             // Features
             enable_code_actions: true,
             inlay_hints: InlayHintConfig::default(),
-            semantic_folding: true,
             // Native lint
             enable_native_lint: true,
             native_lint_rules: HashMap::new(),
@@ -423,7 +421,6 @@ impl AlConfig {
                         }
                     }
                 }
-                "semanticFolding" => merge_bool(obj, key, &mut self.semantic_folding),
                 "enableNativeLint" => merge_bool(obj, key, &mut self.enable_native_lint),
                 "nativeLintRules" => {
                     if let Some(map) = obj.get(key).and_then(|v| v.as_object()) {
@@ -612,7 +609,6 @@ mod tests {
         assert!(config.enable_code_actions);
         assert!(config.inlay_hints.parameter_names);
         assert!(!config.inlay_hints.return_types);
-        assert!(config.semantic_folding);
         // Symbols
         assert!(config.package_cache_path.is_none());
         assert!(config.app_local_folder_paths.is_empty());

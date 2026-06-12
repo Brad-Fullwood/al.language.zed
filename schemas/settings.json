@@ -72,11 +72,6 @@
       "default": false,
       "description": "Show return type hints on procedure declarations."
     },
-    "al.semanticFolding": {
-      "type": "boolean",
-      "default": true,
-      "description": "Enable semantic folding (fold based on AST structure, not just indentation)."
-    },
     "al.packageCachePath": {
       "type": "string",
       "default": null,
