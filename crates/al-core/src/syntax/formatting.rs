@@ -129,6 +129,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // Track unclosed parentheses for multi-line call continuation
     let mut paren_depth: i32 = 0;
 
+    // FB-18: multi-line property assignments (`Permissions = tabledata A = rm,`)
+    // continue on following lines until the terminating `;`. Continuation
+    // lines are indented one level past the opener instead of being
+    // collapsed to the property's own level.
+    let mut in_property_continuation = false;
+
     // Track case...of nesting for label indentation
     let mut case_depth: i32 = 0;
 
@@ -176,6 +182,25 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         if in_var_section && (trimmed_lower == "begin" || trimmed_lower.ends_with(" begin")) {
             indent_level = (indent_level - 1).max(0);
             in_var_section = false;
+        }
+
+        // FB-18: an OBJECT-level `var` section has no closing `begin` — it
+        // ends at the next member declaration: an attribute line
+        // (`[EventSubscriber(...)]`) or a procedure/trigger header.
+        // Previously the next member stayed at variable indentation
+        // (verified on a real codeunit: the attribute + `local procedure`
+        // header were pushed to var-entry depth while `begin` stayed put).
+        if in_var_section {
+            let is_member_start = trimmed.starts_with('[')
+                || trimmed_lower.starts_with("procedure ")
+                || trimmed_lower.starts_with("local ")
+                || trimmed_lower.starts_with("internal ")
+                || trimmed_lower.starts_with("protected ")
+                || trimmed_lower.starts_with("trigger ");
+            if is_member_start {
+                indent_level = (indent_level - 1).max(0);
+                in_var_section = false;
+            }
         }
 
         // `begin` after single-statement openers (if...then begin written separately)
@@ -304,6 +329,22 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // If inside open parens, skip all other indent logic for this line
         if paren_depth > 0 {
             continue;
+        }
+
+        // FB-18: property-assignment continuations. A non-comment line that
+        // ends with `,` outside any parens starts (or stays in) a
+        // continuation — the following line(s) indent one extra level until
+        // the `;` terminator. Trailing commas outside parens are not valid
+        // in executable AL, so this only fires on multi-line property
+        // values (Permissions, TableRelation, CalcFormula, …).
+        let is_comment_line =
+            trimmed.starts_with("//") || trimmed.starts_with("/*") || in_block_comment;
+        if in_property_continuation && (trimmed.ends_with(';') || is_close) {
+            indent_level = (indent_level - 1).max(0);
+            in_property_continuation = false;
+        } else if !in_property_continuation && !is_comment_line && trimmed.ends_with(',') {
+            indent_level += 1;
+            in_property_continuation = true;
         }
 
         // Drain single-stmt stack: if we just wrote a "normal" statement (not a
@@ -1228,5 +1269,58 @@ codeunit 50100 Test
         let pass1 = format_al(input, &opts);
         let pass2 = format_al(&pass1, &opts);
         assert_eq!(pass1, pass2);
+    }
+
+    /// FB-18 regression (found on a real customer codeunit): an object-level
+    /// `var` section is not closed by `begin` — the next member's attribute
+    /// and procedure header must dedent back to member level, and a
+    /// multi-line `Permissions = …,` property keeps its continuation line
+    /// indented past the opener instead of collapsing to property level.
+    #[test]
+    fn fb18_attribute_after_object_var_and_property_continuation() {
+        let input = r#"codeunit 50104 "AUK Data Management Event Subs"
+{
+    InherentPermissions = x;
+    Permissions = tabledata "Warehouse Shipment Header" = rm,
+                  tabledata "Warehouse Shipment Line" = r;
+
+    var
+        FieldValueCalcHelper: Codeunit "AUK Field Value Calc Helper";
+
+    [EventSubscriber(ObjectType::Table, Database::"Warehouse Shipment Line", OnAfterInsertEvent, '', false, false)]
+    local procedure OnAfterWarehouseShipmentLineInsert(var Rec: Record "Warehouse Shipment Line"; RunTrigger: Boolean)
+    begin
+        if not RunTrigger then
+            exit;
+    end;
+}
+"#;
+        let opts = FormatOptions::default();
+        let pass1 = format_al(input, &opts);
+
+        // The attribute and procedure header sit at member level (4), not
+        // var-entry level (8).
+        assert!(
+            pass1.contains("\n    [EventSubscriber(ObjectType::Table"),
+            "attribute must be at member indentation, got:\n{pass1}"
+        );
+        assert!(
+            pass1.contains("\n    local procedure OnAfterWarehouseShipmentLineInsert"),
+            "procedure header must be at member indentation, got:\n{pass1}"
+        );
+        // The Permissions continuation stays indented past the opener.
+        assert!(
+            pass1.contains("\n        tabledata \"Warehouse Shipment Line\" = r;"),
+            "property continuation must keep extra indentation, got:\n{pass1}"
+        );
+        // And the property after the continuation is unaffected.
+        assert!(
+            pass1.contains("\n    var\n"),
+            "var keyword must stay at member level, got:\n{pass1}"
+        );
+
+        // Idempotent: formatting the formatted output changes nothing.
+        let pass2 = format_al(&pass1, &opts);
+        assert_eq!(pass1, pass2, "format must be idempotent");
     }
 }
