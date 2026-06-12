@@ -552,13 +552,36 @@ fn control_keyword_to_symbol_kind(keyword: &str) -> SymbolKind {
 ///   metadata_keyword ("area") + parenthesized_block ("(Content)") + braced_block ("{ ... }")
 /// Uses next_sibling() for zero-allocation look-ahead instead of collecting all children.
 fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<DocumentSymbol>) {
-    let mut cursor = body.walk();
-    if !cursor.goto_first_child() {
-        return;
+    // Iterative in-order walk with an explicit frame stack (CLAUDE.md rule;
+    // F-OPEN-265): nested braced_blocks previously recursed, so degenerate
+    // nesting could overflow the native stack on the documentSymbol hot
+    // path. Each frame materialises one block's children and remembers the
+    // resume index, preserving the original depth-first emission order.
+    struct Frame<'t> {
+        children: Vec<Node<'t>>,
+        idx: usize,
+    }
+    fn frame_for<'t>(block: Node<'t>) -> Frame<'t> {
+        let mut cursor = block.walk();
+        let mut children = Vec::with_capacity(block.child_count());
+        if cursor.goto_first_child() {
+            loop {
+                children.push(cursor.node());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        Frame { children, idx: 0 }
     }
 
-    loop {
-        let child = cursor.node();
+    let mut stack = vec![frame_for(body)];
+    while let Some(top) = stack.last_mut() {
+        let Some(&child) = top.children.get(top.idx) else {
+            stack.pop();
+            continue;
+        };
+        top.idx += 1;
         match child.kind() {
             "object_section" => {
                 if let Some(sym) = extract_section_symbol(child, source) {
@@ -594,13 +617,11 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
             }
             "metadata_keyword" => {
                 if let Some(sym) = try_extract_page_control(child, source) {
-                    // Skip siblings consumed by the page control (paren + braced_block)
-                    loop {
-                        if !cursor.goto_next_sibling() {
-                            break;
-                        }
-                        if cursor.node().kind() == "braced_block" {
-                            // consumed the body — advance past it
+                    // Skip siblings consumed by the page control (paren +
+                    // braced_block): advance past the body block.
+                    while let Some(&sibling) = top.children.get(top.idx) {
+                        top.idx += 1;
+                        if sibling.kind() == "braced_block" {
                             break;
                         }
                     }
@@ -608,7 +629,7 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
                 }
             }
             "braced_block" => {
-                extract_section_body_children(child, source, symbols);
+                stack.push(frame_for(child));
             }
             // F-OPEN-102: fold the trigger-extraction pass into this walk
             // instead of running `extract_triggers_from_braced_block` as a
@@ -624,9 +645,6 @@ fn extract_section_body_children(body: Node, source: &[u8], symbols: &mut Vec<Do
                 }
             }
             _ => {}
-        }
-        if !cursor.goto_next_sibling() {
-            break;
         }
     }
 }

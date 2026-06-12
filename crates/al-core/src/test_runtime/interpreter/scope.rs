@@ -60,12 +60,42 @@ impl CallFrame {
 #[derive(Debug, Default)]
 pub struct ScopeStack {
     frames: Vec<CallFrame>,
+    /// Current `eval_expr` recursion depth. Expression evaluation recurses
+    /// per AST nesting level; ~400 nested parens overflow a 2 MiB thread
+    /// stack (tokio worker default) and ABORT the process. Capped at
+    /// `MAX_EXPR_DEPTH` so degenerate input yields `Eval::Error` instead
+    /// (F-OPEN-265). Statement nesting has its own cap in `DispatchCtx`.
+    expr_depth: usize,
 }
+
+/// Maximum `eval_expr` AST recursion depth. Mirrors `eval_stmt`'s
+/// MAX_AST_DEPTH rationale: real AL expressions nest ~10 deep; 256 is far
+/// beyond anything legitimate and comfortably inside a 2 MiB thread stack.
+pub const MAX_EXPR_DEPTH: usize = 256;
 
 impl ScopeStack {
     /// Empty stack.
     pub fn new() -> Self {
-        Self { frames: Vec::new() }
+        Self {
+            frames: Vec::new(),
+            expr_depth: 0,
+        }
+    }
+
+    /// Enter one `eval_expr` nesting level. Returns `false` when the cap is
+    /// exceeded — the caller must return an error WITHOUT calling
+    /// [`Self::exit_expr`] (the failed enter did not increment).
+    pub fn enter_expr(&mut self) -> bool {
+        if self.expr_depth >= MAX_EXPR_DEPTH {
+            return false;
+        }
+        self.expr_depth += 1;
+        true
+    }
+
+    /// Leave one `eval_expr` nesting level.
+    pub fn exit_expr(&mut self) {
+        self.expr_depth = self.expr_depth.saturating_sub(1);
     }
 
     /// Push a frame; returns its 0-indexed depth.

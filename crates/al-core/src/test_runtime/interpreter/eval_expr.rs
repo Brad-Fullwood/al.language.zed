@@ -16,6 +16,21 @@ use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 
 /// Evaluate a tree-sitter expression node against the active stack.
 pub fn eval_expr(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
+    // Stack-overflow guard (F-OPEN-265): expression evaluation recurses per
+    // AST nesting level, and ~400 nested parens overflow a 2 MiB worker
+    // thread stack — aborting the whole process. Mirror eval_stmt's guard.
+    if !stack.enter_expr() {
+        return Eval::Error(simple_error(&format!(
+            "expression nesting depth exceeded (max {} levels) — likely a pathological or generated test source",
+            crate::test_runtime::interpreter::scope::MAX_EXPR_DEPTH
+        )));
+    }
+    let result = eval_expr_inner(node, source, stack);
+    stack.exit_expr();
+    result
+}
+
+fn eval_expr_inner(node: Node<'_>, source: &[u8], stack: &mut ScopeStack) -> Eval {
     match node.kind() {
         // Literal forms — the AL grammar uses `integer`, `decimal`, `string`
         // as the actual node kinds (not `integer_literal` etc.).
@@ -459,6 +474,40 @@ mod tests {
             Eval::Error(e) => e,
             Eval::Normal(v) => panic!("expected error, got Normal({})", v.type_name()),
             Eval::Exit(v) => panic!("expected error, got Exit({})", v.type_name()),
+        }
+    }
+
+    /// F-OPEN-265: eval_expr must cap AST nesting the way eval_stmt already
+    /// does — degenerate expression nesting must yield `Eval::Error`, not a
+    /// native stack overflow (which aborts the whole al-lsp process).
+    #[test]
+    fn deep_expression_nesting_errors_instead_of_overflowing() {
+        let depth = 400; // beyond the cap, far below crash territory
+        let expr = format!("{}1{}", "(".repeat(depth), ")".repeat(depth));
+        let source = format!(
+            "codeunit 50100 X\n{{\n    procedure P()\n    var\n        I: Integer;\n    begin\n        I := {expr};\n    end;\n}}\n"
+        );
+        let parsed = crate::syntax::AlParser::parse_quick(&source);
+        let mut nodes = vec![parsed.tree.root_node()];
+        let mut target = None;
+        while let Some(n) = nodes.pop() {
+            if n.kind() == "parenthesized_expression" {
+                target = Some(n);
+                break;
+            }
+            let mut c = n.walk();
+            nodes.extend(n.children(&mut c));
+        }
+        let node = target.expect("parenthesized expression must parse");
+        let mut scope = ScopeStack::new();
+        match eval_expr(node, source.as_bytes(), &mut scope) {
+            Eval::Error(e) => assert!(
+                e.message.to_lowercase().contains("depth"),
+                "error must mention the depth cap: {}",
+                e.message
+            ),
+            Eval::Normal(_) => panic!("expected a depth-cap error, got Normal"),
+            Eval::Exit(_) => panic!("expected a depth-cap error, got Exit"),
         }
     }
 
