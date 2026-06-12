@@ -39,6 +39,12 @@ pub enum ObjectKind {
     PageCustomization,
     ControlAddIn,
     Entitlement,
+    /// `profileextension "X" extends "Y"` — extends a Profile's
+    /// customizations (BC 2024+; added by the F-OPEN-267 completeness guard).
+    ProfileExtension,
+    /// `dotnet { ... }` assembly-declaration blocks (LanguageData lists it
+    /// as an object type; added by the F-OPEN-267 completeness guard).
+    DotNet,
 }
 
 impl fmt::Display for ObjectKind {
@@ -62,6 +68,8 @@ impl fmt::Display for ObjectKind {
             ObjectKind::PageCustomization => "PageCustomization",
             ObjectKind::ControlAddIn => "ControlAddIn",
             ObjectKind::Entitlement => "Entitlement",
+            ObjectKind::ProfileExtension => "ProfileExtension",
+            ObjectKind::DotNet => "DotNet",
         };
         f.write_str(s)
     }
@@ -96,6 +104,10 @@ impl FromStr for ObjectKind {
                 Ok(ObjectKind::ControlAddIn)
             }
             "entitlement" => Ok(ObjectKind::Entitlement),
+            "profileextension" | "profile_extension" | "profile-extension" => {
+                Ok(ObjectKind::ProfileExtension)
+            }
+            "dotnet" => Ok(ObjectKind::DotNet),
             _ => Err(format!("Unknown object kind: '{}'. Valid kinds: table, page, codeunit, report, xmlport, query, enum, interface, permissionset, profile, controladdin, entitlement (and their extension variants)", s)),
         }
     }
@@ -110,6 +122,7 @@ impl ObjectKind {
             ObjectKind::Report => Some(ObjectKind::ReportExtension),
             ObjectKind::Enum => Some(ObjectKind::EnumExtension),
             ObjectKind::PermissionSet => Some(ObjectKind::PermissionSetExtension),
+            ObjectKind::Profile => Some(ObjectKind::ProfileExtension),
             _ => None,
         }
     }
@@ -122,6 +135,7 @@ impl ObjectKind {
             ObjectKind::ReportExtension => Some(ObjectKind::Report),
             ObjectKind::EnumExtension => Some(ObjectKind::Enum),
             ObjectKind::PermissionSetExtension => Some(ObjectKind::PermissionSet),
+            ObjectKind::ProfileExtension => Some(ObjectKind::Profile),
             _ => None,
         }
     }
@@ -147,6 +161,8 @@ impl ObjectKind {
             ObjectKind::PageCustomization => "PageCust",
             ObjectKind::ControlAddIn => "ControlAddIn",
             ObjectKind::Entitlement => "Entitlement",
+            ObjectKind::ProfileExtension => "ProfExt",
+            ObjectKind::DotNet => "DotNet",
         }
     }
 
@@ -176,6 +192,8 @@ impl ObjectKind {
             ObjectKind::PageCustomization => "pagecustomization",
             ObjectKind::ControlAddIn => "controladdin",
             ObjectKind::Entitlement => "entitlement",
+            ObjectKind::ProfileExtension => "profileextension",
+            ObjectKind::DotNet => "dotnet",
         }
     }
 }
@@ -902,6 +920,33 @@ impl EnumValueJson {
 mod tests {
     use super::*;
 
+    /// F-OPEN-267: `ObjectKind` must cover every object type the grammar's
+    /// LanguageData JSON declares — Microsoft adds object types per BC
+    /// release, and a missing variant silently drops those objects from the
+    /// symbol model (per CLAUDE.md's no-hardcoded-language-values rule, the
+    /// data files are the source of truth this enum must track).
+    #[test]
+    fn object_kind_covers_every_language_data_object_type() {
+        let types = crate::syntax::language_data::object_types();
+        assert!(
+            !types.is_empty(),
+            "LanguageData object types must load (tree-sitter-al/data)"
+        );
+        for ot in types {
+            // `value` is a grammar parsing artifact (enum `value(N; X)`
+            // members), not a declarable AL object — exempt it.
+            if ot.keyword == "value" {
+                continue;
+            }
+            assert!(
+                ot.keyword.parse::<ObjectKind>().is_ok(),
+                "ObjectKind is missing the '{}' object type declared in \
+                 LanguageData — add a variant (and from_str/al_keyword arms)",
+                ot.keyword
+            );
+        }
+    }
+
     #[test]
     fn deserialize_symbol_reference_json() {
         let json = r#"{
@@ -1157,15 +1202,17 @@ mod tests {
 
     #[test]
     fn test_kinds_without_extensions() {
+        // Profile moved out of this list when ProfileExtension was added
+        // (F-OPEN-267 / BC profileextension object type).
         let no_ext = [
             ObjectKind::Codeunit,
             ObjectKind::XmlPort,
             ObjectKind::Query,
             ObjectKind::Interface,
-            ObjectKind::Profile,
             ObjectKind::PageCustomization,
             ObjectKind::ControlAddIn,
             ObjectKind::Entitlement,
+            ObjectKind::DotNet,
         ];
         for kind in &no_ext {
             assert!(

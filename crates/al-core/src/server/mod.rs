@@ -8,7 +8,8 @@
 //! only place in the crate that imports `tower_lsp::lsp_types::*` (the
 //! transport-boundary coding rule).
 
-pub mod completions;
+mod completions;
+pub mod conversions;
 pub mod daemon;
 pub mod dap_mode;
 pub mod definition;
