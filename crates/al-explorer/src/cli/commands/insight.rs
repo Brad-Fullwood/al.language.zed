@@ -18,7 +18,14 @@ pub fn cmd_trace(event: &str, depth: usize, json: bool) -> ExitCode {
                 );
             } else if let Some(steps) = result.as_array() {
                 if steps.is_empty() {
-                    println!("No event chain found for '{event}'");
+                    // FB-9: be explicit when the input isn't an event rather
+                    // than silently printing nothing.
+                    println!("No event chain found for '{event}'.");
+                    println!(
+                        "'{event}' may not be an event — trace follows \
+                         IntegrationEvent/BusinessEvent publishers. For consumers of a \
+                         procedure or object, use `al-explorer impact {event}`."
+                    );
                 } else {
                     for step in steps {
                         let depth = step.get("depth").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -112,16 +119,57 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
                 if unused.is_empty() {
                     println!("No dead code found.");
                 } else {
-                    println!("{:<12} {:<30} {:<30} REASON", "KIND", "NAME", "OBJECT");
-                    println!("{}", "-".repeat(85));
-                    for item in unused {
-                        let kind = item.get("k").and_then(|v| v.as_str()).unwrap_or("?");
-                        let name = item.get("n").and_then(|v| v.as_str()).unwrap_or("?");
-                        let obj = item.get("obj").and_then(|v| v.as_str()).unwrap_or("?");
-                        let reason = item.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("{:<12} {:<30} {:<30} {}", kind, name, obj, reason);
+                    // FB-12: group by confidence so provably-dead findings
+                    // are not mixed with "no references found, but could be
+                    // used through channels static analysis can't see".
+                    let (high, medium): (Vec<_>, Vec<_>) = unused.iter().partition(|item| {
+                        item.get("confidence")
+                            .and_then(|v| v.as_str())
+                            .map(|c| c.eq_ignore_ascii_case("high"))
+                            .unwrap_or(true)
+                    });
+
+                    let print_table = |items: &[&serde_json::Value]| {
+                        println!("{:<12} {:<32} {:<32} LOCATION", "KIND", "NAME", "OBJECT");
+                        println!("{}", "-".repeat(100));
+                        for item in items {
+                            let kind = item.get("k").and_then(|v| v.as_str()).unwrap_or("?");
+                            let name = item.get("n").and_then(|v| v.as_str()).unwrap_or("?");
+                            let obj = item.get("obj").and_then(|v| v.as_str()).unwrap_or("?");
+                            let file = item.get("f").and_then(|v| v.as_str()).unwrap_or("");
+                            let line = item.get("l").and_then(|v| v.as_u64()).unwrap_or(0);
+                            println!("{:<12} {:<32} {:<32} {}:{}", kind, name, obj, file, line);
+                        }
+                    };
+
+                    if !high.is_empty() {
+                        println!(
+                            "DEAD CODE — high confidence ({} findings, safe to act on):\n",
+                            high.len()
+                        );
+                        print_table(&high);
                     }
-                    eprintln!("\n{} unused symbols", unused.len());
+                    if !medium.is_empty() {
+                        if !high.is_empty() {
+                            println!();
+                        }
+                        println!(
+                            "POSSIBLY UNUSED — medium confidence ({} findings):",
+                            medium.len()
+                        );
+                        println!(
+                            "These have no name references in workspace AL source, but may \
+                             be used via\nFieldRef/RecordRef by number, report layouts, other \
+                             extensions, or the platform.\nVerify before removing.\n"
+                        );
+                        print_table(&medium);
+                    }
+                    eprintln!(
+                        "\n{} findings ({} high, {} possibly-unused)",
+                        unused.len(),
+                        high.len(),
+                        medium.len()
+                    );
                 }
             }
             ExitCode::SUCCESS

@@ -27,6 +27,28 @@ pub enum UnusedReason {
     PublisherRemoved,
 }
 
+/// How certain the analysis is that the symbol is genuinely dead.
+///
+/// FB-12: static analysis over workspace source CANNOT prove some symbols
+/// dead — table fields are reachable via `FieldRef`/`RecordRef` by number,
+/// report layouts, and other extensions; public procedures are callable
+/// from any dependent extension. Presenting those as certainly-dead made
+/// the analysis untrustworthy on real projects (ForNAV dataset tables on
+/// JIG UK). Findings now carry an explicit confidence and the CLI shows
+/// why each medium-confidence finding might still be alive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Confidence {
+    /// Provably unreachable within AL semantics (e.g. a `local` procedure
+    /// with zero call sites in its own object, or a subscriber whose
+    /// publisher no longer exists).
+    High,
+    /// No workspace references found, but the symbol is reachable through
+    /// channels static analysis cannot see (other extensions, FieldRef by
+    /// number, report layouts, the platform).
+    Medium,
+}
+
 /// A single unused symbol found by dead code analysis.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +70,11 @@ pub struct UnusedSymbol {
     pub line: Option<u32>,
     /// Why this symbol is considered dead.
     pub reason: UnusedReason,
+    /// How certain the analysis is (FB-12).
+    pub confidence: Confidence,
+    /// For medium-confidence findings: why the symbol might still be live.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Find all unused symbols in the workspace.
@@ -217,7 +244,7 @@ fn find_unused_procedures(
 
     collect_procedures(root, source, &mut procs);
 
-    for (proc_name, is_event, line) in &procs {
+    for (proc_name, is_event, line, is_local) in &procs {
         // Skip event publishers — they're entry points
         if *is_event {
             continue;
@@ -232,6 +259,21 @@ fn find_unused_procedures(
         let referenced = all_call_names.contains(&lname) || all_text_call_names.contains(&lname);
 
         if !referenced {
+            // FB-12: locality decides confidence. A `local` procedure with
+            // zero call sites is provably dead; a public one may be called
+            // by dependent extensions we can't see.
+            let (confidence, note) = if *is_local {
+                (Confidence::High, None)
+            } else {
+                (
+                    Confidence::Medium,
+                    Some(
+                        "public procedure — may be called by other extensions \
+                         or the platform; verify before removing"
+                            .to_string(),
+                    ),
+                )
+            };
             results.push(UnusedSymbol {
                 kind: UnusedKind::Procedure,
                 name: proc_name.clone(),
@@ -239,6 +281,8 @@ fn find_unused_procedures(
                 file: Some(file_path.to_string()),
                 line: Some(*line),
                 reason: UnusedReason::ZeroReferences,
+                confidence,
+                note,
             });
         }
     }
@@ -377,7 +421,7 @@ fn extract_member_access_names(line: &str) -> Vec<String> {
 fn collect_procedures(
     root: tree_sitter::Node,
     source: &[u8],
-    procs: &mut Vec<(String, bool, u32)>,
+    procs: &mut Vec<(String, bool, u32, bool)>,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -393,7 +437,12 @@ fn collect_procedures(
                     // Check for IntegrationEvent or BusinessEvent attribute
                     let is_event = has_event_attribute(node, source);
 
-                    procs.push((name, is_event, line));
+                    // `local`/`internal` procedures are unreachable from
+                    // other extensions — locality drives the confidence of
+                    // a zero-reference finding (FB-12).
+                    let is_local = node_has_local_modifier(node, source);
+
+                    procs.push((name, is_event, line, is_local));
                 }
             }
             // Do not recurse into procedure body
@@ -403,6 +452,25 @@ fn collect_procedures(
         let mut cursor = node.walk();
         stack.extend(node.children(&mut cursor));
     }
+}
+
+/// Whether a procedure declaration carries the `local` or `internal`
+/// modifier (case-insensitive). Checks the declaration text up to the
+/// procedure keyword.
+fn node_has_local_modifier(node: tree_sitter::Node, source: &[u8]) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Ok(text) = child.utf8_text(source) {
+            let lower = text.to_ascii_lowercase();
+            if lower == "local" || lower == "internal" {
+                return true;
+            }
+            if lower == "procedure" {
+                break;
+            }
+        }
+    }
+    false
 }
 
 /// Check if a procedure node has an IntegrationEvent or BusinessEvent attribute.
@@ -479,6 +547,12 @@ fn find_unused_fields(
         let referenced = all_member_access_names.contains(&field_name.to_lowercase());
 
         if !referenced {
+            // FB-12: a field with no NAME references is never provably
+            // dead — FieldRef/RecordRef access it by NUMBER, report
+            // layouts and dataset configs reference it outside AL source,
+            // and any dependent extension can read it. JIG UK's ForNAV
+            // buffer tables were exactly this: every field flagged, all in
+            // use via field-number config records.
             results.push(UnusedSymbol {
                 kind: UnusedKind::Field,
                 name: field_name.clone(),
@@ -486,6 +560,13 @@ fn find_unused_fields(
                 file: Some(file_path.to_string()),
                 line: Some(*line),
                 reason: UnusedReason::ZeroReferences,
+                confidence: Confidence::Medium,
+                note: Some(
+                    "no AL name references, but fields can be read via \
+                     FieldRef/RecordRef by number, report layouts, or other \
+                     extensions — verify before removing"
+                        .to_string(),
+                ),
             });
         }
     }
@@ -662,6 +743,10 @@ fn find_orphaned_subscribers(
                 file: Some(file_path.to_string()),
                 line: Some(*line),
                 reason: UnusedReason::PublisherRemoved,
+                // The publisher object is gone from both workspace and
+                // symbols — the subscriber can never fire.
+                confidence: Confidence::High,
+                note: None,
             });
         }
     }

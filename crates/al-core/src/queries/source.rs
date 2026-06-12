@@ -365,6 +365,260 @@ pub fn render_method_signature(m: &MethodSymbol) -> String {
     sig
 }
 
+// ---------------------------------------------------------------------------
+// Event-source resolution — `al-explorer event-source` (FB-9/FB-10)
+// ---------------------------------------------------------------------------
+
+/// Result of resolving the publisher behind an `[EventSubscriber(...)]`
+/// attribute at a cursor position.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventSourceResult {
+    /// Publisher object kind from the attribute's `ObjectType::` argument.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<ObjectKind>,
+    /// Publisher object name from the attribute.
+    pub target_object: String,
+    /// Event name from the attribute.
+    pub target_event: String,
+    /// Resolved publisher declaration file — a workspace `.al` file or a
+    /// virtual file materialised from a symbol package.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// 1-based line of the event declaration within `path`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// The declaration line text (trimmed), as a human-readable signature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// True when `path` is a virtual file extracted from a `.app` package.
+    pub from_package: bool,
+    /// Explanation when the publisher could not be fully resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// Resolve the actual event publisher for the `[EventSubscriber(...)]`
+/// attribute at `line_1based` in `file`.
+///
+/// FB-10: "Show Event Source" previously ran a name substring search and
+/// returned a pile of unrelated matches. This resolves the attribute's
+/// `(ObjectType, Object, EventName)` triple to the publisher's declaration
+/// — in the workspace when possible, otherwise materialised from the
+/// symbol package. FB-9: positions without a subscriber attribute get a
+/// clear error instead of garbage results.
+pub fn event_source(
+    workspace: &Workspace,
+    file: &std::path::Path,
+    line_1based: u32,
+) -> Result<EventSourceResult, String> {
+    let (source_text, tree) = workspace
+        .file_index
+        .get_cached_parse(file)
+        .or_else(|| {
+            let text = std::fs::read_to_string(file).ok()?;
+            let result = crate::syntax::AlParser::parse_quick(&text);
+            Some((text, result.tree))
+        })
+        .ok_or_else(|| format!("Cannot read or parse '{}'", file.display()))?;
+
+    // Find the procedure/trigger declaration containing (or starting at)
+    // the requested line. tree-sitter rows are 0-based.
+    let target_row = line_1based.saturating_sub(1) as usize;
+    let mut proc_node: Option<tree_sitter::Node> = None;
+    let mut stack = vec![tree.root_node()];
+    while let Some(current) = stack.pop() {
+        let mut cursor = current.walk();
+        for child in current.children(&mut cursor) {
+            if child.kind() == "procedure_declaration" || child.kind() == "trigger_declaration" {
+                let start = child.start_position().row;
+                let end = child.end_position().row;
+                if target_row >= start && target_row <= end {
+                    proc_node = Some(child);
+                }
+            } else {
+                stack.push(child);
+            }
+        }
+    }
+    let proc_node = proc_node.ok_or_else(|| {
+        format!(
+            "No procedure at {}:{} — place the cursor on an event subscriber \
+             (the [EventSubscriber] attribute or its procedure) and re-run",
+            file.display(),
+            line_1based
+        )
+    })?;
+
+    let attrs =
+        crate::insight::calls::collect_procedure_attributes(proc_node, source_text.as_bytes());
+    let sub_attr = attrs
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("EventSubscriber"))
+        .ok_or_else(|| {
+            format!(
+                "The procedure at {}:{} has no [EventSubscriber] attribute — \
+                 'Show Event Source' only applies to event subscribers",
+                file.display(),
+                line_1based
+            )
+        })?;
+
+    let args = crate::insight::calls::extract_attribute_args(&sub_attr.1);
+    let target_kind = args.first().and_then(|a| {
+        let a = a.trim();
+        let type_str = a.rsplit("::").next().unwrap_or(a);
+        type_str.parse::<ObjectKind>().ok()
+    });
+    let target_object = args
+        .get(1)
+        .map(|s| crate::insight::calls::clean_attr_arg(s))
+        .unwrap_or_default();
+    let target_event = args
+        .get(2)
+        .map(|s| crate::insight::calls::clean_attr_arg(s))
+        .unwrap_or_default();
+    if target_object.is_empty() || target_event.is_empty() {
+        return Err(format!(
+            "Could not parse the EventSubscriber attribute at {}:{}: '{}'",
+            file.display(),
+            line_1based,
+            sub_attr.1
+        ));
+    }
+
+    // 1. Workspace publisher.
+    if let Some(pub_path) = workspace.file_index.find_by_object_name(&target_object) {
+        if let Some((pub_src, pub_tree)) = workspace.file_index.get_cached_parse(&pub_path) {
+            if let Some((decl_line, sig)) =
+                find_procedure_decl_line(pub_tree.root_node(), &pub_src, &target_event)
+            {
+                return Ok(EventSourceResult {
+                    target_kind,
+                    target_object,
+                    target_event,
+                    path: Some(pub_path.to_string_lossy().into_owned()),
+                    line: Some(decl_line),
+                    signature: Some(sig),
+                    from_package: false,
+                    note: None,
+                });
+            }
+        }
+    }
+
+    // 2. Package publisher → virtual file.
+    let mut candidates = workspace.symbols.get_by_name(&target_object);
+    if let Some(kind) = target_kind {
+        candidates.retain(|e| e.kind == kind);
+    }
+    // Prefer the entry that actually declares the event.
+    candidates.sort_by_key(|e| {
+        let has_event = e
+            .methods
+            .iter()
+            .any(|m| m.name.eq_ignore_ascii_case(&target_event));
+        if has_event {
+            0
+        } else {
+            1
+        }
+    });
+    if let Some(entry) = candidates.first() {
+        let app_path = workspace.symbols.app_path(&entry.package);
+        match crate::symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
+            Ok(vpath) => {
+                let range = crate::symbols::virtual_file::find_member_range(
+                    &vpath,
+                    &target_event,
+                    crate::symbols::virtual_file::MemberKind::Unknown,
+                );
+                let line = range.as_ref().map(|r| r.line + 1);
+                let signature = entry
+                    .methods
+                    .iter()
+                    .find(|m| m.name.eq_ignore_ascii_case(&target_event))
+                    .map(render_method_signature);
+                return Ok(EventSourceResult {
+                    target_kind,
+                    target_object,
+                    target_event,
+                    path: Some(vpath.to_string_lossy().into_owned()),
+                    line,
+                    signature,
+                    from_package: true,
+                    note: None,
+                });
+            }
+            Err(e) => {
+                return Ok(EventSourceResult {
+                    target_kind,
+                    target_object: target_object.clone(),
+                    target_event,
+                    path: None,
+                    line: None,
+                    signature: None,
+                    from_package: true,
+                    note: Some(format!(
+                        "Publisher '{}' found in package '{}' but its source could not \
+                         be materialised: {}",
+                        target_object, entry.package, e
+                    )),
+                });
+            }
+        }
+    }
+
+    Ok(EventSourceResult {
+        target_kind,
+        target_object: target_object.clone(),
+        target_event,
+        path: None,
+        line: None,
+        signature: None,
+        from_package: false,
+        note: Some(format!(
+            "Publisher '{}' not found in the workspace or any loaded symbol package — \
+             check that symbols are downloaded",
+            target_object
+        )),
+    })
+}
+
+/// Find a procedure/trigger declaration by name in a parsed tree; returns
+/// (1-based line, trimmed declaration-line text).
+fn find_procedure_decl_line(
+    root: tree_sitter::Node,
+    source: &str,
+    name: &str,
+) -> Option<(u32, String)> {
+    let mut stack = vec![root];
+    while let Some(current) = stack.pop() {
+        let mut cursor = current.walk();
+        for child in current.children(&mut cursor) {
+            if child.kind() == "procedure_declaration" || child.kind() == "trigger_declaration" {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    if let Ok(text) = name_node.utf8_text(source.as_bytes()) {
+                        let clean = text.trim_matches('"');
+                        if clean.eq_ignore_ascii_case(name) {
+                            let row = name_node.start_position().row;
+                            let sig = source
+                                .lines()
+                                .nth(row)
+                                .map(|l| l.trim().to_string())
+                                .unwrap_or_default();
+                            return Some((row as u32 + 1, sig));
+                        }
+                    }
+                }
+            } else {
+                stack.push(child);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,6 +626,7 @@ mod tests {
 
     fn make_table_entry() -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
@@ -427,6 +682,7 @@ mod tests {
 
     fn make_enum_entry() -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Enum,
             id: 50100,
             name: "Sales Document Type".to_string(),
@@ -463,6 +719,7 @@ mod tests {
 
     fn make_codeunit_with_events() -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 80,
             name: "Sales-Post".to_string(),
@@ -523,6 +780,7 @@ mod tests {
 
     fn make_table_ext_entry() -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::TableExtension,
             id: 50100,
             name: "Customer Ext".to_string(),
@@ -657,6 +915,7 @@ mod tests {
     #[test]
     fn render_outline_empty_object() {
         let entry = SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: "Empty CU".to_string(),
@@ -860,6 +1119,7 @@ mod tests {
         table.kind = ObjectKind::Table;
         table.id = 27;
         let codeunit = SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 99,
             name: "Item".to_string(),

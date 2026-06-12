@@ -83,6 +83,15 @@ Examples:
     Events { name: String },
     /// Find event subscribers matching a name
     Subscribers { event: String },
+    /// Resolve the publisher behind the [EventSubscriber] at FILE:LINE
+    EventSource {
+        /// File containing the subscriber
+        #[arg(long)]
+        file: String,
+        /// 1-based line of the subscriber attribute or its procedure
+        #[arg(long)]
+        line: u32,
+    },
     /// Show base + all extensions merged
     Composed {
         #[arg(value_name = "TYPE")]
@@ -812,6 +821,7 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::ById { kind, id } => lsp::cmd_by_id(&kind, id, cli.json),
         Commands::Events { name } => lsp::cmd_events(&name, cli.json),
         Commands::Subscribers { event } => lsp::cmd_subscribers(&event, cli.json),
+        Commands::EventSource { file, line } => lsp::cmd_event_source(&file, line, cli.json),
         Commands::Composed { kind, name } => lsp::cmd_composed(&kind, &name, cli.json),
         Commands::Packages => lsp::cmd_packages(cli.json),
         Commands::Deps => lsp::cmd_deps(cli.json),
