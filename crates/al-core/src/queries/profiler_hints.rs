@@ -389,6 +389,7 @@ fn collect_profiler_lenses(
                             range,
                             kind: crate::queries::code_lens::CodeLensKind::Profiler(title.clone()),
                             title,
+                            test_target: None,
                         });
                     }
                 }

@@ -962,14 +962,37 @@ impl LanguageServer for AlServer {
                     CodeLensKind::Profiler(_) => "al.showProfiler",
                     CodeLensKind::Test(_) => "al.runTest",
                 };
+                // `data` carries the lens kind + payload so clients can
+                // distinguish test lenses; `arguments` makes al.runTest
+                // actionable (which codeunit/method to run). Both were
+                // previously dropped at this boundary (F-OPEN-270). The
+                // payload shape is deliberate — the internal enums are
+                // both internally tagged with "kind" and would collide if
+                // serialized directly.
+                let data = match &e.kind {
+                    CodeLensKind::Reference(count) => {
+                        serde_json::json!({ "kind": "reference", "count": count })
+                    }
+                    CodeLensKind::Profiler(label) => {
+                        serde_json::json!({ "kind": "profiler", "label": label })
+                    }
+                    CodeLensKind::Test(status) => {
+                        serde_json::json!({ "kind": "test", "status": status })
+                    }
+                };
+                let arguments = e
+                    .test_target
+                    .as_ref()
+                    .and_then(|t| serde_json::to_value(t).ok())
+                    .map(|v| vec![v]);
                 CodeLens {
                     range: e.range.into(),
                     command: Some(Command {
                         title: e.title,
                         command: command_id.to_string(),
-                        arguments: None,
+                        arguments,
                     }),
-                    data: None,
+                    data: Some(data),
                 }
             })
             .collect();

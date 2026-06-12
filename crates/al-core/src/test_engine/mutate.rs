@@ -82,10 +82,9 @@ pub struct VariantOutcome {
 
 /// Identifies which test-execution phase produced this report.
 ///
-/// The current implementation does NOT actually run the test suite against
-/// each mutant — that's reserved for the interpreter-backed phase. Surfacing
-/// the phase explicitly prevents callers from interpreting a 0% mutation
-/// score as a real result.
+/// Current runs execute interp-routed tests against each mutant in-process
+/// (`Interpreter`). `Stub` remains for deserialising older reports produced
+/// before execution was wired (F-OPEN-270), whose 0% scores are meaningless.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MutationExecutorPhase {
@@ -149,6 +148,11 @@ pub struct MutationOptions {
     pub parallel: bool,
     /// Per-variant timeout in milliseconds (None = no limit).
     pub timeout_ms: Option<u64>,
+    /// Explicit file allowlist. When set, only these paths are mutated
+    /// (still subject to `affected_only`); when None, the whole workspace
+    /// file index is considered.
+    #[serde(default)]
+    pub files: Option<Vec<String>>,
 }
 
 impl Default for MutationOptions {
@@ -157,6 +161,7 @@ impl Default for MutationOptions {
             affected_only: true,
             parallel: false,
             timeout_ms: Some(30_000),
+            files: None,
         }
     }
 }
@@ -626,12 +631,11 @@ pub async fn run_mutation_testing(
         killed,
         survived,
         errored,
-        // run_single_variant is still the scaffolding stub — no real test
-        // execution happens. Surface that explicitly so downstream consumers
-        // (al-explorer CLI, daemon clients) don't interpret a 0% score as
-        // a real signal. Promote this to `Interpreter` once the interpreter
-        // backend is wired into run_single_variant.
-        executor_phase: MutationExecutorPhase::Stub,
+        // run_single_variant executes interp-routed tests in-process against
+        // each mutant (F-OPEN-270); the score is a real signal for code
+        // covered by interpreter-runnable tests. Mutants in code only covered
+        // by live-BC tests still survive (no offline execution path).
+        executor_phase: MutationExecutorPhase::Interpreter,
     };
 
     let _ = tx
@@ -663,6 +667,13 @@ fn collect_mutation_files(
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
         let path_str = path.to_string_lossy().to_string();
+
+        // Honor the explicit allowlist when given (daemon `files` param).
+        if let Some(allow) = &opts.files {
+            if !allow.iter().any(|f| f == &path_str) {
+                continue;
+            }
+        }
 
         let cached = workspace.file_index.get_cached_parse(path);
 
@@ -735,17 +746,116 @@ async fn run_single_variant(
         }
     };
 
-    let _mutated_source = apply_variant(&original_text, variant);
+    let mutated_source = apply_variant(&original_text, variant);
 
-    // Phase 5 starter: in-process test execution is reserved for the next
-    // implementation phase that wires up the interpreter backend.  For now,
-    // every variant is recorded as "survived" so the infrastructure (variant
-    // generation, apply, event streaming, report) can be exercised and tested
-    // without requiring the interpreter to exist yet.
+    // --- Execute interp-routed tests against the mutant (F-OPEN-270) ---
+    //
+    // The mutant is swapped into the shared file_index for the duration of
+    // the run, then the original is restored. Mutation runs are explicit,
+    // single-flight user actions; concurrent readers may briefly observe the
+    // mutated text, which is acceptable for this tool (the daemon serialises
+    // mutation requests; editors aren't expected to query mid-run).
+    let path_buf = std::path::PathBuf::from(&variant.file);
+    workspace
+        .file_index
+        .add_file(path_buf.clone(), mutated_source);
+
+    let outcome = run_interp_tests_against_mutant(workspace, variant).await;
+
+    // Restore the original source no matter how the run went.
+    workspace.file_index.add_file(path_buf, original_text);
+
+    outcome
+}
+
+/// Run every interp-routed test codeunit in the workspace against the
+/// currently-applied mutant. A mutant is KILLED when any test fails.
+async fn run_interp_tests_against_mutant(
+    workspace: &std::sync::Arc<Workspace>,
+    variant: &MutationVariant,
+) -> VariantOutcome {
+    use crate::test_engine::backends::interp::InterpMode;
+    use crate::test_engine::router::RoutingDecision;
+    use crate::test_engine::session::{RunOptions, TestEvent, TestSession};
+
+    let discovered = crate::queries::tests::discover_tests(workspace);
+    let classifications = crate::test_engine::router::classify_codeunits(workspace, &discovered);
+    let mut all_interp: std::collections::HashMap<i32, bool> = std::collections::HashMap::new();
+    for c in &classifications {
+        let is_interp = matches!(c.decision, RoutingDecision::Interp);
+        all_interp
+            .entry(c.codeunit_id)
+            .and_modify(|all| *all &= is_interp)
+            .or_insert(is_interp);
+    }
+    let file_by_id: std::collections::HashMap<i32, String> = discovered
+        .iter()
+        .map(|cu| (cu.id, cu.file.clone()))
+        .collect();
+    let tests: Vec<crate::test_engine::session::TestId> = discovered
+        .iter()
+        .filter(|cu| all_interp.get(&cu.id).copied().unwrap_or(false))
+        .map(|cu| crate::test_engine::session::TestId {
+            codeunit_id: cu.id,
+            codeunit_name: cu.name.clone(),
+            method_name: None,
+        })
+        .collect();
+    if tests.is_empty() {
+        // No interpreter-runnable coverage — the mutant legitimately survives.
+        return VariantOutcome {
+            variant: variant.clone(),
+            killed: false,
+            killing_test: None,
+            error: None,
+        };
+    }
+
+    let mode = InterpMode::new(std::sync::Arc::clone(workspace));
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<TestEvent>(256);
+    let opts = RunOptions {
+        // Mutants can turn terminating loops infinite — keep the per-run
+        // budget tight so a pathological variant can't stall the whole sweep.
+        timeout_ms: Some(5_000),
+        ..Default::default()
+    };
+    let run_handle = tokio::spawn(async move { mode.run(tests, opts, tx).await });
+
+    // `mutate::TestId` (file + procedure) is the report's wire type — distinct
+    // from `session::TestId` used to address the run.
+    let mut killing_test: Option<TestId> = None;
+    while let Some(ev) = rx.recv().await {
+        if let TestEvent::SuiteComplete { ref summary, .. } = ev {
+            if killing_test.is_none() {
+                if let Some(m) = summary
+                    .methods
+                    .iter()
+                    .find(|m| matches!(m.status, crate::test_engine::TestStatus::Fail))
+                {
+                    killing_test = Some(TestId {
+                        file: file_by_id
+                            .get(&summary.id)
+                            .cloned()
+                            .unwrap_or_else(|| summary.name.clone()),
+                        procedure: m.name.clone(),
+                    });
+                }
+            }
+        }
+    }
+    if let Err(e) = run_handle.await {
+        return VariantOutcome {
+            variant: variant.clone(),
+            killed: false,
+            killing_test: None,
+            error: Some(format!("interp run panicked: {e}")),
+        };
+    }
+
     VariantOutcome {
         variant: variant.clone(),
-        killed: false,
-        killing_test: None,
+        killed: killing_test.is_some(),
+        killing_test,
         error: None,
     }
 }
@@ -790,6 +900,60 @@ mod tests {
 
     fn parse(source: &str) -> tree_sitter::Tree {
         AlParser::parse_quick(source).tree
+    }
+
+    /// F-OPEN-270: the mutation executor must actually RUN interp-routed tests
+    /// against each mutant — the Stub phase reported every mutant as survived,
+    /// making `test-mutate`'s 0.0% score meaningless. A mutant that flips the
+    /// arithmetic inside a covered [Test] procedure must be KILLED.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mutation_run_kills_mutants_via_interpreter() {
+        let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
+        let source = r#"codeunit 50110 "Pure Logic Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestAddition()
+    var
+        Result: Integer;
+    begin
+        Result := 2 + 2;
+        if Result <> 4 then
+            Error('Expected 4, got %1', Result);
+    end;
+}
+"#;
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/PureLogicTest.Codeunit.al"),
+            source.to_string(),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(256);
+        let report = run_mutation_testing(&ws, MutationOptions::default(), tx)
+            .await
+            .expect("mutation run");
+        assert_eq!(
+            report.executor_phase,
+            MutationExecutorPhase::Interpreter,
+            "executor must be promoted off the Stub phase"
+        );
+        assert!(
+            report.killed > 0,
+            "mutants inside the covered [Test] body must be killed; report: \
+             killed={} survived={} errored={}",
+            report.killed,
+            report.survived,
+            report.errored
+        );
+        // The original (unmutated) workspace must be restored afterwards.
+        let (text, _) = ws
+            .file_index
+            .get_cached_parse(std::path::Path::new("/proj/src/PureLogicTest.Codeunit.al"))
+            .expect("file still indexed");
+        assert_eq!(
+            text, source,
+            "original source must be restored after the run"
+        );
     }
 
     // --- Positive: correct variants generated ---------------------------------

@@ -55,6 +55,19 @@ pub struct CodeLensEntry {
     /// Structured kind — consumed by the LSP server to choose the command and
     /// (for Test lenses) the icon.
     pub kind: CodeLensKind,
+    /// For Test lenses: which test the attached `al.runTest` command targets.
+    /// Without this the command is unactionable — the client has no way to
+    /// know which codeunit/method to run (F-OPEN-270).
+    pub test_target: Option<TestTarget>,
+}
+
+/// Identifies the test a Test lens points at, for the `al.runTest` command
+/// arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestTarget {
+    pub codeunit_id: i32,
+    pub method_name: String,
 }
 
 /// Return CodeLens entries for all referenceable symbols in the document.
@@ -128,6 +141,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
                         range: child.selection_range.into(),
                         title: reference_label(count),
                         kind: CodeLensKind::Reference(count),
+                        test_target: None,
                     });
                     // Emit a test lens if this procedure has a [Test] attribute.
                     if let Some(ref ctx) = test_lens_ctx {
@@ -137,6 +151,10 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
                                 range: child.selection_range.into(),
                                 title,
                                 kind: CodeLensKind::Test(status),
+                                test_target: Some(TestTarget {
+                                    codeunit_id: ctx.codeunit_id,
+                                    method_name: name_raw.to_string(),
+                                }),
                             });
                         }
                     }
@@ -151,6 +169,7 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
                 range: sym.selection_range.into(),
                 title: reference_label(count),
                 kind: CodeLensKind::Reference(count),
+                test_target: None,
             });
             // Emit a test lens if this procedure has a [Test] attribute.
             if let Some(ref ctx) = test_lens_ctx {
@@ -160,6 +179,10 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Vec<CodeLensEntry> {
                         range: sym.selection_range.into(),
                         title,
                         kind: CodeLensKind::Test(status),
+                        test_target: Some(TestTarget {
+                            codeunit_id: ctx.codeunit_id,
+                            method_name: name_raw.to_string(),
+                        }),
                     });
                 }
             }

@@ -2377,17 +2377,19 @@ pub(super) async fn dispatch_tests_run(
 /// - `coberturaOut`: str (path to write Cobertura XML)
 /// - `filter`: str (forwarded; currently logged only)
 pub(super) async fn dispatch_tests_run_batch(
-    workspace: &Workspace,
+    workspace: &std::sync::Arc<Workspace>,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
     use crate::launch::find_launch_config;
+    use crate::test_engine::backends::interp::InterpMode;
     use crate::test_engine::backends::live_bc::LiveBcMode;
     use crate::test_engine::output::{cobertura, junit};
+    use crate::test_engine::router::RoutingDecision;
     use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
     use tokio::sync::mpsc;
 
-    // -- Resolve project root + launch config ---------------------------------
+    // -- Resolve project root ---------------------------------------------------
     let project_root = match workspace
         .project
         .read()
@@ -2397,26 +2399,6 @@ pub(super) async fn dispatch_tests_run_batch(
     {
         Some(root) => root,
         None => return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT),
-    };
-    let launch_cfg = match find_launch_config(&project_root) {
-        Some(cfg) => cfg,
-        None => {
-            return rpc_error(
-                id,
-                error_codes::INTERNAL_ERROR,
-                "No launch config found — create .vscode/launch.json or .zed/debug.json",
-            );
-        }
-    };
-    let server_config = match launch_cfg.configs.first() {
-        Some(c) => c.clone(),
-        None => {
-            return rpc_error(
-                id,
-                error_codes::INTERNAL_ERROR,
-                "No BC server config found in launch config",
-            );
-        }
     };
 
     // -- Parse params ----------------------------------------------------------
@@ -2512,11 +2494,76 @@ pub(super) async fn dispatch_tests_run_batch(
             .map(String::from),
     };
 
-    // -- Run via LiveBcMode ----------------------------------------------------
-    let mode = LiveBcMode::new(server_config);
+    // -- Route per codeunit (F-OPEN-270) ----------------------------------------
+    // A codeunit whose discovered [Test] methods ALL classify as `Interp`
+    // runs on the Rust interpreter (no BC server, no launch config needed).
+    // Everything else — mixed codeunits, record-touching tests, codeunits
+    // not discoverable in the workspace — keeps the previous LiveBcMode path
+    // unchanged. The launch config is only required when live tests exist.
+    let discovered = crate::queries::tests::discover_tests(workspace);
+    let classifications = crate::test_engine::router::classify_codeunits(workspace, &discovered);
+    let mut all_interp: std::collections::HashMap<i32, bool> = std::collections::HashMap::new();
+    for c in &classifications {
+        let is_interp = matches!(c.decision, RoutingDecision::Interp);
+        all_interp
+            .entry(c.codeunit_id)
+            .and_modify(|all| *all &= is_interp)
+            .or_insert(is_interp);
+    }
+    let (interp_tests, live_tests): (Vec<TestId>, Vec<TestId>) = tests
+        .into_iter()
+        .partition(|t| all_interp.get(&t.codeunit_id).copied().unwrap_or(false));
+
+    // -- Resolve launch config (only needed for the live path) ------------------
+    let server_config = if live_tests.is_empty() {
+        None
+    } else {
+        let launch_cfg = match find_launch_config(&project_root) {
+            Some(cfg) => cfg,
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "No launch config found — create .vscode/launch.json or .zed/debug.json",
+                );
+            }
+        };
+        match launch_cfg.configs.first() {
+            Some(c) => Some(c.clone()),
+            None => {
+                return rpc_error(
+                    id,
+                    error_codes::INTERNAL_ERROR,
+                    "No BC server config found in launch config",
+                );
+            }
+        }
+    };
+
+    // -- Run interp + live backends, merging their event streams ----------------
     let (tx, mut rx) = mpsc::channel::<TestEvent>(256);
-    let opts_for_run = opts.clone();
-    let run_handle = tokio::spawn(async move { mode.run(tests, opts_for_run, tx).await });
+    let mut run_handles = Vec::new();
+    if !interp_tests.is_empty() {
+        let mode = InterpMode::new(std::sync::Arc::clone(workspace));
+        let tx_interp = tx.clone();
+        let opts_for_run = opts.clone();
+        run_handles.push(tokio::spawn(async move {
+            mode.run(interp_tests, opts_for_run, tx_interp).await
+        }));
+    }
+    if !live_tests.is_empty() {
+        // Routing guarantees server_config is Some when live tests exist.
+        let Some(cfg) = server_config else {
+            return rpc_error(id, error_codes::INTERNAL_ERROR, "launch config vanished");
+        };
+        let mode = LiveBcMode::new(cfg);
+        let tx_live = tx.clone();
+        let opts_for_run = opts.clone();
+        run_handles.push(tokio::spawn(async move {
+            mode.run(live_tests, opts_for_run, tx_live).await
+        }));
+    }
+    drop(tx); // rx ends once every backend's sender is gone
 
     let mut events: Vec<TestEvent> = Vec::new();
     let mut summaries: Vec<crate::test_engine::result::TestCodeunitResult> = Vec::new();
@@ -2526,12 +2573,14 @@ pub(super) async fn dispatch_tests_run_batch(
         }
         events.push(ev);
     }
-    if let Err(e) = run_handle.await {
-        return rpc_error(
-            id,
-            error_codes::INTERNAL_ERROR,
-            &format!("test run task panicked: {e}"),
-        );
+    for run_handle in run_handles {
+        if let Err(e) = run_handle.await {
+            return rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("test run task panicked: {e}"),
+            );
+        }
     }
 
     // -- Persist results -------------------------------------------------------
@@ -2603,7 +2652,7 @@ pub(super) async fn dispatch_tests_run_batch(
 /// minus `codeunitIds` (which is auto-populated from
 /// `queries::tests::discover_tests`).
 pub(super) async fn dispatch_tests_run_auto(
-    workspace: &Workspace,
+    workspace: &std::sync::Arc<Workspace>,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
@@ -3539,13 +3588,11 @@ pub(super) fn dispatch_profiler_hints(
 ///
 /// Returns: serialized `MutationReport` JSON.
 pub(super) async fn dispatch_tests_mutate(
-    workspace: &Workspace,
+    workspace: &std::sync::Arc<Workspace>,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    use crate::test_engine::mutate::{
-        generate_variants_for_file, MutationOptions, MutationReport, VariantOutcome,
-    };
+    use crate::test_engine::mutate::MutationOptions;
     use al_protocol::jsonrpc::error_codes;
 
     // Require a loaded project
@@ -3561,87 +3608,51 @@ pub(super) async fn dispatch_tests_mutate(
         }
     };
 
-    // Parse options
+    // Parse options. An explicit `files` array narrows the mutation scope.
     let parallel = params
         .get("parallel")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let timeout_ms = clamp_timeout_ms(params.get("timeoutMs").and_then(|v| v.as_u64()));
+    let files = params.get("files").and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect::<Vec<String>>()
+    });
 
     let opts = MutationOptions {
         affected_only: true,
         parallel,
         timeout_ms,
+        files,
     };
 
-    // Collect file paths to mutate — from params or from workspace
-    let file_paths: Vec<String> = if let Some(arr) = params.get("files").and_then(|v| v.as_array())
-    {
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
-    } else {
-        // Default: all test files in workspace
-        workspace
-            .file_index
-            .files
-            .iter()
-            .map(|e| e.key().to_string_lossy().to_string())
-            .collect()
-    };
-
-    if file_paths.is_empty() {
-        return Response {
-            id,
-            result: Some(
-                serde_json::to_value(&MutationReport {
-                    variants: vec![],
-                    killed: 0,
-                    survived: 0,
-                    errored: 0,
-                    executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Stub,
-                })
-                .unwrap_or(serde_json::Value::Null),
-            ),
-            error: None,
-            ..Default::default()
-        };
-    }
-
-    // Generate and run variants (sequential for the starter phase)
-    let mut all_outcomes: Vec<VariantOutcome> = Vec::new();
-    let timeout = opts.timeout_ms.map(std::time::Duration::from_millis);
-
-    for file_path in &file_paths {
-        let variants = generate_variants_for_file(workspace, file_path);
-        for variant in variants {
-            // Apply the mutation to a copy of source, then record outcome.
-            // Full interpreter integration is in the next phase; for now every
-            // variant is recorded as "survived" so the endpoint is exercisable.
-            let outcome = crate::test_engine::mutate::VariantOutcome {
-                variant: variant.clone(),
-                killed: false,
-                killing_test: None,
-                error: None,
-            };
-            let _ = timeout; // will be used when interpreter is wired
-            all_outcomes.push(outcome);
+    // Run the real engine (F-OPEN-270): variants are executed against the
+    // interp-routed test suite in-process; the previous dispatcher-local loop
+    // was a stub that marked every mutant survived. Progress events are
+    // drained — this JSON-RPC endpoint returns only the final report.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let report = match crate::test_engine::mutate::run_mutation_testing(workspace, opts, tx).await {
+        Ok(report) => report,
+        Err(crate::test_engine::mutate::MutationError::NoTestFiles) => {
+            crate::test_engine::mutate::MutationReport {
+                variants: vec![],
+                killed: 0,
+                survived: 0,
+                errored: 0,
+                executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Interpreter,
+            }
         }
-    }
-
-    let killed = all_outcomes.iter().filter(|o| o.killed).count();
-    let errored = all_outcomes.iter().filter(|o| o.error.is_some()).count();
-    let survived = all_outcomes.len() - killed - errored;
-
-    let report = MutationReport {
-        variants: all_outcomes,
-        killed,
-        survived,
-        errored,
-        // Daemon dispatch path mirrors the in-process scaffolding: test
-        // execution is stubbed pending the interpreter backend.
-        executor_phase: crate::test_engine::mutate::MutationExecutorPhase::Stub,
+        Err(e) => {
+            return super::rpc_error(
+                id,
+                error_codes::INTERNAL_ERROR,
+                &format!("mutation run failed: {e}"),
+            );
+        }
     };
+    let _ = drain.await;
 
     match serde_json::to_value(&report) {
         Ok(value) => Response {
@@ -4112,9 +4123,98 @@ mod p1_5_tests {
 
     // --- dispatch_tests_run_batch --------------------------------------------
 
+    /// F-OPEN-270: pure-logic test codeunits (router decision: Interp) must
+    /// run on the INTERPRETER — actually executing the [Test] procedures —
+    /// and must NOT require a BC launch config. Previously everything went
+    /// through LiveBcMode: `test-run-all` refused without .zed/debug.json
+    /// and then reported "0/0 passed" for tests the interpreter can run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_batch_routes_pure_tests_to_interpreter_without_launch_config() {
+        let ws = std::sync::Arc::new(empty_ws());
+        let tmp = tempfile::TempDir::new().unwrap();
+        // NO .zed/debug.json and NO .vscode/launch.json on purpose.
+        {
+            let mut guard = ws.project.write().await;
+            *guard = Some(crate::project::AlProject {
+                root: tmp.path().to_path_buf(),
+                app_json: crate::project::AppManifest {
+                    id: String::new(),
+                    name: "test".into(),
+                    publisher: "test".into(),
+                    version: "1.0.0.0".into(),
+                    dependencies: Vec::new(),
+                    application: None,
+                    platform: None,
+                    runtime: None,
+                },
+                packages_dir: tmp.path().join(".alpackages"),
+                packages: Vec::new(),
+                server_configs: Vec::new(),
+            });
+        }
+        // A pure-logic test codeunit: 2 [Test] procedures, one passing and
+        // one failing, so the totals prove real interpreter execution.
+        let src_path = tmp.path().join("PureLogicTest.Codeunit.al");
+        let source = r#"codeunit 50110 "Pure Logic Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestAddition()
+    var
+        Result: Integer;
+    begin
+        Result := 2 + 2;
+        if Result <> 4 then
+            Error('Expected 4, got %1', Result);
+    end;
+
+    [Test]
+    procedure TestFails()
+    begin
+        Error('intentional failure');
+    end;
+}
+"#;
+        std::fs::write(&src_path, source).unwrap();
+        ws.file_index.add_file(src_path, source.to_string());
+
+        let resp = dispatch_tests_run_batch(
+            &ws,
+            7,
+            &serde_json::json!({
+                "codeunitIds": [50110],
+                "codeunitNames": ["Pure Logic Test"],
+            }),
+        )
+        .await;
+        assert!(
+            resp.error.is_none(),
+            "interp-routed tests must run without a launch config: {:?}",
+            resp.error
+        );
+        let result = resp.result.expect("result");
+        let totals = &result["totals"];
+        assert_eq!(
+            totals["total"].as_u64(),
+            Some(2),
+            "both [Test] procedures must execute: {result}"
+        );
+        assert_eq!(
+            totals["passed"].as_u64(),
+            Some(1),
+            "TestAddition must pass: {result}"
+        );
+        assert_eq!(
+            totals["failed"].as_u64(),
+            Some(1),
+            "TestFails must fail: {result}"
+        );
+    }
+
     #[tokio::test]
     async fn run_batch_no_project_returns_error() {
-        let ws = empty_ws();
+        let ws = std::sync::Arc::new(empty_ws());
         let resp = dispatch_tests_run_batch(&ws, 1, &serde_json::json!({})).await;
         assert!(
             resp.error.is_some(),
@@ -4124,7 +4224,7 @@ mod p1_5_tests {
 
     #[tokio::test]
     async fn run_auto_no_project_returns_error() {
-        let ws = empty_ws();
+        let ws = std::sync::Arc::new(empty_ws());
         let resp = dispatch_tests_run_auto(&ws, 2, &serde_json::json!({})).await;
         assert!(resp.error.is_some());
     }
@@ -4140,7 +4240,7 @@ mod p1_5_tests {
     async fn run_batch_missing_codeunit_ids_is_invalid_params() {
         // Set a project root so we get past the NO_PROJECT check, then
         // miss codeunitIds — must return INVALID_PARAMS, not crash.
-        let ws = empty_ws();
+        let ws = std::sync::Arc::new(empty_ws());
         let tmp = tempfile::TempDir::new().unwrap();
         // Write a minimal launch.json so find_launch_config succeeds.
         let dot_zed = tmp.path().join(".zed");
@@ -4184,7 +4284,7 @@ mod p1_5_tests {
         // Negative regression: a codeunitIds entry beyond the i32 range must be
         // rejected with INVALID_PARAMS rather than silently wrapping via
         // `as i32` and executing tests against the wrong codeunit.
-        let ws = empty_ws();
+        let ws = std::sync::Arc::new(empty_ws());
         let tmp = tempfile::TempDir::new().unwrap();
         let dot_zed = tmp.path().join(".zed");
         std::fs::create_dir_all(&dot_zed).unwrap();
@@ -5645,7 +5745,7 @@ mod p1_5_tests {
 
     #[tokio::test]
     async fn tests_mutate_no_project_returns_error() {
-        let ws = empty_ws();
+        let ws = std::sync::Arc::new(empty_ws());
         let resp = dispatch_tests_mutate(&ws, 1, &serde_json::json!({})).await;
         let err = resp.error.expect("no project must error");
         assert_eq!(err.code, error_codes::INTERNAL_ERROR);
