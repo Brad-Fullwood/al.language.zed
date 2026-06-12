@@ -412,6 +412,7 @@ mod tests {
         };
         let ws = Workspace::new();
         let entries = vec![SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 50100,
             name: "Legacy CU".to_string(),

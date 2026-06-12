@@ -2850,6 +2850,7 @@ mod tests {
 
     fn make_entry_with_namespace(kind: ObjectKind, id: i32, name: &str, ns: &str) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind,
             id,
             name: name.to_string(),
@@ -3730,6 +3731,7 @@ codeunit 50100 "My Codeunit"
 
     fn make_interface_entry(name: &str, methods: Vec<crate::symbols::MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Interface,
             id: 0,
             name: name.to_string(),

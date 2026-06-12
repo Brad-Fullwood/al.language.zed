@@ -705,6 +705,7 @@ mod tests {
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),

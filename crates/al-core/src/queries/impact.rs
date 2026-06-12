@@ -360,6 +360,7 @@ mod tests {
 
     fn make_table(id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id,
             name: name.to_string(),
@@ -384,6 +385,7 @@ mod tests {
 
     fn make_page_for_table(id: i32, name: &str, source_table: &str) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Page,
             id,
             name: name.to_string(),
@@ -406,6 +408,7 @@ mod tests {
 
     fn make_table_ext(id: i32, name: &str, extends: &str) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::TableExtension,
             id,
             name: name.to_string(),

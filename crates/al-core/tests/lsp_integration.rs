@@ -141,6 +141,7 @@ fn build_test_index() -> SymbolIndex {
     let index = SymbolIndex::new();
     index.add_entries(&[
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
@@ -202,6 +203,7 @@ fn build_test_index() -> SymbolIndex {
             variables: vec![],
         },
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id: 80,
             name: "Sales-Post".to_string(),
@@ -228,6 +230,7 @@ fn build_test_index() -> SymbolIndex {
             variables: vec![],
         },
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Enum,
             id: 1530,
             name: "Customer Blocked".to_string(),

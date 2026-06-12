@@ -1749,6 +1749,7 @@ mod tests {
 
     fn table_entry(id: i32, name: &str, fields: Vec<FieldSymbol>) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id,
             name: name.to_string(),
@@ -1774,6 +1775,7 @@ mod tests {
         methods: Vec<MethodSymbol>,
     ) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::TableExtension,
             id,
             name: name.to_string(),
@@ -1802,6 +1804,7 @@ mod tests {
 
     fn enum_entry(id: i32, name: &str, values: Vec<EnumValueSymbol>) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Enum,
             id,
             name: name.to_string(),
@@ -1826,6 +1829,7 @@ mod tests {
         values: Vec<EnumValueSymbol>,
     ) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::EnumExtension,
             id,
             name: name.to_string(),

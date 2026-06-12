@@ -153,6 +153,7 @@ mod tests {
 
     fn make_codeunit_entry(name: &str, id: i32, implements: Vec<String>) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),

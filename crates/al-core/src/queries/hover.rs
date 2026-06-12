@@ -606,6 +606,7 @@ mod tests {
     #[test]
     fn test_format_symbol_hover() {
         let entry = crate::symbols::SymbolEntry {
+            synthetic: false,
             kind: crate::symbols::ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
@@ -670,6 +671,7 @@ mod tests {
 
     fn table_entry() -> crate::symbols::SymbolEntry {
         crate::symbols::SymbolEntry {
+            synthetic: false,
             kind: crate::symbols::ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
@@ -723,6 +725,7 @@ mod tests {
     #[test]
     fn format_symbol_hover_renders_enum_values() {
         let entry = crate::symbols::SymbolEntry {
+            synthetic: false,
             kind: crate::symbols::ObjectKind::Enum,
             id: 50100,
             name: "Color".to_string(),
