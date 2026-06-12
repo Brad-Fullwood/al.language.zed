@@ -8,7 +8,6 @@ FINDINGS.md remains the narrative history; this is the index.
 
 | ID | Severity | Title |
 |---|---|---|
-| F-OPEN-272 | P2 | compile/package error "Failed to initialize semantic bridge" instead of falling back to the documented alc subprocess when the bridge is unavailable (ALTool v17 installed, semantic feature off). (tool-audit §5) |
 | F-OPEN-257 | P2 | Decompose run_native_dap (~1,038 lines, dap/native_dap.rs:92): extract per-request handlers over a NativeDapState struct so handlers become unit-testable (file is a coverage gap because only the whole loop is drivable). (FR-5) |
 | F-OPEN-258 | P2 | Split server/daemon/build_dispatch.rs (~3,650 prod lines, ~60 dispatch fns + 2,371 inline test lines) into domain submodules (build, symbols/auth, xliff, tests, analysis, codegen, fixes); mechanical moves. (FR-6) |
 | F-OPEN-259 | P2 | Public NuGet symbol-feed parity (BC 2026 W1): support MSSymbols + AppSourceSymbols public feeds, globalSourcesOnly-equivalent, symbolsCountryRegion + custom-feeds settings in nuget.rs + extension settings schema. Source: ecosystem roadmap R4 (.claude/research/ecosystem-roadmap-2026-06-09.md) |
@@ -25,6 +24,7 @@ FINDINGS.md remains the narrative history; this is the index.
 
 | ID | Severity | Status | Title |
 |---|---|---|---|
+| F-OPEN-272 | P2 | fixed | dispatch_compile falls back to build::compile_project (dotnet alc) when the semantic bridge is unavailable; bridge stays preferred. Routing regression test via AL_TOOL_PATH fixture; live fixture compile yields real alc AL0104 diagnostics instead of 'Failed to initialize semantic bridge'. |
 | F-OPEN-273 | P3 | fixed | xlf object-name extraction stops at the closing quote (parse_object_name); extension headers no longer leak ' extends "Base"' into unit ids. Regression tests for quoted + bare names. |
 | F-OPEN-271 | P2 | fixed | organize-files daemon deadlock (commit follows 39c3b78): dispatcher held file_index.files DashMap iter guard while rename_al_file_and_refresh wrote the same map; snapshot-before-loop fix + 10s-timeout regression test. Live: 13-file fixture organizes in 0.1s (was 30s EAGAIN). |
 | F-OPEN-270 | P1 | fixed | Test engine end-to-end repair (commit 39c3b78): run_batch/run_auto route Interp-classified codeunits to InterpMode (launch config only required for live tests; fixture test-run-all now 2/2 with no .zed/debug.json); mutation executor wired to real interp execution with swap/restore + 5s mutant budget (fixture: 0/145 fake -> 11 killed/2 survived, 84.6%) incl. replacing the dispatcher's second stub loop; test code lenses now carry data{kind:test,status} + al.runTest arguments {codeunitId, methodName} (never-green test_engine_e2e code-lens test now passes 7/7). |
