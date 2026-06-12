@@ -3479,10 +3479,18 @@ pub(super) fn dispatch_organize_files(
 
     let mut results = Vec::new();
 
-    for entry in workspace.file_index.files.iter() {
-        let path = entry.key().clone();
-        let text = entry.value().clone();
+    // Snapshot (path, text) pairs BEFORE the rename loop (F-OPEN-271):
+    // `rename_al_file_and_refresh` mutates `file_index.files`, and holding
+    // the DashMap iter guard across those writes deadlocked the daemon —
+    // clients sat in their 30s read timeout and surfaced a raw EAGAIN.
+    let snapshot: Vec<(std::path::PathBuf, String)> = workspace
+        .file_index
+        .files
+        .iter()
+        .map(|e| (e.key().clone(), e.value().clone()))
+        .collect();
 
+    for (path, text) in snapshot {
         // Parse object info from text
         let parsed = crate::syntax::AlParser::parse_quick(&text);
         let obj = match crate::syntax::find_object_declaration(&parsed.tree, &text) {
@@ -3714,6 +3722,69 @@ mod p1_5_tests {
     fn clamp_timeout_ms_propagates_none() {
         // None (param omitted entirely) stays None — caller decides the default.
         assert_eq!(clamp_timeout_ms(None), None);
+    }
+
+    // --- dispatch_organize_files ----------------------------------------------
+
+    /// F-OPEN-271: organize-files deadlocked the daemon — the dispatcher held
+    /// a `file_index.files` DashMap shard guard across the rename loop while
+    /// `rename_al_file_and_refresh` mutated the same map (the documented
+    /// DashMap gotcha). Clients then hit their 30s read timeout and surfaced
+    /// a raw EAGAIN. The 10s timeout here turns the hang into a clean failure.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn organize_files_renames_without_deadlocking() {
+        let ws = std::sync::Arc::new(empty_ws());
+        let tmp = tempfile::TempDir::new().unwrap();
+        {
+            let mut guard = ws.project.write().await;
+            *guard = Some(crate::project::AlProject {
+                root: tmp.path().to_path_buf(),
+                app_json: crate::project::AppManifest {
+                    id: String::new(),
+                    name: "test".into(),
+                    publisher: "test".into(),
+                    version: "1.0.0.0".into(),
+                    dependencies: Vec::new(),
+                    application: None,
+                    platform: None,
+                    runtime: None,
+                },
+                packages_dir: tmp.path().join(".alpackages"),
+                packages: Vec::new(),
+                server_configs: Vec::new(),
+            });
+        }
+        // A real on-disk file whose name does NOT match <Kind><Id>.<Name>.al.
+        let source = "codeunit 50100 \"Hello World\"\n{\n}\n";
+        let wrong_path = tmp.path().join("misnamed.al");
+        std::fs::write(&wrong_path, source).unwrap();
+        ws.file_index
+            .add_file(wrong_path.clone(), source.to_string());
+
+        let ws2 = std::sync::Arc::clone(&ws);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::task::spawn_blocking(move || {
+                dispatch_organize_files(&ws2, 1, &serde_json::json!({}))
+            }),
+        )
+        .await;
+        let resp = result
+            .expect("organize-files deadlocked (held DashMap guard across rename)")
+            .expect("task panicked");
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let files = resp.result.expect("result")["files"].clone();
+        let arr = files.as_array().expect("files array");
+        assert_eq!(arr.len(), 1, "one rename expected: {arr:?}");
+        assert_eq!(arr[0]["renamed"], true, "rename must succeed: {arr:?}");
+        assert!(
+            tmp.path().join("Codeunit50100.Hello World.al").exists()
+                || arr[0]["to"]
+                    .as_str()
+                    .map(|p| std::path::Path::new(p).exists())
+                    .unwrap_or(false),
+            "renamed file must exist on disk"
+        );
     }
 
     // --- xlf_target_language -------------------------------------------------
