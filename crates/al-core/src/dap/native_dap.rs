@@ -89,6 +89,1079 @@ pub struct ResolvedObject {
 /// `resolve_object` maps a file path to its AL object type + ID using the workspace index.
 /// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
 /// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
+/// Shared state + host callbacks for the native DAP server (F-OPEN-257).
+///
+/// Every DAP request is handled by a method on this struct that writes its
+/// messages through a generic [`tokio::io::AsyncWrite`] sink — production
+/// uses stdout, tests use [`tokio::io::duplex`]. This is what makes the
+/// per-request handlers unit-testable: previously the only drivable surface
+/// was the entire stdio loop.
+pub(crate) struct NativeDapState<F, R, P> {
+    /// Single monotonic sequence counter shared between handlers and the
+    /// background event-forwarding task. DAP requires non-decreasing seq
+    /// values across all messages sent to the client.
+    seq: Arc<AtomicU64>,
+    session: Arc<Mutex<Option<Arc<BcDebugSession>>>>,
+    debug_config: Arc<Mutex<Option<BcDebugConfig>>>,
+    breakpoints: Arc<Mutex<HashMap<String, Vec<i64>>>>,
+    /// Cancellation channel for the background event-forwarding task.
+    /// When a new debug session starts we send a new value so the old task exits.
+    cancel_tx: watch::Sender<u64>,
+    cancel_rx: watch::Receiver<u64>,
+    /// Channel for the BC-event forwarding task to send pre-serialized DAP
+    /// event bytes to the main loop (bounded 1024 — T010).
+    dap_event_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    project_root: String,
+    alc_path: Option<PathBuf>,
+    acquire_token: F,
+    resolve_object: R,
+    resolve_path: P,
+}
+
+impl<F, Fut, R, P> NativeDapState<F, R, P>
+where
+    F: Fn(String) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+{
+    /// Dispatch one DAP request to its handler. Returns `Ok(true)` when the
+    /// server loop should exit (disconnect/terminate).
+    pub(crate) async fn handle_request<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        command: &str,
+        request_seq: i64,
+        arguments: &serde_json::Value,
+    ) -> Result<bool> {
+        match command {
+            "initialize" => self.handle_initialize(out, request_seq, command).await?,
+            "configurationDone" => {
+                self.handle_configuration_done(out, request_seq, command)
+                    .await?
+            }
+            "launch" | "attach" => {
+                self.handle_launch_attach(out, request_seq, command, arguments)
+                    .await?
+            }
+            "setBreakpoints" => {
+                self.handle_set_breakpoints(out, request_seq, command, arguments)
+                    .await?
+            }
+            "next" | "stepIn" | "stepOut" => self.handle_step(out, request_seq, command).await?,
+            "pause" => self.handle_pause(out, request_seq, command).await?,
+            "continue" => self.handle_continue(out, request_seq, command).await?,
+            "threads" => self.handle_threads(out, request_seq, command).await?,
+            "stackTrace" => self.handle_stack_trace(out, request_seq, command).await?,
+            "scopes" => {
+                self.handle_scopes(out, request_seq, command, arguments)
+                    .await?
+            }
+            "variables" => {
+                self.handle_variables(out, request_seq, command, arguments)
+                    .await?
+            }
+            "evaluate" => {
+                self.handle_evaluate(out, request_seq, command, arguments)
+                    .await?
+            }
+            "disconnect" | "terminate" => {
+                self.handle_disconnect(out, request_seq, command).await?;
+                return Ok(true);
+            }
+            _ => self.handle_unknown(out, request_seq, command).await?,
+        }
+        Ok(false)
+    }
+
+    async fn handle_initialize<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        // Respond with our capabilities
+        let resp = make_response(
+            &self.seq,
+            request_seq,
+            command,
+            true,
+            Some(serde_json::json!({
+                "supportsConfigurationDoneRequest": true,
+                "supportsFunctionBreakpoints": false,
+                "supportsConditionalBreakpoints": true,
+                "supportsEvaluateForHovers": true,
+                "supportsStepBack": false,
+                "supportsSetVariable": false,
+                "supportsCompletionsRequest": false,
+                "supportsTerminateRequest": true,
+                "supportsDelayedStackTraceLoading": true,
+                "supportsRestartRequest": false,
+            })),
+            None,
+        );
+        write_dap(out, &resp).await?;
+
+        // Send initialized event
+        let evt = make_event(&self.seq, "initialized", None);
+        write_dap(out, &evt).await?;
+        Ok(())
+    }
+
+    async fn handle_configuration_done<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        // Clone both Arc and config before dropping locks so we don't hold
+        // the mutex guard across the async invoke() call.
+        let session_arc = self.session.lock().await.clone();
+        let cfg = self.debug_config.lock().await.clone();
+        if let (Some(s), Some(cfg)) = (session_arc, cfg) {
+            if let Err(e) = s.configuration_done(&cfg).await {
+                warn!("configurationDone: {e}");
+            }
+        }
+        write_dap(
+            out,
+            &make_response(&self.seq, request_seq, command, true, None, None),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_launch_attach<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<()> {
+        let config = BcDebugConfig::from_dap_args(arguments);
+        // Store config for use in the configurationDone handler.
+        *self.debug_config.lock().await = Some(config.clone());
+
+        // Compile if alc is available and this is a launch
+        if command == "launch" {
+            // Fix #7: only emit "Compiling" for launch, not attach
+            write_dap(
+                out,
+                &make_event(
+                    &self.seq,
+                    "output",
+                    Some(serde_json::json!({
+                        "category": "console",
+                        "output": "Compiling AL project...\r\n"
+                    })),
+                ),
+            )
+            .await?;
+            if let Some(alc) = self.alc_path.as_deref() {
+                match compile_project(alc, &self.project_root).await {
+                    Ok(output) => {
+                        if !output.is_empty() {
+                            write_dap(
+                                out,
+                                &make_event(
+                                    &self.seq,
+                                    "output",
+                                    Some(serde_json::json!({
+                                        "category": "console",
+                                        "output": format!("{output}\r\n")
+                                    })),
+                                ),
+                            )
+                            .await?;
+                        }
+                        write_dap(
+                            out,
+                            &make_event(
+                                &self.seq,
+                                "output",
+                                Some(serde_json::json!({
+                                    "category": "console",
+                                    "output": "Compilation succeeded.\r\n"
+                                })),
+                            ),
+                        )
+                        .await?;
+                    }
+                    Err(e) => {
+                        write_dap(
+                            out,
+                            &make_event(
+                                &self.seq,
+                                "output",
+                                Some(serde_json::json!({
+                                    "category": "stderr",
+                                    "output": format!("Compilation failed: {e}\r\n")
+                                })),
+                            ),
+                        )
+                        .await?;
+                        write_dap(
+                            out,
+                            &make_response(
+                                &self.seq,
+                                request_seq,
+                                command,
+                                false,
+                                None,
+                                Some(format!("Compilation failed: {e}")),
+                            ),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Acquire token
+        write_dap(
+            out,
+            &make_event(
+                &self.seq,
+                "output",
+                Some(serde_json::json!({
+                    "category": "console",
+                    "output": format!("Authenticating to tenant {}...\r\n", config.tenant)
+                })),
+            ),
+        )
+        .await?;
+
+        let token = match (self.acquire_token)(config.tenant.clone()).await {
+            Ok(t) => t,
+            Err(e) => {
+                write_dap(
+                    out,
+                    &make_response(
+                        &self.seq,
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some(format!("Authentication failed: {e}")),
+                    ),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
+
+        // Publish .app if launching
+        if command == "launch" {
+            write_dap(
+                out,
+                &make_event(
+                    &self.seq,
+                    "output",
+                    Some(serde_json::json!({
+                        "category": "console",
+                        "output": "Publishing package...\r\n"
+                    })),
+                ),
+            )
+            .await?;
+
+            // Find the .app file
+            let app_path = find_app_file(&self.project_root).await;
+            if let Some(app_path) = app_path {
+                let http = reqwest::Client::builder()
+                    .danger_accept_invalid_certs(config.accept_invalid_certs)
+                    .build()
+                    .map_err(|e| DapError::PublishFailed(e.to_string()))?;
+
+                match publish_app(&http, &config, &token, &app_path).await {
+                    Ok(()) => {
+                        write_dap(
+                            out,
+                            &make_event(
+                                &self.seq,
+                                "output",
+                                Some(serde_json::json!({
+                                    "category": "console",
+                                    "output": "Package published successfully.\r\n"
+                                })),
+                            ),
+                        )
+                        .await?;
+                    }
+                    Err(e) => {
+                        write_dap(
+                            out,
+                            &make_response(
+                                &self.seq,
+                                request_seq,
+                                command,
+                                false,
+                                None,
+                                Some(format!("Publish failed: {e}")),
+                            ),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
+            } else {
+                // F-013: a missing .app means compile failed (or
+                // hasn't run). Continuing into publish/attach would
+                // either silently use a stale .app from a previous
+                // build (worse — debugging the wrong source) or
+                // produce a confusing "Connect failed" trail. Fail
+                // the launch with a clear error so the user sees
+                // the compile failure as the root cause.
+                write_dap(
+                            out,
+                            &make_response(
+                                &self.seq,
+                                request_seq,
+                                command,
+                                false,
+                                None,
+                                Some(
+                                    "No compiled .app found in project root — compile must succeed before launch (run `al-explorer compile`)."
+                                        .to_string(),
+                                ),
+                            ),
+                        )
+                        .await?;
+                return Ok(());
+            }
+        }
+
+        // Connect to debug hub
+        write_dap(
+            out,
+            &make_event(
+                &self.seq,
+                "output",
+                Some(serde_json::json!({
+                    "category": "console",
+                    "output": "Connecting to debug hub...\r\n"
+                })),
+            ),
+        )
+        .await?;
+
+        match BcDebugSession::connect(&config, &token).await {
+            Ok(debug_session) => {
+                // Attach to debug session
+                if let Err(e) = debug_session.attach(&config).await {
+                    write_dap(
+                        out,
+                        &make_response(
+                            &self.seq,
+                            request_seq,
+                            command,
+                            false,
+                            None,
+                            Some(format!("Attach failed: {e}")),
+                        ),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+
+                // Capture connection ID before moving session into Arc+mutex
+                let conn_id = debug_session.connection_id.clone();
+                *self.session.lock().await = Some(Arc::new(debug_session));
+
+                self.spawn_event_forwarder();
+
+                write_dap(
+                    out,
+                    &make_event(
+                        &self.seq,
+                        "output",
+                        Some(serde_json::json!({
+                            "category": "console",
+                            "output": "Debug session started.\r\n"
+                        })),
+                    ),
+                )
+                .await?;
+
+                write_dap(
+                    out,
+                    &make_response(&self.seq, request_seq, command, true, None, None),
+                )
+                .await?;
+
+                // Open browser with debug context params (must match SignalR ConnectionId)
+                if config.launch_browser {
+                    let web_url = build_debug_browser_url(&config, &conn_id);
+
+                    // Send the URL as an event for Zed to handle
+                    write_dap(
+                        out,
+                        &make_event(
+                            &self.seq,
+                            "al/openUri",
+                            Some(serde_json::json!({
+                                "uri": web_url
+                            })),
+                        ),
+                    )
+                    .await?;
+
+                    if !open_browser(&web_url) {
+                        tracing::warn!(url = %web_url,
+                                    "DAP launch: could not auto-open browser for AAD \
+                                     device-code; user must navigate manually");
+                    }
+                }
+            }
+            Err(e) => {
+                write_dap(
+                    out,
+                    &make_response(
+                        &self.seq,
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some(format!("Debug hub connection failed: {e}")),
+                    ),
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_set_breakpoints<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<()> {
+        let source_path = arguments
+            .get("source")
+            .and_then(|s| s.get("path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let bp_requests = arguments
+            .get("breakpoints")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        // Clone the Arc<BcDebugSession> while holding the session mutex,
+        // then drop the guard immediately so no mutex is held across
+        // the async breakpoint operations below (prevents deadlock).
+        let session_arc = self.session.lock().await.clone();
+        let mut result_bps = Vec::new();
+
+        if let Some(s) = session_arc {
+            // Resolve object type and ID from workspace symbol index.
+            let resolved = (self.resolve_object)(&source_path);
+
+            if let Some(obj) = resolved {
+                let obj_type = obj.object_type;
+                let obj_id = obj.object_id;
+
+                // Hold the breakpoints lock for the ENTIRE remove → add → store
+                // cycle so two concurrent setBreakpoints calls on the same
+                // source_path serialise correctly. Without this hold-across-
+                // await (tokio::sync::Mutex makes that safe), both callers
+                // would read the same `old_ids`, both remove the same set on
+                // BC, both add fresh breakpoints, and one caller's `new_ids`
+                // would overwrite the other in the map — leaving the BC
+                // server's bp set as the union of both adds but the local map
+                // tracking only one half, orphaning the rest. F-OPEN-014.
+                let mut bps = self.breakpoints.lock().await;
+                let old_ids: Vec<i64> = bps.remove(&source_path).unwrap_or_default();
+                for id in old_ids {
+                    if let Err(e) = s.remove_breakpoint(id).await {
+                        tracing::warn!(
+                            breakpoint_id = id,
+                            error = %e,
+                            "DAP setBreakpoints: removing prior breakpoint failed; \
+                             local state will be overwritten regardless"
+                        );
+                    }
+                }
+
+                let mut new_ids = Vec::new();
+                for bp in &bp_requests {
+                    let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
+                    let condition = bp.get("condition").and_then(|v| v.as_str()).unwrap_or("");
+
+                    match s.add_breakpoint(obj_type, obj_id, line, 0, condition).await {
+                        Ok(result) => {
+                            // BC's add_breakpoint can return Ok(Value::Null) or a
+                            // payload without an Id field (bc_debug.rs:945). A
+                            // breakpoint id of 0 is not a usable handle: we could
+                            // neither remove it on a later setBreakpoints nor honour
+                            // a "verified: true" claim. Treat a missing/zero id as a
+                            // failure rather than recording an orphaned breakpoint.
+                            match extract_breakpoint_id(&result) {
+                                Some(bp_id) => {
+                                    new_ids.push(bp_id);
+                                    result_bps.push(serde_json::json!({
+                                        "id": bp_id,
+                                        "verified": true,
+                                        "line": line,
+                                    }));
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        line = line,
+                                        ?result,
+                                        "DAP setBreakpoints: BC accepted the breakpoint \
+                                                 but returned no usable id; not tracking it"
+                                    );
+                                    result_bps.push(serde_json::json!({
+                                                "verified": false,
+                                                "line": line,
+                                                "message": "Breakpoint created but ID could not be extracted from BC response",
+                                            }));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            result_bps.push(serde_json::json!({
+                                "verified": false,
+                                "line": line,
+                                "message": e.to_string(),
+                            }));
+                        }
+                    }
+                }
+                bps.insert(source_path.clone(), new_ids);
+                drop(bps);
+            } else {
+                for bp in &bp_requests {
+                    let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
+                    result_bps.push(serde_json::json!({
+                                "verified": false, "line": line,
+                                "message": format!("Could not resolve AL object from workspace index for: {source_path}"),
+                            }));
+                }
+            }
+        } else {
+            for bp in &bp_requests {
+                let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
+                result_bps.push(serde_json::json!({
+                    "verified": false, "line": line, "message": "No active debug session"
+                }));
+            }
+        }
+
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                true,
+                Some(serde_json::json!({"breakpoints": result_bps})),
+                None,
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Step over / into / out — BC BreakpointExitReason 1 / 2 / 3 via
+    /// SetBreakpointResponse. Merged: the three original arms differed only
+    /// in which session method they invoked.
+    async fn handle_step<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        let session_arc = self.session.lock().await.clone();
+        if let Some(s) = session_arc {
+            let step = match command {
+                "stepIn" => s.step_in().await,
+                "stepOut" => s.step_out().await,
+                _ => s.step_over().await,
+            };
+            if let Err(e) = step {
+                write_dap(
+                    out,
+                    &make_response(
+                        &self.seq,
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some(e.to_string()),
+                    ),
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+        write_dap(
+            out,
+            &make_response(&self.seq, request_seq, command, true, None, None),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_pause<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        // BC's SignalR debug hub does not expose a "pause while running" method.
+        // The BC debugger only pauses at breakpoints or on error; there is no
+        // equivalent of a SIGSTOP that the client can trigger mid-execution.
+        // Respond with failure so Zed shows the user a clear error instead of
+        // silently doing nothing.
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                false,
+                None,
+                Some(
+                    "pause is not supported by the BC debug hub; set a breakpoint instead"
+                        .to_string(),
+                ),
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_continue<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        let session_arc = self.session.lock().await.clone();
+        if let Some(s) = session_arc {
+            // BC expects BreakpointExitReason integer 0 (continue)
+            if let Err(e) = s.continue_execution(serde_json::json!(0)).await {
+                write_dap(
+                    out,
+                    &make_response(
+                        &self.seq,
+                        request_seq,
+                        command,
+                        false,
+                        None,
+                        Some(e.to_string()),
+                    ),
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                true,
+                Some(serde_json::json!({"allThreadsContinued": true})),
+                None,
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_threads<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                true,
+                Some(serde_json::json!({"threads": [{"id": 1, "name": "AL Thread"}]})),
+                None,
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_stack_trace<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        // Fix #5: call get_call_stack() and map BC StackFrame[] to DAP StackFrames.
+        let session_arc = self.session.lock().await.clone();
+        let stack_frames = if let Some(s) = session_arc {
+            match s.get_call_stack().await {
+                Ok(frames) => bc_stack_to_dap(frames, &self.resolve_path),
+                Err(e) => {
+                    debug!("get_call_stack failed: {e}");
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        let total = stack_frames.len();
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                true,
+                Some(serde_json::json!({
+                    "stackFrames": stack_frames,
+                    "totalFrames": total,
+                })),
+                None,
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_scopes<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<()> {
+        // Fix #6: use result of get_globals() to build proper scope entries.
+        // variablesReference is encoded as (frame_id * 100 + scope_index) so the
+        // "variables" handler can decode which frame and scope to fetch.
+        let frame_id = arguments
+            .get("frameId")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        // Clone Arc and drop guard before any async work (T-023).
+        let session_arc = self.session.lock().await.clone();
+        let mut scopes = Vec::new();
+        if let Some(s) = session_arc {
+            // Locals scope (variablesReference = frame_id * 100 + 1)
+            // Always include locals — GetVariables returns per-frame locals.
+            let locals_ref = frame_id * 100 + 1;
+            scopes.push(serde_json::json!({
+                "name": "Locals",
+                "variablesReference": locals_ref,
+                "expensive": false,
+            }));
+
+            // Globals scope — only add if get_globals succeeds and returns data
+            match s.get_globals(frame_id).await {
+                Ok(globals) if !globals.as_array().map(|a| a.is_empty()).unwrap_or(true) => {
+                    let globals_ref = frame_id * 100 + 2;
+                    let count = globals.as_array().map(|a| a.len()).unwrap_or(0);
+                    scopes.push(serde_json::json!({
+                        "name": "Globals",
+                        "variablesReference": globals_ref,
+                        "expensive": true,
+                        "namedVariables": count,
+                    }));
+                }
+                Ok(_) => {
+                    // Empty globals — still add scope so Zed shows it
+                    let globals_ref = frame_id * 100 + 2;
+                    scopes.push(serde_json::json!({
+                        "name": "Globals",
+                        "variablesReference": globals_ref,
+                        "expensive": true,
+                    }));
+                }
+                Err(e) => {
+                    debug!("get_globals failed for frame {frame_id}: {e}");
+                }
+            }
+        }
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                true,
+                Some(serde_json::json!({ "scopes": scopes })),
+                None,
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_variables<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<()> {
+        let vars_ref = arguments
+            .get("variablesReference")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        // Decode the variablesReference encoding from the "scopes" handler:
+        // variablesReference = frame_id * 100 + scope_index
+        // scope_index 2 → globals, otherwise → locals
+        let frame_id = vars_ref / 100;
+        let scope_index = vars_ref % 100;
+        // Clone Arc and drop guard before async work (T-023).
+        let session_arc = self.session.lock().await.clone();
+        let variables = if let Some(s) = session_arc {
+            if scope_index == 2 {
+                match s.get_globals(frame_id).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            frame_id,
+                            error = %e,
+                            "DAP variables: get_globals failed; returning empty array"
+                        );
+                        serde_json::json!([])
+                    }
+                }
+            } else {
+                match s.get_variables(frame_id).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            frame_id,
+                            error = %e,
+                            "DAP variables: get_variables failed; returning empty array"
+                        );
+                        serde_json::json!([])
+                    }
+                }
+            }
+        } else {
+            serde_json::json!([])
+        };
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                true,
+                Some(serde_json::json!({"variables": variables})),
+                None,
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_evaluate<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+        arguments: &serde_json::Value,
+    ) -> Result<()> {
+        let expression = arguments
+            .get("expression")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let frame_id = arguments
+            .get("frameId")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        // Clone Arc and drop guard before async work (T-023).
+        let session_arc = self.session.lock().await.clone();
+        let result = if let Some(s) = session_arc {
+            s.evaluate(frame_id, expression)
+                .await
+                .unwrap_or(serde_json::Value::Null)
+        } else {
+            serde_json::Value::Null
+        };
+        // LocalNode has value, name, type fields
+        let display = result
+            .get("value")
+            .or(result.get("Value"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                true,
+                Some(serde_json::json!({"result": display, "variablesReference": 0})),
+                None,
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn handle_disconnect<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        // Clone Arc, drop guard, then stop (T-023: don't hold mutex across await).
+        let session_arc = self.session.lock().await.clone();
+        if let Some(s) = session_arc {
+            let _ = s.stop_debugging().await;
+        }
+        *self.session.lock().await = None;
+        write_dap(
+            out,
+            &make_response(&self.seq, request_seq, command, true, None, None),
+        )
+        .await?;
+
+        // Send terminated event
+        write_dap(out, &make_event(&self.seq, "terminated", None)).await?;
+        Ok(())
+    }
+
+    async fn handle_unknown<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+        request_seq: i64,
+        command: &str,
+    ) -> Result<()> {
+        // Unknown command — respond with error
+        write_dap(
+            out,
+            &make_response(
+                &self.seq,
+                request_seq,
+                command,
+                false,
+                None,
+                Some(format!("Unsupported command: {command}")),
+            ),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Spawn background task to forward BC push events to Zed.
+    ///
+    /// BC sends Break events via SignalR push at any time (not just in
+    /// response to our invocations). This task polls `try_drain_push_events()`
+    /// which uses try_lock() on event_rx — if an invoke() is running it skips,
+    /// knowing the event will be captured in pending_events and forwarded after
+    /// the invoke returns via flush_pending_events().
+    ///
+    /// Cancellation: send a new value on cancel_tx before spawning a new task
+    /// so the old task exits cleanly on reconnect (prevents task leaks).
+    fn spawn_event_forwarder(&self) {
+        let generation = *self.cancel_tx.borrow() + 1;
+        let _ = self.cancel_tx.send(generation);
+        let mut cancel_rx_clone = self.cancel_rx.clone();
+        let session_clone = self.session.clone();
+        let event_tx_clone = self.dap_event_tx.clone();
+        let seq_clone = self.seq.clone();
+        tokio::spawn(async move {
+            // Snapshot the generation we were spawned in.
+            // If cancel_rx_clone sees a newer value, the task exits.
+            let my_generation = generation;
+            loop {
+                // Check for cancellation (non-blocking).
+                if *cancel_rx_clone.borrow() != my_generation {
+                    return;
+                }
+
+                // Clone the Arc<BcDebugSession> while holding the mutex,
+                // then immediately drop the guard so async methods on the
+                // session are not called while the mutex is held (deadlock).
+                let session_arc = session_clone.lock().await.clone();
+                let bc_session = match session_arc {
+                    Some(s) => s,
+                    None => return, // session ended
+                };
+                // All async calls happen without holding the session mutex.
+                let mut bc_events = bc_session.try_drain_push_events().await;
+                // Also flush pending events buffered during invoke() calls.
+                bc_events.extend(bc_session.flush_pending_events().await);
+
+                for bc_event in bc_events {
+                    let dap_evt = match &bc_event {
+                        BcEvent::Break {
+                            reason, thread_id, ..
+                        } => make_event(
+                            &seq_clone,
+                            "stopped",
+                            Some(serde_json::json!({
+                                "reason": reason,
+                                "threadId": thread_id,
+                                "allThreadsStopped": true,
+                            })),
+                        ),
+                        BcEvent::Detached { terminate } => {
+                            if *terminate {
+                                make_event(&seq_clone, "terminated", None)
+                            } else {
+                                continue;
+                            }
+                        }
+                        BcEvent::FatalError { message } => make_event(
+                            &seq_clone,
+                            "output",
+                            Some(serde_json::json!({
+                                "category": "stderr",
+                                "output": format!("Fatal debugger error: {message}\r\n"),
+                            })),
+                        ),
+                        BcEvent::Other { .. } => continue,
+                    };
+                    let Ok(body) = serde_json::to_vec(&dap_evt) else {
+                        continue;
+                    };
+                    // try_send + warn-log preserves the producer side's
+                    // back-pressure semantics: if Zed is wedged and the
+                    // 1024-slot channel fills, drop the event with a log
+                    // rather than block this task forever (T010).
+                    match event_tx_clone.try_send(body) {
+                        Ok(()) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            tracing::warn!(
+                                "DAP event channel saturated (1024) — \
+                                                     dropping event; client appears to be stuck"
+                            );
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            return; // receiver dropped — DAP server shut down
+                        }
+                    }
+                }
+
+                // Wait for cancellation or next poll interval.
+                tokio::select! {
+                    _ = cancel_rx_clone.changed() => {
+                        if *cancel_rx_clone.borrow() != my_generation {
+                            return;
+                        }
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {}
+                }
+            }
+        });
+    }
+}
+
 pub async fn run_native_dap<F, Fut, R, P>(
     project_root: &str,
     alc_path: Option<&Path>,
@@ -102,30 +1175,23 @@ where
     R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
 {
-    // Single monotonic sequence counter shared between the main loop and the background
-    // event-forwarding task. DAP spec requires non-decreasing seq values across all
-    // messages (responses, events) sent to the client. Using a single AtomicU64
-    // prevents the two previously-separate counters from interleaving non-monotonically.
-    let seq: Arc<AtomicU64> = Arc::new(AtomicU64::new(1));
-    let session: Arc<Mutex<Option<Arc<BcDebugSession>>>> = Arc::new(Mutex::new(None));
-    let debug_config: Arc<Mutex<Option<BcDebugConfig>>> = Arc::new(Mutex::new(None));
-    let breakpoints: Arc<Mutex<HashMap<String, Vec<i64>>>> = Arc::new(Mutex::new(HashMap::new()));
-
-    // Cancellation channel for the background event-forwarding task.
-    // When a new debug session starts we send a new value so the old task exits.
     let (cancel_tx, cancel_rx) = watch::channel(0u64);
-
-    // Channel for the BC-event forwarding task to send pre-serialized DAP event bytes
-    // to the main loop. The main loop drains this channel before processing each
-    // incoming DAP message, ensuring BC push events reach Zed promptly.
-    //
-    // Bounded at 1024 (T010 / spec-concurrency-007): under a misbehaving BC
-    // session that fires events faster than Zed drains them, an unbounded
-    // channel could grow to GB before any back-pressure. 1024 is generous
-    // for realistic debug-event rates (steps, breakpoints, output) and
-    // collapses to a try_send + warn-log at the producer end so we never
-    // block the SignalR forwarder waiting for stdin to drain.
     let (dap_event_tx, mut dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+
+    let state = NativeDapState {
+        seq: Arc::new(AtomicU64::new(1)),
+        session: Arc::new(Mutex::new(None)),
+        debug_config: Arc::new(Mutex::new(None)),
+        breakpoints: Arc::new(Mutex::new(HashMap::new())),
+        cancel_tx,
+        cancel_rx,
+        dap_event_tx,
+        project_root: project_root.to_string(),
+        alc_path: alc_path.map(|p| p.to_path_buf()),
+        acquire_token,
+        resolve_object,
+        resolve_path,
+    };
 
     let mut stdin = BufReader::new(io::stdin());
     let mut stdout = io::stdout();
@@ -169,959 +1235,11 @@ where
 
         debug!("DAP request: {command} (seq={request_seq})");
 
-        match command.as_str() {
-            "initialize" => {
-                // Respond with our capabilities
-                let resp = make_response(
-                    &seq,
-                    request_seq,
-                    &command,
-                    true,
-                    Some(serde_json::json!({
-                        "supportsConfigurationDoneRequest": true,
-                        "supportsFunctionBreakpoints": false,
-                        "supportsConditionalBreakpoints": true,
-                        "supportsEvaluateForHovers": true,
-                        "supportsStepBack": false,
-                        "supportsSetVariable": false,
-                        "supportsCompletionsRequest": false,
-                        "supportsTerminateRequest": true,
-                        "supportsDelayedStackTraceLoading": true,
-                        "supportsRestartRequest": false,
-                    })),
-                    None,
-                );
-                write_dap(&mut stdout, &resp).await?;
-
-                // Send initialized event
-                let evt = make_event(&seq, "initialized", None);
-                write_dap(&mut stdout, &evt).await?;
-            }
-
-            "configurationDone" => {
-                // Clone both Arc and config before dropping locks so we don't hold
-                // the mutex guard across the async invoke() call.
-                let session_arc = session.lock().await.clone();
-                let cfg = debug_config.lock().await.clone();
-                if let (Some(s), Some(cfg)) = (session_arc, cfg) {
-                    if let Err(e) = s.configuration_done(&cfg).await {
-                        warn!("configurationDone: {e}");
-                    }
-                }
-                write_dap(
-                    &mut stdout,
-                    &make_response(&seq, request_seq, &command, true, None, None),
-                )
-                .await?;
-            }
-
-            "launch" | "attach" => {
-                let config = BcDebugConfig::from_dap_args(&arguments);
-                // Store config for use in the configurationDone handler.
-                *debug_config.lock().await = Some(config.clone());
-
-                // Compile if alc is available and this is a launch
-                if command == "launch" {
-                    // Fix #7: only emit "Compiling" for launch, not attach
-                    write_dap(
-                        &mut stdout,
-                        &make_event(
-                            &seq,
-                            "output",
-                            Some(serde_json::json!({
-                                "category": "console",
-                                "output": "Compiling AL project...\r\n"
-                            })),
-                        ),
-                    )
-                    .await?;
-                    if let Some(alc) = alc_path {
-                        match compile_project(alc, project_root).await {
-                            Ok(output) => {
-                                if !output.is_empty() {
-                                    write_dap(
-                                        &mut stdout,
-                                        &make_event(
-                                            &seq,
-                                            "output",
-                                            Some(serde_json::json!({
-                                                "category": "console",
-                                                "output": format!("{output}\r\n")
-                                            })),
-                                        ),
-                                    )
-                                    .await?;
-                                }
-                                write_dap(
-                                    &mut stdout,
-                                    &make_event(
-                                        &seq,
-                                        "output",
-                                        Some(serde_json::json!({
-                                            "category": "console",
-                                            "output": "Compilation succeeded.\r\n"
-                                        })),
-                                    ),
-                                )
-                                .await?;
-                            }
-                            Err(e) => {
-                                write_dap(
-                                    &mut stdout,
-                                    &make_event(
-                                        &seq,
-                                        "output",
-                                        Some(serde_json::json!({
-                                            "category": "stderr",
-                                            "output": format!("Compilation failed: {e}\r\n")
-                                        })),
-                                    ),
-                                )
-                                .await?;
-                                write_dap(
-                                    &mut stdout,
-                                    &make_response(
-                                        &seq,
-                                        request_seq,
-                                        &command,
-                                        false,
-                                        None,
-                                        Some(format!("Compilation failed: {e}")),
-                                    ),
-                                )
-                                .await?;
-                                continue;
-                            }
-                        }
-                    }
-                }
-
-                // Acquire token
-                write_dap(
-                    &mut stdout,
-                    &make_event(
-                        &seq,
-                        "output",
-                        Some(serde_json::json!({
-                            "category": "console",
-                            "output": format!("Authenticating to tenant {}...\r\n", config.tenant)
-                        })),
-                    ),
-                )
-                .await?;
-
-                let token = match acquire_token(config.tenant.clone()).await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        write_dap(
-                            &mut stdout,
-                            &make_response(
-                                &seq,
-                                request_seq,
-                                &command,
-                                false,
-                                None,
-                                Some(format!("Authentication failed: {e}")),
-                            ),
-                        )
-                        .await?;
-                        continue;
-                    }
-                };
-
-                // Publish .app if launching
-                if command == "launch" {
-                    write_dap(
-                        &mut stdout,
-                        &make_event(
-                            &seq,
-                            "output",
-                            Some(serde_json::json!({
-                                "category": "console",
-                                "output": "Publishing package...\r\n"
-                            })),
-                        ),
-                    )
-                    .await?;
-
-                    // Find the .app file
-                    let app_path = find_app_file(project_root).await;
-                    if let Some(app_path) = app_path {
-                        let http = reqwest::Client::builder()
-                            .danger_accept_invalid_certs(config.accept_invalid_certs)
-                            .build()
-                            .map_err(|e| DapError::PublishFailed(e.to_string()))?;
-
-                        match publish_app(&http, &config, &token, &app_path).await {
-                            Ok(()) => {
-                                write_dap(
-                                    &mut stdout,
-                                    &make_event(
-                                        &seq,
-                                        "output",
-                                        Some(serde_json::json!({
-                                            "category": "console",
-                                            "output": "Package published successfully.\r\n"
-                                        })),
-                                    ),
-                                )
-                                .await?;
-                            }
-                            Err(e) => {
-                                write_dap(
-                                    &mut stdout,
-                                    &make_response(
-                                        &seq,
-                                        request_seq,
-                                        &command,
-                                        false,
-                                        None,
-                                        Some(format!("Publish failed: {e}")),
-                                    ),
-                                )
-                                .await?;
-                                continue;
-                            }
-                        }
-                    } else {
-                        // F-013: a missing .app means compile failed (or
-                        // hasn't run). Continuing into publish/attach would
-                        // either silently use a stale .app from a previous
-                        // build (worse — debugging the wrong source) or
-                        // produce a confusing "Connect failed" trail. Fail
-                        // the launch with a clear error so the user sees
-                        // the compile failure as the root cause.
-                        write_dap(
-                            &mut stdout,
-                            &make_response(
-                                &seq,
-                                request_seq,
-                                &command,
-                                false,
-                                None,
-                                Some(
-                                    "No compiled .app found in project root — compile must succeed before launch (run `al-explorer compile`)."
-                                        .to_string(),
-                                ),
-                            ),
-                        )
-                        .await?;
-                        continue;
-                    }
-                }
-
-                // Connect to debug hub
-                write_dap(
-                    &mut stdout,
-                    &make_event(
-                        &seq,
-                        "output",
-                        Some(serde_json::json!({
-                            "category": "console",
-                            "output": "Connecting to debug hub...\r\n"
-                        })),
-                    ),
-                )
-                .await?;
-
-                match BcDebugSession::connect(&config, &token).await {
-                    Ok(debug_session) => {
-                        // Attach to debug session
-                        if let Err(e) = debug_session.attach(&config).await {
-                            write_dap(
-                                &mut stdout,
-                                &make_response(
-                                    &seq,
-                                    request_seq,
-                                    &command,
-                                    false,
-                                    None,
-                                    Some(format!("Attach failed: {e}")),
-                                ),
-                            )
-                            .await?;
-                            continue;
-                        }
-
-                        // Capture connection ID before moving session into Arc+mutex
-                        let conn_id = debug_session.connection_id.clone();
-                        *session.lock().await = Some(Arc::new(debug_session));
-
-                        // Spawn background task to forward BC push events to Zed.
-                        //
-                        // BC sends Break events via SignalR push at any time (not just in
-                        // response to our invocations). This task polls `try_drain_push_events()`
-                        // which uses try_lock() on event_rx — if an invoke() is running it skips,
-                        // knowing the event will be captured in pending_events and forwarded after
-                        // the invoke returns via flush_pending_events().
-                        //
-                        // Cancellation: send a new value on cancel_tx before spawning a new task
-                        // so the old task exits cleanly on reconnect (prevents task leaks).
-                        {
-                            // Notify any previously spawned task to exit, then give the new task
-                            // its own receiver starting from the current generation.
-                            let generation = *cancel_tx.borrow() + 1;
-                            let _ = cancel_tx.send(generation);
-                            let mut cancel_rx_clone = cancel_rx.clone();
-                            let session_clone = session.clone();
-                            let event_tx_clone = dap_event_tx.clone();
-                            let seq_clone = seq.clone();
-                            tokio::spawn(async move {
-                                // Snapshot the generation we were spawned in.
-                                // If cancel_rx_clone sees a newer value, the task exits.
-                                let my_generation = generation;
-                                loop {
-                                    // Check for cancellation (non-blocking).
-                                    if *cancel_rx_clone.borrow() != my_generation {
-                                        return;
-                                    }
-
-                                    // Clone the Arc<BcDebugSession> while holding the mutex,
-                                    // then immediately drop the guard so async methods on the
-                                    // session are not called while the mutex is held (deadlock).
-                                    let session_arc = session_clone.lock().await.clone();
-                                    let bc_session = match session_arc {
-                                        Some(s) => s,
-                                        None => return, // session ended
-                                    };
-                                    // All async calls happen without holding the session mutex.
-                                    let mut bc_events = bc_session.try_drain_push_events().await;
-                                    // Also flush pending events buffered during invoke() calls.
-                                    bc_events.extend(bc_session.flush_pending_events().await);
-
-                                    for bc_event in bc_events {
-                                        let dap_evt = match &bc_event {
-                                            BcEvent::Break {
-                                                reason, thread_id, ..
-                                            } => make_event(
-                                                &seq_clone,
-                                                "stopped",
-                                                Some(serde_json::json!({
-                                                    "reason": reason,
-                                                    "threadId": thread_id,
-                                                    "allThreadsStopped": true,
-                                                })),
-                                            ),
-                                            BcEvent::Detached { terminate } => {
-                                                if *terminate {
-                                                    make_event(&seq_clone, "terminated", None)
-                                                } else {
-                                                    continue;
-                                                }
-                                            }
-                                            BcEvent::FatalError { message } => make_event(
-                                                &seq_clone,
-                                                "output",
-                                                Some(serde_json::json!({
-                                                    "category": "stderr",
-                                                    "output": format!("Fatal debugger error: {message}\r\n"),
-                                                })),
-                                            ),
-                                            BcEvent::Other { .. } => continue,
-                                        };
-                                        let Ok(body) = serde_json::to_vec(&dap_evt) else {
-                                            continue;
-                                        };
-                                        // try_send + warn-log preserves the producer side's
-                                        // back-pressure semantics: if Zed is wedged and the
-                                        // 1024-slot channel fills, drop the event with a log
-                                        // rather than block this task forever (T010).
-                                        match event_tx_clone.try_send(body) {
-                                            Ok(()) => {}
-                                            Err(tokio::sync::mpsc::error::TrySendError::Full(
-                                                _,
-                                            )) => {
-                                                tracing::warn!(
-                                                    "DAP event channel saturated (1024) — \
-                                                     dropping event; client appears to be stuck"
-                                                );
-                                            }
-                                            Err(
-                                                tokio::sync::mpsc::error::TrySendError::Closed(_),
-                                            ) => {
-                                                return; // receiver dropped — DAP server shut down
-                                            }
-                                        }
-                                    }
-
-                                    // Wait for cancellation or next poll interval.
-                                    tokio::select! {
-                                        _ = cancel_rx_clone.changed() => {
-                                            if *cancel_rx_clone.borrow() != my_generation {
-                                                return;
-                                            }
-                                        }
-                                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(50)) => {}
-                                    }
-                                }
-                            });
-                        }
-
-                        write_dap(
-                            &mut stdout,
-                            &make_event(
-                                &seq,
-                                "output",
-                                Some(serde_json::json!({
-                                    "category": "console",
-                                    "output": "Debug session started.\r\n"
-                                })),
-                            ),
-                        )
-                        .await?;
-
-                        write_dap(
-                            &mut stdout,
-                            &make_response(&seq, request_seq, &command, true, None, None),
-                        )
-                        .await?;
-
-                        // Open browser with debug context params (must match SignalR ConnectionId)
-                        if config.launch_browser {
-                            let web_url = build_debug_browser_url(&config, &conn_id);
-
-                            // Send the URL as an event for Zed to handle
-                            write_dap(
-                                &mut stdout,
-                                &make_event(
-                                    &seq,
-                                    "al/openUri",
-                                    Some(serde_json::json!({
-                                        "uri": web_url
-                                    })),
-                                ),
-                            )
-                            .await?;
-
-                            if !open_browser(&web_url) {
-                                tracing::warn!(url = %web_url,
-                                    "DAP launch: could not auto-open browser for AAD \
-                                     device-code; user must navigate manually");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        write_dap(
-                            &mut stdout,
-                            &make_response(
-                                &seq,
-                                request_seq,
-                                &command,
-                                false,
-                                None,
-                                Some(format!("Debug hub connection failed: {e}")),
-                            ),
-                        )
-                        .await?;
-                    }
-                }
-            }
-
-            "setBreakpoints" => {
-                let source_path = arguments
-                    .get("source")
-                    .and_then(|s| s.get("path"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let bp_requests = arguments
-                    .get("breakpoints")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-
-                // Clone the Arc<BcDebugSession> while holding the session mutex,
-                // then drop the guard immediately so no mutex is held across
-                // the async breakpoint operations below (prevents deadlock).
-                let session_arc = session.lock().await.clone();
-                let mut result_bps = Vec::new();
-
-                if let Some(s) = session_arc {
-                    // Resolve object type and ID from workspace symbol index.
-                    let resolved = resolve_object(&source_path);
-
-                    if let Some(obj) = resolved {
-                        let obj_type = obj.object_type;
-                        let obj_id = obj.object_id;
-
-                        // Hold the breakpoints lock for the ENTIRE remove → add → store
-                        // cycle so two concurrent setBreakpoints calls on the same
-                        // source_path serialise correctly. Without this hold-across-
-                        // await (tokio::sync::Mutex makes that safe), both callers
-                        // would read the same `old_ids`, both remove the same set on
-                        // BC, both add fresh breakpoints, and one caller's `new_ids`
-                        // would overwrite the other in the map — leaving the BC
-                        // server's bp set as the union of both adds but the local map
-                        // tracking only one half, orphaning the rest. F-OPEN-014.
-                        let mut bps = breakpoints.lock().await;
-                        let old_ids: Vec<i64> = bps.remove(&source_path).unwrap_or_default();
-                        for id in old_ids {
-                            if let Err(e) = s.remove_breakpoint(id).await {
-                                tracing::warn!(
-                                    breakpoint_id = id,
-                                    error = %e,
-                                    "DAP setBreakpoints: removing prior breakpoint failed; \
-                                     local state will be overwritten regardless"
-                                );
-                            }
-                        }
-
-                        let mut new_ids = Vec::new();
-                        for bp in &bp_requests {
-                            let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
-                            let condition =
-                                bp.get("condition").and_then(|v| v.as_str()).unwrap_or("");
-
-                            match s.add_breakpoint(obj_type, obj_id, line, 0, condition).await {
-                                Ok(result) => {
-                                    // BC's add_breakpoint can return Ok(Value::Null) or a
-                                    // payload without an Id field (bc_debug.rs:945). A
-                                    // breakpoint id of 0 is not a usable handle: we could
-                                    // neither remove it on a later setBreakpoints nor honour
-                                    // a "verified: true" claim. Treat a missing/zero id as a
-                                    // failure rather than recording an orphaned breakpoint.
-                                    match extract_breakpoint_id(&result) {
-                                        Some(bp_id) => {
-                                            new_ids.push(bp_id);
-                                            result_bps.push(serde_json::json!({
-                                                "id": bp_id,
-                                                "verified": true,
-                                                "line": line,
-                                            }));
-                                        }
-                                        None => {
-                                            tracing::warn!(
-                                                line = line,
-                                                ?result,
-                                                "DAP setBreakpoints: BC accepted the breakpoint \
-                                                 but returned no usable id; not tracking it"
-                                            );
-                                            result_bps.push(serde_json::json!({
-                                                "verified": false,
-                                                "line": line,
-                                                "message": "Breakpoint created but ID could not be extracted from BC response",
-                                            }));
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    result_bps.push(serde_json::json!({
-                                        "verified": false,
-                                        "line": line,
-                                        "message": e.to_string(),
-                                    }));
-                                }
-                            }
-                        }
-                        bps.insert(source_path.clone(), new_ids);
-                        drop(bps);
-                    } else {
-                        for bp in &bp_requests {
-                            let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
-                            result_bps.push(serde_json::json!({
-                                "verified": false, "line": line,
-                                "message": format!("Could not resolve AL object from workspace index for: {source_path}"),
-                            }));
-                        }
-                    }
-                } else {
-                    for bp in &bp_requests {
-                        let line = bp.get("line").and_then(|v| v.as_i64()).unwrap_or(1);
-                        result_bps.push(serde_json::json!({
-                            "verified": false, "line": line, "message": "No active debug session"
-                        }));
-                    }
-                }
-
-                write_dap(
-                    &mut stdout,
-                    &make_response(
-                        &seq,
-                        request_seq,
-                        &command,
-                        true,
-                        Some(serde_json::json!({"breakpoints": result_bps})),
-                        None,
-                    ),
-                )
-                .await?;
-            }
-
-            "next" => {
-                // Step over: BC BreakpointExitReason = 1 via SetBreakpointResponse.
-                let session_arc = session.lock().await.clone();
-                if let Some(s) = session_arc {
-                    if let Err(e) = s.step_over().await {
-                        write_dap(
-                            &mut stdout,
-                            &make_response(
-                                &seq,
-                                request_seq,
-                                &command,
-                                false,
-                                None,
-                                Some(e.to_string()),
-                            ),
-                        )
-                        .await?;
-                        continue;
-                    }
-                }
-                write_dap(
-                    &mut stdout,
-                    &make_response(&seq, request_seq, &command, true, None, None),
-                )
-                .await?;
-            }
-
-            "stepIn" => {
-                // Step into: BC BreakpointExitReason = 2 via SetBreakpointResponse.
-                let session_arc = session.lock().await.clone();
-                if let Some(s) = session_arc {
-                    if let Err(e) = s.step_in().await {
-                        write_dap(
-                            &mut stdout,
-                            &make_response(
-                                &seq,
-                                request_seq,
-                                &command,
-                                false,
-                                None,
-                                Some(e.to_string()),
-                            ),
-                        )
-                        .await?;
-                        continue;
-                    }
-                }
-                write_dap(
-                    &mut stdout,
-                    &make_response(&seq, request_seq, &command, true, None, None),
-                )
-                .await?;
-            }
-
-            "stepOut" => {
-                // Step out: BC BreakpointExitReason = 3 via SetBreakpointResponse.
-                let session_arc = session.lock().await.clone();
-                if let Some(s) = session_arc {
-                    if let Err(e) = s.step_out().await {
-                        write_dap(
-                            &mut stdout,
-                            &make_response(
-                                &seq,
-                                request_seq,
-                                &command,
-                                false,
-                                None,
-                                Some(e.to_string()),
-                            ),
-                        )
-                        .await?;
-                        continue;
-                    }
-                }
-                write_dap(
-                    &mut stdout,
-                    &make_response(&seq, request_seq, &command, true, None, None),
-                )
-                .await?;
-            }
-
-            "pause" => {
-                // BC's SignalR debug hub does not expose a "pause while running" method.
-                // The BC debugger only pauses at breakpoints or on error; there is no
-                // equivalent of a SIGSTOP that the client can trigger mid-execution.
-                // Respond with failure so Zed shows the user a clear error instead of
-                // silently doing nothing.
-                write_dap(
-                    &mut stdout,
-                    &make_response(
-                        &seq,
-                        request_seq,
-                        &command,
-                        false,
-                        None,
-                        Some(
-                            "pause is not supported by the BC debug hub; set a breakpoint instead"
-                                .to_string(),
-                        ),
-                    ),
-                )
-                .await?;
-            }
-
-            "continue" => {
-                let session_arc = session.lock().await.clone();
-                if let Some(s) = session_arc {
-                    // BC expects BreakpointExitReason integer 0 (continue)
-                    if let Err(e) = s.continue_execution(serde_json::json!(0)).await {
-                        write_dap(
-                            &mut stdout,
-                            &make_response(
-                                &seq,
-                                request_seq,
-                                &command,
-                                false,
-                                None,
-                                Some(e.to_string()),
-                            ),
-                        )
-                        .await?;
-                        continue;
-                    }
-                }
-                write_dap(
-                    &mut stdout,
-                    &make_response(
-                        &seq,
-                        request_seq,
-                        &command,
-                        true,
-                        Some(serde_json::json!({"allThreadsContinued": true})),
-                        None,
-                    ),
-                )
-                .await?;
-            }
-
-            "threads" => {
-                write_dap(
-                    &mut stdout,
-                    &make_response(
-                        &seq,
-                        request_seq,
-                        &command,
-                        true,
-                        Some(serde_json::json!({"threads": [{"id": 1, "name": "AL Thread"}]})),
-                        None,
-                    ),
-                )
-                .await?;
-            }
-
-            "stackTrace" => {
-                // Fix #5: call get_call_stack() and map BC StackFrame[] to DAP StackFrames.
-                let session_arc = session.lock().await.clone();
-                let stack_frames = if let Some(s) = session_arc {
-                    match s.get_call_stack().await {
-                        Ok(frames) => bc_stack_to_dap(frames, &resolve_path),
-                        Err(e) => {
-                            debug!("get_call_stack failed: {e}");
-                            Vec::new()
-                        }
-                    }
-                } else {
-                    Vec::new()
-                };
-                let total = stack_frames.len();
-                write_dap(
-                    &mut stdout,
-                    &make_response(
-                        &seq,
-                        request_seq,
-                        &command,
-                        true,
-                        Some(serde_json::json!({
-                            "stackFrames": stack_frames,
-                            "totalFrames": total,
-                        })),
-                        None,
-                    ),
-                )
-                .await?;
-            }
-
-            "scopes" => {
-                // Fix #6: use result of get_globals() to build proper scope entries.
-                // variablesReference is encoded as (frame_id * 100 + scope_index) so the
-                // "variables" handler can decode which frame and scope to fetch.
-                let frame_id = arguments
-                    .get("frameId")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                // Clone Arc and drop guard before any async work (T-023).
-                let session_arc = session.lock().await.clone();
-                let mut scopes = Vec::new();
-                if let Some(s) = session_arc {
-                    // Locals scope (variablesReference = frame_id * 100 + 1)
-                    // Always include locals — GetVariables returns per-frame locals.
-                    let locals_ref = frame_id * 100 + 1;
-                    scopes.push(serde_json::json!({
-                        "name": "Locals",
-                        "variablesReference": locals_ref,
-                        "expensive": false,
-                    }));
-
-                    // Globals scope — only add if get_globals succeeds and returns data
-                    match s.get_globals(frame_id).await {
-                        Ok(globals)
-                            if !globals.as_array().map(|a| a.is_empty()).unwrap_or(true) =>
-                        {
-                            let globals_ref = frame_id * 100 + 2;
-                            let count = globals.as_array().map(|a| a.len()).unwrap_or(0);
-                            scopes.push(serde_json::json!({
-                                "name": "Globals",
-                                "variablesReference": globals_ref,
-                                "expensive": true,
-                                "namedVariables": count,
-                            }));
-                        }
-                        Ok(_) => {
-                            // Empty globals — still add scope so Zed shows it
-                            let globals_ref = frame_id * 100 + 2;
-                            scopes.push(serde_json::json!({
-                                "name": "Globals",
-                                "variablesReference": globals_ref,
-                                "expensive": true,
-                            }));
-                        }
-                        Err(e) => {
-                            debug!("get_globals failed for frame {frame_id}: {e}");
-                        }
-                    }
-                }
-                write_dap(
-                    &mut stdout,
-                    &make_response(
-                        &seq,
-                        request_seq,
-                        &command,
-                        true,
-                        Some(serde_json::json!({ "scopes": scopes })),
-                        None,
-                    ),
-                )
-                .await?;
-            }
-
-            "variables" => {
-                let vars_ref = arguments
-                    .get("variablesReference")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                // Decode the variablesReference encoding from the "scopes" handler:
-                // variablesReference = frame_id * 100 + scope_index
-                // scope_index 2 → globals, otherwise → locals
-                let frame_id = vars_ref / 100;
-                let scope_index = vars_ref % 100;
-                // Clone Arc and drop guard before async work (T-023).
-                let session_arc = session.lock().await.clone();
-                let variables = if let Some(s) = session_arc {
-                    if scope_index == 2 {
-                        match s.get_globals(frame_id).await {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::warn!(
-                                    frame_id,
-                                    error = %e,
-                                    "DAP variables: get_globals failed; returning empty array"
-                                );
-                                serde_json::json!([])
-                            }
-                        }
-                    } else {
-                        match s.get_variables(frame_id).await {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::warn!(
-                                    frame_id,
-                                    error = %e,
-                                    "DAP variables: get_variables failed; returning empty array"
-                                );
-                                serde_json::json!([])
-                            }
-                        }
-                    }
-                } else {
-                    serde_json::json!([])
-                };
-                write_dap(
-                    &mut stdout,
-                    &make_response(
-                        &seq,
-                        request_seq,
-                        &command,
-                        true,
-                        Some(serde_json::json!({"variables": variables})),
-                        None,
-                    ),
-                )
-                .await?;
-            }
-
-            "evaluate" => {
-                let expression = arguments
-                    .get("expression")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let frame_id = arguments
-                    .get("frameId")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-                // Clone Arc and drop guard before async work (T-023).
-                let session_arc = session.lock().await.clone();
-                let result = if let Some(s) = session_arc {
-                    s.evaluate(frame_id, expression)
-                        .await
-                        .unwrap_or(serde_json::Value::Null)
-                } else {
-                    serde_json::Value::Null
-                };
-                // LocalNode has value, name, type fields
-                let display = result
-                    .get("value")
-                    .or(result.get("Value"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                write_dap(
-                    &mut stdout,
-                    &make_response(
-                        &seq,
-                        request_seq,
-                        &command,
-                        true,
-                        Some(serde_json::json!({"result": display, "variablesReference": 0})),
-                        None,
-                    ),
-                )
-                .await?;
-            }
-
-            "disconnect" | "terminate" => {
-                // Clone Arc, drop guard, then stop (T-023: don't hold mutex across await).
-                let session_arc = session.lock().await.clone();
-                if let Some(s) = session_arc {
-                    let _ = s.stop_debugging().await;
-                }
-                *session.lock().await = None;
-                write_dap(
-                    &mut stdout,
-                    &make_response(&seq, request_seq, &command, true, None, None),
-                )
-                .await?;
-
-                // Send terminated event
-                write_dap(&mut stdout, &make_event(&seq, "terminated", None)).await?;
-                break;
-            }
-
-            _ => {
-                // Unknown command — respond with error
-                write_dap(
-                    &mut stdout,
-                    &make_response(
-                        &seq,
-                        request_seq,
-                        &command,
-                        false,
-                        None,
-                        Some(format!("Unsupported command: {command}")),
-                    ),
-                )
-                .await?;
-            }
+        if state
+            .handle_request(&mut stdout, &command, request_seq, &arguments)
+            .await?
+        {
+            break;
         }
     }
 
@@ -1199,8 +1317,8 @@ fn build_debug_browser_url(config: &BcDebugConfig, conn_id: &str) -> String {
 /// Serialize `msg` to JSON and write a DAP frame to `writer`.
 ///
 /// Delegates to [`framing::write_dap_frame`] after serialization.
-async fn write_dap(
-    writer: &mut io::Stdout,
+async fn write_dap<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
     msg: &serde_json::Value,
 ) -> std::result::Result<(), std::io::Error> {
     let body = serde_json::to_vec(msg)
@@ -2077,5 +2195,214 @@ mod tests {
             text.contains("\"command\":\"threads\""),
             "serialised body must follow the header: {text:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod handler_tests {
+    //! F-OPEN-257: per-request handler tests over `NativeDapState` — no
+    //! stdio loop, no BC server. Handlers write DAP frames into a duplex
+    //! pipe; tests read them back through the real framing parser.
+
+    use super::*;
+
+    type TokenFut = std::future::Ready<std::result::Result<String, String>>;
+
+    fn no_token(_tenant: String) -> TokenFut {
+        std::future::ready(Err("no auth in tests".to_string()))
+    }
+
+    fn test_state() -> NativeDapState<
+        fn(String) -> TokenFut,
+        fn(&str) -> Option<ResolvedObject>,
+        fn(i32, i32) -> Option<PathBuf>,
+    > {
+        let (cancel_tx, cancel_rx) = watch::channel(0u64);
+        let (dap_event_tx, _dap_event_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        // Keep the receiver alive for the state's lifetime in tests that
+        // never read events — dropping it would only matter for the
+        // forwarder task, which these tests don't spawn.
+        std::mem::forget(_dap_event_rx);
+        NativeDapState {
+            seq: Arc::new(AtomicU64::new(1)),
+            session: Arc::new(Mutex::new(None)),
+            debug_config: Arc::new(Mutex::new(None)),
+            breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            cancel_tx,
+            cancel_rx,
+            dap_event_tx,
+            project_root: "/nonexistent/test-project".to_string(),
+            alc_path: None,
+            acquire_token: no_token,
+            resolve_object: |_| None,
+            resolve_path: |_, _| None,
+        }
+    }
+
+    /// Run one request through `handle_request` and return (terminate, frames).
+    async fn run_request(
+        command: &str,
+        arguments: serde_json::Value,
+    ) -> (bool, Vec<serde_json::Value>) {
+        let state = test_state();
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let terminate = state
+            .handle_request(&mut client, command, 7, &arguments)
+            .await
+            .expect("handler must not error");
+        use tokio::io::AsyncWriteExt;
+        client.shutdown().await.expect("shutdown");
+        drop(client);
+        let mut reader = tokio::io::BufReader::new(server);
+        let mut frames = Vec::new();
+        while let Ok(body) = read_dap_body(&mut reader).await {
+            frames.push(serde_json::from_slice(&body).expect("valid JSON frame"));
+        }
+        (terminate, frames)
+    }
+
+    #[tokio::test]
+    async fn initialize_reports_capabilities_and_initialized_event() {
+        let (term, frames) = run_request("initialize", serde_json::json!({})).await;
+        assert!(!term);
+        assert_eq!(frames.len(), 2, "response + initialized event: {frames:?}");
+        assert_eq!(frames[0]["type"], "response");
+        assert_eq!(frames[0]["success"], true);
+        assert_eq!(
+            frames[0]["body"]["supportsConfigurationDoneRequest"], true,
+            "capabilities must be advertised"
+        );
+        assert_eq!(frames[1]["event"], "initialized");
+        // Monotonic seq across both messages.
+        assert!(frames[0]["seq"].as_u64() < frames[1]["seq"].as_u64());
+    }
+
+    #[tokio::test]
+    async fn threads_returns_single_al_thread() {
+        let (_, frames) = run_request("threads", serde_json::json!({})).await;
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["body"]["threads"][0]["id"], 1);
+    }
+
+    #[tokio::test]
+    async fn pause_fails_with_actionable_message() {
+        let (_, frames) = run_request("pause", serde_json::json!({})).await;
+        assert_eq!(frames[0]["success"], false);
+        assert!(
+            frames[0]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("breakpoint"),
+            "must tell the user the BC alternative: {frames:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_command_is_rejected_not_ignored() {
+        let (term, frames) = run_request("bogusCommand", serde_json::json!({})).await;
+        assert!(!term);
+        assert_eq!(frames[0]["success"], false);
+        assert!(frames[0]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Unsupported command: bogusCommand"));
+    }
+
+    #[tokio::test]
+    async fn variables_without_session_returns_empty_array() {
+        let (_, frames) =
+            run_request("variables", serde_json::json!({"variablesReference": 101})).await;
+        assert_eq!(frames[0]["success"], true);
+        assert_eq!(frames[0]["body"]["variables"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_without_session_reports_unverified() {
+        let (_, frames) = run_request(
+            "setBreakpoints",
+            serde_json::json!({
+                "source": {"path": "/proj/src/Foo.al"},
+                "breakpoints": [{"line": 10}, {"line": 20}],
+            }),
+        )
+        .await;
+        let bps = frames[0]["body"]["breakpoints"]
+            .as_array()
+            .expect("breakpoints array");
+        assert_eq!(bps.len(), 2);
+        for bp in bps {
+            assert_eq!(bp["verified"], false);
+            assert_eq!(bp["message"], "No active debug session");
+        }
+    }
+
+    #[tokio::test]
+    async fn steps_without_session_still_acknowledge() {
+        for cmd in ["next", "stepIn", "stepOut"] {
+            let (_, frames) = run_request(cmd, serde_json::json!({})).await;
+            assert_eq!(frames[0]["success"], true, "{cmd} must ack: {frames:?}");
+            assert_eq!(frames[0]["command"], cmd);
+        }
+    }
+
+    #[tokio::test]
+    async fn continue_without_session_acknowledges_all_threads() {
+        let (_, frames) = run_request("continue", serde_json::json!({})).await;
+        assert_eq!(frames[0]["success"], true);
+        assert_eq!(frames[0]["body"]["allThreadsContinued"], true);
+    }
+
+    #[tokio::test]
+    async fn stack_trace_without_session_returns_empty_frames() {
+        let (_, frames) = run_request("stackTrace", serde_json::json!({"threadId": 1})).await;
+        assert_eq!(frames[0]["success"], true);
+        assert_eq!(frames[0]["body"]["totalFrames"], 0);
+    }
+
+    #[tokio::test]
+    async fn scopes_without_session_returns_no_scopes() {
+        let (_, frames) = run_request("scopes", serde_json::json!({"frameId": 3})).await;
+        assert_eq!(frames[0]["success"], true);
+        assert_eq!(frames[0]["body"]["scopes"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn evaluate_without_session_returns_empty_result() {
+        let (_, frames) = run_request(
+            "evaluate",
+            serde_json::json!({"expression": "Customer.Name", "frameId": 0}),
+        )
+        .await;
+        assert_eq!(frames[0]["success"], true);
+        assert_eq!(frames[0]["body"]["result"], "");
+        assert_eq!(frames[0]["body"]["variablesReference"], 0);
+    }
+
+    #[tokio::test]
+    async fn disconnect_terminates_with_response_then_terminated_event() {
+        let (term, frames) = run_request("disconnect", serde_json::json!({})).await;
+        assert!(term, "disconnect must signal loop exit");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0]["type"], "response");
+        assert_eq!(frames[0]["success"], true);
+        assert_eq!(frames[1]["event"], "terminated");
+    }
+
+    /// launch on a project with no app.json and no auth must fail the request
+    /// with an explanatory response — never crash, never hang.
+    #[tokio::test]
+    async fn attach_without_auth_fails_with_message() {
+        let (term, frames) = run_request(
+            "attach",
+            serde_json::json!({"tenant": "test-tenant", "environmentType": "Sandbox"}),
+        )
+        .await;
+        assert!(!term);
+        let last = frames.last().expect("at least one frame");
+        assert_eq!(last["success"], false, "frames: {frames:?}");
+        assert!(last["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Authentication failed"));
     }
 }
