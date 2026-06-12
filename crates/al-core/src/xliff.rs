@@ -247,11 +247,7 @@ fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
                 let rest = line.trim()[ot.len()..].trim();
                 let (id_str, rest2) = split_id_and_name(rest);
                 let id: u32 = id_str.parse().unwrap_or(0);
-                let name = rest2
-                    .trim()
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
+                let name = parse_object_name(rest2.trim());
                 if !name.is_empty() || id > 0 {
                     return Some((capitalize(ot), id, name));
                 }
@@ -259,6 +255,24 @@ fn detect_object_header(text: &str) -> Option<(String, u32, String)> {
         }
     }
     None
+}
+
+/// Extract just the object NAME from the header remainder, stopping at the
+/// closing quote (quoted identifiers) or the first whitespace (bare
+/// identifiers). Extension headers continue with `extends "Base"` —
+/// `trim_matches('"')` on the whole remainder swallowed that clause into the
+/// name and mangled every xlf unit id for extension objects (F-OPEN-273).
+fn parse_object_name(rest: &str) -> String {
+    let rest = rest.trim();
+    for quote in ['"', '\''] {
+        if let Some(inner) = rest.strip_prefix(quote) {
+            return inner.split(quote).next().unwrap_or_default().to_string();
+        }
+    }
+    rest.split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Split "50100 \"Name\"" into ("50100", "\"Name\"").
@@ -906,6 +920,28 @@ mod tests {
         assert_eq!(result.0, "Table");
         assert_eq!(result.1, 50100);
         assert_eq!(result.2, "Customer Extension");
+    }
+
+    /// F-OPEN-273: the name must stop at the closing quote — extension
+    /// headers carry an `extends` clause that was being swallowed into the
+    /// name (`Sales Order Pageext" extends "Sales Order`), mangling every
+    /// xlf unit id for extension objects.
+    #[test]
+    fn detect_object_header_quoted_name_stops_before_extends_clause() {
+        let text = r#"pageextension 50101 "Sales Order Pageext" extends "Sales Order""#;
+        let (ty, id, name) = detect_object_header(text).unwrap();
+        assert_eq!(ty, "Pageextension");
+        assert_eq!(id, 50101);
+        assert_eq!(name, "Sales Order Pageext");
+    }
+
+    #[test]
+    fn detect_object_header_unquoted_name_stops_before_extends_clause() {
+        let text = "tableextension 50100 MyExt extends MyBase";
+        let (ty, id, name) = detect_object_header(text).unwrap();
+        assert_eq!(ty, "Tableextension");
+        assert_eq!(id, 50100);
+        assert_eq!(name, "MyExt");
     }
 
     #[test]
