@@ -22,7 +22,10 @@ pub(super) fn dispatch_trace(
     let max_depth = params.get("depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let max_depth = max_depth.min(50);
 
-    let graph = workspace.get_or_build_insight_graph();
+    // F-OPEN-269: serve the WORKSPACE-ENRICHED graph (packages + workspace
+    // objects/procedures/calls), not the package-only one. The enriched build
+    // is cached; the returned call-graph read guard is held only while serving.
+    let (graph, _cg_guard) = workspace.get_or_build_call_graph();
     let steps = crate::insight::search::trace_event(&graph, event_name, max_depth);
     // SILENT: serialization of valid Vec<TraceStep> should not fail
     let value = serde_json::to_value(&steps).unwrap_or(serde_json::Value::Null);
@@ -35,7 +38,10 @@ pub(super) fn dispatch_trace(
 }
 
 pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
-    let graph = workspace.get_or_build_insight_graph();
+    // F-OPEN-269: serve the WORKSPACE-ENRICHED graph (packages + workspace
+    // objects/procedures/calls), not the package-only one. The enriched build
+    // is cached; the returned call-graph read guard is held only while serving.
+    let (graph, _cg_guard) = workspace.get_or_build_call_graph();
     let entry_points = crate::insight::search::find_entry_points(&graph);
     // SILENT: serialization of valid Vec<&InsightNode> should not fail
     let value = serde_json::to_value(&entry_points).unwrap_or(serde_json::Value::Null);
@@ -56,7 +62,10 @@ pub(super) fn dispatch_graph_export(
         .get("format")
         .and_then(|v| v.as_str())
         .unwrap_or("json");
-    let graph = workspace.get_or_build_insight_graph();
+    // F-OPEN-269: serve the WORKSPACE-ENRICHED graph (packages + workspace
+    // objects/procedures/calls), not the package-only one. The enriched build
+    // is cached; the returned call-graph read guard is held only while serving.
+    let (graph, _cg_guard) = workspace.get_or_build_call_graph();
 
     // Refuse to materialise an unbounded graph into one JSON-RPC response.
     // The whole exported document lives in memory twice (the String/Value
@@ -104,7 +113,10 @@ pub(super) fn dispatch_graph_export(
 }
 
 pub(super) fn dispatch_insight_stats(workspace: &Workspace, id: u64) -> Response {
-    let graph = workspace.get_or_build_insight_graph();
+    // F-OPEN-269: serve the WORKSPACE-ENRICHED graph (packages + workspace
+    // objects/procedures/calls), not the package-only one. The enriched build
+    // is cached; the returned call-graph read guard is held only while serving.
+    let (graph, _cg_guard) = workspace.get_or_build_call_graph();
     Response {
         id,
         result: Some(serde_json::json!({
@@ -294,6 +306,65 @@ mod tests {
         // Both counts must be present and numeric (0 for an empty workspace).
         assert_eq!(value.get("nodes").and_then(|v| v.as_u64()), Some(0));
         assert_eq!(value.get("edges").and_then(|v| v.as_u64()), Some(0));
+    }
+
+    /// F-OPEN-269: the insight dispatchers must serve the WORKSPACE-ENRICHED
+    /// graph. They used the package-only builder, so on a workspace-only
+    /// project `insight-stats` reported 0 useful nodes and `trace`/
+    /// `entrypoints`/the TUI Events+CallGraph views were empty.
+    #[test]
+    fn dispatch_insight_stats_includes_workspace_objects() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/Logic.al"),
+            r#"codeunit 50100 "Hello World"
+{
+    procedure Greet()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        let resp = dispatch_insight_stats(&ws, 9);
+        assert!(resp.error.is_none());
+        let value = resp.result.expect("stats must carry a result");
+        let nodes = value.get("nodes").and_then(|v| v.as_u64()).unwrap_or(0);
+        let edges = value.get("edges").and_then(|v| v.as_u64()).unwrap_or(0);
+        assert!(
+            nodes >= 2,
+            "workspace object + procedure must appear as insight nodes; got {nodes}"
+        );
+        assert!(
+            edges >= 1,
+            "the Contains edge (object -> procedure) must exist; got {edges}"
+        );
+    }
+
+    /// F-OPEN-269 companion: entrypoints must include workspace procedures
+    /// with no incoming calls.
+    #[test]
+    fn dispatch_entrypoints_includes_workspace_procedures() {
+        let ws = Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/Logic.al"),
+            r#"codeunit 50100 "Hello World"
+{
+    procedure Greet()
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        let resp = dispatch_entrypoints(&ws, 8);
+        assert!(resp.error.is_none());
+        let value = resp.result.expect("result");
+        let text = value.to_string();
+        assert!(
+            text.contains("Greet"),
+            "workspace procedure with no callers must be an entry point; got: {text}"
+        );
     }
 
     #[test]

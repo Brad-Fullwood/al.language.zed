@@ -422,11 +422,20 @@ pub(super) fn dispatch_by_id(
         Ok(k) => k,
         Err(e) => return e,
     };
+    // Package symbols
     let results = workspace.symbols.get_by_id(kind, obj_id);
-    let value: Vec<serde_json::Value> = results
+    let mut value: Vec<serde_json::Value> = results
         .iter()
         .filter_map(|e| serde_json::to_value(e.as_ref()).ok()) // SILENT: serialization of valid structs should not fail
         .collect();
+    // Workspace file objects (F-OPEN-268) — same merge as dispatch_object.
+    let kind_lower = kind.to_string().to_lowercase();
+    for entry in workspace.file_index.object_info.iter() {
+        let info = entry.value();
+        if info.id == Some(i64::from(obj_id)) && info.kind.eq_ignore_ascii_case(&kind_lower) {
+            value.push(workspace_object_to_json(info));
+        }
+    }
     if value.is_empty() {
         Response {
             id,
@@ -455,6 +464,11 @@ pub(super) fn dispatch_events(
     let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
+    // F-OPEN-268: workspace methods (with their [IntegrationEvent]/
+    // [EventSubscriber] attributes) only enter the SymbolIndex via the
+    // call-graph enrichment pass — trigger the cached build before querying
+    // so the user's own publishers are visible, not just package symbols.
+    let _ = workspace.get_or_build_call_graph();
     let results = workspace.symbols.get_events(name);
     let publishers: Vec<serde_json::Value> = results
         .publishers
@@ -489,6 +503,9 @@ pub(super) fn dispatch_subscribers(
     let Some(event) = params.get("event").and_then(|v| v.as_str()) else {
         return invalid_params(id);
     };
+    // F-OPEN-268: see dispatch_events — workspace subscribers need the
+    // enrichment pass too.
+    let _ = workspace.get_or_build_call_graph();
     let results = workspace.symbols.get_events(event);
     let subscribers: Vec<serde_json::Value> = results
         .subscribers
@@ -526,6 +543,9 @@ pub(super) fn dispatch_composed(
         Ok(k) => k,
         Err(e) => return e,
     };
+    // F-OPEN-268: composition must see workspace extensions/bases as well —
+    // they enter the SymbolIndex via the enrichment pass.
+    let _ = workspace.get_or_build_call_graph();
     match workspace.symbols.get_composed_cached(kind, name) {
         Some(composed) => {
             let value = serde_json::to_value(composed.as_ref()).unwrap_or(serde_json::Value::Null);
@@ -753,6 +773,134 @@ mod tests {
             let _: crate::symbols::SymbolEntry = serde_json::from_value(json)
                 .unwrap_or_else(|e| panic!("kind {k:?} must deserialize: {e}"));
         }
+    }
+
+    /// F-OPEN-268: `by-id` must find workspace source objects, not only .app
+    /// package symbols. `object` (lookup by name) already merges the workspace
+    /// file index; `by-id codeunit 50100` returned "No Codeunit with id 50100"
+    /// for an object that `object codeunit "Hello World"` found.
+    #[test]
+    fn dispatch_by_id_finds_workspace_objects() {
+        let ws = crate::workspace::Workspace::new();
+        ws.file_index.object_info.insert(
+            std::path::PathBuf::from("/proj/src/HelloWorld.al"),
+            crate::file_index::CachedObjectInfo {
+                kind: "codeunit".to_string(),
+                id: Some(50_100),
+                name: "Hello World".to_string(),
+                range: tree_sitter::Range {
+                    start_byte: 0,
+                    end_byte: 0,
+                    start_point: tree_sitter::Point { row: 0, column: 0 },
+                    end_point: tree_sitter::Point { row: 0, column: 0 },
+                },
+            },
+        );
+        let resp = dispatch_by_id(
+            &ws,
+            1,
+            &serde_json::json!({"kind": "codeunit", "id": 50_100}),
+        );
+        assert!(
+            resp.error.is_none(),
+            "by-id must find workspace objects: {:?}",
+            resp.error
+        );
+        let value = resp.result.expect("result");
+        let arr = value.as_array().expect("array result");
+        assert_eq!(arr.len(), 1, "exactly the one workspace object: {arr:?}");
+        assert_eq!(arr[0]["name"], "Hello World");
+        assert_eq!(arr[0]["package"], WORKSPACE_PACKAGE);
+    }
+
+    /// F-OPEN-268: `events` must surface WORKSPACE event publishers, not only
+    /// .app package symbols. Workspace methods only enter the SymbolIndex via
+    /// the call-graph enrichment pass — which nothing on the events path
+    /// triggered, so `al-explorer events OnBeforeProcess` missed publishers
+    /// defined in the user's own project.
+    #[test]
+    fn dispatch_events_finds_workspace_publishers() {
+        let ws = crate::workspace::Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/Pub.al"),
+            r#"codeunit 50101 "Test Event Publisher"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnBeforeProcess(var InputValue: Text; var IsHandled: Boolean)
+    begin
+    end;
+}
+"#
+            .to_string(),
+        );
+        let resp = dispatch_events(&ws, 1, &serde_json::json!({"name": "OnBeforeProcess"}));
+        assert!(resp.error.is_none(), "events errored: {:?}", resp.error);
+        let value = resp.result.expect("result");
+        let arr = value.as_array().expect("array");
+        assert!(
+            arr.iter().any(|p| p["objectName"] == "Test Event Publisher"
+                && p["methodName"] == "OnBeforeProcess"),
+            "workspace publisher must be listed; got: {arr:?}"
+        );
+    }
+
+    /// F-OPEN-268: `composed` must merge a WORKSPACE base table with its
+    /// WORKSPACE extension — previously it returned "No Table named ... or no
+    /// extensions found" because neither object was in the SymbolIndex.
+    #[test]
+    fn dispatch_composed_merges_workspace_table_and_extension() {
+        let ws = crate::workspace::Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/TestCustomer.Table.al"),
+            r#"table 50100 "Test Customer"
+{
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+        }
+    }
+}
+"#
+            .to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/TestCustomerExt.TableExt.al"),
+            r#"tableextension 50100 "Test Customer Ext" extends "Test Customer"
+{
+    fields
+    {
+        field(50100; "Custom Field"; Text[50])
+        {
+        }
+    }
+}
+"#
+            .to_string(),
+        );
+        let resp = dispatch_composed(
+            &ws,
+            1,
+            &serde_json::json!({"kind": "table", "name": "Test Customer"}),
+        );
+        assert!(
+            resp.error.is_none(),
+            "composed must find the workspace base + extension: {:?}",
+            resp.error
+        );
+        let text = resp.result.expect("result").to_string();
+        assert!(
+            text.contains("Custom Field"),
+            "composed view must include the extension's field: {text}"
+        );
+    }
+
+    /// F-OPEN-268 guard: an id that matches nothing still errors.
+    #[test]
+    fn dispatch_by_id_unknown_id_still_errors() {
+        let ws = crate::workspace::Workspace::new();
+        let resp = dispatch_by_id(&ws, 1, &serde_json::json!({"kind": "codeunit", "id": 1}));
+        assert!(resp.error.is_some(), "unknown id must keep erroring");
     }
 
     /// An out-of-range `startLine` (> u32::MAX) must be rejected with

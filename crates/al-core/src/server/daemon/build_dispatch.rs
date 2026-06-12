@@ -3043,7 +3043,11 @@ pub(super) fn dispatch_generate(
     }
 
     // Resolve the source table symbol from the workspace symbol index.
+    // F-OPEN-268: workspace tables (with their fields) only enter the
+    // SymbolIndex via the call-graph enrichment pass — trigger the cached
+    // build first so scaffolding works against the user's own tables.
     let table_entry = if !table_name.is_empty() {
+        let _ = workspace.get_or_build_call_graph();
         workspace
             .symbols
             .search(table_name, 10)
@@ -5278,6 +5282,56 @@ mod p1_5_tests {
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("NoSuchTable"));
+    }
+
+    /// F-OPEN-268: `generate page --table` must work against WORKSPACE tables
+    /// (the primary scaffolding use case), with real field controls from the
+    /// table's field sections — not just .app package tables.
+    #[test]
+    fn generate_page_scaffolds_workspace_table_with_fields() {
+        let ws = empty_ws();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/TestCustomer.Table.al"),
+            r#"table 50100 "Test Customer"
+{
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+        }
+        field(2; Name; Text[100])
+        {
+        }
+    }
+}
+"#
+            .to_string(),
+        );
+        let resp = dispatch_generate(
+            &ws,
+            3,
+            &serde_json::json!({
+                "kind": "page", "name": "Test Customer Card",
+                "table": "Test Customer", "id": 50150
+            }),
+        );
+        assert!(
+            resp.error.is_none(),
+            "workspace table must be found: {:?}",
+            resp.error
+        );
+        let code = resp.result.expect("result")["code"]
+            .as_str()
+            .expect("code string")
+            .to_string();
+        assert!(
+            code.contains("Test Customer"),
+            "page must reference the source table: {code}"
+        );
+        assert!(
+            code.contains("No.") && code.contains("Name"),
+            "page must scaffold the table's field controls: {code}"
+        );
     }
 
     // --- dispatch_deps_graph -------------------------------------------------

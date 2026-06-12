@@ -904,19 +904,28 @@ pub fn register_workspace_nodes(
             insight,
         );
 
-        // Also extract MethodSymbol data and add to SymbolIndex so that
-        // parameter lookups (lookup_event_params) find workspace methods.
+        // Also extract MethodSymbol + FieldSymbol data and add to the
+        // SymbolIndex so that parameter lookups (lookup_event_params) find
+        // workspace methods and scaffolding (`generate page --table`) finds
+        // workspace table fields (F-OPEN-268). Always push the entry — even a
+        // member-less object must be resolvable by name/id/composition.
         let methods = extract_methods_from_tree(tree.root_node(), source_bytes);
-        if !methods.is_empty() {
-            workspace_entries.push(crate::symbols::SymbolEntry {
-                kind: ok,
-                id,
-                name: info.name.clone(),
-                package: "workspace".to_string(),
-                methods,
-                ..Default::default()
-            });
-        }
+        let fields = match ok {
+            ObjectKind::Table | ObjectKind::TableExtension => {
+                extract_fields_from_tree(tree.root_node(), source_bytes)
+            }
+            _ => Vec::new(),
+        };
+        workspace_entries.push(crate::symbols::SymbolEntry {
+            kind: ok,
+            id,
+            name: info.name.clone(),
+            package: "workspace".to_string(),
+            methods,
+            fields,
+            extends: info_extends_from_tree(tree.root_node(), source_bytes),
+            ..Default::default()
+        });
     }
 
     // Clear any previously registered workspace entries before re-adding to prevent
@@ -927,6 +936,108 @@ pub fn register_workspace_nodes(
     if !workspace_entries.is_empty() {
         symbols.add_entries_owned(workspace_entries);
     }
+}
+
+/// Extract `FieldSymbol` data from table/tableextension field sections.
+///
+/// Fields parse as `object_section` nodes with keyword `field` and a
+/// parenthesized `(ID; Name; Type)` triplet. Used by the workspace
+/// enrichment pass so scaffolding (`generate page --table`) works against
+/// the user's own tables (F-OPEN-268).
+fn extract_fields_from_tree(
+    root: tree_sitter::Node,
+    source: &[u8],
+) -> Vec<crate::symbols::FieldSymbol> {
+    let mut fields = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "object_section" {
+            if let Some(kw) = node.child_by_field_name("keyword") {
+                if kw
+                    .utf8_text(source)
+                    .is_ok_and(|t| t.eq_ignore_ascii_case("field"))
+                {
+                    if let Some(f) = field_symbol_from_section(node, source) {
+                        fields.push(f);
+                    }
+                    // Field bodies hold properties/triggers, not nested fields.
+                    continue;
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    // The explicit stack visits siblings in reverse order; sort for stable,
+    // declaration-order output.
+    fields.sort_by_key(|f| f.id);
+    fields
+}
+
+/// Extract the `extends` target from an object declaration, if any.
+///
+/// The grammar emits `extends X` either as `object_modifier` (with
+/// `modifier`/`target` fields) or — what real headers actually produce —
+/// as `implements_clause` (positional `metadata_keyword` + `name` children,
+/// shared between `implements` and `extends`). Needed so workspace extension
+/// objects participate in composition (`composed table <base>`) once
+/// registered in the SymbolIndex (F-OPEN-268).
+fn info_extends_from_tree(root: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "object_modifier" | "implements_clause") {
+            let mut kw_cursor = node.walk();
+            let keyword_node = node.child_by_field_name("modifier").or_else(|| {
+                node.children(&mut kw_cursor)
+                    .find(|c| c.kind() == "metadata_keyword")
+            });
+            let keyword = keyword_node
+                .and_then(|m| m.utf8_text(source).ok())
+                .unwrap_or("");
+            if keyword.trim().eq_ignore_ascii_case("extends") {
+                let mut tgt_cursor = node.walk();
+                let target_node = node
+                    .child_by_field_name("target")
+                    .or_else(|| node.children(&mut tgt_cursor).find(|c| c.kind() == "name"));
+                return target_node
+                    .and_then(|t| t.utf8_text(source).ok())
+                    .map(|t| t.trim().trim_matches('"').to_string());
+            }
+        }
+        // The extends clause lives in the object header — don't descend into
+        // object bodies (procedure code can't contain these clause nodes).
+        if node.kind() != "object_body" {
+            let mut cursor = node.walk();
+            stack.extend(node.children(&mut cursor));
+        }
+    }
+    None
+}
+
+/// Parse one `field(ID; Name; Type)` section header into a `FieldSymbol`.
+fn field_symbol_from_section(
+    node: tree_sitter::Node,
+    source: &[u8],
+) -> Option<crate::symbols::FieldSymbol> {
+    let mut cursor = node.walk();
+    let paren = node
+        .children(&mut cursor)
+        .find(|c| c.kind() == "parenthesized_block")?;
+    let text = paren.utf8_text(source).ok()?;
+    let inner = text.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let mut parts = inner.splitn(3, ';');
+    let id: i32 = parts.next()?.trim().parse().ok()?;
+    let name = parts.next()?.trim().trim_matches('"').to_string();
+    let type_name = parts.next()?.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    Some(crate::symbols::FieldSymbol {
+        id,
+        name,
+        type_name,
+        properties: Vec::new(),
+    })
 }
 
 /// Extract `MethodSymbol` data from all procedures in an AL object AST.
@@ -1545,6 +1656,110 @@ fn collect_procedure_names_from_node(
 mod tests {
     use super::*;
     use crate::symbols::{AttributeSymbol, MethodSymbol, ObjectKind, SymbolEntry, SymbolIndex};
+
+    /// F-OPEN-268: in the current grammar `[IntegrationEvent(...)]` parses as a
+    /// PRECEDING SIBLING of `procedure_declaration`, not a child. The method
+    /// extractor only walked children, so every workspace method reached the
+    /// SymbolIndex with zero attributes — making `events`/`subscribers` (and
+    /// insight Publishes edges) blind to workspace event publishers.
+    #[test]
+    fn extract_methods_captures_preceding_sibling_attributes() {
+        let source = r#"codeunit 50101 "Test Event Publisher"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnBeforeProcess(var InputValue: Text; var IsHandled: Boolean)
+    begin
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sales-Post", 'OnAfterPost', '', false, false)]
+    local procedure HandlePost()
+    begin
+    end;
+}
+"#;
+        let result = crate::syntax::AlParser::parse_quick(source);
+        let methods = extract_methods_from_tree(result.tree.root_node(), source.as_bytes());
+
+        let publisher = methods
+            .iter()
+            .find(|m| m.name == "OnBeforeProcess")
+            .expect("OnBeforeProcess method must be extracted");
+        assert!(
+            publisher
+                .attributes
+                .iter()
+                .any(|a| a.name.eq_ignore_ascii_case("IntegrationEvent")),
+            "must capture the [IntegrationEvent] attribute (preceding sibling); got: {:?}",
+            publisher.attributes
+        );
+
+        let subscriber = methods
+            .iter()
+            .find(|m| m.name == "HandlePost")
+            .expect("HandlePost method must be extracted");
+        assert!(
+            subscriber
+                .attributes
+                .iter()
+                .any(|a| a.name.eq_ignore_ascii_case("EventSubscriber")),
+            "must capture the [EventSubscriber] attribute; got: {:?}",
+            subscriber.attributes
+        );
+    }
+
+    /// F-OPEN-268: workspace TABLES must reach the SymbolIndex with their
+    /// FIELDS, so `generate page --table <workspace table>` can scaffold real
+    /// field controls (the primary scaffolding use case). Previously the
+    /// enrichment only extracted methods, leaving workspace tables hollow.
+    #[test]
+    fn workspace_enrichment_extracts_table_fields() {
+        let source = r#"table 50100 "Test Customer"
+{
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+            Caption = 'No.';
+        }
+        field(2; Name; Text[100])
+        {
+        }
+    }
+}
+"#;
+        let result = crate::syntax::AlParser::parse_quick(source);
+        let fields = extract_fields_from_tree(result.tree.root_node(), source.as_bytes());
+        assert_eq!(fields.len(), 2, "both fields must be extracted: {fields:?}");
+        assert_eq!(fields[0].id, 1);
+        assert_eq!(fields[0].name, "No.");
+        assert_eq!(fields[0].type_name, "Code[20]");
+        assert_eq!(fields[1].id, 2);
+        assert_eq!(fields[1].name, "Name");
+        assert_eq!(fields[1].type_name, "Text[100]");
+    }
+
+    /// F-OPEN-268: the enrichment must populate `extends` for extension
+    /// objects so workspace extensions participate in composition.
+    #[test]
+    fn extends_target_extracted_from_extension_header() {
+        let source = r#"tableextension 50100 "Test Customer Ext" extends "Test Customer"
+{
+    fields
+    {
+        field(50100; "Custom Field"; Text[50])
+        {
+        }
+    }
+}
+"#;
+        let result = crate::syntax::AlParser::parse_quick(source);
+        let target = info_extends_from_tree(result.tree.root_node(), source.as_bytes());
+        assert_eq!(
+            target.as_deref(),
+            Some("Test Customer"),
+            "extends target must be extracted from the object header"
+        );
+    }
 
     // ------------------------------------------------------------------
     // Fixtures
