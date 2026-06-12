@@ -177,6 +177,116 @@ impl InsightGraph {
         }
     }
 
+    /// Connect every Subscriber node in the graph to its target Event
+    /// node(s) with a `SubscribesTo` edge.
+    ///
+    /// FB-8: Subscriber nodes added by the workspace-enrichment pass
+    /// (`insight::calls::register_workspace_nodes`) stored their target on
+    /// the node but never got an edge — only `build()`'s
+    /// `resolve_relationships` created edges, and that pass only sees
+    /// package entries (which don't carry `EventSubscriber` attributes in
+    /// Microsoft symbol packages at all). Net effect: `trace` could never
+    /// descend from an event to its subscribers.
+    ///
+    /// Must run after ALL nodes are registered (packages + workspace).
+    /// Idempotent: `add_edge` dedups, so re-running after a rebuild is safe.
+    ///
+    /// When the target event has no declared Event node but the target
+    /// *object* exists (e.g. table-trigger events like `OnAfterInsertEvent`
+    /// which are platform-implicit, never declared in AL source), an Event
+    /// node is synthesized under that object so the chain stays traceable.
+    pub fn resolve_subscriber_edges(&mut self) {
+        let subscribers: Vec<(NodeIndex, String, String)> = self
+            .graph
+            .node_indices()
+            .filter_map(|idx| {
+                if let InsightNode::Subscriber {
+                    target_object,
+                    target_event,
+                    ..
+                } = &self.graph[idx]
+                {
+                    if target_object.is_empty() || target_event.is_empty() {
+                        return None;
+                    }
+                    Some((
+                        idx,
+                        target_object.to_lowercase(),
+                        target_event.to_lowercase(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Same kind-search order as `resolve_relationships`: well-formed AL
+        // declares the publisher type in the attribute, but the parsed node
+        // doesn't carry it, so search the kinds that can publish events.
+        const KINDS: [ObjectKind; 10] = [
+            ObjectKind::Codeunit,
+            ObjectKind::Table,
+            ObjectKind::Page,
+            ObjectKind::Report,
+            ObjectKind::XmlPort,
+            ObjectKind::Query,
+            ObjectKind::Interface,
+            ObjectKind::TableExtension,
+            ObjectKind::PageExtension,
+            ObjectKind::ReportExtension,
+        ];
+
+        for (sub_idx, obj_lower, evt_lower) in subscribers {
+            let mut connected = false;
+            for kind in KINDS {
+                let key = NodeKey::Event(kind, obj_lower.clone(), evt_lower.clone());
+                let event_indices: Vec<NodeIndex> = self.get_nodes(&key).to_vec();
+                if event_indices.is_empty() {
+                    continue;
+                }
+                for event_idx in event_indices {
+                    self.add_edge(sub_idx, event_idx, InsightEdge::SubscribesTo);
+                }
+                connected = true;
+                break;
+            }
+            if connected {
+                continue;
+            }
+            // No declared event — synthesize one under the target object if
+            // the object itself is known (implicit table/page trigger events).
+            for kind in KINDS {
+                let obj_key = NodeKey::Object(kind, obj_lower.clone());
+                let Some(obj_idx) = self.get_node(&obj_key) else {
+                    continue;
+                };
+                let display_object = match &self.graph[obj_idx] {
+                    InsightNode::Object { name, .. } => name.clone(),
+                    _ => obj_lower.clone(),
+                };
+                // Recover the event's display name from the subscriber node
+                // (the lowercase key loses casing).
+                let display_event = match &self.graph[sub_idx] {
+                    InsightNode::Subscriber { target_event, .. } => target_event.clone(),
+                    _ => evt_lower.clone(),
+                };
+                let event_key = NodeKey::Event(kind, obj_lower.clone(), evt_lower.clone());
+                let event_idx = self.ensure_node(
+                    event_key,
+                    InsightNode::Event {
+                        object_kind: kind,
+                        object_name: display_object,
+                        name: display_event,
+                        event_type: EventNodeType::Integration,
+                    },
+                );
+                self.add_edge(obj_idx, event_idx, InsightEdge::Publishes);
+                self.add_edge(sub_idx, event_idx, InsightEdge::SubscribesTo);
+                break;
+            }
+        }
+    }
+
     /// Remove all outgoing edges from `node`. Used for invalidation when
     /// a file changes and its call edges need re-extraction.
     pub fn remove_edges_from(&mut self, node: NodeIndex) {
@@ -516,6 +626,7 @@ mod tests {
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),
@@ -535,6 +646,7 @@ mod tests {
 
     fn make_table(id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id,
             name: name.to_string(),
@@ -559,6 +671,7 @@ mod tests {
 
     fn make_table_ext(id: i32, name: &str, extends: &str) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::TableExtension,
             id,
             name: name.to_string(),
@@ -979,6 +1092,7 @@ mod tests {
 
         // Customer table
         let customer = SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id: 18,
             name: "Customer".to_string(),
@@ -1002,6 +1116,7 @@ mod tests {
 
         // Sales Header with TableRelation to Customer
         let sales_header = SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id: 36,
             name: "Sales Header".to_string(),
@@ -1056,6 +1171,7 @@ mod tests {
         let index = SymbolIndex::new();
 
         let item = SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id: 27,
             name: "Item".to_string(),
@@ -1079,6 +1195,7 @@ mod tests {
 
         // Sales Line with a quoted TableRelation that includes a WHERE clause.
         let sales_line = SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id: 37,
             name: "Sales Line".to_string(),

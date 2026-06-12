@@ -284,6 +284,7 @@ mod tests {
 
     fn base_entry(kind: ObjectKind, id: i32, name: &str) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind,
             id,
             name: name.to_string(),

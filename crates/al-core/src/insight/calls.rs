@@ -936,6 +936,12 @@ pub fn register_workspace_nodes(
     if !workspace_entries.is_empty() {
         symbols.add_entries_owned(workspace_entries);
     }
+
+    // FB-8: connect workspace Subscriber nodes to their target Event nodes.
+    // Without this pass the subscribers registered above carried their
+    // target on the node but had no SubscribesTo edge, so `trace` showed
+    // origins and nothing else.
+    insight.resolve_subscriber_edges();
 }
 
 /// Extract `FieldSymbol` data from table/tableextension field sections.
@@ -1357,7 +1363,7 @@ fn register_single_procedure(
 }
 
 /// Collect `(attribute_name, args_text)` pairs from a procedure node.
-fn collect_procedure_attributes(
+pub(crate) fn collect_procedure_attributes(
     proc_node: tree_sitter::Node,
     source: &[u8],
 ) -> Vec<(String, String)> {
@@ -1415,7 +1421,7 @@ fn parse_subscriber_target_from_attrs(attrs: &[(String, String)]) -> (String, St
 }
 
 /// Extract comma-separated arguments from an attribute text like `[Attr(a, b, c)]`.
-fn extract_attribute_args(attr_text: &str) -> Vec<String> {
+pub(crate) fn extract_attribute_args(attr_text: &str) -> Vec<String> {
     // Find the '(' ... ')' inside the attribute text
     let start = match attr_text.find('(') {
         Some(i) => i + 1,
@@ -1483,7 +1489,7 @@ fn extract_attribute_args(attr_text: &str) -> Vec<String> {
 }
 
 /// Clean an attribute argument: strip surrounding quotes, type prefixes like `Codeunit::`.
-fn clean_attr_arg(s: &str) -> String {
+pub(crate) fn clean_attr_arg(s: &str) -> String {
     let s = s.trim();
     // Remove type prefix like `Codeunit::`
     let s = if let Some(pos) = s.find("::") {
@@ -1767,6 +1773,7 @@ mod tests {
 
     fn make_codeunit(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),
@@ -1786,6 +1793,7 @@ mod tests {
 
     fn make_table(id: i32, name: &str, methods: Vec<MethodSymbol>) -> SymbolEntry {
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Table,
             id,
             name: name.to_string(),
@@ -2164,6 +2172,103 @@ mod tests {
     // ------------------------------------------------------------------
     // E. Subscriber/event detection
     // ------------------------------------------------------------------
+
+    /// FB-8 regression: a workspace subscriber to a workspace event must be
+    /// reachable from `trace_event` — i.e. `register_workspace_nodes` must
+    /// produce the `SubscribesTo` EDGE, not just the Subscriber node.
+    /// Before the fix, `trace` printed `[origin]` lines and nothing else on
+    /// every real project.
+    #[test]
+    fn workspace_subscriber_appears_in_event_trace() {
+        let publisher = r#"codeunit 50100 "Trace Publisher"
+{
+    [IntegrationEvent(false, false)]
+    local procedure OnAfterDoThing(var Done: Boolean)
+    begin
+    end;
+}
+"#;
+        let subscriber = r#"codeunit 50101 "Trace Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Trace Publisher", OnAfterDoThing, '', false, false)]
+    local procedure HandleDoThing(var Done: Boolean)
+    begin
+    end;
+}
+"#;
+        let file_index = crate::file_index::FileIndex::new();
+        file_index.add_file(
+            std::path::PathBuf::from("/ws/Publisher.Codeunit.al"),
+            publisher.to_string(),
+        );
+        file_index.add_file(
+            std::path::PathBuf::from("/ws/Subscriber.Codeunit.al"),
+            subscriber.to_string(),
+        );
+
+        let symbols = SymbolIndex::new();
+        let mut insight = InsightGraph::new();
+        register_workspace_nodes(&file_index, &symbols, &mut insight);
+
+        let steps = crate::insight::search::trace_event(&insight, "OnAfterDoThing", 10);
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.edge_type == "origin" && s.object == "Trace Publisher"),
+            "trace must find the publishing origin, got: {steps:?}"
+        );
+        assert!(
+            steps.iter().any(|s| s.edge_type == "subscribes_to"
+                && s.object == "Trace Subscriber"
+                && s.name == "HandleDoThing"),
+            "trace must descend to the workspace subscriber, got: {steps:?}"
+        );
+    }
+
+    /// FB-8 follow-on: subscribers to platform-implicit events (table
+    /// trigger events like OnAfterInsertEvent, never declared in AL) get a
+    /// synthesized Event node under the target object so the chain stays
+    /// traceable.
+    #[test]
+    fn implicit_table_event_subscriber_is_traceable() {
+        let table = r#"table 50100 "Trace Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+}
+"#;
+        let subscriber = r#"codeunit 50102 "Table Event Subs"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Trace Table", OnAfterInsertEvent, '', false, false)]
+    local procedure OnAfterInsert(var Rec: Record "Trace Table"; RunTrigger: Boolean)
+    begin
+    end;
+}
+"#;
+        let file_index = crate::file_index::FileIndex::new();
+        file_index.add_file(
+            std::path::PathBuf::from("/ws/TraceTable.Table.al"),
+            table.to_string(),
+        );
+        file_index.add_file(
+            std::path::PathBuf::from("/ws/TableEventSubs.Codeunit.al"),
+            subscriber.to_string(),
+        );
+
+        let symbols = SymbolIndex::new();
+        let mut insight = InsightGraph::new();
+        register_workspace_nodes(&file_index, &symbols, &mut insight);
+
+        let steps = crate::insight::search::trace_event(&insight, "OnAfterInsertEvent", 10);
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.edge_type == "subscribes_to" && s.object == "Table Event Subs"),
+            "implicit table event must trace to its subscriber, got: {steps:?}"
+        );
+    }
 
     #[test]
     fn register_workspace_nodes_detects_events_and_subscribers() {

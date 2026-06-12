@@ -627,6 +627,7 @@ mod tests {
             });
         }
         SymbolEntry {
+            synthetic: false,
             kind: ObjectKind::Codeunit,
             id,
             name: name.to_string(),
