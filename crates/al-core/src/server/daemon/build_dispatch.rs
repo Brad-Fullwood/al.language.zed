@@ -622,7 +622,7 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
             };
         }
     };
-    if tc.is_none() {
+    let Some(toolchain) = tc.clone() else {
         return Response {
             id,
             result: None,
@@ -632,41 +632,72 @@ pub(super) async fn dispatch_compile(workspace: &Workspace, id: u64) -> Response
             }),
             ..Default::default()
         };
-    }
+    };
+    let package_cache = project.as_ref().map(|p| p.packages_dir.clone());
     // Drop the read guards before acquiring async locks
     drop(tc);
     drop(project);
 
     let result: Result<serde_json::Value, String> = async {
-        let guard = crate::semantic::get_or_init_bridge(workspace)
-            .await
-            .ok_or("Failed to initialize semantic bridge")?;
-        let bridge = guard.as_ref().ok_or("Semantic bridge unavailable")?;
-        let compile_result = bridge
-            .compile(&project_root, None, None)
-            .await
-            .map_err(|e| format!("Compilation failed: {}", e))?;
-        // Semantic bridge may not return appPath — fall back to finding the
-        // .app file on disk when compilation succeeded.
+        // Preferred path: the .NET CodeAnalysis bridge (rich diagnostics with
+        // end positions). When it is unavailable — built without the
+        // `semantic` feature, or CLR init failed — FALL BACK to the
+        // `dotnet alc` subprocess (F-OPEN-272; the documented behavior).
+        if let Some(guard) = crate::semantic::get_or_init_bridge(workspace).await {
+            if let Some(bridge) = guard.as_ref() {
+                let compile_result = bridge
+                    .compile(&project_root, None, None)
+                    .await
+                    .map_err(|e| format!("Compilation failed: {}", e))?;
+                // Semantic bridge may not return appPath — fall back to finding
+                // the .app file on disk when compilation succeeded.
+                let app_path = compile_result
+                    .app_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .or_else(|| {
+                        if compile_result.success {
+                            crate::build::find_app_file(&project_root)
+                                .map(|p| p.display().to_string())
+                        } else {
+                            None
+                        }
+                    });
+                return Ok(serde_json::json!({
+                    "success": compile_result.success,
+                    "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
+                        "file": d.file.display().to_string(),
+                        "line": d.line,
+                        "column": d.column,
+                        "endLine": d.end_line,
+                        "endColumn": d.end_column,
+                        "severity": d.severity,
+                        "code": d.code,
+                        "message": d.message,
+                    })).collect::<Vec<_>>(),
+                    "appPath": app_path,
+                }));
+            }
+        }
+
+        tracing::info!("semantic bridge unavailable — compiling via dotnet alc subprocess");
+        let compile_result =
+            crate::build::compile_project(&toolchain, &project_root, package_cache.as_deref())
+                .await
+                .map_err(|e| format!("Compilation failed: {}", e))?;
         let app_path = compile_result
             .app_path
             .as_ref()
-            .map(|p| p.display().to_string())
-            .or_else(|| {
-                if compile_result.success {
-                    crate::build::find_app_file(&project_root).map(|p| p.display().to_string())
-                } else {
-                    None
-                }
-            });
+            .map(|p| p.display().to_string());
         Ok(serde_json::json!({
             "success": compile_result.success,
             "diagnostics": compile_result.diagnostics.iter().map(|d| serde_json::json!({
-                "file": d.file.display().to_string(),
+                "file": d.file,
                 "line": d.line,
                 "column": d.column,
-                "endLine": d.end_line,
-                "endColumn": d.end_column,
+                // alc output carries no end positions; keep the wire shape.
+                "endLine": serde_json::Value::Null,
+                "endColumn": serde_json::Value::Null,
                 "severity": d.severity,
                 "code": d.code,
                 "message": d.message,
@@ -5934,6 +5965,57 @@ mod p1_5_tests {
             "expected a toolchain error, got: {}",
             err.message
         );
+    }
+
+    /// F-OPEN-272: when the semantic bridge is unavailable (feature off or
+    /// init failed) but a toolchain exists, `compile` must FALL BACK to the
+    /// `dotnet alc` subprocess path (as the README documents) instead of
+    /// erroring "Failed to initialize semantic bridge". The fixture alc.dll is
+    /// an empty file so the subprocess attempt itself fails — the contract
+    /// under test is the ROUTING: the bridge-init error must not surface.
+    #[tokio::test]
+    async fn compile_falls_back_to_alc_when_bridge_unavailable() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("app.json"),
+            r#"{"id":"x","name":"t","publisher":"p","version":"1.0.0.0"}"#,
+        )
+        .unwrap();
+        {
+            let mut g = ws.project.write().await;
+            *g = Some(make_project(tmp.path()));
+        }
+        let tc_dir = tempfile::TempDir::new().unwrap();
+        write_fixture_toolchain(tc_dir.path());
+        let tc = {
+            let _lock = AL_TOOL_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var_os("AL_TOOL_PATH");
+            // SAFETY: serialized via env_lock; restored immediately after.
+            unsafe { std::env::set_var("AL_TOOL_PATH", tc_dir.path()) };
+            let tc = crate::toolchain::find_toolchain()
+                .expect("fixture AL_TOOL_PATH toolchain must be discovered");
+            unsafe {
+                match prev {
+                    Some(v) => std::env::set_var("AL_TOOL_PATH", v),
+                    None => std::env::remove_var("AL_TOOL_PATH"),
+                }
+            }
+            tc
+        };
+        {
+            let mut g = ws.toolchain.write().await;
+            *g = Some(tc);
+        }
+        let resp = dispatch_compile(&ws, 3).await;
+        if let Some(err) = &resp.error {
+            assert!(
+                !err.message.contains("semantic bridge"),
+                "compile must fall back to the alc subprocess when the bridge \
+                 is unavailable, not error on bridge init: {}",
+                err.message
+            );
+        }
     }
 
     // --- dispatch_package (AL_TOOL_PATH seam + build error propagation) -------
