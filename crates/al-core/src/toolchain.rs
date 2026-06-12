@@ -35,6 +35,32 @@ pub fn dotnet_command(alc: &Path) -> std::process::Command {
 
 /// Async (tokio) counterpart of [`dotnet_command`]. See its docs for the
 /// roll-forward rationale.
+/// Path to `altool.dll` — the ALTool CLI assembly (v17+) that hosts the
+/// `launchlspserver` / `launchmcpserver` commands. It ships as a SIBLING of
+/// the `alc.dll` compiler the toolchain discovers (alc itself does NOT
+/// understand those commands). Returns None for pre-v17 toolchains.
+pub fn find_altool(toolchain: &AlToolchain) -> Option<std::path::PathBuf> {
+    let altool = toolchain.alc.with_file_name("altool.dll");
+    altool.is_file().then_some(altool)
+}
+
+/// Compose the command that launches Microsoft's official AL Language
+/// Server (`altool launchlspserver`, ALTool v17+). Used by
+/// `al-lsp --official-lsp` to delegate the whole stdio LSP session to the
+/// official server (F-OPEN-260).
+///
+/// NOTE: altool is an ASP.NET Core app — it additionally requires the
+/// Microsoft.AspNetCore.App shared framework at runtime (the dotnet host
+/// reports a precise error if it's missing).
+pub fn official_lsp_command(altool: &Path, extra_args: &[String]) -> std::process::Command {
+    let mut cmd = std::process::Command::new("dotnet");
+    cmd.env("DOTNET_ROLL_FORWARD", "Major");
+    cmd.arg(altool);
+    cmd.arg("launchlspserver");
+    cmd.args(extra_args);
+    cmd
+}
+
 pub fn dotnet_command_async(alc: &Path) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("dotnet");
     cmd.arg(alc);
@@ -519,6 +545,35 @@ mod tests {
             Some("/some/tools/net8.0/any/alc.dll")
         );
         // DOTNET_ROLL_FORWARD=Major lets the net8.0 tool run on a newer major.
+        let rf = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("DOTNET_ROLL_FORWARD"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned());
+        assert_eq!(rf.as_deref(), Some("Major"));
+    }
+
+    /// F-OPEN-260: the official-LSP delegation command must run the
+    /// discovered alc assembly's `launchlspserver` entry point under dotnet
+    /// with roll-forward (net8 assembly on newer majors), forwarding args.
+    #[test]
+    fn official_lsp_command_composes_launchlspserver_invocation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tc = fake_toolchain(dir.path());
+        // find_altool requires the sibling altool.dll (v17+); absent → None.
+        assert!(find_altool(&tc).is_none(), "no altool.dll yet");
+        std::fs::write(dir.path().join("altool.dll"), b"").unwrap();
+        let altool = find_altool(&tc).expect("altool.dll sibling discovered");
+        let extra = vec!["/x/proj".to_string()];
+        let cmd = official_lsp_command(&altool, &extra);
+        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("dotnet"));
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], altool.display().to_string());
+        assert_eq!(args[1], "launchlspserver");
+        assert_eq!(args[2], "/x/proj");
         let rf = cmd
             .get_envs()
             .find(|(k, _)| *k == std::ffi::OsStr::new("DOTNET_ROLL_FORWARD"))

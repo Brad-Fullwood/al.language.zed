@@ -90,3 +90,33 @@ fn set_nested_value_inner(
     let child = obj.entry(path[0].to_string()).or_insert_with(|| json!({}));
     set_nested_value_inner(child, &path[1..], value, depth + 1);
 }
+
+/// Resolve the al-lsp launch arguments from user settings (F-OPEN-260).
+///
+/// Priority:
+/// 1. An explicit `binary.arguments` override always wins (power users).
+/// 2. `al.useOfficialLsp: true` (flat, dotted, or nested under `"al"`)
+///    delegates the session to Microsoft's official AL Language Server
+///    via `al-lsp --official-lsp` (requires ALTool v17+ on the machine).
+/// 3. Default: the built-in native server over stdio.
+pub fn resolve_server_args(
+    user_args: Option<Vec<String>>,
+    user_settings: Option<&serde_json::Value>,
+) -> Vec<String> {
+    if let Some(args) = user_args {
+        return args;
+    }
+    let use_official = user_settings
+        .and_then(|s| {
+            s.get("useOfficialLsp")
+                .or_else(|| s.get("al.useOfficialLsp"))
+                .or_else(|| s.get("al").and_then(|al| al.get("useOfficialLsp")))
+        })
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if use_official {
+        vec!["--official-lsp".to_string()]
+    } else {
+        vec!["--stdio".to_string()]
+    }
+}

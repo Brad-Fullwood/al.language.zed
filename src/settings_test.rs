@@ -127,3 +127,43 @@ fn moderate_depth_key_nests_normally() {
     let merged = apply_al_settings_to_config(&config, &user_settings);
     assert_eq!(merged, json!({ "a": { "b": { "c": 1 } } }));
 }
+
+// --- resolve_server_args (F-OPEN-260) --------------------------------------
+
+#[test]
+fn resolve_server_args_defaults_to_stdio() {
+    assert_eq!(
+        crate::settings::resolve_server_args(None, None),
+        vec!["--stdio".to_string()]
+    );
+}
+
+#[test]
+fn resolve_server_args_honors_use_official_lsp_in_all_shapes() {
+    for shape in [
+        serde_json::json!({"useOfficialLsp": true}),
+        serde_json::json!({"al.useOfficialLsp": true}),
+        serde_json::json!({"al": {"useOfficialLsp": true}}),
+    ] {
+        assert_eq!(
+            crate::settings::resolve_server_args(None, Some(&shape)),
+            vec!["--official-lsp".to_string()],
+            "shape: {shape}"
+        );
+    }
+    // false / absent stays native
+    let off = serde_json::json!({"al": {"useOfficialLsp": false}});
+    assert_eq!(
+        crate::settings::resolve_server_args(None, Some(&off)),
+        vec!["--stdio".to_string()]
+    );
+}
+
+#[test]
+fn resolve_server_args_explicit_arguments_override_everything() {
+    let s = serde_json::json!({"useOfficialLsp": true});
+    assert_eq!(
+        crate::settings::resolve_server_args(Some(vec!["--custom".into()]), Some(&s)),
+        vec!["--custom".to_string()]
+    );
+}

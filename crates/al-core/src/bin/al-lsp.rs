@@ -180,7 +180,66 @@ async fn main() {
         spawn_signal_handlers();
     }
 
-    if args.iter().any(|a| a == "--dap") {
+    if args.iter().any(|a| a == "--official-lsp") {
+        // Official-LSP delegation (F-OPEN-260): hand the entire stdio LSP
+        // session to Microsoft's `launchlspserver` (ALTool v17+), discovered
+        // via the existing toolchain. The native server remains the default;
+        // this mode is opt-in (`al.useOfficialLsp` in Zed settings).
+        let install_hint = "Install ALTool v17+ with `dotnet tool install --global \
+             Microsoft.Dynamics.BusinessCentral.Development.Tools` (plus the ASP.NET Core \
+             runtime, e.g. `aspnet-runtime`), or remove the al.useOfficialLsp setting to \
+             use the built-in server.";
+        let toolchain = match al_core::toolchain::find_toolchain() {
+            Ok(tc) => tc,
+            Err(e) => {
+                tracing::error!(error = %e, "--official-lsp requires the AL toolchain");
+                eprintln!("al-lsp: --official-lsp requires Microsoft's AL toolchain. {install_hint} ({e})");
+                std::process::exit(1);
+            }
+        };
+        let Some(altool) = al_core::toolchain::find_altool(&toolchain) else {
+            tracing::error!(
+                "--official-lsp: altool.dll not found next to alc.dll (pre-v17 toolchain?)"
+            );
+            eprintln!(
+                "al-lsp: the discovered AL toolchain has no altool.dll — the official LSP \
+                 server ships with ALTool v17+. {install_hint}"
+            );
+            std::process::exit(1);
+        };
+        // Forward everything except our own mode flags ("--stdio" is the
+        // native server's transport flag; the official server is stdio-only).
+        let forward: Vec<String> = args
+            .iter()
+            .skip(1)
+            .filter(|a| a.as_str() != "--official-lsp" && a.as_str() != "--stdio")
+            .cloned()
+            .collect();
+        tracing::info!(
+            altool = %altool.display(),
+            "delegating LSP session to the official AL language server"
+        );
+        let mut cmd = al_core::toolchain::official_lsp_command(&altool, &forward);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let err = cmd.exec(); // replaces this process; only returns on failure
+            tracing::error!(error = %err, "failed to exec the official AL LSP");
+            eprintln!("al-lsp: failed to launch the official AL LSP: {err}");
+            std::process::exit(1);
+        }
+        #[cfg(not(unix))]
+        {
+            match cmd.status() {
+                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                Err(err) => {
+                    tracing::error!(error = %err, "failed to spawn the official AL LSP");
+                    eprintln!("al-lsp: failed to launch the official AL LSP: {err}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    } else if args.iter().any(|a| a == "--dap") {
         // DAP mode — native BC debug (no EditorServices.Host dependency)
         let project_root = env::current_dir()
             .map(|p| p.display().to_string())

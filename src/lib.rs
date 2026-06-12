@@ -287,13 +287,16 @@ impl zed::Extension for AlExtension {
     ) -> Result<zed::Command> {
         let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
 
-        // User-configured binary arguments (e.g. ["--stdio"]).
-        let user_args: Vec<String> = settings
-            .binary
-            .as_ref()
-            .and_then(|b| b.arguments.as_ref())
-            .map(|args| args.to_vec())
-            .unwrap_or_else(|| vec!["--stdio".to_string()]);
+        // Launch arguments: explicit binary.arguments override > the
+        // al.useOfficialLsp delegation toggle (F-OPEN-260) > native --stdio.
+        let user_args = settings::resolve_server_args(
+            settings
+                .binary
+                .as_ref()
+                .and_then(|b| b.arguments.as_ref())
+                .map(|args| args.to_vec()),
+            settings.settings.as_ref(),
+        );
 
         // Resolution chain (4 steps): user-configured path → cached download
         // → PATH lookup → GitHub release download. Step 1 is checked inside

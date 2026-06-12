@@ -237,6 +237,27 @@ The WASM extension resolves `al-lsp` in this order:
 
 ## Configuration in Zed
 
+### Official Microsoft language server (optional)
+
+The built-in Rust server is the default. To delegate the LSP session to
+Microsoft's official AL Language Server (`altool launchlspserver`, ALTool
+v17+ — requires the .NET 8+ and ASP.NET Core runtimes):
+
+```json
+{
+  "lsp": {
+    "al-lsp": {
+      "settings": { "al": { "useOfficialLsp": true } }
+    }
+  }
+}
+```
+
+`al-lsp --official-lsp` discovers `altool.dll` next to the toolchain's
+`alc.dll` and execs it on the same stdio session. If ALTool or the ASP.NET
+Core runtime is missing, the server exits with an actionable install hint.
+
+
 Minimal `settings.json`:
 
 ```jsonc
