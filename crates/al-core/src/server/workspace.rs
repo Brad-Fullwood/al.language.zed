@@ -149,7 +149,8 @@ pub(crate) async fn initialize_workspace(
                                 download_symbols_from_server(&project, &deps, &client).await
                             }
                             DownloadSource::NuGet => {
-                                download_packages_nuget(&deps, &project.packages_dir).await
+                                download_packages_nuget(&workspace, &deps, &project.packages_dir)
+                                    .await
                             }
                         };
                         if !downloaded.is_empty() {
@@ -545,10 +546,32 @@ pub(crate) fn map_nuget_feeds(
         .collect()
 }
 
+/// Resolve the EFFECTIVE NuGet feed list from user config + built-in defaults
+/// (VS Code v17 parity, F-OPEN-259): custom feeds (`al.nugetFeeds`) are tried
+/// first; the public Microsoft feeds (MSSymbols/AppSourceSymbols/BCPublic)
+/// are appended unless `al.useOnlyCustomFeeds` is set.
+pub(crate) fn effective_nuget_feeds(
+    config: &crate::config::AlConfig,
+) -> Vec<crate::project::NuGetFeed> {
+    let mut feeds: Vec<crate::project::NuGetFeed> = config
+        .nuget_feeds
+        .iter()
+        .map(|f| crate::project::NuGetFeed {
+            name: f.name.clone(),
+            index_url: f.url.clone(),
+        })
+        .collect();
+    if !config.use_only_custom_feeds {
+        feeds.extend(crate::project::nuget_feeds());
+    }
+    feeds
+}
+
 /// Download symbol packages from NuGet into the project's .alpackages directory.
 ///
 /// Returns paths to successfully downloaded .app files.
 async fn download_packages_nuget(
+    workspace: &crate::workspace::Workspace,
     deps: &[crate::project::AppDependency],
     dest: &Path,
 ) -> Vec<PathBuf> {
@@ -559,9 +582,16 @@ async fn download_packages_nuget(
     );
 
     // crate::project::AppDependency is re-exported from crate::symbols — pass directly.
-    let feeds = map_nuget_feeds(&crate::project::nuget_feeds());
+    // F-OPEN-259: honor al.nugetFeeds / al.useOnlyCustomFeeds / al.symbolsCountryRegion.
+    let (feeds, country) = {
+        let cfg = workspace.config.read().await;
+        (
+            map_nuget_feeds(&effective_nuget_feeds(&cfg)),
+            cfg.symbols_country_region.clone(),
+        )
+    };
 
-    let client = crate::symbols::nuget::NuGetClient::new(feeds);
+    let client = crate::symbols::nuget::NuGetClient::new(feeds).with_country(country);
     let results = client.download_all(deps, dest).await;
 
     let mut downloaded = Vec::new();
@@ -630,7 +660,9 @@ pub(crate) async fn download_symbols_command(server: &AlServer, source: Download
         DownloadSource::Server => {
             download_symbols_from_server(&project, &deps, &server.client).await
         }
-        DownloadSource::NuGet => download_packages_nuget(&deps, &project.packages_dir).await,
+        DownloadSource::NuGet => {
+            download_packages_nuget(&server.workspace, &deps, &project.packages_dir).await
+        }
     };
 
     if packages.is_empty() {
@@ -1170,6 +1202,35 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    /// F-OPEN-259 (`al.nugetFeeds` / `al.useOnlyCustomFeeds` parity):
+    /// custom feeds take priority; defaults are appended unless the
+    /// only-custom flag is set.
+    #[test]
+    fn effective_feeds_honor_custom_and_only_flags() {
+        let mut cfg = crate::config::AlConfig::default();
+        // Defaults only.
+        let feeds = effective_nuget_feeds(&cfg);
+        assert_eq!(feeds.len(), 3, "the three public Microsoft feeds");
+
+        // Custom feed first, defaults appended.
+        cfg.nuget_feeds = vec![crate::config::NuGetFeedConfig {
+            name: "corp".into(),
+            url: "https://nuget.corp.example/v3/index.json".into(),
+        }];
+        let feeds = effective_nuget_feeds(&cfg);
+        assert_eq!(feeds.len(), 4);
+        assert_eq!(
+            feeds[0].index_url,
+            "https://nuget.corp.example/v3/index.json"
+        );
+
+        // Only-custom drops the defaults entirely.
+        cfg.use_only_custom_feeds = true;
+        let feeds = effective_nuget_feeds(&cfg);
+        assert_eq!(feeds.len(), 1);
+        assert_eq!(feeds[0].name, "corp");
+    }
+
     // map_nuget_feeds
     // -----------------------------------------------------------------------
 

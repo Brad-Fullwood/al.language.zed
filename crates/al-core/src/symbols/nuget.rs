@@ -82,9 +82,26 @@ const SYSTEM_APP_ID: &str = "8874ed3a-0643-4247-9ced-7a7002f7135d";
 /// - Core Microsoft packages have fixed names (no GUID or special casing)
 /// - Other packages: `{Publisher}.{AppName}.symbols.{AppId}` (spaces removed, lowercase)
 pub fn resolve_dependencies(deps: &[AppDependency]) -> Vec<PackageRef> {
+    resolve_dependencies_for_country(deps, None)
+}
+
+/// Country/region-aware variant (`al.symbolsCountryRegion` parity, BC 2026 W1).
+///
+/// Localized apps (Application, Base Application) ship country-specific
+/// packages on the MSSymbols feed — e.g. `Microsoft.Application.DE.symbols`.
+/// `"w1"` (worldwide) and `None` resolve to the unsuffixed W1 packages.
+/// Platform/System packages are country-invariant.
+pub fn resolve_dependencies_for_country(
+    deps: &[AppDependency],
+    country: Option<&str>,
+) -> Vec<PackageRef> {
+    let cc = country
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && !c.eq_ignore_ascii_case("w1"))
+        .map(str::to_uppercase);
     deps.iter()
         .map(|dep| {
-            let id = resolve_package_id(dep);
+            let id = resolve_package_id(dep, cc.as_deref());
             PackageRef {
                 id,
                 version: Some(dep.version.clone()),
@@ -101,17 +118,26 @@ pub fn resolve_dependencies(deps: &[AppDependency]) -> Vec<PackageRef> {
 /// - Application (Base App): `Microsoft.Application.symbols` (no GUID)
 /// - System Application: `Microsoft.SystemApplication.symbols.{guid}` (no space, with GUID)
 /// - System (Platform): `Microsoft.Platform.symbols` (no GUID, different name)
-fn resolve_package_id(dep: &AppDependency) -> String {
+fn resolve_package_id(dep: &AppDependency, country: Option<&str>) -> String {
     let id_lower = dep.id.to_lowercase();
 
     // Core Microsoft packages have special naming on the MSSymbols feed.
     // These were found empirically — Microsoft is inconsistent about GUID inclusion.
     match id_lower.as_str() {
-        APPLICATION_APP_ID => "Microsoft.Application.symbols".to_string(),
-        BASE_APPLICATION_APP_ID => format!(
-            "Microsoft.BaseApplication.symbols.{}",
-            BASE_APPLICATION_APP_ID
-        ),
+        APPLICATION_APP_ID => match country {
+            Some(cc) => format!("Microsoft.Application.{cc}.symbols"),
+            None => "Microsoft.Application.symbols".to_string(),
+        },
+        BASE_APPLICATION_APP_ID => match country {
+            Some(cc) => format!(
+                "Microsoft.BaseApplication.{cc}.symbols.{}",
+                BASE_APPLICATION_APP_ID
+            ),
+            None => format!(
+                "Microsoft.BaseApplication.symbols.{}",
+                BASE_APPLICATION_APP_ID
+            ),
+        },
         BUSINESS_FOUNDATION_APP_ID => format!(
             "Microsoft.BusinessFoundation.symbols.{}",
             BUSINESS_FOUNDATION_APP_ID
@@ -164,6 +190,9 @@ pub struct NuGetClient {
     /// skips the network round-trip. Downloads of DIFFERENT packages still
     /// run concurrently up to the `download_all` semaphore. F-OPEN-019.
     package_locks: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    /// `al.symbolsCountryRegion` — selects localized core packages
+    /// (e.g. `Microsoft.Application.DE.symbols`). None/"w1" = worldwide.
+    country: Option<String>,
 }
 
 impl NuGetClient {
@@ -178,7 +207,14 @@ impl NuGetClient {
             feeds,
             base_address_cache: Mutex::new(HashMap::new()),
             package_locks: Mutex::new(HashMap::new()),
+            country: None,
         }
+    }
+
+    /// Select the symbols country/region (`al.symbolsCountryRegion` parity).
+    pub fn with_country(mut self, country: Option<String>) -> Self {
+        self.country = country;
+        self
     }
 
     /// Get or create the per-package serialisation mutex for `pkg_id`.
@@ -229,7 +265,7 @@ impl NuGetClient {
         dest: &Path,
     ) -> Vec<Result<PathBuf, NuGetError>> {
         const MAX_CONCURRENT_DOWNLOADS: usize = 4;
-        let refs = resolve_dependencies(deps);
+        let refs = resolve_dependencies_for_country(deps, self.country.as_deref());
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DOWNLOADS));
         let futures = refs.iter().map(|pkg_ref| {
             let sem = std::sync::Arc::clone(&semaphore);
@@ -592,6 +628,47 @@ mod tests {
             "Microsoft.SystemApplication.symbols.63ca2fa4-4f03-4f2b-a480-172fef340d3f"
         );
         assert_eq!(refs[0].version.as_deref(), Some("24.0.12345.0"));
+    }
+
+    /// F-OPEN-259 (`al.symbolsCountryRegion` parity): localized core apps
+    /// resolve to country-specific packages; platform packages and the "w1"
+    /// worldwide marker stay unsuffixed.
+    #[test]
+    fn resolve_dependencies_applies_country_region_to_localized_apps() {
+        let deps = vec![
+            AppDependency {
+                id: "c1335042-3002-4257-bf8a-75c898ccb1b8".to_string(),
+                name: "Application".to_string(),
+                publisher: "Microsoft".to_string(),
+                version: "26.5.0.0".to_string(),
+            },
+            AppDependency {
+                id: "437dbf0e-84ff-417a-965d-ed2bb9650972".to_string(),
+                name: "Base Application".to_string(),
+                publisher: "Microsoft".to_string(),
+                version: "26.5.0.0".to_string(),
+            },
+            AppDependency {
+                id: "8874ed3a-0643-4247-9ced-7a7002f7135d".to_string(),
+                name: "System".to_string(),
+                publisher: "Microsoft".to_string(),
+                version: "26.0.0.0".to_string(),
+            },
+        ];
+        let refs = resolve_dependencies_for_country(&deps, Some("de"));
+        assert_eq!(refs[0].id, "Microsoft.Application.DE.symbols");
+        assert_eq!(
+            refs[1].id,
+            "Microsoft.BaseApplication.DE.symbols.437dbf0e-84ff-417a-965d-ed2bb9650972"
+        );
+        // Platform is country-invariant.
+        assert_eq!(refs[2].id, "Microsoft.Platform.symbols");
+
+        // "w1" (and case variants) means worldwide — identical to None.
+        let w1 = resolve_dependencies_for_country(&deps, Some("W1"));
+        assert_eq!(w1[0].id, "Microsoft.Application.symbols");
+        let none = resolve_dependencies_for_country(&deps, None);
+        assert_eq!(none[0].id, "Microsoft.Application.symbols");
     }
 
     #[test]

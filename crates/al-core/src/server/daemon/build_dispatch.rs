@@ -1256,9 +1256,19 @@ pub(super) async fn dispatch_download_symbols(
                     })
                     .collect()
             } else {
-                let nuget_feeds =
-                    crate::server::workspace::map_nuget_feeds(&crate::project::nuget_feeds());
-                let client = crate::symbols::nuget::NuGetClient::new(nuget_feeds);
+                // F-OPEN-259: honor al.nugetFeeds / al.useOnlyCustomFeeds /
+                // al.symbolsCountryRegion on the daemon path too.
+                let (nuget_feeds, country) = {
+                    let cfg = workspace.config.read().await;
+                    (
+                        crate::server::workspace::map_nuget_feeds(
+                            &crate::server::workspace::effective_nuget_feeds(&cfg),
+                        ),
+                        cfg.symbols_country_region.clone(),
+                    )
+                };
+                let client =
+                    crate::symbols::nuget::NuGetClient::new(nuget_feeds).with_country(country);
                 let nuget_results = client.download_all(&all_deps, &dest).await;
                 nuget_results
                     .into_iter()

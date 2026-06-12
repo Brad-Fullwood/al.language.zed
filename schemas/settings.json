@@ -108,6 +108,24 @@
       "default": null,
       "description": "Default publisher name for scaffolding."
     },
+    "al.nugetFeeds": {
+      "type": "array",
+      "default": [],
+      "description": "Custom public NuGet v3 feeds to resolve symbol packages from, tried before the built-in Microsoft feeds. Each entry: {\"name\": string, \"url\": string (v3 index URL)}.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "url": { "type": "string" }
+        },
+        "required": ["name", "url"]
+      }
+    },
+    "al.useOnlyCustomFeeds": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, ONLY the feeds in al.nugetFeeds are used — the built-in public Microsoft feeds (MSSymbols, AppSourceSymbols, BCPublic) are skipped."
+    },
     "al.symbolsCountryRegion": {
       "type": "string",
       "default": null,
