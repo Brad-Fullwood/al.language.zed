@@ -9,13 +9,12 @@ mod cli;
 #[cfg(unix)]
 mod types;
 #[cfg(unix)]
+mod views;
+#[cfg(unix)]
 use clap::Parser;
 #[cfg(unix)]
 use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
-        MouseEventKind,
-    },
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -26,7 +25,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{ListState, Paragraph},
 };
 #[cfg(unix)]
 use std::process::ExitCode;
@@ -38,6 +37,19 @@ use types::{ObjectKind, SymbolEntry, SymbolIndex};
 #[cfg(unix)]
 use al_protocol::DaemonClient;
 
+#[cfg(unix)]
+use views::call_graph::{CallGraphView, handle_call_graph_key, render_call_graph};
+#[cfg(unix)]
+use views::event_chain::{EventChainView, handle_event_chain_key, render_event_chain};
+#[cfg(unix)]
+use views::object_browser::{
+    handle_object_browser_key, handle_object_browser_mouse, render_object_browser,
+};
+#[cfg(unix)]
+use views::profiler::{ProfilerView, handle_profiler_key, render_profiler};
+#[cfg(unix)]
+use views::test_runner::{TestRunnerView, handle_test_runner_key, render_test_runner};
+
 /// Upper bound on the length (in bytes) of any single-line text input field
 /// driven by `KeyCode::Char` events (search query, event-chain / call-graph
 /// query, profiler file path). Without a cap, holding down a key would grow
@@ -45,7 +57,7 @@ use al_protocol::DaemonClient;
 /// whole symbol set on every keystroke — eventually exhausting memory. No real
 /// query or path approaches this length.
 #[cfg(unix)]
-const MAX_INPUT_LEN: usize = 4096;
+pub(crate) const MAX_INPUT_LEN: usize = 4096;
 
 // ---------------------------------------------------------------------------
 // Navigation helpers
@@ -81,7 +93,7 @@ fn wrap_prev(current: Option<usize>, len: usize) -> usize {
 /// Connect to the al-lsp daemon if not already connected, recording any
 /// connection failure in `status`.
 #[cfg(unix)]
-fn ensure_daemon_client(
+pub(crate) fn ensure_daemon_client(
     client: &mut Option<DaemonClient>,
     project_root: &std::path::Path,
     status: &mut String,
@@ -97,7 +109,7 @@ fn ensure_daemon_client(
 /// Move a list selection one step (forward or backward) with wrap-around,
 /// doing nothing when the list is empty.
 #[cfg(unix)]
-fn advance_list_selection(list_state: &mut ListState, len: usize, forward: bool) {
+pub(crate) fn advance_list_selection(list_state: &mut ListState, len: usize, forward: bool) {
     if len == 0 {
         return;
     }
@@ -112,7 +124,7 @@ fn advance_list_selection(list_state: &mut ListState, len: usize, forward: bool)
 /// Highlight style for a focused text input (bold yellow) vs. unfocused
 /// (dark gray).
 #[cfg(unix)]
-fn input_focused_style(is_focused: bool) -> Style {
+pub(crate) fn input_focused_style(is_focused: bool) -> Style {
     if is_focused {
         Style::default()
             .fg(Color::Yellow)
@@ -124,7 +136,7 @@ fn input_focused_style(is_focused: bool) -> Style {
 
 /// Highlight style for the active pane (bold yellow) vs. inactive (dark gray).
 #[cfg(unix)]
-fn pane_style(is_active: bool) -> Style {
+pub(crate) fn pane_style(is_active: bool) -> Style {
     if is_active {
         Style::default()
             .fg(Color::Yellow)
@@ -140,7 +152,7 @@ fn pane_style(is_active: bool) -> Style {
 
 #[cfg(unix)]
 #[derive(PartialEq, Clone, Copy)]
-enum ViewMode {
+pub(crate) enum ViewMode {
     ObjectBrowser,
     EventChain,
     CallGraph,
@@ -154,7 +166,7 @@ enum ViewMode {
 
 #[cfg(unix)]
 #[derive(PartialEq, Clone, Copy)]
-enum ActivePane {
+pub(crate) enum ActivePane {
     Search,
     Packages,
     Objects,
@@ -163,7 +175,7 @@ enum ActivePane {
 
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClickTarget {
+pub(crate) enum ClickTarget {
     Objects,
     Details,
 }
@@ -174,7 +186,7 @@ enum ClickTarget {
 /// is added in ISSUE-017 follow-up work).
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-enum DetailTargetKind {
+pub(crate) enum DetailTargetKind {
     Field,
     Key,
     Control(String),
@@ -184,759 +196,10 @@ enum DetailTargetKind {
 
 #[cfg(unix)]
 #[derive(Debug, Clone)]
-struct DetailTarget {
-    name: String,
+pub(crate) struct DetailTarget {
+    pub(crate) name: String,
     #[allow(dead_code)]
-    kind: DetailTargetKind,
-}
-
-// ---------------------------------------------------------------------------
-// Event chain view
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-/// A single row shown in the event chain results list.
-#[derive(Debug, Clone)]
-struct TraceRow {
-    depth: usize,
-    edge_type: String,
-    node_type: String,
-    name: String,
-    object: String,
-}
-
-#[cfg(unix)]
-struct EventChainView {
-    /// Current text in the search input.
-    query: String,
-    /// Whether the search input is focused (vs. the results list).
-    input_focused: bool,
-    /// Flattened trace rows from the daemon.
-    rows: Vec<TraceRow>,
-    list_state: ListState,
-    /// Live event-name suggestions for the current query (FB-6:
-    /// search-as-you-type). Refreshed on each keystroke, rendered in the
-    /// results area until a trace is run.
-    suggestions: Vec<String>,
-    suggestion_state: ListState,
-    /// Status/error message shown below the list.
-    status: String,
-    /// Daemon client (None if not connected).
-    client: Option<DaemonClient>,
-    project_root: std::path::PathBuf,
-}
-
-#[cfg(unix)]
-impl EventChainView {
-    fn new(project_root: std::path::PathBuf) -> Self {
-        Self {
-            query: String::new(),
-            input_focused: true,
-            rows: Vec::new(),
-            list_state: ListState::default(),
-            suggestions: Vec::new(),
-            suggestion_state: ListState::default(),
-            status: String::from("Type an event name — matches appear as you type"),
-            client: None,
-            project_root,
-        }
-    }
-
-    fn ensure_client(&mut self) {
-        ensure_daemon_client(&mut self.client, &self.project_root, &mut self.status);
-    }
-
-    /// FB-6: refresh the search-as-you-type suggestion list from the
-    /// daemon's `events` substring search. Cheap (index-backed) and
-    /// synchronous — runs on each keystroke.
-    fn refresh_suggestions(&mut self) {
-        self.suggestions.clear();
-        self.suggestion_state.select(None);
-        let q = self.query.trim().to_string();
-        if q.len() < 2 {
-            self.status = String::from("Type an event name — matches appear as you type");
-            return;
-        }
-        self.ensure_client();
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        match client.request("events", Some(serde_json::json!({ "name": q }))) {
-            Ok(val) => {
-                if let Some(arr) = val.as_array() {
-                    let mut seen = std::collections::HashSet::new();
-                    for item in arr {
-                        let obj = item
-                            .get("objectName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        let method = item
-                            .get("methodName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        if seen.insert((obj.to_string(), method.to_string())) {
-                            self.suggestions.push(format!("{obj}::{method}"));
-                        }
-                        if self.suggestions.len() >= 100 {
-                            break;
-                        }
-                    }
-                }
-                self.status = format!(
-                    "{} matching events — ↓ to select, Enter to trace",
-                    self.suggestions.len()
-                );
-            }
-            Err(e) => {
-                self.client = None;
-                self.status = format!("Daemon error: {e}");
-            }
-        }
-    }
-
-    fn run_trace(&mut self) {
-        if self.query.trim().is_empty() {
-            self.status = "Enter an event name to search".to_string();
-            return;
-        }
-        self.ensure_client();
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        let params = serde_json::json!({ "event": self.query.trim(), "depth": 10 });
-        match client.request("trace", Some(params)) {
-            Ok(val) => {
-                self.rows.clear();
-                if let Some(arr) = val.as_array() {
-                    for item in arr {
-                        self.rows.push(TraceRow {
-                            depth: item.get("depth").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                            edge_type: item
-                                .get("edgeType")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            node_type: item
-                                .get("nodeType")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            name: item
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            object: item
-                                .get("object")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                        });
-                    }
-                    if self.rows.is_empty() {
-                        self.status = format!("No event chain found for '{}'", self.query.trim());
-                    } else {
-                        self.status = format!(
-                            "{} steps in event chain for '{}'",
-                            self.rows.len(),
-                            self.query.trim()
-                        );
-                        self.list_state.select(Some(0));
-                    }
-                } else {
-                    self.status = "Unexpected response format from daemon".to_string();
-                }
-            }
-            Err(e) => {
-                // Connection may have dropped — reset so next query reconnects
-                self.client = None;
-                self.status = format!("Daemon error: {e}");
-            }
-        }
-    }
-
-    fn next_row(&mut self) {
-        advance_list_selection(&mut self.list_state, self.rows.len(), true);
-    }
-
-    fn prev_row(&mut self) {
-        advance_list_selection(&mut self.list_state, self.rows.len(), false);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Call graph view
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-/// A single row shown in the call graph results list.
-#[derive(Debug, Clone)]
-struct CallRow {
-    label: String,
-    kind: CallRowKind,
-}
-
-#[cfg(unix)]
-#[derive(Debug, Clone, PartialEq)]
-enum CallRowKind {
-    Header,
-    Entry,
-}
-
-#[cfg(unix)]
-struct CallGraphView {
-    /// Current text in the search input.
-    query: String,
-    /// Whether the search input is focused.
-    input_focused: bool,
-    rows: Vec<CallRow>,
-    list_state: ListState,
-    status: String,
-    client: Option<DaemonClient>,
-    project_root: std::path::PathBuf,
-}
-
-#[cfg(unix)]
-impl CallGraphView {
-    fn new(project_root: std::path::PathBuf) -> Self {
-        Self {
-            query: String::new(),
-            input_focused: true,
-            rows: Vec::new(),
-            list_state: ListState::default(),
-            status: String::from("Type a symbol name and press Enter to query"),
-            client: None,
-            project_root,
-        }
-    }
-
-    fn ensure_client(&mut self) {
-        ensure_daemon_client(&mut self.client, &self.project_root, &mut self.status);
-    }
-
-    fn run_query(&mut self) {
-        if self.query.trim().is_empty() {
-            self.status = "Enter a symbol name to search".to_string();
-            return;
-        }
-        self.ensure_client();
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        let params = serde_json::json!({ "symbol": self.query.trim() });
-        match client.request("impact", Some(params)) {
-            Ok(val) => {
-                self.rows.clear();
-                let symbol = val
-                    .get("symbol")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(self.query.trim());
-                self.rows.push(CallRow {
-                    label: format!("Impact analysis for: {symbol}"),
-                    kind: CallRowKind::Header,
-                });
-                if let Some(impacted) = val.get("impacted").and_then(|v| v.as_array()) {
-                    if impacted.is_empty() {
-                        self.rows.push(CallRow {
-                            label: "  (no impacted symbols found)".to_string(),
-                            kind: CallRowKind::Entry,
-                        });
-                    } else {
-                        // FB-11: group by reference type and render each
-                        // entry as readable text — kind, ID, name, and the
-                        // field/procedure that creates the reference. The
-                        // previous code dumped raw JSON for non-string
-                        // entries.
-                        let mut by_type: std::collections::BTreeMap<String, Vec<String>> =
-                            std::collections::BTreeMap::new();
-                        for entry in impacted {
-                            if let Some(s) = entry.as_str() {
-                                by_type
-                                    .entry("other".to_string())
-                                    .or_default()
-                                    .push(s.to_string());
-                                continue;
-                            }
-                            let kind = entry.get("k").and_then(|v| v.as_str()).unwrap_or("?");
-                            let name = entry.get("n").and_then(|v| v.as_str()).unwrap_or("?");
-                            let id = entry.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                            let ref_type = entry
-                                .get("type")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("reference")
-                                .to_string();
-                            let pkg = entry.get("package").and_then(|v| v.as_str()).unwrap_or("");
-                            let mut label = if id > 0 {
-                                format!("{kind} {id} \"{name}\"")
-                            } else {
-                                format!("{kind} \"{name}\"")
-                            };
-                            if let Some(field) = entry.get("field").and_then(|v| v.as_str()) {
-                                label.push_str(&format!(" — field \"{field}\""));
-                            }
-                            if let Some(proc) = entry.get("proc").and_then(|v| v.as_str()) {
-                                label.push_str(&format!(" — {proc}"));
-                            }
-                            if !pkg.is_empty() {
-                                label.push_str(&format!("  [{pkg}]"));
-                            }
-                            by_type.entry(ref_type).or_default().push(label);
-                        }
-                        let total: usize = by_type.values().map(Vec::len).sum();
-                        self.rows.push(CallRow {
-                            label: format!("  {total} impacted symbols:"),
-                            kind: CallRowKind::Header,
-                        });
-                        for (ref_type, labels) in by_type {
-                            self.rows.push(CallRow {
-                                label: format!("  {} ({}):", ref_type, labels.len()),
-                                kind: CallRowKind::Header,
-                            });
-                            for label in labels {
-                                self.rows.push(CallRow {
-                                    label: format!("    {label}"),
-                                    kind: CallRowKind::Entry,
-                                });
-                            }
-                        }
-                    }
-                }
-                self.status = format!(
-                    "Impact query complete for '{}' — tip: use Object.Member \
-                     (e.g. Customer.OnBeforePost) to narrow",
-                    self.query.trim()
-                );
-                if !self.rows.is_empty() {
-                    self.list_state.select(Some(0));
-                }
-            }
-            Err(e) => {
-                self.client = None;
-                self.status = format!("Daemon error: {e}");
-            }
-        }
-    }
-
-    fn next_row(&mut self) {
-        advance_list_selection(&mut self.list_state, self.rows.len(), true);
-    }
-
-    fn prev_row(&mut self) {
-        advance_list_selection(&mut self.list_state, self.rows.len(), false);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Profiler view
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-/// A single hotspot row parsed from a `.alcpuprofile` file.
-#[derive(Debug, Clone)]
-struct HotspotRow {
-    procedure: String,
-    object: String,
-    self_time_ms: f64,
-    total_time_ms: f64,
-    hit_count: u64,
-}
-
-#[cfg(unix)]
-struct ProfilerView {
-    /// File path input typed by the user.
-    file_path: String,
-    /// Whether the file path input is focused.
-    input_focused: bool,
-    /// Parsed hotspot rows.
-    hotspots: Vec<HotspotRow>,
-    list_state: ListState,
-    /// Status/error message.
-    status: String,
-    /// Total session duration (ms).
-    duration_ms: f64,
-}
-
-#[cfg(unix)]
-impl ProfilerView {
-    fn new() -> Self {
-        Self {
-            file_path: String::new(),
-            input_focused: true,
-            hotspots: Vec::new(),
-            list_state: ListState::default(),
-            status: String::from("Enter path to .alcpuprofile and press Enter to load"),
-            duration_ms: 0.0,
-        }
-    }
-
-    /// Parse a Chrome-style `.alcpuprofile` JSON file and populate `hotspots`.
-    fn load_profile(&mut self) {
-        let path = self.file_path.trim().to_string();
-        if path.is_empty() {
-            self.status = "No file path entered".to_string();
-            return;
-        }
-        let data = match std::fs::read(&path) {
-            Ok(d) => d,
-            Err(e) => {
-                self.status = format!("Cannot read file: {e}");
-                return;
-            }
-        };
-        // Strip UTF-8 BOM if present
-        let data = if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
-            &data[3..]
-        } else {
-            &data[..]
-        };
-
-        let json: serde_json::Value = match serde_json::from_slice(data) {
-            Ok(v) => v,
-            Err(e) => {
-                self.status = format!("JSON parse error: {e}");
-                return;
-            }
-        };
-
-        // Compute session duration
-        let start = json
-            .get("startTime")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let end = json.get("endTime").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        // Chrome profiles use microseconds
-        self.duration_ms = (end - start) / 1000.0;
-
-        let nodes = match json.get("nodes").and_then(|v| v.as_array()) {
-            Some(n) => n,
-            None => {
-                self.status = "No 'nodes' array found in profile".to_string();
-                return;
-            }
-        };
-
-        // Cap the number of nodes we iterate. A malformed or adversarial
-        // profile could declare millions of nodes; iterating all of them in the
-        // synchronous TUI would freeze the UI. Real BC CPU profiles are far
-        // smaller than this bound.
-        const MAX_PROFILE_NODES: usize = 500_000;
-        let truncated = nodes.len() > MAX_PROFILE_NODES;
-        let nodes = if truncated {
-            &nodes[..MAX_PROFILE_NODES]
-        } else {
-            &nodes[..]
-        };
-
-        // Build a map: node id -> (functionName, url, hitCount)
-        let mut rows: Vec<HotspotRow> = Vec::new();
-        for node in nodes {
-            let hit_count = node.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
-            if hit_count == 0 {
-                continue;
-            }
-            let call_frame = node.get("callFrame").unwrap_or(&serde_json::Value::Null);
-            let function_name = call_frame
-                .get("functionName")
-                .and_then(|v| v.as_str())
-                .unwrap_or("(unknown)")
-                .to_string();
-            let url = call_frame
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-
-            // Skip internal/empty nodes
-            if function_name == "(root)"
-                || function_name == "(idle)"
-                || function_name == "(garbage collector)"
-            {
-                continue;
-            }
-
-            // hitCount in Chrome's CPU profile format is the number of times
-            // the sampler observed this node at the top of the stack. It is
-            // NOT a millisecond duration — the actual durations live in the
-            // top-level `timeDeltas` array, which we don't aggregate yet.
-            //
-            // Treating hit_count as ms is a deliberately rough approximation
-            // that's only accurate when the sampling interval happens to be
-            // 1 ms (BC's default in the alcpuprofile producer). It's good
-            // enough for ranking hotspots — which is all this view shows —
-            // but mis-reports raw "self_time_ms" for any other interval.
-            // TODO(profiler): aggregate timeDeltas per node for true ms.
-            let self_time_ms = hit_count as f64;
-            rows.push(HotspotRow {
-                procedure: function_name,
-                object: url,
-                self_time_ms,
-                total_time_ms: self_time_ms, // simplified: no call tree aggregation
-                hit_count,
-            });
-        }
-
-        // Sort descending by self_time_ms
-        rows.sort_by(|a, b| {
-            b.self_time_ms
-                .partial_cmp(&a.self_time_ms)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let count = rows.len();
-        self.hotspots = rows;
-        self.status = if count == 0 {
-            "No hotspots found in profile (all hitCount=0?)".to_string()
-        } else if truncated {
-            format!(
-                "{count} hotspots loaded (profile truncated to first {MAX_PROFILE_NODES} nodes) — duration {:.1}ms",
-                self.duration_ms
-            )
-        } else {
-            format!(
-                "{count} hotspots loaded — duration {:.1}ms",
-                self.duration_ms
-            )
-        };
-        if !self.hotspots.is_empty() {
-            self.list_state.select(Some(0));
-            self.input_focused = false;
-        }
-    }
-
-    fn next_row(&mut self) {
-        advance_list_selection(&mut self.list_state, self.hotspots.len(), true);
-    }
-
-    fn prev_row(&mut self) {
-        advance_list_selection(&mut self.list_state, self.hotspots.len(), false);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test runner view
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-/// Status of a single test method as reported by the daemon.
-#[derive(Debug, Clone, PartialEq)]
-enum MethodStatus {
-    NotRun,
-    Pass { duration_ms: u64 },
-    Fail { error: Option<String> },
-    Skip,
-}
-
-#[cfg(unix)]
-/// A single row in the test runner tree — either a codeunit header or a method.
-#[derive(Debug, Clone)]
-enum TestRow {
-    Codeunit {
-        name: String,
-        id: i32,
-    },
-    Method {
-        codeunit_id: i32,
-        name: String,
-        status: MethodStatus,
-    },
-}
-
-#[cfg(unix)]
-struct TestRunnerView {
-    rows: Vec<TestRow>,
-    list_state: ListState,
-    status: String,
-    client: Option<DaemonClient>,
-    project_root: std::path::PathBuf,
-}
-
-#[cfg(unix)]
-impl TestRunnerView {
-    fn new(project_root: std::path::PathBuf) -> Self {
-        Self {
-            rows: Vec::new(),
-            list_state: ListState::default(),
-            status: String::from("Press 'r' to run selected, 'R' to run all"),
-            client: None,
-            project_root,
-        }
-    }
-
-    fn ensure_client(&mut self) {
-        ensure_daemon_client(&mut self.client, &self.project_root, &mut self.status);
-    }
-
-    /// Discover tests and load last results, populating `rows`.
-    fn refresh_discovery(&mut self) {
-        self.ensure_client();
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-
-        // Discover test codeunits / methods.
-        let discovered = match client.request("tests.discover", None) {
-            Ok(v) => v,
-            Err(e) => {
-                self.client = None;
-                self.status = format!("Daemon error (discover): {e}");
-                return;
-            }
-        };
-
-        // Optionally load last results.
-        let last_results = client
-            .request("tests.last_results", None)
-            .unwrap_or(serde_json::Value::Null);
-
-        self.rows.clear();
-        let Some(codeunits) = discovered.as_array() else {
-            self.status = "No test codeunits found".to_string();
-            return;
-        };
-
-        for cu in codeunits {
-            let cu_name = cu
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("(unknown)")
-                .to_string();
-            let cu_id = cu.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            self.rows.push(TestRow::Codeunit {
-                name: cu_name,
-                id: cu_id,
-            });
-
-            if let Some(tests) = cu.get("tests").and_then(|v| v.as_array()) {
-                for t in tests {
-                    let method_name = t
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("(unknown)")
-                        .to_string();
-                    // Look up status from last_results.
-                    let status = find_method_status(&last_results, cu_id, &method_name);
-                    self.rows.push(TestRow::Method {
-                        codeunit_id: cu_id,
-                        name: method_name,
-                        status,
-                    });
-                }
-            }
-        }
-
-        if self.rows.is_empty() {
-            self.status = "No test codeunits discovered".to_string();
-        } else {
-            self.status = format!("{} row(s) loaded", self.rows.len());
-            self.list_state.select(Some(0));
-        }
-    }
-
-    /// Run the currently-selected codeunit (if the selected row is a Codeunit or Method).
-    fn run_selected(&mut self) {
-        let codeunit_id = match self.list_state.selected().and_then(|i| self.rows.get(i)) {
-            Some(TestRow::Codeunit { id, .. }) => *id,
-            Some(TestRow::Method { codeunit_id, .. }) => *codeunit_id,
-            None => {
-                self.status = "Nothing selected".to_string();
-                return;
-            }
-        };
-        self.ensure_client();
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        let params = serde_json::json!({ "codeunitIds": [codeunit_id] });
-        match client.request("tests.run_batch", Some(params)) {
-            Ok(_) => {
-                self.status = format!("Run complete for codeunit {codeunit_id}. Refreshing…");
-            }
-            Err(e) => {
-                self.client = None;
-                self.status = format!("Daemon error (run_batch): {e}");
-                return;
-            }
-        }
-        self.refresh_discovery();
-    }
-
-    /// Run all discovered tests.
-    fn run_all(&mut self) {
-        self.ensure_client();
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
-        match client.request("tests.run_auto", None) {
-            Ok(_) => {
-                self.status = "Run all complete. Refreshing…".to_string();
-            }
-            Err(e) => {
-                self.client = None;
-                self.status = format!("Daemon error (run_auto): {e}");
-                return;
-            }
-        }
-        self.refresh_discovery();
-    }
-
-    fn next_row(&mut self) {
-        advance_list_selection(&mut self.list_state, self.rows.len(), true);
-    }
-
-    fn prev_row(&mut self) {
-        advance_list_selection(&mut self.list_state, self.rows.len(), false);
-    }
-
-    /// Return the error message of the currently-selected method (if any).
-    fn selected_error(&self) -> Option<&str> {
-        match self.list_state.selected().and_then(|i| self.rows.get(i)) {
-            Some(TestRow::Method {
-                status: MethodStatus::Fail { error: Some(e) },
-                ..
-            }) => Some(e.as_str()),
-            _ => None,
-        }
-    }
-}
-
-#[cfg(unix)]
-/// Look up the run status for `(codeunit_id, method_name)` in a JSON
-/// last-results response.  Returns `NotRun` if not found.
-fn find_method_status(
-    last_results: &serde_json::Value,
-    codeunit_id: i32,
-    method_name: &str,
-) -> MethodStatus {
-    let arr = match last_results.as_array() {
-        Some(a) => a,
-        None => return MethodStatus::NotRun,
-    };
-    let lower = method_name.to_lowercase();
-    let matching = arr.iter().find(|r| {
-        r.get("codeunitId").and_then(|v| v.as_i64()) == Some(codeunit_id as i64)
-            && r.get("methodName")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_lowercase())
-                .as_deref()
-                == Some(&lower)
-    });
-    let Some(r) = matching else {
-        return MethodStatus::NotRun;
-    };
-    let status_str = r.get("status").and_then(|v| v.as_str()).unwrap_or("");
-    match status_str {
-        "pass" | "Pass" => MethodStatus::Pass {
-            duration_ms: r.get("durationMs").and_then(|v| v.as_u64()).unwrap_or(0),
-        },
-        "fail" | "Fail" => MethodStatus::Fail {
-            error: r
-                .get("error")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-        },
-        "skip" | "Skip" => MethodStatus::Skip,
-        _ => MethodStatus::NotRun,
-    }
+    pub(crate) kind: DetailTargetKind,
 }
 
 // ---------------------------------------------------------------------------
@@ -950,56 +213,56 @@ fn find_method_status(
 type InitResult = Result<(DaemonClient, Vec<types::SymbolEntry>), String>;
 
 #[cfg(unix)]
-struct App {
-    pub view_mode: ViewMode,
+pub(crate) struct App {
+    pub(crate) view_mode: ViewMode,
 
     // Object browser state
-    pub active_pane: ActivePane,
-    pub search_query: String,
-    pub global_search: bool,
+    pub(crate) active_pane: ActivePane,
+    pub(crate) search_query: String,
+    pub(crate) global_search: bool,
 
-    pub packages: Vec<String>,
-    pub package_list_state: ListState,
+    pub(crate) packages: Vec<String>,
+    pub(crate) package_list_state: ListState,
 
-    pub kinds: Vec<ObjectKind>,
-    pub active_kind_index: usize,
+    pub(crate) kinds: Vec<ObjectKind>,
+    pub(crate) active_kind_index: usize,
 
-    pub symbols: SymbolIndex,
-    pub current_objects: Vec<Arc<SymbolEntry>>,
-    pub object_list_state: ListState,
+    pub(crate) symbols: SymbolIndex,
+    pub(crate) current_objects: Vec<Arc<SymbolEntry>>,
+    pub(crate) object_list_state: ListState,
 
-    pub details_list_state: ListState,
-    pub details_items: Vec<(Option<DetailTarget>, Line<'static>)>,
+    pub(crate) details_list_state: ListState,
+    pub(crate) details_items: Vec<(Option<DetailTarget>, Line<'static>)>,
 
-    pub should_quit: bool,
+    pub(crate) should_quit: bool,
 
-    pub last_click_time: std::time::Instant,
-    pub last_click_target: Option<ClickTarget>,
-    pub last_click_index: usize,
+    pub(crate) last_click_time: std::time::Instant,
+    pub(crate) last_click_target: Option<ClickTarget>,
+    pub(crate) last_click_index: usize,
 
     // Event chain, call graph, profiler, and test runner views
-    pub event_chain: EventChainView,
-    pub call_graph: CallGraphView,
-    pub profiler: ProfilerView,
-    pub test_runner: TestRunnerView,
+    pub(crate) event_chain: EventChainView,
+    pub(crate) call_graph: CallGraphView,
+    pub(crate) profiler: ProfilerView,
+    pub(crate) test_runner: TestRunnerView,
 
     // Persistent daemon connection for open_selected_object
-    pub daemon_client: Option<DaemonClient>,
+    pub(crate) daemon_client: Option<DaemonClient>,
 
     // Background workspace-init handoff. `Some` while the init thread is
     // still running; the event loop polls it every tick so the first frame
     // renders immediately ("Loading workspace…") instead of blocking the
     // terminal for the whole daemon cold-start (FB-1).
-    pub init_rx: Option<std::sync::mpsc::Receiver<InitResult>>,
+    pub(crate) init_rx: Option<std::sync::mpsc::Receiver<InitResult>>,
     // Human-readable init state shown in the object browser while loading,
     // or the error if init failed.
-    pub init_status: Option<String>,
+    pub(crate) init_status: Option<String>,
 
     // Project root resolved once at startup. Subsequent code paths must use
     // this field rather than calling current_dir() again — the user can `cd`
     // after launching al-explorer, which would otherwise drift the daemon
     // socket key.
-    pub project_root: std::path::PathBuf,
+    pub(crate) project_root: std::path::PathBuf,
 }
 
 #[cfg(unix)]
@@ -1127,7 +390,7 @@ impl App {
         }
     }
 
-    fn update_objects_list(&mut self, reset_selection: bool) {
+    pub(crate) fn update_objects_list(&mut self, reset_selection: bool) {
         if let Some(selected) = self.package_list_state.selected()
             && let Some(pkg_name) = self.packages.get(selected)
         {
@@ -1212,19 +475,19 @@ impl App {
         self.update_details_items();
     }
 
-    fn next_package(&mut self) {
+    pub(crate) fn next_package(&mut self) {
         let i = wrap_next(self.package_list_state.selected(), self.packages.len());
         self.package_list_state.select(Some(i));
         self.update_objects_list(true);
     }
 
-    fn previous_package(&mut self) {
+    pub(crate) fn previous_package(&mut self) {
         let i = wrap_prev(self.package_list_state.selected(), self.packages.len());
         self.package_list_state.select(Some(i));
         self.update_objects_list(true);
     }
 
-    fn next_kind(&mut self) {
+    pub(crate) fn next_kind(&mut self) {
         if self.kinds.is_empty() {
             return;
         }
@@ -1232,7 +495,7 @@ impl App {
         self.update_objects_list(true);
     }
 
-    fn previous_kind(&mut self) {
+    pub(crate) fn previous_kind(&mut self) {
         if self.kinds.is_empty() {
             return;
         }
@@ -1244,7 +507,7 @@ impl App {
         self.update_objects_list(true);
     }
 
-    fn next_object(&mut self) {
+    pub(crate) fn next_object(&mut self) {
         let i = match self.object_list_state.selected() {
             Some(i) => {
                 if i >= self.current_objects.len().saturating_sub(1) {
@@ -1262,7 +525,7 @@ impl App {
         }
     }
 
-    fn previous_object(&mut self) {
+    pub(crate) fn previous_object(&mut self) {
         let i = match self.object_list_state.selected() {
             Some(i) => {
                 if i == 0 {
@@ -1337,7 +600,7 @@ impl App {
         }
     }
 
-    fn update_details_items(&mut self) {
+    pub(crate) fn update_details_items(&mut self) {
         self.hydrate_selected_object();
         self.details_items.clear();
 
@@ -1618,7 +881,7 @@ impl App {
         }
     }
 
-    fn open_selected_object(&mut self) {
+    pub(crate) fn open_selected_object(&mut self) {
         let target_member: Option<DetailTarget> = self
             .details_list_state
             .selected()
@@ -1687,7 +950,7 @@ impl App {
         }
     }
 
-    fn register_click(&mut self, target: ClickTarget, index: usize) -> bool {
+    pub(crate) fn register_click(&mut self, target: ClickTarget, index: usize) -> bool {
         let now = std::time::Instant::now();
         let is_double = self.last_click_target == Some(target)
             && self.last_click_index == index
@@ -1876,440 +1139,6 @@ fn run_app<B: Backend<Error = io::Error>>(
     }
 }
 
-#[cfg(unix)]
-fn handle_object_browser_key(app: &mut App, key: crossterm::event::KeyEvent) {
-    // Tab bindings for type filters
-    if key.code == KeyCode::Tab {
-        app.next_kind();
-        return;
-    }
-    if key.code == KeyCode::BackTab {
-        app.previous_kind();
-        return;
-    }
-
-    match app.active_pane {
-        ActivePane::Search => match key.code {
-            KeyCode::Esc => {
-                app.search_query.clear();
-                app.update_objects_list(true);
-            }
-            KeyCode::Backspace => {
-                app.search_query.pop();
-                app.update_objects_list(true);
-            }
-            KeyCode::Char(c) => {
-                if app.search_query.len() < MAX_INPUT_LEN {
-                    app.search_query.push(c);
-                    app.update_objects_list(true);
-                }
-            }
-            KeyCode::Down | KeyCode::Enter => {
-                app.active_pane = ActivePane::Packages;
-            }
-            KeyCode::Right => {
-                app.active_pane = ActivePane::Objects;
-            }
-            _ => {}
-        },
-        ActivePane::Packages => match key.code {
-            KeyCode::Down | KeyCode::Char('j') => app.next_package(),
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(0) = app.package_list_state.selected() {
-                    app.active_pane = ActivePane::Search;
-                } else {
-                    app.previous_package();
-                }
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                app.active_pane = ActivePane::Objects;
-            }
-            _ => {}
-        },
-        ActivePane::Objects => match key.code {
-            KeyCode::Down | KeyCode::Char('j') => app.next_object(),
-            KeyCode::Up | KeyCode::Char('k') => app.previous_object(),
-            KeyCode::Left | KeyCode::Char('h') => {
-                app.active_pane = ActivePane::Packages;
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                app.active_pane = ActivePane::Details;
-            }
-            KeyCode::Enter => {
-                app.details_list_state.select(None);
-                app.open_selected_object();
-            }
-            KeyCode::Esc => {
-                app.active_pane = ActivePane::Search;
-            }
-            _ => {}
-        },
-        ActivePane::Details => match key.code {
-            KeyCode::Down | KeyCode::Char('j') => app.next_detail(),
-            KeyCode::Up | KeyCode::Char('k') => app.previous_detail(),
-            KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
-                app.active_pane = ActivePane::Objects;
-            }
-            KeyCode::Enter => app.open_selected_object(),
-            _ => {}
-        },
-    }
-}
-
-#[cfg(unix)]
-fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEvent) {
-    let view = &mut app.event_chain;
-    if view.input_focused {
-        match key.code {
-            KeyCode::Char(c) => {
-                if view.query.len() < MAX_INPUT_LEN {
-                    view.query.push(c);
-                    view.refresh_suggestions();
-                }
-            }
-            KeyCode::Backspace => {
-                view.query.pop();
-                view.refresh_suggestions();
-            }
-            KeyCode::Esc => {
-                view.query.clear();
-                view.rows.clear();
-                view.suggestions.clear();
-                view.status = "Cleared".to_string();
-            }
-            KeyCode::Enter => {
-                view.run_trace();
-                if !view.rows.is_empty() {
-                    view.input_focused = false;
-                }
-            }
-            KeyCode::Down | KeyCode::Tab => {
-                // Prefer the live suggestion list when present (FB-6),
-                // otherwise fall back to the trace rows.
-                if view.rows.is_empty() && !view.suggestions.is_empty() {
-                    view.input_focused = false;
-                    view.suggestion_state.select(Some(0));
-                } else if !view.rows.is_empty() {
-                    view.input_focused = false;
-                    view.list_state.select(Some(0));
-                }
-            }
-            _ => {}
-        }
-    } else if view.rows.is_empty() && !view.suggestions.is_empty() {
-        // Navigating the suggestion list.
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                advance_list_selection(&mut view.suggestion_state, view.suggestions.len(), true);
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                advance_list_selection(&mut view.suggestion_state, view.suggestions.len(), false);
-            }
-            KeyCode::Enter => {
-                if let Some(s) = view
-                    .suggestion_state
-                    .selected()
-                    .and_then(|sel| view.suggestions.get(sel))
-                {
-                    // Suggestion format is "Object::Event" — trace by
-                    // the event name.
-                    let event = s.rsplit("::").next().unwrap_or(s).to_string();
-                    view.query = event;
-                    view.run_trace();
-                    if !view.rows.is_empty() {
-                        view.list_state.select(Some(0));
-                    }
-                }
-            }
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::BackTab => {
-                view.input_focused = true;
-            }
-            _ => {}
-        }
-    } else {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => view.next_row(),
-            KeyCode::Char('k') | KeyCode::Up => view.prev_row(),
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::BackTab => {
-                view.input_focused = true;
-            }
-            KeyCode::Enter => {
-                // Re-run trace with current query
-                view.input_focused = true;
-            }
-            _ => {}
-        }
-    }
-}
-
-#[cfg(unix)]
-fn handle_call_graph_key(app: &mut App, key: crossterm::event::KeyEvent) {
-    let view = &mut app.call_graph;
-    if view.input_focused {
-        match key.code {
-            KeyCode::Char(c) => {
-                if view.query.len() < MAX_INPUT_LEN {
-                    view.query.push(c);
-                }
-            }
-            KeyCode::Backspace => {
-                view.query.pop();
-            }
-            KeyCode::Esc => {
-                view.query.clear();
-                view.rows.clear();
-                view.status = "Cleared".to_string();
-            }
-            KeyCode::Enter => {
-                view.run_query();
-                if !view.rows.is_empty() {
-                    view.input_focused = false;
-                }
-            }
-            KeyCode::Down | KeyCode::Tab => {
-                if !view.rows.is_empty() {
-                    view.input_focused = false;
-                    view.list_state.select(Some(0));
-                }
-            }
-            _ => {}
-        }
-    } else {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => view.next_row(),
-            KeyCode::Char('k') | KeyCode::Up => view.prev_row(),
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::BackTab => {
-                view.input_focused = true;
-            }
-            KeyCode::Enter => {
-                view.input_focused = true;
-            }
-            _ => {}
-        }
-    }
-}
-
-#[cfg(unix)]
-fn handle_profiler_key(app: &mut App, key: crossterm::event::KeyEvent) {
-    let view = &mut app.profiler;
-    if view.input_focused {
-        match key.code {
-            KeyCode::Char(c) => {
-                if view.file_path.len() < MAX_INPUT_LEN {
-                    view.file_path.push(c);
-                }
-            }
-            KeyCode::Backspace => {
-                view.file_path.pop();
-            }
-            KeyCode::Esc => {
-                view.file_path.clear();
-                view.hotspots.clear();
-                view.status = "Cleared".to_string();
-            }
-            KeyCode::Enter => {
-                view.load_profile();
-            }
-            KeyCode::Down | KeyCode::Tab => {
-                if !view.hotspots.is_empty() {
-                    view.input_focused = false;
-                    view.list_state.select(Some(0));
-                }
-            }
-            _ => {}
-        }
-    } else {
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => view.next_row(),
-            KeyCode::Char('k') | KeyCode::Up => view.prev_row(),
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::BackTab => {
-                view.input_focused = true;
-            }
-            _ => {}
-        }
-    }
-}
-
-#[cfg(unix)]
-fn handle_test_runner_key(app: &mut App, key: crossterm::event::KeyEvent) {
-    let view = &mut app.test_runner;
-    match key.code {
-        KeyCode::Char('j') | KeyCode::Down => view.next_row(),
-        KeyCode::Char('k') | KeyCode::Up => view.prev_row(),
-        KeyCode::Char('r') => view.run_selected(),
-        KeyCode::Char('R') => view.run_all(),
-        KeyCode::Esc | KeyCode::Char('q') => {
-            app.view_mode = ViewMode::ObjectBrowser;
-        }
-        _ => {}
-    }
-}
-
-#[cfg(unix)]
-fn handle_object_browser_mouse(app: &mut App, mouse_event: crossterm::event::MouseEvent) {
-    if let Ok((width, height)) = crossterm::terminal::size() {
-        // Account for the mode bar at the top (1 line)
-        let content_area = Rect {
-            x: 0,
-            y: 1,
-            width,
-            height: height.saturating_sub(1),
-        };
-        let layout = compute_layout(content_area);
-        let (col, row) = (mouse_event.column, mouse_event.row);
-
-        let search_area = layout.left_column[0];
-        let packages_area = layout.left_column[1];
-        let types_area = layout.middle_column[0];
-        let objects_area = layout.middle_column[1];
-        let details_area = layout.main_columns[2];
-
-        let packages_inner = inner_area(packages_area);
-        let objects_inner = inner_area(objects_area);
-        let details_inner = inner_area(details_area);
-        let search_inner = inner_area(search_area);
-        let search_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(5)])
-            .split(search_inner);
-        let tabs_inner = inner_area(types_area);
-        let arrow_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(0),
-                Constraint::Length(1),
-            ])
-            .split(tabs_inner);
-
-        match mouse_event.kind {
-            MouseEventKind::ScrollDown => {
-                if rect_contains(packages_inner, col, row) {
-                    app.next_package();
-                } else if rect_contains(details_inner, col, row) {
-                    app.next_detail();
-                } else if rect_contains(objects_inner, col, row) {
-                    app.next_object();
-                }
-            }
-            MouseEventKind::ScrollUp => {
-                if rect_contains(packages_inner, col, row) {
-                    app.previous_package();
-                } else if rect_contains(details_inner, col, row) {
-                    app.previous_detail();
-                } else if rect_contains(objects_inner, col, row) {
-                    app.previous_object();
-                }
-            }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if rect_contains(search_area, col, row) {
-                    app.active_pane = ActivePane::Search;
-                    if rect_contains(search_chunks[1], col, row) {
-                        app.global_search = !app.global_search;
-                        app.update_objects_list(true);
-                    }
-                } else if rect_contains(packages_inner, col, row) {
-                    app.active_pane = ActivePane::Packages;
-                    let offset = app.package_list_state.offset();
-                    let clicked_idx = row.saturating_sub(packages_inner.y) as usize;
-                    let target = offset + clicked_idx;
-                    if target < app.packages.len() {
-                        app.package_list_state.select(Some(target));
-                        app.update_objects_list(true);
-                    }
-                } else if rect_contains(types_area, col, row) {
-                    app.active_pane = ActivePane::Objects;
-                    if rect_contains(arrow_chunks[0], col, row) {
-                        app.previous_kind();
-                    } else if rect_contains(arrow_chunks[2], col, row) {
-                        app.next_kind();
-                    }
-                } else if rect_contains(objects_inner, col, row) {
-                    app.active_pane = ActivePane::Objects;
-                    let offset = app.object_list_state.offset();
-                    let clicked_idx = row.saturating_sub(objects_inner.y) as usize;
-                    let target = offset + clicked_idx;
-                    if target < app.current_objects.len() {
-                        app.object_list_state.select(Some(target));
-                        app.details_list_state.select(Some(0));
-                        app.update_details_items();
-                        let is_double = app.register_click(ClickTarget::Objects, target);
-                        if is_double {
-                            app.details_list_state.select(None);
-                            app.open_selected_object();
-                        }
-                    }
-                } else if rect_contains(details_inner, col, row) {
-                    app.active_pane = ActivePane::Details;
-                    let offset = app.details_list_state.offset();
-                    let clicked_idx = row.saturating_sub(details_inner.y) as usize;
-                    let target = offset + clicked_idx;
-                    if target < app.details_items.len() {
-                        app.details_list_state.select(Some(target));
-                        let is_double = app.register_click(ClickTarget::Details, target);
-                        if is_double {
-                            app.open_selected_object();
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Layout helpers
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-struct UiLayout {
-    main_columns: [Rect; 3],
-    left_column: [Rect; 2],
-    middle_column: [Rect; 2],
-}
-
-#[cfg(unix)]
-fn compute_layout(area: Rect) -> UiLayout {
-    let main_columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(30),
-            Constraint::Percentage(50),
-        ])
-        .split(area);
-
-    let left_column = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(main_columns[0]);
-
-    let middle_column = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(main_columns[1]);
-
-    UiLayout {
-        main_columns: [main_columns[0], main_columns[1], main_columns[2]],
-        left_column: [left_column[0], left_column[1]],
-        middle_column: [middle_column[0], middle_column[1]],
-    }
-}
-
-#[cfg(unix)]
-fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
-    col >= rect.x
-        && col < rect.x.saturating_add(rect.width)
-        && row >= rect.y
-        && row < rect.y.saturating_add(rect.height)
-}
-
-#[cfg(unix)]
-fn inner_area(rect: Rect) -> Rect {
-    Block::default().borders(Borders::ALL).inner(rect)
-}
-
 // ---------------------------------------------------------------------------
 // UI rendering
 // ---------------------------------------------------------------------------
@@ -2338,7 +1167,7 @@ fn ui(f: &mut Frame, app: &mut App) {
 /// Object ID for display: `None` when the kind has no developer-visible ID
 /// in AL syntax, or when the entry carries a sentinel/synthetic ID (≤ 0).
 #[cfg(unix)]
-fn display_object_id(entry: &SymbolEntry) -> Option<i32> {
+pub(crate) fn display_object_id(entry: &SymbolEntry) -> Option<i32> {
     if entry.kind.has_numeric_id() && entry.id > 0 {
         Some(entry.id)
     } else {
@@ -2382,691 +1211,12 @@ fn render_mode_bar(f: &mut Frame, area: Rect, mode: ViewMode) {
     f.render_widget(Paragraph::new(Line::from(all_spans)), area);
 }
 
-#[cfg(unix)]
-fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
-    let layout = compute_layout(area);
-
-    // ==========================================
-    // 1. Search Bar (Left Top)
-    // ==========================================
-    let search_style = pane_style(app.active_pane == ActivePane::Search);
-
-    let search_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Search ")
-        .border_style(search_style);
-
-    let search_inner = search_block.inner(layout.left_column[0]);
-    f.render_widget(search_block, layout.left_column[0]);
-
-    let search_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(5)].as_ref())
-        .split(search_inner);
-
-    let cursor = if app.active_pane == ActivePane::Search {
-        "█"
-    } else {
-        ""
-    };
-    let search_text_str = format!("{}{}", app.search_query, cursor);
-
-    let search_text = Paragraph::new(search_text_str).style(Style::default().fg(Color::White));
-    f.render_widget(search_text, search_chunks[0]);
-
-    let filter_icon = if app.global_search { "[ALL]" } else { "[PKG]" };
-    let icon_p = Paragraph::new(filter_icon).alignment(ratatui::layout::Alignment::Right);
-    f.render_widget(icon_p, search_chunks[1]);
-
-    // ==========================================
-    // 2. Packages List (Left Bottom)
-    // ==========================================
-    let pkg_style = pane_style(app.active_pane == ActivePane::Packages);
-
-    let packages: Vec<ListItem> = app
-        .packages
-        .iter()
-        .map(|i| ListItem::new(Line::from(vec![Span::raw(i.clone())])))
-        .collect();
-
-    let packages_list = List::new(packages)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Packages ")
-                .border_style(pkg_style),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
-    f.render_stateful_widget(
-        packages_list,
-        layout.left_column[1],
-        &mut app.package_list_state,
-    );
-
-    // ==========================================
-    // 3. Types Tabs (Middle Top)
-    // ==========================================
-    let obj_style = pane_style(app.active_pane == ActivePane::Objects);
-
-    let tabs_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Types (Press Tab) ")
-        .border_style(obj_style);
-
-    let tabs_inner_area = tabs_block.inner(layout.middle_column[0]);
-    f.render_widget(tabs_block, layout.middle_column[0]);
-
-    if !app.kinds.is_empty() {
-        let total = app.kinds.len();
-        let idx = app.active_kind_index;
-
-        let prev_idx = if idx == 0 {
-            total.saturating_sub(1)
-        } else {
-            idx - 1
-        };
-        let next_idx = if idx == total.saturating_sub(1) {
-            0
-        } else {
-            idx + 1
-        };
-
-        let arrow_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(0),
-                Constraint::Length(1),
-            ])
-            .split(tabs_inner_area);
-
-        let left_arrow = if total > 1 { "<" } else { " " };
-        let right_arrow = if total > 1 { ">" } else { " " };
-        let arrow_style = Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM);
-        f.render_widget(
-            Paragraph::new(left_arrow)
-                .alignment(ratatui::layout::Alignment::Center)
-                .style(arrow_style),
-            arrow_chunks[0],
-        );
-        f.render_widget(
-            Paragraph::new(right_arrow)
-                .alignment(ratatui::layout::Alignment::Center)
-                .style(arrow_style),
-            arrow_chunks[2],
-        );
-
-        let middle_width = arrow_chunks[1].width as usize;
-        if middle_width > 0 {
-            let center_width = std::cmp::min(std::cmp::max(10, middle_width / 2), middle_width);
-            let side_total = middle_width.saturating_sub(center_width);
-            let left_width = side_total / 2;
-            let right_width = side_total.saturating_sub(left_width);
-
-            let prev_label = if total > 1 {
-                format!("{:?}", app.kinds[prev_idx])
-            } else {
-                "".to_string()
-            };
-            let next_label = if total > 1 {
-                let display_idx = if total == 2 { prev_idx } else { next_idx };
-                format!("{:?}", app.kinds[display_idx])
-            } else {
-                "".to_string()
-            };
-            let active_label = format!("{:?}", app.kinds[idx]);
-
-            let left_text = pad_center(truncate_with_ellipsis(&prev_label, left_width), left_width);
-            let right_text = pad_center(
-                truncate_with_ellipsis(&next_label, right_width),
-                right_width,
-            );
-            let center_text = pad_center(
-                truncate_with_ellipsis(&active_label, center_width),
-                center_width,
-            );
-
-            let spans = vec![
-                Span::styled(
-                    left_text,
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::DIM),
-                ),
-                Span::styled(
-                    center_text,
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    right_text,
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::DIM),
-                ),
-            ];
-            let p = Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Left);
-            f.render_widget(p, arrow_chunks[1]);
-        }
-    }
-
-    // ==========================================
-    // 4. Objects List (Middle Bottom)
-    // ==========================================
-    if let Some(status) = &app.init_status {
-        // Workspace still loading (or failed): show the status where the
-        // objects will appear instead of a silently empty pane (FB-1).
-        let style = if status.starts_with("Workspace load failed") {
-            Style::default().fg(Color::Red)
-        } else {
-            Style::default().fg(Color::Yellow)
-        };
-        let loading = Paragraph::new(status.as_str())
-            .style(style)
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(obj_style),
-            );
-        f.render_widget(loading, layout.middle_column[1]);
-    } else {
-        let objects: Vec<ListItem> = app
-            .current_objects
-            .iter()
-            .map(|entry| {
-                // Object IDs: AL interfaces (and a few other kinds) have no
-                // developer-visible ID — symbol packages carry an internal
-                // compiler hash there. Render blank instead of the hash /
-                // `-1` sentinel (FB-2/FB-3).
-                let display = match display_object_id(entry) {
-                    Some(id) => format!("{} {}", id, entry.name),
-                    None => entry.name.clone(),
-                };
-                ListItem::new(Line::from(vec![Span::raw(display)]))
-            })
-            .collect();
-
-        let objects_list = List::new(objects)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(obj_style),
-            )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol(">> ");
-        f.render_stateful_widget(
-            objects_list,
-            layout.middle_column[1],
-            &mut app.object_list_state,
-        );
-    }
-
-    // ==========================================
-    // 5. Details Pane (Right Full Column)
-    // ==========================================
-    let detail_style = pane_style(app.active_pane == ActivePane::Details);
-
-    let list_items: Vec<ListItem> = app
-        .details_items
-        .iter()
-        .map(|(_, line)| ListItem::new(line.clone()))
-        .collect();
-
-    let details_list = List::new(list_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Details (Scroll/Click) ")
-                .border_style(detail_style),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    f.render_stateful_widget(
-        details_list,
-        layout.main_columns[2],
-        &mut app.details_list_state,
-    );
-}
-
-#[cfg(unix)]
-fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChainView) {
-    // Split: search input (3 lines) + results list + status bar (1 line)
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    // Search input
-    let input_style = input_focused_style(view.input_focused);
-    let cursor = if view.input_focused { "█" } else { "" };
-    let input_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Event Name (Enter to trace, Tab to navigate results) ")
-        .border_style(input_style);
-    let input_inner = input_block.inner(chunks[0]);
-    f.render_widget(input_block, chunks[0]);
-    f.render_widget(
-        Paragraph::new(format!("{}{}", view.query, cursor))
-            .style(Style::default().fg(Color::White)),
-        input_inner,
-    );
-
-    // Results list
-    let list_style = if !view.input_focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    // FB-6: before a trace has run, the results area shows live
-    // search-as-you-type matches for the current query.
-    if view.rows.is_empty() && !view.suggestions.is_empty() {
-        let items: Vec<ListItem> = view
-            .suggestions
-            .iter()
-            .map(|s| {
-                let (obj, evt) = s.rsplit_once("::").unwrap_or(("", s.as_str()));
-                ListItem::new(Line::from(vec![
-                    Span::styled(obj.to_string(), Style::default().fg(Color::DarkGray)),
-                    Span::raw("::"),
-                    Span::styled(
-                        evt.to_string(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]))
-            })
-            .collect();
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Matching events (↓ then Enter to trace) ")
-                    .border_style(list_style),
-            )
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Blue)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol(">> ");
-        f.render_stateful_widget(list, chunks[1], &mut view.suggestion_state);
-
-        f.render_widget(
-            Paragraph::new(view.status.clone()).style(Style::default().fg(Color::DarkGray)),
-            chunks[2],
-        );
-        return;
-    }
-
-    let items: Vec<ListItem> = view
-        .rows
-        .iter()
-        .map(|row| {
-            let indent = "  ".repeat(row.depth);
-            let (prefix_style, name_style) = match row.node_type.as_str() {
-                "event" => (
-                    Style::default().fg(Color::Magenta),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                "subscriber" => (
-                    Style::default().fg(Color::Cyan),
-                    Style::default().fg(Color::Green),
-                ),
-                _ => (
-                    Style::default().fg(Color::DarkGray),
-                    Style::default().fg(Color::White),
-                ),
-            };
-            let edge_label = match row.edge_type.as_str() {
-                "origin" => "EVENT",
-                "subscribes_to" => "SUBS",
-                "publishes" => "PUB",
-                other => other,
-            };
-            let line = Line::from(vec![
-                Span::raw(indent),
-                Span::styled(format!("[{edge_label:<6}] "), prefix_style),
-                Span::styled(row.object.clone(), Style::default().fg(Color::DarkGray)),
-                Span::raw("."),
-                Span::styled(row.name.clone(), name_style),
-            ]);
-            ListItem::new(line)
-        })
-        .collect();
-
-    let title = if view.rows.is_empty() {
-        " Event Chain (no results) "
-    } else {
-        " Event Chain (j/k navigate, Esc back to search) "
-    };
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(list_style),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
-    f.render_stateful_widget(list, chunks[1], &mut view.list_state);
-
-    // Status bar
-    f.render_widget(
-        Paragraph::new(view.status.clone()).style(Style::default().fg(Color::DarkGray)),
-        chunks[2],
-    );
-}
-
-#[cfg(unix)]
-fn render_call_graph(f: &mut Frame, area: Rect, view: &mut CallGraphView) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    // Search input
-    let input_style = input_focused_style(view.input_focused);
-    let cursor = if view.input_focused { "█" } else { "" };
-    let input_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Symbol Name (Enter to query impact, Tab to navigate results) ")
-        .border_style(input_style);
-    let input_inner = input_block.inner(chunks[0]);
-    f.render_widget(input_block, chunks[0]);
-    f.render_widget(
-        Paragraph::new(format!("{}{}", view.query, cursor))
-            .style(Style::default().fg(Color::White)),
-        input_inner,
-    );
-
-    // Results list
-    let list_style = if !view.input_focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let items: Vec<ListItem> = view
-        .rows
-        .iter()
-        .map(|row| {
-            let style = match row.kind {
-                CallRowKind::Header => Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-                CallRowKind::Entry => Style::default().fg(Color::White),
-            };
-            ListItem::new(Line::from(Span::styled(row.label.clone(), style)))
-        })
-        .collect();
-
-    let title = if view.rows.is_empty() {
-        " Call Graph / Impact (no results) "
-    } else {
-        " Call Graph / Impact (j/k navigate, Esc back to search) "
-    };
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(list_style),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
-    f.render_stateful_widget(list, chunks[1], &mut view.list_state);
-
-    // Status bar
-    f.render_widget(
-        Paragraph::new(view.status.clone()).style(Style::default().fg(Color::DarkGray)),
-        chunks[2],
-    );
-}
-
-#[cfg(unix)]
-fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(area);
-
-    // File path input
-    let input_style = input_focused_style(view.input_focused);
-    let cursor = if view.input_focused { "█" } else { "" };
-    let input_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Profile Path (.alcpuprofile — Enter to load, Tab to navigate) ")
-        .border_style(input_style);
-    let input_inner = input_block.inner(chunks[0]);
-    f.render_widget(input_block, chunks[0]);
-    f.render_widget(
-        Paragraph::new(format!("{}{}", view.file_path, cursor))
-            .style(Style::default().fg(Color::White)),
-        input_inner,
-    );
-
-    // Hotspot table
-    let list_style = if !view.input_focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let items: Vec<ListItem> = if view.hotspots.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled(
-            "No profile loaded — enter a path above and press Enter",
-            Style::default().fg(Color::DarkGray),
-        )))]
-    } else {
-        // Header row
-        let header_text = format!(
-            "{:<40} {:<30} {:>10} {:>10} {:>8}",
-            "Procedure", "Object/File", "Self(ms)", "Total(ms)", "Hits"
-        );
-        let mut rows: Vec<ListItem> = vec![ListItem::new(Line::from(Span::styled(
-            header_text,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )))];
-
-        for h in &view.hotspots {
-            let procedure = truncate_with_ellipsis(&h.procedure, 39);
-            let object = truncate_with_ellipsis(&h.object, 29);
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("{:<40} ", procedure),
-                    Style::default().fg(Color::Green),
-                ),
-                Span::styled(
-                    format!("{:<30} ", object),
-                    Style::default().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    format!("{:>10.1} ", h.self_time_ms),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(
-                    format!("{:>10.1} ", h.total_time_ms),
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled(
-                    format!("{:>8}", h.hit_count),
-                    Style::default().fg(Color::Magenta),
-                ),
-            ]);
-            rows.push(ListItem::new(line));
-        }
-        rows
-    };
-
-    let title = if view.hotspots.is_empty() {
-        " Hotspots "
-    } else {
-        " Hotspots (j/k navigate, Esc back to input) "
-    };
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(list_style),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
-    f.render_stateful_widget(list, chunks[1], &mut view.list_state);
-
-    // Status bar
-    f.render_widget(
-        Paragraph::new(view.status.clone()).style(Style::default().fg(Color::DarkGray)),
-        chunks[2],
-    );
-}
-
-#[cfg(unix)]
-fn render_test_runner(f: &mut Frame, area: Rect, view: &mut TestRunnerView) {
-    // Split vertically: list (left 60%) | error detail (right 40%).
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(area);
-
-    // Status bar at bottom of left column.
-    let left_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(columns[0]);
-
-    // Build list items.
-    let items: Vec<ListItem> = view
-        .rows
-        .iter()
-        .map(|row| match row {
-            TestRow::Codeunit { name, id } => ListItem::new(Line::from(vec![Span::styled(
-                format!(" {name} ({id})"),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )])),
-            TestRow::Method { name, status, .. } => {
-                let (icon, color) = match status {
-                    MethodStatus::NotRun => ("○", Color::DarkGray),
-                    MethodStatus::Pass { .. } => ("✓", Color::Green),
-                    MethodStatus::Fail { .. } => ("✗", Color::Red),
-                    MethodStatus::Skip => ("⊘", Color::Yellow),
-                };
-                let duration = if let MethodStatus::Pass { duration_ms } = status {
-                    format!(" ({duration_ms}ms)")
-                } else {
-                    String::new()
-                };
-                ListItem::new(Line::from(vec![
-                    Span::raw("   "),
-                    Span::styled(icon, Style::default().fg(color)),
-                    Span::raw(format!(" {name}{duration}")),
-                ]))
-            }
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Tests [r: run selected | R: run all | j/k: navigate | q: back] "),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("> ");
-    f.render_stateful_widget(list, left_rows[0], &mut view.list_state);
-
-    // Status bar.
-    let status_p = Paragraph::new(view.status.as_str()).style(Style::default().fg(Color::DarkGray));
-    f.render_widget(status_p, left_rows[1]);
-
-    // Right pane: error detail for selected Fail row.
-    let error_text = view
-        .selected_error()
-        .unwrap_or("(select a failed test to see error)");
-    let detail = Paragraph::new(error_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Error Detail "),
-        )
-        .wrap(ratatui::widgets::Wrap { trim: false });
-    f.render_widget(detail, columns[1]);
-}
-
 // ---------------------------------------------------------------------------
 // String helpers
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
-fn truncate_with_ellipsis(s: &str, width: usize) -> String {
+pub(crate) fn truncate_with_ellipsis(s: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
@@ -3083,7 +1233,7 @@ fn truncate_with_ellipsis(s: &str, width: usize) -> String {
 }
 
 #[cfg(unix)]
-fn pad_center(s: String, width: usize) -> String {
+pub(crate) fn pad_center(s: String, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
@@ -3124,6 +1274,10 @@ fn find_member_line_in_file(path: &std::path::Path, member_name: &str) -> Option
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::views::call_graph::handle_call_graph_key;
+    use crate::views::event_chain::handle_event_chain_key;
+    use crate::views::object_browser::handle_object_browser_key;
+    use crate::views::profiler::handle_profiler_key;
     use crossterm::event::KeyEvent;
     use types::{ObjectKind, SymbolEntry};
 
@@ -3209,43 +1363,6 @@ mod tests {
         assert!(app.kinds.contains(&ObjectKind::Codeunit));
         // The "Other" package's Page must not appear.
         assert!(!app.kinds.contains(&ObjectKind::Page));
-    }
-
-    #[test]
-    fn load_profile_handles_large_node_arrays() {
-        // One real hotspot followed by many empty nodes; exercises the bounded
-        // iteration path introduced by the node-count cap.
-        let mut nodes = vec![serde_json::json!({
-            "hitCount": 5u64,
-            "callFrame": { "functionName": "DoWork", "url": "Cod50000.al" }
-        })];
-        for _ in 0..1000 {
-            nodes.push(serde_json::json!({ "hitCount": 0u64 }));
-        }
-        let profile = serde_json::json!({
-            "startTime": 0.0,
-            "endTime": 1_000_000.0,
-            "nodes": nodes,
-        });
-
-        let path = std::env::temp_dir().join(format!(
-            "al-explorer-test-profile-{}-{}.alcpuprofile",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::write(&path, serde_json::to_vec(&profile).unwrap()).unwrap();
-
-        let mut view = ProfilerView::new();
-        view.file_path = path.to_string_lossy().into_owned();
-        view.load_profile();
-        std::fs::remove_file(&path).ok();
-
-        assert_eq!(view.hotspots.len(), 1);
-        assert_eq!(view.hotspots[0].procedure, "DoWork");
-        assert!(!view.status.contains("truncated"));
     }
 
     #[test]
