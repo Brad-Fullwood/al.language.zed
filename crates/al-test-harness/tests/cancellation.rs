@@ -32,7 +32,6 @@ codeunit 50100 "Cancellation Test"
 /// T052: send $/cancelRequest for a non-existent id; the server must
 /// gracefully ignore it (no panic, no protocol break).
 #[tokio::test]
-#[ignore = "requires al-lsp binary"]
 async fn cancel_non_existent_id_is_silently_ignored() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/cancel_test.al", TEST_DOC).await;
@@ -60,7 +59,6 @@ async fn cancel_non_existent_id_is_silently_ignored() {
 /// the result if the cancel was processed too late. Either is acceptable —
 /// the contract is that the server never panics.
 #[tokio::test]
-#[ignore = "requires al-lsp binary"]
 async fn cancel_before_request_does_not_panic_server() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/cancel_test.al", TEST_DOC).await;

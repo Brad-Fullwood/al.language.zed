@@ -215,9 +215,21 @@ async fn test_b01_open_file_triggers_diagnostics() {
     client.shutdown().await;
 }
 
-/// B-02: opening a file with an empty begin..end triggers diagnostics (custom lint rules removed)
+/// Collect every diagnostic `code` string the server published.
+fn published_codes(
+    diags: &std::collections::HashMap<String, Vec<serde_json::Value>>,
+) -> Vec<String> {
+    diags
+        .values()
+        .flat_map(|d| d.iter())
+        .filter_map(|d| d.get("code").and_then(|c| c.as_str()).map(str::to_string))
+        .collect()
+}
+
+/// B-02: the custom AL-L001 native-lint rule was removed — an empty begin..end
+/// must NOT re-emit it, and the server must still process the file (symbols).
 #[tokio::test]
-async fn test_b02_empty_begin_end_triggers_al_l001() {
+async fn test_b02_empty_begin_end_emits_no_al_l001() {
     let code = r#"codeunit 50151 "Empty Proc"
 {
     procedure DoNothing()
@@ -226,21 +238,29 @@ async fn test_b02_empty_begin_end_triggers_al_l001() {
 }"#;
 
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
-    // open_file waits for publishDiagnostics — server must process the file.
+    // open_file blocks until publishDiagnostics arrives, so the set is complete.
     client.open_file("src/integration_b02.al", code).await;
 
-    // Custom lint rules have been removed; AL-L001 is no longer emitted.
-    // Verify the server processed the file without crashing.
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    let _diags = client.drain_diagnostics();
+    let codes = published_codes(&client.drain_diagnostics());
+    assert!(
+        !codes.iter().any(|c| c.eq_ignore_ascii_case("AL-L001")),
+        "AL-L001 was removed and must not be re-emitted; got {codes:?}"
+    );
+
+    // Server processed the file and stays responsive.
+    let symbols = client.document_symbols("src/integration_b02.al").await;
+    assert!(
+        !symbols.is_empty(),
+        "server must extract symbols from the opened file"
+    );
 
     client.shutdown().await;
 }
 
-/// B-03: opening a file with a TODO comment triggers diagnostics (custom lint rules removed)
+/// B-03: the custom AL-L007 native-lint rule was removed — a TODO comment must
+/// NOT re-emit it, and the server must still process the file (symbols).
 #[tokio::test]
-async fn test_b03_todo_comment_triggers_al_l007() {
-    // CODEUNIT_SIMPLE has no TODO; use a specific fixture
+async fn test_b03_todo_comment_emits_no_al_l007() {
     let code = r#"codeunit 50152 "Todo Test"
 {
     procedure DoWork()
@@ -253,10 +273,17 @@ async fn test_b03_todo_comment_triggers_al_l007() {
     let mut client = LspClient::spawn(test_project_dir()).await.unwrap();
     client.open_file("src/integration_b03.al", code).await;
 
-    // Custom lint rules have been removed; AL-L007 is no longer emitted.
-    // Verify the server processed the file without crashing.
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    let _diags = client.drain_diagnostics();
+    let codes = published_codes(&client.drain_diagnostics());
+    assert!(
+        !codes.iter().any(|c| c.eq_ignore_ascii_case("AL-L007")),
+        "AL-L007 was removed and must not be re-emitted; got {codes:?}"
+    );
+
+    let symbols = client.document_symbols("src/integration_b03.al").await;
+    assert!(
+        !symbols.is_empty(),
+        "server must extract symbols from the opened file"
+    );
 
     client.shutdown().await;
 }
