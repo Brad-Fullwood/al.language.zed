@@ -52,8 +52,6 @@ pub mod xliff;
 /// syntax module stays free of `tower_lsp` references — preserving the option to
 /// lift it back out if ever needed, and matching the transport-boundary coding rule.
 pub mod syntax_lsp {
-    use crate::syntax::types::SyntaxPosition;
-
     /// Convert a tree-sitter Range to an LSP Range.
     pub fn ts_range_to_lsp(
         range: &tree_sitter::Range,
@@ -63,15 +61,6 @@ pub mod syntax_lsp {
         tower_lsp::lsp_types::Range {
             start: tower_lsp::lsp_types::Position::new(sr.start.line, sr.start.character),
             end: tower_lsp::lsp_types::Position::new(sr.end.line, sr.end.character),
-        }
-    }
-
-    /// Convert a `tower_lsp::lsp_types::Position` to a `SyntaxPosition`.
-    #[inline]
-    pub fn lsp_pos_to_syntax(pos: tower_lsp::lsp_types::Position) -> SyntaxPosition {
-        SyntaxPosition {
-            line: pos.line,
-            character: pos.character,
         }
     }
 }

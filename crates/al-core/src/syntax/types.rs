@@ -49,9 +49,6 @@ pub enum SyntaxSymbolKind {
 }
 
 /// A document symbol (for outline/symbol views).
-// The `deprecated` field mirrors the LSP DocumentSymbol.deprecated Optional<bool>
-// and is kept here for parity; callers may always pass `None`.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SyntaxDocumentSymbol {
     pub name: std::string::String,
