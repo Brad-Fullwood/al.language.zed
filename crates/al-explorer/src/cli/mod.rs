@@ -326,8 +326,8 @@ Examples:
     ///
     /// For non-interactive environments (CI, scripting) consider using
     /// `--password` on snapshot/profile commands instead. Note that passwords
-    /// supplied via `--password` are visible in shell history, `/proc/<pid>/cmdline`,
-    /// and daemon logs at DEBUG level. Prefer reading credentials from a file or
+    /// supplied via `--password` are visible in shell history and
+    /// `/proc/<pid>/cmdline`. Prefer reading credentials from a file or
     /// environment variable when possible.
     Authenticate {
         /// Subcommand: login (default), status, clear
