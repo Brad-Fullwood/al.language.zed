@@ -872,6 +872,20 @@ pub(crate) enum CompletionCandidateKind {
     EnumMember,
 }
 
+/// Resolution primitive: given a [`resolve_expression_type`]-resolved receiver,
+/// return the transport-agnostic completion candidates available on it (workspace
+/// globals + procedures + fields, composed `.app` members, builtin methods from
+/// the semantic cache). The query layer (`queries::completions`) orchestrates this
+/// with `resolve_expression_type` and converts the result to LSP `CompletionItem`s.
+///
+/// Deliberately kept here, not in `queries/`: it is a peer of
+/// `resolve_expression_type`, returns the resolution-owned (already
+/// transport-agnostic) [`CompletionCandidate`], and depends on six private
+/// resolution helpers (`resolve_object_path`, `composed_members_for`,
+/// `format_type_detail`/`format_method_signature`/`format_builtin_signature`,
+/// `workspace_field_items`). Moving it would force those internals to `pub(crate)`
+/// and split two tightly-coupled resolution calls across the layer boundary —
+/// increasing coupling, not reducing it. (Audit A1, considered and declined.)
 pub(crate) fn completion_items_for_receiver(
     workspace: &Workspace,
     receiver: &ResolvedType,
