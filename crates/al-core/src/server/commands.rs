@@ -212,17 +212,18 @@ pub(super) async fn compile(server: &AlServer) {
     }
 }
 
-/// Publish alc compile diagnostics per file and clear squiggles for files
-/// that were affected last compile but are clean now (F-008).
-async fn publish_compile_result(
-    server: &AlServer,
+/// Convert alc compile diagnostics into per-file LSP diagnostics, resolving
+/// relative paths against `root`. Pure (no server / I/O) so the severity
+/// mapping, the 1-based→0-based position conversion, the end-of-range (start of
+/// next line per LSP, not the old u32::MAX sentinel — T067), and the relative→
+/// absolute path resolution (F-019) are all unit-testable.
+fn group_compile_diagnostics(
+    diagnostics: &[crate::build::CompileDiagnostic],
     root: &std::path::Path,
-    result: &crate::build::CompileResult,
-) {
-    // Group compile diagnostics by file and publish per-file.
+) -> std::collections::HashMap<String, Vec<Diagnostic>> {
     let mut by_file: std::collections::HashMap<String, Vec<Diagnostic>> =
         std::collections::HashMap::new();
-    for d in &result.diagnostics {
+    for d in diagnostics {
         let severity = match d.severity {
             crate::build::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
             crate::build::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
@@ -236,12 +237,10 @@ async fn publish_compile_result(
                     line: start_line,
                     character: start_char,
                 },
-                // alc only reports start position; the LSP-spec way to
-                // express "to end of line" is `start of next line`
-                // (Position{ line+1, character: 0 }). The previous
-                // u32::MAX sentinel was tolerated by Zed/VS Code but
-                // is undefined by the LSP spec and breaks stricter
-                // clients (T067 / stb-server-lsp-1059).
+                // alc only reports start position; the LSP-spec way to express
+                // "to end of line" is the start of the next line. The previous
+                // u32::MAX sentinel was tolerated by Zed/VS Code but is undefined
+                // by the LSP spec and breaks stricter clients (T067).
                 end: Position {
                     line: start_line.saturating_add(1),
                     character: 0,
@@ -253,13 +252,10 @@ async fn publish_compile_result(
             message: d.message.clone(),
             ..Default::default()
         };
-        // F-019: alc emits relative paths
-        // (`src/Foo.al`) when run from project_root.
-        // `Url::from_file_path` requires an absolute
-        // path, so resolve relative entries against
-        // the project root before grouping —
-        // otherwise the per-file URI conversion
-        // below silently drops the diagnostic.
+        // F-019: alc emits relative paths (`src/Foo.al`) when run from
+        // project_root. Url::from_file_path requires an absolute path, so resolve
+        // relative entries against the root before grouping — otherwise the
+        // per-file URI conversion silently drops the diagnostic.
         let abs_path = {
             let p = std::path::Path::new(&d.file);
             if p.is_absolute() {
@@ -270,6 +266,18 @@ async fn publish_compile_result(
         };
         by_file.entry(abs_path).or_default().push(lsp_diag);
     }
+    by_file
+}
+
+/// Publish alc compile diagnostics per file and clear squiggles for files
+/// that were affected last compile but are clean now (F-008).
+async fn publish_compile_result(
+    server: &AlServer,
+    root: &std::path::Path,
+    result: &crate::build::CompileResult,
+) {
+    // Group compile diagnostics by file (pure — see group_compile_diagnostics).
+    let by_file = group_compile_diagnostics(&result.diagnostics, root);
     let current_affected: std::collections::HashSet<String> = by_file.keys().cloned().collect();
     for (file, diags) in by_file {
         if let Ok(uri) = Url::from_file_path(&file) {
@@ -331,5 +339,92 @@ pub(super) async fn apply_recommended_settings(server: &AlServer) {
                 )
                 .await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::build::{CompileDiagnostic, DiagnosticSeverity as S};
+
+    fn diag(file: &str, line: u32, column: u32, sev: S, code: &str) -> CompileDiagnostic {
+        CompileDiagnostic {
+            file: file.to_string(),
+            line,
+            column,
+            severity: sev,
+            code: code.to_string(),
+            message: format!("{code} message"),
+        }
+    }
+
+    #[test]
+    fn maps_severity_and_converts_1based_position_to_0based_lsp_range() {
+        let root = std::path::Path::new("/proj");
+        let by_file =
+            group_compile_diagnostics(&[diag("/proj/src/A.al", 5, 3, S::Error, "AL0118")], root);
+        let v = by_file
+            .get("/proj/src/A.al")
+            .expect("absolute file grouped");
+        assert_eq!(v.len(), 1);
+        let d = &v[0];
+        assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+        // 1-based (5,3) → 0-based (4,2); end is the start of the next line (T067).
+        assert_eq!(
+            d.range.start,
+            Position {
+                line: 4,
+                character: 2
+            }
+        );
+        assert_eq!(
+            d.range.end,
+            Position {
+                line: 5,
+                character: 0
+            }
+        );
+        assert_eq!(d.source.as_deref(), Some("al-compiler"));
+        assert_eq!(d.code, Some(NumberOrString::String("AL0118".to_string())));
+        assert_eq!(d.message, "AL0118 message");
+    }
+
+    #[test]
+    fn resolves_relative_paths_against_root_and_saturates_zero_positions() {
+        let root = std::path::Path::new("/proj");
+        // line/column 1 must convert to 0 (saturating_sub), not underflow.
+        let by_file =
+            group_compile_diagnostics(&[diag("src/Rel.al", 1, 1, S::Warning, "AL0001")], root);
+        let v = by_file
+            .get("/proj/src/Rel.al")
+            .expect("relative path resolved against root");
+        assert_eq!(
+            v[0].range.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(v[0].severity, Some(DiagnosticSeverity::WARNING));
+    }
+
+    #[test]
+    fn buckets_multiple_diagnostics_per_file_and_maps_info() {
+        let root = std::path::Path::new("/proj");
+        let by_file = group_compile_diagnostics(
+            &[
+                diag("/proj/A.al", 1, 1, S::Error, "E1"),
+                diag("/proj/A.al", 2, 1, S::Info, "I1"),
+                diag("/proj/B.al", 1, 1, S::Error, "E2"),
+            ],
+            root,
+        );
+        assert_eq!(by_file.get("/proj/A.al").map(Vec::len), Some(2));
+        assert_eq!(by_file.get("/proj/B.al").map(Vec::len), Some(1));
+        assert!(by_file
+            .get("/proj/A.al")
+            .unwrap()
+            .iter()
+            .any(|d| d.severity == Some(DiagnosticSeverity::INFORMATION)));
     }
 }
