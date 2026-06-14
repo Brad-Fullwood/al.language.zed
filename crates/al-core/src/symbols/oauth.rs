@@ -153,7 +153,7 @@ pub async fn acquire_token(
     let cache_path = token_cache_path(tenant);
 
     // 1. Try cached token
-    if let Some(cached) = load_cached_token(&cache_path) {
+    if let Some(cached) = load_cached_token(&cache_path, tenant) {
         let now = now_unix();
         if cached.expires_at > now + 60 {
             debug!(tenant, "Using cached BC access token");
@@ -1125,63 +1125,154 @@ fn create_secure_dir(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)
 }
 
-fn load_cached_token(path: &PathBuf) -> Option<CachedToken> {
-    // Distinguish the two failure modes:
+// ── OS secret store (S1) ─────────────────────────────────────────────────────
+//
+// Persist the OAuth bundle in the platform keyring (Secret Service / Keychain /
+// Credential Manager) so the 90-day refresh token is not stored as plaintext on
+// disk. Everything here degrades safely: any failure (no backend, locked
+// keychain, even a panic in the backend) falls through to the hardened 0o600
+// file, so authentication never breaks because a keyring is unavailable.
+
+/// Keyring service name (the `account`/`user` is the tenant).
+const KEYRING_SERVICE: &str = "al-lsp-oauth";
+
+/// Whether to use the OS keyring. Disabled under `cfg!(test)` (unit tests assert
+/// on file behavior and run without a backend) and via `AL_OAUTH_DISABLE_KEYRING`
+/// (lets a user — e.g. on a shared CI account — force the file path).
+fn keyring_enabled() -> bool {
+    !cfg!(test) && std::env::var_os("AL_OAUTH_DISABLE_KEYRING").is_none()
+}
+
+/// Run a keyring operation on a dedicated OS thread.
+///
+/// keyring's `async-secret-service` backend blocks on an internal async runtime;
+/// al-lsp calls token save/load from within tokio, where that nested block-on
+/// would panic. A fresh `std::thread` has no ambient runtime, so the backend can
+/// manage its own; `join()` additionally turns any panic into `None`, so a
+/// misbehaving backend degrades to the file fallback rather than crashing al-lsp.
+fn keyring_op<T, F>(f: F) -> Option<T>
+where
+    F: FnOnce() -> Option<T> + Send + 'static,
+    T: Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("al-keyring".to_string())
+        .spawn(f)
+        .ok()?
+        .join()
+        .ok()
+        .flatten()
+}
+
+/// Read the token JSON from the OS keyring. `None` = absent / no backend.
+fn keyring_get(tenant: &str) -> Option<String> {
+    if !keyring_enabled() {
+        return None;
+    }
+    let tenant = tenant.to_string();
+    keyring_op(move || {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &tenant).ok()?;
+        entry.get_password().ok()
+    })
+}
+
+/// Store the token JSON in the OS keyring. Returns `true` only on success.
+fn keyring_set(tenant: &str, json: &str) -> bool {
+    if !keyring_enabled() {
+        return false;
+    }
+    let tenant = tenant.to_string();
+    let json = json.to_string();
+    keyring_op(move || {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &tenant).ok()?;
+        entry.set_password(&json).ok()
+    })
+    .is_some()
+}
+
+/// Delete the OS keyring entry for `tenant`. Returns `true` if one was removed.
+fn keyring_delete(tenant: &str) -> bool {
+    if !keyring_enabled() {
+        return false;
+    }
+    let tenant = tenant.to_string();
+    keyring_op(move || {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, &tenant).ok()?;
+        match entry.delete_credential() {
+            Ok(()) => Some(true),
+            Err(keyring::Error::NoEntry) => Some(false),
+            Err(_) => None,
+        }
+    })
+    .unwrap_or(false)
+}
+
+fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedToken> {
+    // 1. OS keyring first.
+    if let Some(json) = keyring_get(tenant) {
+        let json = zeroize::Zeroizing::new(json);
+        match serde_json::from_str::<CachedToken>(&json) {
+            Ok(tok) => return Some(tok),
+            Err(e) => {
+                tracing::warn!(tenant, error = %e, "OAuth keyring token corrupt — ignoring");
+            }
+        }
+    }
+    // 2. Legacy plaintext file. Distinguish the two failure modes:
     // - file missing / unreadable: expected on first run, debug-level only
     // - file readable but JSON deserialise fails: corrupt or schema drift,
     //   warn so the user knows why their cached token isn't being honoured
     let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
+        Ok(c) => zeroize::Zeroizing::new(c),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
             tracing::debug!(path = %path.display(), error = %e, "OAuth token cache: read failed");
             return None;
         }
     };
-    match serde_json::from_str(&content) {
-        Ok(tok) => Some(tok),
+    let tok: CachedToken = match serde_json::from_str(&content) {
+        Ok(tok) => tok,
         Err(e) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %e,
                 "OAuth token cache: JSON deserialize failed — re-authentication will be required"
             );
-            None
+            return None;
         }
+    };
+    // Migrate-on-read: move the secret into the OS keyring and delete the
+    // plaintext file, so a token cached by an earlier version stops lingering on
+    // disk after the first load. Best-effort — if the keyring is unavailable the
+    // file simply stays as the fallback store.
+    if keyring_set(tenant, &content) {
+        let _ = std::fs::remove_file(path);
+        tracing::info!(
+            tenant,
+            "Migrated OAuth token from plaintext cache to OS keyring"
+        );
     }
+    Some(tok)
 }
 
 /// Persist the OAuth token bundle so subsequent al-lsp invocations don't
 /// have to re-run the device-code or browser flow until the refresh token
 /// expires.
 ///
-/// **Threat-model note (T012 / sec-001 / 3c348c6a5c6519d7).**
-/// Tokens are written as **plaintext JSON** at `~/.cache/al-lsp/oauth/`.
-/// Defence-in-depth here is exclusively filesystem permissions (parent dir
-/// 0o700, file 0o600 on Unix; default ACL on Windows — see create_secure_dir).
-/// There is no at-rest encryption: a compromised user account or any
-/// process running as the same user can read the refresh token (90-day
-/// AAD default) and impersonate the user against the tenant's BC API.
-///
-/// This is acceptable for a developer-facing tool with the same trust
-/// model as `~/.aws/credentials`, `~/.docker/config.json`, and
-/// `~/.config/gh/hosts.yml`. If/when this code ships in a more hostile
-/// deployment posture the refresh token should move to the OS keyring
-/// (Secret Service / Keychain / Credential Manager via the `keyring`
-/// crate). Tracked as future work; the access_token is short-lived
-/// enough (≤1h) that only refresh_token migration matters.
+/// **Storage (S1).** Prefers the OS secret store (Secret Service / Keychain /
+/// Credential Manager) via the `keyring` crate, so the refresh token (90-day AAD
+/// default) does not sit in plaintext on disk. When no backend is available
+/// (headless Linux without a Secret Service, CI, or `AL_OAUTH_DISABLE_KEYRING`)
+/// it falls back to a hardened file (parent dir 0o700, file 0o600 on Unix;
+/// default ACL on Windows). The file fallback has the same trust model as
+/// `~/.aws/credentials`; the short-lived access token (≤1h) only matters until
+/// the next refresh.
 fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
     use std::fs::OpenOptions;
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
 
-    if let Some(parent) = path.parent() {
-        if let Err(e) = create_secure_dir(parent) {
-            warn!(error = %e, path = %parent.display(), "Failed to create secure OAuth cache directory — token will not be cached");
-            return;
-        }
-    }
     let cached = CachedToken {
         access_token: tok.access_token.clone(),
         refresh_token: tok.refresh_token.clone(),
@@ -1189,12 +1280,32 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
         tenant: tenant.to_string(),
     };
     let json = match serde_json::to_string_pretty(&cached) {
-        Ok(j) => j,
+        Ok(j) => zeroize::Zeroizing::new(j),
         Err(e) => {
             warn!(error = %e, "Failed to serialize OAuth token");
             return;
         }
     };
+
+    // 1. Prefer the OS secret store; on success the refresh token never touches
+    //    plaintext disk. Remove any legacy file left by an earlier version.
+    if keyring_set(tenant, &json) {
+        let _ = std::fs::remove_file(path);
+        debug!(tenant, "Stored OAuth token in OS keyring");
+        return;
+    }
+
+    // 2. Fallback: hardened 0o600 file.
+    debug!(
+        tenant,
+        "OS keyring unavailable; caching OAuth token to a 0o600 file"
+    );
+    if let Some(parent) = path.parent() {
+        if let Err(e) = create_secure_dir(parent) {
+            warn!(error = %e, path = %parent.display(), "Failed to create secure OAuth cache directory — token will not be cached");
+            return;
+        }
+    }
 
     // Atomic write: open a per-pid temp file in the same directory, write the
     // full JSON, fsync, then rename into place. rename(2) is atomic on POSIX
@@ -1253,21 +1364,42 @@ fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
 /// `acquire_token` call falls through to refresh-then-interactive sign-in
 /// instead of re-using the same stale token (F-OPEN-012).
 ///
-/// Returns `true` if a cache file existed and was removed, `false` if no
-/// cache file was present or removal failed (logged at warn level).
+/// Returns `true` if a token existed (in the OS keyring or the file) and was
+/// removed, `false` if none was present or removal failed (logged at warn level).
 pub fn invalidate_cached_token(tenant: &str) -> bool {
+    // Clear both stores so a token can't survive in one after the other is wiped.
+    let keyring_cleared = keyring_delete(tenant);
     let path = token_cache_path(tenant);
-    match std::fs::remove_file(&path) {
-        Ok(_) => {
-            info!(tenant, "OAuth token cache cleared");
-            true
-        }
+    let file_cleared = match std::fs::remove_file(&path) {
+        Ok(_) => true,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => {
-            warn!(tenant, error = %e, "Failed to delete OAuth token cache");
+            warn!(tenant, error = %e, "Failed to delete OAuth token cache file");
             false
         }
+    };
+    if keyring_cleared || file_cleared {
+        info!(tenant, "OAuth token invalidated");
     }
+    keyring_cleared || file_cleared
+}
+
+/// Return the cached token's `expires_at` (unix secs) for `tenant` if one is
+/// cached in either the OS keyring or the legacy file. Read-only — unlike
+/// [`load_cached_token`] it never migrates or deletes — for the auth `status`
+/// command. Keyring-aware so status is correct after a token migrates off disk.
+pub fn cached_token_expiry(tenant: &str) -> Option<u64> {
+    if let Some(json) = keyring_get(tenant) {
+        let json = zeroize::Zeroizing::new(json);
+        if let Ok(tok) = serde_json::from_str::<CachedToken>(&json) {
+            return Some(tok.expires_at);
+        }
+    }
+    let path = token_cache_path(tenant);
+    let content = zeroize::Zeroizing::new(std::fs::read_to_string(&path).ok()?);
+    serde_json::from_str::<CachedToken>(&content)
+        .ok()
+        .map(|t| t.expires_at)
 }
 
 fn now_unix() -> u64 {
@@ -1558,7 +1690,7 @@ mod tests {
     fn load_cached_token_returns_none_for_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("absent.json");
-        assert!(load_cached_token(&path).is_none());
+        assert!(load_cached_token(&path, "test-tenant").is_none());
     }
 
     #[test]
@@ -1568,7 +1700,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("corrupt.json");
         std::fs::write(&path, b"{not valid json").unwrap();
-        assert!(load_cached_token(&path).is_none());
+        assert!(load_cached_token(&path, "test-tenant").is_none());
     }
 
     #[test]
@@ -1583,13 +1715,40 @@ mod tests {
             expires_in: 3600,
         };
         save_cached_token(&path, "common", &tok);
-        let loaded = load_cached_token(&path).expect("must load");
+        let loaded = load_cached_token(&path, "test-tenant").expect("must load");
         assert_eq!(loaded.access_token, "AAA");
         assert_eq!(loaded.refresh_token.as_deref(), Some("RRR"));
         assert_eq!(loaded.tenant, "common");
         assert!(
             loaded.expires_at > now_unix(),
             "expiry must be in the future"
+        );
+    }
+
+    #[test]
+    fn keyring_disabled_uses_file_fallback_and_keeps_it() {
+        // Under cfg!(test) keyring_enabled() is false, so save/load use the file
+        // and migrate-on-read (which only fires on a successful keyring_set) does
+        // not run — the hardened-file fallback must stay intact when no backend
+        // is available (the exact path headless Linux / CI takes).
+        assert!(!keyring_enabled(), "keyring must be disabled in unit tests");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("contoso.json");
+        let tok = TokenResponse {
+            access_token: "AT".into(),
+            refresh_token: Some("RT".into()),
+            expires_in: 3600,
+        };
+        save_cached_token(&path, "contoso", &tok);
+        assert!(
+            path.exists(),
+            "keyring disabled -> token must be written to the 0o600 file"
+        );
+        let loaded = load_cached_token(&path, "contoso").expect("must load from file fallback");
+        assert_eq!(loaded.access_token, "AT");
+        assert!(
+            path.exists(),
+            "file must NOT be deleted when no keyring backend is available"
         );
     }
 

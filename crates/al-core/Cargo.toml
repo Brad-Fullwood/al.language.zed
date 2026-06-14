@@ -51,6 +51,18 @@ futures = { workspace = true }
 # Zeroize OAuth bearer/refresh secrets on drop — al-lsp is a long-lived daemon
 # (F-OPEN-010). Pre-approved direct dependency.
 zeroize = { workspace = true }
+# OS secret store (Secret Service / Keychain / Credential Manager) for OAuth
+# token persistence (S1): keeps the 90-day refresh token off plaintext disk.
+# crypto-rust keeps the pure-Rust / no-OpenSSL cross-compile posture; the code
+# falls back to the hardened 0o600 file when no backend is available (headless
+# Linux / CI), so auth never breaks because a keyring is absent.
+keyring = { version = "3", default-features = false, features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "crypto-rust",
+    "tokio",
+] }
 # Folded in from al-lsp (stage 7):
 # tracing-subscriber is binary-only — only the [[bin]] al-lsp target wires it
 # up. Opt-in via the `bin` feature so library consumers (al-test-harness, the

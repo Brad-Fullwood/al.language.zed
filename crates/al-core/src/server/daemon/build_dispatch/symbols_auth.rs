@@ -62,31 +62,28 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
             let tenants = get_project_tenants(workspace);
             let mut statuses = Vec::new();
             for tenant in &tenants {
-                let cache_path = crate::symbols::oauth::token_cache_path(tenant);
-                let cached = tokio::fs::read_to_string(&cache_path)
-                    .await
-                    .ok()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-                if let Some(cached) = cached {
-                    let expires_at = cached
-                        .get("expires_at")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    statuses.push(serde_json::json!({
-                        "tenant": tenant,
-                        "authenticated": expires_at > now + 60,
-                        "expiresAt": expires_at,
-                        "expired": expires_at <= now + 60,
-                    }));
-                } else {
-                    statuses.push(serde_json::json!({
-                        "tenant": tenant,
-                        "authenticated": false,
-                    }));
+                // Keyring-aware: cached_token_expiry checks the OS keyring first,
+                // then the legacy file, so status is correct after a token has
+                // migrated off plaintext disk (S1).
+                match crate::symbols::oauth::cached_token_expiry(tenant) {
+                    Some(expires_at) => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        statuses.push(serde_json::json!({
+                            "tenant": tenant,
+                            "authenticated": expires_at > now + 60,
+                            "expiresAt": expires_at,
+                            "expired": expires_at <= now + 60,
+                        }));
+                    }
+                    None => {
+                        statuses.push(serde_json::json!({
+                            "tenant": tenant,
+                            "authenticated": false,
+                        }));
+                    }
                 }
             }
             Response {
@@ -106,8 +103,8 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
                         continue;
                     }
                 }
-                let cache_path = crate::symbols::oauth::token_cache_path(tenant);
-                if tokio::fs::remove_file(&cache_path).await.is_ok() {
+                // Clears both the OS keyring entry and any legacy plaintext file.
+                if crate::symbols::oauth::invalidate_cached_token(tenant) {
                     cleared += 1;
                 }
             }
