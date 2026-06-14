@@ -126,6 +126,22 @@ pub async fn run_daemon(_project_root: PathBuf) -> Result<(), Box<dyn std::error
     )
 }
 
+/// Create `dir` (and parents) restricted to the owner (0o700).
+///
+/// `DirBuilder::mode` applies the mode only to directories this call creates, so
+/// a dir left at a laxer mode by an earlier run (created before this hardening,
+/// or under a different umask) would keep its old permissions. We therefore
+/// re-assert 0o700 after creation, making the result independent of prior state.
+#[cfg(unix)]
+fn ensure_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
 /// Run the daemon server for a project.
 #[cfg(unix)]
 pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -133,9 +149,12 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
         "Cannot determine Unix socket path: XDG_RUNTIME_DIR is not set and no secure runtime directory is available"
     )?;
 
-    // Ensure parent directory exists
+    // Ensure parent directory exists, owner-only (0o700). The socket file is
+    // already 0o600 below, but the containing dir defaulted to the process
+    // umask (often 0o755) — world-readable, leaking the socket filename (a hash
+    // of the project path) to other users on a shared host. See ensure_private_dir.
     if let Some(parent) = sock_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        ensure_private_dir(parent)?;
     }
 
     // Remove stale socket file if it exists
@@ -867,6 +886,34 @@ mod tests {
     use al_protocol::jsonrpc::{error_codes, Request};
     use futures::FutureExt;
     use tokio::sync::Notify;
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_dir_creates_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("al-lsp");
+        super::ensure_private_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "newly created dir must be 0o700");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_private_dir_tightens_preexisting_lax_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("al-lsp");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::ensure_private_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o700,
+            "pre-existing 0o755 dir must be tightened to 0o700"
+        );
+    }
 
     #[test]
     fn extract_i32_accepts_in_range() {
