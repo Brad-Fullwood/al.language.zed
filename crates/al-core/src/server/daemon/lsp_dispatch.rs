@@ -818,30 +818,24 @@ mod tests {
 
     #[test]
     fn workspace_object_to_json_handles_all_object_kinds() {
-        // Every tree-sitter node kind we may emit must round-trip cleanly. If a
-        // new ObjectKind variant is added without the lowercase normaliser
-        // covering it, this test fires before users see a launch crash.
-        let kinds = [
-            "table",
-            "tableextension",
-            "page",
-            "pageextension",
-            "codeunit",
-            "report",
-            "reportextension",
-            "xmlport",
-            "query",
-            "enum",
-            "enumextension",
-            "interface",
-            "permissionset",
-            "permissionsetextension",
-            "profile",
-            "pagecustomization",
-            "controladdin",
-            "entitlement",
-        ];
-        for k in kinds {
+        // Data-driven: iterate every object kind language_data knows about, so a
+        // newly-extracted AL object type is exercised automatically instead of
+        // being silently omitted (the old static list had drifted — it was missing
+        // profileextension and dotnet for exactly this reason). Fires before users
+        // hit a launch-time crash if the ObjectKind normaliser ever misses a kind.
+        //
+        // `value` (kw_value) is the one language_data entry that is NOT a top-level
+        // object — it has no ObjectKind and find_object_declaration never emits it.
+        // A NEW non-object pseudo-entry would fail here, prompting either an
+        // ObjectKind addition or an explicit exclusion — the correct prompt.
+        const NON_OBJECT_KEYWORDS: &[&str] = &["value"];
+        let mut covered = 0;
+        for ot in crate::syntax::language_data::object_types() {
+            let k = ot.keyword.as_str();
+            if NON_OBJECT_KEYWORDS.contains(&k) {
+                continue;
+            }
+            covered += 1;
             let info = crate::file_index::CachedObjectInfo {
                 kind: k.to_string(),
                 id: Some(1),
@@ -857,6 +851,12 @@ mod tests {
             let _: crate::symbols::SymbolEntry = serde_json::from_value(json)
                 .unwrap_or_else(|e| panic!("kind {k:?} must deserialize: {e}"));
         }
+        // Floor so the test can't silently degrade to covering nothing if the
+        // data source or exclusion list changes (20 ObjectKind variants today).
+        assert!(
+            covered >= 20,
+            "expected >= 20 object kinds covered, only {covered}"
+        );
     }
 
     /// F-OPEN-268: `by-id` must find workspace source objects, not only .app

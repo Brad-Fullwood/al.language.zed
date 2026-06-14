@@ -1719,6 +1719,38 @@ mod tests {
     }
 
     #[test]
+    fn kind_to_object_type_keys_are_real_language_data_keywords() {
+        // The bc_object_type::* INTEGERS are Microsoft BC DAP wire constants
+        // (legitimately hardcoded). The KEYWORDS that select them are AL language
+        // facts — assert each still resolves in language_data, so a future keyword
+        // rename that orphans a map entry (live objects then silently → UNKNOWN)
+        // fails here instead of in production.
+        for kw in [
+            "table",
+            "report",
+            "codeunit",
+            "xmlport",
+            "page",
+            "query",
+            "pageextension",
+            "tableextension",
+            "enum",
+            "enumextension",
+            "reportextension",
+        ] {
+            assert_ne!(
+                kind_to_object_type(kw),
+                bc_object_type::UNKNOWN,
+                "{kw} should map to a known BC DAP object type"
+            );
+            assert!(
+                crate::syntax::language_data::object_type_by_keyword(kw).is_some(),
+                "{kw} must be a real AL object keyword in language_data"
+            );
+        }
+    }
+
+    #[test]
     fn kind_to_object_type_maps_all_known_kinds() {
         // Each AL object kind string from the file index must map to its BC
         // ObjectTypeWrapper integer. A regression here silently sends BC the

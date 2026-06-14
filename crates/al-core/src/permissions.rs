@@ -163,7 +163,12 @@ fn xml_escape_attr(s: &str) -> String {
     out
 }
 
-/// Convert internal permission type to XML ObjectType name.
+/// Convert an internal permission type (e.g. `"tabledata"`, `"page"`) to the BC
+/// permission-set XML `ObjectType` schema name (e.g. `"TableData"`, `"Page"`).
+/// The XML names are fixed BC schema constants — not AL keywords — but the *set*
+/// of permission types that must be covered is an AL language fact, verified
+/// against `language_data` by the `xml_object_type_covers_*` test so a new
+/// permission type can't silently fall through to a schema-invalid lowercase name.
 fn xml_object_type(perm_type: &str) -> &str {
     match perm_type {
         "tabledata" => "TableData",
@@ -190,6 +195,28 @@ fn xml_permission_flags(perms: &str) -> (u8, u8, u8, u8, u8) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn xml_object_type_covers_every_permission_type_in_language_data() {
+        // Data-driven completeness guard: every permission_type language_data
+        // declares must map to a CamelCase BC schema name. A new permission_type
+        // added to the data without a mapping here fails this test instead of
+        // emitting a lowercase, schema-invalid <Object Type="..."> in the XML.
+        for ot in crate::syntax::language_data::object_types() {
+            let Some(pt) = ot.permission_type.as_deref() else {
+                continue;
+            };
+            let xml = xml_object_type(pt);
+            assert_ne!(
+                xml, pt,
+                "permission_type '{pt}' falls through xml_object_type unmapped"
+            );
+            assert!(
+                xml.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
+                "xml_object_type('{pt}') = '{xml}' must be a CamelCase BC schema name"
+            );
+        }
+    }
 
     #[test]
     fn permission_for_table_is_rimd() {
