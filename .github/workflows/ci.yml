@@ -131,3 +131,36 @@ jobs:
       # binary resolution for every new user (latest_github_release -> not found).
       - name: Check repository slug consistency
         run: ./scripts/check-repo-consistency.sh
+
+  windows-al-lsp:
+    # al-lsp ships on Windows (release.yml), but the main `ci` matrix is Unix-only
+    # (al-explorer's AF_UNIX daemon IPC can't link on Windows). Without this, a
+    # Windows-specific compile regression — the daemon's #[cfg(not(unix))] stub or
+    # the native Windows Credential Manager keyring backend — would only surface at
+    # the next release tag (O2). Build-only, and default features (no
+    # --features semantic): build.rs skips the .NET bridge when dotnet is absent,
+    # so no SDK is needed; the semantic path stays gated by release.yml.
+    name: Windows al-lsp build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-al-lsp-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            windows-al-lsp-cargo-
+
+      - name: Build al-lsp (Windows, default features)
+        run: cargo build -p al-core --bin al-lsp

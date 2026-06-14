@@ -96,8 +96,18 @@ fn spawn_signal_handlers() {
 async fn main() {
     let log_dir = log_dir();
 
-    // File logging layer — INFO level by default to avoid logging sensitive data
+    // File logging layer — INFO by default to avoid logging sensitive data;
+    // override the level with AL_LOG_FILE_LEVEL (see below).
     let log_path = log_dir.join("al-lsp.log");
+
+    // Bounded growth: al-lsp is a long-lived daemon, so an unrotated log would
+    // grow without limit. When the existing file exceeds the cap, roll it to
+    // al-lsp.log.old (one generation kept) before reopening in append mode.
+    const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+    if fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0) > MAX_LOG_BYTES {
+        let _ = fs::rename(&log_path, log_dir.join("al-lsp.log.old"));
+    }
+
     let log_file = match fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -142,7 +152,14 @@ async fn main() {
     let env_filter = tracing_subscriber::EnvFilter::from_default_env()
         .add_directive(tracing::Level::INFO.into());
 
-    let file_filter = tracing_subscriber::EnvFilter::new("info");
+    // File log level: INFO by default; override with AL_LOG_FILE_LEVEL (e.g.
+    // `debug`, or `al_core=trace`) to capture detail for a hard-to-reproduce
+    // issue without recompiling. Empty/unset falls back to INFO.
+    let file_filter = std::env::var("AL_LOG_FILE_LEVEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(tracing_subscriber::EnvFilter::new)
+        .unwrap_or_else(|| tracing_subscriber::EnvFilter::new("info"));
 
     let registry = tracing_subscriber::registry()
         .with(stderr_layer.with_filter(env_filter))
