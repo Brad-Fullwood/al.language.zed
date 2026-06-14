@@ -125,7 +125,7 @@ pub fn test_coverage(workspace: &Workspace) -> CoverageReport {
         let Some(obj_info) = crate::syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
-        if obj_info.kind.to_lowercase() != "codeunit" {
+        if !crate::syntax::language_data::is_test_container_kind(&obj_info.kind) {
             continue;
         }
 
@@ -195,8 +195,8 @@ fn collect_all_procedures(workspace: &Workspace) -> Vec<ProcDef> {
 
         let root = tree.root_node();
         let source = text.as_bytes();
-        let is_test_cu =
-            obj_info.kind.to_lowercase() == "codeunit" && has_test_subtype(root, source);
+        let is_test_cu = crate::syntax::language_data::is_test_container_kind(&obj_info.kind)
+            && has_test_subtype(root, source);
 
         collect_procs_recursive(root, source, &object_name, &path, is_test_cu, &mut result);
     }

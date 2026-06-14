@@ -281,6 +281,22 @@ pub fn object_type_by_keyword(kw: &str) -> Option<&'static ObjectType> {
     OBJECT_TYPES.get(idx)
 }
 
+/// Object kinds that can declare `[Test]` procedures. AL semantic fact: a test
+/// procedure lives only in a codeunit (`SubType = Test`). Centralized here —
+/// rather than scattered `kind == "codeunit"` checks across `queries/` — so the
+/// rule has one home and one casing idiom; revisit if Microsoft ever extends
+/// test infrastructure to another object kind. Case-insensitive, allocation-free.
+pub fn is_test_container_kind(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("codeunit")
+}
+
+/// Object kinds that can implement an interface. AL semantic fact: only
+/// codeunits implement interfaces today. Same single-source-of-truth rationale
+/// as [`is_test_container_kind`].
+pub fn implements_interface_kind(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("codeunit")
+}
+
 pub fn page_control_by_keyword(kw: &str) -> Option<&'static PageControlEntry> {
     let idx = *PAGE_CONTROL_MAP.get(&kw.to_ascii_lowercase())?;
     PAGE_CONTROLS.get(idx)
@@ -316,6 +332,18 @@ pub fn is_page_control_keyword(kw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_container_and_interface_predicates_match_codeunit_case_insensitively() {
+        for yes in ["codeunit", "CodeUnit", "CODEUNIT"] {
+            assert!(is_test_container_kind(yes), "{yes} is a test container");
+            assert!(implements_interface_kind(yes), "{yes} implements interfaces");
+        }
+        for no in ["table", "page", "report", "enum", "interface", ""] {
+            assert!(!is_test_container_kind(no), "{no} is not a test container");
+            assert!(!implements_interface_kind(no), "{no} cannot implement");
+        }
+    }
 
     #[test]
     fn keywords_loads_and_has_entries() {

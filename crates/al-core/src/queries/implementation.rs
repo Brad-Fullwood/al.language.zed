@@ -95,7 +95,7 @@ fn find_codeunit_implementing_interface(
             && obj_node
                 .child(0)
                 .and_then(|kw| kw.utf8_text(source).ok())
-                .map(|kw| kw.eq_ignore_ascii_case("codeunit"))
+                .map(crate::syntax::language_data::implements_interface_kind)
                 .unwrap_or(false);
         if !is_codeunit {
             continue;

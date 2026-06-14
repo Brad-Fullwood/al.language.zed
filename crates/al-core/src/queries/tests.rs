@@ -40,7 +40,7 @@ pub fn discover_tests(workspace: &Workspace) -> Vec<TestCodeunit> {
         let Some(obj_info) = crate::syntax::find_object_declaration(&tree, &text) else {
             continue;
         };
-        if obj_info.kind.to_lowercase() != "codeunit" {
+        if !crate::syntax::language_data::is_test_container_kind(&obj_info.kind) {
             continue;
         }
 

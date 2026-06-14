@@ -274,7 +274,7 @@ fn build_test_lens_context(
     }
 
     let obj_info = crate::syntax::find_object_declaration(tree, text)?;
-    if obj_info.kind.to_lowercase() != "codeunit" {
+    if !crate::syntax::language_data::is_test_container_kind(&obj_info.kind) {
         return None;
     }
     let codeunit_id = obj_info.id.unwrap_or(0) as i32;
