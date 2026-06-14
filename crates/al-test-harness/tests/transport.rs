@@ -493,49 +493,41 @@ fn test_adversarial_from_transport_is_not_pub_testability_gap() {
 // ST-14  file_uri: spaces in path are percent-encoded
 // ---------------------------------------------------------------------------
 
-/// `file_uri()` is private, but we can observe its output through the
-/// notifications the harness sends (via open_file → notify → send_message).
-/// Since we can't call open_file without a real client, we test the encoding
-/// logic directly by replicating it here.
+/// `file_uri()` (lib.rs) percent-encodes every byte outside the RFC 3986
+/// unreserved set (plus `/`), so paths containing `#`, `?`, spaces, etc. produce
+/// URIs that match what the server emits. This replaces an earlier test that
+/// asserted a "KNOWN GAP" (only spaces encoded) — that gap is fixed; the test
+/// had been left replicating the old, stale logic and was actively misleading.
 ///
-/// GAP: the current encoding only handles spaces (b' ' → %20).
-/// Other characters that need encoding (e.g. `#`, `?`, `[`, `]`) are NOT encoded.
-/// This will cause URI mismatches for paths containing those characters.
+/// `file_uri` takes `&self` (an `LspClient`), so the pure encoding rule is
+/// mirrored here; production `file_uri` is exercised by every e2e test via its
+/// call sites. Keep this mirror in sync with `lib.rs::file_uri`.
 #[test]
-fn test_adversarial_file_uri_only_encodes_spaces_not_other_special_chars() {
-    // Replicate the encoding logic from lib.rs file_uri()
+fn test_file_uri_percent_encodes_reserved_chars() {
     let encode = |path: &str| -> String {
-        path.bytes()
-            .flat_map(|b| {
-                if b == b' ' {
-                    vec![b'%', b'2', b'0']
-                } else {
-                    vec![b]
-                }
-            })
-            .map(|b| b as char)
-            .collect()
+        let mut out = String::new();
+        for b in path.bytes() {
+            let unreserved =
+                b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/');
+            if unreserved {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out
     };
 
-    // Spaces are encoded
+    // Spaces, '#' and '?' are now percent-encoded (the old "gap").
     assert_eq!(
         encode("/home/user/my project/file.al"),
         "/home/user/my%20project/file.al"
     );
+    assert_eq!(encode("/home/user/file#1.al"), "/home/user/file%231.al");
+    assert_eq!(encode("/home/user/file?.al"), "/home/user/file%3F.al");
 
-    // Hash is NOT encoded — GAP
-    let hash_path = encode("/home/user/file#1.al");
-    assert_eq!(
-        hash_path, "/home/user/file#1.al",
-        "KNOWN GAP: '#' in file paths is not percent-encoded, will break URI matching"
-    );
-
-    // Question mark is NOT encoded — GAP
-    let question_path = encode("/home/user/file?.al");
-    assert_eq!(
-        question_path, "/home/user/file?.al",
-        "KNOWN GAP: '?' in file paths is not percent-encoded, will break URI matching"
-    );
+    // Unreserved characters and path separators pass through untouched.
+    assert_eq!(encode("/a-b_c.d~e/f.al"), "/a-b_c.d~e/f.al");
 }
 
 // ---------------------------------------------------------------------------

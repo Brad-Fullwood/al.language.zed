@@ -553,7 +553,16 @@ async fn test_hover_on_parameter() {
     // procedure Precheck(var Staging: Record "Item Journal Staging")
     //                        ^^^^^^^
     let hover = client.hover("objects/codeunit.al", 5, 27).await;
-    assert!(hover.is_some(), "Should return hover for parameter Staging");
+    let content = hover.as_ref().and_then(hover_content);
+    // Behavioral: not just "a hover came back" — it must actually describe the
+    // Staging parameter / its Record type, so a hover that returns a neighbouring
+    // symbol's info is caught.
+    assert!(
+        content.is_some_and(|c| {
+            c.contains("Staging") || c.contains("Item Journal") || c.contains("Record")
+        }),
+        "hover on parameter Staging must describe it; got {content:?}"
+    );
 
     client.shutdown().await;
 }
