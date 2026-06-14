@@ -284,6 +284,27 @@ fn check_object_consumers(
         }
     }
 
+    // Object-scope (global) Record variables referencing the target. The
+    // parameter scan above only sees procedure signatures; a base-app codeunit
+    // commonly holds `Cust: Record Customer` as a global, which the generic
+    // impact analysis previously missed entirely (only the orphaned
+    // insight::analysis::table_impact caught it — now merged here so `al impact`
+    // covers global-variable consumers too).
+    for var in &entry.variables {
+        if is_record_of(&var.type_name, target_object) {
+            results.push(ImpactEntry {
+                kind: entry.kind,
+                id: entry.id,
+                name: entry.name.clone(),
+                proc: None,
+                field: None,
+                impact_type: ImpactType::Read,
+                package: Some(entry.package.clone()),
+            });
+            break;
+        }
+    }
+
     // Check fields for TableRelation to target.
     for field in &entry.fields {
         for prop in &field.properties {
@@ -625,6 +646,60 @@ mod tests {
                 .iter()
                 .any(|r| r.name == "My Codeunit" && r.impact_type == ImpactType::Read),
             "Record CustomerBank parameter must not match Customer. Got: {:?}",
+            results
+        );
+    }
+
+    /// A global (object-scope) `Record Customer` variable IS an impact — merged
+    /// from the orphaned table_impact, which the generic impact previously missed
+    /// (it only scanned method parameters). Red-green: drop the entry.variables
+    /// loop in check_object_consumers and this fails.
+    #[test]
+    fn impact_global_record_variable_is_found() {
+        let ws = Workspace::new();
+        let mut codeunit = make_table(50100, "My Codeunit");
+        codeunit.kind = ObjectKind::Codeunit;
+        codeunit.fields = Vec::new();
+        codeunit.variables = vec![VariableSymbol {
+            name: "Cust".to_string(),
+            type_name: "Record Customer".to_string(),
+            is_protected: false,
+        }];
+        ws.symbols
+            .add_entries(&[make_table(18, "Customer"), codeunit]);
+
+        let results = impact(&ws, "Customer");
+
+        assert!(
+            results
+                .iter()
+                .any(|r| r.name == "My Codeunit" && r.impact_type == ImpactType::Read),
+            "global Record Customer variable must be reported as an impact. Got: {:?}",
+            results
+        );
+    }
+
+    /// Substring guard for the variable path: a `Record "CustomerBank"` global
+    /// must NOT match `Customer`.
+    #[test]
+    fn impact_global_record_variable_no_substring_false_positive() {
+        let ws = Workspace::new();
+        let mut codeunit = make_table(50100, "My Codeunit");
+        codeunit.kind = ObjectKind::Codeunit;
+        codeunit.fields = Vec::new();
+        codeunit.variables = vec![VariableSymbol {
+            name: "Cust".to_string(),
+            type_name: "Record \"CustomerBank\"".to_string(),
+            is_protected: false,
+        }];
+        ws.symbols
+            .add_entries(&[make_table(18, "Customer"), codeunit]);
+
+        let results = impact(&ws, "Customer");
+
+        assert!(
+            !results.iter().any(|r| r.name == "My Codeunit"),
+            "Record CustomerBank global must not match Customer. Got: {:?}",
             results
         );
     }
