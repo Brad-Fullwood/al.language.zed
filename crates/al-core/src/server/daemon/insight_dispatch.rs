@@ -205,6 +205,86 @@ pub(super) fn dispatch_suggest_event(
     }
 }
 
+/// Table-centric impact: every object touching the named table, grouped by
+/// object with operation kinds (RecordVariable / RecordParameter / Relation /
+/// Extends) and location hints. Richer than `impact` (which flattens to
+/// per-consumer Read/Filter entries); wires the previously-orphaned
+/// `insight::analysis::table_impact`. Backs `al impact --table <name>`.
+pub(super) fn dispatch_table_impact(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let Some(table) = params.get("table").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let result = crate::insight::analysis::table_impact(&workspace.symbols, table);
+    let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+        ..Default::default()
+    }
+}
+
+/// Multi-hop event propagation TREE. Unlike `trace` (a flat list following only
+/// SubscribesTo edges), this follows the call graph's DirectCall /
+/// TriggerInvocation / RecordTrigger / EventSubscription edges through procedure
+/// intermediaries and marks cycles. Wires the previously-orphaned
+/// `insight::search::trace_event_chain`. Backs `al trace --tree`.
+pub(super) fn dispatch_trace_chain(
+    workspace: &Workspace,
+    id: u64,
+    params: &serde_json::Value,
+) -> Response {
+    let Some(event_name) = params.get("event").and_then(|v| v.as_str()) else {
+        return invalid_params(id);
+    };
+    let max_depth = (params.get("depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(50);
+
+    // Enriched graph (workspace SubscribesTo + call edges) — same rationale as
+    // dispatch_trace (F-OPEN-269). get_or_build_call_graph builds and returns
+    // the CallGraph that trace_event_chain needs in addition to the InsightGraph.
+    let (insight, cg_guard) = workspace.get_or_build_call_graph();
+    let chain = match cg_guard.as_ref() {
+        Some(call_graph) => {
+            crate::insight::search::trace_event_chain(&insight, call_graph, event_name, max_depth)
+        }
+        None => crate::insight::search::EventChain {
+            event_name: event_name.to_string(),
+            publisher_object: String::new(),
+            chains: Vec::new(),
+            nodes_visited: 0,
+        },
+    };
+    let value = serde_json::to_value(&chain).unwrap_or(serde_json::Value::Null);
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+        ..Default::default()
+    }
+}
+
+/// Complete event-interception map: every published event with its full
+/// subscriber list and counts, plus orphan subscribers (those targeting a
+/// missing event), in one structured result. No prior endpoint produced the
+/// whole-workspace map; `subscribers` answers a single event and `deadCode`
+/// only flags orphans. Wires the previously-orphaned
+/// `insight::discovery::discover_events`. Backs `al intercept`.
+pub(super) fn dispatch_event_map(workspace: &Workspace, id: u64) -> Response {
+    let (insight, _cg_guard) = workspace.get_or_build_call_graph();
+    let result = crate::insight::discovery::discover_events(&insight);
+    let value = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+    Response {
+        id,
+        result: Some(value),
+        error: None,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +319,65 @@ mod tests {
         let ws = Workspace::new();
         let resp = dispatch_impact(&ws, 3, &serde_json::json!({ "symbol": "" }));
         assert_invalid_params(&resp);
+    }
+
+    #[test]
+    fn dispatch_table_impact_missing_table_is_invalid_params() {
+        let ws = Workspace::new();
+        let resp = dispatch_table_impact(&ws, 40, &serde_json::json!({}));
+        assert_invalid_params(&resp);
+    }
+
+    #[test]
+    fn dispatch_table_impact_returns_table_impact_result_shape() {
+        // Wired to insight::analysis::table_impact — result is the
+        // TableImpactResult shape (tableName / objects / totalImpacts).
+        let ws = Workspace::new();
+        let resp = dispatch_table_impact(&ws, 41, &serde_json::json!({ "table": "Customer" }));
+        let value = resp.result.expect("must carry a result");
+        assert_eq!(
+            value.get("tableName").and_then(|v| v.as_str()),
+            Some("Customer")
+        );
+        assert!(value.get("objects").and_then(|v| v.as_array()).is_some());
+        assert!(value.get("totalImpacts").is_some());
+    }
+
+    #[test]
+    fn dispatch_trace_chain_missing_event_is_invalid_params() {
+        let ws = Workspace::new();
+        let resp = dispatch_trace_chain(&ws, 42, &serde_json::json!({}));
+        assert_invalid_params(&resp);
+    }
+
+    #[test]
+    fn dispatch_trace_chain_returns_event_chain_shape() {
+        // Wired to insight::search::trace_event_chain — result is the EventChain
+        // tree shape (eventName / chains / nodesVisited).
+        let ws = Workspace::new();
+        let resp = dispatch_trace_chain(&ws, 43, &serde_json::json!({ "event": "OnAfterPost" }));
+        let value = resp.result.expect("must carry a result");
+        assert_eq!(
+            value.get("eventName").and_then(|v| v.as_str()),
+            Some("OnAfterPost")
+        );
+        assert!(value.get("chains").and_then(|v| v.as_array()).is_some());
+        assert!(value.get("nodesVisited").is_some());
+    }
+
+    #[test]
+    fn dispatch_event_map_returns_discovery_result_shape() {
+        // Wired to insight::discovery::discover_events — result is the
+        // EventDiscoveryResult shape (events / orphanSubscribers / totals).
+        let ws = Workspace::new();
+        let resp = dispatch_event_map(&ws, 44);
+        let value = resp.result.expect("must carry a result");
+        assert!(value.get("events").and_then(|v| v.as_array()).is_some());
+        assert!(value
+            .get("orphanSubscribers")
+            .and_then(|v| v.as_array())
+            .is_some());
+        assert_eq!(value.get("totalEvents").and_then(|v| v.as_u64()), Some(0));
     }
 
     #[test]

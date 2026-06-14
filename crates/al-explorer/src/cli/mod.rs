@@ -344,7 +344,14 @@ Examples:
         /// Maximum trace depth
         #[arg(short, long, default_value = "10")]
         depth: usize,
+        /// Show the full multi-hop propagation TREE (follows procedure calls
+        /// between events and marks cycles) instead of the flat subscriber list.
+        #[arg(long)]
+        tree: bool,
     },
+    /// Event interception map: every publisher with its subscribers + counts,
+    /// plus orphan subscribers (targeting a missing event), for the whole workspace.
+    Intercept,
     /// Find entry point procedures (no incoming calls)
     Entrypoints,
     /// Export insight graph
@@ -363,6 +370,10 @@ Examples:
     Impact {
         /// Symbol to analyze (e.g., "Customer", "Customer.\"Credit Limit\"", "Sales-Post.PostDocument")
         symbol: String,
+        /// Table-centric view: group consumers of this TABLE by object with
+        /// operation kinds (variable / parameter / relation / extends).
+        #[arg(long)]
+        table: bool,
     },
     /// Find integration points (events) for an object, table, or event
     #[command(name = "suggest-event")]
@@ -913,12 +924,13 @@ pub fn run(cli: Cli) -> ExitCode {
         Commands::Authenticate { cmd, tenant } => {
             lsp::cmd_authenticate(&cmd, tenant.as_deref(), cli.json)
         }
-        Commands::Trace { event, depth } => insight::cmd_trace(&event, depth, cli.json),
+        Commands::Trace { event, depth, tree } => insight::cmd_trace(&event, depth, tree, cli.json),
+        Commands::Intercept => insight::cmd_intercept(cli.json),
         Commands::Entrypoints => insight::cmd_entrypoints(cli.json),
         Commands::Graph { format } => insight::cmd_graph(&format, cli.json),
         Commands::InsightStats => insight::cmd_insight_stats(cli.json),
         Commands::DeadCode => insight::cmd_dead_code(cli.json),
-        Commands::Impact { symbol } => insight::cmd_impact(&symbol, cli.json),
+        Commands::Impact { symbol, table } => insight::cmd_impact(&symbol, table, cli.json),
         Commands::SuggestEvent {
             object,
             procedure,

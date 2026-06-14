@@ -2,7 +2,10 @@ use std::process::ExitCode;
 
 use super::{connect, print_json, report_error, run_command};
 
-pub fn cmd_trace(event: &str, depth: usize, json: bool) -> ExitCode {
+pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode {
+    if tree {
+        return cmd_trace_chain(event, depth, json);
+    }
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -178,7 +181,10 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
     }
 }
 
-pub fn cmd_impact(symbol: &str, json: bool) -> ExitCode {
+pub fn cmd_impact(symbol: &str, table: bool, json: bool) -> ExitCode {
+    if table {
+        return cmd_table_impact(symbol, json);
+    }
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
@@ -216,6 +222,207 @@ pub fn cmd_impact(symbol: &str, json: bool) -> ExitCode {
                         println!("{:<15} {:<30} {:<15} {}", kind, name, impact_type, detail);
                     }
                     eprintln!("\n{} consumers", impacted.len());
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+/// `al impact --table <name>`: table-centric grouped impact (wires the
+/// previously-orphaned table_impact via the `tableImpact` daemon endpoint).
+fn cmd_table_impact(table: &str, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    match client.request("tableImpact", Some(serde_json::json!({ "table": table }))) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                let name = result
+                    .get("tableName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(table);
+                let objects = result
+                    .get("objects")
+                    .and_then(|v| v.as_array())
+                    .map(|v| &v[..])
+                    .unwrap_or(&[]);
+                let total = result
+                    .get("totalImpacts")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if objects.is_empty() {
+                    println!("No objects reference table '{name}'.");
+                } else {
+                    println!(
+                        "Table impact for '{name}' ({total} site(s) across {} object(s)):\n",
+                        objects.len()
+                    );
+                    for obj in objects {
+                        let kind = obj
+                            .get("objectKind")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        let oname = obj
+                            .get("objectName")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        println!("  {kind} {oname}");
+                        if let Some(impacts) = obj.get("impacts").and_then(|v| v.as_array()) {
+                            for imp in impacts {
+                                let op =
+                                    imp.get("operation").and_then(|v| v.as_str()).unwrap_or("?");
+                                let hint = imp
+                                    .get("locationHint")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                println!("      [{op}] {hint}");
+                            }
+                        }
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+/// `al trace --tree`: multi-hop event propagation TREE (wires the
+/// previously-orphaned trace_event_chain via the `traceChain` endpoint).
+fn cmd_trace_chain(event: &str, depth: usize, json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    let params = serde_json::json!({ "event": event, "depth": depth });
+    match client.request("traceChain", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                let chains = result
+                    .get("chains")
+                    .and_then(|v| v.as_array())
+                    .map(|v| &v[..])
+                    .unwrap_or(&[]);
+                if chains.is_empty() {
+                    println!("No event chain found for '{event}'.");
+                    println!(
+                        "'{event}' may not be an event — trace follows \
+                         IntegrationEvent/BusinessEvent publishers."
+                    );
+                } else {
+                    let pubobj = result
+                        .get("publisherObject")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    println!("Event propagation tree for '{event}' (publisher: {pubobj}):\n");
+                    for root in chains {
+                        print_chain_node(root, 0);
+                    }
+                    let visited = result
+                        .get("nodesVisited")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    eprintln!("\n{visited} node(s) visited");
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+fn print_chain_node(node: &serde_json::Value, indent: usize) {
+    let pad = "  ".repeat(indent);
+    let edge = node.get("edgeKind").and_then(|v| v.as_str()).unwrap_or("?");
+    let ntype = node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("?");
+    let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+    let object = node.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+    let cycle = node.get("cycle").and_then(|v| v.as_bool()).unwrap_or(false);
+    let marker = if cycle { " (cycle)" } else { "" };
+    println!("{pad}[{edge}] {ntype}: {object}::{name}{marker}");
+    if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
+        for child in children {
+            print_chain_node(child, indent + 1);
+        }
+    }
+}
+
+/// `al intercept`: complete event-interception map — every publisher with its
+/// subscribers + orphan subscribers (wires the previously-orphaned
+/// discover_events via the `eventMap` endpoint).
+pub fn cmd_intercept(json: bool) -> ExitCode {
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    match client.request("eventMap", None) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+            } else {
+                let events = result
+                    .get("events")
+                    .and_then(|v| v.as_array())
+                    .map(|v| &v[..])
+                    .unwrap_or(&[]);
+                let orphans = result
+                    .get("orphanSubscribers")
+                    .and_then(|v| v.as_array())
+                    .map(|v| &v[..])
+                    .unwrap_or(&[]);
+                if events.is_empty() && orphans.is_empty() {
+                    println!("No events or subscribers found in the workspace.");
+                } else {
+                    let total = result
+                        .get("totalEvents")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    println!("Event interception map ({total} event(s)):\n");
+                    for ev in events {
+                        let ename = ev.get("eventName").and_then(|v| v.as_str()).unwrap_or("?");
+                        let pubobj = ev
+                            .get("publisher")
+                            .and_then(|p| p.get("objectName"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
+                        let count = ev
+                            .get("subscriberCount")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        println!("  {pubobj}::{ename}  ({count} subscriber(s))");
+                        if let Some(subs) = ev.get("subscribers").and_then(|v| v.as_array()) {
+                            for s in subs {
+                                let so =
+                                    s.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
+                                let sm =
+                                    s.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
+                                println!("      <- {so}.{sm}");
+                            }
+                        }
+                    }
+                    if !orphans.is_empty() {
+                        println!(
+                            "\nOrphan subscribers ({}) — target an event with no workspace publisher:",
+                            orphans.len()
+                        );
+                        for o in orphans {
+                            let oo = o.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
+                            let om = o.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
+                            let to = o
+                                .get("targetObject")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?");
+                            let te = o.get("targetEvent").and_then(|v| v.as_str()).unwrap_or("?");
+                            println!("  {oo}.{om} -> {to}::{te} (missing)");
+                        }
+                    }
                 }
             }
             ExitCode::SUCCESS

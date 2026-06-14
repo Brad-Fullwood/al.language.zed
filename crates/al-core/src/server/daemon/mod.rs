@@ -567,7 +567,10 @@ pub(crate) async fn dispatch_request(
         "insightStats" => insight_dispatch::dispatch_insight_stats(workspace, id),
         "deadCode" => insight_dispatch::dispatch_dead_code(workspace, id),
         "impact" => insight_dispatch::dispatch_impact(workspace, id, &params),
+        "tableImpact" => insight_dispatch::dispatch_table_impact(workspace, id, &params),
         "suggestEvent" => insight_dispatch::dispatch_suggest_event(workspace, id, &params),
+        "traceChain" => insight_dispatch::dispatch_trace_chain(workspace, id, &params),
+        "eventMap" => insight_dispatch::dispatch_event_map(workspace, id),
         // Semantic / toolchain
         "permissions" => build_dispatch::dispatch_permissions(workspace, id, &params),
         "compile" => build_dispatch::dispatch_compile(workspace, id).await,
