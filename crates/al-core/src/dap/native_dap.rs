@@ -366,6 +366,25 @@ where
             )
             .await?;
 
+            if config.accept_invalid_certs {
+                crate::http_auth::warn_insecure_tls("DAP launch");
+                write_dap(
+                    out,
+                    &make_event(
+                        &self.seq,
+                        "output",
+                        Some(serde_json::json!({
+                            "category": "important",
+                            "output": format!(
+                                "{}\r\n",
+                                crate::http_auth::insecure_tls_message("DAP launch")
+                            ),
+                        })),
+                    ),
+                )
+                .await?;
+            }
+
             // Find the .app file
             let app_path = find_app_file(&self.project_root).await;
             if let Some(app_path) = app_path {

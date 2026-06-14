@@ -489,11 +489,7 @@ impl BcDebugSession {
             // bc_client.rs:99 (T035). Without this the DAP path silently
             // disables TLS certificate validation when launch.json sets
             // accept_invalid_certs=true.
-            warn!(
-                "BcDebugSession::connect: accept_invalid_certs=true is active — TLS \
-                 certificate validation is DISABLED for the SignalR negotiate + \
-                 WebSocket. Use only for local-dev sandboxes."
-            );
+            crate::http_auth::warn_insecure_tls("DAP SignalR debug");
         }
         let hub_url = config.debug_hub_url();
 

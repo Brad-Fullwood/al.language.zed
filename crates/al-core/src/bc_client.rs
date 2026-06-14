@@ -305,10 +305,7 @@ impl BcClient {
     /// Build a BC client from the given server config.
     pub fn new(config: &BcServerConfig) -> Self {
         if config.accept_invalid_certs {
-            warn!(
-                "BcClient: accept_invalid_certs=true is active — TLS certificate \
-                 validation is DISABLED. Use only for local-dev sandboxes."
-            );
+            crate::http_auth::warn_insecure_tls("BcClient");
         }
         let client = Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)

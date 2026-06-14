@@ -91,11 +91,7 @@ impl BcServerClient {
         insecure_tls: bool,
     ) -> Result<Self, BcServerError> {
         if insecure_tls {
-            warn!(
-                "TLS certificate verification DISABLED for BC server connection — \
-                 this is unsafe and should only be used against trusted local servers \
-                 with self-signed certificates."
-            );
+            crate::http_auth::warn_insecure_tls("BC server connection");
         }
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(insecure_tls)

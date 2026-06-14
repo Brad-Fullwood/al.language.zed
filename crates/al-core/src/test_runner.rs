@@ -80,10 +80,7 @@ impl TestRunnerClient {
             // Parity with bc_server / bc_debug / native_dap / http_auth so
             // an operator watching daemon logs sees the same "TLS disabled"
             // warning regardless of which BC client path runs.
-            warn!(
-                "TLS certificate verification disabled for test runner \
-                 (accept_invalid_certs=true) — traffic is vulnerable to MITM substitution."
-            );
+            crate::http_auth::warn_insecure_tls("test runner");
         }
         let client = Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)

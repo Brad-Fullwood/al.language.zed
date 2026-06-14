@@ -1,5 +1,27 @@
 //! Shared HTTP helpers for BC server API clients.
 
+/// Canonical, user-facing message warning that TLS verification is disabled.
+/// `context` names the surface (e.g. "BcClient", "DAP launch") so identical
+/// wording appears across every code path that honours `acceptInvalidCerts`.
+pub(crate) fn insecure_tls_message(context: &str) -> String {
+    format!(
+        "TLS certificate verification is DISABLED ({context}: acceptInvalidCerts=true). \
+         Business Central traffic — including credentials and bearer tokens — is \
+         vulnerable to interception/MITM. Use only against a trusted local-dev sandbox."
+    )
+}
+
+/// Surface the insecure-TLS warning to every operator-visible channel: the
+/// structured log AND, unconditionally, stderr — so it is seen even when
+/// `RUST_LOG` filters out warn-level tracing (stderr reaches the editor's LSP/DAP
+/// log and the CLI terminal). DAP callers should ALSO emit it to the debug
+/// console (an `output` event), the surface the editing user actually watches.
+pub(crate) fn warn_insecure_tls(context: &str) {
+    let msg = insecure_tls_message(context);
+    tracing::warn!("{msg}");
+    eprintln!("al-lsp: {msg}");
+}
+
 /// Build a `reqwest::Client` with the given TLS and timeout settings.
 ///
 /// Shared by `profiling` and `snapshot` so their `make_client` wrappers are
@@ -15,10 +37,7 @@ pub(crate) fn build_http_client(
     timeout_secs: u64,
 ) -> Result<reqwest::Client, reqwest::Error> {
     if accept_invalid_certs {
-        tracing::warn!(
-            "TLS certificate verification disabled (accept_invalid_certs=true) — \
-             traffic is vulnerable to MITM substitution."
-        );
+        warn_insecure_tls("BC HTTP client");
     }
     reqwest::Client::builder()
         .danger_accept_invalid_certs(accept_invalid_certs)
@@ -44,6 +63,19 @@ pub(crate) fn apply_basic_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insecure_tls_message_names_context_and_warns_clearly() {
+        let m = insecure_tls_message("BcClient");
+        assert!(m.contains("BcClient"), "must name the surface: {m}");
+        assert!(m.contains("DISABLED"), "must be unambiguous: {m}");
+        assert!(
+            m.to_lowercase().contains("acceptinvalidcerts"),
+            "must name the setting that caused it: {m}"
+        );
+        // Different contexts produce distinct, attributable messages.
+        assert_ne!(m, insecure_tls_message("DAP launch"));
+    }
 
     /// Build a throwaway request and return its `Authorization` header value,
     /// if any. This exercises the *real* effect of `apply_basic_auth` — that a
