@@ -22,7 +22,7 @@ use crate::errors::AlError;
 /// `AL_COMPILE_TIMEOUT_SECS`; values <= 0 disable the cap.
 const DEFAULT_COMPILE_TIMEOUT_SECS: u64 = 600;
 
-fn compile_timeout() -> Option<std::time::Duration> {
+pub(crate) fn compile_timeout() -> Option<std::time::Duration> {
     let default_timeout = Some(std::time::Duration::from_secs(DEFAULT_COMPILE_TIMEOUT_SECS));
     match std::env::var("AL_COMPILE_TIMEOUT_SECS") {
         Ok(s) => match s.trim().parse::<i64>() {
@@ -31,6 +31,43 @@ fn compile_timeout() -> Option<std::time::Duration> {
             Err(_) => default_timeout,
         },
         Err(_) => default_timeout,
+    }
+}
+
+/// Error from running a configured `alc` command under the shared cancellation
+/// policy ([`run_alc_with_timeout`]). Each caller maps these to its own error type.
+pub(crate) enum AlcRunError {
+    /// Spawning or awaiting the `alc` child failed.
+    Spawn(std::io::Error),
+    /// The compile exceeded the `AL_COMPILE_TIMEOUT_SECS` cap (seconds).
+    Timeout(u64),
+}
+
+/// Run a fully-configured `alc` command under the shared cancellation policy:
+/// piped stdio, `kill_on_drop` (SIGKILL when the awaiting future is dropped —
+/// covers the timeout branch and upstream task cancellation such as
+/// `$/cancelRequest`), and the `AL_COMPILE_TIMEOUT_SECS` cap. Centralized so the
+/// daemon build path (`compile_project`) and the DAP compile path can never drift
+/// on timeout / zombie-child handling (was duplicated verbatim — DUP-1/DUP-2).
+pub(crate) async fn run_alc_with_timeout(
+    mut cmd: tokio::process::Command,
+) -> Result<std::process::Output, AlcRunError> {
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    let child = cmd.spawn().map_err(AlcRunError::Spawn)?;
+    match compile_timeout() {
+        Some(timeout) => match tokio::time::timeout(timeout, child.wait_with_output()).await {
+            Ok(result) => result.map_err(AlcRunError::Spawn),
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = timeout.as_secs(),
+                    "alc compilation exceeded timeout — killed child process"
+                );
+                Err(AlcRunError::Timeout(timeout.as_secs()))
+            }
+        },
+        None => child.wait_with_output().await.map_err(AlcRunError::Spawn),
     }
 }
 
@@ -249,28 +286,12 @@ pub async fn compile_project_with_analyzers(
         }
     }
 
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    // kill_on_drop ensures the child receives SIGKILL when the awaiting future
-    // is dropped — covers both the timeout branch below and tokio task
-    // cancellation upstream (e.g. $/cancelRequest dropping the spawning task).
-    cmd.kill_on_drop(true);
-
-    let child = cmd.spawn()?;
-    let output = match compile_timeout() {
-        Some(timeout) => match tokio::time::timeout(timeout, child.wait_with_output()).await {
-            Ok(result) => result?,
-            Err(_) => {
-                // Timeout: the future owns Child, dropping it triggers SIGKILL
-                // via kill_on_drop. The await completes after the timeout fires.
-                tracing::warn!(
-                    timeout_secs = timeout.as_secs(),
-                    "alc compilation exceeded timeout — killed child process"
-                );
-                return Err(AlError::BuildTimeout(timeout.as_secs()));
-            }
-        },
-        None => child.wait_with_output().await?,
+    // Shared cancel/timeout policy (kill_on_drop + AL_COMPILE_TIMEOUT_SECS) lives
+    // in run_alc_with_timeout so the DAP compile path can't drift from it.
+    let output = match run_alc_with_timeout(cmd).await {
+        Ok(o) => o,
+        Err(AlcRunError::Spawn(e)) => return Err(e.into()),
+        Err(AlcRunError::Timeout(secs)) => return Err(AlError::BuildTimeout(secs)),
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);

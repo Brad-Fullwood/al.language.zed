@@ -1345,23 +1345,6 @@ async fn write_dap<W: tokio::io::AsyncWrite + Unpin>(
     write_dap_frame(writer, &body).await
 }
 
-/// Default cap on a single `alc` invocation in the DAP path. Kept in sync with
-/// `crate::build::DEFAULT_COMPILE_TIMEOUT_SECS` and honouring the same
-/// `AL_COMPILE_TIMEOUT_SECS` override; values <= 0 disable the cap. Duplicated
-/// here (rather than imported) because `crate::dap` is kept self-contained.
-const DAP_COMPILE_TIMEOUT_SECS: u64 = 600;
-
-fn compile_timeout() -> Option<std::time::Duration> {
-    match std::env::var("AL_COMPILE_TIMEOUT_SECS") {
-        Ok(s) => match s.trim().parse::<i64>() {
-            Ok(n) if n <= 0 => None,
-            Ok(n) => Some(std::time::Duration::from_secs(n as u64)),
-            Err(_) => Some(std::time::Duration::from_secs(DAP_COMPILE_TIMEOUT_SECS)),
-        },
-        Err(_) => Some(std::time::Duration::from_secs(DAP_COMPILE_TIMEOUT_SECS)),
-    }
-}
-
 /// Compile via `dotnet alc` and return raw output.
 ///
 /// This is a DAP-local version of compilation. It returns raw output as a string
@@ -1385,32 +1368,17 @@ async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<
         cmd.arg(format!("/packagecachepath:{}", packages_dir.display()));
     }
 
-    cmd.stderr(std::process::Stdio::piped());
-    cmd.stdout(std::process::Stdio::piped());
-    // F-FIX-038 parity: tokio does NOT propagate task cancellation to child
-    // processes. Without kill_on_drop + an explicit timeout, a hung or
-    // cancelled DAP session leaves a zombie `alc` running to completion.
-    cmd.kill_on_drop(true);
-
-    let output = match compile_timeout() {
-        Some(dur) => match tokio::time::timeout(dur, cmd.output()).await {
-            Ok(Ok(o)) => o,
-            Ok(Err(e)) => {
-                return Err(DapError::CompilationFailed(format!(
-                    "Failed to run alc: {e}"
-                )))
-            }
-            Err(_) => {
-                return Err(DapError::CompilationFailed(format!(
-                    "alc compilation timed out after {}s",
-                    dur.as_secs()
-                )))
-            }
-        },
-        None => cmd
-            .output()
-            .await
-            .map_err(|e| DapError::CompilationFailed(format!("Failed to run alc: {e}")))?,
+    // Shared cancel/timeout policy with the daemon build path (DUP-1/DUP-2).
+    let output = match crate::build::run_alc_with_timeout(cmd).await {
+        Ok(o) => o,
+        Err(crate::build::AlcRunError::Spawn(e)) => {
+            return Err(DapError::CompilationFailed(format!("Failed to run alc: {e}")))
+        }
+        Err(crate::build::AlcRunError::Timeout(secs)) => {
+            return Err(DapError::CompilationFailed(format!(
+                "alc compilation timed out after {secs}s"
+            )))
+        }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2050,70 +2018,10 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // compile_timeout — env-var parsing. Mirrors the build.rs convention:
-    // a process-global env var serialised behind a Mutex so parallel tests
-    // do not race.
-    // -----------------------------------------------------------------------
-
-    /// Serialize access to the process-global AL_COMPILE_TIMEOUT_SECS env var.
-    static COMPILE_TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn compile_timeout_defaults_when_env_unset() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
-        assert_eq!(
-            compile_timeout(),
-            Some(std::time::Duration::from_secs(DAP_COMPILE_TIMEOUT_SECS))
-        );
-    }
-
-    #[test]
-    fn compile_timeout_zero_or_negative_disables_cap() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "0");
-        assert_eq!(compile_timeout(), None, "0 must disable the timeout cap");
-        std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "-5");
-        assert_eq!(
-            compile_timeout(),
-            None,
-            "negative value must disable the timeout cap"
-        );
-        std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
-    }
-
-    #[test]
-    fn compile_timeout_positive_value_is_honoured() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "  45  ");
-        assert_eq!(
-            compile_timeout(),
-            Some(std::time::Duration::from_secs(45)),
-            "a positive (trimmed) value must be used verbatim"
-        );
-        std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
-    }
-
-    #[test]
-    fn compile_timeout_unparseable_falls_back_to_default() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "not-a-number");
-        assert_eq!(
-            compile_timeout(),
-            Some(std::time::Duration::from_secs(DAP_COMPILE_TIMEOUT_SECS)),
-            "garbage must fall back to the default, not disable the cap"
-        );
-        std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
-    }
+    // compile_timeout + the alc run/timeout policy now live in crate::build
+    // (run_alc_with_timeout), shared with the daemon build path. Their env-var
+    // parsing is covered by build.rs's compile_timeout_* tests; the DAP
+    // duplicates were removed to keep a single source of truth (DUP-1/DUP-2).
 
     // -----------------------------------------------------------------------
     // compile_project — the no-app.json guard is reachable without a real
