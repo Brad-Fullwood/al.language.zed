@@ -331,17 +331,18 @@ fn unreleased_api_channel_requirement_is_documented() {
             );
         }
 
-        // The trap MUST be documented so a Stable-Zed user can self-diagnose.
-        let troubleshooting = include_str!("../TROUBLESHOOTING.md");
+        // The trap MUST stay documented so a Stable-Zed user can self-diagnose.
+        // The standalone TROUBLESHOOTING.md was intentionally removed, so the
+        // in-repo documentation of record is now the `API CHANNEL` block kept
+        // next to the zed_extension_api dependency in Cargo.toml itself.
         assert!(
-            troubleshooting.contains("development builds of Zed")
-                && (troubleshooting.contains("Nightly") || troubleshooting.contains("nightly")),
-            "TROUBLESHOOTING.md must explain the unreleased-API channel requirement (Nightly/Dev) \
-             and quote Zed's error, since the extension silently fails to load on Stable Zed"
-        );
-        assert!(
-            cargo.contains("CHANNEL COUPLING"),
-            "Cargo.toml must keep the CHANNEL COUPLING warning next to the zed_extension_api dep"
+            cargo.contains("API CHANNEL")
+                && cargo.contains("development builds of Zed")
+                && cargo.contains("Dev/Nightly"),
+            "Cargo.toml must keep the API CHANNEL warning (quoting Zed's \
+             'development builds of Zed' error and the Dev/Nightly requirement) \
+             next to the zed_extension_api dep, since the extension silently fails \
+             to load on Stable Zed when pinned to an unreleased API"
         );
     }
 }

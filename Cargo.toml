@@ -24,7 +24,7 @@ crate-type = ["cdylib"]
 # development builds of Zed") — that trap shipped four times before the
 # `committed_api_target_is_released` guard test was added. For local experiments
 # against git main use `scripts/use-api.sh dev`, and run
-# `scripts/use-api.sh stable` before committing. See TROUBLESHOOTING.md.
+# `scripts/use-api.sh stable` before committing.
 zed_extension_api = "0.7.0"
 serde_json = "1.0"
 
