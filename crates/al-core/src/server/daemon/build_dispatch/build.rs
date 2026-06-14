@@ -61,6 +61,26 @@ fn parse_bc_server_params(params: &serde_json::Value, output_subdir: &str) -> Bc
     }
 }
 
+/// SSRF guard: reject a `serverUrl` whose scheme is not http(s) before any
+/// network use. The daemon socket is same-user only, but a `serverUrl` of
+/// `file://`, `gopher://`, etc. would otherwise be handed straight to the BC
+/// HTTP client. Reuses the launch-config allowlist so both surfaces agree.
+/// Returns `Some(INVALID_PARAMS error)` when the URL must be rejected.
+fn reject_unsafe_server_url(id: u64, server_url: &str) -> Option<Response> {
+    if crate::launch::is_safe_http_server(server_url) {
+        return None;
+    }
+    Some(Response {
+        id,
+        result: None,
+        error: Some(RpcError {
+            code: error_codes::INVALID_PARAMS,
+            message: format!("serverUrl '{server_url}' is not an http(s) URL; refusing to connect"),
+        }),
+        ..Default::default()
+    })
+}
+
 /// Return the absolute file path (and line 1) for a workspace object by name.
 /// Used by al-explorer to open objects in Zed via the `zed://file/path:line:col` URL scheme.
 pub(in crate::server::daemon) fn dispatch_location(
@@ -544,6 +564,9 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
     };
 
     let bc = parse_bc_server_params(params, "snapshots");
+    if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
+        return err;
+    }
     let config = crate::snapshot::SnapshotConfig {
         server_url: bc.server_url,
         company: bc.company,
@@ -679,6 +702,9 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
     };
 
     let bc = parse_bc_server_params(params, "profiles");
+    if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
+        return err;
+    }
     let config = crate::profiling::ProfilingConfig {
         server_url: bc.server_url,
         company: bc.company,
@@ -1092,6 +1118,50 @@ mod tests {
 
     fn empty_ws() -> Workspace {
         Workspace::new()
+    }
+
+    #[test]
+    fn reject_unsafe_server_url_blocks_non_http_schemes() {
+        for bad in ["file:///etc/passwd", "gopher://internal", "ftp://host", ""] {
+            let resp = reject_unsafe_server_url(1, bad)
+                .unwrap_or_else(|| panic!("{bad:?} must be rejected"));
+            assert_eq!(resp.error.unwrap().code, error_codes::INVALID_PARAMS);
+            assert!(resp.result.is_none());
+        }
+    }
+
+    #[test]
+    fn reject_unsafe_server_url_allows_http_and_https() {
+        for ok in [
+            "http://localhost:7049/BC",
+            "https://bc.example/inst",
+            "localhost:7048",
+        ] {
+            assert!(
+                reject_unsafe_server_url(1, ok).is_none(),
+                "{ok:?} must be allowed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_snapshot_rejects_non_http_serverurl() {
+        // A file:// serverUrl returns INVALID_PARAMS (the guard) rather than an
+        // INTERNAL_ERROR from a connection attempt — proves the dispatcher
+        // refuses before touching the network.
+        let params = serde_json::json!({ "cmd": "list", "serverUrl": "file:///etc/passwd" });
+        let resp = dispatch_snapshot(42, &params).await;
+        let err = resp.error.expect("must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.message.contains("http(s)"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_profiling_rejects_non_http_serverurl() {
+        let params = serde_json::json!({ "cmd": "start", "serverUrl": "gopher://internal" });
+        let resp = dispatch_profiling(7, &params).await;
+        let err = resp.error.expect("must error");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
     }
 
     fn write_al(tmp: &tempfile::TempDir, name: &str, content: &str) -> String {

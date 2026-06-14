@@ -241,7 +241,7 @@ const MAX_LAUNCH_FILE_BYTES: u64 = 1_048_576;
 /// that URL would be handed unchanged to the BC HTTP client. Restrict to
 /// http(s):// (the only two schemes the BC dev API uses) or bare hostnames
 /// (e.g. `localhost`, where the BC client default-prepends http://).
-fn is_safe_http_server(server: &str) -> bool {
+pub(crate) fn is_safe_http_server(server: &str) -> bool {
     let s = server.trim();
     if s.is_empty() {
         return false;
