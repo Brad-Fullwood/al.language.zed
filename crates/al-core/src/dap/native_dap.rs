@@ -1372,7 +1372,9 @@ async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<
     let output = match crate::build::run_alc_with_timeout(cmd).await {
         Ok(o) => o,
         Err(crate::build::AlcRunError::Spawn(e)) => {
-            return Err(DapError::CompilationFailed(format!("Failed to run alc: {e}")))
+            return Err(DapError::CompilationFailed(format!(
+                "Failed to run alc: {e}"
+            )))
         }
         Err(crate::build::AlcRunError::Timeout(secs)) => {
             return Err(DapError::CompilationFailed(format!(

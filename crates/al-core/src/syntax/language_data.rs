@@ -337,7 +337,10 @@ mod tests {
     fn test_container_and_interface_predicates_match_codeunit_case_insensitively() {
         for yes in ["codeunit", "CodeUnit", "CODEUNIT"] {
             assert!(is_test_container_kind(yes), "{yes} is a test container");
-            assert!(implements_interface_kind(yes), "{yes} implements interfaces");
+            assert!(
+                implements_interface_kind(yes),
+                "{yes} implements interfaces"
+            );
         }
         for no in ["table", "page", "report", "enum", "interface", ""] {
             assert!(!is_test_container_kind(no), "{no} is not a test container");
