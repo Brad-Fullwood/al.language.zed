@@ -89,9 +89,7 @@ fn resolve_output_path_within_project(
         None
     }
 }
-// ---------------------------------------------------------------------------
 // WP15: Test runner
-// ---------------------------------------------------------------------------
 
 pub(in crate::server::daemon) fn dispatch_tests_discover(
     workspace: &Workspace,
@@ -280,9 +278,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
         ..Default::default()
     }
 }
-// ---------------------------------------------------------------------------
 // p1-5: New test_engine endpoints — additive; existing tests.run is frozen.
-// ---------------------------------------------------------------------------
 
 /// `tests.run_batch` — run multiple codeunits, optionally in parallel,
 /// optionally writing JUnit/Cobertura output to disk.
@@ -1473,9 +1469,7 @@ mod tests {
         assert!(err.message.contains("out of range"), "got: {}", err.message);
     }
 
-    // -----------------------------------------------------------------------
     // p1-7 freeze gate: existing wire formats must not drift.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn freeze_test_codeunit_result_wire_format() {
@@ -1632,9 +1626,7 @@ mod tests {
         assert_eq!(results[0]["status"], "pass");
     }
 
-    // -----------------------------------------------------------------------
     // p2 dispatcher tests — affected + classify
-    // -----------------------------------------------------------------------
 
     #[test]
     fn affected_missing_changed_files_returns_invalid_params() {
@@ -1699,11 +1691,9 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Wire-format freeze gates for new endpoints landed in this session.
     // These pin the JSON response shapes; failures here flag callers who
     // rename fields without bumping the protocol version.
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn freeze_run_batch_response_shape() {
@@ -1925,10 +1915,8 @@ mod tests {
         assert!(err.message.contains("pathA"));
     }
 
-    // -----------------------------------------------------------------------
     // dispatch_tests_mutate: no-project must short-circuit to an error before
     // any variant generation.
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn tests_mutate_no_project_returns_error() {

@@ -221,7 +221,6 @@ impl AlServer {
             return;
         }
 
-        // Cancel previous pending task
         if let Some(old) = self.diag_task.lock().await.take() {
             old.abort();
         }
@@ -299,7 +298,6 @@ impl LanguageServer for AlServer {
 
         tracing::info!(root_uri = ?root_uri, "initialize: storing root URI");
 
-        // Store root URI for use in initialized()
         *self.root_uri.write().await = root_uri;
 
         // Parse initialization options into config
@@ -449,23 +447,18 @@ impl LanguageServer for AlServer {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        // Abort any pending diagnostics task
         if let Some(task) = self.diag_task.lock().await.take() {
             task.abort();
         }
-        // Abort background workspace init if still running
         if let Some(task) = self.init_task.lock().await.take() {
             task.abort();
         }
-        // Abort in-flight al.reindex task if still running
         if let Some(task) = self.reindex_task.lock().await.take() {
             task.abort();
         }
         crate::semantic::shutdown_bridge(&self.workspace).await;
         Ok(())
     }
-
-    // -- Text document synchronization --
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri.clone();
@@ -608,8 +601,6 @@ impl LanguageServer for AlServer {
         tracing::info!("Configuration updated");
     }
 
-    // -- Hover --
-
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         self.await_ready().await;
         let uri = &params.text_document_position_params.text_document.uri;
@@ -621,8 +612,6 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "hover");
         Ok(result)
     }
-
-    // -- Completion --
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         self.await_ready().await;
@@ -643,8 +632,6 @@ impl LanguageServer for AlServer {
         Ok(result)
     }
 
-    // -- Go-to-definition --
-
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
@@ -658,8 +645,6 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "goto_definition");
         Ok(result)
     }
-
-    // -- References --
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         self.await_ready().await;
@@ -707,8 +692,6 @@ impl LanguageServer for AlServer {
         Ok(result)
     }
 
-    // -- Document symbols --
-
     async fn document_symbol(
         &self,
         params: DocumentSymbolParams,
@@ -735,8 +718,6 @@ impl LanguageServer for AlServer {
         Ok(result)
     }
 
-    // -- Formatting --
-
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         self.await_ready().await;
         let uri = &params.text_document.uri;
@@ -762,8 +743,6 @@ impl LanguageServer for AlServer {
         Ok(result)
     }
 
-    // -- Folding ranges --
-
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         self.await_ready().await;
         let uri = &params.text_document.uri;
@@ -774,8 +753,6 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, ranges = count, elapsed_us = elapsed.as_micros() as u64, "folding_range");
         Ok(result)
     }
-
-    // -- Semantic tokens --
 
     async fn semantic_tokens_full(
         &self,
@@ -825,8 +802,6 @@ impl LanguageServer for AlServer {
         Ok(result)
     }
 
-    // -- Signature help --
-
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         self.await_ready().await;
         let uri = &params.text_document_position_params.text_document.uri;
@@ -837,8 +812,6 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, line = position.line, col = position.character, found = result.is_some(), elapsed_us = elapsed.as_micros() as u64, "signature_help");
         Ok(result)
     }
-
-    // -- Code actions --
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         self.await_ready().await;
@@ -852,8 +825,6 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, actions = count, elapsed_us = elapsed.as_micros() as u64, "code_action");
         Ok(result)
     }
-
-    // -- Pull diagnostics --
 
     async fn diagnostic(
         &self,
@@ -884,8 +855,6 @@ impl LanguageServer for AlServer {
         Ok(diagnostics::full_diagnostic_report(diags))
     }
 
-    // -- Rename --
-
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         self.await_ready().await;
         let uri = &params.text_document_position.text_document.uri;
@@ -912,8 +881,6 @@ impl LanguageServer for AlServer {
         Ok(result)
     }
 
-    // -- Workspace symbols --
-
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
@@ -927,8 +894,6 @@ impl LanguageServer for AlServer {
         Ok(result)
     }
 
-    // -- Inlay hints --
-
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         self.await_ready().await;
         let uri = &params.text_document.uri;
@@ -941,8 +906,6 @@ impl LanguageServer for AlServer {
         tracing::debug!(uri = %uri, hints = count, elapsed_us = elapsed.as_micros() as u64, "inlay_hint");
         Ok(result)
     }
-
-    // -- Code lens --
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         self.await_ready().await;
@@ -1001,8 +964,6 @@ impl LanguageServer for AlServer {
         Ok(Some(lenses))
     }
 
-    // -- Execute command --
-
     async fn execute_command(
         &self,
         params: ExecuteCommandParams,
@@ -1056,7 +1017,6 @@ impl LanguageServer for AlServer {
     }
 }
 
-/// Run the LSP server on stdin/stdout.
 pub async fn run_lsp() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();

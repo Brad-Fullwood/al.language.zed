@@ -62,10 +62,6 @@ fn next_rand(max: i64) -> i64 {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn err(message: impl Into<String>) -> Eval {
     Eval::Error(ErrorInfo {
         message: message.into(),
@@ -77,10 +73,6 @@ fn err(message: impl Into<String>) -> Eval {
 fn ok(v: Value) -> Eval {
     Eval::Normal(v)
 }
-
-// ---------------------------------------------------------------------------
-// Procedure implementations
-// ---------------------------------------------------------------------------
 
 /// `Any.Boolean(): Boolean`
 ///
@@ -329,10 +321,6 @@ pub fn set_default_seed(args: &[Value]) -> Eval {
     ok(Value::Empty)
 }
 
-// ---------------------------------------------------------------------------
-// Resolver
-// ---------------------------------------------------------------------------
-
 /// Resolve a procedure name (case-insensitive) to its Rust implementation.
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
     match procedure.to_ascii_lowercase().as_str() {
@@ -350,10 +338,6 @@ pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
         _ => None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -31,10 +31,6 @@ use crate::test_runtime::interpreter::eval_stmt::eval_stmt;
 use crate::test_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use crate::workspace::Workspace;
 
-// ---------------------------------------------------------------------------
-// InterpMode
-// ---------------------------------------------------------------------------
-
 /// Interpreter backend: runs test procedures without a live BC server.
 ///
 /// Phase 2 scope: pure-logic tests only. Tests that touch records, HTTP,
@@ -50,10 +46,6 @@ impl InterpMode {
         Self { workspace }
     }
 }
-
-// ---------------------------------------------------------------------------
-// TestSession impl
-// ---------------------------------------------------------------------------
 
 #[allow(async_fn_in_trait)]
 impl TestSession for InterpMode {
@@ -195,10 +187,6 @@ impl TestSession for InterpMode {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Per-codeunit interpreter run (synchronous — called from spawn_blocking)
-// ---------------------------------------------------------------------------
 
 fn run_codeunit_interp(
     workspace: &Workspace,
@@ -412,20 +400,12 @@ fn workspace_to_arc_workaround(_workspace: &Workspace) -> Arc<Workspace> {
     Arc::new(Workspace::new())
 }
 
-// ---------------------------------------------------------------------------
-// Send helper
-// ---------------------------------------------------------------------------
-
 async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<(), TestRunnerError> {
     tx.send(event).await.map_err(|_| {
         warn!("interpreter test event channel closed; aborting run");
         TestRunnerError::ChannelClosed
     })
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

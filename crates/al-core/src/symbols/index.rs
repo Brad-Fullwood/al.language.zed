@@ -495,7 +495,6 @@ impl SymbolIndex {
     /// uniform — adding a new secondary index requires adding exactly one
     /// `Self::retain_arcs_not_in(&self.new_index, &ptrs);` line below.
     pub fn remove_package_entries(&self, package_name: &str) {
-        // Collect sequence IDs of entries to remove and their Arc pointers.
         let to_remove: Vec<(usize, Arc<SymbolEntry>)> = self
             .all
             .iter()

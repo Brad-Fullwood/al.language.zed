@@ -313,9 +313,7 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Message patching
-// ---------------------------------------------------------------------------
 
 async fn patch_outgoing(
     body: &[u8],
@@ -414,9 +412,7 @@ fn patch_launch_args(args: &mut serde_json::Map<String, serde_json::Value>) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // AL compilation
-// ---------------------------------------------------------------------------
 
 async fn compile_project(toolchain: &AlToolchain, project_root: &str) -> Result<String, DapError> {
     let project_path = Path::new(project_root);

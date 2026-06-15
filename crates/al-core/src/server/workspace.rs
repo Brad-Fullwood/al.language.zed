@@ -778,9 +778,7 @@ pub(crate) fn handle_workspace_symbol(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Recommended settings helpers
-// ---------------------------------------------------------------------------
 
 /// Check whether the settings prompt has already been shown (persistent sentinel).
 fn settings_prompt_shown() -> bool {
@@ -1187,9 +1185,7 @@ mod tests {
         assert!(settings["languages"]["AL"].is_object());
     }
 
-    // -----------------------------------------------------------------------
     // DownloadSource::display_name
-    // -----------------------------------------------------------------------
 
     #[test]
     fn download_source_display_names() {
@@ -1197,7 +1193,6 @@ mod tests {
         assert_eq!(DownloadSource::NuGet.display_name(), "NuGet");
     }
 
-    // -----------------------------------------------------------------------
     /// F-OPEN-259 (`al.nugetFeeds` / `al.useOnlyCustomFeeds` parity):
     /// custom feeds take priority; defaults are appended unless the
     /// only-custom flag is set.
@@ -1228,7 +1223,6 @@ mod tests {
     }
 
     // map_nuget_feeds
-    // -----------------------------------------------------------------------
 
     #[test]
     fn map_nuget_feeds_preserves_index_urls_in_order() {
@@ -1255,9 +1249,7 @@ mod tests {
         assert!(mapped.is_empty());
     }
 
-    // -----------------------------------------------------------------------
     // ensure_parent_dir
-    // -----------------------------------------------------------------------
 
     #[test]
     fn ensure_parent_dir_creates_missing_parents() {
@@ -1279,9 +1271,7 @@ mod tests {
         assert!(ensure_parent_dir(p).is_ok());
     }
 
-    // -----------------------------------------------------------------------
     // log_source_availability — must not panic on odd inputs / empty list
-    // -----------------------------------------------------------------------
 
     #[test]
     fn log_source_availability_handles_empty_and_missing_files() {
@@ -1294,9 +1284,7 @@ mod tests {
         log_source_availability(&[PathBuf::from("/")]);
     }
 
-    // -----------------------------------------------------------------------
     // sentinel_path / settings_prompt_shown / mark_settings_prompt_shown
-    // -----------------------------------------------------------------------
 
     /// RAII guard that snapshots and restores process env vars used by the
     /// path helpers, so these serial tests don't leak state into one another.
@@ -1377,9 +1365,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // -----------------------------------------------------------------------
     // zed_has_al_settings
-    // -----------------------------------------------------------------------
 
     #[cfg(target_os = "linux")]
     fn write_zed_settings(guard: &EnvGuard, contents: &str) -> PathBuf {
@@ -1461,9 +1447,7 @@ mod tests {
         assert!(!zed_has_al_settings());
     }
 
-    // -----------------------------------------------------------------------
     // apply_recommended_settings (end-to-end merge + write)
-    // -----------------------------------------------------------------------
 
     #[test]
     #[serial_test::serial]
@@ -1493,9 +1477,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // -----------------------------------------------------------------------
     // strip_jsonc_comments_and_parse — block-comment & escape edge paths
-    // -----------------------------------------------------------------------
 
     #[test]
     fn block_comment_preserves_following_keys() {
@@ -1544,9 +1526,7 @@ mod tests {
         assert!(strip_jsonc_comments_and_parse(input).is_err());
     }
 
-    // -----------------------------------------------------------------------
     // deep_merge — type-replacement at nested depth
-    // -----------------------------------------------------------------------
 
     #[test]
     fn deep_merge_override_object_replaces_base_scalar() {
@@ -1577,9 +1557,7 @@ mod tests {
         assert_eq!(merged["a"]["b"]["add"], 2);
     }
 
-    // -----------------------------------------------------------------------
     // recommended_al_settings — load-bearing keys the apply flow depends on
-    // -----------------------------------------------------------------------
 
     #[test]
     fn recommended_settings_registers_al_lsp_language_server() {
@@ -1599,9 +1577,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // zed_has_al_settings — remaining early-return branches
-    // -----------------------------------------------------------------------
 
     #[test]
     #[serial_test::serial]
@@ -1642,9 +1618,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // -----------------------------------------------------------------------
     // apply_recommended_settings — fresh-file and JSONC-input paths
-    // -----------------------------------------------------------------------
 
     #[test]
     #[serial_test::serial]
@@ -1698,9 +1672,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // -----------------------------------------------------------------------
     // handle_workspace_symbol — top-level objects + child symbols
-    // -----------------------------------------------------------------------
 
     /// Build an `AlServer` (with a real tower-lsp `Client`) for in-process tests.
     /// `LspService::new` wires a live client without spawning the LSP transport.
@@ -1827,9 +1799,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // strip_jsonc_comments_and_parse — block-comment EOF + CRLF-in-block edges
-    // -----------------------------------------------------------------------
 
     #[test]
     fn block_comment_terminated_exactly_at_eof_after_star() {
@@ -1861,9 +1831,7 @@ mod tests {
         assert_eq!(parsed["a"], 1);
     }
 
-    // -----------------------------------------------------------------------
     // deep_merge — base-without-key insert path
-    // -----------------------------------------------------------------------
 
     #[test]
     fn deep_merge_inserts_override_key_absent_in_base() {

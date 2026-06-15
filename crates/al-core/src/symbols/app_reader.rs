@@ -227,7 +227,6 @@ mod tests {
         data.extend_from_slice(&1u32.to_le_bytes()); // version
         data.extend_from_slice(&[0u8; 32]); // padding to 40 bytes
 
-        // Create ZIP in memory
         let mut zip_buf = Vec::new();
         {
             let cursor = Cursor::new(&mut zip_buf);
@@ -385,7 +384,6 @@ mod tests {
         data.extend_from_slice(b"NAVX");
         data.extend_from_slice(&[0u8; 46]); // 50 byte header total
 
-        // Create ZIP
         let mut zip_buf = Vec::new();
         {
             let cursor = Cursor::new(&mut zip_buf);

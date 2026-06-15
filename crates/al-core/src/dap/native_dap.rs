@@ -1383,16 +1383,13 @@ async fn compile_project(alc: &Path, project_root: &str) -> std::result::Result<
 }
 
 async fn find_app_file(project_root: &str) -> Option<std::path::PathBuf> {
-    let root = Path::new(project_root);
-    // Look for .app files in the project root
-    let mut entries = tokio::fs::read_dir(root).await.ok()?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("app") {
-            return Some(path);
-        }
-    }
-    None
+    // Reuse the build pipeline's selection logic so a sandbox deploy never grabs
+    // a stale artifact. It prefers the manifest-derived
+    // `{publisher}_{name}_{version}.app` and otherwise falls back to the
+    // most-recently-modified .app. This previously returned the first .app in
+    // readdir order, which deployed an arbitrary (often outdated) version when
+    // several builds were present in the project root.
+    crate::build::find_app_file(Path::new(project_root))
 }
 
 fn open_browser(url: &str) -> bool {
@@ -2057,6 +2054,30 @@ mod tests {
             found.as_deref(),
             Some(app.as_path()),
             "the .app artifact must be located by extension"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_app_file_picks_manifest_version_not_first_found() {
+        // Regression: deploy must pick the .app matching the manifest version,
+        // not whichever .app readdir happens to return first (which deployed a
+        // stale older build to the sandbox).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"publisher":"Pub","name":"App","version":"2.0.0.0"}"#,
+        )
+        .unwrap();
+        let old = dir.path().join("Pub_App_1.0.0.0.app");
+        let new = dir.path().join("Pub_App_2.0.0.0.app");
+        std::fs::write(&old, b"PK").unwrap();
+        std::fs::write(&new, b"PK").unwrap();
+
+        let found = find_app_file(dir.path().to_str().unwrap()).await;
+        assert_eq!(
+            found.as_deref(),
+            Some(new.as_path()),
+            "deploy must select the manifest version (2.0.0.0), never an older build"
         );
     }
 

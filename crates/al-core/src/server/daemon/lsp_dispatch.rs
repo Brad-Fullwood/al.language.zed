@@ -1078,10 +1078,8 @@ mod tests {
         assert_eq!(resp.result, Some(serde_json::json!([])));
     }
 
-    // -----------------------------------------------------------------------
-    // ok_response_opt — the None branch must produce a JSON-RPC null result
+    // -----------------------------------------------------------------------    // ok_response_opt — the None branch must produce a JSON-RPC null result
     // (no error), not be confused with an error response.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn ok_response_opt_none_yields_null_result_no_error() {
@@ -1099,10 +1097,8 @@ mod tests {
         assert_eq!(resp.result, Some(serde_json::json!([1, 2, 3])));
     }
 
-    // -----------------------------------------------------------------------
-    // Parameter-validation / error paths shared by every position dispatcher.
+    // -----------------------------------------------------------------------    // Parameter-validation / error paths shared by every position dispatcher.
     // These run entirely in-process against an empty Workspace.
-    // -----------------------------------------------------------------------
 
     fn assert_invalid_params(resp: &Response, id: u64) {
         assert_eq!(resp.id, id);
@@ -1178,9 +1174,7 @@ mod tests {
         assert_invalid_params(&resp, 10);
     }
 
-    // -----------------------------------------------------------------------
-    // dispatch_search — limit clamping + empty-workspace happy path.
-    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------    // dispatch_search — limit clamping + empty-workspace happy path.
 
     #[test]
     fn dispatch_search_rejects_missing_query() {
@@ -1223,10 +1217,8 @@ mod tests {
         assert_eq!(resp.result, Some(serde_json::json!([])));
     }
 
-    // -----------------------------------------------------------------------
-    // dispatch_object / dispatch_by_id / dispatch_composed — kind parsing and
+    // -----------------------------------------------------------------------    // dispatch_object / dispatch_by_id / dispatch_composed — kind parsing and
     // not-found error responses.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn dispatch_object_rejects_unknown_kind() {
@@ -1316,9 +1308,7 @@ mod tests {
         assert!(err.message.contains("Ghost"));
     }
 
-    // -----------------------------------------------------------------------
-    // dispatch_events / dispatch_subscribers — empty-workspace success shape.
-    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------    // dispatch_events / dispatch_subscribers — empty-workspace success shape.
 
     #[test]
     fn dispatch_events_rejects_missing_name() {
@@ -1350,9 +1340,7 @@ mod tests {
         assert_eq!(resp.result, Some(serde_json::json!([])));
     }
 
-    // -----------------------------------------------------------------------
-    // dispatch_packages / dispatch_deps — no-project / empty states.
-    // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------    // dispatch_packages / dispatch_deps — no-project / empty states.
 
     #[test]
     fn dispatch_packages_empty_returns_empty_array() {

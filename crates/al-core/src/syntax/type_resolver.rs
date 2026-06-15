@@ -327,7 +327,6 @@ impl<'a> TypeResolver<'a> {
         container: Node<'a>,
         scope: VariableScope,
     ) -> Option<VariableDecl> {
-        // Find the regular_variable_declaration or label_declaration child
         let mut cursor = container.walk();
         for child in container.children(&mut cursor) {
             if child.kind() == "regular_variable_declaration" {

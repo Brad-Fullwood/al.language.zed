@@ -9,9 +9,7 @@ use super::build::write_al_file_and_refresh;
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response};
 
-// ---------------------------------------------------------------------------
 // Analysis dispatchers (lint, format, fix, rules, parse, source)
-// ---------------------------------------------------------------------------
 
 pub(in crate::server::daemon) fn dispatch_lint(
     workspace: &Workspace,
@@ -255,9 +253,7 @@ pub(in crate::server::daemon) fn dispatch_parse(
         ..Default::default()
     }
 }
-// ---------------------------------------------------------------------------
 // Bulk fix dispatchers (T1603-T1605)
-// ---------------------------------------------------------------------------
 
 pub(in crate::server::daemon) fn dispatch_fix_application_area(
     workspace: &Workspace,
@@ -404,11 +400,9 @@ mod tests {
         Workspace::new()
     }
 
-    // -----------------------------------------------------------------------
     // Analysis dispatchers: param-validation & happy-path branches.
     // These exercise the synchronous, in-process error/edge paths that need
     // neither a live BC server nor a spawned binary.
-    // -----------------------------------------------------------------------
 
     /// Open a real `.al` file on disk and return its `file://` URI string,
     /// suitable for the `{ "file": ... }` param shape the dispatchers accept.

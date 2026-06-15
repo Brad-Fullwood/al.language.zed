@@ -110,30 +110,20 @@ impl FromStr for ObjectKind {
 }
 
 impl ObjectKind {
-    /// Returns the extension kind that extends this base kind, if any.
+    /// The primary (first-listed) extension kind for this base kind.
     pub fn extension_kind(&self) -> Option<ObjectKind> {
-        match self {
-            ObjectKind::Table => Some(ObjectKind::TableExtension),
-            ObjectKind::Page => Some(ObjectKind::PageExtension),
-            ObjectKind::Report => Some(ObjectKind::ReportExtension),
-            ObjectKind::Enum => Some(ObjectKind::EnumExtension),
-            ObjectKind::PermissionSet => Some(ObjectKind::PermissionSetExtension),
-            ObjectKind::Profile => Some(ObjectKind::ProfileExtension),
-            _ => None,
-        }
+        crate::symbols::language_data::object_type_by_keyword(self.al_keyword())?
+            .extensions
+            .first()
+            .and_then(|kw| kw.parse::<ObjectKind>().ok())
     }
 
-    /// Returns the base kind that this extension extends, if this is an extension kind.
     pub fn base_kind(&self) -> Option<ObjectKind> {
-        match self {
-            ObjectKind::TableExtension => Some(ObjectKind::Table),
-            ObjectKind::PageExtension => Some(ObjectKind::Page),
-            ObjectKind::ReportExtension => Some(ObjectKind::Report),
-            ObjectKind::EnumExtension => Some(ObjectKind::Enum),
-            ObjectKind::PermissionSetExtension => Some(ObjectKind::PermissionSet),
-            ObjectKind::ProfileExtension => Some(ObjectKind::Profile),
-            _ => None,
-        }
+        let kw = self.al_keyword();
+        crate::symbols::language_data::object_types()
+            .iter()
+            .find(|ot| ot.extensions.iter().any(|e| e.eq_ignore_ascii_case(kw)))
+            .and_then(|ot| ot.keyword.parse::<ObjectKind>().ok())
     }
 
     /// Short alias used in physical file names inside .app packages (e.g., Tab, Pag, Cod).
@@ -1196,13 +1186,14 @@ mod tests {
     #[test]
     fn test_kinds_without_extensions() {
         // Profile moved out of this list when ProfileExtension was added
-        // (F-OPEN-267 / BC profileextension object type).
+        // (F-OPEN-267 / BC profileextension object type). PageCustomization is
+        // NOT here: object_types.json lists it under page's `extensions`, so it
+        // is a page extension (see pagecustomization_is_a_page_extension).
         let no_ext = [
             ObjectKind::Codeunit,
             ObjectKind::XmlPort,
             ObjectKind::Query,
             ObjectKind::Interface,
-            ObjectKind::PageCustomization,
             ObjectKind::ControlAddIn,
             ObjectKind::Entitlement,
             ObjectKind::DotNet,
@@ -1215,6 +1206,17 @@ mod tests {
             );
             assert!(!kind.is_extension());
         }
+    }
+
+    #[test]
+    fn pagecustomization_is_a_page_extension() {
+        // page.extensions in object_types.json includes pagecustomization.
+        assert_eq!(
+            ObjectKind::PageCustomization.base_kind(),
+            Some(ObjectKind::Page)
+        );
+        assert!(ObjectKind::PageCustomization.is_extension());
+        assert!(ObjectKind::PageCustomization.extension_kind().is_none());
     }
 
     #[test]

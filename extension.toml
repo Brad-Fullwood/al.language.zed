@@ -1,6 +1,6 @@
 id = "al"
 name = "AL Language (Business Central)"
-version = "0.2.1"
+version = "0.2.2"
 schema_version = 1
 authors = ["Brad Fullwood"]
 description = "AL language support for Microsoft Dynamics 365 Business Central"
@@ -35,4 +35,4 @@ name = "AL Tools"
 #        <(echo "extension"; cd tree-sitter-al && git rev-parse HEAD)
 [grammars.al]
 repository = "https://github.com/Brad-Fullwood/AL-Tree-Sitter"
-rev = "f946d9ed16f9fb1e2d2339b9b90280da0c478797"
+rev = "52d26abd0537f34be4cea5f16091ebbf118d96a9"

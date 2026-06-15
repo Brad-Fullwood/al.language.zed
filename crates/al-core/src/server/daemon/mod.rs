@@ -167,7 +167,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     }
     tracing::info!(path = %sock_path.display(), project = %project_root.display(), "daemon: listening");
 
-    // Register global path for cleanup on exit/signals
     let _ = SOCKET_PATH.set(sock_path.clone());
     let _cleanup = SocketCleanup;
 
@@ -186,7 +185,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
     let last_activity = Arc::new(AtomicU64::new(now_activity_ms()));
     let shutdown_signal = Arc::new(Notify::new());
 
-    // Idle timeout checker
     let activity_clone = Arc::clone(&last_activity);
     let ws_clone = Arc::clone(&workspace);
     let shutdown_idle = Arc::clone(&shutdown_signal);
@@ -276,7 +274,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((stream, _addr)) => {
-                        // Reset backoff on success.
                         accept_backoff = ACCEPT_BACKOFF_START;
 
                         // Bump the idle timer *before* spawning the connection
@@ -304,7 +301,6 @@ pub async fn run_daemon(project_root: PathBuf) -> Result<(), Box<dyn std::error:
                         let activity = Arc::clone(&last_activity);
                         let shutdown_conn = Arc::clone(&shutdown_signal);
                         tokio::spawn(async move {
-                            // Permit is held for the lifetime of the connection task.
                             let _permit = permit;
                             if let Err(e) = handle_connection(stream, ws, activity, shutdown_conn).await {
                                 tracing::warn!(error = %e, "daemon: connection error");
@@ -538,7 +534,6 @@ pub(crate) async fn dispatch_request(
         "composed" => lsp_dispatch::dispatch_composed(workspace, id, &params),
         "packages" => lsp_dispatch::dispatch_packages(workspace, id),
         "deps" => lsp_dispatch::dispatch_deps(workspace, id),
-        // Analysis
         "lint" => build_dispatch::dispatch_lint(workspace, id, &params),
         "format" => build_dispatch::dispatch_format(workspace, id, &params),
         "fix" => build_dispatch::dispatch_fix(workspace, id, &params),
@@ -558,7 +553,6 @@ pub(crate) async fn dispatch_request(
         "source" => build_dispatch::dispatch_source(workspace, id, &params),
         "eventSource" => build_dispatch::dispatch_event_source(workspace, id, &params),
         "location" => build_dispatch::dispatch_location(workspace, id, &params),
-        // Insight engine
         "trace" => insight_dispatch::dispatch_trace(workspace, id, &params),
         "entrypoints" => insight_dispatch::dispatch_entrypoints(workspace, id),
         "graphExport" => insight_dispatch::dispatch_graph_export(workspace, id, &params),
@@ -569,7 +563,6 @@ pub(crate) async fn dispatch_request(
         "suggestEvent" => insight_dispatch::dispatch_suggest_event(workspace, id, &params),
         "traceChain" => insight_dispatch::dispatch_trace_chain(workspace, id, &params),
         "eventMap" => insight_dispatch::dispatch_event_map(workspace, id),
-        // Semantic / toolchain
         "permissions" => build_dispatch::dispatch_permissions(workspace, id, &params),
         "compile" => build_dispatch::dispatch_compile(workspace, id).await,
         "package" => build_dispatch::dispatch_package(workspace, id).await,
@@ -585,25 +578,20 @@ pub(crate) async fn dispatch_request(
         "debug" => debug_dispatch::dispatch_debug(workspace, id, &params).await,
         "snapshot" => build_dispatch::dispatch_snapshot(id, &params).await,
         "profiling" => build_dispatch::dispatch_profiling(id, &params).await,
-        // XLIFF / Translation
         "xlf.generate" => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
         "xlf.refresh" => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
         "xlf.untranslated" => build_dispatch::dispatch_xlf_untranslated(id, &params),
         "xlf.suggest" => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
-        // WP15: Test runner
         "tests.discover" => build_dispatch::dispatch_tests_discover(workspace, id),
         "tests.run" => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
         "tests.coverage" => build_dispatch::dispatch_tests_coverage(workspace, id),
-        // p1-5: Phase 1 test_engine endpoints
         "tests.run_batch" => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
         "tests.run_auto" => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
         "tests.last_results" => {
             build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
         }
-        // p2: routing + affected-tests endpoints
         "tests.affected" => build_dispatch::dispatch_tests_affected(workspace, id, &params),
         "tests.classify" => build_dispatch::dispatch_tests_classify(workspace, id),
-        // Phase 4: snapshot record/replay/diff
         "tests.snapshot_record" => {
             build_dispatch::dispatch_tests_snapshot_record(workspace, id, &params).await
         }
@@ -611,11 +599,8 @@ pub(crate) async fn dispatch_request(
             build_dispatch::dispatch_tests_snapshot_replay(id, &params).await
         }
         "tests.snapshot_diff" => build_dispatch::dispatch_tests_snapshot_diff(id, &params).await,
-        // Phase 5: mutation testing
         "tests.mutate" => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
-        // WP16: Object generation
         "generate" => build_dispatch::dispatch_generate(workspace, id, &params),
-        // WP17: Analysis differentiators
         "obsolete" => build_dispatch::dispatch_obsolete(workspace, id),
         "audit.dataClassification" => {
             build_dispatch::dispatch_audit_data_classification(workspace, id)
@@ -627,7 +612,6 @@ pub(crate) async fn dispatch_request(
         "duplicates" => build_dispatch::dispatch_find_duplicates(workspace, id, &params),
         "upgrade" => build_dispatch::dispatch_upgrade_report(workspace, id, &params),
         "profiler.hints" => build_dispatch::dispatch_profiler_hints(workspace, id, &params),
-        // Diagnostics / observability
         "diag" => dispatch_diag(workspace, id, &params),
         "ping" => Response {
             id,
@@ -710,10 +694,6 @@ fn dispatch_diag(workspace: &Workspace, id: u64, params: &serde_json::Value) -> 
         ),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Shared utility functions used by dispatch sub-modules
-// ---------------------------------------------------------------------------
 
 pub(crate) fn extract_uri(params: &serde_json::Value) -> Option<url::Url> {
     let uri_str = params.get("uri")?.as_str()?;
@@ -852,10 +832,6 @@ pub(crate) fn lint_diag_to_json(d: &crate::syntax::LintDiagnostic) -> serde_json
         "endColumn": d.range.end_point.column + 1,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Workspace initialization (daemon mode — no LSP Client)
-// ---------------------------------------------------------------------------
 
 pub(crate) async fn initialize_daemon_workspace(workspace: &Workspace, project_root: &Path) {
     // Delegate common steps (find project, load packages, scan, toolchain) to al-core.
@@ -1023,8 +999,6 @@ mod tests {
         assert_eq!(result, Some("no newline here".to_string()));
     }
 
-    // --- file_uri_from_params -------------------------------------------------
-
     #[test]
     fn file_uri_prefers_explicit_uri_field() {
         // When a "uri" is present it is used verbatim, ignoring any "file".
@@ -1081,8 +1055,6 @@ mod tests {
         let params = serde_json::json!({ "something": "else" });
         assert!(file_uri_from_params(&params).is_none());
     }
-
-    // --- dispatch_request: routing ------------------------------------------
 
     /// `ping` is a static health-check that needs no project; it must echo
     /// `"pong"` with the request id and no error.
@@ -1184,8 +1156,6 @@ mod tests {
         assert!(resp.result.is_some());
     }
 
-    // --- dispatch_diag ------------------------------------------------------
-
     #[test]
     fn dispatch_diag_summary_serializes_memory_stats() {
         let ws = std::sync::Arc::new(crate::workspace::Workspace::new());
@@ -1210,8 +1180,6 @@ mod tests {
         assert!(err.message.contains("bogus"));
     }
 
-    // --- parse_object_kind --------------------------------------------------
-
     #[test]
     fn parse_object_kind_rejects_garbage_with_invalid_params() {
         // A non-AL kind string must map to an INVALID_PARAMS error Response
@@ -1223,8 +1191,6 @@ mod tests {
         assert!(rpc.message.contains("notakind"));
     }
 
-    // --- require_project_root ----------------------------------------------
-
     #[test]
     fn require_project_root_errors_when_no_project_loaded() {
         // A fresh workspace has no project; require_project_root must return
@@ -1235,8 +1201,6 @@ mod tests {
         let rpc = err.error.expect("must carry an RpcError");
         assert_eq!(rpc.code, error_codes::INTERNAL_ERROR);
     }
-
-    // --- ensure_document / require_document_text ---------------------------
 
     #[test]
     fn ensure_document_loads_file_from_disk_then_serves_text() {
@@ -1283,8 +1247,6 @@ mod tests {
         assert!(got.is_none());
     }
 
-    // --- extract_uri --------------------------------------------------------
-
     #[test]
     fn extract_uri_parses_valid_file_url() {
         let params = serde_json::json!({ "uri": "file:///a/b.al" });
@@ -1302,8 +1264,6 @@ mod tests {
         // Present string but not a parseable URL (no scheme → relative-ref error).
         assert!(extract_uri(&serde_json::json!({ "uri": "not a url" })).is_none());
     }
-
-    // --- extract_position ---------------------------------------------------
 
     #[test]
     fn extract_position_parses_valid_line_and_character() {
@@ -1330,8 +1290,6 @@ mod tests {
         let params = serde_json::json!({ "line": 0, "character": (u32::MAX as u64) + 1 });
         assert!(extract_position(&params).is_none());
     }
-
-    // --- invalid_params / file_not_found / rpc_error helpers ----------------
 
     #[test]
     fn invalid_params_carries_invalid_params_code_and_id() {
@@ -1361,8 +1319,6 @@ mod tests {
         assert_eq!(err.code, error_codes::INTERNAL_ERROR);
         assert_eq!(err.message, "boom");
     }
-
-    // --- dispatch_request: routing to no-param success methods --------------
 
     /// `rules` is a static query (lint rule catalogue) needing no project; it
     /// must route through `dispatch_request` and return a JSON array result
@@ -1406,8 +1362,6 @@ mod tests {
         assert!(resp.error.is_none());
         assert!(resp.result.expect("entrypoints result").is_array());
     }
-
-    // --- dispatch_request: routing to param-validating methods --------------
 
     /// `hover` requires uri + position; with null params (the default when the
     /// wire omits `params`) it must route through and surface INVALID_PARAMS,
@@ -1490,8 +1444,6 @@ mod tests {
             error_codes::METHOD_NOT_FOUND
         );
     }
-
-    // --- lint_diag_to_json --------------------------------------------------
 
     #[test]
     fn lint_diag_to_json_uses_one_based_positions() {

@@ -222,7 +222,6 @@ pub(crate) fn handle_event_chain_key(app: &mut App, key: crossterm::event::KeyEv
             _ => {}
         }
     } else if view.rows.is_empty() && !view.suggestions.is_empty() {
-        // Navigating the suggestion list.
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 advance_list_selection(&mut view.suggestion_state, view.suggestions.len(), true);
@@ -277,7 +276,6 @@ pub(crate) fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChai
         ])
         .split(area);
 
-    // Search input
     let input_style = input_focused_style(view.input_focused);
     let cursor = if view.input_focused { "█" } else { "" };
     let input_block = Block::default()
@@ -292,7 +290,6 @@ pub(crate) fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChai
         input_inner,
     );
 
-    // Results list
     let list_style = if !view.input_focused {
         Style::default()
             .fg(Color::Yellow)
@@ -404,7 +401,6 @@ pub(crate) fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChai
         .highlight_symbol(">> ");
     f.render_stateful_widget(list, chunks[1], &mut view.list_state);
 
-    // Status bar
     f.render_widget(
         Paragraph::new(view.status.clone()).style(Style::default().fg(Color::DarkGray)),
         chunks[2],

@@ -257,7 +257,6 @@ pub(crate) fn render_profiler(f: &mut Frame, area: Rect, view: &mut ProfilerView
         input_inner,
     );
 
-    // Hotspot table
     let list_style = if !view.input_focused {
         Style::default()
             .fg(Color::Yellow)

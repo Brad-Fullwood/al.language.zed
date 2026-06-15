@@ -5,32 +5,16 @@ use tower_lsp::lsp_types::*;
 use super::formatting;
 use super::AlServer;
 
-// ---------------------------------------------------------------------------
-// Document symbols
-// ---------------------------------------------------------------------------
-
 // T028: handle_document_symbol inlined in lsp::document_symbol with
 // spawn_blocking wrapper — see crates/al-core/src/server/lsp.rs.
-
-// ---------------------------------------------------------------------------
-// Folding ranges
-// ---------------------------------------------------------------------------
 
 pub(crate) fn handle_folding_range(server: &AlServer, uri: &Url) -> Option<Vec<FoldingRange>> {
     crate::queries::folding::folding_ranges(&server.workspace, uri)
         .map(|ranges| ranges.into_iter().map(Into::into).collect())
 }
 
-// ---------------------------------------------------------------------------
-// Semantic tokens
-// ---------------------------------------------------------------------------
-
 // T028: handle_semantic_tokens inlined in lsp::semantic_tokens_full with
 // spawn_blocking wrapper — see crates/al-core/src/server/lsp.rs.
-
-// ---------------------------------------------------------------------------
-// Signature help
-// ---------------------------------------------------------------------------
 
 pub(crate) fn handle_signature_help(
     server: &AlServer,
@@ -69,10 +53,6 @@ pub(crate) fn handle_signature_help(
         active_parameter: result.active_parameter,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Code actions
-// ---------------------------------------------------------------------------
 
 pub(crate) fn handle_code_action(
     server: &AlServer,
@@ -202,10 +182,6 @@ fn core_action_to_lsp(
         ..Default::default()
     })
 }
-
-// ---------------------------------------------------------------------------
-// Inlay hints
-// ---------------------------------------------------------------------------
 
 pub(crate) fn handle_inlay_hint(
     server: &AlServer,

@@ -29,10 +29,6 @@ impl LiveBcMode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: send one event, returning ChannelClosed on failure.
-// ---------------------------------------------------------------------------
-
 /// Match `name` against a simple-glob `pattern`. Supports `*` (zero-or-more
 /// of any char) and is case-insensitive — matches AL's identifier rules.
 /// No-asterisk patterns require an exact case-insensitive match.
@@ -74,10 +70,6 @@ async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<()
         TestRunnerError::ChannelClosed
     })
 }
-
-// ---------------------------------------------------------------------------
-// Helper: run one codeunit (with timeout), collect events into a Vec.
-// ---------------------------------------------------------------------------
 
 async fn run_one_codeunit(
     config: &BcServerConfig,
@@ -401,10 +393,6 @@ mod tests {
     use crate::test_engine::result::TestStatus;
     use crate::test_engine::session::{RunOptions, TestEvent, TestId, TestSession};
 
-    // -----------------------------------------------------------------------
-    // Helpers
-    // -----------------------------------------------------------------------
-
     /// Build a `BcServerConfig` pointing at the given wiremock base URL.
     ///
     /// Uses Windows auth so no env-var credentials are required (the mock
@@ -431,13 +419,9 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Test 1: construction from config
-    // -----------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
     // method_matches — pure-function tests, no MockServer needed
-    // -----------------------------------------------------------------------
 
     use super::method_matches;
 
@@ -504,9 +488,7 @@ mod tests {
         // first failure that pins the implementation gap.)
     }
 
-    // -----------------------------------------------------------------------
     // Test 2: empty test list → only SessionComplete{total:0}
-    // -----------------------------------------------------------------------
 
     /// Positive: empty input emits exactly one event — SessionComplete{0,0,0,0}.
     #[tokio::test]
@@ -549,9 +531,7 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 0);
     }
 
-    // -----------------------------------------------------------------------
     // Test 3: single codeunit happy path
-    // -----------------------------------------------------------------------
 
     /// Positive: single codeunit pass path emits correct event sequence.
     #[tokio::test]
@@ -643,9 +623,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Test 4: two codeunits in parallel
-    // -----------------------------------------------------------------------
 
     /// Positive: two codeunits with parallel=true both complete.
     #[tokio::test]
@@ -722,9 +700,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Test 5: per-test timeout produces Skip (NEGATIVE)
-    // -----------------------------------------------------------------------
 
     /// Negative: slow server + tight timeout → CaseResult{Skip} with timeout message.
     #[tokio::test]
@@ -807,9 +783,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Test: duplicate TestIds are deduplicated (no inflated counts)
-    // -----------------------------------------------------------------------
 
     /// Regression: passing the same TestId twice must run the codeunit once and
     /// report total=1 (not 2). Previously each duplicate invoked the BC API and
@@ -883,9 +857,7 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Test 6: server 500 emits Error event and continues (NEGATIVE)
-    // -----------------------------------------------------------------------
 
     /// Negative: 500 on one codeunit emits Error event but run continues for next codeunit.
     #[tokio::test]

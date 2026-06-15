@@ -303,7 +303,6 @@ pub(crate) fn render_test_runner(f: &mut Frame, area: Rect, view: &mut TestRunne
         .highlight_symbol("> ");
     f.render_stateful_widget(list, left_rows[0], &mut view.list_state);
 
-    // Status bar.
     let status_p = Paragraph::new(view.status.as_str()).style(Style::default().fg(Color::DarkGray));
     f.render_widget(status_p, left_rows[1]);
 

@@ -282,9 +282,7 @@ pub fn lint_to_diagnostic(lint: &crate::syntax::LintDiagnostic, source: &[u8]) -
     }
 }
 
-// ---------------------------------------------------------------------------
 // T1503: Test diagnostics — convert test results to LSP publishDiagnostics
-// ---------------------------------------------------------------------------
 
 /// Convert a `TestDiagnostic` (from al-core's test runner) to an LSP `Diagnostic`.
 ///
@@ -685,9 +683,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // semantic_to_diagnostic — additional edge / branch coverage
-    // -----------------------------------------------------------------------
 
     #[test]
     fn semantic_to_diagnostic_unknown_severity_defaults_to_warning() {
@@ -789,9 +785,7 @@ mod tests {
         assert_eq!((diag.range.end.line, diag.range.end.character), (3, 8));
     }
 
-    // -----------------------------------------------------------------------
     // test_diag_to_lsp — remaining severity variants
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_diag_information_and_hint_severities() {

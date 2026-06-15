@@ -19,9 +19,7 @@ pub(super) use xliff::*;
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::Response;
 
-// ---------------------------------------------------------------------------
 // Shared constants — used by multiple submodules via `super::ERR_*`
-// ---------------------------------------------------------------------------
 pub(super) const ERR_INITIALIZING: &str = "Workspace is initializing, try again";
 pub(super) const ERR_NO_PROJECT: &str = "No project loaded";
 
@@ -51,9 +49,7 @@ fn clamp_min_similarity(s: Option<f64>) -> f32 {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Analysis dispatchers (no dedicated submodule — reported as left-in-mod)
-// ---------------------------------------------------------------------------
 
 pub(super) fn dispatch_obsolete(workspace: &Workspace, id: u64) -> Response {
     let entries = crate::queries::obsolescence::obsolescence_timeline(workspace);

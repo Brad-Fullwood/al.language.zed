@@ -13,10 +13,6 @@ use thiserror::Error;
 use crate::test_runtime::interpreter::value::Value;
 use crate::test_runtime::mock::filter::{self, FilterExpr};
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Type aliases
-// ──────────────────────────────────────────────────────────────────────────────
-
 /// A field number, matching BC's integer field-number convention.
 pub type FieldNo = i32;
 
@@ -25,10 +21,6 @@ pub type PrimaryKey = Vec<Value>;
 
 /// A single row: field number → value.
 pub type Row = BTreeMap<FieldNo, Value>;
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Error type
-// ──────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum RecordError {
@@ -45,10 +37,6 @@ pub enum RecordError {
     #[error("filter parse error for field {0}: {1}")]
     FilterParse(FieldNo, String),
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Per-field filter spec
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// A filter applied to a specific field.
 #[derive(Debug, Clone)]
@@ -67,10 +55,6 @@ impl FieldFilter {
         }
     }
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Sort key for iteration
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// The current-key fields that determine iteration order.
 /// Defaults to the primary key fields.
@@ -93,10 +77,6 @@ impl SortKey {
             .collect()
     }
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// MockRecord
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// An in-memory BC record table.
 ///
@@ -409,10 +389,6 @@ impl MockRecord {
         self.x_rec.get(&field)
     }
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Tests
-// ──────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -748,10 +724,6 @@ mod tests {
         rec.reset();
         assert_eq!(rec.count(), 5);
     }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // ADVERSARIAL-I tests
-    // ──────────────────────────────────────────────────────────────────────────
 
     // Vector 1: NaN Decimal as primary key — BTreeMap uses Ord (total_cmp)
     // for lookup, so insert+get should round-trip. However, PartialEq is

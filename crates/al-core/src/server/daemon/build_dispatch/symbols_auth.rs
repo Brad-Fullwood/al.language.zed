@@ -458,11 +458,9 @@ mod tests {
         Workspace::new()
     }
 
-    // -----------------------------------------------------------------------
-    // F-009: dispatch_download_symbols must refresh workspace symbol indexes
+    // -----------------------------------------------------------------------    // F-009: dispatch_download_symbols must refresh workspace symbol indexes
     // after a successful download so hover/completion/definition see the new
     // packages without a daemon restart.
-    // -----------------------------------------------------------------------
 
     /// Empty result vector — no successful downloads — must short-circuit
     /// to 0 loaded packages and not touch the workspace symbol index.
@@ -519,10 +517,8 @@ mod tests {
         assert_eq!(loaded, 0, "unreadable path should yield 0 loaded");
     }
 
-    // -----------------------------------------------------------------------
-    // dispatch_authenticate: status/clear branches resolve without a network
+    // -----------------------------------------------------------------------    // dispatch_authenticate: status/clear branches resolve without a network
     // call when the workspace has no configured tenants.
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn authenticate_status_no_tenants_returns_empty_list() {
@@ -553,11 +549,9 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // dispatch_clear_cache: response shape — `deleted`/`existed` booleans and
+    // -----------------------------------------------------------------------    // dispatch_clear_cache: response shape — `deleted`/`existed` booleans and
     // a `path`. With no index dir present, both flags must be false and no
     // error must be reported.
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn clear_cache_reports_shape_and_no_error() {

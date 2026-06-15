@@ -14,10 +14,6 @@
 
 use std::fmt;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Error type
-// ──────────────────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CalcParseError {
     #[error("empty formula")]
@@ -43,10 +39,6 @@ pub enum CalcParseError {
     #[error("CONST() with empty argument in WHERE clause for field '{0}'")]
     EmptyConstArgument(String),
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// AST
-// ──────────────────────────────────────────────────────────────────────────────
 
 /// Parsed FlowField formula.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,10 +108,6 @@ pub enum WhereValue {
     /// `FILTER(expression)` — a filter expression string.
     Filter(String),
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Parser
-// ──────────────────────────────────────────────────────────────────────────────
 
 struct Parser<'a> {
     input: &'a str,
@@ -345,10 +333,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Public API
-// ──────────────────────────────────────────────────────────────────────────────
-
 /// Parse a FlowField `CalcFormula` string.
 ///
 /// Supports formula types: `Sum`, `Count`, `Lookup`, `Average`, `Min`, `Max`,
@@ -435,10 +419,6 @@ pub fn parse(formula: &str) -> Result<CalcFormula, CalcParseError> {
         where_clause,
     })
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Tests
-// ──────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -604,9 +584,6 @@ mod tests {
     fn test_invalid_missing_table() {
         assert!(parse("Sum()").is_err());
     }
-    // ──────────────────────────────────────────────────────────────────────────
-    // ADVERSARIAL-I tests
-    // ──────────────────────────────────────────────────────────────────────────
 
     // Vector 15: Quoted names with special characters.
 
@@ -720,10 +697,6 @@ mod tests {
         );
     }
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Property-based tests (proptest)
-// ──────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod proptest_tests {

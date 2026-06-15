@@ -5,9 +5,7 @@ use super::{ERR_INITIALIZING, ERR_NO_PROJECT};
 use crate::workspace::Workspace;
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
-// ---------------------------------------------------------------------------
 // Shared BC server connection params (used by snapshot and profiling)
-// ---------------------------------------------------------------------------
 
 /// Common BC server connection parameters extracted from JSON-RPC params.
 struct BcServerParams {
@@ -245,7 +243,6 @@ pub(in crate::server::daemon) fn dispatch_event_source(
     }
 }
 // Semantic / toolchain dispatchers
-// ---------------------------------------------------------------------------
 
 pub(in crate::server::daemon) async fn dispatch_compile(
     workspace: &Workspace,
@@ -838,7 +835,6 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
     }
 }
 // Metrics: cyclomatic/cognitive complexity per procedure (T1802)
-// ---------------------------------------------------------------------------
 
 pub(in crate::server::daemon) fn dispatch_metrics(
     workspace: &Workspace,
@@ -1227,10 +1223,8 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // F-011: write_al_file_and_refresh / rename_al_file_and_refresh keep
     // the workspace in sync with daemon-initiated file mutations.
-    // -----------------------------------------------------------------------
 
     /// F-011 positive: write_al_file_and_refresh writes to disk AND
     /// updates documents + file_index + invalidates insight graph.
@@ -1424,10 +1418,8 @@ mod tests {
         assert!(err.message.contains("absolute"), "got: {}", err.message);
     }
 
-    // -----------------------------------------------------------------------
     // parse_bc_server_params: defaults vs explicit overrides (shared by the
     // snapshot + profiling dispatchers). Pure, no BC server required.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn bc_server_params_apply_documented_defaults_when_absent() {
@@ -1488,10 +1480,8 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // capitalize_first / sanitize_filename: pure helpers used by
     // dispatch_organize_files to build canonical `.al` file names.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn capitalize_first_uppercases_only_leading_char() {
@@ -1521,9 +1511,7 @@ mod tests {
         assert_eq!(sanitize_filename("Sales Header"), "Sales Header");
     }
 
-    // -----------------------------------------------------------------------
     // dispatch_sort_members: content path, dry-run, and missing-param branch.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn sort_members_with_content_returns_sorted_and_changed_flags() {
@@ -1552,10 +1540,8 @@ mod tests {
         assert_eq!(resp.error.expect("err").code, error_codes::INVALID_PARAMS);
     }
 
-    // -----------------------------------------------------------------------
     // dispatch_organize_files: no-project root must surface an error rather
     // than scanning an undefined root.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn organize_files_without_project_returns_error() {
@@ -1568,10 +1554,8 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // dispatch_profiler_hints: an absent/empty `hotspots` array must produce
     // a well-formed (array) result, never an error.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn profiler_hints_absent_hotspots_returns_array() {

@@ -289,8 +289,6 @@ mod tests {
         }
     }
 
-    // --- is_record_of ---
-
     #[test]
     fn is_record_of_quoted() {
         assert!(is_record_of("Record \"Customer\"", "customer"));
@@ -324,8 +322,6 @@ mod tests {
         assert!(!is_record_of("Record Customer", ""));
     }
 
-    // --- table_impact: extends ---
-
     #[test]
     fn detects_table_extension() {
         let index = SymbolIndex::new();
@@ -349,8 +345,6 @@ mod tests {
             .iter()
             .any(|i| i.operation == TableOperationKind::Extends));
     }
-
-    // --- table_impact: relation ---
 
     #[test]
     fn detects_table_relation() {
@@ -389,8 +383,6 @@ mod tests {
             .contains("Sell-to Customer No.")));
     }
 
-    // --- table_impact: record variable ---
-
     #[test]
     fn detects_record_variable() {
         let index = SymbolIndex::new();
@@ -423,8 +415,6 @@ mod tests {
             .unwrap_or("")
             .contains("Cust")));
     }
-
-    // --- table_impact: record parameter ---
 
     #[test]
     fn detects_record_parameter() {
@@ -460,8 +450,6 @@ mod tests {
             .any(|i| i.operation == TableOperationKind::RecordParameter));
     }
 
-    // --- table_impact: no hits ---
-
     #[test]
     fn no_impact_when_unrelated() {
         let index = SymbolIndex::new();
@@ -473,8 +461,6 @@ mod tests {
         assert_eq!(result.total_impacts, 0);
     }
 
-    // --- table_impact: canonical name ---
-
     #[test]
     fn canonical_name_from_index() {
         let index = SymbolIndex::new();
@@ -484,8 +470,6 @@ mod tests {
         let result = table_impact(&index, "CUSTOMER");
         assert_eq!(result.table_name, "Customer");
     }
-
-    // --- table_impact: total_impacts ---
 
     #[test]
     fn total_impacts_counts_all_sites() {
@@ -516,8 +500,6 @@ mod tests {
         // 2 record vars from Multi + 1 extends from CE
         assert_eq!(result.total_impacts, 3);
     }
-
-    // --- extract_table_relation_table: shape coverage ---
 
     #[test]
     fn extract_table_relation_bare_identifier() {

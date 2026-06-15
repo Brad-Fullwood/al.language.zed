@@ -196,9 +196,7 @@ pub(in crate::server::daemon) fn dispatch_setup(workspace: &Workspace, id: u64) 
         ..Default::default()
     }
 }
-// ---------------------------------------------------------------------------
 // WP16: Object wizards / code generation
-// ---------------------------------------------------------------------------
 
 pub(in crate::server::daemon) fn dispatch_generate(
     workspace: &Workspace,
@@ -666,9 +664,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // dispatch_permissions: xml format branch + objectCount shaping.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn permissions_xml_format_returns_xml_content_and_count() {

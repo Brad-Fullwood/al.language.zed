@@ -39,10 +39,6 @@ use std::collections::VecDeque;
 use crate::test_runtime::interpreter::scope::Eval;
 use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 
-// ---------------------------------------------------------------------------
-// Thread-local queue
-// ---------------------------------------------------------------------------
-
 /// Maximum items the queue can hold (mirrors `array[25] of Variant`).
 const MAX_QUEUE_SIZE: usize = 25;
 
@@ -105,10 +101,6 @@ pub fn reset_queue() {
     QUEUE.with(|q| q.borrow_mut().clear());
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn err(message: impl Into<String>) -> Eval {
     Eval::Error(ErrorInfo {
         message: message.into(),
@@ -124,10 +116,6 @@ fn ok(v: Value) -> Eval {
 fn ok_empty() -> Eval {
     Eval::Normal(Value::Empty)
 }
-
-// ---------------------------------------------------------------------------
-// Stub implementations
-// ---------------------------------------------------------------------------
 
 /// `AssertEmpty()` — error if the queue is not empty; also clears the queue
 /// (matches BC behaviour: counts items, clears, then asserts count was 0).
@@ -260,10 +248,6 @@ pub fn max_length(_args: &[Value]) -> Eval {
     ok(Value::Integer(MAX_QUEUE_SIZE as i64))
 }
 
-// ---------------------------------------------------------------------------
-// Typed dequeue helpers
-// ---------------------------------------------------------------------------
-
 /// `DequeueText(): Text` — dequeue and coerce to Text via Format().
 pub fn dequeue_text(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
@@ -344,10 +328,6 @@ pub fn dequeue_boolean(_args: &[Value]) -> Eval {
         Err(msg) => err(format!("Library Variable Storage: {msg}")),
     })
 }
-
-// ---------------------------------------------------------------------------
-// Typed peek helpers
-// ---------------------------------------------------------------------------
 
 /// `PeekText(Index: Integer): Text`.
 pub fn peek_text(args: &[Value]) -> Eval {
@@ -442,10 +422,6 @@ pub fn peek_boolean(args: &[Value]) -> Eval {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Helper: render a Value as Text (mirrors AL's Format() builtin)
-// ---------------------------------------------------------------------------
-
 fn format_value(v: &Value) -> String {
     match v {
         Value::Integer(n) => n.to_string(),
@@ -463,10 +439,6 @@ fn format_value(v: &Value) -> String {
         other => format!("<{}>", other.type_name()),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Resolver
-// ---------------------------------------------------------------------------
 
 /// Resolve a procedure name (case-insensitive) to its Rust implementation.
 ///
@@ -500,10 +472,6 @@ pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
         _ => None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

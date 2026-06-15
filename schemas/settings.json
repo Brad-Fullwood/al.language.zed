@@ -37,7 +37,7 @@
     "al.enableNativeLint": {
       "type": "boolean",
       "default": true,
-      "description": "Enable native AL lint rules (AL-L001 through AL-L024). These are fast, tree-sitter-based rules that run alongside CodeAnalysis."
+      "description": "Reserved for future native AL lint rules. The setting is parsed for compatibility, but native lint diagnostics are currently inert; diagnostics come from syntax parsing and the semantic CodeAnalysis bridge."
     },
     "al.nativeLintRules": {
       "type": "object",
@@ -45,7 +45,7 @@
         "type": "boolean"
       },
       "default": {},
-      "description": "Per-rule enable/disable overrides. Key is rule code (e.g. 'AL-L001': false to disable). Rules not listed default to enabled."
+      "description": "Reserved per-rule enable/disable overrides for future native lint rules. Parsed for compatibility but currently inert."
     },
     "al.enableExternalRulesets": {
       "type": "boolean",

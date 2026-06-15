@@ -829,7 +829,6 @@ mod tests {
         use std::io::Write;
         use zip::write::SimpleFileOptions;
 
-        // Create a fake .nupkg with a .app file inside
         let mut nupkg_buf = Vec::new();
         {
             let cursor = std::io::Cursor::new(&mut nupkg_buf);

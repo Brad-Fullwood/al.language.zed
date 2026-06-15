@@ -38,10 +38,6 @@ use std::cell::Cell;
 use crate::test_runtime::interpreter::scope::Eval;
 use crate::test_runtime::interpreter::value::{ErrorInfo, Value};
 
-// ---------------------------------------------------------------------------
-// Thread-local LCG state
-// ---------------------------------------------------------------------------
-
 thread_local! {
     /// Current LCG state.  Initial value 1 matches BC's default when
     /// `Randomize` has not been called.
@@ -67,10 +63,6 @@ fn next_rand(max: i64) -> i64 {
         (r % max) + 1
     })
 }
-
-// ---------------------------------------------------------------------------
-// Procedure implementations
-// ---------------------------------------------------------------------------
 
 fn err(message: impl Into<String>) -> Eval {
     Eval::Error(ErrorInfo {
@@ -198,10 +190,6 @@ pub fn rand_date_from(args: &[Value]) -> Eval {
     ok(Value::Date(start + offset))
 }
 
-// ---------------------------------------------------------------------------
-// Resolver
-// ---------------------------------------------------------------------------
-
 /// Resolve a procedure name (case-insensitive) to its Rust implementation.
 /// Returns `None` if the name is not part of this stub's API surface.
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
@@ -215,10 +203,6 @@ pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
         _ => None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
