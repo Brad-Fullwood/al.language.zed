@@ -4,8 +4,68 @@ AL Language for Zed adds Microsoft Dynamics 365 Business Central AL support to
 Zed. The extension bundles grammar integration for the editor and ships a native
 Rust language server, debugger adapter, CLI, and agent-facing MCP tools.
 
+This project is intentionally more ambitious than a syntax-highlighting
+extension. Large parts of the usual Microsoft AL development experience have
+been rebuilt here as native, inspectable, Zed-integrated tooling: parsing,
+workspace indexing, symbol package reading, language-server features, debugging,
+build orchestration, project analysis, test workflows, and command-line tooling.
+
+## Why This Exists
+
+The standard AL tooling is powerful, but it is centered on the Microsoft VS Code
+extension and its surrounding runtime assumptions. That works well inside VS
+Code, but it leaves several gaps for Zed and for teams that want a more open,
+scriptable development stack:
+
+- The official extension is not designed as a reusable Zed language package.
+- Much of the behavior is opaque from outside the Microsoft extension runtime,
+  which makes deep editor integration and regression testing harder.
+- Useful workflows such as symbol search, event tracing, dependency impact,
+  dead-code analysis, test routing, and workspace audits are spread across
+  compiler behavior, server behavior, and editor behavior instead of exposed as
+  composable commands.
+- Debugging and Business Central service integration need editor-specific glue
+  that the stock VS Code extension naturally owns for VS Code.
+- Automated agents and CI need stable CLI/MCP surfaces, deterministic JSON
+  output, and narrow commands rather than editor-only actions.
+
+The result is a native AL toolchain for Zed that keeps compatibility with the
+Business Central ecosystem while making the moving parts visible, testable, and
+scriptable.
+
+## Native Reimplementation Of AL Tooling
+
+This repository rewrites or replaces a substantial amount of the standard AL
+editor tooling surface:
+
+| Area | This project |
+|------|--------------|
+| Parsing and grammar | Tree-sitter grammar generated from AL TextMate data, with checked-in parser and query artifacts. |
+| Language server | Native Rust `al-lsp` for diagnostics, completions, hover, navigation, rename, formatting, code actions, semantic tokens, inlay hints, and workspace indexing. |
+| Symbol handling | Native `.app` package reading, manifest parsing, source indexing, symbol search, composition, package cache handling, server symbol downloads, and NuGet feed resolution. |
+| Debugging | Native DAP adapter mode in `al-lsp --dap`, with Business Central attach/launch plumbing and Zed debug scenario conversion. |
+| Build and package workflows | `al-explorer` commands for compile, package, publish-adjacent workflows, toolchain discovery, diagnostics, formatting, linting, and project setup. |
+| Analysis tools | Event tracing, subscriber discovery, call graph, impact analysis, dead-code detection, SQL anti-pattern scanning, duplicate detection, architecture lint, breaking-change analysis, upgrade reports, obsolescence timelines, and permission/data audits. |
+| Test tooling | Test discovery, test routing, run-all workflows, result persistence, coverage summaries, mutation testing, and snapshot/replay support. |
+| Automation | CLI JSON output, Zed tasks, daemon protocol, and MCP tools for agent workflows. |
+
+This is better for Zed users because the integration is native instead of
+adapter-shaped around VS Code. It is better for automation because the same
+engine is available through LSP, DAP, CLI, daemon JSON-RPC, and MCP. It is
+better for maintenance because behavior can be tested in this repository without
+reverse-engineering a closed editor extension boundary.
+
+It is not a rejection of Microsoft's tooling. The project still interoperates
+with the Microsoft AL compiler, Business Central services, ALTool discovery,
+symbol packages, and optional CodeAnalysis-based semantic checks. It also has an
+escape hatch: `al.useOfficialLsp` can delegate an LSP session to Microsoft's
+official AL language server when that is the right tradeoff. The difference is
+that the default path is owned here, optimized for Zed, and exposed as a real
+toolchain rather than only as editor behavior.
+
 ## Features
 
+- Native AL development stack for Zed, not just syntax highlighting.
 - AL grammar support through the bundled `tree-sitter-al` submodule.
 - Syntax highlighting, brackets, indentation, folding, outlines, text objects,
   locals, runnables, inline values, snippets, and Business Central themes.
